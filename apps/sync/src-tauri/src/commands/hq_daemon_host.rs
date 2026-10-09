@@ -710,10 +710,7 @@ fn conflict_notice_state_dir() -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub async fn acknowledge_conflict_notice(
-    app: AppHandle,
-    notice_id: String,
-) -> Result<(), String> {
+pub async fn acknowledge_conflict_notice(app: AppHandle, notice_id: String) -> Result<(), String> {
     run_daemon_sync_command_blocking(vec![
         "daemon".into(),
         "sync".into(),
@@ -728,7 +725,7 @@ pub async fn acknowledge_conflict_notice(
         "sync:conflict-notices",
         &pending,
     )
-        .map_err(|_| "Conflict notice update could not be delivered.".to_string())
+    .map_err(|_| "Conflict notice update could not be delivered.".to_string())
 }
 
 fn safe_conflict_backup_path(value: &str) -> bool {
@@ -739,12 +736,20 @@ fn safe_conflict_backup_path(value: &str) -> bool {
             .all(|part| matches!(part, std::path::Component::Normal(_)))
 }
 
-fn conflict_backup_root(hq_root: &Path, scope: &str, company_slug: Option<&str>) -> Result<PathBuf, String> {
+fn conflict_backup_root(
+    hq_root: &Path,
+    scope: &str,
+    company_slug: Option<&str>,
+) -> Result<PathBuf, String> {
     match scope {
         "personal" if company_slug.is_none() => Ok(hq_root.to_path_buf()),
         "company" => {
             let slug = company_slug
-                .filter(|value| value.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
+                .filter(|value| {
+                    value
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+                })
                 .ok_or_else(|| "Conflict company is invalid.".to_string())?;
             match hq_desktop_core::workspaces::read_manifest(hq_root) {
                 hq_desktop_core::workspaces::ManifestLoad::Present(entries) => Ok(entries
@@ -752,9 +757,14 @@ fn conflict_backup_root(hq_root: &Path, scope: &str, company_slug: Option<&str>)
                     .find(|entry| entry.slug == slug)
                     .map(|entry| entry.path)
                     .unwrap_or_else(|| hq_root.join("companies").join(slug))),
-                hq_desktop_core::workspaces::ManifestLoad::Absent => Ok(hq_root.join("companies").join(slug)),
+                hq_desktop_core::workspaces::ManifestLoad::Absent => {
+                    Ok(hq_root.join("companies").join(slug))
+                }
                 hq_desktop_core::workspaces::ManifestLoad::Failed(error) => {
-                    log(LOG_TAG, &format!("could not resolve conflict company from manifest: {error}"));
+                    log(
+                        LOG_TAG,
+                        &format!("could not resolve conflict company from manifest: {error}"),
+                    );
                     Err("Company folder could not be resolved.".to_string())
                 }
             }
@@ -764,7 +774,11 @@ fn conflict_backup_root(hq_root: &Path, scope: &str, company_slug: Option<&str>)
 }
 
 #[tauri::command]
-pub fn show_conflict_backup(scope: String, company_slug: Option<String>, backup_path: String) -> Result<(), String> {
+pub fn show_conflict_backup(
+    scope: String,
+    company_slug: Option<String>,
+    backup_path: String,
+) -> Result<(), String> {
     if !safe_conflict_backup_path(&backup_path) {
         return Err("Conflict backup path is invalid.".to_string());
     }
@@ -781,13 +795,18 @@ pub fn show_conflict_backup(scope: String, company_slug: Option<String>, backup_
         return Err("Conflict backup could not be found.".to_string());
     }
     #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg("-R").arg(&backup).status();
+    let result = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&backup)
+        .status();
     #[cfg(target_os = "windows")]
     let result = std::process::Command::new("explorer")
         .arg(format!("/select,{}", backup.display()))
         .status();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let result = std::process::Command::new("xdg-open").arg(backup.parent().unwrap_or(&root)).status();
+    let result = std::process::Command::new("xdg-open")
+        .arg(backup.parent().unwrap_or(&root))
+        .status();
     result
         .map_err(|_| "File manager could not open the conflict backup.".to_string())?
         .success()
@@ -834,6 +853,12 @@ pub struct DaemonSyncStatusDetails {
     pub unit_status: String,
     pub reason: Option<String>,
     pub log_path: String,
+    pub hq_cloud_version: Option<String>,
+    pub runner_source: Option<String>,
+    pub hq_cloud_update_last_check_at: Option<String>,
+    pub hq_cloud_update_outcome: Option<String>,
+    pub hq_cloud_update_target: Option<String>,
+    pub hq_cloud_update_error_class: Option<String>,
 }
 
 pub fn parse_daemon_sync_status(output: &str) -> Result<DaemonSyncStatusDetails, String> {
@@ -894,6 +919,30 @@ pub fn parse_daemon_sync_status(output: &str) -> Result<DaemonSyncStatusDetails,
         unit_status: unit_status.to_string(),
         reason,
         log_path: log_path.to_string(),
+        hq_cloud_version: object
+            .get("hqCloudVersion")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        runner_source: object
+            .get("runnerSource")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_last_check_at: object
+            .get("hqCloudUpdateLastCheckAt")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_outcome: object
+            .get("hqCloudUpdateOutcome")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_target: object
+            .get("hqCloudUpdateTarget")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_error_class: object
+            .get("hqCloudUpdateErrorClass")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
     })
 }
 
@@ -904,6 +953,69 @@ pub fn hosted_daemon_sync_status() -> Result<DaemonSyncStatusDetails, String> {
         status.reason = Some(INSTANT_SYNC_UNSUPPORTED_MESSAGE.to_string());
     }
     Ok(status)
+}
+
+/// Client health is best-effort and must not wait on a stuck CLI. Keep this
+/// call below the heartbeat cadence so an old or unhealthy CLI falls back.
+pub fn hosted_daemon_sync_status_bounded() -> Result<DaemonSyncStatusDetails, String> {
+    const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+    let hq = local_hq().ok_or_else(|| HQ_CLI_MISSING_MESSAGE.to_string())?;
+    let mut child =
+        hq_desktop_core::paths::spawn_command(&hq, &["daemon", "sync", "status", "--json"])
+            .env("PATH", hq_desktop_core::paths::child_path())
+            .env("HQ_NO_UPDATE_CHECK", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                log(
+                    LOG_TAG,
+                    &format!("could not start bounded daemon status: {error}"),
+                );
+                "HQ daemon status is unavailable. Tap to retry.".to_string()
+            })?;
+    let deadline = Instant::now() + STATUS_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log(LOG_TAG, "bounded daemon status timed out after 5 seconds");
+                return Err("HQ daemon status timed out. Tap to retry.".to_string());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log(
+                    LOG_TAG,
+                    &format!("could not wait for bounded daemon status: {error}"),
+                );
+                return Err("HQ daemon status is unavailable. Tap to retry.".to_string());
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("could not read bounded daemon status: {error}"),
+        );
+        "HQ daemon status is unavailable. Tap to retry.".to_string()
+    })?;
+    if !output.status.success() {
+        log(LOG_TAG, "bounded daemon status exited unsuccessfully");
+        return Err("HQ daemon status is unavailable. Tap to retry.".to_string());
+    }
+    let output = String::from_utf8(output.stdout).map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("bounded daemon status returned invalid UTF-8: {error}"),
+        );
+        "HQ daemon returned an unreadable sync status. Tap to retry.".to_string()
+    })?;
+    parse_daemon_sync_status(&output)
 }
 
 /// `daemon_status` in daemon mode: the daemon's sync service.
@@ -1607,8 +1719,8 @@ fn host_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use std::fs;
+    use std::sync::{Arc, Mutex};
     use tauri::Listener;
     use tempfile::TempDir;
 
@@ -1619,7 +1731,8 @@ mod tests {
         fs::write(
             hq.path().join("companies/manifest.yaml"),
             "companies:\n  indigo:\n    name: Indigo\n    path: workspace/indigo-data\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(
             conflict_backup_root(hq.path(), "company", Some("indigo")).unwrap(),
@@ -1992,6 +2105,26 @@ mod tests {
         );
         assert!(status.reason.is_none());
         assert_eq!(status.log_path, "/tmp/hq-sync.log");
+    }
+
+    #[test]
+    fn daemon_sync_status_parser_retains_runner_and_updater_telemetry() {
+        let status = parse_daemon_sync_status(r#"{"running":true,"paused":false,"syncOwner":"daemon","owner":"hq-daemon","unitStatus":"running","reason":null,"logPath":"/tmp/hq-sync.log","hqCloudVersion":"6.18.54","runnerSource":"managed-full-package","hqCloudUpdateLastCheckAt":"2026-10-08T12:00:00.000Z","hqCloudUpdateOutcome":"failed","hqCloudUpdateTarget":"6.18.54","hqCloudUpdateErrorClass":"registry"}"#).unwrap();
+        assert_eq!(status.hq_cloud_version.as_deref(), Some("6.18.54"));
+        assert_eq!(
+            status.runner_source.as_deref(),
+            Some("managed-full-package")
+        );
+        assert_eq!(
+            status.hq_cloud_update_last_check_at.as_deref(),
+            Some("2026-10-08T12:00:00.000Z")
+        );
+        assert_eq!(status.hq_cloud_update_outcome.as_deref(), Some("failed"));
+        assert_eq!(status.hq_cloud_update_target.as_deref(), Some("6.18.54"));
+        assert_eq!(
+            status.hq_cloud_update_error_class.as_deref(),
+            Some("registry")
+        );
     }
 
     #[test]

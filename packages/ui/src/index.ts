@@ -176,6 +176,15 @@ export * from "./brand/brand.js";
 
 // V2 windowed desktop shell — composes the title bar + channel rail + views.
 export { default as LinkContextMenu } from "./common/LinkContextMenu.svelte";
+export { default as LinkHovercard } from "./chat/messaging/LinkHovercard.svelte";
+export {
+  LinkHovercardController,
+  copyLinkToClipboard,
+  insideLinkCard,
+} from "./chat/messaging/linkHovercardController.svelte.js";
+export { linkPreview, relabelRawUrlLinks } from "./common/linkPreview.js";
+export type { LinkPreview, LinkProvider, PageTitleLookup } from "./common/linkPreview.js";
+export { setPageTitleFetcher } from "./common/linkTitles.js";
 export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";

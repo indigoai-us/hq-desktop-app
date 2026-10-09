@@ -1118,7 +1118,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
-    getMyTelemetry: (from, to) => this.get(WEB_PATHS.myTelemetry(from, to)),
+    getMyTelemetry: (from, to, tz) => this.get(WEB_PATHS.myTelemetry(from, to, tz)),
   };
 
   readonly integrations: PlatformAdapter["integrations"] = {
