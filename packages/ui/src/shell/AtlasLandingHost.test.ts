@@ -8,8 +8,6 @@ import { loadAtlas } from "./atlas-lazy.js";
 import { bindLiveRefresh } from "../mesh/live-refresh.js";
 import { createAtlasCache } from "../atlas/atlas-cache.js";
 import { smokeAtlasGraph } from "../atlas/atlas-model.js";
-import { configureProjectsApi } from "../projects/local-projects.js";
-import { fakeProjectsApi } from "../projects/testing.js";
 
 const mounted: Array<ReturnType<typeof mount>> = [];
 afterEach(() => {
@@ -55,11 +53,11 @@ describe("AtlasLandingHost (US-009)", () => {
     const inspector = target.querySelector("[data-testid='atlas-inspector']");
     expect(inspector).not.toBeNull();
     expect(target.querySelector("[data-testid='atlas-landing-loading']")).toBeNull();
-    const rollup = target.querySelector("[data-testid='atlas-inspector-rollup']")?.textContent ?? "";
-    expect(rollup).toContain("2 live");
-    expect(rollup).toContain("0 projects in progress");
-    // The landing has no map yet, so the objects chip stays hidden.
-    expect(rollup).not.toContain("objects");
+    // No Company block: no company heading, live, objects or projects chips.
+    expect(target.querySelector("[data-testid='atlas-inspector-rollup']")).toBeNull();
+    expect(inspector!.querySelector("h2")).toBeNull();
+    expect(inspector!.textContent).not.toContain("projects in progress");
+    expect(inspector!.textContent).not.toMatch(/\bobjects\b/);
     const working = target.querySelectorAll("[data-testid='atlas-inspector-working-now'] button");
     expect([...working].map((b) => b.textContent?.trim())).toEqual(["ZE Zed", "⌁ Scout"]);
     (working[0] as HTMLButtonElement).click();
@@ -301,68 +299,43 @@ describe("AtlasLandingHost local first page (QA-016 re-test)", () => {
   });
 });
 
-describe("AtlasLandingHost projects in progress (QA-065)", () => {
-  // boring-ecom's board: three started projects, one done, one not started,
-  // plus another company's started project that must not count.
-  const boardProjects = [
-    { id: "subscription-growth-calculator", title: "Calculator", company: "boring-ecom", status: "planned", storyCount: 11, storiesComplete: 5 },
-    { id: "skio-retention-automation", title: "Skio", company: "boring-ecom", status: "", storyCount: 15, storiesComplete: 3 },
-    { id: "strawberry-weekly-retention-report", title: "Report", company: "boring-ecom", status: "in_progress", storyCount: 7, storiesComplete: 6 },
-    { id: "shipped", title: "Shipped", company: "boring-ecom", status: "active", storyCount: 4, storiesComplete: 4 },
-    { id: "idea", title: "Idea", company: "boring-ecom", status: "planned", storyCount: 3, storiesComplete: 0 },
-    { id: "other", title: "Other", company: "amass", status: "in_progress", storyCount: 5, storiesComplete: 2 },
-  ];
-
-  afterEach(() => configureProjectsApi(null));
-
-  function rollupText(target: HTMLElement): string {
-    return target.querySelector("[data-testid='atlas-inspector-rollup']")?.textContent ?? "";
-  }
-
-  async function waitForText(target: HTMLElement, text: string): Promise<void> {
-    await loadAtlas();
-    for (let i = 0; i < 50; i += 1) {
-      if (rollupText(target).includes(text)) return;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await tick();
-    }
-  }
-
-  it("counts the same in-progress projects as the Projects board on the rendered map", async () => {
-    configureProjectsApi(fakeProjectsApi(async () => boardProjects));
-    // The map graph carries no story rollups, as the local folder map does.
+describe("AtlasLandingHost Today story counters", () => {
+  it("passes the live Board read to the map so Today rows show done/total stories", async () => {
     const graph = smokeAtlasGraph();
-    graph.nodes = graph.nodes.map(({ stories: _stories, ...n }) => n);
-    const storage = new Map([["hq.atlas.v1:co_boring", JSON.stringify(graph)]]);
+    const now = Date.now();
+    const rail = graph.nodes.find((n) => n.id === "project:projects/hq-desktop-console-rail/")!;
+    rail.touched = now - 60_000;
+    const storage = new Map([["hq.atlas.v1:co_indigo", JSON.stringify(graph)]]);
     const atlasCache = createAtlasCache({
       fetcher: vi.fn(async () => graph),
       storage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => void storage.set(k, v) },
     });
+    const loadProjectView = vi.fn(async (projectId: string) => ({
+      projectId,
+      stories: [
+        { id: "US-1", status: "done" },
+        { id: "US-2", status: "done" },
+        { id: "US-3", status: "in_progress" },
+      ],
+    }));
     const target = document.createElement("div");
     document.body.appendChild(target);
     mounted.push(
       mount(AtlasLandingHost, {
         target,
-        props: { companyLabel: "Boring", workingNow: [], slug: "boring-ecom", companyUid: "co_boring", atlasCache },
+        props: { companyLabel: "Indigo", workingNow: [], slug: "indigo", companyUid: "co_indigo", atlasCache, loadProjectView },
       }),
     );
-    await waitForText(target, "3 projects in progress");
-    expect(target.querySelector("[data-testid='atlas-map']")).not.toBeNull();
-    expect(rollupText(target)).toContain("3 projects in progress");
-  });
-
-  it("uses the board count on the landing summary before the map is linked", async () => {
-    configureProjectsApi(fakeProjectsApi(async () => boardProjects));
-    const target = document.createElement("div");
-    document.body.appendChild(target);
-    mounted.push(
-      mount(AtlasLandingHost, {
-        target,
-        props: { companyLabel: "Boring", workingNow: [], slug: "boring-ecom" },
-      }),
-    );
-    await waitForText(target, "3 projects in progress");
-    expect(rollupText(target)).toContain("3 projects in progress");
+    await loadAtlas();
+    for (let i = 0; i < 50 && !target.querySelector("[data-testid='atlas-today-stories']"); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await tick();
+    }
+    expect(loadProjectView).toHaveBeenCalledWith("hq-desktop-console-rail");
+    const row = [...target.querySelectorAll("[data-testid='atlas-today-project']")].find((r) =>
+      r.textContent?.includes("HQ desktop console rail"),
+    )!;
+    expect(row.querySelector("[data-testid='atlas-today-stories']")?.textContent).toContain("2/3 stories");
   });
 });
 

@@ -154,6 +154,29 @@ describe("atlasLiveActors (US-013)", () => {
       { actorUid: "b_box", name: "box", bot: true, avatarUrl: botPicture, repo: "hq-pro", taskId: "US-2", signal: "US-2" },
     ]);
   });
+
+  it("keeps a session's repo and branch next to its project, and the branch with a repo-only session", () => {
+    const live = {
+      participants: [
+        {
+          actorUid: "u_stefan",
+          actorType: "human",
+          displayName: "Stefan Johnson",
+          presence: "online",
+          sessions: [
+            { projectId: "Retention", repo: "indigoai-us/hq-desktop-app", branch: "main", status: "active" },
+            { repo: "hq-pro", branch: "fix/live", status: "open" },
+            { cwd: "/tmp", branch: "orphan", status: "open" },
+          ],
+        },
+      ],
+    };
+    expect(atlasLiveActors(live, new Map(), "co_a", new Map())).toEqual([
+      { actorUid: "u_stefan", name: "Stefan Johnson", bot: false, cwd: "/tmp", signal: undefined },
+      { actorUid: "u_stefan", name: "Stefan Johnson", bot: false, repo: "hq-pro", branch: "fix/live", signal: undefined },
+      { actorUid: "u_stefan", name: "Stefan Johnson", bot: false, projectId: "retention", repo: "indigoai-us/hq-desktop-app", branch: "main", signal: undefined },
+    ]);
+  });
 });
 
 describe("atlasNodeDestination: Open files shows a file, not a tree", () => {

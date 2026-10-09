@@ -109,6 +109,8 @@ export interface AtlasLiveActor {
   bot: boolean;
   projectId?: string;
   repo?: string;
+  /** Branch of `repo`, when the session reports one. */
+  branch?: string;
   cwd?: string;
   workerId?: string;
   taskId?: string;
@@ -135,6 +137,7 @@ type LiveReadLike = {
       projectId?: string;
       taskId?: string;
       repo?: string;
+      branch?: string;
       cwd?: string;
       workerId?: string;
       status: string;
@@ -180,10 +183,16 @@ export function atlasLiveActors(
       if (s.status === "ended") continue;
       const projectId = s.projectId?.trim().toLowerCase() || undefined;
       const taskId = s.taskId?.trim() || undefined;
+      // The repo and branch ride along with a project too: the person stays
+      // on the project and the repo is shown as a second line.
+      const repo = {
+        ...(s.repo?.trim() ? { repo: s.repo.trim() } : {}),
+        ...(s.repo?.trim() && s.branch?.trim() ? { branch: s.branch.trim() } : {}),
+      };
       const hints = projectId
-        ? { projectId }
+        ? { projectId, ...repo }
         : {
-            ...(s.repo?.trim() ? { repo: s.repo.trim() } : {}),
+            ...repo,
             ...(s.cwd?.trim() ? { cwd: s.cwd.trim() } : {}),
             ...(s.workerId?.trim() ? { workerId: s.workerId.trim() } : {}),
             ...(taskId ? { taskId } : {}),

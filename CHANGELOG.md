@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Atlas: the side panel's Today section now lists only the projects worked on today, newest first. Each row shows the project name, a thin progress bar, a story count such as "12/31 stories" taken from the live Board, and how long ago it changed. Click a row to open the project. The Company block at the top of the side panel (company name and the live, objects and projects-in-progress counts) is gone.
+- Atlas: a person whose session reports a repo but no project now sits on the map next to that repo, and their hover card says "Working in hq-desktop-app" with the branch when known. Someone on a project who also reports a repo shows the repo as a second line. This needs the live sessions read to carry the repo; until the server sends it, those people stay in Not on the map.
+
 ## [0.11.0] — 2026-10-08
 
 This release brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
