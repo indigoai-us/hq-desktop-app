@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-10-09
+
 - Project board cards have more room and a clearer order: the title first, then the description, then repos and branch on one quiet line that never wraps, then progress. Board column headers no longer sit on a shaded band. The extra green dots are gone, and teammates' initials no longer overlap. In the task drawer, section names are quieter than their content, done tasks show a check and muted text, open tasks show an empty ring, the branch sits on one line with a Copy button, and acceptance items have more space between them. The company switcher's search field has room around it and no stacked outlines, and the scrollbar no longer crowds the list.
 - Atlas: the side panel's Today section now lists only the projects worked on today, newest first. Each row shows the project name, a thin progress bar, a story count such as "12/31 stories" taken from the live Board, and how long ago it changed. Click a row to open the project. The Company block at the top of the side panel (company name and the live, objects and projects-in-progress counts) is gone.
 - Atlas: a person whose session reports a repo but no project now sits on the map next to that repo, and their hover card says "Working in hq-desktop-app" with the branch when known. Someone on a project who also reports a repo shows the repo as a second line. This needs the live sessions read to carry the repo; until the server sends it, those people stay in Not on the map.
