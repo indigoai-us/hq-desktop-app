@@ -46,6 +46,29 @@ function meBody(from: string, to: string, sessions: number) {
   };
 }
 
+describe("My Telemetry days in the user's time zone", () => {
+  const body = meBody("2026-10-08", "2026-10-09", 5);
+  const DENVER_EVENING = Date.parse("2026-10-09T02:30:00Z");
+
+  it("highlights the UTC day that is today in Denver, not the newest UTC day", () => {
+    const view = snapshotFromMe(body, "7d", DENVER_EVENING, "America/Denver");
+    expect(view.days.map((d) => d.today ?? false)).toEqual([true, false]);
+    expect(view.dayLabels).toEqual(["Oct 8", "Oct 9"]);
+  });
+
+  it("highlights the newest day in UTC", () => {
+    const view = snapshotFromMe(body, "7d", DENVER_EVENING, "UTC");
+    expect(view.days.map((d) => d.today ?? false)).toEqual([false, true]);
+  });
+
+  it("follows Denver across the fall-back DST change", () => {
+    const fall = meBody("2026-11-01", "2026-11-02", 5);
+    // 23:30 MST on Nov 1, after the clocks went back.
+    const view = snapshotFromMe(fall, "7d", Date.parse("2026-11-02T06:30:00Z"), "America/Denver");
+    expect(view.days.map((d) => d.today ?? false)).toEqual([true, false]);
+  });
+});
+
 describe("My Telemetry from /v1/telemetry/me", () => {
   it("builds the request window from the range control", () => {
     expect(rangeWindow("7d", NOW)).toEqual({ from: "2026-09-26", to: "2026-10-02" });

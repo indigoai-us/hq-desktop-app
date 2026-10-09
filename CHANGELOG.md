@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Tokens per day chart in My Telemetry now says UTC next to its title, because HQ counts each day from midnight UTC rather than your local midnight. The highlighted bar and the "today" label now mean today where you are: in the evening in the Americas, the newest bar is already tomorrow in UTC, so it shows its date instead of "today".
+
 ## [0.11.0] — 2026-10-08
 
 This release brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
