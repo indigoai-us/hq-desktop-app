@@ -237,7 +237,12 @@
       headline={entries.length === 0 && dawn.phase !== "failed" ? "Your first brief is on its way" : ""}
       onbloomdone={() => (bloomDone = true)}
     >
-      {#if dawn.phase === "failed"}
+      {#if dawn.phase === "failed" && run?.duplicatePrompt}
+        <p class="blocked" data-testid="brief-duplicate-prompt">Your last brief is still being written. Wait for it?</p>
+        <!-- svelte-ignore a11y_autofocus -->
+        <button type="button" class="cta" autofocus onclick={() => run?.waitForLast()} data-testid="brief-wait">Wait for it</button>
+        <button type="button" class="ghost" onclick={() => { bloomDone = false; void run?.start({ force: true }); }} data-testid="brief-start-new">Start a new one</button>
+      {:else if dawn.phase === "failed"}
         <button type="button" class="cta" onclick={createBrief} data-testid="brief-retry">Try again</button>
         <button type="button" class="ghost" onclick={() => run?.dismiss()}>Dismiss</button>
       {:else if runInfo}

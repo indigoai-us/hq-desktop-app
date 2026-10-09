@@ -249,12 +249,28 @@ export type BriefCreatePhase =
       samples?: unknown;
     }
   | { kind: "ready"; runId: string }
-  | { kind: "failed"; runId: string | null; message: string };
+  | {
+      kind: "failed";
+      runId: string | null;
+      message: string;
+      /** A stall verdict, not the bot's: HQ keeps watching the run and flips to ready if it finishes. */
+      stalled?: true;
+    };
 
 /** No status file this long after sending: the bot never picked the job up. */
 export const BRIEF_START_TIMEOUT_MS = 3 * 60_000;
-/** A running status that has not changed this long is treated as stalled. */
-export const BRIEF_STALL_TIMEOUT_MS = 10 * 60_000;
+/**
+ * Nothing in the run folder has changed this long: a soft "stalled" verdict.
+ * Older skills write status.json only at start and end, and a full sweep can
+ * take over ten minutes, so this is generous; quiet runs show "Still working…"
+ * long before it.
+ */
+export const BRIEF_STALL_TIMEOUT_MS = 20 * 60_000;
+/** After a stall verdict, keep watching the run this long in case it finishes. */
+export const BRIEF_STALL_GRACE_MS = 30 * 60_000;
+/** Poll interval while watching a stalled run. */
+export const BRIEF_WATCH_POLL_MS = 15_000;
+const STALL_MESSAGE = "Your brief has not reported progress in a while. HQ is still watching for it and will show it if it finishes.";
 export const BRIEF_POLL_MS = 2_000;
 
 /** One poll's reading: the status file text, null when absent, or a read error. */
@@ -281,7 +297,7 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
       phase.updatedAt !== status.updatedAt;
     const lastChangeAt = changed ? now : phase.lastChangeAt;
     if (now - lastChangeAt > BRIEF_STALL_TIMEOUT_MS) {
-      return { kind: "failed", runId, message: `The brief stopped making progress at "${status.step || "a step"}".` };
+      return { kind: "failed", runId, message: STALL_MESSAGE, stalled: true };
     }
     return {
       kind: "running",
@@ -299,7 +315,7 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
   // No usable status yet: absent, mid-write, or a read error.
   if (phase.kind === "running") {
     if (now - phase.lastChangeAt > BRIEF_STALL_TIMEOUT_MS) {
-      return { kind: "failed", runId, message: "The brief stopped reporting progress." };
+      return { kind: "failed", runId, message: STALL_MESSAGE, stalled: true };
     }
     return phase;
   }
@@ -348,6 +364,25 @@ export function estimateLabel(entries: readonly BriefIndexEntry[]): string | nul
   const mid = ds.length / 2;
   const median = ds.length % 2 ? ds[Math.floor(mid)]! : (ds[mid - 1]! + ds[mid]!) / 2;
   return `usually ~${Math.max(1, Math.round(median / 60_000))} min`;
+}
+
+/** The run-folder files whose changes count as the run being alive. */
+export const BRIEF_LIVENESS_FILES = ["status.json", "brief-data.json", "brief.json", "housekeeping.json"] as const;
+
+/**
+ * A cheap fingerprint of the run folder: each liveness file's presence, size
+ * and content hash (and its mtime when the host can give one). Any change
+ * between two probes means the bot is still writing.
+ */
+export function folderFingerprint(files: readonly { text: string | null; mtime?: number | null }[]): string {
+  return files
+    .map(({ text, mtime }) => {
+      if (text == null) return mtime != null ? `-@${mtime}` : "-";
+      let h = 0;
+      for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0;
+      return `${text.length}:${h}${mtime != null ? `@${mtime}` : ""}`;
+    })
+    .join("|");
 }
 
 /** Which files a run has written, for naming the phase when activity is missing. */
