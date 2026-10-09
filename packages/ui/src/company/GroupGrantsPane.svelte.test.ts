@@ -36,10 +36,10 @@ function filesApi(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function render(files: unknown) {
+function render(files: unknown, companyUid = "cmp_indigo") {
   const target = document.createElement("div");
   document.body.appendChild(target);
-  mounted.push(mount(GroupGrantsPane, { target, props: { companyUid: "cmp_indigo", companyLabel: "Indigo", targets, files: files as never } }));
+  mounted.push(mount(GroupGrantsPane, { target, props: { companyUid, companyLabel: "Indigo", targets, files: files as never } }));
   flushSync();
   return target;
 }
@@ -143,7 +143,8 @@ describe("GroupGrantsPane", () => {
     flushSync();
     expect(files.revokeGroupGrant).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("AE agent will lose access to Keptwork.");
-    const confirm = [...document.body.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Revoke" && !b.dataset.testid);
+    const confirm = document.body.querySelector<HTMLButtonElement>("[data-testid='confirm-dialog-ok']");
+    expect(confirm?.textContent?.trim()).toBe("Revoke");
     files.setOutbound([{ groupId: "grp_ae", sourceCompanyUid: "cmp_indigo", targetCompanyUid: "cmp_kept", role: "guest", status: "revoked" }]);
     confirm!.click();
     await vi.waitFor(() => {
@@ -158,7 +159,8 @@ describe("GroupGrantsPane", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     let broken = true;
     const files = filesApi({ listAccessGroups: vi.fn(async () => (broken ? fail("http-500") : ok({ groups: [] }))) });
-    const t = render(files);
+    // A company with no cached groups: earlier tests cached cmp_indigo's.
+    const t = render(files, "cmp_uncached");
     await vi.waitFor(() => {
       flushSync();
       expect(q(t, "grants-failed")).not.toBeNull();

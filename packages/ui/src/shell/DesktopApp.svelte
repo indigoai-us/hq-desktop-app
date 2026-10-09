@@ -12250,9 +12250,13 @@
   const grantsOpen = $derived(railPlaceholder?.id === "grants");
   $effect(() => {
     if (!grantsOpen) return;
-    for (const company of railCompanyRoster) {
-      loadCallerRole({ companyUid: company.uid, selfUid: self?.uid ?? null, selfEmail: self?.email ?? null, company: adapter.company ?? null });
-    }
+    const uids = railCompanyRoster.map((company) => company.uid);
+    const selfUid = self?.uid ?? null;
+    const selfEmail = self?.email ?? null;
+    // Untracked: the role cache this writes must not re-run the loads.
+    untrack(() => {
+      for (const companyUid of uids) loadCallerRole({ companyUid, selfUid, selfEmail, company: adapter.company ?? null });
+    });
   });
   const grantTargets = $derived(
     grantsOpen

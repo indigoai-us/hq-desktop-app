@@ -5,6 +5,7 @@
    * revoke an active grant, and see which other companies' groups have
    * access here. Data and actions: group-grants.ts.
    */
+  import { untrack } from "svelte";
   import type { FilesApi } from "@hq/platform";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import LazyDropdown from "../common/LazyDropdown.svelte";
@@ -78,7 +79,8 @@
     let cancelled = false;
     const hit = cachedGroups(uid);
     if (hit) groups = hit;
-    if (!read) paneState = "loading";
+    // Untracked: this effect writes `read`, so tracking it would re-run the load forever.
+    if (!untrack(() => read)) paneState = "loading";
     void (async () => {
       let list = hit ?? [];
       try {
