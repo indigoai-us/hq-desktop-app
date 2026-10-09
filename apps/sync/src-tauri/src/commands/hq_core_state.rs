@@ -191,6 +191,8 @@ enum CoreAutoUpdateDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CoreUpdateErrorKind {
     AlreadyInProgress,
+    /// Turned off for this build (a scratch build, `scratch_build.rs`).
+    Unavailable,
     InvalidCoreRoot,
     Network,
     RescueSpawn,
@@ -202,6 +204,7 @@ impl CoreUpdateErrorKind {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::AlreadyInProgress => "already_in_progress",
+            Self::Unavailable => "unavailable",
             Self::InvalidCoreRoot => "invalid_core_root",
             Self::Network => "network",
             Self::RescueSpawn => "rescue_spawn",
@@ -1812,6 +1815,7 @@ pub(crate) fn classify_core_update_error(
             classify_spawn_error(detail).unwrap_or_else(|| classify_rescue_stderr_failure(detail))
         }
         CoreUpdateErrorKind::AlreadyInProgress
+        | CoreUpdateErrorKind::Unavailable
         | CoreUpdateErrorKind::InvalidCoreRoot
         | CoreUpdateErrorKind::ChannelConfiguration
         | CoreUpdateErrorKind::Internal => RescueFailureCategory::Unknown,
@@ -1917,10 +1921,16 @@ impl Drop for CoreUpdateRunGuard {
 }
 
 pub(crate) fn try_begin_core_update() -> Result<CoreUpdateRunGuard, CoreUpdateError> {
-    if crate::scratch_build::active() {
+    try_begin_core_update_with(crate::scratch_build::active())
+}
+
+/// `try_begin_core_update` with the scratch-build switch passed in, so both
+/// answers can be tested in any build.
+pub(crate) fn try_begin_core_update_with(scratch: bool) -> Result<CoreUpdateRunGuard, CoreUpdateError> {
+    if scratch {
         crate::scratch_build::skip("HQ Core update");
         return Err(CoreUpdateError::new(
-            CoreUpdateErrorKind::AlreadyInProgress,
+            CoreUpdateErrorKind::Unavailable,
             "HQ Core updates are turned off for this test build",
         ));
     }

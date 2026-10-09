@@ -4,6 +4,7 @@
 // the release path sets them. This test pins that no workflow, build script,
 // package script or Tauri config does, that the code still reads each one at
 // build time, and that the doc lists every one.
+import { execFileSync } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +40,19 @@ describe("dev-only build switches", () => {
     ];
     expect(paths.some((p) => p.endsWith("release.yml"))).toBe(true);
     for (const path of paths) {
+      const text = await read(path).catch(() => "");
+      for (const name of ALL) {
+        expect(text.includes(name), `${path} mentions ${name}`).toBe(false);
+      }
+    }
+  });
+
+  it("are not set by a committed env file, or anywhere in apps/work", async () => {
+    const tracked = execFileSync("git", ["-C", rootDir, "ls-files"], { encoding: "utf8" }).split("\n").filter(Boolean);
+    const envFiles = tracked.filter((path) => /(^|\/)\.env(\.|$)/.test(path));
+    const work = tracked.filter((path) => path.startsWith("apps/work/") && !/\.(png|jpe?g|gif|webp|ico|woff2?|ttf|otf)$/i.test(path));
+    expect(work.length).toBeGreaterThan(0);
+    for (const path of [...envFiles, ...work]) {
       const text = await read(path).catch(() => "");
       for (const name of ALL) {
         expect(text.includes(name), `${path} mentions ${name}`).toBe(false);

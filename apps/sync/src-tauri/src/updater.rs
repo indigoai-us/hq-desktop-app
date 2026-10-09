@@ -2711,7 +2711,12 @@ const UPDATER_DISABLED_MESSAGE: &str = "Updates are turned off for this build";
 /// switch baked in, so a test bundle opened from Finder (no shell env) is
 /// covered too.
 pub fn updater_disabled() -> bool {
-    dev_env_flag_set(UPDATER_DISABLED_ENV) || crate::scratch_build::active()
+    updater_disabled_with(dev_env_flag_set(UPDATER_DISABLED_ENV), crate::scratch_build::active())
+}
+
+/// `updater_disabled` with its two inputs passed in (testable in any build).
+pub(crate) fn updater_disabled_with(env_switch: bool, scratch_build: bool) -> bool {
+    env_switch || scratch_build
 }
 
 pub fn setup_update_checker(app: &AppHandle) {

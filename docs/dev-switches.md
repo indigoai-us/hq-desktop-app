@@ -15,7 +15,7 @@ Code: `apps/sync/src-tauri/src/scratch_build.rs`.
 
 | Switch | What it does |
 | --- | --- |
-| `HQ_SCRATCH_BUILD=1` | Stops the test bundle from changing your installed HQ. It turns off the app updater (the background check, the channel lookup, manual check, download and install, and the version gate), UI hot updates, the hq CLI, pack, HQ Core, qmd and HQ Work installers, the login item (launch repair, Start at login, the restart handoff to launchd) and the sync version marker. It also counts as `HQ_UPDATER_DISABLED=1`. |
+| `HQ_SCRATCH_BUILD=1` | Stops the test bundle from changing your installed HQ. It turns off the app updater (the background check, the channel lookup, manual check, download and install, and the version gate), UI hot updates, the hq CLI, pack, HQ Core, qmd and HQ Work installers, every `install_*` command (dependencies and coding tools, so sign a coding tool in from the installed app or a terminal), the login item (launch repair, Start at login, the restart handoff to launchd) and the sync version marker. It also counts as `HQ_UPDATER_DISABLED=1`. |
 | `HQ_SCRATCH_IMPORT_HQ_BIN=/abs/path/to/hq` | The "Bring in your context" scan runs this `hq` instead of the installed one. Ignored unless `HQ_SCRATCH_BUILD` is set. |
 | `HQ_SCRATCH_IMPORT_SCANNER=/abs/path/to/scan.sh` | The scan uses this scanner (passed to hq as `HQ_IMPORT_SCANNER_OVERRIDE`). Ignored unless `HQ_SCRATCH_BUILD` is set. |
 
@@ -32,7 +32,7 @@ through `cargo tauri build`). Code:
 | Switch | What it does |
 | --- | --- |
 | `VITE_HQ_DEV_FIRST_RUN_FORCE=1` | Treats `desktop.visual-first-run` as on for this build and opens the takeover on every launch, even after setup ran or the takeover was finished. The flag service is not read or changed. The walk is real: it creates the setup bot under the name you give it (or renames the one you have), joins or starts the company you pick, and connects the apps you pick. |
-| `VITE_HQ_DEV_FIRST_RUN_DRY=1` | Makes the walk side-effect free. Nothing is created, renamed, joined, connected or sent. Done and Continue in chat only close the takeover, and the "finished" marker is not written. Reads still happen, so the screens show your real companies and catalog. On its own it changes nothing until the takeover opens. |
+| `VITE_HQ_DEV_FIRST_RUN_DRY=1` | Makes the walk side-effect free. Nothing is created, renamed, joined, connected or sent. Done and Continue in chat only close the takeover, and the "finished" marker is not written. Reads still happen, so the screens show your real companies and catalog. One exception: "Bring in your context" runs the real scan so you see your real tree, and the scan writes one report under `workspace/imports/<date>/report.json` in your HQ folder. After a dry walk, the setup channel's Start makes a real setup bot. On its own it changes nothing until the takeover opens. |
 
 For a dry walk you can repeat, set both. For a real walk, set only
 `VITE_HQ_DEV_FIRST_RUN_FORCE`.

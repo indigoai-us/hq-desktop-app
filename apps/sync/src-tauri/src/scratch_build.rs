@@ -11,7 +11,8 @@
 //!   updater (it implies the runtime `HQ_UPDATER_DISABLED` switch, so the
 //!   background checker, channel resolver, manual check/download/install,
 //!   hard version gate and autostart ensure all stand down), UI hot updates,
-//!   the hq CLI / pack / HQ Core / qmd / HQ Work auto-installers, the login
+//!   the hq CLI / pack / HQ Core / qmd / HQ Work auto-installers, every
+//!   `install_*` command (dependency and coding tool installs), the login
 //!   LaunchAgent (launch reconcile, Start at login, launchd restart handoff)
 //!   and the sync-version marker.
 //! - `HQ_SCRATCH_IMPORT_HQ_BIN=<absolute path>` runs this `hq` for the
@@ -52,6 +53,21 @@ pub fn skip(what: &str) {
 }
 
 pub const UPDATES_OFF_MESSAGE: &str = "Updates are turned off for this test build";
+pub const INSTALLS_OFF_MESSAGE: &str = "Installs are turned off for this test build";
+
+/// The `install_*` commands refuse in a scratch build: they would change
+/// tools the installed HQ shares with this bundle.
+pub fn refuse_install(what: &str) -> Result<(), String> {
+    refuse_install_with(active(), what)
+}
+
+fn refuse_install_with(scratch: bool, what: &str) -> Result<(), String> {
+    if scratch {
+        skip(what);
+        return Err(INSTALLS_OFF_MESSAGE.to_string());
+    }
+    Ok(())
+}
 
 fn import_hq_bin_for(scratch: bool, value: Option<&'static str>) -> Option<&'static str> {
     if scratch { absolute_path(value) } else { None }
@@ -109,16 +125,34 @@ mod tests {
         assert_eq!(import_scanner_for(true, Some("~/scan.sh")), None);
     }
 
-    /// Build with `HQ_SCRATCH_BUILD=1 cargo test scratch_build` to prove the
-    /// switch is compiled in and the update paths report off.
+    /// Every gate answers off for a scratch build and on otherwise, tested
+    /// through the pure forms so it runs in any build.
     #[test]
-    fn a_scratch_build_turns_updates_off() {
-        if !active() {
-            return;
-        }
-        assert!(crate::updater::updater_disabled());
-        assert!(crate::updater::background_updates_disabled());
-        assert_eq!(crate::ui_hot_update::mode().as_str(), "off");
-        assert!(crate::commands::hq_core_state::try_begin_core_update().is_err());
+    fn a_scratch_build_turns_updates_and_installs_off() {
+        assert!(crate::updater::updater_disabled_with(false, true));
+        assert!(crate::updater::updater_disabled_with(true, false));
+        assert!(!crate::updater::updater_disabled_with(false, false));
+        assert_eq!(
+            crate::ui_hot_update::scratch_mode_override(true).map(|m| m.as_str()),
+            Some("off")
+        );
+        assert!(crate::ui_hot_update::scratch_mode_override(false).is_none());
+        let refused = crate::commands::hq_core_state::try_begin_core_update_with(true)
+            .err()
+            .expect("a scratch build refuses a Core update");
+        assert_eq!(refused.kind().label(), "unavailable");
+        assert_eq!(refuse_install_with(true, "install_hq_cli"), Err(INSTALLS_OFF_MESSAGE.to_string()));
+        assert_eq!(refuse_install_with(false, "install_hq_cli"), Ok(()));
+    }
+
+    /// The compiled-in answer matches the build: on only when built with
+    /// `HQ_SCRATCH_BUILD=1 cargo test scratch_build`.
+    #[test]
+    fn this_build_answers_by_its_switch() {
+        assert_eq!(crate::updater::updater_disabled(), crate::updater::updater_disabled_with(
+            std::env::var("HQ_UPDATER_DISABLED").map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")).unwrap_or(false),
+            active(),
+        ));
+        assert_eq!(refuse_install("x").is_err(), active());
     }
 }
