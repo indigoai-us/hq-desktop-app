@@ -1732,6 +1732,7 @@ export function createSyncPlatformAdapter(
       previewOffload: () => call('preview_storage_offload'),
       offload: () => call('run_storage_offload'),
       openCloudFile: (path) => call('open_cloud_file', { path }),
+      cloudFileUiReady: () => call('cloud_file_ui_ready'),
     },
 
     contextImport: {

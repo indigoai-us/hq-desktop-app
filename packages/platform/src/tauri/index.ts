@@ -887,6 +887,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     previewOffload: () => this.call("preview_storage_offload"),
     offload: () => this.call("run_storage_offload"),
     openCloudFile: (path) => this.call("open_cloud_file", { path }),
+    cloudFileUiReady: () => this.call("cloud_file_ui_ready"),
   };
 
   readonly bots: NonNullable<PlatformAdapter["bots"]> = {

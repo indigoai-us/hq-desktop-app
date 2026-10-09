@@ -148,7 +148,7 @@ describe("Settings › Storage pane", () => {
 
   it("renders the totals, local bands and cloud companies", async () => {
     await render({ status: async () => ({ ok: true, value: SAMPLE_STATUS }) });
-    expect(q("settings-storage-total")?.textContent).toContain("HQ backups on this Mac: 76.30 GB");
+    expect(q("settings-storage-total")?.textContent).toMatch(/HQ backups on this (Mac|PC|computer): 76\.30 GB/);
     expect(host.querySelectorAll("[data-testid='settings-storage-local-table'] tbody tr")).toHaveLength(5);
     expect((q("storage-local-band-7d") as HTMLInputElement).disabled).toBe(true);
     expect(q("settings-storage-cloud-indigo")?.textContent).toContain("420 deleted-file markers");

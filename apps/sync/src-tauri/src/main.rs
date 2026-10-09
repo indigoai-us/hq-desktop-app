@@ -927,6 +927,7 @@ fn main() {
             commands::storage::preview_storage_offload,
             commands::storage::run_storage_offload,
             commands::cloud_file::open_cloud_file,
+            commands::cloud_file::cloud_file_ui_ready,
             commands::bots::local_bots_list,
             commands::bots::local_bots_create,
             commands::bots::local_bots_start,

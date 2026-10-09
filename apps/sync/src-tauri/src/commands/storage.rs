@@ -68,6 +68,9 @@ pub struct CloudStorage {
     pub noncurrent_count: u64,
     pub delete_markers: u64,
     pub tranches: Vec<CloudTranche>,
+    /// Whether this person may delete old versions (owners and admins).
+    /// `None` on CLIs that predate it; the UI then treats it as "no".
+    pub can_delete: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -88,6 +91,12 @@ pub struct OffloadStatus {
     pub current_candidates: CountBytes,
     /// `.hqcloud` placeholders on this computer.
     pub placeholders: CountBytes,
+    /// `false` when big-file moves can't run at all (old HQ, old HQ sync).
+    pub available: Option<bool>,
+    pub reason: Option<String>,
+    /// `true` only once the CLI can move current files. Absent means it
+    /// can't, so `current_candidates` is not offered.
+    pub current_available: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -96,6 +105,8 @@ pub struct StorageStatus {
     pub local: LocalStorage,
     pub cloud: Vec<CloudStorage>,
     pub offload: Option<OffloadStatus>,
+    /// Cloud history could not be read at all (e.g. signed out).
+    pub cloud_error: Option<String>,
     pub generated_at: Option<String>,
 }
 
@@ -105,6 +116,12 @@ pub struct OffloadHistory {
     pub uploaded: u64,
     pub bytes: u64,
     pub freed_bytes: u64,
+    /// Blobs that would move (dry run) or were eligible (real run).
+    pub candidates: Option<u64>,
+    pub candidate_bytes: Option<u64>,
+    /// `Some(false)` with a `reason` when this half could not run.
+    pub available: Option<bool>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -119,6 +136,9 @@ pub struct OffloadedFile {
 pub struct OffloadCurrent {
     pub offloaded: Vec<OffloadedFile>,
     pub freed_bytes: u64,
+    /// `Some(false)` with a `reason` while current-file moves are blocked.
+    pub available: Option<bool>,
+    pub reason: Option<String>,
 }
 
 /// `hq storage offload --json` (with `--dry-run`: what would move).
@@ -195,8 +215,7 @@ fn is_iso_date(value: &str) -> bool {
     b.len() == 10
         && b[4] == b'-'
         && b[7] == b'-'
-        && b
-            .iter()
+        && b.iter()
             .enumerate()
             .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
@@ -237,10 +256,15 @@ pub fn prune_args(req: &PruneRequest, dry_run: bool) -> Result<Vec<OsString>, St
 /// `hq storage offload` with the CLI defaults (50 MB, 14 idle days, history
 /// and current files).
 pub fn offload_args(dry_run: bool) -> Vec<OsString> {
-    ["storage", "offload", if dry_run { "--dry-run" } else { "--yes" }, "--json"]
-        .iter()
-        .map(OsString::from)
-        .collect()
+    [
+        "storage",
+        "offload",
+        if dry_run { "--dry-run" } else { "--yes" },
+        "--json",
+    ]
+    .iter()
+    .map(OsString::from)
+    .collect()
 }
 
 pub fn parse_offload(stdout: &str) -> Result<OffloadResult, String> {
@@ -345,7 +369,9 @@ mod tests {
     use super::*;
 
     fn rendered(args: &[OsString]) -> Vec<String> {
-        args.iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        args.iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
     }
 
     const STATUS: &str = r#"{
@@ -471,8 +497,16 @@ mod tests {
         assert_eq!(
             rendered(&prune_args(&req, true).unwrap()),
             [
-                "storage", "prune", "--local-before", "2026-09-01", "--cloud-before",
-                "2026-07-01", "--company", "indigo", "--dry-run", "--json"
+                "storage",
+                "prune",
+                "--local-before",
+                "2026-09-01",
+                "--cloud-before",
+                "2026-07-01",
+                "--company",
+                "indigo",
+                "--dry-run",
+                "--json"
             ]
         );
         let run = rendered(&prune_args(&req, false).unwrap());
@@ -513,32 +547,116 @@ mod tests {
         assert!(parse_status(STATUS).unwrap().offload.is_none());
     }
 
-    // Shape from the offload contract (hq storage offload --json).
+    // Real `hq storage ... --json` output captured from hq-cli feat/hq-storage
+    // against a fixture HQ (packages/ui/src/settings/__fixtures__/storage).
+    const FIXTURES: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../packages/ui/src/settings/__fixtures__/storage/"
+    );
+
+    fn fixture(name: &str) -> String {
+        std::fs::read_to_string(format!("{FIXTURES}{name}")).unwrap()
+    }
+
+    /// Every key the CLI sent must come back out of the typed struct, so a
+    /// field serde would drop fails here instead of in the UI.
+    fn assert_passthrough<T: serde::de::DeserializeOwned + Serialize>(raw: &str) {
+        let wire: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let typed: T = serde_json::from_str(raw).unwrap();
+        let back = serde_json::to_value(typed).unwrap();
+        assert_subset(&wire, &back, "$");
+    }
+
+    fn assert_subset(wire: &serde_json::Value, back: &serde_json::Value, at: &str) {
+        match (wire, back) {
+            (serde_json::Value::Object(w), serde_json::Value::Object(b)) => {
+                for (k, v) in w {
+                    let path = format!("{at}.{k}");
+                    let got = b
+                        .get(k)
+                        .unwrap_or_else(|| panic!("{path} dropped by serde"));
+                    assert_subset(v, got, &path);
+                }
+            }
+            (serde_json::Value::Array(w), serde_json::Value::Array(b)) => {
+                assert_eq!(w.len(), b.len(), "{at} length");
+                for (i, (wv, bv)) in w.iter().zip(b).enumerate() {
+                    assert_subset(wv, bv, &format!("{at}[{i}]"));
+                }
+            }
+            _ => assert_eq!(wire, back, "{at}"),
+        }
+    }
+
     #[test]
-    fn parses_offload_result() {
-        let r = parse_offload(
-            r#"{"history":{"uploaded":660,"bytes":55900000000,"freed_bytes":55000000000},
-                "current":{"offloaded":[{"path":"companies/acme/media/promo.mp4","bytes":524288000}],
-                           "freed_bytes":524288000},
-                "errors":[{"path":"a.mov","message":"upload failed"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(r.history.uploaded, 660);
-        assert_eq!(r.history.freed_bytes, 55_000_000_000);
-        assert_eq!(r.current.offloaded[0].path, "companies/acme/media/promo.mp4");
-        assert_eq!(r.current.freed_bytes, 524_288_000);
+    fn wire_contract_round_trips_captured_cli_json() {
+        assert_passthrough::<StorageStatus>(&fixture("status.json"));
+        assert_passthrough::<StorageStatus>(&fixture("status-after-offload.json"));
+        assert_passthrough::<OffloadResult>(&fixture("offload-dry.json"));
+        assert_passthrough::<OffloadResult>(&fixture("offload-real.json"));
+        assert_passthrough::<PruneResult>(&fixture("prune-dry.json"));
+    }
+
+    #[test]
+    fn dry_run_offload_keeps_candidates() {
+        let r = parse_offload(&fixture("offload-dry.json")).unwrap();
+        assert!(r.dry_run);
+        assert_eq!(r.history.uploaded, 0);
+        assert_eq!(r.history.candidates, Some(6));
+        assert_eq!(r.history.candidate_bytes, Some(378_535_936));
+    }
+
+    #[test]
+    fn real_offload_keeps_errors_and_unavailable_halves() {
+        let r = parse_offload(&fixture("offload-real.json")).unwrap();
+        assert_eq!(r.history.uploaded, 6);
+        assert_eq!(r.history.freed_bytes, 0);
         assert_eq!(r.errors.len(), 1);
-        assert!(!r.dry_run);
-        let empty = parse_offload(r#"{"history":{},"current":{},"errors":[],"dry_run":true}"#).unwrap();
-        assert!(empty.dry_run);
-        assert!(empty.current.offloaded.is_empty());
+        // The CLI marks blocked halves unavailable; that must survive parsing.
+        let mut v: serde_json::Value = serde_json::from_str(&fixture("offload-real.json")).unwrap();
+        v["current"]["available"] = false.into();
+        v["current"]["reason"] = "blocked".into();
+        v["history"]["available"] = false.into();
+        v["history"]["reason"] = "update HQ sync".into();
+        assert_passthrough::<OffloadResult>(&v.to_string());
+        let r = parse_offload(&v.to_string()).unwrap();
+        assert_eq!(r.current.available, Some(false));
+        assert_eq!(r.current.reason.as_deref(), Some("blocked"));
+        assert_eq!(r.history.available, Some(false));
+        assert_eq!(r.history.reason.as_deref(), Some("update HQ sync"));
         assert!(parse_offload("error: unknown command 'offload'").is_err());
     }
 
     #[test]
+    fn status_keeps_can_delete_and_offload_availability() {
+        let mut v: serde_json::Value = serde_json::from_str(&fixture("status.json")).unwrap();
+        v["cloud"] = serde_json::json!([{
+            "company": "indigo", "available": true, "can_delete": false,
+            "current_bytes": 0, "noncurrent_bytes": 0, "noncurrent_count": 0,
+            "delete_markers": 0, "tranches": []
+        }]);
+        v["cloud_error"] = "signed out".into();
+        v["offload"]["available"] = false.into();
+        v["offload"]["reason"] = "update HQ sync".into();
+        assert_passthrough::<StorageStatus>(&v.to_string());
+        let s = parse_status(&v.to_string()).unwrap();
+        assert_eq!(s.cloud[0].can_delete, Some(false));
+        assert_eq!(s.cloud_error.as_deref(), Some("signed out"));
+        let o = s.offload.unwrap();
+        assert_eq!(o.available, Some(false));
+        assert_eq!(o.current_available, None);
+    }
+
+    #[test]
     fn offload_args_shape() {
-        assert_eq!(rendered(&offload_args(true)), ["storage", "offload", "--dry-run", "--json"]);
-        assert_eq!(rendered(&offload_args(false)), ["storage", "offload", "--yes", "--json"]);
+        assert_eq!(
+            rendered(&offload_args(true)),
+            ["storage", "offload", "--dry-run", "--json"]
+        );
+        assert_eq!(
+            rendered(&offload_args(false)),
+            ["storage", "offload", "--yes", "--json"]
+        );
     }
 
     #[test]

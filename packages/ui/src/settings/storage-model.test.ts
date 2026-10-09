@@ -147,7 +147,7 @@ describe("prunedBytes / hasRetainedRefs (hq storage prune --json)", () => {
 });
 
 describe("cloud delete permission", () => {
-  it("allows owners, admins and unknown roles; blocks members", () => {
+  it("allows owners and admins; blocks members and unknown roles", () => {
     const roles = rolesFromMemberships([
       { companySlug: "indigo", role: "owner" },
       { companySlug: "acme", role: "Admin" },
@@ -156,7 +156,16 @@ describe("cloud delete permission", () => {
     expect(canDeleteCloud(roles, "indigo")).toBe(true);
     expect(canDeleteCloud(roles, "acme")).toBe(true);
     expect(canDeleteCloud(roles, "beta")).toBe(false);
-    expect(canDeleteCloud(roles, "unknown")).toBe(true);
+    // Fails closed: no membership row (or the lookup failed) means no.
+    expect(canDeleteCloud(roles, "unknown")).toBe(false);
+    expect(canDeleteCloud(new Map(), "indigo")).toBe(false);
+  });
+
+  it("uses the CLI's can_delete when it reports one", () => {
+    const roles = rolesFromMemberships([{ companySlug: "indigo", role: "owner" }]);
+    expect(canDeleteCloud(roles, "indigo", false)).toBe(false);
+    expect(canDeleteCloud(new Map(), "indigo", true)).toBe(true);
+    expect(canDeleteCloud(roles, "indigo", null)).toBe(true);
   });
 
   it("recognises the CLI access-denied message", () => {

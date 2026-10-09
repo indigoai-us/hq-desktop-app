@@ -12,6 +12,7 @@
    * never reach the screen.
    */
   import { onMount } from "svelte";
+  import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import type {
     PlatformAdapter,
     StorageOffloadResult,
@@ -30,10 +31,15 @@
     BIG_FILE_MB,
     IDLE_DAYS,
     OFFLOAD_CONFIRM_COPY,
+    OFFLOAD_CURRENT_COPY,
+    currentOffloadAvailable,
     offloadCandidates,
-    offloadErrorsCopy,
     offloadFreedBytes,
+    offloadIncludesCurrent,
+    offloadOutcome,
+    offloadPreviewBlocker,
     offloadSummary,
+    offloadUnavailableCopy,
     CLOUD_ADMIN_ONLY_COPY,
     bookmarksCopy,
     canDeleteCloud,
@@ -57,6 +63,10 @@
 
   let { adapter = null }: Props = $props();
 
+  /** "this Mac" / "this PC" / "this computer". */
+  let hostNoun = $state(hostComputerNoun());
+  const device = $derived(`this ${hostNoun}`);
+
   type Phase = "idle" | "previewing" | "confirm" | "deleting" | "done";
 
   let status = $state<StorageStatus | null>(null);
@@ -77,9 +87,11 @@
   let offloadPhase = $state<OffloadPhase>("idle");
   let offloadPreview = $state<StorageOffloadResult | null>(null);
   let offloadError = $state<string | null>(null);
-  let offloadResult = $state<{ freed: number; errors: string } | null>(null);
+  let offloadResult = $state<{ ok: boolean; lines: string[] } | null>(null);
 
   const bigFiles = $derived(offloadCandidates(status?.offload));
+  /** Current files are listed only once the CLI can move them. */
+  const showCurrent = $derived(currentOffloadAvailable(status?.offload));
   const placeholders = $derived(status?.offload?.placeholders ?? null);
   /** Either flow running locks the whole page. */
   const busy = $derived(phase !== "idle" || offloadPhase !== "idle");
@@ -98,8 +110,9 @@
       offloadPhase = "idle";
       return;
     }
-    if (!offloadSummary(res.value)) {
-      offloadError = "Nothing to move right now.";
+    const blocker = offloadPreviewBlocker(res.value);
+    if (blocker) {
+      offloadError = blocker;
       offloadPhase = "idle";
       return;
     }
@@ -116,9 +129,9 @@
       console.error("storage offload failed:", res.message);
       offloadError = res.message?.includes(UPDATE_HQ_CODE)
         ? "Update HQ to move big files to the cloud."
-        : "We couldn't move your files. Nothing was removed from this Mac. Try again in a moment.";
+        : `We couldn't move your files. Nothing was removed from ${device}. Try again in a moment.`;
     } else {
-      offloadResult = { freed: offloadFreedBytes(res.value), errors: offloadErrorsCopy(res.value) };
+      offloadResult = offloadOutcome(res.value, device);
     }
     await load();
     offloadPhase = "idle";
@@ -131,7 +144,7 @@
 
   const offloadConfirmMessage = $derived(
     offloadPreview
-      ? `${offloadSummary(offloadPreview)}. This frees about ${formatBytes(offloadFreedBytes(offloadPreview))}. ${OFFLOAD_CONFIRM_COPY}`
+      ? `${offloadSummary(offloadPreview)}. This frees about ${formatBytes(offloadFreedBytes(offloadPreview))}. ${OFFLOAD_CONFIRM_COPY}${offloadIncludesCurrent(offloadPreview) ? ` ${OFFLOAD_CURRENT_COPY}` : ""}`
       : "",
   );
 
@@ -197,7 +210,7 @@
 
   function describeRequest(req: StoragePruneRequest): string {
     if (req.localBefore) {
-      return `Backups on this Mac from before ${req.localBefore}`;
+      return `Backups on ${device} from before ${req.localBefore}`;
     }
     return `Old file versions in ${req.company} from before ${req.cloudBefore}`;
   }
@@ -239,7 +252,7 @@
     const errors: string[] = [];
     for (const req of currentRequests()) {
       const res = await api.prune(req);
-      const where = req.company ?? "this Mac";
+      const where = req.company ?? device;
       if (!res.ok) {
         console.error("storage prune failed:", res.message);
         errors.push(`${where}: couldn't delete. Try again later.`);
@@ -247,7 +260,7 @@
       }
       freed += prunedBytes(res.value);
       if (res.value.local && res.value.local.available === false) {
-        errors.push("this Mac: some backups couldn't be deleted.");
+        errors.push(`${device}: some backups couldn't be deleted.`);
       }
       for (const c of res.value.cloud ?? []) {
         const errs = c.errors ?? [];
@@ -281,6 +294,7 @@
   onMount(() => {
     void load();
     void loadRoles();
+    return subscribeHostComputerNoun((next) => (hostNoun = next));
   });
 </script>
 
@@ -304,7 +318,7 @@
     <div class="set-row" data-testid="settings-storage-header">
       <div>
         <div class="sn" data-testid="settings-storage-total">
-          HQ backups on this Mac: {status.local.available ? formatBytes(status.local.git_dir_bytes) : "unknown"}
+          HQ backups on {device}: {status.local.available ? formatBytes(status.local.git_dir_bytes) : "unknown"}
         </div>
         <div class="sd">
           {#if status.local.available}
@@ -324,11 +338,17 @@
     </div>
 
     <div class="set-subhead" data-testid="settings-storage-big-files"><div class="sn">Big files</div>
-      <div class="sd">Files over {BIG_FILE_MB} MB you haven't opened in {IDLE_DAYS} days, and old copies of big files in your backup history. Moving them to your HQ cloud frees space on this Mac. They still show in your HQ folder and download when you open them.</div>
+      <div class="sd" data-testid="settings-storage-big-files-copy">
+        {OFFLOAD_CONFIRM_COPY} Moving them frees space on {device}.{#if showCurrent} Files over {BIG_FILE_MB} MB you haven't opened in {IDLE_DAYS} days move too. {OFFLOAD_CURRENT_COPY}{/if}
+      </div>
     </div>
     {#if !status.offload}
       <div class="set-row unavailable" data-testid="settings-storage-big-files-update">
         <div class="sd">Update HQ to move big files to the cloud.</div>
+      </div>
+    {:else if status.offload.available === false}
+      <div class="set-row unavailable" data-testid="settings-storage-big-files-unavailable">
+        <div class="sd">{offloadUnavailableCopy(status.offload.reason)}</div>
       </div>
     {:else}
       <div class="set-row actions">
@@ -337,8 +357,8 @@
             {bigFiles.count > 0 ? `${formatBytes(bigFiles.bytes)} in big files` : "No big files to move"}
           </div>
           {#if bigFiles.count > 0}
-            <div class="sd">
-              {status.offload.current_candidates.count.toLocaleString()} idle files in your HQ folder ({formatBytes(status.offload.current_candidates.bytes)}) · {status.offload.history_candidates.count.toLocaleString()} old copies in backup history ({formatBytes(status.offload.history_candidates.bytes)})
+            <div class="sd" data-testid="settings-storage-big-files-breakdown">
+              {status.offload.history_candidates.count.toLocaleString()} old copies in backup history ({formatBytes(status.offload.history_candidates.bytes)}){#if showCurrent} · {status.offload.current_candidates.count.toLocaleString()} idle files in your HQ folder ({formatBytes(status.offload.current_candidates.bytes)}){/if}
             </div>
           {/if}
           {#if placeholders && placeholders.count > 0}
@@ -353,9 +373,13 @@
             <div class="sd" role="status" data-testid="settings-storage-offloading">Uploading and checking each file before freeing space. This can take a while for big files.</div>
           {/if}
           {#if offloadResult}
-            <div class="sd" role="status" data-testid="settings-storage-offload-result">
-              Moved to HQ cloud. Freed {formatBytes(offloadResult.freed)}.
-              {#if offloadResult.errors}<br />{offloadResult.errors}{/if}
+            <div
+              class="sd"
+              class:error={!offloadResult.ok}
+              role={offloadResult.ok ? "status" : "alert"}
+              data-testid="settings-storage-offload-result"
+            >
+              {#each offloadResult.lines as line, i (i)}{#if i > 0}<br />{/if}{line}{/each}
             </div>
           {/if}
         </div>
@@ -375,7 +399,7 @@
     </div>
     {#if !status.local.available}
       <div class="set-row unavailable" data-testid="settings-storage-local-unavailable">
-        <div class="sd">Update HQ to manage backups on this Mac.</div>
+        <div class="sd">Update HQ to manage backups on {device}.</div>
       </div>
     {:else if localBands.length === 0}
       <div class="set-row"><div class="sd">No backup history yet.</div></div>
@@ -409,7 +433,7 @@
       <div class="sd">Old versions of files your companies keep in the cloud. Current files are never touched.</div>
     </div>
     {#if cloudEntries.length === 0}
-      <div class="set-row"><div class="sd">No cloud companies on this Mac.</div></div>
+      <div class="set-row"><div class="sd">No cloud companies on {device}.</div></div>
     {/if}
     {#each cloudEntries as entry (entry.company)}
       <div class="cloud-company" data-testid={`settings-storage-cloud-${entry.company}`}>
@@ -425,12 +449,12 @@
             </div>
           </div>
         </div>
-        {#if entry.available && entry.bands.length > 0 && !canDeleteCloud(roles, entry.company)}
+        {#if entry.available && entry.bands.length > 0 && !canDeleteCloud(roles, entry.company, entry.can_delete)}
           <div class="set-row"><div class="sd" data-testid={`settings-storage-cloud-${entry.company}-admin-only`}>{CLOUD_ADMIN_ONLY_COPY}</div></div>
         {/if}
         {#if entry.available && entry.bands.length > 0}
           {@const cutoff = cloudCutoffs[entry.company] ?? null}
-          {@const canDelete = canDeleteCloud(roles, entry.company)}
+          {@const canDelete = canDeleteCloud(roles, entry.company, entry.can_delete)}
           <table class="bands">
             <thead><tr><th></th><th>Age</th><th class="num">Old versions</th><th class="num">Size</th></tr></thead>
             <tbody>

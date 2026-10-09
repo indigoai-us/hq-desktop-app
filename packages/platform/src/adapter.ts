@@ -2302,6 +2302,8 @@ export interface StorageCloudCompany {
   noncurrent_count: number;
   delete_markers: number;
   tranches: StorageCloudTranche[];
+  /** Owner or admin: may delete old versions. Absent on older CLIs. */
+  can_delete?: boolean | null;
 }
 
 export interface StorageStatus {
@@ -2321,6 +2323,8 @@ export interface StorageStatus {
   cloud: StorageCloudCompany[];
   /** Big files that can move to HQ cloud. Absent on CLIs without offload. */
   offload?: StorageOffloadStatus | null;
+  /** Cloud history could not be read at all (e.g. signed out). */
+  cloud_error?: string | null;
   generated_at?: string | null;
 }
 
@@ -2337,12 +2341,36 @@ export interface StorageOffloadStatus {
   current_candidates: StorageCountBytes;
   /** `.hqcloud` placeholders already on this computer. */
   placeholders: StorageCountBytes;
+  /** `false` when big files can't move at all (old HQ, old HQ sync). */
+  available?: boolean | null;
+  reason?: string | null;
+  /**
+   * `true` only once the CLI can move current files. Absent means it can't,
+   * so `current_candidates` is not offered.
+   */
+  current_available?: boolean | null;
 }
 
 /** `hq storage offload --json` (with `--dry-run`: what would move). */
 export interface StorageOffloadResult {
-  history: { uploaded: number; bytes: number; freed_bytes: number };
-  current: { offloaded: Array<{ path: string; bytes: number }>; freed_bytes: number };
+  history: {
+    uploaded: number;
+    bytes: number;
+    freed_bytes: number;
+    /** Old copies that would move (dry run) or were eligible. */
+    candidates?: number | null;
+    candidate_bytes?: number | null;
+    /** `false` with a `reason` when history copies could not move. */
+    available?: boolean | null;
+    reason?: string | null;
+  };
+  current: {
+    offloaded: Array<{ path: string; bytes: number }>;
+    freed_bytes: number;
+    /** `false` with a `reason` while current files can't move yet. */
+    available?: boolean | null;
+    reason?: string | null;
+  };
   /** Per-file failures; the UI only counts them. */
   errors: unknown[];
   dry_run?: boolean;
@@ -2354,6 +2382,8 @@ export const CLOUD_FILE_EVENT = "cloud-file://fetch";
 export interface CloudFileEventPayload {
   /** Original file name, e.g. `promo.mp4`. */
   name: string;
+  /** Full placeholder path; keys the toast. */
+  path?: string | null;
   phase: "fetching" | "opened" | "error";
   /** `offline` | `no-access` | `update-hq` | `open-failed` | `failed`. */
   error?: string | null;
@@ -2417,6 +2447,11 @@ export interface StorageApi {
   offload(): AdapterPromise<StorageOffloadResult>;
   /** Download a `.hqcloud` placeholder's original and open it. */
   openCloudFile(path: string): AdapterPromise<string>;
+  /**
+   * The UI is listening for `CLOUD_FILE_EVENT`: returns events that fired
+   * before (e.g. a cold start from a Finder double-click).
+   */
+  cloudFileUiReady(): AdapterPromise<CloudFileEventPayload[]>;
 }
 
 export interface ContextImportApi {

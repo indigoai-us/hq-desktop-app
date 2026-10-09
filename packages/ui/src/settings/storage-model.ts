@@ -15,6 +15,8 @@ import type {
   StoragePruneRequest,
   StoragePruneResult,
 } from "@hq/platform";
+import { thisComputerNoun } from "@hq/platform";
+import { formatBytes } from "../common/sync-model.js";
 
 export interface StorageBand {
   id: string;
@@ -175,12 +177,18 @@ export function bookmarksCopy(count: number): string {
 export const CLOUD_ADMIN_ONLY_COPY = "Only company owners and admins can delete cloud history.";
 
 /**
- * False only when the person is known to be neither owner nor admin of the
- * company. Unknown role: the CLI's permission error decides.
+ * Whether the person may delete a company's old cloud versions. Fails
+ * closed: the CLI's `can_delete` wins when present; otherwise only a known
+ * owner or admin role allows it. Unknown role means no.
  */
-export function canDeleteCloud(roles: ReadonlyMap<string, string>, company: string): boolean {
+export function canDeleteCloud(
+  roles: ReadonlyMap<string, string>,
+  company: string,
+  cliCanDelete?: boolean | null,
+): boolean {
+  if (typeof cliCanDelete === "boolean") return cliCanDelete;
   const role = (roles.get(company) ?? "").trim().toLowerCase();
-  return !role || role === "owner" || role === "admin";
+  return role === "owner" || role === "admin";
 }
 
 /** Slug → role from `identity.listWorkspaces()` membership rows. */
@@ -206,59 +214,141 @@ export const BIG_FILE_MB = 50;
 /** Current files untouched this long move (CLI default `--idle-days 14`). */
 export const IDLE_DAYS = 14;
 
+/** What happens to old copies in backup history. */
 export const OFFLOAD_CONFIRM_COPY =
-  "These files will be stored in your HQ cloud. They'll still show in your HQ folder and download when you open them.";
+  "Old copies of big files in your backup history will be stored in your HQ cloud. You can still get any of them back.";
 
-/** Everything Big files could move right now. */
+/** What happens to current files, said only when the CLI can move them. */
+export const OFFLOAD_CURRENT_COPY =
+  "Big files you haven't opened in a while still show in your HQ folder and download when you open them.";
+
+/** Plain copy when the CLI says big files can't move (`available: false`). */
+export function offloadUnavailableCopy(reason: string | null | undefined): string {
+  if (reason && /update hq/i.test(reason)) return "Update HQ to move big files to the cloud.";
+  return "Moving big files to the cloud isn't available yet.";
+}
+
+/** True when current files are offered: only when the CLI says it can move them. */
+export function currentOffloadAvailable(o: StorageOffloadStatus | null | undefined): boolean {
+  return o?.available !== false && o?.current_available === true;
+}
+
+/** What "Move to cloud" will actually move right now. */
 export function offloadCandidates(o: StorageOffloadStatus | null | undefined): {
   count: number;
   bytes: number;
 } {
-  if (!o) return { count: 0, bytes: 0 };
+  if (!o || o.available === false) return { count: 0, bytes: 0 };
+  const withCurrent = currentOffloadAvailable(o);
   return {
-    count: (o.history_candidates?.count ?? 0) + (o.current_candidates?.count ?? 0),
-    bytes: (o.history_candidates?.bytes ?? 0) + (o.current_candidates?.bytes ?? 0),
+    count: (o.history_candidates?.count ?? 0) + (withCurrent ? o.current_candidates?.count ?? 0 : 0),
+    bytes: (o.history_candidates?.bytes ?? 0) + (withCurrent ? o.current_candidates?.bytes ?? 0 : 0),
+  };
+}
+
+/** History copies a dry run would move: `candidates`, else `uploaded`. */
+function historyPlanned(r: StorageOffloadResult): { count: number; bytes: number } {
+  const h = r.history;
+  if (!h || h.available === false) return { count: 0, bytes: 0 };
+  return {
+    count: h.candidates ?? h.uploaded ?? 0,
+    bytes: h.candidate_bytes ?? (h.bytes || h.freed_bytes || 0),
+  };
+}
+
+/** Current files in a result, ignored when the CLI marks them unavailable. */
+function currentMoved(r: StorageOffloadResult): { count: number; bytes: number; freed: number } {
+  const c = r.current;
+  if (!c || c.available === false) return { count: 0, bytes: 0, freed: 0 };
+  const files = c.offloaded ?? [];
+  return {
+    count: files.length,
+    bytes: files.reduce((s, f) => s + (f.bytes ?? 0), 0),
+    freed: c.freed_bytes ?? 0,
   };
 }
 
 /**
- * Space an offload frees (or would free, on a dry run). Falls back to the
- * moved size when the CLI leaves `freed_bytes` at 0 on a dry run.
+ * Space an offload frees, or would free on a dry run. A dry run uses the
+ * candidate size; a real run only what the CLI says it freed.
  */
 export function offloadFreedBytes(r: StorageOffloadResult): number {
-  const history = r.history ?? { uploaded: 0, bytes: 0, freed_bytes: 0 };
-  const current = r.current ?? { offloaded: [], freed_bytes: 0 };
-  const currentMoved = (current.offloaded ?? []).reduce((s, f) => s + (f.bytes ?? 0), 0);
-  const h = history.freed_bytes || (r.dry_run ? history.bytes ?? 0 : 0);
-  const c = current.freed_bytes || (r.dry_run ? currentMoved : 0);
-  return h + c;
+  const current = currentMoved(r);
+  if (r.dry_run) return historyPlanned(r).bytes + (current.freed || current.bytes);
+  const h = r.history?.available === false ? 0 : r.history?.freed_bytes ?? 0;
+  return h + current.freed;
 }
 
 function plural(n: number, one: string, many: string): string {
   return `${n.toLocaleString()} ${n === 1 ? one : many}`;
 }
 
-/** One plain line listing what an offload covers. */
+/** One plain line listing what a dry run would move; empty when nothing. */
 export function offloadSummary(r: StorageOffloadResult): string {
   const parts: string[] = [];
-  const copies = r.history?.uploaded ?? 0;
-  const files = r.current?.offloaded?.length ?? 0;
+  const copies = historyPlanned(r).count;
+  const files = currentMoved(r).count;
   if (copies > 0) parts.push(`${plural(copies, "old copy", "old copies")} of big files in your backup history`);
   if (files > 0) parts.push(`${plural(files, "big file", "big files")} you haven't opened in ${IDLE_DAYS} days`);
   return parts.join(" and ");
 }
 
-/** Result line for failed files; empty when none failed. */
-export function offloadErrorsCopy(r: StorageOffloadResult): string {
+/** True when a dry run includes current files (so their copy applies). */
+export function offloadIncludesCurrent(r: StorageOffloadResult): boolean {
+  return currentMoved(r).count > 0;
+}
+
+/**
+ * Why a preview can't go ahead, in plain words, or `null` when it can.
+ * History copies are the only thing the CLI moves today, so an unavailable
+ * history half with no current files is "not available", never "0 B".
+ */
+export function offloadPreviewBlocker(r: StorageOffloadResult): string | null {
+  if (r.history?.available === false && currentMoved(r).count === 0) {
+    return offloadUnavailableCopy(r.history.reason);
+  }
+  if (!offloadSummary(r)) return "Nothing to move right now.";
+  return null;
+}
+
+/** Result line for failed items; empty when none failed. */
+export function offloadErrorsCopy(r: StorageOffloadResult, device: string = thisComputerNoun()): string {
   const n = r.errors?.length ?? 0;
   if (n === 0) return "";
   return n === 1
-    ? "1 file couldn't be moved. It's still on this Mac."
-    : `${n.toLocaleString()} files couldn't be moved. They're still on this Mac.`;
+    ? `1 file couldn't be moved. It's still on ${device}.`
+    : `${n.toLocaleString()} files couldn't be moved. They're still on ${device}.`;
+}
+
+/** Plain result of a real offload. `ok: false` lines read as a problem. */
+export function offloadOutcome(
+  r: StorageOffloadResult,
+  device: string = thisComputerNoun(),
+): { ok: boolean; lines: string[] } {
+  const freed = offloadFreedBytes(r);
+  const errors = r.errors ?? [];
+  if (r.history?.available === false && currentMoved(r).count === 0) {
+    return { ok: false, lines: [offloadUnavailableCopy(r.history.reason)] };
+  }
+  if (errors.length > 0) {
+    const needsUpdate = errors.some((e) => typeof e === "string" && /update hq/i.test(e));
+    if (freed > 0) {
+      return { ok: false, lines: [`Moved some files to HQ cloud. Freed ${formatBytes(freed)}.`, offloadErrorsCopy(r, device)] };
+    }
+    return {
+      ok: false,
+      lines: [
+        `No space was freed yet. Your files are still on ${device}.`,
+        needsUpdate ? "Update HQ, then try again." : "Try again in a moment.",
+      ],
+    };
+  }
+  if (freed > 0) return { ok: true, lines: [`Moved to HQ cloud. Freed ${formatBytes(freed)}.`] };
+  return { ok: true, lines: ["Nothing needed moving."] };
 }
 
 /** Plain copy for a failed `.hqcloud` open. Never raw CLI text. */
-export function cloudFileErrorCopy(code: string | null | undefined): string {
+export function cloudFileErrorCopy(code: string | null | undefined, device: string = thisComputerNoun()): string {
   switch (code) {
     case "offline":
       return "You're offline. Connect and try again.";
@@ -267,14 +357,22 @@ export function cloudFileErrorCopy(code: string | null | undefined): string {
     case UPDATE_HQ_CODE:
       return "Update HQ to open files stored in HQ cloud.";
     case "open-failed":
-      return "It downloaded, but no app on this Mac could open it.";
+      return `It downloaded, but no app on ${device} could open it.`;
     default:
       return "We couldn't download it. Try again in a moment.";
   }
 }
 
+/** Toast key: the full placeholder path, so same-named files stay apart. */
+export function cloudFileToastKey(ev: CloudFileEventPayload): string {
+  return `cloud-file:${ev.path || ev.name}`;
+}
+
 /** Toast for each step of opening a `.hqcloud` placeholder. */
-export function cloudFileToast(ev: CloudFileEventPayload): {
+export function cloudFileToast(
+  ev: CloudFileEventPayload,
+  device: string = thisComputerNoun(),
+): {
   title: string;
   detail: string;
   tone: "ok" | "err" | "neutral";
@@ -286,7 +384,7 @@ export function cloudFileToast(ev: CloudFileEventPayload): {
     return { title: `Downloading ${name}`, detail: "Getting it from HQ cloud.", tone: "neutral", progress: "indeterminate", sticky: true };
   }
   if (ev.phase === "opened") {
-    return { title: `${name} is ready`, detail: "Opened it for you. It stays on this Mac while you use it.", tone: "ok", progress: null, sticky: false };
+    return { title: `${name} is ready`, detail: `Opened it for you. It stays on ${device} while you use it.`, tone: "ok", progress: null, sticky: false };
   }
-  return { title: `Couldn't open ${name}`, detail: cloudFileErrorCopy(ev.error), tone: "err", progress: null, sticky: true };
+  return { title: `Couldn't open ${name}`, detail: cloudFileErrorCopy(ev.error, device), tone: "err", progress: null, sticky: true };
 }
