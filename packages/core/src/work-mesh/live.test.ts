@@ -49,6 +49,29 @@ describe("parseLiveReadResponse", () => {
     ).toBeUndefined();
   });
 
+  it("keeps a session's repo and branch when the server sends them", () => {
+    const parsed = parseLiveReadResponse({
+      contractVersion: 1,
+      generatedAt: "2026-09-04T00:00:00.000Z",
+      participants: [
+        {
+          actorUid: "prs_s",
+          actorType: "human",
+          displayName: "Stefan",
+          presence: "online",
+          lastSeenAt: "2026-09-04T00:00:00.000Z",
+          sessions: [
+            { sessionId: "s1", status: "active", repo: " hq-desktop-app ", branch: " main ", startedAt: "2026-09-04T00:00:00.000Z" },
+            { sessionId: "s2", status: "active", branch: "  " },
+          ],
+        },
+      ],
+    });
+    const [withRepo, bare] = parsed?.participants[0]?.sessions ?? [];
+    expect(withRepo).toMatchObject({ repo: "hq-desktop-app", branch: "main" });
+    expect(bare).not.toHaveProperty("branch");
+  });
+
   it("returns null for unusable payloads", () => {
     expect(parseLiveReadResponse(null)).toBeNull();
     expect(parseLiveReadResponse({})).toBeNull();
