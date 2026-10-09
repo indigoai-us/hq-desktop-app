@@ -16,6 +16,8 @@ import type { BriefSweepSource } from "./brief-data.js";
 export interface BriefDemo {
   creator: BriefCreator;
   source: BriefSweepSource;
+  /** What a run at this progress reports (for frozen frames). */
+  statusAt(progress: number): { activity: unknown; findings: unknown; samples: unknown };
   /** Frozen frame for screenshots: progress, or "fail". */
   frozen: number | "fail" | null;
 }
@@ -54,6 +56,42 @@ function demoActivity(progress: number, start: number) {
   return done.slice(-12);
 }
 
+/** Findings that grow as sources land, like a real run's status.json. */
+function demoFindings(p: number) {
+  const k = (from: number, to: number, v: number) => Math.round(v * Math.max(0, Math.min(1, (p - from) / (to - from))));
+  return {
+    signals: { decision: k(0.26, 0.4, 7), action_item: k(0.26, 0.4, 12), risk: k(0.3, 0.42, 3), commitment: k(0.3, 0.42, 5), key_point: k(0.3, 0.44, 19) },
+    sessions: k(0.16, 0.26, 42),
+    meetings: k(0.26, 0.34, 6),
+    dms: { total: k(0.34, 0.42, 31), need_you: k(0.36, 0.42, 4) },
+    prs: { merged: k(0.5, 0.58, 34), open: k(0.5, 0.58, 9), review_requested: k(0.52, 0.58, 2) },
+    ci_red: k(0.6, 0.64, 1),
+    agents: { total: k(0.42, 0.5, 44), attention: k(0.46, 0.5, 3) },
+    integrations: p >= 0.68 ? { gmail: 5 } : {},
+  };
+}
+
+const SAMPLES: [number, string, string, string][] = [
+  [0.3, "decision", "Keep the no-self-merge rule on hq-core?", "indigo"],
+  [0.33, "action_item", "Send Jacob the investor memo folder", "indigo"],
+  [0.35, "commitment", "Stefan: ship the bot install flow behind the flag", "indigo"],
+  // Another company's item: the app must never show it.
+  [0.36, "decision", "LiveRecover: pick the dunning email copy", "liverecover"],
+  [0.39, "risk", "Q4 pipeline thin after two churns", "indigo"],
+  [0.42, "dm", "Izzy is waiting on your reply about X mentions", "indigo"],
+  [0.56, "pr", "hq-desktop-app #1531 first-run screens merged", "indigo"],
+  [0.63, "ci", "hq-desktop-app main is red on 1 of 3 workflows", "indigo"],
+];
+
+function demoSamples(p: number, start: number) {
+  return SAMPLES.filter(([at]) => p >= at).map(([at, kind, title, company]) => ({
+    kind,
+    title,
+    company,
+    at: new Date(start + at * 18_000).toISOString(),
+  }));
+}
+
 const STEPS: [number, string][] = [
   [0.05, "Checking your setup"],
   [0.15, "Reading your last brief"],
@@ -74,7 +112,7 @@ export function briefDemoFromUrl(search: string): BriefDemo | null {
   let runId = "";
   const bot = { name: "demo", agentUid: "agt_demo", runtime: "claude", state: "running", processAlive: true } as LocalBotRow;
   const creator: BriefCreator = {
-    company: () => "demo",
+    company: () => "indigo",
     check: async () => ({ ok: true, bot }),
     dispatch: async (_bot, _body, key) => {
       started = Date.now();
@@ -95,8 +133,12 @@ export function briefDemoFromUrl(search: string): BriefDemo | null {
       }
       if (progress >= 1) return JSON.stringify({ run_id: runId, state: "ready", step: "Done", progress: 1 });
       const step = [...STEPS].reverse().find(([p]) => progress >= p)?.[1] ?? "Starting";
-      return JSON.stringify({ run_id: runId, state: "running", step, progress, updated_at: new Date().toISOString(), activity: demoActivity(progress, started) });
+      return JSON.stringify({ run_id: runId, state: "running", step, progress, updated_at: new Date().toISOString(), activity: demoActivity(progress, started), findings: demoFindings(progress), samples: demoSamples(progress, started), company: "indigo" });
     },
   };
-  return { creator, source, frozen };
+  const statusAt = (p: number) => {
+    const t0 = Date.now() - p * 18_000;
+    return { activity: demoActivity(p, t0), findings: demoFindings(p), samples: demoSamples(p, t0) };
+  };
+  return { creator, source, frozen, statusAt };
 }

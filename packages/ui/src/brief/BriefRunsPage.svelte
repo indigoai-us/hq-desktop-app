@@ -11,6 +11,9 @@
   import BriefRunBar from "./BriefRunBar.svelte";
   import BriefDawn from "./BriefDawn.svelte";
   import BriefActivity from "./BriefActivity.svelte";
+  import BriefFindings from "./BriefFindings.svelte";
+  import { parseFindings, parseSamples } from "./brief-findings.js";
+  import { parseActivity } from "./brief-runs.js";
   import { elapsedLabel, estimateLabel, stillWorkingLine } from "./brief-runs.js";
   import { briefDemoFromUrl } from "./brief-demo.js";
   import type { DawnPhase } from "./brief-dawn.js";
@@ -173,9 +176,22 @@
     return () => clearInterval(t);
   });
   const runInfo = $derived.by(() => {
+    if (demo?.frozen != null && demo.frozen !== "fail") {
+      const s = demo.statusAt(demo.frozen);
+      return {
+        activity: parseActivity(s.activity),
+        findings: demo.frozen > 0.1 ? parseFindings(s.findings) : null,
+        samples: parseSamples(s.samples, "indigo"),
+        elapsed: elapsedLabel(demo.frozen * 18_000 + 1500),
+        estimate: "usually ~12 min",
+        still: null,
+      };
+    }
     if (cp.kind !== "waiting" && cp.kind !== "running") return null;
     return {
       activity: cp.kind === "running" ? (cp.activity ?? []) : [],
+      findings: cp.kind === "running" ? (cp.findings ?? null) : null,
+      samples: cp.kind === "running" ? parseSamples(cp.samples, run?.company ?? null) : [],
       elapsed: elapsedLabel(tickNow - cp.sentAt),
       estimate: estimateLabel(entries),
       still: stillWorkingLine(cp, tickNow, run?.files ?? null),
@@ -225,9 +241,12 @@
         <button type="button" class="cta" onclick={createBrief} data-testid="brief-retry">Try again</button>
         <button type="button" class="ghost" onclick={() => run?.dismiss()}>Dismiss</button>
       {:else if runInfo}
+        {#if runInfo.findings}
+          <BriefFindings findings={runInfo.findings} samples={runInfo.samples} cards={size === "page" ? 3 : 1} />
+        {/if}
         <BriefActivity
           activity={runInfo.activity}
-          visible={size === "page" ? 5 : 2}
+          visible={runInfo.findings ? 1 : size === "page" ? 5 : 2}
           elapsed={runInfo.elapsed}
           estimate={runInfo.estimate}
           stillWorking={runInfo.still}

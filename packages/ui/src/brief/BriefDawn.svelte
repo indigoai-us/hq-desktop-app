@@ -58,7 +58,7 @@
     const e = look.elevation;
     const cols = Math.floor(W / 8);
     const rows = Math.floor(H / 8);
-    const hz = Math.floor(rows * 0.62);
+    const hz = Math.floor(rows * (size === "page" ? 0.5 : 0.62));
     const R = Math.max(3, Math.min((hz - 2) / 2.4, cols * 0.09));
     const cx = cols * 0.5;
     // Below the horizon at 0, its top cresting near 0.25, fully up at 1.
@@ -220,8 +220,8 @@
     background: #121216;
   }
   .dawn.page {
-    height: min(560px, calc(100vh - 160px));
-    min-height: 360px;
+    height: min(680px, calc(100vh - 120px));
+    min-height: 420px;
   }
   .dawn.masthead {
     height: 260px;
@@ -241,7 +241,7 @@
     position: absolute;
     left: 0;
     right: 0;
-    top: 66%;
+    top: 54%;
     display: flex;
     flex-direction: column;
     align-items: center;

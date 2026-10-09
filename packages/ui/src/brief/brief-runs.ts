@@ -9,6 +9,7 @@
  */
 
 import type { LocalBotRow } from "@hq/platform";
+import { parseFindings, type BriefFindings } from "./brief-findings.js";
 
 export const BRIEF_ROOT = "workspace/brief";
 export const BRIEF_INDEX_PATH = `${BRIEF_ROOT}/index.jsonl`;
@@ -190,6 +191,12 @@ export interface BriefRunStatus {
   housekeeping: Record<string, unknown> | null;
   /** Empty when the skill that wrote it predates the activity list. */
   activity: BriefActivity[];
+  /** Counts found so far; null before the first source lands (or an older skill). */
+  findings: BriefFindings | null;
+  /** status.json `samples`, unfiltered; the UI keeps only the run's company. */
+  samples: unknown;
+  /** The company the run says it is for, when it says. */
+  company: string | null;
 }
 
 export function parseBriefStatus(text: string): BriefRunStatus | null {
@@ -214,6 +221,9 @@ export function parseBriefStatus(text: string): BriefRunStatus | null {
     sources: rec(r.sources),
     housekeeping: r.housekeeping && typeof r.housekeeping === "object" ? rec(r.housekeeping) : null,
     activity: parseActivity(r.activity),
+    findings: parseFindings(r.findings),
+    samples: r.samples ?? null,
+    company: str(r.company) || null,
   };
 }
 
@@ -235,6 +245,8 @@ export type BriefCreatePhase =
       lastChangeAt: number;
       updatedAt: string | null;
       activity?: BriefActivity[];
+      findings?: BriefFindings | null;
+      samples?: unknown;
     }
   | { kind: "ready"; runId: string }
   | { kind: "failed"; runId: string | null; message: string };
@@ -280,6 +292,8 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
       lastChangeAt,
       updatedAt: status.updatedAt,
       activity: status.activity,
+      findings: status.findings,
+      samples: status.samples,
     };
   }
   // No usable status yet: absent, mid-write, or a read error.

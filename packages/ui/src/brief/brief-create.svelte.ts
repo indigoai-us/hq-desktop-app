@@ -57,6 +57,8 @@ export interface BriefCreateDeps {
 
 /** localStorage key holding the run id while a run is in flight. */
 export const ACTIVE_RUN_KEY = "hq.brief.activeRun";
+/** The company that run was sent for, kept beside the run id. */
+export const ACTIVE_RUN_COMPANY_KEY = "hq.brief.activeRunCompany";
 
 type Finished = Extract<BriefCreatePhase, { kind: "ready" | "failed" }>;
 
@@ -64,6 +66,8 @@ export class BriefCreateRun {
   phase = $state<BriefCreatePhase>({ kind: "idle" });
   /** What the run folder holds, probed while status.json is quiet. */
   files = $state<BriefRunFiles | null>(null);
+  /** The company the in-flight run was sent for; samples are kept to it. */
+  company = $state<string | null>(null);
   private lastProbe = 0;
   private blockedBot: LocalBotRow | null = null;
   private timer: unknown = null;
@@ -141,6 +145,7 @@ export class BriefCreateRun {
       this.finish({ kind: "failed", runId: null, message: error });
       return;
     }
+    this.company = company;
     this.remember(runId);
     this.phase = { kind: "waiting", runId, sentAt: this.now().getTime() };
     this.schedule();
@@ -182,6 +187,7 @@ export class BriefCreateRun {
           continue;
         }
         this.stopped = false;
+        this.company = status.company ?? this.storage?.getItem(ACTIVE_RUN_COMPANY_KEY) ?? null;
         this.remember(runId);
         this.phase = {
           kind: "running",
@@ -192,6 +198,8 @@ export class BriefCreateRun {
           lastChangeAt: now,
           updatedAt: status.updatedAt,
           activity: status.activity,
+          findings: status.findings,
+          samples: status.samples,
         };
         this.schedule();
         return true;
@@ -218,6 +226,7 @@ export class BriefCreateRun {
   private remember(runId: string): void {
     try {
       this.storage?.setItem(ACTIVE_RUN_KEY, runId);
+      if (this.company) this.storage?.setItem(ACTIVE_RUN_COMPANY_KEY, this.company);
     } catch (err) {
       this.log("could not remember the active run", err);
     }
@@ -226,6 +235,7 @@ export class BriefCreateRun {
   private forget(): void {
     try {
       this.storage?.removeItem(ACTIVE_RUN_KEY);
+      this.storage?.removeItem(ACTIVE_RUN_COMPANY_KEY);
     } catch (err) {
       this.log("could not clear the active run", err);
     }
