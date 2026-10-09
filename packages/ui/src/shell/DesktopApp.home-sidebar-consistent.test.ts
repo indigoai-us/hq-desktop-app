@@ -87,7 +87,10 @@ function sidebarApi(): ChatSidebarApi {
             companyUid: COMPANY_UID,
             name: "indigo-ops",
             subtitle: "company",
-            lastActivityAt: new Date().toISOString(),
+            // Newest row whatever the time of day: the fixture stamps rows at
+            // today(7..10), which are still in the future before 10:12 local,
+            // so a plain "now" sinks below them and out of the ⌘K list.
+            lastActivityAt: new Date(Math.max(Date.now(), new Date().setHours(11, 0, 0, 0))).toISOString(),
             unreadCount: 0,
             memberCount: 4,
           },

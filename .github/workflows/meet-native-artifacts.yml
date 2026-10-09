@@ -24,6 +24,8 @@ jobs:
         working-directory: apps/sync
         shell: pwsh
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       HQ_SYNC_SENTRY_DSN: ""
       VITE_SENTRY_DSN: ""
       RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
