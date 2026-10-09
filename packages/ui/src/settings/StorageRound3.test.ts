@@ -189,6 +189,21 @@ describe("StorageSettingsPane round 3", () => {
     expect(q("settings-storage-pending-reclaim")).toBeNull();
   });
 
+  it("explains ~0 B bands when refs hold all old history (real status)", async () => {
+    await render({ status: async () => ({ ok: true, value: STATUS_HOLDERS }) });
+    const held = q("settings-storage-local-held");
+    expect(held?.textContent).toContain(
+      "Nothing can be freed yet. 6 older branches or saved versions still use this history.",
+    );
+    expect(held?.textContent).toContain("Changes set aside for later");
+    expect(held?.textContent).not.toMatch(/delete/i);
+  });
+
+  it("no held note when some old history can be freed", async () => {
+    await render({ status: async () => ({ ok: true, value: statusWithBand(STATUS_HOLDERS) }) });
+    expect(q("settings-storage-local-held")).toBeNull();
+  });
+
   it("blocks confirm when the dry run is held by refs and lists them", async () => {
     const prune = vi.fn();
     await render({

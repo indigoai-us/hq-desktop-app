@@ -329,6 +329,14 @@
       : "",
   );
 
+  /** Status says branches or saved versions hold all old history. */
+  const statusHolders = $derived.by(() => {
+    const local = status?.local;
+    const count = local?.holding_refs_count ?? local?.holding_refs?.length ?? 0;
+    const deletable = localBands.slice(1).some((b) => b.bytes > 0);
+    return local?.available && count > 0 && !deletable ? { count, refs: local.holding_refs ?? [] } : null;
+  });
+
   const pendingReclaim = $derived.by(() => {
     const local = status?.local;
     const bytes = local?.pending_reclaim_bytes ?? 0;
@@ -484,6 +492,21 @@
           {/each}
         </tbody>
       </table>
+      {#if statusHolders}
+        <div class="set-row" data-testid="settings-storage-local-held">
+          <div>
+            <div class="sd">{holdersCopy(statusHolders.count)}</div>
+            {#if statusHolders.refs.length > 0}
+              <details class="holders">
+                <summary>What's still using it</summary>
+                <ul>
+                  {#each statusHolders.refs as ref (ref.name)}<li>{holderLabel(ref)}</li>{/each}
+                </ul>
+              </details>
+            {/if}
+          </div>
+        </div>
+      {/if}
     {/if}
 
     <div class="set-subhead"><div class="sn">Cloud file history</div>

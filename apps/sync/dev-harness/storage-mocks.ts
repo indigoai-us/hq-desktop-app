@@ -6,10 +6,20 @@
 //   ?storage=data         (default) 6 old copies to move, cloud history
 //   ?storage=unavailable  big-file moves can't run ("update HQ sync")
 //   ?storage=partial      the move uploads but frees nothing (real CLI result)
+//   ?storage=holders      branches and saved versions hold old history, so
+//                         deleting old backups would free nothing
+//
+// Status, a successful move and a successful delete use the round-3 contract
+// fixtures (24 h undo backup, pending reclaim); see the fixtures README.
 import { NOT_HANDLED } from './company-flow-mocks';
-import status from '../../../packages/ui/src/settings/__fixtures__/storage/status.json';
+import status from '../../../packages/ui/src/settings/__fixtures__/storage/status-r3.json';
+import statusR1 from '../../../packages/ui/src/settings/__fixtures__/storage/status.json';
 import offloadDry from '../../../packages/ui/src/settings/__fixtures__/storage/offload-dry.json';
 import offloadReal from '../../../packages/ui/src/settings/__fixtures__/storage/offload-real.json';
+import offloadRealR3 from '../../../packages/ui/src/settings/__fixtures__/storage/offload-real-r3.json';
+import pruneDryR3 from '../../../packages/ui/src/settings/__fixtures__/storage/prune-dry-r3.json';
+import pruneDryHolders from '../../../packages/ui/src/settings/__fixtures__/storage/prune-dry-holders.json';
+import pruneRealR3 from '../../../packages/ui/src/settings/__fixtures__/storage/prune-real-r3.json';
 
 const CURRENT_BLOCKED = {
   available: false,
@@ -26,7 +36,17 @@ function statusFor(variant: string): unknown {
       : { ...status.offload, placeholders: { count: 2, bytes: 1_048_576_000 } };
   return {
     ...status,
-    local: { ...status.local, root: '/Users/corey/Documents/HQ' },
+    local: {
+      ...status.local,
+      root: '/Users/corey/Documents/HQ',
+      // Holders zero every band (real round-2 capture); otherwise use the
+      // round-1 bands, which have deletable history.
+      ...(variant === 'holders'
+        ? {}
+        : { tranches: statusR1.local.tranches, holding_refs: [], holding_refs_count: 0 }),
+      // A fresh undo window, so the pending line reads as a future time.
+      reclaim_after: new Date(Date.now() + DAY).toISOString(),
+    },
     offload,
     cloud: [
       {
@@ -63,15 +83,11 @@ export function storageAnswer(cmd: string): unknown {
       return { ...offloadDry, current: { ...offloadDry.current, ...CURRENT_BLOCKED } };
     case 'run_storage_offload':
       if (variant() === 'partial') return { ...offloadReal, current: { ...offloadReal.current, ...CURRENT_BLOCKED } };
-      return {
-        ...offloadReal,
-        history: { ...offloadReal.history, freed_bytes: 365_105_152 },
-        current: { ...offloadReal.current, ...CURRENT_BLOCKED },
-        errors: [],
-      };
+      return { ...offloadRealR3, current: { ...offloadRealR3.current, ...CURRENT_BLOCKED } };
     case 'preview_storage_prune':
+      return variant() === 'holders' ? pruneDryHolders : pruneDryR3;
     case 'run_storage_prune':
-      return { local: null, cloud: [], dry_run: cmd === 'preview_storage_prune' };
+      return pruneRealR3;
     case 'cloud_file_ui_ready':
       return [];
     default:
