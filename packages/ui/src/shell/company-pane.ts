@@ -97,6 +97,46 @@ export function companyRowDestination(
   return { kind: "extra", page: companyPageId(rowId), companyUid };
 }
 
+/** Project detail tab the company Projects page can open on. */
+export type CompanyProjectsTab = "tasks" | "files";
+
+/**
+ * The company's own Projects page (the sidepane Projects row), optionally
+ * opened on one project. Atlas uses this so Open board stays in the company
+ * pane instead of leaving for the cross-company Projects view, which closed
+ * the company pane and showed Home's chat list.
+ */
+export function companyProjectsDestination(
+  companyUid: string,
+  project?: string | null,
+  tab?: CompanyProjectsTab | null,
+): NavigationDestination {
+  const destination = companyRowDestination("projects", companyUid);
+  const id = project?.trim();
+  if (!id || destination.kind !== "extra") return destination;
+  const params = new URLSearchParams({ project: id });
+  if (tab) params.set("tab", tab);
+  return { ...destination, param: params.toString() };
+}
+
+/** The project (and tab) a company Projects page param asks to open. */
+export function companyProjectsFocus(
+  param: string | null | undefined,
+): { project: string; tab: CompanyProjectsTab | null } | null {
+  const raw = param?.trim() ?? "";
+  if (!raw) return null;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(raw);
+  } catch {
+    return null;
+  }
+  const project = params.get("project")?.trim();
+  if (!project) return null;
+  const tab = params.get("tab");
+  return { project, tab: tab === "tasks" || tab === "files" ? tab : null };
+}
+
 /** Cached summary fields the pane shows as row counts. */
 export interface CompanyPaneSummary {
   board: number;

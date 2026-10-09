@@ -10,6 +10,8 @@ import { createAtlasCache } from "../atlas/atlas-cache.js";
 import { smokeAtlasGraph } from "../atlas/atlas-model.js";
 import { configureProjectsApi } from "../projects/local-projects.js";
 import { fakeProjectsApi } from "../projects/testing.js";
+import { companyProjectsFocus, companyRowForPage } from "./company-pane.js";
+import { paneForEntry } from "./destination-pane.js";
 
 const mounted: Array<ReturnType<typeof mount>> = [];
 afterEach(() => {
@@ -405,14 +407,43 @@ describe("AtlasLandingHost inspector actions (QA-066)", () => {
     return found as HTMLButtonElement;
   }
 
-  it("opens a project's Files tab and its board on the Projects page", async () => {
+  it("opens a project's Files tab and its board on the company Projects page", async () => {
     const onnavigate = vi.fn();
     const target = await mountWithMap(onnavigate);
     await select(target, "project:projects/billing-v2/");
     button(target, "Open files").click();
-    expect(onnavigate).toHaveBeenLastCalledWith({ kind: "projects", company: "indigo", project: "billing-v2", tab: "files" });
+    expect(onnavigate).toHaveBeenLastCalledWith({
+      kind: "extra",
+      page: "company-page-projects",
+      companyUid: "co_indigo",
+      param: "project=billing-v2&tab=files",
+    });
     button(target, "Open board").click();
-    expect(onnavigate).toHaveBeenLastCalledWith({ kind: "projects", company: "indigo", project: "billing-v2", tab: "tasks" });
+    expect(onnavigate).toHaveBeenLastCalledWith({
+      kind: "extra",
+      page: "company-page-projects",
+      companyUid: "co_indigo",
+      param: "project=billing-v2&tab=tasks",
+    });
+  });
+
+  it("Open board stays in the company: company pane, Projects row, the project on Tasks", async () => {
+    const onnavigate = vi.fn();
+    const target = await mountWithMap(onnavigate);
+    await select(target, "project:projects/billing-v2/");
+    button(target, "Open board").click();
+    const [[destination]] = onnavigate.mock.calls.slice(-1);
+    // The cross-company Projects view closed the company pane and showed
+    // Home's chat list (owner bug, 0.11.0).
+    expect(paneForEntry({ destination, accountId: "acct", companyUid: null })).toEqual({
+      pane: "company",
+      companyKey: "co_indigo",
+    });
+    expect(destination.kind === "extra" && companyRowForPage(destination.page)).toBe("projects");
+    expect(destination.kind === "extra" && companyProjectsFocus(destination.param)).toEqual({
+      project: "billing-v2",
+      tab: "tasks",
+    });
   });
 
   it("opens any other file in the company Files explorer", async () => {
