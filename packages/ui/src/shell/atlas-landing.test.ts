@@ -196,20 +196,25 @@ describe("atlasNodeDestination: Open files shows a file, not a tree", () => {
       vault: "company:indigo",
       path: "companies/indigo/projects/billing-v2/README.md",
     });
-    expect(atlasNodeDestination(project, "indigo", "board")).toEqual({
-      kind: "projects",
-      company: "indigo",
-      project: "billing-v2",
-      tab: "tasks",
+    expect(atlasNodeDestination(project, "indigo", "board", "co_indigo")).toEqual({
+      kind: "extra",
+      page: "company-page-projects",
+      companyUid: "co_indigo",
+      param: "project=billing-v2&tab=tasks",
     });
+  });
+
+  it("keeps Open board in the company pane, never the cross-company Projects view", () => {
+    const board = atlasNodeDestination({ type: "knowledge", path: "knowledge/brand/", folder: true }, "indigo", "board", "co_indigo");
+    expect(board).toEqual({ kind: "extra", page: "company-page-projects", companyUid: "co_indigo" });
   });
 
   it("falls back when a folder has no file to show", () => {
     expect(atlasNodeDestination({ type: "project", path: "projects/empty/", folder: true }, "indigo", "files")).toEqual({
-      kind: "projects",
-      company: "indigo",
-      project: "empty",
-      tab: "files",
+      kind: "extra",
+      page: "company-page-projects",
+      companyUid: "indigo",
+      param: "project=empty&tab=files",
     });
     expect(atlasNodeDestination({ type: "knowledge", path: "knowledge/brand/", folder: true }, "indigo", "files")).toEqual({
       kind: "explorer",

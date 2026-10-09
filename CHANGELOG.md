@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 - Atlas: the side panel's Today section now lists only the projects worked on today, newest first. Each row shows the project name, a thin progress bar, a story count such as "12/31 stories" taken from the live Board, and how long ago it changed. Click a row to open the project. The Company block at the top of the side panel (company name and the live, objects and projects-in-progress counts) is gone.
 - Atlas: a person whose session reports a repo but no project now sits on the map next to that repo, and their hover card says "Working in hq-desktop-app" with the branch when known. Someone on a project who also reports a repo shows the repo as a second line. This needs the live sessions read to carry the repo; until the server sends it, those people stay in Not on the map.
+- Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
 
 ## [0.11.0] — 2026-10-08
 
