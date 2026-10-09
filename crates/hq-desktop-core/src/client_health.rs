@@ -211,6 +211,38 @@ closed_wire_enum!(
 );
 
 closed_wire_enum!(
+    /// Where the active sync runner is hosted; the wire never includes its path.
+    ClientHealthSyncRunnerSource {
+        Npx => "npx",
+        DaemonManaged => "daemon_managed",
+        DaemonStaged => "daemon_staged",
+        DaemonBundled => "daemon_bundled",
+        Unknown => "unknown",
+    }
+);
+
+closed_wire_enum!(
+    /// Outcome of the daemon-owned hq-cloud updater's most recent check.
+    ClientHealthDaemonHqCloudUpdateOutcome {
+        Updated => "updated",
+        UpToDate => "up_to_date",
+        Pinned => "pinned",
+        Failed => "failed",
+    }
+);
+
+closed_wire_enum!(
+    /// Content-free closed failure class from the daemon-owned hq-cloud updater.
+    ClientHealthDaemonHqCloudUpdateErrorClass {
+        Registry => "registry",
+        Install => "install",
+        Convergence => "convergence",
+        Filesystem => "filesystem",
+        Unknown => "unknown",
+    }
+);
+
+closed_wire_enum!(
     /// Current sync state of the installation. `paused` and `conflict_blocked`
     /// are first-class states (not failures folded into `error`) because
     /// support treats them differently: pause may be intentional and conflicts
@@ -449,6 +481,16 @@ pub struct ClientHealthHeartbeat {
     /// overwrite newer state.
     pub sequence: u64,
     pub versions: ClientHealthVersions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_runner_source: Option<ClientHealthSyncRunnerSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_hq_cloud_update_last_check_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_hq_cloud_update_outcome: Option<ClientHealthDaemonHqCloudUpdateOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_hq_cloud_update_target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_hq_cloud_update_error_class: Option<ClientHealthDaemonHqCloudUpdateErrorClass>,
     pub sync_state: ClientHealthSyncState,
     /// Last time a sync RUN started — distinct from success.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -936,6 +978,11 @@ pub fn parse_client_health_heartbeat(
         sent_at: assert_iso_utc("sentAt", raw.get("sentAt"))?,
         sequence: assert_bounded_int("sequence", raw.get("sequence"), MAX_SAFE_INTEGER)?,
         versions,
+        sync_runner_source: None,
+        daemon_hq_cloud_update_last_check_at: None,
+        daemon_hq_cloud_update_outcome: None,
+        daemon_hq_cloud_update_target: None,
+        daemon_hq_cloud_update_error_class: None,
         sync_state: ClientHealthSyncState::parse_field("syncState", raw.get("syncState"))?,
         last_sync_attempt_at: None,
         last_sync_success_at: None,
@@ -963,6 +1010,36 @@ pub fn parse_client_health_heartbeat(
     if let Some(entry) = raw.get("syncEngineWatermarkAt") {
         heartbeat.sync_engine_watermark_at =
             Some(assert_iso_utc("syncEngineWatermarkAt", Some(entry))?);
+    }
+    if let Some(entry) = raw.get("syncRunnerSource") {
+        heartbeat.sync_runner_source = Some(ClientHealthSyncRunnerSource::parse_field(
+            "syncRunnerSource",
+            Some(entry),
+        )?);
+    }
+    if let Some(entry) = raw.get("daemonHqCloudUpdateLastCheckAt") {
+        heartbeat.daemon_hq_cloud_update_last_check_at = Some(assert_iso_utc(
+            "daemonHqCloudUpdateLastCheckAt",
+            Some(entry),
+        )?);
+    }
+    if let Some(entry) = raw.get("daemonHqCloudUpdateOutcome") {
+        heartbeat.daemon_hq_cloud_update_outcome =
+            Some(ClientHealthDaemonHqCloudUpdateOutcome::parse_field(
+                "daemonHqCloudUpdateOutcome",
+                Some(entry),
+            )?);
+    }
+    if let Some(entry) = raw.get("daemonHqCloudUpdateTarget") {
+        heartbeat.daemon_hq_cloud_update_target =
+            Some(assert_version("daemonHqCloudUpdateTarget", Some(entry))?);
+    }
+    if let Some(entry) = raw.get("daemonHqCloudUpdateErrorClass") {
+        heartbeat.daemon_hq_cloud_update_error_class =
+            Some(ClientHealthDaemonHqCloudUpdateErrorClass::parse_field(
+                "daemonHqCloudUpdateErrorClass",
+                Some(entry),
+            )?);
     }
     if let Some(entry) = raw.get("conflictCount") {
         heartbeat.conflict_count = Some(assert_bounded_int(
@@ -1616,6 +1693,36 @@ mod tests {
             wire.get("lastSyncSuccessAt").is_none(),
             "the watermark must never masquerade as a completed success"
         );
+    }
+
+    #[test]
+    fn active_runner_and_daemon_updater_fields_round_trip_without_paths() {
+        let mut input = value(HEARTBEAT_HEALTHY);
+        input["versions"]["syncRunner"] = json!("6.18.54");
+        input["syncRunnerSource"] = json!("daemon_managed");
+        input["daemonHqCloudUpdateLastCheckAt"] = json!("2026-10-08T12:00:00.000Z");
+        input["daemonHqCloudUpdateOutcome"] = json!("failed");
+        input["daemonHqCloudUpdateTarget"] = json!("6.18.54");
+        input["daemonHqCloudUpdateErrorClass"] = json!("registry");
+
+        let heartbeat = parse_client_health_heartbeat(&input).expect("daemon health parses");
+        assert_eq!(
+            heartbeat.sync_runner_source,
+            Some(ClientHealthSyncRunnerSource::DaemonManaged)
+        );
+        assert_eq!(
+            heartbeat.daemon_hq_cloud_update_outcome,
+            Some(ClientHealthDaemonHqCloudUpdateOutcome::Failed)
+        );
+        assert_eq!(
+            heartbeat.daemon_hq_cloud_update_error_class,
+            Some(ClientHealthDaemonHqCloudUpdateErrorClass::Registry)
+        );
+        assert_eq!(
+            heartbeat.daemon_hq_cloud_update_target.as_deref(),
+            Some("6.18.54")
+        );
+        assert_eq!(serde_json::to_value(&heartbeat).expect("serializes"), input);
     }
 
     #[test]
