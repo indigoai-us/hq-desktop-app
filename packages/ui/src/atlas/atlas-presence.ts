@@ -17,6 +17,8 @@ export type AtlasLiveActorInput = {
   projectId?: string;
   /** Other hints from the live session about where the work is, when sent. */
   repo?: string;
+  /** Branch of `repo`, when the session reports one. */
+  branch?: string;
   cwd?: string;
   workerId?: string;
   taskId?: string;
@@ -55,6 +57,14 @@ function atlasActorWhere(a: AtlasLiveActorInput): string | undefined {
     if (leaf) return leaf;
   }
   return undefined;
+}
+
+/** "Working in hq-desktop-app · main" when the session names a repo. */
+export function atlasWorkingIn(a: Pick<AtlasLiveActorInput, "repo" | "branch">): string | undefined {
+  const repo = a.repo?.trim().replace(/\\/g, "/").replace(/\/+$/, "").split("/").pop()?.trim();
+  if (!repo) return undefined;
+  const branch = a.branch?.trim();
+  return branch ? `Working in ${repo} · ${branch}` : `Working in ${repo}`;
 }
 
 /** Plain words for why an actor has no place on the map. */
@@ -103,12 +113,14 @@ export function atlasPresenceFromActors(
     if (seen.has(key)) continue;
     seen.add(key);
     if (hit) placedActors.add(a.actorUid);
+    const working = atlasWorkingIn(a);
     rows.push({
       nodeId,
       actorUid: a.actorUid,
       name: a.name,
       bot: a.bot,
       signal: a.signal,
+      ...(working ? { working } : {}),
       ...(a.idle ? { idle: true } : {}),
       ...(a.avatarUrl ? { avatarUrl: a.avatarUrl } : {}),
       ...(hit ? {} : { unplaced: atlasUnplacedReason(a) }),
@@ -163,6 +175,8 @@ export type AtlasDockedChip = {
   index: number;
   /** What the actor is doing, when the live read says. */
   signal?: string;
+  /** "Working in <repo> · <branch>" when the session names a repo. */
+  working?: string;
   /** Online with no session in progress: drawn quieter, without the pulse. */
   idle?: boolean;
   /** Picture drawn inside the chip; initials when absent or it fails to load. */
@@ -212,6 +226,7 @@ export function atlasDockedChips(
       initials: who.bot ? "⌁" : atlasInitials(who.name),
       index: i,
       signal: who.signal,
+      ...(who.working ? { working: who.working } : {}),
       ...(who.idle ? { idle: true } : {}),
       ...(who.avatarUrl ? { avatarUrl: who.avatarUrl } : {}),
       x: x1 + 18 + i * CHIP_GAP,

@@ -924,7 +924,9 @@
   import {
     mergePaletteRows,
     paletteConversationItems,
+    paletteProjectDestination,
     paletteProjectItems,
+    paletteProjectsCommandDestination,
   } from "./palette-rows.js";
   import {
     joinableMemberships,
@@ -4511,7 +4513,7 @@
         detail: "Open a company's project board",
         shortcut: shortcutLabel("view.projects"),
         action: () => {
-          void navigate({ kind: "projects" });
+          void navigate(paletteProjectsCommandDestination(tenantCompanyId));
         },
       });
       nav.push({
@@ -4641,11 +4643,7 @@
       companyUid: item.companyUid,
       personal: item.personal,
       action: () => {
-        void navigate({
-          kind: "projects",
-          company: item.companySlug,
-          project: item.projectId,
-        });
+        void navigate(paletteProjectDestination(item));
       },
     }));
     return [...projectItems, ...nav, ...conversations];
@@ -13038,6 +13036,15 @@
     if (!res.ok) throw Object.assign(new Error(res.message ?? res.reason), { code: res.reason });
     return res.value;
   }
+
+  // Atlas Today: the live Board project view, the same read the Projects page
+  // uses for story status. Null when there is none.
+  async function loadAtlasProjectView(projectId: string, companyUid: string): Promise<unknown> {
+    const api = adapter.workMesh;
+    if (!api || !companyUid) return null;
+    const res = await api.getProjectView(projectId, companyUid);
+    return res.ok ? res.value : null;
+  }
 </script>
 
 {#snippet meetingsAgenda()}
@@ -13655,11 +13662,11 @@
             companyLabel={companyPaneCompany?.label ?? ""}
             workingNow={atlasWorkingNow(atlasCompanyRoster)}
             slug={companyPaneCompany?.slug ?? ""}
-            summaryEnabled={Boolean(adapter.company)}
             companyUid={companyPaneCompany?.uid ?? null}
             atlasSource={atlasVaultSource}
             atlasLocal={atlasLocalSource}
             loadPeople={companyPaneCompany?.slug ? () => loadAtlasPeople(companyPaneCompany?.slug ?? "") : null}
+            loadProjectView={adapter.workMesh && companyPaneCompany?.uid ? (projectId) => loadAtlasProjectView(projectId, companyPaneCompany?.uid ?? "") : null}
             actors={atlasActors}
             filterActor={atlasFilterActor}
             onclearfilter={() => (atlasFilterActor = null)}

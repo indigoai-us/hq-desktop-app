@@ -10,6 +10,7 @@ import {
   rangeWindow,
   snapshotFromMe,
 } from "./telemetry-me.js";
+import { localTimeZone } from "./telemetry-model.js";
 
 const NOW = Date.parse("2026-10-02T12:00:00Z");
 
@@ -45,6 +46,29 @@ function meBody(from: string, to: string, sessions: number) {
     },
   };
 }
+
+describe("My Telemetry days in the user's time zone", () => {
+  const body = meBody("2026-10-08", "2026-10-09", 5);
+  const DENVER_EVENING = Date.parse("2026-10-09T02:30:00Z");
+
+  it("highlights the UTC day that is today in Denver, not the newest UTC day", () => {
+    const view = snapshotFromMe(body, "7d", DENVER_EVENING, "America/Denver");
+    expect(view.days.map((d) => d.today ?? false)).toEqual([true, false]);
+    expect(view.dayLabels).toEqual(["Oct 8", "Oct 9"]);
+  });
+
+  it("highlights the newest day in UTC", () => {
+    const view = snapshotFromMe(body, "7d", DENVER_EVENING, "UTC");
+    expect(view.days.map((d) => d.today ?? false)).toEqual([false, true]);
+  });
+
+  it("follows Denver across the fall-back DST change", () => {
+    const fall = meBody("2026-11-01", "2026-11-02", 5);
+    // 23:30 MST on Nov 1, after the clocks went back.
+    const view = snapshotFromMe(fall, "7d", Date.parse("2026-11-02T06:30:00Z"), "America/Denver");
+    expect(view.days.map((d) => d.today ?? false)).toEqual([true, false]);
+  });
+});
 
 describe("My Telemetry from /v1/telemetry/me", () => {
   it("builds the request window from the range control", () => {
@@ -130,7 +154,7 @@ describe("My Telemetry from /v1/telemetry/me", () => {
     const getMyTelemetry = vi.fn(async (from: string, to: string) => ({ ok: true as const, value: meBody(from, to, 9) }));
     const fetcher = createMyTelemetryFetcher({ getMyTelemetry }, () => NOW);
     await expect(fetcher("7d")).resolves.toMatchObject({ range: "7d", sessions: 9 });
-    expect(getMyTelemetry).toHaveBeenCalledWith("2026-09-26", "2026-10-02");
+    expect(getMyTelemetry).toHaveBeenCalledWith("2026-09-26", "2026-10-02", localTimeZone());
 
     const failing = createMyTelemetryFetcher(
       { getMyTelemetry: async () => ({ ok: false as const, reason: "error" as const, code: "http-402", message: "personal-plan-required" }) },
@@ -183,7 +207,7 @@ describe("TelemetryView on the real source", () => {
     const seven = [...target.querySelectorAll("button.tab")].find((b) => b.textContent === "7d") as HTMLButtonElement;
     seven.click();
     await settle();
-    expect(getMyTelemetry).toHaveBeenLastCalledWith("2026-09-26", "2026-10-02");
+    expect(getMyTelemetry).toHaveBeenLastCalledWith("2026-09-26", "2026-10-02", localTimeZone());
     expect(target.querySelector(".stat .n")?.textContent).toContain("7");
     expect(seven.getAttribute("aria-selected")).toBe("true");
   });
@@ -206,5 +230,16 @@ describe("TelemetryView on the real source", () => {
     await settle();
     expect(target.querySelector("[data-testid='telemetry-error']")).toBeNull();
     expect(target.querySelector(".stat .n")?.textContent).toContain("5");
+  });
+});
+
+describe("bucketTz from hq-pro", () => {
+  it("carries the server's bucket zone onto the snapshot", () => {
+    const body = { ...meBody("2026-09-26", "2026-10-02", 3), bucketTz: "America/Denver" };
+    expect(snapshotFromMe(body, "7d", NOW, "America/Denver").bucketTz).toBe("America/Denver");
+  });
+
+  it("leaves bucketTz unset for an older server that does not send it", () => {
+    expect(snapshotFromMe(meBody("2026-09-26", "2026-10-02", 3), "7d", NOW, "UTC").bucketTz).toBeUndefined();
   });
 });
