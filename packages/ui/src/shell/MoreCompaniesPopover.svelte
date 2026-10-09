@@ -198,7 +198,7 @@
     max-height: min(480px, calc(100vh - 24px));
     display: flex;
     flex-direction: column;
-    padding: 8px;
+    padding: 12px 8px 8px;
     border-radius: var(--v4-radius-popover, 8px);
     background: var(--overlay-bg);
     color: var(--v4-text-1);
@@ -207,33 +207,52 @@
     font-family: var(--font-ui);
   }
 
+  /* One quiet field: a faint fill, no border, and a focus state that
+     brightens the fill instead of stacking a ring on top. */
   .search {
-    width: 100%;
+    width: calc(100% - 8px);
     box-sizing: border-box;
     height: 32px;
-    margin: 0 0 6px;
+    margin: 0 4px 8px;
     padding: 0 10px;
-    border-radius: 8px;
-    border: 1px solid var(--v4-hairline);
-    background: var(--v4-control-bg);
+    border-radius: 6px;
+    border: 0;
+    outline: none;
+    background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font: 13px/1 var(--font-ui);
+    transition: background 120ms ease, box-shadow 120ms ease;
+  }
+
+  .search:focus,
+  .search:focus-visible {
+    outline: none;
+    background: var(--v4-active-row);
+    box-shadow: inset 0 0 0 1px var(--v4-hairline);
   }
 
   .search::placeholder {
     color: var(--v4-text-3);
   }
 
+  /* A reserved, thin gutter keeps the scrollbar off the rows. */
   .list {
     overflow: auto;
     min-height: 0;
     overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    padding-right: 4px;
   }
 
   .sec {
-    padding: 8px 8px 4px;
-    font: 500 13px/1.2 var(--font-ui);
-    color: var(--v4-text-2);
+    padding: 12px 8px 6px;
+    font: 400 13px/1.2 var(--font-ui);
+    color: var(--v4-text-3);
+  }
+
+  .list > .sec:first-child {
+    padding-top: 4px;
   }
 
   .hint {
