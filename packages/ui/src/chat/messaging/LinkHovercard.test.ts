@@ -51,7 +51,7 @@ describe("LinkHovercard render", () => {
     expect(card.getAttribute("id")).toBe("card-1");
     expect(card.getAttribute("data-provider")).toBe("calendar");
     expect(card.querySelector(".link-card-kind")?.textContent).toBe("Calendar event");
-    expect(card.querySelector(".link-card-title")?.textContent).toBe("Weekly sync · Fri, Oct 9");
+    expect(card.querySelector(".link-card-title")?.textContent).toBe("Weekly sync");
     const labels = [...card.querySelectorAll("dt")].map((dt) => dt.textContent);
     expect(labels).toEqual(["Date", "Time", "Time zone", "Location"]);
     // Stroke icon only, no emoji or image.
@@ -62,6 +62,15 @@ describe("LinkHovercard render", () => {
     const add = [...card.querySelectorAll("button")].find((b) => b.textContent === "Add to calendar")!;
     add.click();
     expect(props.onopen).toHaveBeenCalledWith(href);
+  });
+
+  it("shows the domain only once on a generic card without a fetched title", () => {
+    const { card } = mountCard("https://example.com/blog/post");
+    expect(card.querySelector(".link-card-kind")?.textContent).toBe("example.com");
+    expect(card.querySelector(".link-card-title")?.textContent).toBe("blog/post");
+    const bare = mountCard("https://example.org/").card;
+    expect(bare.querySelector(".link-card-title")).toBeNull();
+    expect(bare.getAttribute("aria-label")).toBe("example.org");
   });
 
   it("renders a GitHub PR card from parsed fields", () => {

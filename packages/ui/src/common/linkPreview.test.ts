@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { fallbackLabel, linkPreview, relabelRawUrlLinks } from "./linkPreview";
+import {
+  describeRecurrence,
+  fallbackLabel,
+  linkPreview,
+  relabelRawUrlLinks,
+} from "./linkPreview";
 
 /** Intl may emit narrow no-break spaces before AM/PM; compare on plain spaces. */
 const plain = (value: string | undefined) => value?.replace(/[  ]/g, " ");
@@ -29,6 +34,19 @@ describe("linkPreview: Google Calendar templates", () => {
     expect(field(href, "Time zone")).toBe("America/Los Angeles");
     expect(field(href, "Repeats")).toBe("Weekly");
     expect(field(href, "Location")).toBe("Zoom");
+  });
+
+  it("keeps the date out of the card title, which the Date row already shows", () => {
+    expect(linkPreview(href)?.cardTitle).toBe("Izzy / Corey weekly sync");
+  });
+
+  it("spells out BYDAY and a UTC UNTIL in the event zone", () => {
+    const swim =
+      "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim" +
+      "&dates=20261027T223000Z/20261027T230000Z&ctz=America/Denver" +
+      "&recur=RRULE:FREQ%3DWEEKLY;BYDAY%3DTU,TH;UNTIL%3D20261121T055959Z";
+    // 05:59Z on Nov 21 is still Nov 20 in Denver.
+    expect(field(swim, "Repeats")).toBe("Weekly on Tue, Thu until Nov 20");
   });
 
   it("offers Add to calendar pointing at the template", () => {
@@ -193,5 +211,57 @@ describe("relabelRawUrlLinks", () => {
     expect(relabelRawUrlLinks(mail)).toBe(mail);
     const nested = `<a href="https://example.com" ${A}><strong>x</strong></a>`;
     expect(relabelRawUrlLinks(nested)).toBe(nested);
+  });
+});
+
+describe("describeRecurrence", () => {
+  it("handles daily, weekly and monthly rules", () => {
+    expect(describeRecurrence("RRULE:FREQ=DAILY")).toBe("Daily");
+    expect(describeRecurrence("RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR")).toBe("Weekly on Mon, Wed, Fri");
+    expect(describeRecurrence("RRULE:FREQ=MONTHLY;BYMONTHDAY=15")).toBe("Monthly on the 15th");
+    expect(describeRecurrence("RRULE:FREQ=MONTHLY;BYDAY=2TU")).toBe("Monthly on the 2nd Tue");
+    expect(describeRecurrence("RRULE:FREQ=MONTHLY;BYDAY=-1FR")).toBe("Monthly on the last Fri");
+  });
+
+  it("handles INTERVAL and COUNT", () => {
+    expect(describeRecurrence("RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU")).toBe(
+      "Every 2 weeks on Tue",
+    );
+    expect(describeRecurrence("RRULE:FREQ=DAILY;COUNT=10")).toBe("Daily, 10 times");
+    expect(describeRecurrence("RRULE:FREQ=DAILY;COUNT=1")).toBe("Daily, once");
+  });
+
+  it("reads UNTIL in the event zone when it is UTC, as-is when floating", () => {
+    const rule = "RRULE:FREQ=WEEKLY;UNTIL=20261121T055959Z";
+    expect(describeRecurrence(rule, "America/Denver")).toBe("Weekly until Nov 20");
+    expect(describeRecurrence(rule, "Asia/Tokyo")).toBe("Weekly until Nov 21");
+    expect(describeRecurrence("RRULE:FREQ=WEEKLY;UNTIL=20261120", "Asia/Tokyo")).toBe(
+      "Weekly until Nov 20",
+    );
+  });
+
+  it("falls back for empty or unknown rules", () => {
+    expect(describeRecurrence(null)).toBeUndefined();
+    expect(describeRecurrence("RRULE:FREQ=HOURLY")).toBe("Repeats");
+    expect(describeRecurrence("garbage")).toBe("Repeats");
+  });
+});
+
+describe("linkPreview: generic card title", () => {
+  it("shows the path once in the card, since the header has the domain", () => {
+    const preview = linkPreview("https://example.com/blog/2026/launch-notes");
+    expect(preview?.title).toBe("example.com › 2026/launch-notes");
+    expect(preview?.cardTitle).toBe("2026/launch-notes");
+    expect(linkPreview("https://example.com/")?.cardTitle).toBe("");
+  });
+
+  it("uses the fragment path for hash-routed apps", () => {
+    const href = "https://apps.daysmartrecreation.com/dash/x/#/online/berthoud/teams/7037";
+    expect(linkPreview(href)?.title).toBe("apps.daysmartrecreation.com › berthoud/teams/7037");
+    expect(linkPreview(href)?.cardTitle).toBe("berthoud/teams/7037");
+    // A plain anchor is not a route.
+    expect(fallbackLabel(new URL("https://example.com/docs/guide#install"))).toBe(
+      "example.com › docs/guide",
+    );
   });
 });

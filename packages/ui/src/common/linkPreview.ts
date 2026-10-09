@@ -26,6 +26,12 @@ export interface LinkPreview {
   provider: LinkProvider;
   /** Short readable label shown in place of the raw URL. */
   title: string;
+  /**
+   * Title shown inside the hovercard when it differs from the inline label,
+   * e.g. a calendar event without the date the card already lists. An empty
+   * string hides the title row.
+   */
+  cardTitle?: string;
   /** Kind line shown above the title in the hovercard. */
   kind: string;
   host: string;
@@ -67,12 +73,26 @@ function humanizeSlug(slug: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/** `domain › short path` fallback label. */
+/** Path of a hash-routed SPA (`/dash/x/#/online/teams/7`), or null. */
+function hashRoute(url: URL): string[] | null {
+  if (!url.hash.startsWith('#/')) return null;
+  const parts = url.hash.slice(2).split('?')[0].split('/').filter(Boolean).map(safeDecode);
+  return parts.length > 0 ? parts : null;
+}
+
+/** Short path part of the fallback label, or '' when the URL has no useful path. */
+function fallbackPath(url: URL): string {
+  const route = hashRoute(url);
+  if (route) return route.slice(-3).join('/');
+  const parts = segments(url).filter((part) => !/^[0-9a-f-]{16,}$/i.test(part));
+  return parts.slice(-2).join('/');
+}
+
+/** `domain › short path` fallback label. Hash-routed SPAs use the fragment path. */
 export function fallbackLabel(url: URL): string {
   const host = bareHost(url);
-  const parts = segments(url).filter((part) => !/^[0-9a-f-]{16,}$/i.test(part));
-  if (parts.length === 0) return host;
-  return truncate(`${host} › ${parts.slice(-2).join('/')}`);
+  const path = fallbackPath(url);
+  return path ? truncate(`${host} › ${path}`) : host;
 }
 
 // ---------------------------------------------------------------- calendar
@@ -138,16 +158,83 @@ function formatCalendarRange(
   return { date: dateFmt.format(start.date), time };
 }
 
-function describeRecurrence(recur: string | null): string | undefined {
+const RRULE_DAYS: Record<string, string> = {
+  MO: 'Mon',
+  TU: 'Tue',
+  WE: 'Wed',
+  TH: 'Thu',
+  FR: 'Fri',
+  SA: 'Sat',
+  SU: 'Sun',
+};
+
+const RRULE_FREQS: Record<string, [label: string, unit: string]> = {
+  DAILY: ['Daily', 'days'],
+  WEEKLY: ['Weekly', 'weeks'],
+  MONTHLY: ['Monthly', 'months'],
+  YEARLY: ['Yearly', 'years'],
+};
+
+function ordinal(n: number): string {
+  if (n === -1) return 'last';
+  const teen = n % 100 >= 11 && n % 100 <= 13;
+  const suffix = teen ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[n % 10];
+  return `${n}${suffix ?? 'th'}`;
+}
+
+/** `TU` -> `Tue`, `2TU` -> `2nd Tue`, `-1FR` -> `last Fri`. */
+function describeByDay(day: string): string | null {
+  const match = day.match(/^([+-]?\d{1,2})?([A-Z]{2})$/);
+  const name = match ? RRULE_DAYS[match[2]] : undefined;
+  if (!match || !name) return null;
+  return match[1] ? `${ordinal(Number(match[1]))} ${name}` : name;
+}
+
+/**
+ * Plain-words RRULE, e.g. `Weekly on Tue, Thu until Nov 20`. A UTC UNTIL is
+ * shown as its date in the event's zone.
+ */
+export function describeRecurrence(recur: string | null, zone?: string): string | undefined {
   if (!recur) return undefined;
-  const labels: Record<string, string> = {
-    DAILY: 'Daily',
-    WEEKLY: 'Weekly',
-    MONTHLY: 'Monthly',
-    YEARLY: 'Yearly',
-  };
-  const freq = recur.match(/FREQ=([A-Z]+)/)?.[1];
-  return (freq && labels[freq]) || 'Repeats';
+  const rule = recur
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^RRULE:/i, ''))
+    .find((line) => /^FREQ=/i.test(line) || /;FREQ=/i.test(line));
+  if (!rule) return 'Repeats';
+  const parts = new Map<string, string>();
+  for (const pair of rule.split(';')) {
+    const [key, value] = pair.split('=');
+    if (key && value) parts.set(key.toUpperCase(), value.toUpperCase());
+  }
+  const freq = parts.get('FREQ') ?? '';
+  const known = RRULE_FREQS[freq];
+  if (!known) return 'Repeats';
+  const interval = Number(parts.get('INTERVAL') ?? '1');
+  let text = Number.isInteger(interval) && interval > 1 ? `Every ${interval} ${known[1]}` : known[0];
+
+  const days = (parts.get('BYDAY') ?? '').split(',').filter(Boolean).map(describeByDay);
+  const monthDay = parts.get('BYMONTHDAY');
+  if (days.length > 0 && days.every(Boolean)) {
+    const list = days.join(', ');
+    text += /^(\d|last)/.test(list) ? ` on the ${list}` : ` on ${list}`;
+  } else if (monthDay && /^-?\d{1,2}$/.test(monthDay)) {
+    text += ` on the ${ordinal(Number(monthDay))}`;
+  }
+
+  const until = parts.get('UNTIL');
+  const stamp = until ? parseCalendarStamp(until) : null;
+  const count = Number(parts.get('COUNT'));
+  if (stamp) {
+    const shown = new Intl.DateTimeFormat('en-US', {
+      month: 'short',
+      day: 'numeric',
+      timeZone: stamp.utc ? (zone ?? 'UTC') : 'UTC',
+    }).format(stamp.date);
+    text += ` until ${shown}`;
+  } else if (Number.isInteger(count) && count > 0) {
+    text += count === 1 ? ', once' : `, ${count} times`;
+  }
+  return text;
 }
 
 function parseCalendar(url: URL): LinkPreview | null {
@@ -176,7 +263,7 @@ function parseCalendar(url: URL): LinkPreview | null {
     fields.push({ label: 'Time', value: range.time });
   }
   if (zone) fields.push({ label: 'Time zone', value: zone.replace(/_/g, ' ') });
-  const recurrence = describeRecurrence(params.get('recur'));
+  const recurrence = describeRecurrence(params.get('recur'), zone);
   if (recurrence) fields.push({ label: 'Repeats', value: recurrence });
   const location = params.get('location');
   if (location) fields.push({ label: 'Location', value: truncate(location, 120) });
@@ -184,6 +271,8 @@ function parseCalendar(url: URL): LinkPreview | null {
   return {
     provider: 'calendar',
     title: truncate(shortDate ? `${text} · ${shortDate}` : text),
+    // The card lists the date in its own row.
+    cardTitle: truncate(text),
     kind: 'Calendar event',
     host,
     fields,
@@ -410,6 +499,8 @@ export function linkPreview(href: string): LinkPreview | null {
     parseOtherProviders(url) ?? {
       provider: 'generic',
       title: fallbackLabel(url),
+      // The card header already shows the domain.
+      cardTitle: truncate(fallbackPath(url)),
       kind: bareHost(url),
       host: bareHost(url),
       fields: [],

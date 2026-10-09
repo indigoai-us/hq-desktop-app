@@ -39,7 +39,7 @@
   let cardHeight = $state(0);
 
   const title = $derived(
-    preview.wantsPageTitle && pageTitle ? pageTitle : preview.title,
+    preview.wantsPageTitle && pageTitle ? pageTitle : (preview.cardTitle ?? preview.title),
   );
   const position = $derived.by(() => {
     const vw = typeof window === 'undefined' ? 1024 : window.innerWidth;
@@ -84,7 +84,7 @@
   class="link-card"
   data-link-card
   role="group"
-  aria-label={`${preview.kind}: ${title}`}
+  aria-label={title ? `${preview.kind}: ${title}` : preview.kind}
   data-provider={preview.provider}
   style:left={`${position.left}px`}
   style:top={`${position.top}px`}
@@ -107,7 +107,9 @@
     ><path d={ICON_PATHS[preview.provider]} /></svg>
     <span class="link-card-kind">{preview.kind}</span>
   </div>
-  <div class="link-card-title">{title}</div>
+  {#if title}
+    <div class="link-card-title">{title}</div>
+  {/if}
   {#if preview.fields.length > 0}
     <dl class="link-card-fields">
       {#each preview.fields as field (field.label)}
