@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Project board cards have more room and a clearer order: the title first, then the description, then repos and branch on one quiet line that never wraps, then progress. Board column headers no longer sit on a shaded band. The extra green dots are gone, and teammates' initials no longer overlap. In the task drawer, section names are quieter than their content, done tasks show a check and muted text, open tasks show an empty ring, the branch sits on one line with a Copy button, and acceptance items have more space between them. The company switcher's search field has room around it and no stacked outlines, and the scrollbar no longer crowds the list.
+- Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
 
 ## [0.11.0] — 2026-10-08
 
