@@ -34,7 +34,6 @@ const PAGE_INFO: Record<string, { story: string; summary: string }> = {
   atlas: { story: "US-009", summary: "Who is live in this company and what they are working on." },
   projects: { story: "US-023", summary: "The company's projects and their stories." },
   activity: { story: "US-026", summary: "Recent work across the company." },
-  goals: { story: "US-026", summary: "The company's goals and progress." },
   team: { story: "US-027", summary: "People in this company and their access." },
   bots: { story: "US-027", summary: "Bots and agents in this company." },
   knowledge: { story: "US-028", summary: "The company's knowledge base." },
@@ -63,6 +62,8 @@ const ROW_LABELS: ReadonlyMap<string, string> = new Map(
 export const LEGACY_COMPANY_ROWS: Readonly<Record<string, string>> = {
   [COMPANY_SETTINGS_ROW.id]: "general",
   workforce: "billing",
+  // Goals left the sidebar; saved links to it open Atlas.
+  goals: "atlas",
 };
 
 /** Every row id the company pane routes. */
@@ -94,6 +95,46 @@ export function companyRowDestination(
   companyUid: string,
 ): NavigationDestination {
   return { kind: "extra", page: companyPageId(rowId), companyUid };
+}
+
+/** Project detail tab the company Projects page can open on. */
+export type CompanyProjectsTab = "tasks" | "files";
+
+/**
+ * The company's own Projects page (the sidepane Projects row), optionally
+ * opened on one project. Atlas uses this so Open board stays in the company
+ * pane instead of leaving for the cross-company Projects view, which closed
+ * the company pane and showed Home's chat list.
+ */
+export function companyProjectsDestination(
+  companyUid: string,
+  project?: string | null,
+  tab?: CompanyProjectsTab | null,
+): NavigationDestination {
+  const destination = companyRowDestination("projects", companyUid);
+  const id = project?.trim();
+  if (!id || destination.kind !== "extra") return destination;
+  const params = new URLSearchParams({ project: id });
+  if (tab) params.set("tab", tab);
+  return { ...destination, param: params.toString() };
+}
+
+/** The project (and tab) a company Projects page param asks to open. */
+export function companyProjectsFocus(
+  param: string | null | undefined,
+): { project: string; tab: CompanyProjectsTab | null } | null {
+  const raw = param?.trim() ?? "";
+  if (!raw) return null;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(raw);
+  } catch {
+    return null;
+  }
+  const project = params.get("project")?.trim();
+  if (!project) return null;
+  const tab = params.get("tab");
+  return { project, tab: tab === "tasks" || tab === "files" ? tab : null };
 }
 
 /** Cached summary fields the pane shows as row counts. */

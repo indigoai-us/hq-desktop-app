@@ -66,6 +66,8 @@
     activity: "chart-bar",
     goals: "target",
     team: "users",
+    groups: "users-three",
+    grants: "lock-simple",
     bots: "robot",
     knowledge: "book",
     policies: "shield-check",

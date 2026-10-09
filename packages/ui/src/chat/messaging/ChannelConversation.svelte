@@ -36,6 +36,7 @@
   import MentionPicker from "./MentionPicker.svelte";
   import { isHumanMessage, type LocalBotRow } from "@hq/platform";
   import ArtifactCard from "./ArtifactCard.svelte";
+  import ForwardedBlock from "./ForwardedBlock.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
   import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
@@ -43,6 +44,9 @@
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import {
     parseMessageAttachments,
+    parseForwardedFrom,
+    parseOmittedAttachments,
+    forwardNoteText,
     isHiddenTimelineMessage,
     systemModelForMessage,
     type FileAttachmentModel,
@@ -193,6 +197,11 @@
      * re-opening the same thread.
      */
     onclosereply?: () => void;
+    /**
+     * Forward this message (US-009). Without it no Forward button is drawn.
+     * Not offered on unsent rows, which have no server event id yet.
+     */
+    onforward?: (msg: ConversationMessageWire) => void;
     /** Start an in-channel session from this message. */
     onstartsession?: (rootEventId: string) => void;
     /** Open an existing in-channel session from a work-session card. */
@@ -380,6 +389,7 @@
     allowHereMention = false,
     onreply,
     onclosereply,
+    onforward,
     onstartsession,
     onopensession,
     onopenattachment,
@@ -1904,6 +1914,18 @@
         {copiedEventId === msg.eventId && copiedKind === "text" ? "Copied" : "Copy"}
       </button>
     {/if}
+    {#if onforward && !card && !msg.eventId.startsWith("local-send-")}
+      <button
+        type="button"
+        class="dm-quick-react-btn dm-quick-forward"
+        data-testid="message-forward"
+        aria-label="Forward message"
+        title="Forward"
+        onclick={() => onforward(msg)}
+      >
+        Forward
+      </button>
+    {/if}
     {#if !msg.eventId.startsWith("local-")}
       <button
         type="button"
@@ -1941,6 +1963,78 @@
       </button>
     {/if}
   </div>
+{/snippet}
+
+{#snippet bubbleBodyText(msg: ConversationMessageWire, text: string)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="dm-bubble-body selectable-text msg-body"
+    class:msg-body-jumbo={isJumboEmojiBody(text)}
+    data-reveal={revealIds.has(msg.eventId) ? "true" : undefined}
+    use:revealLines={{
+      active: revealIds.has(msg.eventId),
+      text,
+      onreveal: followReveal,
+    }}
+    onclick={(e) => {
+      if (onBodyLinkActivate(e)) return;
+      onMentionActivate(e, e.target);
+    }}
+    onkeydown={(e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        if (onBodyLinkActivate(e)) return;
+        onMentionActivate(e, e.target);
+      }
+    }}
+  >
+    {#if isHeavyMessageBody(text)}
+      <PlainMessageBody body={text} />
+    {:else}
+      {@html applyMentionMarkup(
+        renderMessageBodyMarkdown(text),
+        storedMentions(msg),
+      )}
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet bubbleContent(msg: ConversationMessageWire, rich: ExtractedRichContent)}
+  {#if rich.text.trim()}
+    {@render bubbleBodyText(msg, rich.text)}
+  {/if}
+  {#if rich.rich}
+    <RichMessageContent
+      content={rich.rich}
+      ondecision={handleDecision}
+      {answeredQuestionIds}
+      {answeredChoices}
+      connections={cardsForMessage(msg)}
+    />
+  {/if}
+  {#if msg.details?.trim()}
+    <ArtifactCard
+      kind="details"
+      text={msg.details}
+      eventId={msg.eventId}
+      onopen={onopenartifact}
+    />
+  {/if}
+  {#if msg.prompt?.trim()}
+    <ArtifactCard
+      kind="prompt"
+      text={msg.prompt}
+      eventId={msg.eventId}
+      onopen={onopenartifact}
+    />
+  {/if}
+  <MessageAttachments
+    {previewCache}
+    {vaultCompanyUid}
+    attachments={parseMessageAttachments(msg)}
+    onopen={openAttachment}
+    resolveUrl={resolveAttachmentUrl}
+    {onreleaseurl}
+  />
 {/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2060,8 +2154,9 @@
               data-event-id={msg.eventId}
             >
               <span class="dm-msg-avatar">
+                <!-- A bot's card shows the bot's avatar, as its messages do. -->
                 <IdentityMark
-                  kind="person"
+                  kind={isAgent(msg) ? "agent" : "person"}
                   label={messageAuthor(msg)}
                   avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                   agentUid={msg.fromPersonUid}
@@ -2191,6 +2286,8 @@
             />
           {:else if messageHasVisibleContent(msg) || parseMessageAttachments(msg).length > 0}
             {@const rich = richForMessage(msg)}
+            {@const forwarded = parseForwardedFrom(msg.forwardedFrom)}
+            {@const forwardNote = forwarded ? forwardNoteText(msg.forwardNote) : ""}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
               class:dm-msg-group-start={groupStart}
@@ -2266,71 +2363,19 @@
                      under the message it belongs to. -->
                 <div class="dm-msg-main">
                   <div class="dm-bubble">
-                    {#if rich.text.trim()}
-                      <!-- svelte-ignore a11y_no_static_element_interactions -->
-                      <div
-                        class="dm-bubble-body selectable-text msg-body"
-                        class:msg-body-jumbo={isJumboEmojiBody(rich.text)}
-                        data-reveal={revealIds.has(msg.eventId) ? "true" : undefined}
-                        use:revealLines={{
-                          active: revealIds.has(msg.eventId),
-                          text: rich.text,
-                          onreveal: followReveal,
-                        }}
-                        onclick={(e) => {
-                          if (onBodyLinkActivate(e)) return;
-                          onMentionActivate(e, e.target);
-                        }}
-                        onkeydown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            if (onBodyLinkActivate(e)) return;
-                            onMentionActivate(e, e.target);
-                          }
-                        }}
+                    {#if forwarded}
+                      {#if forwardNote}
+                        {@render bubbleBodyText(msg, forwardNote)}
+                      {/if}
+                      <ForwardedBlock
+                        forwardedFrom={forwarded}
+                        omittedAttachments={parseOmittedAttachments(msg.omittedAttachments)}
                       >
-                        {#if isHeavyMessageBody(rich.text)}
-                          <PlainMessageBody body={rich.text} />
-                        {:else}
-                          {@html applyMentionMarkup(
-                            renderMessageBodyMarkdown(rich.text),
-                            storedMentions(msg),
-                          )}
-                        {/if}
-                      </div>
+                        {@render bubbleContent(msg, rich)}
+                      </ForwardedBlock>
+                    {:else}
+                      {@render bubbleContent(msg, rich)}
                     {/if}
-                    {#if rich.rich}
-                      <RichMessageContent
-                        content={rich.rich}
-                        ondecision={handleDecision}
-                        {answeredQuestionIds}
-                        {answeredChoices}
-                        connections={cardsForMessage(msg)}
-                      />
-                    {/if}
-                    {#if msg.details?.trim()}
-                      <ArtifactCard
-                        kind="details"
-                        text={msg.details}
-                        eventId={msg.eventId}
-                        onopen={onopenartifact}
-                      />
-                    {/if}
-                    {#if msg.prompt?.trim()}
-                      <ArtifactCard
-                        kind="prompt"
-                        text={msg.prompt}
-                        eventId={msg.eventId}
-                        onopen={onopenartifact}
-                      />
-                    {/if}
-                    <MessageAttachments
-                      {previewCache}
-                      {vaultCompanyUid}
-                      attachments={parseMessageAttachments(msg)}
-                      onopen={openAttachment}
-                      resolveUrl={resolveAttachmentUrl}
-                      {onreleaseurl}
-                    />
                   </div>
                   {@render quickReact(msg, false)}
                 </div>

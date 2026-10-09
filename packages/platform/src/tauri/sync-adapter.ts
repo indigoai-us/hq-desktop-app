@@ -780,6 +780,7 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['contacts']));
       },
+      resolveRetiredEntities: (uids) => call<Json>('resolve_retired_entities', { uids }),
       listDmRequests: async () => {
         const result = await call<unknown>('list_dm_requests');
         if (!result.ok) return result;
@@ -927,6 +928,21 @@ export function createSyncPlatformAdapter(
           });
         }
         return call('send_dm', { toPersonUid, body });
+      },
+      forwardMessage: async ({ path, body }) => {
+        const attempted = await hqProAttemptWithRetries<unknown>('POST', path, body);
+        if (attempted.result.ok) {
+          return ok({
+            status: attempted.status,
+            body: JSON.stringify(attempted.result.value ?? {}),
+          });
+        }
+        // An HTTP refusal keeps its status and body so the server code reaches
+        // the picker; only a transport failure stays a failure.
+        if (attempted.status !== null && attempted.result.code !== 'network') {
+          return ok({ status: attempted.status, body: attempted.body ?? '' });
+        }
+        return attempted.result;
       },
       // Exactly one recipient key travels; the other is explicitly null to
       // match the Rust `build_compose_payload` contract.
@@ -1423,8 +1439,15 @@ export function createSyncPlatformAdapter(
             cursor,
           }),
         ),
-      getAccessTree: (companyUid, prefix) =>
-        hqProJson('GET', withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, { prefix })),
+      getAccessTree: (companyUid, prefix, page) =>
+        hqProJson(
+          'GET',
+          withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, {
+            prefix,
+            limit: page?.limit,
+            cursor: page?.cursor,
+          }),
+        ),
       listAccessGroups: (companyUid) =>
         hqProJson('GET', `/secrets/${encodeURIComponent(companyUid)}/groups`),
       atlasLocal: {
@@ -1595,6 +1618,7 @@ export function createSyncPlatformAdapter(
         call('take_pending_messages_target'),
       setActiveCompany: (slug) =>
         call('set_desktop_active_company', { companySlug: slug }),
+      getActiveCompany: () => call<string | null>('get_desktop_active_company'),
       openDriftDetail: (report) => call('open_drift_detail', { report }),
       openMeetingPermissionsWindow: () =>
         call('open_meeting_permissions_window'),

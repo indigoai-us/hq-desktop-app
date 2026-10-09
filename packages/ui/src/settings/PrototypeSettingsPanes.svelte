@@ -56,13 +56,13 @@
   import {
     APPEARANCE_SIZES,
     APPEARANCE_THEMES,
-    applyColorTheme,
     applyUiSize,
     applyWindowOpacity,
     calendarAccountLabel,
+    currentColorTheme,
     hasAppearanceHost,
     readHostWindowOpacity,
-    readStoredTheme,
+    requestColorTheme,
     settingsCompanyLists,
   } from "./shell-settings-model.js";
   import {
@@ -153,7 +153,11 @@
     ...(hostOpacity == null ? {} : { windowOpacity: hostOpacity }),
     uiSize: readStoredUiSize(deviceStorage, storage),
   });
-  let theme = $state<ColorTheme>(readStoredTheme());
+  // The selected pill shows the theme actually applied to this window
+  // (`data-force-theme`, absent = System), never a stored copy with its own
+  // default: `readStoredTheme` falls back to "dark", so a fresh install showed
+  // Dark selected while the window followed a light macOS appearance.
+  let theme = $state<ColorTheme>(currentColorTheme());
   let notifPermission = $state<string | null>(null);
   let notifRequesting = $state(false);
   let notifPermissionError = $state<string | null>(null);
@@ -372,7 +376,7 @@
   }
 
   function setTheme(next: ColorTheme): void {
-    theme = applyColorTheme(next);
+    theme = requestColorTheme(next);
   }
 
   function setUiSize(next: SettingsUiSize): void {
@@ -1194,6 +1198,7 @@
     // Keep the slider in sync when transparency changes elsewhere (another
     // window, storage event, native menu) — the host announces every apply.
     const onAppearanceChange = () => {
+      theme = currentColorTheme();
       const next = readHostWindowOpacity();
       if (next != null && next !== prefs.windowOpacity) {
         prefs = writePrefs({ windowOpacity: next });

@@ -2,6 +2,9 @@
   /** See the note on its use below — deliberately outside the instance so a
    *  remount does not re-ask the server for peers it already 404'd on. */
   const dmNameLookupsTried = new Set<string>();
+  /** Companies whose member roster was already read to name DM peers. Same
+   *  reasoning: a remount keeps the names through the conversation cache. */
+  const peerRosterCompaniesTried = new Set<string>();
 </script>
 
 <script lang="ts">
@@ -89,6 +92,15 @@
     browseOnlyCompanyProjectChannels,
   } from "./channel-admin";
   import { isAgentUid } from "./agent-thinking";
+  import {
+    NO_RETIRED_ENTITIES,
+    isRetiredCompany,
+    liveCompanyUidSet,
+    mergeRetiredEntities,
+    retiredProbeCandidates,
+    withoutRetiredRows,
+    type RetiredEntities,
+  } from "./retired-entities.js";
   import { isSelf, selfIsAdmin, type SelfIdentity } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
   import {
@@ -153,6 +165,7 @@
     wakeMayChangeHumanRecency,
     normalizeChannel,
     normalizeConversations,
+    contactHasConversation,
     rememberRecentDm,
     loadBotSetupChannels,
     rememberBotSetupChannel,
@@ -190,6 +203,14 @@
     type SortMode,
     type ScopeCompany,
   } from "./sidebar-model";
+  import {
+    addToPeerDirectory,
+    applyPeerDirectory,
+    isUnnamedPeer,
+    peersMissingNames,
+    readablePeerName,
+    type PeerNameEntry,
+  } from "./peer-names";
   import type { RowExtrasResolver } from "./row-extras.js";
   import {
     filterSwitcher,
@@ -453,6 +474,12 @@
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
+     * Emits what the sidebar has learned about retired companies and gone
+     * bots, so the host can drop the same rows from its own cached lists
+     * (the palette's search rows).
+     */
+    onretired?: ((retired: RetiredEntities) => void) | null;
+    /**
      * Emits the rail rows in DISPLAY order (pinned → day sections → "Last
      * week" once expanded) so the shell's next/previous-conversation
      * shortcuts walk exactly what the user sees.
@@ -586,6 +613,7 @@
     botDisplayNames = null,
     ownedLocalBotUids = null,
     onrows,
+    onretired = null,
     ondisplayrows,
     onactions,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -969,6 +997,10 @@
     companiesForChannelCreate(companies, accountLabel),
   );
 
+  /** What is known about retired companies and gone bots (see `retired-entities.ts`). */
+  let retiredEntities = $state<RetiredEntities>(NO_RETIRED_ENTITIES);
+  const liveCompanyUids = $derived(liveCompanyUidSet(companies));
+
   /**
    * Companies a Cloud bot can be added to: the workspace list, plus any company
    * the directory already shows a company channel for. A company created a
@@ -993,6 +1025,8 @@
       if (!uid || !label || out.has(uid) || channel.scope !== "company") {
         continue;
       }
+      // A retired company's channel must not offer the company back.
+      if (isRetiredCompany(uid, retiredEntities, liveCompanyUids)) continue;
       if (
         knownLabels.has(uid.toLowerCase()) ||
         knownLabels.has(label.toLowerCase())
@@ -1069,6 +1103,21 @@
   /** Bots the server confirmed removed. Their conversation stays off the list. */
   let removedBotUids = $state<string[]>(loadAccountRemovedBots(accountStorage, legacyRemovalStorage));
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
+
+  /**
+   * Names for DM peers the contacts roster does not cover: people read from
+   * other companies' member rosters, plus every channel and group roster.
+   * Rows read it so a peer known only by uid shows a name, not "prs_…".
+   */
+  let rosterPeers = $state<Array<{ personUid: string } & PeerNameEntry>>([]);
+  const peerDirectory = $derived.by(() => {
+    const directory = new Map<string, PeerNameEntry>();
+    addToPeerDirectory(directory, rosterPeers);
+    for (const channel of channels) {
+      addToPeerDirectory(directory, channel.members ?? []);
+    }
+    return directory;
+  });
 
   /**
    * The user's own agents: local bots this machine runs, plus their own bots
@@ -1149,7 +1198,7 @@
     return map;
   });
 
-  const allRows = $derived(
+  const unfilteredRows = $derived(
     withCancelledBotRows(
       // Each bot that is starting keeps a row of its own.
       shownWakingBots.reduce<ConversationRow[]>(
@@ -1160,6 +1209,7 @@
           recentDms,
           homeChannelIdByUid,
           companyDisplayNamesByUid,
+          peerDirectory,
         }), botSetupChannels),
       ),
       // A cancel whose create has no known outcome names no bot and has no row.
@@ -1168,6 +1218,40 @@
       removedBotUids,
     ),
   );
+
+  /**
+   * Rows a retired (tombstoned) company or a gone bot left behind. hq-pro keeps
+   * listing a retired company's channels, and its bots as contacts, with no
+   * retired marker, so the uids this sidebar cannot place are asked about once
+   * (`GET /entity/{uid}` through `resolveRetiredEntities`) and hidden only on
+   * an explicit "gone" answer. A company the list does not know yet (its
+   * channel can arrive before the company list refreshes) answers live and
+   * stays; a failed read hides nothing. See `retired-entities.ts`.
+   */
+  const retiredAsked = new Set<string>();
+  $effect(() => {
+    const live = liveCompanyUids;
+    const rows = unfilteredRows;
+    if (!api.resolveRetiredEntities) return;
+    // A company in the live list is re-asked if it ever leaves it.
+    for (const uid of live) retiredAsked.delete(uid);
+    const candidates = retiredProbeCandidates(rows, live, retiredAsked);
+    if (candidates.length === 0) return;
+    for (const uid of candidates) retiredAsked.add(uid);
+    api.resolveRetiredEntities(candidates).then(
+      (result) => {
+        const next = mergeRetiredEntities(untrack(() => retiredEntities), result);
+        retiredEntities = next;
+        onretired?.(next);
+      },
+      () => {
+        // Ask again the next time the rows change.
+        for (const uid of candidates) retiredAsked.delete(uid);
+      },
+    );
+  });
+
+  const allRows = $derived(withoutRetiredRows(unfilteredRows, retiredEntities, liveCompanyUids));
 
   /**
    * The sidebar's "Companies" section. When the user has pinned any
@@ -1357,12 +1441,17 @@
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
   // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
-    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames), {
-      pinnedIds: pinsWithSetup,
-      dmDots,
-      includeContactsWithoutConversation: true,
-      homeChannelIdByUid,
-    }),
+    withoutRetiredRows(
+      normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames), {
+        pinnedIds: pinsWithSetup,
+        dmDots,
+        includeContactsWithoutConversation: true,
+        homeChannelIdByUid,
+        peerDirectory,
+      }),
+      retiredEntities,
+      liveCompanyUids,
+    ),
   );
 
   // US-021: owner/admin-only "All company projects" view. `companyProjectChannels`
@@ -1652,20 +1741,29 @@
     }
     event.preventDefault();
     if (!selectionMode) selectionMode = true;
+    // In selection mode a plain click toggles the row, the same as its
+    // checkbox, so a mouse-only user can build a selection row by row. Shift
+    // still extends a range from the anchor.
     selection = applySelectionClick(selection, orderedRowIds, row.id, {
       shiftKey: event.shiftKey,
-      metaKey: event.metaKey,
-      ctrlKey: event.ctrlKey,
+      metaKey: !event.shiftKey,
+      ctrlKey: false,
     });
     focusedRowId = row.id;
+    if (selection.selected.length === 0) exitSelectionMode();
   }
 
   /**
    * Checkbox toggle. Always additive/subtractive (never a replace), so ticking
    * a box can build a selection one row at a time without a modifier key.
+   *
+   * The click is NOT cancelled. A real pointer click drains microtasks after
+   * each listener, so Svelte draws the new `checked` value while the event is
+   * still dispatching; a cancelled checkbox click is then undone by the
+   * browser, leaving the box empty while the row counts as selected. Only
+   * propagation is stopped, so the row button underneath never sees it.
    */
   function toggleRowSelection(row: ConversationRow, event: Event): void {
-    event.preventDefault();
     event.stopPropagation();
     if (!selectionMode) selectionMode = true;
     selection = applySelectionClick(selection, orderedRowIds, row.id, {
@@ -1675,6 +1773,12 @@
     });
     focusedRowId = row.id;
     if (selection.selected.length === 0) exitSelectionMode();
+    // Keep the native box in step with the model whatever order the DOM
+    // update and the browser's activation settle in.
+    const box = event.currentTarget;
+    if (box instanceof HTMLInputElement) {
+      box.checked = selectionMode && selection.selected.includes(row.id);
+    }
   }
 
   function selectionKeydown(event: KeyboardEvent): void {
@@ -3288,6 +3392,7 @@
       bootAttempted = true;
       loading = false;
       firstRefreshSettled = true;
+      void resolveUnnamedDmPeers();
       maybeReportShellReady();
       void directory.finally(() => maybeReportShellReady());
     }
@@ -3364,18 +3469,16 @@
    */
   async function resolveUnnamedDmPeers(): Promise<void> {
     const fetchThread = api.fetchDmThread;
-    if (typeof fetchThread !== "function") return;
-    const pending = contacts.filter(
+    const pending = typeof fetchThread !== "function" ? [] : contacts.filter(
       (contact) =>
-        !contact.displayName?.trim() &&
-        !contact.email?.trim() &&
+        isUnnamedPeer(contact) &&
         !dmNameLookupsTried.has(contact.personUid),
     );
     for (const contact of pending) {
       const uid = contact.personUid;
       dmNameLookupsTried.add(uid);
       try {
-        const page = await fetchThread.call(api, {
+        const page = await fetchThread!.call(api, {
           withPersonUid: uid,
           limit: 10,
         });
@@ -3383,21 +3486,82 @@
         const theirs = messages.find(
           (message) => (message.fromPersonUid ?? "").trim() === uid,
         );
-        const displayName = theirs?.fromDisplayName?.trim() ?? "";
+        const displayName = readablePeerName(theirs?.fromDisplayName) ?? "";
         const email = theirs?.fromEmail?.trim() ?? "";
         if (!displayName && !email) continue;
         contacts = contacts.map((entry) =>
           entry.personUid === uid
             ? {
                 ...entry,
-                displayName: entry.displayName || displayName || null,
+                displayName:
+                  readablePeerName(entry.displayName) || displayName || null,
                 email: entry.email || email || null,
               }
             : entry,
         );
       } catch {
-        /* best effort — the row still lists, titled by email or uid */
+        /* best effort: the row still lists, titled by email or "Unknown person" */
       }
+    }
+    // A pair where only you have written has no message from them to name
+    // them. Their company's member roster does.
+    await resolvePeersFromCompanyRosters();
+  }
+
+  /** DM conversation peers still without a readable name, after the directory. */
+  function unnamedConversationPeers(): Set<string> {
+    const options = { dmDots, recentDms };
+    const withConversation = contacts.filter((contact) =>
+      contactHasConversation(contact, options),
+    );
+    return new Set(
+      peersMissingNames(applyPeerDirectory(withConversation, peerDirectory)),
+    );
+  }
+
+  /**
+   * Read the member roster of each of the caller's companies (a few at a
+   * time, each company once) until every DM peer has a name. The global
+   * contacts read does not list everyone in every company, so a teammate in
+   * another company would otherwise keep a raw id as their row title.
+   */
+  async function resolvePeersFromCompanyRosters(): Promise<void> {
+    const load = api.listCompanyMembers;
+    if (typeof load !== "function") return;
+    if (unnamedConversationPeers().size === 0) return;
+    const queue = (companies ?? [])
+      .map((company) => (company.cloudUid ?? "").trim())
+      .filter((uid) => uid && !peerRosterCompaniesTried.has(uid));
+    if (queue.length === 0) return;
+    const worker = async () => {
+      while (queue.length > 0 && unnamedConversationPeers().size > 0) {
+        const companyUid = queue.shift() as string;
+        peerRosterCompaniesTried.add(companyUid);
+        try {
+          const resp = await load.call(api, companyUid);
+          const rows = Array.isArray(resp?.contacts) ? resp.contacts : [];
+          const named = rows
+            .filter((row) => row && typeof row.personUid === "string")
+            .map((row) => ({
+              personUid: row.personUid,
+              displayName: row.displayName ?? null,
+              email: row.email ?? null,
+            }));
+          if (named.length > 0) rosterPeers = [...rosterPeers, ...named];
+        } catch {
+          /* best effort: a company we cannot read leaves the row unnamed */
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    const next = applyPeerDirectory(contacts, peerDirectory);
+    if (next !== contacts) {
+      contacts = next;
+      // Keep the names for the next launch's cache-first paint.
+      saveConversationCache(
+        { channels, contacts, cachedAt: Date.now() },
+        storage,
+      );
     }
   }
 
@@ -3813,7 +3977,7 @@
   }
 
   function openSearchHit(hit: MessageSearchHit) {
-    const row = resolveSearchHitRow(hit, allRows);
+    const row = resolveSearchHitRow(hit, allRows, peerDirectory);
     // The point of the click is to land on the message, so the history dialog
     // has to go: left open it sat on top of the conversation it had just
     // jumped to. closeHistory() moves no focus, so focus stays wherever
@@ -4729,7 +4893,7 @@
               <div class="chat-empty">No matching messages</div>
             {:else}
               {#each messageSearchHits as hit (hit.messageId + (hit.createdAt ?? ""))}
-                {@const row = resolveSearchHitRow(hit, allRows)}
+                {@const row = resolveSearchHitRow(hit, allRows, peerDirectory)}
                 <div role="listitem" class="chat-li">
                   <button
                     type="button"
@@ -5117,6 +5281,7 @@
           data-checkbox-for={row.id}
           tabindex={showSelectGutter ? 0 : -1}
           checked={selectionMode && selection.selected.includes(row.id)}
+          aria-checked={selectionMode && selection.selected.includes(row.id)}
           aria-label={`Select ${row.title}`}
           onclick={(e) => toggleRowSelection(row, e)}
         />
@@ -6510,8 +6675,11 @@
     }
   }
 
+  /* Wraps rather than clipping: with icons on every action the bar is wider
+     than a default-width rail, which pushed Archive and Done out of view. */
   .chat-selection-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
     padding: 6px 10px;

@@ -41,10 +41,58 @@ export const HQ_BLOCK_FENCE_LANG = "hq-block";
 
 export type BlockAlign = "left" | "center" | "right";
 
+/**
+ * Closed icon enum for title labels. Same rule as the tone enums: the agent
+ * picks a NAME, the renderer maps it to its own inline monochrome SVG. An
+ * agent never supplies markup, a path, a URL or a style. Every block that
+ * carries a title or label (badge, callout, decision question, progress, stat
+ * item) always renders an icon: a missing or unknown name falls back to the
+ * per-kind default ({@link DEFAULT_BLOCK_ICON}). keyValue keys take the same
+ * enum but have no default, so a key shows an icon only when asked for.
+ */
+export const RICH_ICON_NAMES = [
+  "user",
+  "folder",
+  "file",
+  "check",
+  "clock",
+  "flag",
+  "link",
+  "mail",
+  "alert",
+  "error",
+  "info",
+  "star",
+  "tag",
+  "send",
+  "calendar",
+  "chart",
+  "question",
+] as const;
+
+export type RichIcon = (typeof RICH_ICON_NAMES)[number];
+
+const RICH_ICON_SET: ReadonlySet<string> = new Set(RICH_ICON_NAMES);
+
+/** True when `value` is one of the closed {@link RICH_ICON_NAMES}. */
+export function isRichIcon(value: unknown): value is RichIcon {
+  return typeof value === "string" && RICH_ICON_SET.has(value);
+}
+
+/** The icon a labelled block shows when the agent names none (or an unknown one). */
+export const DEFAULT_BLOCK_ICON = {
+  badge: "tag",
+  progress: "chart",
+  stat: "chart",
+  decision: "question",
+} as const satisfies Record<string, RichIcon>;
+
 /** A single metric tile: label + value, with an optional delta/trend. */
 export interface StatItem {
   label: string;
   value: string;
+  /** Closed-enum icon before the label; absent → {@link DEFAULT_BLOCK_ICON}.stat. */
+  icon?: RichIcon;
   /** Optional change caption, e.g. "+12%" or "-3.4k". Rendered verbatim text. */
   delta?: string;
   /** Optional direction used only to pick an accent color, never markup. */
@@ -105,15 +153,19 @@ export interface BadgeBlock {
   label: string;
   /** Closed enum → CSS class only; never a raw color/style. */
   tone: BadgeTone;
+  /** Closed-enum icon before the label; absent → {@link DEFAULT_BLOCK_ICON}.badge. */
+  icon?: RichIcon;
 }
 
 /** One row of a key→value definition list; both sides are sanitized text. */
 export interface KeyValueRow {
   key: string;
   value: string;
+  /** Optional closed-enum icon before the key; no default (keys stay quiet). */
+  icon?: RichIcon;
 }
 
-/** An aligned two-column definition list (label → value). */
+/** A definition list (label → value), rendered as an inline, wrapping run of pairs. */
 export interface KeyValueBlock {
   kind: "keyValue";
   items: KeyValueRow[];
@@ -127,6 +179,8 @@ export interface ProgressBlock {
   value: number;
   /** Optional closed-enum tone → CSS class; omitted when absent. */
   tone?: BadgeTone;
+  /** Closed-enum icon before the label; absent → {@link DEFAULT_BLOCK_ICON}.progress. */
+  icon?: RichIcon;
 }
 
 /**
@@ -143,6 +197,8 @@ export interface CalloutBlock {
   tone: CalloutTone;
   title?: string;
   body: string;
+  /** Closed-enum icon; absent → the tone's icon ({@link calloutDefaultIcon}). */
+  icon?: RichIcon;
 }
 
 /**
@@ -175,6 +231,8 @@ export interface DecisionBlock {
   allowOther: boolean;
   /** Opaque id echoed back for correlation; never rendered. */
   questionId?: string;
+  /** Closed-enum icon before the question; absent → {@link DEFAULT_BLOCK_ICON}.decision. */
+  icon?: RichIcon;
 }
 
 /**
@@ -466,6 +524,36 @@ function parseCalloutTone(value: unknown): CalloutTone {
     : "info";
 }
 
+/** The icon a callout of `tone` shows when the agent names none. */
+export function calloutDefaultIcon(tone: CalloutTone): RichIcon {
+  switch (tone) {
+    case "success":
+      return "check";
+    case "warning":
+      return "alert";
+    case "danger":
+      return "error";
+    default:
+      return "info";
+  }
+}
+
+/**
+ * Read an agent's `icon` field with the same strictness as `tone`: a known
+ * name passes, an unknown non-empty value collapses to `fallback`, and a
+ * missing value yields nothing (the renderer then applies the default).
+ */
+function parseIcon(value: unknown, fallback: RichIcon | null): RichIcon | undefined {
+  if (value == null) return undefined;
+  if (isRichIcon(value)) return value;
+  return fallback ?? undefined;
+}
+
+function iconField(value: unknown, fallback: RichIcon | null): { icon?: RichIcon } {
+  const icon = parseIcon(value, fallback);
+  return icon ? { icon } : {};
+}
+
 function parseStatBlock(raw: Record<string, unknown>): StatBlock | null {
   const rawItems = Array.isArray(raw.items) ? raw.items : [];
   const items: StatItem[] = [];
@@ -484,6 +572,7 @@ function parseStatBlock(raw: Record<string, unknown>): StatBlock | null {
       value,
       ...(deltaText ? { delta: deltaText } : {}),
       ...(trend ? { trend } : {}),
+      ...iconField(entry.icon, DEFAULT_BLOCK_ICON.stat),
     });
   }
   return items.length > 0 ? { kind: "stat", items } : null;
@@ -559,7 +648,12 @@ function parseMarkdownBlock(raw: Record<string, unknown>): MarkdownBlock | null 
 function parseBadgeBlock(raw: Record<string, unknown>): BadgeBlock | null {
   const label = toSafeText(raw.label, MAX_LABEL_LEN);
   if (!label) return null;
-  return { kind: "badge", label, tone: parseBadgeTone(raw.tone) };
+  return {
+    kind: "badge",
+    label,
+    tone: parseBadgeTone(raw.tone),
+    ...iconField(raw.icon, DEFAULT_BLOCK_ICON.badge),
+  };
 }
 
 function parseKeyValueBlock(raw: Record<string, unknown>): KeyValueBlock | null {
@@ -570,7 +664,8 @@ function parseKeyValueBlock(raw: Record<string, unknown>): KeyValueBlock | null 
     const key = toSafeText(entry.key, MAX_LABEL_LEN);
     const value = toSafeText(entry.value, MAX_CELL_LEN);
     if (!key && !value) continue;
-    items.push({ key, value });
+    // Keys have no default icon: an unknown name is dropped, not replaced.
+    items.push({ key, value, ...iconField(entry.icon, null) });
   }
   return items.length > 0 ? { kind: "keyValue", items } : null;
 }
@@ -588,6 +683,7 @@ function parseProgressBlock(raw: Record<string, unknown>): ProgressBlock | null 
     ...(label ? { label } : {}),
     value: clamped,
     ...(tone ? { tone } : {}),
+    ...iconField(raw.icon, DEFAULT_BLOCK_ICON.progress),
   };
 }
 
@@ -600,11 +696,13 @@ function parseCalloutBlock(raw: Record<string, unknown>): CalloutBlock | null {
   const body = toSafeText(raw.body ?? raw.text, MAX_TEXT_LEN);
   if (!body) return null;
   const title = toSafeText(raw.title, MAX_LABEL_LEN);
+  const tone = parseCalloutTone(raw.tone);
   return {
     kind: "callout",
-    tone: parseCalloutTone(raw.tone),
+    tone,
     ...(title ? { title } : {}),
     body,
+    ...iconField(raw.icon, calloutDefaultIcon(tone)),
   };
 }
 
@@ -646,6 +744,7 @@ function parseDecisionBlock(raw: Record<string, unknown>): DecisionBlock | null 
     // Free-text "Other" is offered unless explicitly disabled.
     allowOther: raw.allowOther !== false,
     ...(questionId ? { questionId } : {}),
+    ...iconField(raw.icon, DEFAULT_BLOCK_ICON.decision),
   };
 }
 
@@ -1551,8 +1650,10 @@ export function messageHasVisibleContent(message: {
   richContent?: unknown;
   prompt?: string | null;
   details?: string | null;
+  forwardNote?: string | null;
 }): boolean {
   if (message.prompt?.trim() || message.details?.trim()) return true;
+  if (typeof message.forwardNote === "string" && message.forwardNote.trim()) return true;
   const { text, rich } = richContentForMessage(message);
   if (text.trim()) return true;
   return rich?.blocks.some((block) => !HOST_PLACED_BLOCK_KINDS.has(block.kind)) ?? false;

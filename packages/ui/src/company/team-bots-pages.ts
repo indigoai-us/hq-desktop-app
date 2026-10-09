@@ -181,9 +181,9 @@ export interface BotListRow {
  * wins so Pause and the local status stay. Duplicate uids inside one list keep
  * the first row. Keyed `{#each}` blocks throw on a repeated uid.
  */
-export function mergeBotRows(local: readonly BotListRow[], cloud: readonly BotListRow[]): BotListRow[] {
+export function mergeBotRows<T extends Pick<BotListRow, "uid">>(local: readonly T[], cloud: readonly T[]): T[] {
   const seen = new Set<string>();
-  const out: BotListRow[] = [];
+  const out: T[] = [];
   for (const row of [...local, ...cloud]) {
     if (seen.has(row.uid)) continue;
     seen.add(row.uid);
@@ -192,7 +192,7 @@ export function mergeBotRows(local: readonly BotListRow[], cloud: readonly BotLi
   return out;
 }
 
-export function filterBots(rows: readonly BotListRow[], filter: BotFilter): BotListRow[] {
+export function filterBots<T extends Pick<BotListRow, "kind" | "live">>(rows: readonly T[], filter: BotFilter): T[] {
   if (filter === "local") return rows.filter((row) => row.kind === "local");
   if (filter === "cloud") return rows.filter((row) => row.kind === "cloud");
   if (filter === "live") return rows.filter((row) => row.live);

@@ -19,7 +19,15 @@ import {
   toastItems,
 } from "./toast-stack.svelte.js";
 import { looksLikeStateKey, updateToastCopy } from "./update-toast.js";
-import { syncToastCopy } from "./sync-toast.js";
+import {
+  SYNC_TOAST_ANY_COMPANY,
+  isSyncToastDismissed,
+  readDismissedSyncToasts,
+  syncToastCopy,
+  withSyncToastDismissed,
+  withSyncToastRestored,
+  writeDismissedSyncToasts,
+} from "./sync-toast.js";
 import { emptySyncStatus, type SyncStatusState } from "../home/sync-status.js";
 
 const SRC = join(__dirname, "..");
@@ -339,5 +347,44 @@ describe("toast typography outside the chat shell (QA-095)", () => {
     for (const rule of style.matchAll(/(?<![-\w])font:\s*[^;]+;/g)) {
       expect(rule[0]).toContain("var(--ts-font)");
     }
+  });
+});
+
+describe("sync toast dismissal", () => {
+  function memoryStorage(): Pick<Storage, "getItem" | "setItem"> {
+    const data = new Map<string, string>();
+    return { getItem: (k) => data.get(k) ?? null, setItem: (k, v) => void data.set(k, v) };
+  }
+
+  it("persists the dismissed companies and reads them back", () => {
+    const storage = memoryStorage();
+    expect(readDismissedSyncToasts(storage).size).toBe(0);
+    writeDismissedSyncToasts(storage, withSyncToastDismissed(new Set(), "personal"));
+    const back = readDismissedSyncToasts(storage);
+    expect(isSyncToastDismissed(back, "personal")).toBe(true);
+    expect(isSyncToastDismissed(back, "acme")).toBe(false);
+  });
+
+  it("ignores a corrupt stored value", () => {
+    const storage = memoryStorage();
+    storage.setItem("hq.syncToast.dismissed.v1", "{not json");
+    expect(readDismissedSyncToasts(storage).size).toBe(0);
+    storage.setItem("hq.syncToast.dismissed.v1", JSON.stringify(["personal", 3, ""]));
+    expect([...readDismissedSyncToasts(storage)]).toEqual(["personal"]);
+  });
+
+  it("a toast closed before the run named its company hides every company", () => {
+    const dismissed = withSyncToastDismissed(new Set(), null);
+    expect(dismissed.has(SYNC_TOAST_ANY_COMPANY)).toBe(true);
+    expect(isSyncToastDismissed(dismissed, "acme")).toBe(true);
+    expect(isSyncToastDismissed(dismissed, null)).toBe(true);
+  });
+
+  it("a sync the person starts brings the toast back for that company, or for all when unscoped", () => {
+    const dismissed = new Set(["personal", "acme", SYNC_TOAST_ANY_COMPANY]);
+    const scoped = withSyncToastRestored(dismissed, "acme");
+    expect(isSyncToastDismissed(scoped, "acme")).toBe(false);
+    expect(isSyncToastDismissed(scoped, "personal")).toBe(true);
+    expect(withSyncToastRestored(dismissed).size).toBe(0);
   });
 });

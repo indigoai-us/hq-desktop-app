@@ -128,7 +128,7 @@
     position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 2;
     box-sizing: border-box; width: 300px; padding: 12px;
     border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 12px;
-    background: #1c1c1f; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    background: #1c1c1c; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
     color: #fafafa; text-align: left;
   }
   .bs-k { margin: 0 0 6px; color: rgba(250, 250, 250, 0.5); font-size: 12px; }

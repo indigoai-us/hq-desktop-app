@@ -15,10 +15,14 @@ import {
   looksLikeRawId,
   mergePaletteRows,
   paletteConversationItems,
+  paletteProjectDestination,
+  paletteProjectsCommandDestination,
   paletteRowDetail,
   paletteRowKeywords,
   paletteRowLabel,
 } from "./palette-rows.js";
+import { companyProjectsFocus } from "./company-pane.js";
+import { paneForEntry } from "./destination-pane.js";
 
 const INDIGO = "cmp_01KQ2RYAHXHDPCTY9GPQPTH3DG";
 const COMPANIES: ScopeCompany[] = [{ companyUid: INDIGO, label: "Indigo" }];
@@ -354,5 +358,49 @@ describe("mergePaletteRows", () => {
   it("tolerates empty inputs", () => {
     expect(mergePaletteRows()).toEqual([]);
     expect(mergePaletteRows([], [])).toEqual([]);
+  });
+});
+
+describe("palette Projects stay in the company", () => {
+  const item = { companyUid: INDIGO, personal: false, companySlug: "indigo", projectId: "billing-v2" };
+
+  it("opens a company project on that company's Projects page, with the company pane", () => {
+    const destination = paletteProjectDestination(item);
+    expect(destination).toEqual({
+      kind: "extra",
+      page: "company-page-projects",
+      companyUid: INDIGO,
+      param: "project=billing-v2",
+    });
+    expect(paneForEntry({ destination, accountId: "acct", companyUid: null })).toEqual({
+      pane: "company",
+      companyKey: INDIGO,
+    });
+    expect(destination.kind === "extra" && companyProjectsFocus(destination.param)).toEqual({
+      project: "billing-v2",
+      tab: null,
+    });
+  });
+
+  it("keys a company with no uid by its slug, and keeps personal projects on the Projects view", () => {
+    expect(paletteProjectDestination({ ...item, companyUid: null })).toMatchObject({
+      kind: "extra",
+      page: "company-page-projects",
+      companyUid: "indigo",
+    });
+    expect(paletteProjectDestination({ ...item, companyUid: null, personal: true, companySlug: "personal" })).toEqual({
+      kind: "projects",
+      company: "personal",
+      project: "billing-v2",
+    });
+  });
+
+  it("sends the Projects command to the selected company's Projects page, else the Projects view", () => {
+    expect(paletteProjectsCommandDestination(INDIGO)).toEqual({
+      kind: "extra",
+      page: "company-page-projects",
+      companyUid: INDIGO,
+    });
+    expect(paletteProjectsCommandDestination(null)).toEqual({ kind: "projects" });
   });
 });

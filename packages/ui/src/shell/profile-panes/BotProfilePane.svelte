@@ -21,6 +21,9 @@
   } from "./profile-pane-model.js";
 
   import type { EditBotTab } from "./profile-pane-model.js";
+  import type { Snippet } from "svelte";
+
+  export type BotPaneTab = "profile" | "jobs";
 
   interface BotUsageSummary {
     status: "loading" | "ready" | "unavailable";
@@ -54,6 +57,12 @@
     onpause?: () => void;
     onresume?: () => void;
     onstop?: () => void;
+    /** Profile | Jobs. Tabs show only when a Jobs panel is given. */
+    tab?: BotPaneTab;
+    ontab?: (tab: BotPaneTab) => void;
+    /** Job count beside the Jobs tab; null while unknown. */
+    jobsCount?: number | null;
+    jobsPanel?: Snippet;
   }
 
   let {
@@ -74,6 +83,10 @@
     onpause,
     onresume,
     onstop,
+    tab = "profile",
+    ontab,
+    jobsCount = null,
+    jobsPanel,
   }: Props = $props();
 
   const phase = $derived(profilePhase(snapshot?.name));
@@ -103,10 +116,19 @@
   data-live={snapshot?.live ? "true" : "false"}
 >
   <header class="phead">
-    <span class="pp-title">Profile</span>
+    {#if jobsPanel}
+      <div class="ptabs" role="tablist" aria-label="Bot pane">
+        <button type="button" class="ptab" role="tab" aria-selected={tab === "profile"} data-testid="bot-pane-tab-profile" onclick={() => ontab?.("profile")}>Profile</button>
+        <button type="button" class="ptab" role="tab" aria-selected={tab === "jobs"} data-testid="bot-pane-tab-jobs" onclick={() => ontab?.("jobs")}>Jobs{#if jobsCount !== null && jobsCount > 0}<span class="count">{jobsCount}</span>{/if}</button>
+      </div>
+    {:else}
+      <span class="pp-title">Profile</span>
+    {/if}
     <button type="button" class="icon" data-testid="bot-profile-close" aria-label="Close profile" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
   </header>
-  {#if phase === "shimmer" || !snapshot}
+  {#if tab === "jobs" && jobsPanel}
+    <div class="body" data-testid="bot-pane-jobs-body">{@render jobsPanel()}</div>
+  {:else if phase === "shimmer" || !snapshot}
     <div class="body" aria-busy="true">
       <ReadLoader testid="bot-profile-loading" />
     </div>
@@ -191,10 +213,12 @@
       {/if}
       {#if snapshot.jobs.length}
         <section class="g">
-          <div class="k">Scheduled jobs <span class="count">{snapshot.jobs.length}</span></div>
-          {#each snapshot.jobs as job (job.id)}
-            <div class="run"><span class="mk"></span><div><div class="t">{job.title}</div><span class="meta">{job.meta}</span></div><span class="trail">{job.trailing}</span></div>
-          {/each}
+          <div class="k">Scheduled jobs <span class="count">{snapshot.jobs.length}</span>{#if jobsPanel}<button type="button" class="link" data-testid="bot-profile-open-jobs" onclick={() => ontab?.("jobs")}>Open Jobs</button>{/if}</div>
+          {#if !jobsPanel}
+            {#each snapshot.jobs as job (job.id)}
+              <div class="run"><span class="mk"></span><div><div class="t">{job.title}</div><span class="meta">{job.meta}</span></div><span class="trail">{job.trailing}</span></div>
+            {/each}
+          {/if}
         </section>
       {/if}
       {#if usage}
@@ -249,6 +273,15 @@
     border-bottom: 1px solid var(--v4-rowline, var(--line));
   }
   .pp-title { color: var(--v4-text-1); font-size: 13px; font-weight: 500; }
+  /* The tab label lines up with the 20px content edge below the header. */
+  .ptabs { display: inline-flex; gap: 2px; margin-left: -2px; }
+  .ptab {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 24px; padding: 0 8px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--v4-text-2); font: inherit; font-weight: 500; cursor: pointer;
+  }
+  .ptab:hover { background: var(--hover, var(--v4-hover)); color: var(--v4-text-1); }
+  .ptab[aria-selected="true"] { background: var(--sel, var(--v4-control-bg)); color: var(--v4-text-1); }
   .icon {
     display: inline-flex;
     align-items: center;

@@ -103,6 +103,7 @@ pub mod watcher_exit_lifecycle;
 pub mod window_material;
 pub mod update_gate;
 pub mod uploads_paused;
+pub mod retired_entities;
 pub mod workspaces;
 #[cfg(any(windows, test))]
 mod windows_symlink_fallback;

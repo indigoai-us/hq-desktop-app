@@ -18,8 +18,14 @@
   } from "../../common/messageMarkdown.js";
   import ConnectionCard from "./ConnectionCard.svelte";
   import PlainMessageBody from "./PlainMessageBody.svelte";
+  import RichLabelIcon from "./RichLabelIcon.svelte";
   import type { ConnectionCards, ConnectionCardView } from "./connection-card-model.js";
-  import { HOST_PLACED_BLOCK_KINDS, MAX_CONNECT_ITEMS } from "./richMessageContent.js";
+  import {
+    DEFAULT_BLOCK_ICON,
+    HOST_PLACED_BLOCK_KINDS,
+    MAX_CONNECT_ITEMS,
+    calloutDefaultIcon,
+  } from "./richMessageContent.js";
   import type {
     BadgeTone,
     CalloutTone,
@@ -322,7 +328,11 @@
       <div class="rich-stat-row" data-testid="rich-stat">
         {#each block.items as item, i (i)}
           <div class="rich-stat-tile">
-            <div class="rich-stat-label">{item.label}</div>
+            {#if item.label}
+              <div class="rich-stat-label">
+                <RichLabelIcon name={item.icon ?? DEFAULT_BLOCK_ICON.stat} size={12} /><span>{item.label}</span>
+              </div>
+            {/if}
             <div class="rich-stat-value">{item.value}</div>
             {#if item.delta}
               <div class="rich-stat-delta {item.trend ? TREND_CLASS[item.trend] : ''}">
@@ -422,13 +432,19 @@
       </div>
     {:else if block.kind === "badge"}
       <div class="rich-badge-row" data-testid="rich-badge">
-        <span class="rich-badge {badgeToneClass(block.tone)}">{block.label}</span>
+        <span class="rich-badge {badgeToneClass(block.tone)}">
+          <RichLabelIcon name={block.icon ?? DEFAULT_BLOCK_ICON.badge} size={12} /><span>{block.label}</span>
+        </span>
       </div>
     {:else if block.kind === "keyValue"}
       <dl class="rich-kv" data-testid="rich-keyvalue">
         {#each block.items as row, i (i)}
-          <div class="rich-kv-row">
-            <dt class="rich-kv-key">{row.key}</dt>
+          <div class="rich-kv-pair" data-testid="rich-kv-pair">
+            {#if row.key}
+              <dt class="rich-kv-key">
+                {#if row.icon}<RichLabelIcon name={row.icon} size={12} />{/if}<span>{row.key}</span>
+              </dt>
+            {/if}
             <dd class="rich-kv-value">{row.value}</dd>
           </div>
         {/each}
@@ -437,7 +453,9 @@
       <div class="rich-progress {badgeToneClass(block.tone)}" data-testid="rich-progress">
         <div class="rich-progress-head">
           {#if block.label}
-            <span class="rich-progress-label">{block.label}</span>
+            <span class="rich-progress-label">
+              <RichLabelIcon name={block.icon ?? DEFAULT_BLOCK_ICON.progress} size={12} /><span>{block.label}</span>
+            </span>
           {/if}
           <span class="rich-progress-pct">{block.value}%</span>
         </div>
@@ -459,15 +477,7 @@
         role="note"
       >
         <span class="rich-callout-icon" aria-hidden="true">
-          {#if block.tone === "success"}
-            <RailIcon name="check" size={15} />
-          {:else if block.tone === "warning"}
-            <RailIcon name="warning" size={15} />
-          {:else if block.tone === "danger"}
-            <RailIcon name="warning-circle" size={15} />
-          {:else}
-            <RailIcon name="info" size={15} />
-          {/if}
+          <RichLabelIcon name={block.icon ?? calloutDefaultIcon(block.tone)} size={14} />
         </span>
         <div class="rich-callout-content">
           {#if block.title}
@@ -484,7 +494,9 @@
       {@const answered = decisionAnswered(block, blockIndex)}
       {@const chosen = decisionChoice(block, blockIndex)}
       <div class="rich-decision" data-testid="rich-decision" role="group" aria-label={block.question}>
-        <div class="rich-decision-q">{block.question}</div>
+        <div class="rich-decision-q">
+          <RichLabelIcon name={block.icon ?? DEFAULT_BLOCK_ICON.decision} size={13} /><span>{block.question}</span>
+        </div>
         <div class="rich-decision-options" class:is-answered={answered}>
           {#each block.options as option, i (option.id || i)}
             {@const isChosen = answered && chosen === option.label}
@@ -589,6 +601,9 @@
     background: var(--raised, var(--pop-hover));
   }
   .rich-stat-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.02em;
@@ -741,6 +756,7 @@
   .rich-badge {
     display: inline-flex;
     align-items: center;
+    gap: 4px;
     padding: 2px 9px;
     border-radius: 999px;
     border: 1px solid var(--tone-line);
@@ -756,34 +772,36 @@
   /* ── Key/value definition list ──────────────────────────────────────── */
   .rich-kv {
     margin: 0;
-    display: grid;
-    gap: 0;
-    border: 1px solid var(--line, var(--pop-border));
-    border-radius: 8px;
-    overflow: hidden;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 14px;
+    row-gap: 3px;
+    font-size: 12px;
+    line-height: 1.5;
   }
-  .rich-kv-row {
-    display: grid;
-    grid-template-columns: minmax(90px, 34%) 1fr;
-    gap: 12px;
-    padding: 6px 11px;
-    border-bottom: 1px solid var(--line, var(--pop-border));
-  }
-  .rich-kv-row:last-child {
-    border-bottom: none;
+  .rich-kv-pair {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    min-width: 0;
+    max-width: 100%;
   }
   .rich-kv-key {
     margin: 0;
-    font-size: 12px;
-    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+    font-weight: 400;
     color: var(--t3, var(--pop-muted));
   }
   .rich-kv-value {
     margin: 0;
-    font-size: 12px;
+    min-width: 0;
     color: var(--t1, var(--pop-text));
     font-variant-numeric: tabular-nums;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
   /* ── Progress meter ─────────────────────────────────────────────────── */
@@ -800,6 +818,9 @@
     font-size: 11px;
   }
   .rich-progress-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     color: var(--t2, var(--pop-muted));
     font-weight: 500;
   }
@@ -873,6 +894,9 @@
     border-radius: 8px;
   }
   .rich-decision-q {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 13px;
     font-weight: 600;
     color: var(--t1, var(--pop-text));

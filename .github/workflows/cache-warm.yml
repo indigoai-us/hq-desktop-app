@@ -83,6 +83,9 @@ jobs:
   release-macos:
     name: Warm release macOS universal
     runs-on: macos-14
+    env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
     timeout-minutes: 90
     defaults:
       run:
@@ -176,6 +179,8 @@ jobs:
           - x86_64-pc-windows-msvc
           - aarch64-pc-windows-msvc
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       RUST_BACKTRACE: 1
 
     steps:
@@ -270,6 +275,8 @@ jobs:
       run:
         working-directory: apps/sync
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
 
@@ -338,6 +345,8 @@ jobs:
       run:
         working-directory: apps/sync
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
       RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
@@ -397,6 +406,8 @@ jobs:
     permissions:
       contents: write
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       GH_TOKEN: ${{ github.token }}
     defaults:
       run:
@@ -570,6 +581,8 @@ jobs:
     permissions:
       contents: write
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       GH_TOKEN: ${{ github.token }}
       RUST_TARGET: x86_64-pc-windows-msvc
     defaults:
@@ -773,6 +786,8 @@ jobs:
     permissions:
       contents: write
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       GH_TOKEN: ${{ github.token }}
       RUST_TARGET: aarch64-pc-windows-msvc
     defaults:

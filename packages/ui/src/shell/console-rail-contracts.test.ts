@@ -203,6 +203,20 @@ describe("US-002 pending console-rail contracts", () => {
     expect(shell).toMatch(/<AtlasLandingHost\b/);
   });
 
+  it("Atlas Open board opens the project on the company Projects pane, not the cross-company view", async () => {
+    const { readFileSync } = await import("node:fs");
+    const shell = readFileSync(
+      join(REPO_ROOT, "packages/ui/src/shell/DesktopApp.svelte"),
+      "utf8",
+    );
+    const start = shell.indexOf('railPlaceholder?.id === "projects" && companyPaneCompany}');
+    expect(start).toBeGreaterThan(0);
+    // The pane's <ProjectsHome ... /> element.
+    const branch = shell.slice(start, shell.indexOf("/>", shell.indexOf("<ProjectsHome", start)));
+    expect(branch).toMatch(/focusProject=\{companyProjectsFocus\(extraPageParam\)\?\.project/);
+    expect(branch).toMatch(/focusTab=\{companyProjectsFocus\(extraPageParam\)\?\.tab/);
+  });
+
   it("US-011: the notifications bell stays in the titlebar", async () => {
     const { readFileSync } = await import("node:fs");
     const titlebar = readFileSync(join(REPO_ROOT, "packages/ui/src/home/V4TitleBar.svelte"), "utf8");

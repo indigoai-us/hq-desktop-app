@@ -28,6 +28,17 @@
   import "../../chat/chat-tokens.css";
   import { companyStore } from "../company-store.svelte.js";
   import DeployAccessForm from "./DeployAccessForm.svelte";
+  import ConnectionCardLogo from "../../chat/messaging/ConnectionCardLogo.svelte";
+  import { brandMarkFor } from "../../chat/messaging/app-brand-marks.js";
+  import {
+    appMetaLine,
+    appStatusSummary,
+    catalogFailureLine,
+    catalogIntegrationRows,
+    deriveCategory,
+    filterIntegrationApps,
+    groupIntegrationApps,
+  } from "./integration-apps.js";
   import type { DeployAccessRequest } from "./deploy-access.js";
   import {
     ACCESS_LEVELS,
@@ -42,6 +53,7 @@
     memberOptions,
     filterIntegrations,
     companyIntegrationRows,
+    viewerCanManageIntegrations,
     filterSecrets,
     readFilesConnectCache,
     recentVaultFiles,
@@ -114,6 +126,16 @@
   // data.integrations is only the list of apps that can be connected.
   let connectedApps = $state<IntegrationRow[] | null>(null);
   let integrationsError = $state<string | null>(null);
+  // The admin answer's `viewer.canManageIntegrations`; null until it says.
+  let canManageIntegrations = $state<boolean | null>(null);
+  // Apps HQ can connect (hq-pro factory catalog); null = not loaded yet.
+  let catalogApps = $state<IntegrationRow[] | null>(null);
+  // A plain line shown instead of the catalog; never server text.
+  let catalogLine = $state<string | null>(null);
+  let catalogCanRetry = $state(false);
+  let catalogLoading = false;
+  // Read once per company visit, even when the cache painted the list first.
+  let catalogFresh = false;
   let deploymentsError = $state<string | null>(null);
   let query = $state("");
   let vaultTab = $state<"all" | "new">("all");
@@ -132,7 +154,8 @@
   $effect(() => {
     const s = slug;
     // Never another tenant's rows: no cache means an empty company (QA-028).
-    data = readFilesConnectCache(s) ?? emptyCompanyCache();
+    const cached = readFilesConnectCache(s) ?? emptyCompanyCache();
+    data = cached;
     // A company switch drops every open sheet and selection (QA-023).
     sheet = null;
     selectedSecret = null;
@@ -144,6 +167,12 @@
     deployments = cachedDeployments(s);
     connectedApps = null;
     integrationsError = null;
+    canManageIntegrations = null;
+    catalogApps = cached.integrations.length ? cached.integrations : null;
+    catalogLine = null;
+    catalogCanRetry = false;
+    catalogLoading = false;
+    catalogFresh = false;
     let live = true;
     queueMicrotask(() => {
       if (live) void refresh(s, () => live);
@@ -211,6 +240,7 @@
       const rows = companyIntegrationRows(res.value);
       if (!alive()) return;
       connectedApps = rows;
+      canManageIntegrations = viewerCanManageIntegrations(res.value);
       integrationsError = null;
     } catch (err) {
       console.error("integrations load failed:", err);
@@ -225,6 +255,76 @@
     const s = slug;
     void refresh(s, () => slug === s);
   }
+
+  /**
+   * Available: the apps HQ can connect, from the same factory catalog the web
+   * console lists (`GET /v1/integrations/factory/catalog`). Read when the tab
+   * first opens. A failed read is retried once quietly; after that the tab
+   * says so in one plain line with Try again. Owner/admin only on the server,
+   * so a member gets a plain line and no request.
+   */
+  async function loadCatalog(quietRetries = 1): Promise<void> {
+    const s = slug;
+    const uid = companyUid;
+    const search = adapter?.integrations?.catalogSearch;
+    if (catalogLoading) return;
+    catalogFresh = true;
+    // What the cache painted stays on screen through a failed refresh.
+    const kept = catalogApps?.length ? catalogApps : [];
+    if (!search || !uid) {
+      catalogApps = kept;
+      return;
+    }
+    if (canManageIntegrations === false) {
+      catalogLine = catalogFailureLine({ status: 403 }).line;
+      catalogCanRetry = false;
+      catalogApps = kept;
+      return;
+    }
+    catalogLoading = true;
+    catalogLine = null;
+    try {
+      const res = await search(uid, "", 60);
+      if (slug !== s) return;
+      if (!res.ok) {
+        const verdict = catalogFailureLine(res);
+        if (verdict.retry && quietRetries > 0) {
+          catalogLoading = false;
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          if (slug === s) await loadCatalog(quietRetries - 1);
+          return;
+        }
+        catalogLine = verdict.line;
+        catalogCanRetry = verdict.retry;
+        catalogApps = kept;
+        return;
+      }
+      const rows = catalogIntegrationRows(res.value);
+      catalogApps = rows;
+      data = { ...data, integrations: rows };
+      writeFilesConnectCache(s, data);
+    } catch (err) {
+      console.error("integration catalog load failed:", err);
+      if (slug !== s) return;
+      catalogLine = catalogFailureLine(null).line;
+      catalogCanRetry = true;
+      catalogApps = kept;
+    } finally {
+      if (slug === s) catalogLoading = false;
+    }
+  }
+
+  function retryCatalog(): void {
+    catalogApps = null;
+    catalogLine = null;
+    void loadCatalog(0);
+  }
+
+  $effect(() => {
+    if (page !== "integrations" || integrationTab !== "available" || catalogFresh) return;
+    void slug;
+    queueMicrotask(() => void loadCatalog());
+  });
 
 
   // The sidepane shows these same totals (QA-014): every row, before tabs and search.
@@ -361,25 +461,32 @@
     };
   });
 
-  const allIntegrations = $derived([
-    ...(connectedApps ?? []),
-    ...data.integrations.filter((row) => row.kind !== "connected"),
-  ]);
+  const allIntegrations = $derived([...(connectedApps ?? []), ...(catalogApps ?? [])]);
+  // Available and Agents & MCP list rows; Connected lists one row per app.
   const integrationRows = $derived(filterIntegrations(allIntegrations, integrationTab, query));
-  // Only the Connected tab reads the server; Available is the local catalog.
+  const connectedGroups = $derived(groupIntegrationApps(connectedApps ?? []));
+  const appRows = $derived(filterIntegrationApps(connectedGroups, query));
   const connectedLoading = $derived(integrationTab === "connected" && connectedApps === null);
   const connectedFailed = $derived(
     integrationTab === "connected" && !!integrationsError && (connectedApps?.length ?? 0) === 0,
   );
+  const availableLoading = $derived(integrationTab === "available" && catalogApps === null);
+  const availableFailed = $derived(integrationTab === "available" && !!catalogLine && (catalogApps?.length ?? 0) === 0);
   const secretRows = $derived(filterSecrets(secrets ?? [], secretTab, query));
   // Rows in the current Integrations tab before the search, for the no-match total.
-  const integrationTabTotal = $derived(filterIntegrations(allIntegrations, integrationTab, "").length);
+  const integrationTabTotal = $derived(
+    integrationTab === "connected" ? connectedGroups.length : filterIntegrations(allIntegrations, integrationTab, "").length,
+  );
+  const integrationShown = $derived(integrationTab === "connected" ? appRows.length : integrationRows.length);
   const integrationPage = $derived(pageRows(integrationRows, integrationPages));
+  const appPage = $derived(pageRows(appRows, integrationPages));
   const secretPage = $derived(pageRows(secretRows, secretPages));
   const deployPage = $derived(pageRows(deployments ?? [], deployPages));
   const integrationCurrent = $derived(
     integrationRows.find((row) => row.id === selectedIntegration) ?? integrationRows[0],
   );
+  const appCurrent = $derived(appRows.find((app) => app.key === selectedIntegration) ?? appRows[0]);
+  const appCurrentSummary = $derived(appCurrent ? appStatusSummary(appCurrent) : null);
   // The inspector reads the filtered rows (QA-058): a secret the tab or search
   // hides is never inspected, and its actions never stay on screen.
   const secretCurrent = $derived(secretRows.find((row) => row.id === selectedSecret) ?? secretRows[0]);
@@ -661,6 +768,10 @@
   <span class="st" data-status={value}><i class="dot" aria-hidden="true"></i>{statusLabel(value)}</span>
 {/snippet}
 
+{#snippet summaryDot(state: string, text: string)}
+  <span class="st" data-status={state} data-testid="integration-app-status"><i class="dot" aria-hidden="true"></i>{text}</span>
+{/snippet}
+
 <section class="page" data-testid="files-connect" data-page={page}>
   {#if page === "vault"}
     <header class="toolbar">
@@ -722,12 +833,12 @@
   {:else if page === "integrations"}
     <header class="toolbar">
       <h1>Integrations</h1>
-      <!-- No count while connected apps load, or beside a failed read with nothing loaded. -->
-      {#if !connectedLoading && !connectedFailed}<span class="count" data-testid="integrations-count">{countLabel("Integrations", integrationRows.length)}</span>{/if}
+      <!-- No count while a tab loads, or beside a failed read with nothing loaded. -->
+      {#if !connectedLoading && !connectedFailed && !availableLoading && !availableFailed}<span class="count" data-testid="integrations-count">{countLabel("Integrations", integrationShown)}</span>{/if}
       <span class="grow"></span>
       <div class="fc-seg" role="tablist" aria-label="Integrations view">
         <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "connected"} onclick={() => (integrationTab = "connected")}>Connected</button>
-        <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "available"} onclick={() => (integrationTab = "available")}>Available</button>
+        <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "available"} data-testid="integrations-available" onclick={() => (integrationTab = "available")}>Available</button>
         <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "mcp"} data-testid="integrations-mcp" onclick={() => (integrationTab = "mcp")}>Agents & MCP</button>
       </div>
       <input class="field search" placeholder="Filter apps" aria-label="Filter apps" bind:value={query} />
@@ -742,13 +853,52 @@
             <span class="empty-title">{integrationsError}</span>
             <RailButton icon="refresh" data-testid="integrations-retry" onclick={retryRefresh}>Try again</RailButton>
           </div>
+        {:else if availableLoading}
+          <ReadLoader testid="integrations-loader" onretry={retryCatalog} />
+        {:else if availableFailed}
+          <div class="empty" data-testid="integrations-empty">
+            <span class="empty-title">{catalogLine}</span>
+            {#if catalogCanRetry}
+              <RailButton icon="refresh" data-testid="integrations-retry" onclick={retryCatalog}>Try again</RailButton>
+            {/if}
+          </div>
+        {:else if integrationTab === "connected"}
+          <!-- One row per app, as in the web console; its connections open in the pane. -->
+          {#each appPage.rows as app (app.key)}
+            {@const summary = appStatusSummary(app)}
+            <button class="row app-row" type="button" data-testid="integration-app" data-app={app.key} aria-current={app.key === appCurrent?.key} onclick={() => (selectedIntegration = app.key)}>
+              <ConnectionCardLogo logo={{ mark: brandMarkFor(app.domain) }} size={24} />
+              <span class="nm">{app.name}</span>
+              <span class="meta grow-meta">{app.domain}</span>
+              <span class="meta app-count">{appMetaLine(app)}</span>
+              {@render summaryDot(summary.state, summary.text)}
+            </button>
+          {/each}
+          {#if appRows.length === 0}
+            {#if query.trim() && integrationTabTotal > 0}
+              <ListEmptyState
+                total={integrationTabTotal}
+                shown={0}
+                {query}
+                noun={["app", "apps"]}
+                scope="in this view"
+                onclear={() => (query = "")}
+                testid="integrations-empty"
+              />
+            {:else}
+              <p class="empty-line" data-testid="integrations-empty">No connected apps yet</p>
+            {/if}
+          {/if}
+          {#if appPage.remaining > 0}
+            <ShowMoreRow shown={appPage.rows.length} total={appPage.total} next={appPage.next} noun="apps" testid="integrations-show-more" onmore={() => (integrationPages += 1)} />
+          {/if}
         {:else}
         {#each integrationPage.rows as row (row.id)}
           <button class="row" type="button" aria-current={row.id === integrationCurrent?.id} onclick={() => (selectedIntegration = row.id)}>
-            <span class="mark" aria-hidden="true">{row.mark}</span>
+            <ConnectionCardLogo logo={{ mark: brandMarkFor(row.domain) }} size={24} />
             <span class="nm">{row.name}</span>
-            <span class="meta grow-meta">{row.detail}</span>
-            {@render statusDot(row.status)}
+            <span class="meta grow-meta">{row.domain || row.detail}</span>
+            {#if row.kind !== "available"}{@render statusDot(row.status)}{/if}
           </button>
         {/each}
         {#if integrationRows.length === 0}
@@ -763,7 +913,7 @@
               testid="integrations-empty"
             />
           {:else}
-            <p class="empty-line" data-testid="integrations-empty">{integrationTab === "connected" ? "No connected apps yet" : integrationTab === "mcp" ? "No agent tools connected yet" : "No apps available"}</p>
+            <p class="empty-line" data-testid="integrations-empty">{integrationTab === "mcp" ? "No agent tools connected yet" : "No apps available"}</p>
           {/if}
         {/if}
         {#if integrationPage.remaining > 0}
@@ -772,12 +922,52 @@
         {/if}
       </div>
       <aside class="pane">
-        {#if integrationCurrent && !connectedLoading && !connectedFailed}
-          <header class="pane-h"><span class="pane-kind">{integrationCurrent.kind === "mcp" ? "Agents & MCP" : integrationCurrent.kind === "available" ? "Available" : "Connected"}</span></header>
+        {#if integrationTab === "connected" && appCurrent && appCurrentSummary && !connectedLoading && !connectedFailed}
+          <header class="pane-h"><span class="pane-kind">Connected</span></header>
+          <div class="pane-b" data-testid="integration-app-detail">
+            <div class="app-head">
+              <ConnectionCardLogo logo={{ mark: brandMarkFor(appCurrent.domain) }} size={28} />
+              <span class="app-id">
+                <h2>{appCurrent.name}</h2>
+                {#if appCurrent.domain}<span class="meta">{appCurrent.domain}</span>{/if}
+              </span>
+            </div>
+            <p class="meta">{appMetaLine(appCurrent)}</p>
+            {@render summaryDot(appCurrentSummary.state, appCurrentSummary.text)}
+            <ul class="conns" data-testid="integration-connections">
+              {#each appCurrent.connections as conn (conn.id)}
+                <li class="conn" data-testid="integration-connection">
+                  <span class="conn-top">
+                    <span class="conn-name">{conn.owner ? `Connected by ${conn.owner}` : conn.name}</span>
+                    {@render statusDot(conn.status)}
+                  </span>
+                  {#if conn.detail && conn.detail !== `Connected by ${conn.owner}`}<span class="meta wrap-meta">{conn.detail}</span>{/if}
+                  {#if conn.reason}<span class="conn-note" data-testid="integration-reason">{conn.reason}</span>{/if}
+                  {#if conn.fixPath}<span class="conn-note" data-testid="integration-fix">{conn.fixPath}</span>{/if}
+                </li>
+              {/each}
+            </ul>
+            <div class="actions">
+              <RailButton icon="external" data-testid="integration-open-console" onclick={openConsole}>Open console</RailButton>
+            </div>
+          </div>
+        {:else if integrationTab !== "connected" && integrationCurrent && !availableLoading && !availableFailed}
+          <header class="pane-h"><span class="pane-kind">{integrationCurrent.kind === "mcp" ? "Agents & MCP" : "Available"}</span></header>
           <div class="pane-b">
-            <h2>{integrationCurrent.name}</h2>
-            <p class="meta">{integrationCurrent.detail}</p>
-            {@render statusDot(integrationCurrent.status)}
+            <div class="app-head">
+              <ConnectionCardLogo logo={{ mark: brandMarkFor(integrationCurrent.domain) }} size={28} />
+              <span class="app-id">
+                <h2>{integrationCurrent.name}</h2>
+                {#if integrationCurrent.domain}<span class="meta">{integrationCurrent.domain}</span>{/if}
+              </span>
+            </div>
+            {#if integrationCurrent.kind === "available"}
+              <p class="meta">{deriveCategory(integrationCurrent.domain, integrationCurrent.name)}{integrationCurrent.audience ? ` · ${integrationCurrent.audience}` : ""}</p>
+              <p class="wrap-meta">{integrationCurrent.detail}</p>
+            {:else}
+              <p class="meta">{integrationCurrent.detail}</p>
+              {@render statusDot(integrationCurrent.status)}
+            {/if}
             <div class="actions">
               <RailButton icon="external" data-testid="integration-open-console" onclick={openConsole}>Open console</RailButton>
             </div>
@@ -1095,11 +1285,21 @@
   .meta { color: var(--t3, var(--v4-text-3)); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .grow-meta { flex: 1; min-width: 0; }
   .mono { font-family: var(--font-mono, ui-monospace, monospace); }
-  .mark { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border-radius: 5px; background: var(--raised, var(--v4-control-faint)); color: var(--t2, var(--v4-text-2)); font-size: 12px; font-weight: 500; }
   .st { display: inline-flex; align-items: center; gap: 6px; color: var(--t2, var(--v4-text-2)); white-space: nowrap; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3, var(--v4-text-3)); }
   .st[data-status="active"] .dot, .st[data-status="live"] .dot { background: var(--ok, var(--v4-ok)); }
   .st[data-status="error"] .dot { background: var(--red, var(--v4-danger)); }
+  .st[data-status="needs-attention"] .dot, .st[data-status="needs-sign-in"] .dot { background: var(--warn, var(--v4-warn, #e5a00d)); }
+  /* Integrations: one row per app (console hub), connections in the pane. */
+  .app-id { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .app-count { flex: 0 1 auto; }
+  .app-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .conns { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line, var(--v4-rowline)); }
+  .conn { display: flex; flex-direction: column; gap: 2px; padding: 10px 0; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
+  .conn-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+  .conn-name { color: var(--t1, var(--v4-text-1)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conn-note { color: var(--t2, var(--v4-text-2)); overflow-wrap: anywhere; }
+  .wrap-meta { color: var(--t3, var(--v4-text-3)); white-space: normal; overflow-wrap: anywhere; }
   /* Detail pane: Messages profile pane rhythm. */
   .pane { min-height: 0; overflow: auto; border-left: 1px solid var(--line, var(--v4-rowline)); display: flex; flex-direction: column; }
   .pane-h { display: flex; align-items: center; min-height: 48px; padding: 12px 14px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
