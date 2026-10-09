@@ -110,6 +110,7 @@
   import {
     companyPagePlaceholderForPage,
     companyRowDestination,
+    companyProjectsFocus,
     companyRowForPage,
   } from "./company-pane.js";
   import { entryCompanyUidForCommit, paneForEntry } from "./destination-pane.js";
@@ -13705,6 +13706,8 @@
               pickerCompanies={companyPickerSlugs(effectiveCompanies)}
               slug={companyPaneCompany.slug ?? null}
               preferredSlug={companyPaneCompany.slug ?? null}
+              focusProject={companyProjectsFocus(extraPageParam)?.project ?? null}
+              focusTab={companyProjectsFocus(extraPageParam)?.tab ?? null}
               onslugchange={(slug) => {
                 void navigate({ kind: "projects", company: slug });
               }}

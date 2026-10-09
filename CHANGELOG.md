@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Client health now reports the active sync runner version and whether it runs from the daemon or the npx cache. In daemon mode, it also reports the daemon hq-cloud updater's last check and outcome when the installed CLI provides them.
+- Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
 
 ## [0.11.0] — 2026-10-08
 
