@@ -227,61 +227,22 @@ describe("CompanySettingsPage live Groups and Grants", () => {
     expect(target.querySelector("[data-testid='groups-unavailable']")).not.toBeNull();
   });
 
-  it("Grants reads each top-level folder and shows counts per folder that expand to rows", async () => {
-    const files = filesApi();
-    const target = open("grants", { slug: "acme", companyUid: "cmp_live3", files });
-    expect(target.querySelector("[data-testid='grants-loading']")).not.toBeNull();
-    await vi.waitFor(() => {
-      flushSync();
-      expect(target.querySelectorAll("[data-testid='grant-section']")).toHaveLength(3);
-    });
-    expect(files.listDir).toHaveBeenCalledWith("companies/acme");
-    expect(files.getAccessTree.mock.calls.map((c) => c[1]).sort()).toEqual(["agents/*", "knowledge/*"]);
-    expect(text(target, "grants-sub")).toMatch(/^3 folder grants/);
-    const folders = [...target.querySelectorAll<HTMLElement>("[data-testid='grant-section']")].map((b) => b.dataset.folder);
-    expect(folders[0]).toBe("*");
-    const agents = target.querySelector<HTMLButtonElement>("[data-testid='grant-section'][data-folder='agents']")!;
-    expect(agents.textContent?.replace(/\s+/g, " ").trim()).toBe("agents/ 1 0 0 0 1");
-    expect(target.querySelector("[data-testid='grant-row']")).toBeNull();
-    agents.click();
-    flushSync();
-    expect(text(target, "grant-row")).toBe("Ana agents/a/* write No expiry");
-
-    target.querySelector<HTMLButtonElement>("[data-testid='grant-filter-groups']")!.click();
-    flushSync();
-    expect(target.querySelectorAll("[data-testid='grant-section']")).toHaveLength(2);
-    target.querySelector<HTMLButtonElement>("[data-testid='grant-filter-expiring']")!.click();
-    flushSync();
-    expect(text(target, "grants-filter-empty")).toContain("No folder grants have an expiry date");
-  });
-
-  it("Grants lists folders it could not read instead of hiding them", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const base = filesApi();
+  it("Grants shows cross-company group grants, not the folder census (owner 2026-10-08)", async () => {
     const files = filesApi({
-      getAccessTree: vi.fn(async (uid: string, prefix: string) =>
-        prefix === "knowledge/*" ? { ok: false as const, reason: "error" as const, code: "http-502", message: "bad gateway" } : base.getAccessTree(uid, prefix),
-      ),
+      listOutboundGroupGrants: vi.fn(async () => ({ ok: true as const, value: { grants: [] } })),
+      listInboundGroupGrants: vi.fn(async () => ({ ok: true as const, value: { grants: [] } })),
+      createGroupGrant: vi.fn(),
+      revokeGroupGrant: vi.fn(),
     });
-    const target = open("grants", { slug: "acme", companyUid: "cmp_live4", files });
+    const target = open("grants", { slug: "acme", companyUid: "cmp_live3", files });
     await vi.waitFor(() => {
       flushSync();
-      expect(target.querySelector("[data-testid='grants-unread']")).not.toBeNull();
+      expect(target.querySelector("[data-testid='grant-form']")).not.toBeNull();
     });
-    expect(text(target, "grants-unread")).toContain("knowledge/ · Could not read this folder's grants.");
-    expect(target.textContent).not.toContain("bad gateway");
-    warn.mockRestore();
-  });
-
-  it("Grants shows failed when every folder read fails", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const files = filesApi({ getAccessTree: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "http-500", message: "x" })) });
-    const target = open("grants", { slug: "acme", companyUid: "cmp_live5", files });
-    await vi.waitFor(() => {
-      flushSync();
-      expect(target.querySelector("[data-testid='grants-failed']")).not.toBeNull();
-    });
+    expect(text(target, "outbound-grants-empty")).toBe("No active grants yet.");
+    expect(files.getAccessTree).not.toHaveBeenCalled();
+    expect(files.listDir).not.toHaveBeenCalled();
     expect(target.querySelector("[data-testid='grant-section']")).toBeNull();
-    warn.mockRestore();
+    expect(target.textContent).not.toContain("folder grants");
   });
 });
