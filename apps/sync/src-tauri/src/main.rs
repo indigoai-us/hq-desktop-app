@@ -985,6 +985,7 @@ fn main() {
             commands::desktop_alt::list_deploy_apps,
             commands::deploy_preview::deploy_app_preview,
             commands::deploy_preview_pass::deploy_app_snapshot,
+            commands::link_title::link_page_title,
             commands::desktop_alt::deploy_access_request,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,

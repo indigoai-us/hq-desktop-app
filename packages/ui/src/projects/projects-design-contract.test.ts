@@ -154,3 +154,16 @@ describe("project board at narrow widths (QA-029)", () => {
     expect(boards).not.toContain("overflow-x: auto");
   });
 });
+
+describe("board column headers sit on the page ground", () => {
+  it.each([
+    ["StoryKanban.svelte", "column-header"],
+    ["CompanyProjectsPage.svelte", "kanban-column-head"],
+  ])("%s .%s has no fill, divider or sticky band", (file, cls) => {
+    const rule = styleOf(file).match(new RegExp(`\\.${cls} \\{[^}]*\\}`))?.[0] ?? "";
+    expect(rule).not.toBe("");
+    expect(rule).toContain("background: transparent;");
+    expect(rule).not.toContain("border-bottom");
+    expect(rule).not.toContain("position: sticky");
+  });
+});

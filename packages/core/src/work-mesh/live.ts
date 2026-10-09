@@ -42,6 +42,8 @@ export interface LiveSession {
    * today). Atlas places an actor with no project by these.
    */
   repo?: string;
+  /** Git branch the session is on, when the server sends it. */
+  branch?: string;
   cwd?: string;
   workerId?: string;
   status: LiveSessionStatus | string;
@@ -126,6 +128,7 @@ function parseSession(raw: unknown): LiveSession | null {
       : {}),
     ...(optionalTrimmed(row.taskId) ? { taskId: optionalTrimmed(row.taskId) } : {}),
     ...(optionalTrimmed(row.repo) ? { repo: optionalTrimmed(row.repo) } : {}),
+    ...(optionalTrimmed(row.branch) ? { branch: optionalTrimmed(row.branch) } : {}),
     ...(optionalTrimmed(row.cwd) ? { cwd: optionalTrimmed(row.cwd) } : {}),
     ...(optionalTrimmed(row.workerId) ? { workerId: optionalTrimmed(row.workerId) } : {}),
     status,

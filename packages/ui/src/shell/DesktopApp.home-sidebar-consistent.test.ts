@@ -235,18 +235,21 @@ describe("Home sidebar is the same however Home is reached", () => {
     expect(homeSidebar()).toEqual(viaRail);
   });
 
-  it("the company picker still narrows Home and shows that company's Activity", { timeout: 30_000 }, async () => {
+  it("the company picker narrows Home to one chronological list, no Activity block", { timeout: 30_000 }, async () => {
     await mountShell();
     await homeViaRail();
     click('[data-testid="chat-scope-pill"]');
     await settle();
     click(`[data-testid="chat-scope-option"][data-scope="${COMPANY_UID}"]`);
     await settle();
-    expect(homeSidebar().activity).toBe(true);
+    expect(homeSidebar().activity).toBe(false);
+    expect(
+      host.querySelector('.chat-list[aria-labelledby^="chat-sec-"] [data-conversation-id="ch:chn_indigo_ops"]'),
+    ).not.toBeNull();
 
     // Opening a conversation from Home keeps the picked company.
     click('[data-conversation-id="ch:chn_indigo_ops"]');
     await settle();
-    expect(homeSidebar().activity).toBe(true);
+    expect(homeSidebar().activity).toBe(false);
   });
 });

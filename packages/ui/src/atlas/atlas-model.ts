@@ -81,6 +81,8 @@ export type AtlasPresence = {
   name: string;
   bot: boolean;
   signal?: string;
+  /** "Working in <repo> · <branch>" when the live session names a repo. */
+  working?: string;
   /** Online with no session in progress; listed apart from Working now. */
   idle?: boolean;
   /** Name of the object on the map they are working on, when there is one. */
