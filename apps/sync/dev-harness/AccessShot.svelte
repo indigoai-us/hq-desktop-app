@@ -66,11 +66,35 @@
       const end = start + page.limit;
       return ok(tree(prefix, all.slice(start, end), end < all.length ? btoa(String(end)) : null));
     },
+    // Grants pane: cross-company group grants, matching the console's revoked rows.
+    listOutboundGroupGrants: async (_uid: string, groupId: string) => {
+      if (state === 'loading') return never();
+      if (state === 'failed') return fail('http-500');
+      const rows = [
+        { groupId: 'grp_scout_agent', sourceCompanyUid: 'cmp_acme', targetCompanyUid: 'cmp_kept', role: 'admin', status: 'revoked', targetCompanyName: 'Keptwork' },
+        { groupId: 'grp_dev_test', sourceCompanyUid: 'cmp_acme', targetCompanyUid: 'cmp_vyg', role: 'admin', status: 'revoked', targetCompanyName: 'VYG' },
+        { groupId: 'grp_dev_test', sourceCompanyUid: 'cmp_acme', targetCompanyUid: 'cmp_01GONE', role: 'admin', status: 'revoked' },
+        ...(params.get('active') ? [{ groupId: 'grp_exec', sourceCompanyUid: 'cmp_acme', targetCompanyUid: 'cmp_kept', role: 'guest', status: 'active', targetCompanyName: 'Keptwork' }] : []),
+      ];
+      return ok({ grants: rows.filter((r) => r.groupId === groupId) });
+    },
+    listInboundGroupGrants: async () => (state === 'loading' ? never() : state === 'failed' ? fail('http-500') : ok({ grants: [] })),
+    createGroupGrant: async () => {
+      await new Promise((r) => setTimeout(r, 1500));
+      return ok({ grant: {} });
+    },
+    revokeGroupGrant: async () => ok({ grant: {} }),
   };
+  const targets = [
+    { uid: 'cmp_acme', label: 'Acme', eligible: true },
+    { uid: 'cmp_kept', label: 'Keptwork', eligible: true },
+    { uid: 'cmp_vyg', label: 'VYG', eligible: true },
+    { uid: 'cmp_other', label: 'Northwind', eligible: false },
+  ];
 </script>
 
 <div class="frame" data-theme="dark">
-  <CompanySettingsPage slug="acme" companyLabel="Acme" companyUid="cmp_acme" section={pane} role="Owner" files={files as never} />
+  <CompanySettingsPage slug="acme" companyLabel="Acme" companyUid="cmp_acme" section={pane} role="Owner" files={files as never} {targets} />
 </div>
 
 <style>
