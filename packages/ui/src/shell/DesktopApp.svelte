@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { clearAccountCaches } from "../common/account-caches.js";
   import RailIcon from "../common/button/RailIcon.svelte";
   import {
     parseMeshProjectView,
@@ -11802,6 +11803,7 @@
     pendingRestoreScroll = null;
     const cache = imagePreviewCache;
     await onsignout?.();
+    clearAccountCaches();
     try { await cache?.clearAccount(); }
     catch (error) { console.warn("[image-preview] Sign-out cache cleanup failed", error); }
   }

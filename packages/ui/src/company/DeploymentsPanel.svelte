@@ -10,6 +10,8 @@
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import ListEmptyState from "../common/ListEmptyState.svelte";
+  import ShowMoreRow from "../shell/ShowMoreRow.svelte";
+  import { pageRows } from "../shell/list-paging.js";
 
   interface Props {
     slug: string;
@@ -50,6 +52,14 @@
       matchesDeploymentQuery(deployment, deploymentQuery),
     ),
   );
+  // Large companies have over a thousand deployments; paint them a page at a time.
+  let deploymentPages = $state(1);
+  const deploymentPage = $derived(pageRows(filteredDeployments, deploymentPages));
+  $effect(() => {
+    void deploymentQuery;
+    void slug;
+    deploymentPages = 1;
+  });
 
   $effect(() => {
     const token = reloadToken;
@@ -310,10 +320,13 @@
         <ReadLoader testid="deployments-loading" onretry={retry} />
       {:else if filteredDeployments.length > 0}
         <div class="deployment-list">
-          {#each filteredDeployments as deployment, index (`${deployment.url}:${index}`)}
+          {#each deploymentPage.rows as deployment, index (`${deployment.url}:${index}`)}
             <DeploymentRow {deployment} {openExternal} />
           {/each}
         </div>
+        {#if deploymentPage.remaining > 0}
+          <ShowMoreRow shown={deploymentPage.rows.length} total={deploymentPage.total} next={deploymentPage.next} noun="deployments" onmore={() => (deploymentPages += 1)} testid="deployments-more" />
+        {/if}
       {:else}
         <ListEmptyState
           total={deployments.length}
