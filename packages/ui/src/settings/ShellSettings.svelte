@@ -711,7 +711,7 @@
           {/await}
         {/if}
       {:else if active === "billing"}
-        <BillingSettingsPane {openExternal} />
+        <BillingSettingsPane {openExternal} company={adapter?.company ?? null} />
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
       {:else if active === "bots"}

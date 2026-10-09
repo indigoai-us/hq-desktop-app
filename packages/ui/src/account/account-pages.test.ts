@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  ACCOUNT_BILLING_URL,
   deleteConfirmed,
   invoicePdfUrl,
   invoiceStripeUrl,
@@ -18,7 +19,18 @@ describe("account pages (US-035)", () => {
     expect(new URL(invoicePdfUrl("IN-2026-0009")).hostname).toBe("billing.stripe.com");
     expect(invoicePdfUrl("IN-2026-0009")).toContain(".pdf");
     expect(new URL(invoiceStripeUrl("IN-2026-0009")).hostname).toBe("billing.stripe.com");
-    expect(new URL(managePaymentUrl()).hostname).toBe("billing.stripe.com");
+  });
+
+  it("Manage payment opens the person portal session hq-pro mints", async () => {
+    const session = "https://billing.stripe.com/p/session/live_person";
+    const createPersonBillingPortalSession = vi.fn(async () => ({ ok: true as const, value: { url: session } }));
+    await expect(managePaymentUrl({ createPersonBillingPortalSession })).resolves.toBe(session);
+    expect(createPersonBillingPortalSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("Manage payment falls back to the console account billing page", async () => {
+    await expect(managePaymentUrl(null)).resolves.toBe(ACCOUNT_BILLING_URL);
+    expect(ACCOUNT_BILLING_URL).toBe("https://hq.computer/account/billing");
   });
 
   it("requires the delete phrase before sign-in", () => {

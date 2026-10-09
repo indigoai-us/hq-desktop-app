@@ -39,13 +39,14 @@ describe("one Settings list (OWNER-R21)", () => {
     expect(nav.slice(0, 9)).toEqual(["profile", "public-profile", "billing", "general", "appearance", "notifications", "sync", "meetings", "updates"]);
   });
 
-  it("Billing renders inside Settings with Manage payment", () => {
+  it("Billing renders inside Settings with Manage payment, which falls back to the console", async () => {
     const openExternal = vi.fn();
     mountSettings({ initialSection: "billing", openExternal });
     const pane = host.querySelector('[data-testid="settings-billing-pane"]');
     expect(pane).not.toBeNull();
     host.querySelector<HTMLButtonElement>('[data-testid="manage-payment"]')!.click();
-    expect(openExternal).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(openExternal).toHaveBeenCalledTimes(1));
+    expect(openExternal).toHaveBeenCalledWith("https://hq.computer/account/billing");
   });
 
   it("old Profile, Billing and account Settings routes redirect into Settings", () => {

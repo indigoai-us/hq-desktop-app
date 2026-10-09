@@ -1325,6 +1325,10 @@ export function createSyncPlatformAdapter(
       getDeployments: (slug) => call('get_company_deployments', { slug }),
       listIntegrations: (companyUid) =>
         hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid), undefined, COMPANY_INTEGRATIONS_TIMEOUT_SECS),
+      createBillingPortalSession: (companyUid) =>
+        hqProJson('POST', '/v1/billing/portal', { companyUid }),
+      createPersonBillingPortalSession: () =>
+        hqProJson('POST', '/v1/billing/person/portal', {}),
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
       deployAppPreview: (appId, url, deployedAt, refresh) =>
         call('deploy_app_preview', { appId, url, deployedAt, refresh }),

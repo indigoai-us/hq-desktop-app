@@ -6,7 +6,9 @@
  * external hand-off. Settings section ids are the SettingsPage vocabulary.
  */
 
-import { approvedStripeUrl, stripeDestination } from "../company/company-settings.js";
+import type { CompanyApi } from "@hq/platform";
+import { approvedStripeUrl, billingPortalUrl } from "../company/company-settings.js";
+import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
 import { advertisedShortcutRows } from "../shell/advertised-shortcuts.js";
 import { SETTINGS_SECTIONS, type SettingsTab } from "../settings/settings-sections.js";
 
@@ -139,9 +141,13 @@ export function invoiceStripeUrl(id: string): string {
   return stripeInvoice(id, false);
 }
 
-/** Manage payment opens the Stripe customer portal. */
-export function managePaymentUrl(): string {
-  return stripeDestination("portal");
+/** The console's person billing page, the fallback when no portal session is minted. */
+export const ACCOUNT_BILLING_URL = `${HQ_CONSOLE_BASE}/account/billing`;
+
+/** Manage payment opens the caller's own Stripe portal session. */
+export function managePaymentUrl(company: Pick<CompanyApi, "createPersonBillingPortalSession"> | null | undefined): Promise<string> {
+  const mint = company?.createPersonBillingPortalSession ? () => company.createPersonBillingPortalSession!() : null;
+  return billingPortalUrl(mint, ACCOUNT_BILLING_URL);
 }
 
 export const DELETE_CONFIRM_PHRASE = "delete";
