@@ -1861,6 +1861,21 @@ export function omitCompanyScopedChannels(
   return rows.filter((row) => !isCompanyScopedChannel(row));
 }
 
+/**
+ * Rows the conversation rail dates. All and a company pane list every
+ * conversation, company channels included, in one chronological list; only
+ * Personal leaves company channels out. There is no separate block for
+ * company channels: an "ACTIVITY" block pinned above the date buckets made
+ * channels with old or missing activity outrank today's DMs.
+ */
+export function railInboxRows(
+  rows: readonly ConversationRow[],
+  scope: CompanyScope,
+): ConversationRow[] {
+  if (scope === "personal") return omitCompanyScopedChannels(rows);
+  return rows.slice();
+}
+
 /** Company-scoped channels for one company, newest activity first. */
 export function companyScopedChannels(
   rows: readonly ConversationRow[],

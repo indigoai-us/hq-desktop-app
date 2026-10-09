@@ -14,12 +14,9 @@
   import { loadAtlas } from "./atlas-lazy.js";
   import type { AtlasLiveActor, AtlasWorkingNow } from "./atlas-landing.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
-  import { useCompanySummary } from "../company/company-summary.svelte.js";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import { atlasNodeDestination, type AtlasActionNode } from "./atlas-landing.js";
   import type { NavigationDestination } from "./navigation-history.js";
-  import { loadLocalProjects, ProjectsUnavailableError } from "../projects/local-projects.js";
-  import { boardProjectsInProgress } from "../projects/projects-model.js";
   import { requestLiveRefresh } from "../mesh/live-refresh.js";
 
   type AtlasModule = Awaited<ReturnType<typeof loadAtlas>>;
@@ -28,10 +25,8 @@
   interface Props {
     companyLabel: string;
     workingNow: readonly AtlasWorkingNow[];
-    /** Company slug for the cached summary; projects in progress come from it. */
+    /** Company slug: the local map folder and the inspector's open targets. */
     slug?: string | null;
-    /** False when the host has no company backend (summary stays empty). */
-    summaryEnabled?: boolean;
     onopenperson?: (uid: string) => void;
     /** Company uid for the Atlas graph; without one the map stays unmounted. */
     companyUid?: string | null;
@@ -60,13 +55,14 @@
     atlasLocal?: AtlasLocalSource | null;
     /** OWNER-R4: company telemetry for the Atlas People & agents list. */
     loadPeople?: (() => Promise<unknown>) | null;
+    /** Live Board project view by project id (story counts in Today). */
+    loadProjectView?: ((projectId: string) => Promise<unknown>) | null;
   }
 
   let {
     companyLabel,
     workingNow,
     slug = null,
-    summaryEnabled = false,
     onopenperson,
     companyUid = null,
     actors = [],
@@ -78,6 +74,7 @@
     atlasSource = null,
     atlasLocal = null,
     loadPeople = null,
+    loadProjectView = null,
   }: Props = $props();
 
   // Who is working now comes from the live read. Ask for it when Atlas opens
@@ -87,33 +84,6 @@
     const uid = companyUid?.trim();
     if (uid) requestLiveRefresh(uid);
   });
-
-  // Shared cache with the company sidepane: paints the warm summary first and
-  // refreshes in the background. No poller.
-  const summary = useCompanySummary({
-    slug: () => slug?.trim() || null,
-    enabled: () => summaryEnabled,
-  });
-  // In progress comes from the same projects and board status helper as the
-  // Projects page (QA-065); the cached summary only fills in until it loads.
-  let boardInProgress = $state<number | null>(null);
-  let boardRequest = 0;
-  $effect(() => {
-    const boardSlug = slug?.trim() || null;
-    const request = ++boardRequest;
-    boardInProgress = null;
-    if (!boardSlug) return;
-    loadLocalProjects()
-      .then((projects) => {
-        if (request === boardRequest) boardInProgress = boardProjectsInProgress(projects, boardSlug);
-      })
-      .catch((err) => {
-        if (!(err instanceof ProjectsUnavailableError)) {
-          console.warn(`Atlas projects in progress for ${boardSlug} failed:`, err);
-        }
-      });
-  });
-  const projectsInProgress = $derived(boardInProgress ?? summary.summary.board);
 
   let mod = $state<AtlasModule | null>(null);
   const cache = $derived.by(() => {
@@ -171,8 +141,8 @@
       {filterActor}
       {onclearfilter}
       {onopenpage}
-      projectsInProgress={boardInProgress}
       {loadPeople}
+      {loadProjectView}
       onopenfiles={(node) => openNode(node, "files")}
       onopenboard={(node) => openNode(node, "board")}
       onopenperson={(uid) => onopenperson?.(uid)}
@@ -206,8 +176,6 @@
         related={[]}
         presence={[...workingNow]}
         company={companyLabel}
-        objectCount={null}
-        {projectsInProgress}
         nowMs={Date.now()}
         onselect={selectWho}
       />

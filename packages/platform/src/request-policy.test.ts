@@ -375,4 +375,88 @@ describe("startJitteredPoll", () => {
     await Promise.resolve();
     expect(ticks).toBe(0);
   });
+
+  describe("pauseWhenHidden", () => {
+    function fakeVisibility(hidden: boolean) {
+      const listeners = new Set<() => void>();
+      return {
+        hidden,
+        listeners,
+        addEventListener: (_: "visibilitychange", fn: () => void) => void listeners.add(fn),
+        removeEventListener: (_: "visibilitychange", fn: () => void) => void listeners.delete(fn),
+        set(next: boolean) {
+          this.hidden = next;
+          for (const fn of [...listeners]) fn();
+        },
+      };
+    }
+    function timers() {
+      let pending: (() => void) | null = null;
+      return {
+        flush: () => { const due = pending; pending = null; due?.(); },
+        has: () => pending !== null,
+        setTimeoutFn: (fn: () => void) => { pending = fn; return 1; },
+        clearTimeoutFn: () => { pending = null; },
+      };
+    }
+
+    it("skips ticks while hidden and runs one owed tick when shown", async () => {
+      const t = timers();
+      const vis = fakeVisibility(false);
+      let ticks = 0;
+      const stop = startJitteredPoll({
+        intervalMs: 30_000, throttle: null, pauseWhenHidden: true, visibility: vis,
+        tick: () => { ticks += 1; },
+        setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn,
+      });
+      t.flush();
+      await Promise.resolve();
+      expect(ticks).toBe(1);
+
+      vis.set(true);
+      t.flush();
+      await Promise.resolve();
+      expect(ticks).toBe(1);
+      expect(t.has()).toBe(false);
+
+      vis.set(false);
+      await Promise.resolve();
+      expect(ticks).toBe(2);
+      expect(t.has()).toBe(true);
+      stop();
+      expect(vis.listeners.size).toBe(0);
+    });
+
+    it("does not run an extra tick on show when none came due", async () => {
+      const t = timers();
+      const vis = fakeVisibility(false);
+      let ticks = 0;
+      const stop = startJitteredPoll({
+        intervalMs: 30_000, throttle: null, pauseWhenHidden: true, visibility: vis,
+        tick: () => { ticks += 1; },
+        setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn,
+      });
+      vis.set(true);
+      vis.set(false);
+      await Promise.resolve();
+      expect(ticks).toBe(0);
+      stop();
+    });
+
+    it("keeps polling while hidden when the option is off", async () => {
+      const t = timers();
+      const vis = fakeVisibility(true);
+      let ticks = 0;
+      const stop = startJitteredPoll({
+        intervalMs: 30_000, throttle: null, visibility: vis,
+        tick: () => { ticks += 1; },
+        setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn,
+      });
+      t.flush();
+      await Promise.resolve();
+      expect(ticks).toBe(1);
+      expect(vis.listeners.size).toBe(0);
+      stop();
+    });
+  });
 });

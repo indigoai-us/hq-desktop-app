@@ -1508,8 +1508,8 @@ export const AGENT_PATHS = {
     `/v1/fleet/${encodeURIComponent(companyUid)}/agents/${encodeURIComponent(agentUid)}/owners`,
   companyTelemetry: (companyUid: string, from: string, to: string) =>
     `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-  myTelemetry: (from: string, to: string) =>
-    `/v1/telemetry/me?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+  myTelemetry: (from: string, to: string, tz?: string) =>
+    `/v1/telemetry/me?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`,
 } as const;
 
 /** One company's connected apps (hq-pro integrations-admin; any member may read). */
@@ -1649,10 +1649,11 @@ export interface AgentsApi {
     to: string,
   ): AdapterPromise<Json>;
   /**
-   * GET /v1/telemetry/me?from=&to= — the caller's own cross-company rollups
-   * (daily series + totals). Optional so older test doubles stay valid.
+   * GET /v1/telemetry/me?from=&to=&tz= — the caller's own cross-company rollups
+   * (daily series + totals). `tz` is an IANA zone; the response's `bucketTz`
+   * says which zone the days were cut in. Optional so older test doubles stay valid.
    */
-  getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
+  getMyTelemetry?(from: string, to: string, tz?: string): AdapterPromise<Json>;
   /**
    * OWNER-R27: session history recorded on this Mac in the HQ workspace
    * folder (workspace/sessions + workspace/threads), newest first. Native

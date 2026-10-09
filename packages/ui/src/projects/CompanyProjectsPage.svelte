@@ -1525,10 +1525,6 @@
 <style>
   .company-projects {
     container: company-projects / inline-size;
-    /* Shared by the sticky column headers: the page ground laid over an
-       opaque surface, so cards scrolling underneath never show through. */
-    --projects-sticky-bg: linear-gradient(var(--v4-ground), var(--v4-ground)),
-      var(--v4-surface-solid);
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -1837,7 +1833,7 @@
   }
 
   /* overflow-x: clip keeps cards inside the column without creating a scroll
-     container, so the sticky header still sticks to the page scroller. */
+     container. */
   .kanban-column {
     display: flex;
     flex-direction: column;
@@ -1847,20 +1843,14 @@
     background: transparent;
   }
 
+  /* Unshaded header: no fill, no divider, not sticky. */
   .kanban-column-head {
-    position: sticky;
-    top: 0;
-    z-index: 2;
     display: flex;
     align-items: center;
     min-height: 36px;
     margin-bottom: 8px;
     padding: 0 2px;
-    border-bottom: 1px solid var(--v4-hairline);
-    background: var(
-      --projects-sticky-bg,
-      var(--v4-surface-solid)
-    );
+    background: transparent;
   }
 
   .kanban-column-title {

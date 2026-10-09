@@ -4,7 +4,7 @@
 import type { Workspace } from '../../src/lib/workspaces';
 import { personaHasLocalHq, resolveHarnessPersona, type ShellPersona } from '../personas';
 import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../state-flags';
-import { readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
+import { conflictNoticesSwitch, readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
@@ -1915,6 +1915,27 @@ const harnessNotifyPrefs: Record<string, unknown> = {
   updatedAt: '2026-09-23T12:00:00.000Z',
 };
 
+/**
+ * The person-scope flag snapshot answered here would hide the flags an audit
+ * switch turns on (`?firstrun=`, `?gates=on`): merge them in.
+ */
+function withSwitchedFlags(
+  answer: { status: number; body: string },
+  args?: Record<string, unknown>,
+): { status: number; body: string } {
+  if (args?.url !== '/v1/flags/resolve') return answer;
+  const search = typeof window === 'undefined' ? null : window.location.search;
+  const switched = switchedHandler('hq_pro_fetch', args, search)?.value as { body?: string } | undefined;
+  if (!switched || typeof switched.body !== 'string') return answer;
+  try {
+    const base = JSON.parse(answer.body) as { version: number; flags: Record<string, boolean> };
+    const extra = JSON.parse(switched.body) as { flags?: Record<string, boolean> };
+    return { status: 200, body: JSON.stringify({ ...base, flags: { ...base.flags, ...(extra.flags ?? {}) } }) };
+  } catch {
+    return answer;
+  }
+}
+
 function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; body: string } | null {
   const url = typeof args?.url === 'string' ? args.url : '';
   const method = typeof args?.method === 'string' ? args.method : 'GET';
@@ -1940,7 +1961,30 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   return null;
 }
 
+// ?scale=large inflates the long lists to a big company's real sizes (1,290
+// deployments, 1,700 policies, 925 knowledge files) for perf measurement.
+function scaledAnswer(cmd: string, args?: Record<string, unknown>): unknown {
+  if (typeof window === 'undefined' || new URLSearchParams(window.location.search).get('scale') !== 'large') return NOT_HANDLED;
+  if (cmd === 'get_company_deployments') {
+    return Array.from({ length: 1290 }, (_, i) => ({ sub: `app-${i}`, url: `app-${i}.hq.computer`, state: i % 9 ? 'active' : 'paused', lastDeploy: `${i % 30}d ago`, size: '4.2 MB', ver: `v1.${i}`, pwd: i % 4 === 0 }));
+  }
+  if (cmd === 'list_hq_dir') {
+    const rel = String(args?.relPath ?? '');
+    const many = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => ({ name: `${prefix}-${String(i).padStart(4, '0')}.md`, path: `${rel}/${prefix}-${String(i).padStart(4, '0')}.md`, isDir: false, hasChildren: false }));
+    if (/^companies\/[^/]+\/policies$/.test(rel)) return many(1700, 'policy');
+    if (/^companies\/[^/]+\/knowledge$/.test(rel)) return many(925, 'doc');
+  }
+  if (cmd === 'get_company_file_content') {
+    const path = String(args?.relPath ?? args?.path ?? '');
+    const m = /policy-(\d+)\.md$/.exec(path);
+    if (m) return `---\ntitle: Policy ${m[1]}\nenforcement: ${Number(m[1]) % 3 ? 'soft' : 'hard'}\nwhen: deploy, release\n---\n# Rule\n\nKeep it short.\n`;
+  }
+  return NOT_HANDLED;
+}
+
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const scaled = scaledAnswer(cmd, args);
+  if (scaled !== NOT_HANDLED) return scaled as T;
   if (typeof window !== 'undefined') {
     const counts = ((window as Window & { __hqInvokeCounts?: Record<string, number> })
       .__hqInvokeCounts ??= {});
@@ -1954,7 +1998,7 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   }
   if (cmd === 'hq_pro_fetch') {
     const notify = harnessNotifyFetch(args);
-    if (notify) return notify as T;
+    if (notify) return withSwitchedFlags(notify, args) as T;
   }
   if (cmd === 'invalidate_notify_prefs_cache') return null as T;
   if (new URLSearchParams(window.location.search).has('loadingTest')) {
@@ -1977,6 +2021,10 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   const search = typeof window === 'undefined' ? null : window.location.search;
   if (cmd === 'hq_pro_fetch' && typeof window !== 'undefined') {
     ((window as Window & { __hqFetchUrls?: string[] }).__hqFetchUrls ??= []).push(String(args?.url ?? ''));
+  }
+  if (cmd === 'get_pending_conflict_notices') {
+    const conflicts = conflictNoticesSwitch(search);
+    if (conflicts) return conflicts as T;
   }
   const switched = switchedHandler(cmd, args, search);
   if (switched) return switched.value as T;

@@ -62,6 +62,7 @@ mod ui_hot_update;
 mod ui_protocol;
 mod tray_helper;
 mod updater;
+mod scratch_build;
 mod updater_outcome;
 mod util;
 #[cfg(target_os = "macos")]
@@ -982,6 +983,7 @@ fn main() {
             commands::desktop_alt::list_deploy_apps,
             commands::deploy_preview::deploy_app_preview,
             commands::deploy_preview_pass::deploy_app_snapshot,
+            commands::link_title::link_page_title,
             commands::desktop_alt::deploy_access_request,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,
@@ -1296,7 +1298,11 @@ fn main() {
             // hq-cli can attach the installed hq-sync version to feedback
             // submissions — the CLI has no other way to learn the running
             // menubar-app version. Best-effort; never aborts launch.
-            commands::config::record_sync_version(app_version::current());
+            // Not from a scratch build (scratch_build.rs): it would name the
+            // test bundle as the installed app.
+            if !scratch_build::active() {
+                commands::config::record_sync_version(app_version::current());
+            }
 
             // Heal a LaunchAgent still pointing at a renamed bundle
             // (`HQ Sync.app` → `HQ.app`) before the default-on create/opt-out
