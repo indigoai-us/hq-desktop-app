@@ -9,6 +9,9 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - The Activity page now shows which models each person uses. The team list adds a short line under each name with their most-used model, such as "Opus 5.5 +1" when they used more than one. A person's detail panel has a Models section listing each model with its share of their tokens, most used first. Export includes the models too. People with no model data show neither.
+- Warning, error, info and success boxes in chat messages are quieter: they now use a neutral background, and only the icon is colored.
+- Client health now reports the active sync runner version and whether it runs from the daemon or the npx cache. In daemon mode, it also reports the daemon hq-cloud updater's last check and outcome when the installed CLI provides them.
+- Picking a company's project in the ⌘K palette now opens it on that company's Projects page, with the company sidebar open. The palette's Projects command opens the selected company's Projects page. Before, both left the company and showed the Home message list. From Home with no company selected, Projects still opens the Projects page with its company picker. Personal projects open there too.
 - Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
 
 ## [0.11.0] — 2026-10-08
