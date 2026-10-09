@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Links in messages now show a short readable title instead of the full web address. A Google Calendar invite reads as the event name and date, a GitHub link as the repository and number (such as indigoai-us/hq-desktop-app#1512), and a deployed app as its name. Other links show the page's own title when HQ can read it, otherwise the site and the end of the path. Links written with their own text keep that text. Hover over a link, or move to it with the keyboard, to see a card with the details: date, time, time zone, repeat and place for a calendar invite, with Add to calendar; repository and number for GitHub; app and host for a deploy; and the full address with Copy link for anything else. Escape closes the card, and clicking the link still opens it. Page titles are read by the app itself, without your sign-ins or cookies, and only from public web addresses.
+
 ## [0.11.0] — 2026-10-08
 
 This release brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.

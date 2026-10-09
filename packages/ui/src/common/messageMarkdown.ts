@@ -11,6 +11,7 @@
  */
 import { escapeHtml, renderMarkdown, safeHref } from "./markdown.js";
 import { replaceEmojiShortcodesInHtml } from "./emojiShortcodes.js";
+import { relabelRawUrlLinks, type PageTitleLookup } from "./linkPreview.js";
 
 function trimBlankBoundaryLines(lines: string[]): string[] {
   let start = 0;
@@ -232,7 +233,20 @@ export function autolinkMessageUrls(html: string): string {
   return out;
 }
 
-export function renderMessageBodyMarkdown(body: string): string {
+/**
+ * Render a chat body. Raw URLs become readable link titles (see
+ * linkPreview.ts); `pageTitle` supplies fetched page titles for generic links.
+ * The relabel pass runs outside the body cache so a newly fetched title shows
+ * up without evicting it.
+ */
+export function renderMessageBodyMarkdown(
+  body: string,
+  pageTitle?: PageTitleLookup,
+): string {
+  return relabelRawUrlLinks(renderMessageBodyHtml(body), pageTitle);
+}
+
+function renderMessageBodyHtml(body: string): string {
   const hit = markdownCache.get(body);
   if (hit !== undefined) return hit;
   // Emoji conversion runs LAST, on already-escaped HTML: autolinking has
