@@ -69,6 +69,9 @@ pub fn init(app: &AppHandle) {
 /// key survives every typed settings round-trip). `HQ_UI_HOT_UPDATES`
 /// overrides it.
 pub fn mode() -> UiHotMode {
+    if crate::scratch_build::active() {
+        return UiHotMode::Off;
+    }
     if let Ok(v) = std::env::var("HQ_UI_HOT_UPDATES") {
         return UiHotMode::from_pref(Some(&v));
     }
@@ -581,6 +584,10 @@ fn check_interval() -> Duration {
 
 /// Launch check plus the 30-minute schedule, with backoff on failures.
 pub fn setup_checker(app: &AppHandle) {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("UI hot update checker");
+        return;
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_CHECK_DELAY).await;

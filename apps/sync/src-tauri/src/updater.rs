@@ -2706,8 +2706,12 @@ const UPDATER_DISABLED_MESSAGE: &str = "Updates are turned off for this build";
 /// GitHub releases even when plugins.updater.endpoints is empty. On
 /// 2026-10-08 a "HQ Lane Check" bundle pulled 0.11.0-beta.11 that way,
 /// installed it over itself and repointed the login LaunchAgent.
+///
+/// A scratch build (`HQ_SCRATCH_BUILD`, see `scratch_build.rs`) has the same
+/// switch baked in, so a test bundle opened from Finder (no shell env) is
+/// covered too.
 pub fn updater_disabled() -> bool {
-    dev_env_flag_set(UPDATER_DISABLED_ENV)
+    dev_env_flag_set(UPDATER_DISABLED_ENV) || crate::scratch_build::active()
 }
 
 pub fn setup_update_checker(app: &AppHandle) {

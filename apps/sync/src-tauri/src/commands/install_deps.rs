@@ -7888,6 +7888,10 @@ static QMD_ABI_REPAIR_STARTED: AtomicBool = AtomicBool::new(false);
 /// Launch-time repair for a desktop-installed qmd whose sqlite addon was built
 /// for a different Node ABI than HQ's managed Node. Runs once per process.
 pub fn setup_qmd_abi_repair(app: &AppHandle) {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("qmd ABI repair");
+        return;
+    }
     if QMD_ABI_REPAIR_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
