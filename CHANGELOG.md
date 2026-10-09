@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Activity page now shows which models each person uses. The team list adds a short line under each name with their most-used model, such as "Opus 5.5 +1" when they used more than one. A person's detail panel has a Models section listing each model with its share of their tokens, most used first. Export includes the models too. People with no model data show neither.
 - The Tokens per day chart in My Telemetry now says UTC next to its title, because HQ counts each day from midnight UTC rather than your local midnight. The highlighted bar and the "today" label now mean today where you are: in the evening in the Americas, the newest bar is already tomorrow in UTC, so it shows its date instead of "today". The app now sends your time zone with the request, and the UTC note goes away once HQ reports that it counted the days in your zone.
 - Warning, error, info and success boxes in chat messages are quieter: they now use a neutral background, and only the icon is colored.
 - Client health now reports the active sync runner version and whether it runs from the daemon or the npx cache. In daemon mode, it also reports the daemon hq-cloud updater's last check and outcome when the installed CLI provides them.
