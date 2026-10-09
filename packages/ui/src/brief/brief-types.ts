@@ -31,6 +31,14 @@ export interface BriefCalendarEvent {
   kind: "team" | "ext" | "learn";
   /** Projected from a recurring series rather than read from the calendar. */
   projected?: boolean;
+  /** A free/busy placeholder with no title: hatched, unlabeled. */
+  busy?: boolean;
+  /** You answered "maybe": dashed outline, as in Meetings. */
+  tentative?: boolean;
+  /** Attendee names for the hover peek (you are left out). */
+  attendees?: string[];
+  /** Join link (Meet, Zoom, Teams, Webex), when the event has one. */
+  joinUrl?: string | null;
 }
 
 export interface BriefMeeting {

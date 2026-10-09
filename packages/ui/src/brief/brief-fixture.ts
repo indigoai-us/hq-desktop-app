@@ -32,12 +32,21 @@ export function octoberEightBrief(now: Date = new Date()): BriefInput {
     now: now.toISOString(),
     userName: "Corey",
     companies: [INDIGO, LIVERECOVER, "indigo", "liverecover"],
+    // Copied from the owner's real Oct 9 calendar (Meetings day view), with the
+    // free/busy holds the feed sends alongside: two cover named events and are
+    // dropped by the strip, one stands alone.
     calendarToday: [
-      { id: "c1", title: "Dev standup", start: at(now, 9, 0), end: at(now, 9, 30), kind: "team" },
-      { id: "c2", title: "HQ and Sales sync", start: at(now, 9, 0), end: at(now, 9, 45), kind: "team" },
-      { id: "c3", title: "Zach and Jeff onboarding", start: at(now, 10, 0), end: at(now, 11, 0), kind: "ext" },
-      { id: "c4", title: "Cut30 office hours", start: at(now, 13, 0), end: at(now, 14, 0), kind: "learn" },
-      { id: "c5", title: "Getting started with HQ", start: at(now, 16, 0), end: at(now, 17, 0), kind: "learn", projected: true },
+      { id: "c1", title: "VYG Standup", start: at(now, 7, 30), end: at(now, 8, 0), kind: "team" },
+      { id: "c2", title: "HQ Dev Standup", start: at(now, 9, 0), end: at(now, 10, 0), kind: "team" },
+      { id: "b1", title: "Busy", start: at(now, 9, 0), end: at(now, 10, 0), kind: "team", busy: true },
+      { id: "c3", title: "Jacob / Corey", start: at(now, 9, 30), end: at(now, 10, 0), kind: "team" },
+      { id: "c4", title: "HQ Training Series", start: at(now, 11, 0), end: at(now, 11, 45), kind: "learn" },
+      { id: "c5", title: "HQ Founder Office Hours", start: at(now, 12, 0), end: at(now, 13, 0), kind: "learn" },
+      { id: "b2", title: "Busy", start: at(now, 12, 0), end: at(now, 13, 0), kind: "team", busy: true },
+      { id: "c6", title: "Jordan Menard / Corey Epstein", start: at(now, 13, 15), end: at(now, 13, 30), kind: "ext", tentative: true },
+      { id: "c7", title: "Lizzie / Corey Epstein – HQ Advisory", start: at(now, 14, 0), end: at(now, 14, 30), kind: "ext", attendees: ["Lizzie"] },
+      { id: "c8", title: "30 Min Video/Phone Meeting w/ Rachel Bell", start: at(now, 15, 30), end: at(now, 16, 0), kind: "ext", joinUrl: "https://zoom.us/j/000" },
+      { id: "b3", title: "Busy", start: at(now, 16, 30), end: at(now, 17, 0), kind: "team", busy: true },
     ],
     decisions: [
       {

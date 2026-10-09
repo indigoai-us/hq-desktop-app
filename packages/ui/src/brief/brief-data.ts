@@ -21,6 +21,7 @@
 import type { AdapterPromise, Json, WhoAmI } from "@hq/platform";
 import { parseRecordedMeetings, signalBodyText } from "../meetings/recorded-meetings.js";
 import { localSessionsFromNative } from "../telemetry/telemetry-local-sessions.js";
+import { eventEnd, eventMeetingUrl, eventStart, type MeetingEvent } from "../meetings/meetings-model.js";
 import { briefSeed } from "./brief-seed.js";
 import { parseSweep, sweepToInput } from "./brief-sweep.js";
 import { parseBriefItems, parseHousekeeping, type BriefHousekeeping } from "./brief-run-files.js";
@@ -159,17 +160,36 @@ export function signalTitle(markdown: string): string {
 
 const LEARN = /\b(training|office hours|live session|getting started|course|workshop|class)\b/i;
 
-/** Today's calendar events from the upcoming feed, classified for the strip. */
+/**
+ * Today's calendar from the upcoming feed, read with the Meetings view's own
+ * event helpers (eventStart / eventEnd / eventMeetingUrl) so times and links
+ * agree. Every named event of the day is kept, with or without a join link. All-day, cancelled and declined events are
+ * left out; untitled "Busy" holds are kept as busy blocks (the strip drops
+ * the ones a named event covers); a repeated event (same title and start,
+ * from two calendars) is kept once.
+ */
 export function calendarToday(raw: readonly Json[], now: Date, selfEmail: string): BriefCalendarEvent[] {
-  const domain = selfEmail.split("@")[1]?.toLowerCase() ?? "";
+  const self = selfEmail.toLowerCase();
+  const domain = self.split("@")[1] ?? "";
   const out: BriefCalendarEvent[] = [];
+  const seen = new Set<string>();
   for (const item of raw) {
     const e = rec(item);
     if (str(e.status) === "cancelled") continue;
-    const start = str(rec(e.start).dateTime);
-    if (!start || !sameLocalDay(start, now)) continue;
-    const title = str(e.summary) || "Busy";
+    const ev = item as unknown as MeetingEvent;
+    if (!rec(e.start).dateTime) continue; // all-day
+    const start = eventStart(ev);
+    if (!start || !sameLocalDay(start.toISOString(), now)) continue;
+    const end = eventEnd(ev);
     const attendees = Array.isArray(e.attendees) ? e.attendees.map(rec) : [];
+    const me = attendees.find((a) => a.self === true || (self !== "" && str(a.email).toLowerCase() === self));
+    const response = str(me?.responseStatus);
+    if (response === "declined") continue;
+    const summary = str(e.summary);
+    const busy = !summary || summary.toLowerCase() === "busy";
+    const key = `${summary.toLowerCase()}|${start.getTime()}`;
+    if (!busy && seen.has(key)) continue;
+    seen.add(key);
     const outside =
       domain !== "" &&
       attendees.some((a) => {
@@ -177,11 +197,18 @@ export function calendarToday(raw: readonly Json[], now: Date, selfEmail: string
         return email.includes("@") && !email.endsWith(`@${domain}`) && !email.endsWith("calendar.google.com");
       });
     out.push({
-      id: str(e.id) || `${start}-${title}`,
-      title,
-      start,
-      end: str(rec(e.end).dateTime) || null,
-      kind: LEARN.test(title) ? "learn" : outside ? "ext" : "team",
+      id: str(e.id) || key,
+      title: busy ? "Busy" : summary,
+      start: start.toISOString(),
+      end: end && end.getTime() > start.getTime() ? end.toISOString() : null,
+      kind: LEARN.test(summary) ? "learn" : outside ? "ext" : "team",
+      ...(busy ? { busy: true } : {}),
+      ...(response === "tentative" ? { tentative: true } : {}),
+      attendees: attendees
+        .filter((a) => a !== me && a.resource !== true)
+        .map((a) => str(a.displayName) || str(a.email))
+        .filter(Boolean),
+      joinUrl: busy ? null : eventMeetingUrl(ev),
     });
   }
   return out.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));

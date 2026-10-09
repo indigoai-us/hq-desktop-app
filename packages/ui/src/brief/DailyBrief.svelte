@@ -51,8 +51,10 @@
     dmApi?: BriefDmApi | null;
     /** Opens the DM with this uid in Messages. */
     onopenthread?: (uid: string) => void;
+    /** Opens the Meetings page. */
+    onopenmeetings?: () => void;
   }
-  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread }: Props = $props();
+  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings }: Props = $props();
 
   const state = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
@@ -115,7 +117,7 @@
   </header>
   {#if header}<div class="b-runs">{@render header()}</div>{/if}
 
-  <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} />
+  <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} {onopenmeetings} />
 
   <main class="b-grid" style="grid-template-areas:{plan.areas.map((a) => `'${a}'`).join(' ')}">
     {#each plan.widgets as w, i (w.kind)}

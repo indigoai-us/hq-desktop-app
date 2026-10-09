@@ -13962,6 +13962,7 @@
             creator={briefCreator}
             run={briefRun}
             onopenthread={openBriefDm}
+            onopenmeetings={() => void navigate({ kind: "meetings" })}
           />
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}

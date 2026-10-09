@@ -33,10 +33,12 @@
     run?: BriefCreateRun | null;
     /** Opens the DM with this uid in Messages. */
     onopenthread?: (uid: string) => void;
+    /** Opens the Meetings page. */
+    onopenmeetings?: () => void;
     /** Test seam; defaults to the adapter's HQ file read. */
     source?: BriefSweepSource | null;
   }
-  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, source: sourceProp }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp }: Props = $props();
 
   const LAST_KEY = "hq.brief.lastOpenedAt";
   // Fixed for the page's life; the host remounts the page for a new adapter.
@@ -220,7 +222,7 @@
   <div class="daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
   {#if dawn}<div class="masthead-wrap">{@render dawnScene("masthead")}</div>{/if}
-  <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {input} {companies} {onlaunch} {housekeeping} header={entries.length || run ? runBar : undefined} />
+  <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} header={entries.length || run ? runBar : undefined} />
 {:else if failed}
   <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
 {:else}

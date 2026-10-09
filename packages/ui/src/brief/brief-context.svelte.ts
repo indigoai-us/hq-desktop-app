@@ -25,6 +25,8 @@ export interface PeekContent {
   sample?: boolean;
   /** Actionable items show their full prompt and the launch controls. */
   prompt?: { id: string; text: string };
+  /** Buttons under the peek (e.g. Open in Meetings). */
+  actions?: { label: string; run: () => void; testid?: string }[];
   /** A person or agent: the peek lists their recent DMs, read live. */
   dms?: { uid: string; name: string; isAgent: boolean };
 }

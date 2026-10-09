@@ -22,6 +22,19 @@
     onmouseleave={() => brief.hidePeekSoon()}
   >
     {#if p.content.sample}<div class="sample" data-testid="brief-sample">Sample · no live source yet</div>{/if}
+
+<style>
+  .peek-act {
+    all: unset;
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 500;
+    padding: 6px 14px;
+    border-radius: 999px;
+    color: #1b1b1e;
+    background: rgba(255, 255, 255, 0.92);
+  }
+</style>
     <div class="ttl">{p.content.title}</div>
     {#if p.content.status}<div class="st">{p.content.status}</div>{/if}
     {#each p.content.sections as s, i (i)}
@@ -33,6 +46,13 @@
         {/each}
       </div>
     {/each}
+    {#if p.content.actions?.length}
+      <div class="sec acts">
+        {#each p.content.actions as a (a.label)}
+          <button type="button" class="peek-act" data-testid={a.testid} onclick={a.run}>{a.label}</button>
+        {/each}
+      </div>
+    {/if}
     {#if p.content.dms}
       {#key p.content.dms.uid}<BriefPeekDms {...p.content.dms} />{/key}
     {/if}

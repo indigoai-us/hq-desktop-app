@@ -38,7 +38,7 @@ describe("DailyBrief", () => {
       "meetings",
       "fleet",
     ]);
-    expect(target.querySelector('[data-testid="brief-today"]')?.textContent).toContain("Zach and Jeff onboarding");
+    expect(target.querySelector('[data-testid="brief-today"]')?.textContent).toContain("HQ Founder Office Hours");
     expect(target.querySelectorAll('[data-testid="brief-need"]')).toHaveLength(4);
     const origins = [...target.querySelectorAll('[data-testid="brief-origin"]')].map((el) => el.textContent?.trim());
     expect(origins.some((t) => /^IN\s*hq-core$/.test(t ?? ""))).toBe(true);
