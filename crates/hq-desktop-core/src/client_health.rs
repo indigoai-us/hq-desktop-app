@@ -1194,13 +1194,18 @@ mod tests {
         "arch": "arm64",
         "sentAt": "2026-09-03T17:05:00.000Z",
         "sequence": 412,
-        "versions": { "desktop": "1.42.3", "cli": "5.106.2", "core": "3.18.0", "syncRunner": "5.106.2" },
+        "versions": { "desktop": "1.42.3", "cli": "5.106.2", "core": "3.18.0", "syncRunner": "6.18.54" },
         "syncState": "idle",
         "lastSyncAttemptAt": "2026-09-03T17:00:00.000Z",
         "lastSyncSuccessAt": "2026-09-03T17:00:00.000Z",
         "consecutiveFailures": 0,
         "conflictCount": 0,
-        "updaterState": "up_to_date"
+        "updaterState": "up_to_date",
+        "syncRunnerSource": "daemon_managed",
+        "daemonHqCloudUpdateLastCheckAt": "2026-10-08T12:00:00.000Z",
+        "daemonHqCloudUpdateOutcome": "failed",
+        "daemonHqCloudUpdateTarget": "6.18.56",
+        "daemonHqCloudUpdateErrorClass": "registry"
     }"#;
 
     const HEARTBEAT_PAUSED: &str = r#"{
