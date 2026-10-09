@@ -11,6 +11,7 @@ import {
   publicSecret,
   type SecretRow,
 } from "../company/files-connect/files-connect-model.js";
+import { registerAccountCache } from "../common/account-caches.js";
 
 export const metadata = {
   performanceBudget: {
@@ -73,6 +74,7 @@ export interface PersonalRailCache {
 }
 
 const caches = new Map<string, PersonalRailCache>();
+registerAccountCache(() => caches.clear());
 
 export function readPersonalRailCache(owner: string): PersonalRailCache | null {
   return caches.get(owner) ?? null;

@@ -1940,7 +1940,30 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   return null;
 }
 
+// ?scale=large inflates the long lists to a big company's real sizes (1,290
+// deployments, 1,700 policies, 925 knowledge files) for perf measurement.
+function scaledAnswer(cmd: string, args?: Record<string, unknown>): unknown {
+  if (typeof window === 'undefined' || new URLSearchParams(window.location.search).get('scale') !== 'large') return NOT_HANDLED;
+  if (cmd === 'get_company_deployments') {
+    return Array.from({ length: 1290 }, (_, i) => ({ sub: `app-${i}`, url: `app-${i}.hq.computer`, state: i % 9 ? 'active' : 'paused', lastDeploy: `${i % 30}d ago`, size: '4.2 MB', ver: `v1.${i}`, pwd: i % 4 === 0 }));
+  }
+  if (cmd === 'list_hq_dir') {
+    const rel = String(args?.relPath ?? '');
+    const many = (n: number, prefix: string) => Array.from({ length: n }, (_, i) => ({ name: `${prefix}-${String(i).padStart(4, '0')}.md`, path: `${rel}/${prefix}-${String(i).padStart(4, '0')}.md`, isDir: false, hasChildren: false }));
+    if (/^companies\/[^/]+\/policies$/.test(rel)) return many(1700, 'policy');
+    if (/^companies\/[^/]+\/knowledge$/.test(rel)) return many(925, 'doc');
+  }
+  if (cmd === 'get_company_file_content') {
+    const path = String(args?.relPath ?? args?.path ?? '');
+    const m = /policy-(\d+)\.md$/.exec(path);
+    if (m) return `---\ntitle: Policy ${m[1]}\nenforcement: ${Number(m[1]) % 3 ? 'soft' : 'hard'}\nwhen: deploy, release\n---\n# Rule\n\nKeep it short.\n`;
+  }
+  return NOT_HANDLED;
+}
+
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const scaled = scaledAnswer(cmd, args);
+  if (scaled !== NOT_HANDLED) return scaled as T;
   if (typeof window !== 'undefined') {
     const counts = ((window as Window & { __hqInvokeCounts?: Record<string, number> })
       .__hqInvokeCounts ??= {});
