@@ -28,6 +28,7 @@
   let url = $state("");
   let attaching = $state(false);
   let joining = $state(false);
+  let failureDetail = $state<string | null>(null);
   const now = new Date();
 
   const trimmed = $derived(url.trim());
@@ -46,9 +47,11 @@
   async function join(): Promise<void> {
     if (!provider || joining) return;
     joining = true;
+    failureDetail = null;
     try {
-      await joinPastedLink(trimmed, openExternal);
-      onclose?.();
+      const result = await joinPastedLink(trimmed, openExternal);
+      failureDetail = result.failureDetail;
+      if (!failureDetail) onclose?.();
     } finally {
       joining = false;
     }
@@ -81,6 +84,7 @@
   <button type="button" class="btn" data-testid="paste-link-attach" disabled={!provider} aria-expanded={attaching} onclick={() => (attaching = !attaching)}><RailIcon name="link" />Attach to…</button>
   <button type="button" class="btn" onclick={() => onclose?.()}><RailIcon name="x" />Cancel</button>
 </div>
+{#if failureDetail}<p class="failure" role="status" data-testid="paste-link-failure">{failureDetail}</p>{/if}
 {#if attaching && provider}
   <div class="rule"></div>
   <div class="lbl">Attach to a meeting</div>
@@ -104,6 +108,7 @@
   .chip { font-size: 13px; color: var(--t2); white-space: nowrap; }
   .mm { font-size: 13px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; gap: 6px; margin-top: 12px; }
+  .failure { margin: 8px 0 0; color: var(--t3); font-size: 13px; line-height: 17px; }
   .btn { height: var(--hq-btn-h); padding: 0 var(--hq-btn-pad-inline); border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
   .btn:hover:not(:disabled) { background: var(--hover); }
   .btn.primary { border-color: transparent; background: var(--v4-primary-bg, var(--t1)); color: var(--v4-primary-fg, var(--side-bg)); }

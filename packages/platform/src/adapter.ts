@@ -1331,6 +1331,18 @@ export interface CreatedFile {
   cloudSync: boolean;
 }
 
+/** Identifies one cross-company group grant (hq-pro POST /group-grants/revoke body). */
+export interface GroupGrantKey {
+  sourceCompanyUid: string;
+  groupId: string;
+  targetCompanyUid: string;
+}
+
+/** hq-pro POST /group-grants body. `role` is a membership role. */
+export interface GroupGrantInput extends GroupGrantKey {
+  role: string;
+}
+
 export interface FilesApi {
   listDir(relPath: string): AdapterPromise<Json[]>;
   /** Files explorer vault index. Desktop only; hosts without it omit it. */
@@ -1359,6 +1371,15 @@ export interface FilesApi {
   getAccessTree?(companyUid: string, prefix: string, page?: { limit: number; cursor?: string }): AdapterPromise<Json>;
   /** OWNER-R17: the company's groups, for names (hq-pro GET /secrets/{companyUid}/groups). Read-only. */
   listAccessGroups?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Cross-company group grants: the reads and writes the web console's Grants
+   * page uses (hq-pro GET /group-grants/outbound, GET /group-grants/inbound,
+   * POST /group-grants, POST /group-grants/revoke). Hosts without them omit them.
+   */
+  listOutboundGroupGrants?(sourceCompanyUid: string, groupId: string): AdapterPromise<Json>;
+  listInboundGroupGrants?(companyUid: string): AdapterPromise<Json>;
+  createGroupGrant?(input: GroupGrantInput): AdapterPromise<Json>;
+  revokeGroupGrant?(input: GroupGrantKey): AdapterPromise<Json>;
   /**
    * Atlas map listing from the company folder synced to this machine
    * (QA-016). Desktop only. Each call resolves null when the company folder is

@@ -38,6 +38,8 @@ export interface ScheduledBot {
   scheduledStartTime?: string | null;
   autoScheduled: boolean;
   errorMessage?: string | null;
+  terminalSubCode?: string | null;
+  failureReason?: string | null;
   /**
    * US-010 — the real source-landed signal from hq-pro: true only when the
    * transcript has actually been persisted to the vault as a queryable source

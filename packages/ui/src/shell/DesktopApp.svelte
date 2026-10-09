@@ -292,8 +292,12 @@
     firstRunHandoffNotice,
     firstRunImportNotice,
     firstRunIntro,
-    firstRunKickoff,
+    firstRunKickoffCarry,
     firstRunRoute,
+    firstRunSettledNotice,
+    firstRunSettledParts,
+    firstRunSettledSince,
+    type FirstRunSettledSent,
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
@@ -303,6 +307,13 @@
     type FirstRunImportHandoff,
   } from "../chat/first-run/visual-first-run.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
+  import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
+  import { teamOptionsFrom } from "../chat/first-run/team-step.js";
+  import {
+    createFirstRunAppsHost,
+    createFirstRunTeamHost,
+    type FirstRunSettled,
+  } from "../chat/first-run/first-run-hosts.js";
   import {
     hasRunWelcomeSetup,
     isSetupChannel,
@@ -3061,9 +3072,11 @@
       // for it and open that one instead.
       // A bot it already made this session is used too: the local list can
       // lag behind a create that just answered.
-      const firstRun =
-        firstRunCreateInFlight ??
-        (firstRunCreatedBot ? Promise.resolve<FirstRunAssistantResult>({ ok: true, bot: firstRunCreatedBot }) : null);
+      // A dry walk (dev-switches.ts) made no bot: start for real from here.
+      const firstRun = firstRunDev.dry
+        ? null
+        : (firstRunCreateInFlight ??
+          (firstRunCreatedBot ? Promise.resolve<FirstRunAssistantResult>({ ok: true, bot: firstRunCreatedBot }) : null));
       if (firstRun) {
         const created = await firstRun;
         if (created.ok) {
@@ -3221,12 +3234,21 @@
    * waits for the later of the two answers, never their sum, and no more than
    * the grace past the wait it already had.
    */
-  let visualFirstRunFlag = $state<boolean | null>(null);
-  let visualFirstRunFinished = $state(hasFinishedVisualFirstRun());
+  /**
+   * Dev-only build switches (dev-switches.ts, docs/dev-switches.md), off in
+   * every release build. FORCE: the flag counts as on and the takeover opens
+   * on every launch. DRY: walking it creates, joins, connects and sends
+   * nothing.
+   */
+  const firstRunDev = FIRST_RUN_DEV_SWITCHES;
+  let visualFirstRunFlag = $state<boolean | null>(firstRunDev.force ? true : null);
+  let visualFirstRunFinished = $state(firstRunDev.force ? false : hasFinishedVisualFirstRun());
   function settleVisualFirstRunFlag(value: boolean): void {
     if (visualFirstRunFlag === null) visualFirstRunFlag = value;
   }
   onMount(() => {
+    // FORCE: the flag service is not read.
+    if (firstRunDev.force) return;
     const identity = adapter.identity;
     // Only a first run needs the answer: no read at all otherwise.
     if (!adapter.bots || welcomeSetupRun || visualFirstRunFinished || !identity || typeof identity.hasFeature !== "function") {
@@ -3257,7 +3279,11 @@
     return () => window.clearTimeout(timer);
   });
   const firstRunRouteNow = $derived.by(() =>
-    firstRunRoute({
+    firstRunDev.force
+      ? Boolean(adapter.bots) && SETUP_BOT_MODE && !visualFirstRunFinished
+        ? "visual"
+        : "legacy"
+      : firstRunRoute({
       hasBots: Boolean(adapter.bots) && SETUP_BOT_MODE,
       welcomeSetupRun,
       welcomeSetupOwed,
@@ -3314,6 +3340,8 @@
           firstRunCreatedBot = result.bot;
           // A scan that finished while the create ran: its kickoff missed it.
           deliverFirstRunImport();
+          // The takeover closed while the create ran: the later screens' note.
+          deliverFirstRunSettled();
         } else setupBotStartError = result.reason;
         return result;
       })
@@ -3384,6 +3412,7 @@
    * repeated, and other failures are tried a few times, further apart.
    */
   function deliverFirstRunImport(): void {
+    if (firstRunDev.dry) return;
     const imported = firstRunImport;
     const bot = firstRunCreatedBot;
     if (!imported || !bot || firstRunImportDelivered || firstRunImportSending) return;
@@ -3407,6 +3436,7 @@
   }
   /** Best effort: a setup bot that already existed takes the confirmed name. */
   async function nameExistingAssistant(bot: SetupBotRef, displayName: string): Promise<void> {
+    if (firstRunDev.dry) return;
     if ((botDisplayNames[bot.agentUid] ?? "").trim() === displayName) return;
     botDisplayNames = rememberBotDisplayName(botDisplayNames, bot.agentUid, displayName);
     try {
@@ -3421,6 +3451,7 @@
    * as the app's other notices to bots), once per bot.
    */
   function sendFirstRunHandoffNotice(bot: SetupBotRef, displayName: string): void {
+    if (firstRunDev.dry) return;
     const ready = localBotRuntimeReady;
     const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
     const runtime =
@@ -3428,9 +3459,12 @@
     const key = `first-run-handoff:${bot.agentUid}`;
     const imported = firstRunImport;
     if (imported) firstRunImportDelivered = true;
+    const { team, apps } = firstRunSettled;
+    // The notice carries what is settled now; a later part goes at close.
+    firstRunSettledSent = firstRunSettledParts({ team, apps });
     void sendBotNotice(
       bot.agentUid,
-      firstRunHandoffNotice({ name: displayName, runtime, toolsReady, imported }, { noun: hostComputerNoun() }),
+      firstRunHandoffNotice({ name: displayName, runtime, toolsReady, imported, team, apps }, { noun: hostComputerNoun() }),
       key,
       key,
       true,
@@ -3442,6 +3476,11 @@
    * the takeover settled, so it does not ask them again.
    */
   async function runFirstRunAssistantCreate(displayName: string): Promise<FirstRunAssistantResult> {
+    if (firstRunDev.dry) {
+      // Dry walk: the assistant "is ready" after a beat. Nothing is created or sent.
+      await new Promise((resolve) => setTimeout(resolve, FIRST_RUN_DRY_DELAY_MS));
+      return { ok: true, bot: { agentUid: "agt_first_run_dry", name: displayName } };
+    }
     if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
     await refreshLocalBots();
     const existing = await findExistingSetupBot();
@@ -3461,7 +3500,13 @@
     const noun = hostComputerNoun();
     // A scan already finished (the name was confirmed late) rides in the kickoff.
     const imported = firstRunImport;
-    if (imported) firstRunImportDelivered = true;
+    const { team, apps } = firstRunSettled;
+    // What does not fit the kickoff goes later as a note (firstRunKickoffCarry).
+    const carry = firstRunKickoffCarry({ name: displayName, runtime, toolsReady, imported, team, apps }, { noun });
+    if (imported && carry.importWhole) firstRunImportDelivered = true;
+    // The kickoff carries what was settled when it went out; a part settled
+    // later (the create waited for a coding tool) goes at close.
+    if (carry.settled) firstRunSettledSent = firstRunSettledParts({ team, apps });
     const created = await createBotEntry(
       {
         name: SETUP_BOT_NAME,
@@ -3469,7 +3514,7 @@
         worker: SETUP_BOT_WORKER,
         runtime,
         intro: firstRunIntro({ name: displayName, runtime }, { noun }),
-        kickoff: firstRunKickoff({ name: displayName, runtime, toolsReady, imported }, { noun }),
+        kickoff: carry.kickoff,
       },
       // The progress card and the DM row carry the person's name for it.
       { displayName },
@@ -3501,11 +3546,103 @@
     const generic = `Could not create ${SETUP_BOT_NAME}.`;
     return { ok: false, reason: created.reason === generic ? `Couldn't start ${displayName}. Try again in a moment.` : created.reason };
   }
+  /**
+   * "Your team", Note taker and Project management (slices 2 and 5). The
+   * screens settle while the assistant already runs (it starts at the name
+   * step), so what they settled goes to it as one bot-only note when the
+   * takeover closes, unless the kickoff carried it.
+   */
+  let firstRunSettled: FirstRunSettled = { team: null, apps: {} };
+  /** Each part the assistant already has (in its kickoff or a note), by its JSON. */
+  let firstRunSettledSent: FirstRunSettledSent = {};
+  let firstRunSettledSending = false;
+  /** The takeover closed (Done or Continue in chat): what it settled is final. */
+  let firstRunLeft = false;
+  function recordFirstRunSettled(next: FirstRunSettled): void {
+    firstRunSettled = next;
+  }
+  function deliverFirstRunSettled(): void {
+    if (firstRunDev.dry || !firstRunLeft || firstRunSettledSending) return;
+    const bot = firstRunCreatedBot;
+    if (!bot) return;
+    const settled = firstRunSettled;
+    const body = firstRunSettledNotice(firstRunSettledSince(settled, firstRunSettledSent));
+    if (!body) return;
+    const key = `first-run-settled:${bot.agentUid}`;
+    firstRunSettledSending = true;
+    void sendBotNotice(bot.agentUid, body, key, key, true).then((sent) => {
+      firstRunSettledSending = false;
+      if (sent) firstRunSettledSent = { ...firstRunSettledSent, ...firstRunSettledParts(settled) };
+    });
+  }
+  /** The person's companies and invites, once the roster answered. */
+  const firstRunTeamOptions = $derived(rosterStatus === "loading" ? null : teamOptionsFrom(companies ?? []));
+  /** The create_company card needs card actions (`canRunEntryPoints`, declared further down). */
+  const firstRunCanCreateCompany = $derived(typeof adapter.messaging?.runCardAction === "function");
+  const firstRunTeamHost = $derived(
+    adapter.company || firstRunCanCreateCompany || firstRunDev.dry
+      ? createFirstRunTeamHost({
+          dry: firstRunDev.dry,
+          claimInvite: adapter.company ? (slug: string) => adapter.company!.claimPendingInvite(slug) : null,
+          createCompany: firstRunCanCreateCompany ? createFirstRunCompany : null,
+          joined: async (companyUid) => {
+            if (companyUid) {
+              const pinned = pinCompany(pinnedCompanyIds ?? [], companyUid);
+              if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
+            }
+            await readWorkspaceHealth();
+            void onrefreshroster?.();
+          },
+          created: () => {
+            createCompanyRequested = true;
+            void onrefreshroster?.();
+          },
+        })
+      : null,
+  );
+  /**
+   * The New company sheet's create, without its navigation: the takeover is
+   * on screen, and the company opens once it closes.
+   */
+  async function createFirstRunCompany(
+    name: string,
+    slug: string,
+  ): Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string }> {
+    const draft = await openCreateCompanyDraft(conversationApi);
+    if (!draft.ok) return { ok: false, reason: draft.reason };
+    const values: Record<string, string> = {};
+    if (draft.form.nameFieldId) values[draft.form.nameFieldId] = name;
+    const slugId = slugFieldOf(draft.form.fields);
+    if (slugId) values[slugId] = slug;
+    const result = await submitCreateCompany(conversationApi, draft.form, values, []);
+    if (!result.ok) return { ok: false, reason: result.reason };
+    return { ok: true, companyUid: result.company.companyUid };
+  }
+  const firstRunAppsHost = $derived(
+    adapter.integrations?.catalogSearch
+      ? createFirstRunAppsHost({
+          dry: firstRunDev.dry,
+          catalogSearch: (uid, query, limit) => adapter.integrations.catalogSearch(uid, query, limit),
+          listConnections: adapter.integrations.listConnections
+            ? (uid) => adapter.integrations.listConnections(uid)
+            : null,
+          startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
+          install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
+          openUrl: openConnectionUrl,
+        })
+      : null,
+  );
+
   /** The takeover is done on this computer: it never opens again. */
   function closeVisualFirstRun(): void {
     // Leaving must not set off the automatic start above in this session.
     setupBotAutoStarted = true;
-    markVisualFirstRunFinished();
+    // A dry walk leaves no marker, so it can be walked again.
+    if (!firstRunDev.dry) markVisualFirstRunFinished();
+    firstRunLeft = true;
+    deliverFirstRunSettled();
+    // A dry walk's pretend assistant must not be what #welcome's Start opens.
+    if (firstRunDev.dry) firstRunCreatedBot = null;
     visualFirstRunFinished = true;
     visualFirstRunOpen = false;
     // Nothing starts from the takeover once it is closed.
@@ -3522,6 +3659,7 @@
     const creation = firstRunCreation;
     if (creation.state !== "ready") return;
     closeVisualFirstRun();
+    if (firstRunDev.dry) return;
     const bot = creation.bot;
     if (!firstRunCreatedUids.has(bot.agentUid)) {
       openSetupBotDm(bot);
@@ -3547,6 +3685,10 @@
    * whose setup chat start (and its sign-in step) takes over from here.
    */
   function continueFirstRunInChat(): void {
+    if (firstRunDev.dry) {
+      closeVisualFirstRun();
+      return;
+    }
     if (firstRunCreation.state === "ready") {
       talkToFirstRunAssistant();
       return;
@@ -12299,6 +12441,27 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // Grants pane: the caller's other companies, grantable where they are an
+  // owner or admin (hq-pro enforces the same rule).
+  const grantsOpen = $derived(railPlaceholder?.id === "grants");
+  $effect(() => {
+    if (!grantsOpen) return;
+    const uids = railCompanyRoster.map((company) => company.uid);
+    const selfUid = self?.uid ?? null;
+    const selfEmail = self?.email ?? null;
+    // Untracked: the role cache this writes must not re-run the loads.
+    untrack(() => {
+      for (const companyUid of uids) loadCallerRole({ companyUid, selfUid, selfEmail, company: adapter.company ?? null });
+    });
+  });
+  const grantTargets = $derived(
+    grantsOpen
+      ? railCompanyRoster.map((company) => {
+          const role = callerRole(company.uid);
+          return { uid: company.uid, label: company.label, eligible: role === "Owner" || role === "Admin" };
+        })
+      : [],
+  );
   $effect(() => {
     const uid = companyPaneCompany?.uid;
     if (!uid) return;
@@ -13790,6 +13953,7 @@
             messaging={adapter.messaging ?? null}
             seatLimit={railGate(RAIL_WORKFORCE_LIMITS_FLAG)}
             files={adapter.files ?? null}
+            targets={grantTargets}
           />
         {:else if railPlaceholder?.id === "bots" && companyPaneCompany}
           <BotsPage
@@ -15211,6 +15375,10 @@
       onretry={() => firstRunStarter.retry()}
       importHost={firstRunImportHost}
       onimport={recordFirstRunImport}
+      teamOptions={firstRunTeamOptions}
+      teamHost={firstRunTeamHost}
+      appsHost={firstRunAppsHost}
+      onsettled={recordFirstRunSettled}
       ontalk={talkToFirstRunAssistant}
       oncontinueinchat={continueFirstRunInChat}
     />
