@@ -197,6 +197,47 @@ describe("US-042 paste detection", () => {
     await settle();
     expect(el.querySelector('[data-testid="paste-link-failure"]')?.textContent).toContain("signed-in Zoom users");
   });
+
+  it("uses the generic detail when the terminal failure has no server reason", async () => {
+    const openExternal = vi.fn();
+    store.scheduledBots = [{
+      botId: "failed-zoom",
+      meetingUrl: zoom,
+      platform: "zoom",
+      status: "failed",
+      autoScheduled: false,
+    }];
+    store.inviteBotByUrl.mockResolvedValue({ kind: "info", text: "Notetaker invited." });
+    const el = render(MeetingsToolbarControls, { openExternal });
+    (el.querySelector('[data-testid="meetings-paste-link"]') as HTMLButtonElement).click();
+    await opened(el, "paste-link-input");
+    const input = el.querySelector('[data-testid="paste-link-input"]') as HTMLInputElement;
+    input.value = zoom;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    (el.querySelector('[data-testid="paste-link-join"]') as HTMLButtonElement).click();
+    await settle();
+    expect(el.querySelector('[data-testid="paste-link-failure"]')?.textContent).toContain("couldn't join this meeting");
+  });
+
+  it("closes after a successful paste-link retry despite an older failure", async () => {
+    const openExternal = vi.fn();
+    store.scheduledBots = [
+      { botId: "failed-zoom", meetingUrl: zoom, platform: "zoom", status: "failed", autoScheduled: false, failureReason: "Zoom requires sign-in." },
+      { botId: "retry-zoom", meetingUrl: zoom, platform: "zoom", status: "scheduled", autoScheduled: false },
+    ];
+    store.inviteBotByUrl.mockResolvedValue({ kind: "info", text: "Notetaker invited." });
+    const el = render(MeetingsToolbarControls, { openExternal });
+    (el.querySelector('[data-testid="meetings-paste-link"]') as HTMLButtonElement).click();
+    await opened(el, "paste-link-input");
+    const input = el.querySelector('[data-testid="paste-link-input"]') as HTMLInputElement;
+    input.value = zoom;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    (el.querySelector('[data-testid="paste-link-join"]') as HTMLButtonElement).click();
+    await settle();
+    expect(el.querySelector('[data-testid="paste-link-failure"]')).toBeNull();
+  });
 });
 
 describe("US-042 no-calendar canvas", () => {

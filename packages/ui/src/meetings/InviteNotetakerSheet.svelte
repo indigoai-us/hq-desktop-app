@@ -7,7 +7,7 @@
   import RailIcon from "../common/button/RailIcon.svelte";
   import { dismissable } from "../common/dismissable.js";
   import { meetingsStore } from "./meetings-store.svelte";
-  import { meetingUrlsMatch } from "./meetings-model";
+  import { isActiveBotStatus, meetingUrlsMatch } from "./meetings-model";
   import { canInviteNotetaker, notetakerLinkProblem } from "./notetaker-invite";
 
   interface Props {
@@ -27,10 +27,14 @@
     phase = "pending";
     failure = "";
     const result = await meetingsStore.inviteBotByUrl(link.trim(), null);
-    const failedBot = meetingsStore.scheduledBots.find(
-      (bot) => bot.status === "failed" && meetingUrlsMatch(bot.meetingUrl, link.trim()),
+    const matchingBots = meetingsStore.scheduledBots.filter(
+      (bot) => meetingUrlsMatch(bot.meetingUrl, link.trim()),
     );
-    if (!result || result.kind === "warn" || failedBot) {
+    const activeBot = matchingBots.find((bot) => isActiveBotStatus(bot.status));
+    const failedBot = matchingBots.find(
+      (bot) => bot.status === "failed",
+    );
+    if (!result || result.kind === "warn" || (!activeBot && failedBot)) {
       failure = failedBot?.failureReason?.trim() || result?.text || "The notetaker couldn't join this meeting.";
       phase = "failed";
       return;

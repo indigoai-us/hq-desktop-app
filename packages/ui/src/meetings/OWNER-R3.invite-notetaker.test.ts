@@ -227,4 +227,17 @@ describe("OWNER-R3 Invite notetaker to a meeting (header +)", () => {
     await settle();
     expect(q(el, "invite-notetaker-failed")?.textContent).toBe("Zoom requires sign-in.");
   });
+
+  it("clears an earlier terminal failure when a retry is active", async () => {
+    store.scheduledBots = [
+      { ...scheduled, botId: "failed", status: "failed", failureReason: "Zoom requires sign-in." },
+      { ...scheduled, botId: "retry", status: "scheduled" },
+    ];
+    store.inviteBotByUrl.mockResolvedValueOnce({ kind: "info", text: "Notetaker invited." });
+    const el = render(InviteNotetakerSheet, { onclose: vi.fn() });
+    type(q<HTMLInputElement>(el, "invite-notetaker-link")!, scheduled.meetingUrl);
+    q<HTMLButtonElement>(el, "invite-notetaker-confirm")!.click();
+    await settle();
+    expect(q(el, "invite-notetaker-done")).not.toBeNull();
+  });
 });

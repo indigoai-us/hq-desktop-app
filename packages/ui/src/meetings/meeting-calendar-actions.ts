@@ -7,7 +7,7 @@
 
 import { pushToast } from "../shell/toast-stack.svelte.js";
 import { meetingsStore, type ToastDescriptor } from "./meetings-store.svelte";
-import { meetingUrlsMatch } from "./meetings-model";
+import { isActiveBotStatus, meetingUrlsMatch } from "./meetings-model";
 
 export type OpenExternal = (url: string) => void | Promise<void>;
 
@@ -63,11 +63,18 @@ export async function joinPastedLink(
     return { failureDetail: "Couldn't open the meeting link." };
   }
   const result = await meetingsStore.inviteBotByUrl(url, null);
-  const failedBot = meetingsStore.scheduledBots.find(
-    (bot) => bot.status === "failed" && meetingUrlsMatch(bot.meetingUrl, url),
+  const matchingBots = meetingsStore.scheduledBots.filter(
+    (bot) => meetingUrlsMatch(bot.meetingUrl, url),
   );
-  const failureDetail = failedBot?.failureReason?.trim()
-    || (result?.kind === "warn" ? result.text || "The notetaker couldn't join this meeting." : null);
+  const activeBot = matchingBots.find((bot) => isActiveBotStatus(bot.status));
+  const failedBot = matchingBots.find(
+    (bot) => bot.status === "failed",
+  );
+  const failureDetail = !activeBot && failedBot
+    ? failedBot.failureReason?.trim() || "The notetaker couldn't join this meeting."
+    : result?.kind === "warn"
+      ? result.text || "The notetaker couldn't join this meeting."
+      : null;
   toast(result);
   return { failureDetail };
 }
