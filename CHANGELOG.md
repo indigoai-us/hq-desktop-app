@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
+- The Messages sidebar is one list ordered by latest activity when a company is picked. A company's channels used to sit in a separate Activity block above Today, so a channel last used days ago, or never, showed above the direct message you got a minute ago. Now they sit under Today, Yesterday and the earlier days with your direct messages and project channels, and channels nobody has written in go to No messages yet at the bottom. The order is the same whether you open the app, switch company, open a project channel or follow a link.
 
 ## [0.11.0] — 2026-10-08
 
