@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Warning, error, info and success boxes in chat messages are quieter: they now use a neutral background, and only the icon is colored.
+
 ## [0.11.0] — 2026-10-08
 
 This release brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
