@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-10-09
+
 - Meetings now explains why a notetaker could not join and offers a retry after the meeting settings are fixed.
 - The company Grants page now matches the web console. It is for granting one of your company's groups access to other companies, and for seeing which outside groups have access to yours. Pick a group, the companies to grant it to, and Read or Write, then press Grant access; the button says Granting… until HQ answers and cannot be pressed twice. Active grants list each group, company and role with a Revoke button that asks before it removes access. Revoked grants stay listed so you can see what was taken away. The Grants tab shows External groups with access. Admin is no longer offered, because grants to other companies are Read or Write only. A company HQ cannot name shows as "Unknown company" instead of an id, and a failed read says so with Try again. The folder-by-folder grant counts that used to be here are gone; who can open a folder is still shown on the company's Files access screen.
 - Conflict copy notices in the main window are now one small card in the top right, under the title bar. In 0.11.0 each parked copy got its own unstyled row across the top of the window, so several of them pushed the whole app down and covered the window's close, minimize and zoom buttons. The card shows how many copies were parked; Review lists each file with Show in Finder and Dismiss. A single copy shows its file and actions directly.
