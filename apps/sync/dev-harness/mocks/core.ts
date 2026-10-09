@@ -4,7 +4,7 @@
 import type { Workspace } from '../../src/lib/workspaces';
 import { personaHasLocalHq, resolveHarnessPersona, type ShellPersona } from '../personas';
 import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../state-flags';
-import { readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
+import { conflictNoticesSwitch, readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
@@ -1915,6 +1915,27 @@ const harnessNotifyPrefs: Record<string, unknown> = {
   updatedAt: '2026-09-23T12:00:00.000Z',
 };
 
+/**
+ * The person-scope flag snapshot answered here would hide the flags an audit
+ * switch turns on (`?firstrun=`, `?gates=on`): merge them in.
+ */
+function withSwitchedFlags(
+  answer: { status: number; body: string },
+  args?: Record<string, unknown>,
+): { status: number; body: string } {
+  if (args?.url !== '/v1/flags/resolve') return answer;
+  const search = typeof window === 'undefined' ? null : window.location.search;
+  const switched = switchedHandler('hq_pro_fetch', args, search)?.value as { body?: string } | undefined;
+  if (!switched || typeof switched.body !== 'string') return answer;
+  try {
+    const base = JSON.parse(answer.body) as { version: number; flags: Record<string, boolean> };
+    const extra = JSON.parse(switched.body) as { flags?: Record<string, boolean> };
+    return { status: 200, body: JSON.stringify({ ...base, flags: { ...base.flags, ...(extra.flags ?? {}) } }) };
+  } catch {
+    return answer;
+  }
+}
+
 function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; body: string } | null {
   const url = typeof args?.url === 'string' ? args.url : '';
   const method = typeof args?.method === 'string' ? args.method : 'GET';
@@ -1977,7 +1998,7 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   }
   if (cmd === 'hq_pro_fetch') {
     const notify = harnessNotifyFetch(args);
-    if (notify) return notify as T;
+    if (notify) return withSwitchedFlags(notify, args) as T;
   }
   if (cmd === 'invalidate_notify_prefs_cache') return null as T;
   if (new URLSearchParams(window.location.search).has('loadingTest')) {
@@ -2000,6 +2021,10 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   const search = typeof window === 'undefined' ? null : window.location.search;
   if (cmd === 'hq_pro_fetch' && typeof window !== 'undefined') {
     ((window as Window & { __hqFetchUrls?: string[] }).__hqFetchUrls ??= []).push(String(args?.url ?? ''));
+  }
+  if (cmd === 'get_pending_conflict_notices') {
+    const conflicts = conflictNoticesSwitch(search);
+    if (conflicts) return conflicts as T;
   }
   const switched = switchedHandler(cmd, args, search);
   if (switched) return switched.value as T;

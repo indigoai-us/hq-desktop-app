@@ -2777,6 +2777,10 @@ fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateResult> {
 
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("hq CLI update install");
+        return Err(crate::scratch_build::UPDATES_OFF_MESSAGE.to_string());
+    }
     install_hq_cli_update_with_retry_attempt(app, 0)
         .await
         .map_err(|error| error.to_string())
@@ -5018,6 +5022,10 @@ fn heal_blocked_managed_shadow(latest: &str) -> Option<HqCliUpdateInfo> {
 }
 
 pub fn setup_hq_cli_update_checker(app: &AppHandle) {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("hq CLI update checker");
+        return;
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         // One-time un-wedge for machines blocked by the pre-pin dist-tag race. A
