@@ -318,7 +318,7 @@ describe("Note taker and Project management", () => {
   it("a catalog the person may not read says so, with no Retry, and Next still works", async () => {
     render({
       initialStep: "notes",
-      apps: { catalog: vi.fn(async () => ({ ok: false, reason: "Only company owners and admins can browse apps to connect.", retry: false })) },
+      apps: { catalog: vi.fn(async () => ({ ok: false as const, reason: "Only company owners and admins can browse apps to connect.", retry: false })) },
     });
     await settle();
     expect(q('[data-testid="first-run-notes-catalog-failed"]')?.textContent).toContain("Only company owners and admins");

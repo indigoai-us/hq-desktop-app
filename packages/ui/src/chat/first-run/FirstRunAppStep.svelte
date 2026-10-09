@@ -80,11 +80,12 @@
     {#each shown as app (app.domain)}
       {@const isConnected = connectedApp?.domain === app.domain || already.has(app.domain)}
       {@const pending = busyDomain === app.domain}
+      {@const note = app.authClass === "key" && !isConnected ? APP_COPY.needsKey : app.description || app.domain}
       <li class="first-run-app" class:connected={isConnected} data-testid={`first-run-app-${app.domain}`}>
         <ConnectionCardLogo logo={appLogo(app.domain)} size={30} />
         <span class="first-run-app-text">
           <span class="first-run-app-name">{app.name}</span>
-          <span class="first-run-app-note">{app.authClass === "key" && !isConnected ? APP_COPY.needsKey : app.description || app.domain}</span>
+          <span class="first-run-app-note" title={note}>{note}</span>
         </span>
         {#if app.authClass !== "key" || isConnected}
           <button
