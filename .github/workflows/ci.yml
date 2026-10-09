@@ -183,6 +183,9 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Frontend sync app (typecheck + lint + coverage)
     runs-on: ubuntu-latest
+    env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -254,6 +257,9 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Frontend work app (typecheck + lint + builds)
     runs-on: ubuntu-latest
+    env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -430,6 +436,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
     steps:
