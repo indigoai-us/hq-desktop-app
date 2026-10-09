@@ -1144,6 +1144,17 @@ export interface CompanyApi {
    */
   listIntegrations?(companyUid: string): AdapterPromise<Json>;
   /**
+   * hq-pro `POST /v1/billing/portal`: a short-lived Stripe Billing Portal
+   * session for a company the caller owns, `{ url }`. A non-owner gets 403.
+   * Desktop only.
+   */
+  createBillingPortalSession?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * hq-pro `POST /v1/billing/person/portal`: the caller's own Stripe Billing
+   * Portal session, `{ url }`. Desktop only.
+   */
+  createPersonBillingPortalSession?(): AdapterPromise<Json>;
+  /**
    * Raw hq-deploy `/api/apps` rows for one scope (company slug or
    * `personal`): `{ scope, callerSub, apps }`. Desktop only.
    */

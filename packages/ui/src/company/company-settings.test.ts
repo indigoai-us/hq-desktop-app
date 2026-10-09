@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  billingPortalUrl,
   deleteGroup,
   emptySnapshot,
   filterGrants,
@@ -53,10 +54,41 @@ describe("US-030 company settings", () => {
     expect(deleteGroup(groups, "ops", true)).toEqual([]);
   });
 
-  it("hands upgrade to Stripe checkout and payment to the portal", () => {
+  it("hands upgrade to Stripe checkout and rejects non-Stripe hosts", () => {
     expect(new URL(stripeDestination("upgrade")).hostname).toBe("checkout.stripe.com");
-    expect(new URL(stripeDestination("portal")).hostname).toBe("billing.stripe.com");
     expect(approvedStripeUrl("http://checkout.stripe.com/c/pay/x")).toBeNull();
     expect(approvedStripeUrl("https://evil.example/checkout")).toBeNull();
+  });
+});
+
+describe("billingPortalUrl", () => {
+  const FALLBACK = "https://hq.computer/companies/acme/billing";
+  const SESSION = "https://billing.stripe.com/p/session/live_abc123";
+
+  it("opens the portal session hq-pro minted, never a fixed portal link", async () => {
+    const mint = vi.fn(async () => ({ ok: true as const, value: { url: SESSION } }));
+    await expect(billingPortalUrl(mint, FALLBACK)).resolves.toBe(SESSION);
+    expect(mint).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the console billing page when there is no mint", async () => {
+    await expect(billingPortalUrl(null, FALLBACK)).resolves.toBe(FALLBACK);
+  });
+
+  it("falls back when hq-pro refuses (non-owner 403)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const mint = async () => ({ ok: false as const, code: "http-403", message: "Requires owner role" });
+    await expect(billingPortalUrl(mint, FALLBACK)).resolves.toBe(FALLBACK);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("falls back when the mint throws or answers a non-portal url", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(billingPortalUrl(async () => { throw new Error("offline"); }, FALLBACK)).resolves.toBe(FALLBACK);
+    await expect(billingPortalUrl(async () => ({ ok: true as const, value: { url: "https://evil.example/p" } }), FALLBACK)).resolves.toBe(FALLBACK);
+    await expect(billingPortalUrl(async () => ({ ok: true as const, value: { url: "https://checkout.stripe.com/c/pay/x" } }), FALLBACK)).resolves.toBe(FALLBACK);
+    await expect(billingPortalUrl(async () => ({ ok: true as const, value: {} }), FALLBACK)).resolves.toBe(FALLBACK);
+    warn.mockRestore();
   });
 });

@@ -38,11 +38,9 @@ export const GRANT_LEVELS = ["read", "write"] as const;
 export type GrantLevel = (typeof GRANT_LEVELS)[number];
 
 export const WORKFORCE_CHECKOUT_URL = "https://checkout.stripe.com/c/pay/hq-workforce";
-export const STRIPE_PORTAL_URL = "https://billing.stripe.com/p/login/hq";
 
-const STRIPE_HOSTS: Record<"upgrade" | "portal", string> = {
+const STRIPE_HOSTS: Record<"upgrade", string> = {
   upgrade: "checkout.stripe.com",
-  portal: "billing.stripe.com",
 };
 
 /** Only Stripe-hosted https pages are opened in the system browser. */
@@ -59,14 +57,41 @@ export function approvedStripeUrl(raw: unknown): string | null {
   }
 }
 
-/** Checkout for plan changes. Portal for managing payment. */
-export function stripeDestination(action: "upgrade" | "portal"): string {
-  const url = action === "upgrade" ? WORKFORCE_CHECKOUT_URL : STRIPE_PORTAL_URL;
-  const approved = approvedStripeUrl(url);
+/** Checkout for plan changes. */
+export function stripeDestination(action: "upgrade"): string {
+  const approved = approvedStripeUrl(WORKFORCE_CHECKOUT_URL);
   if (!approved || new URL(approved).hostname !== STRIPE_HOSTS[action]) {
     throw new Error(`Stripe ${action} URL is not on the allowed host`);
   }
   return approved;
+}
+
+/** A portal mint from the platform adapter: `{ url }` on success. */
+export type BillingPortalMint = () => Promise<{ ok: true; value: unknown } | { ok: false; code?: string; message?: string }>;
+
+/**
+ * Where Manage payment goes. A Stripe Billing Portal link is a short-lived
+ * session hq-pro mints per request; there is no fixed portal URL (the old
+ * `billing.stripe.com/p/login/hq` constant was a 404). When the mint is
+ * missing, fails, or is refused (a non-owner gets 403), the console billing
+ * page is the fallback: it shows the same state and its own Manage billing.
+ */
+export async function billingPortalUrl(mint: BillingPortalMint | null | undefined, fallback: string): Promise<string> {
+  if (!mint) return fallback;
+  try {
+    const result = await mint();
+    if (!result.ok) {
+      console.warn(`billing: portal session refused (${result.code ?? "unknown"}); opening the console billing page`);
+      return fallback;
+    }
+    const raw = result.value && typeof result.value === "object" ? (result.value as { url?: unknown }).url : null;
+    const url = approvedStripeUrl(raw);
+    if (url && new URL(url).hostname === "billing.stripe.com") return url;
+    console.warn("billing: portal session answered without a Stripe billing url; opening the console billing page");
+  } catch (error) {
+    console.warn("billing: portal session request failed; opening the console billing page", error);
+  }
+  return fallback;
 }
 
 export interface SettingsGeneral {

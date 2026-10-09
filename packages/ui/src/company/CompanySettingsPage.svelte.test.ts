@@ -285,3 +285,46 @@ describe("CompanySettingsPage live Groups and Grants", () => {
     warn.mockRestore();
   });
 });
+
+describe("CompanySettingsPage Billing hand-offs", () => {
+  function billingCompany(extra: Record<string, unknown> = {}) {
+    return {
+      getTeamTelemetry: vi.fn(async () => ({ ok: true as const, value: { perMember: [] } })),
+      listMembers: vi.fn(async () => ({ ok: true as const, value: [] })),
+      ...extra,
+    };
+  }
+  const messaging = { listContacts: vi.fn(async () => ({ ok: true as const, value: [] })) };
+
+  it("Manage payment opens the portal session minted for this company", async () => {
+    const session = "https://billing.stripe.com/p/session/live_acme";
+    const createBillingPortalSession = vi.fn(async () => ({ ok: true as const, value: { url: session } }));
+    const openExternal = vi.fn();
+    const target = render({ slug: "acme", companyUid: "cmp_acme", company: billingCompany({ createBillingPortalSession }), messaging, openExternal });
+    openWorkforce(target);
+    target.querySelector<HTMLButtonElement>("[data-testid='manage-payment']")!.click();
+    await vi.waitFor(() => expect(openExternal).toHaveBeenCalledTimes(1));
+    expect(createBillingPortalSession).toHaveBeenCalledWith("cmp_acme");
+    expect(openExternal).toHaveBeenCalledWith(session);
+  });
+
+  it("Manage payment falls back to the console billing page when the mint is refused", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const createBillingPortalSession = vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "http-403" }));
+    const openExternal = vi.fn();
+    const target = render({ slug: "acme", companyUid: "cmp_acme", company: billingCompany({ createBillingPortalSession }), messaging, openExternal });
+    openWorkforce(target);
+    target.querySelector<HTMLButtonElement>("[data-testid='manage-payment']")!.click();
+    await vi.waitFor(() => expect(openExternal).toHaveBeenCalledTimes(1));
+    expect(openExternal).toHaveBeenCalledWith("https://hq.computer/companies/acme/billing");
+    warn.mockRestore();
+  });
+
+  it("Upgrade opens the console billing upgrade for this company", () => {
+    const openExternal = vi.fn();
+    const target = render({ slug: "acme", companyUid: "cmp_acme", company: billingCompany(), messaging, openExternal });
+    openWorkforce(target);
+    target.querySelector<HTMLButtonElement>("[data-testid='workforce-upgrade']")!.click();
+    expect(openExternal).toHaveBeenCalledWith("https://hq.computer/companies/acme/billing?upgrade=team");
+  });
+});

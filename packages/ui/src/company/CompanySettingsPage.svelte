@@ -3,11 +3,13 @@
   /**
    * Company settings (console-rail US-030).
    * General, Brand, Groups, Grants, HQ Workforce, and Billing.
-   * Cached snapshot paints on the first frame. Upgrade opens Stripe checkout.
-   * Manage payment opens the Stripe portal. Delete group asks first.
+   * Cached snapshot paints on the first frame. Upgrade opens the console
+   * billing page's upgrade. Manage payment opens a Stripe portal session
+   * hq-pro mints for this company. Delete group asks first.
    */
   import {
     GRANT_FILTERS,
+    billingPortalUrl,
     emptySnapshot,
     expiringGrantCount,
     filterGrants,
@@ -15,7 +17,6 @@
     grantLevelLabel,
     metadata,
     readSettingsCache,
-    stripeDestination,
     writeSettingsCache,
     type GrantFilter,
     type SettingsSnapshot,
@@ -43,6 +44,7 @@
   import { readCompanyTeam, readTeamCache, seatCounts, writeTeamCache } from "./team-bots-pages.js";
   import type { TeamMember } from "./team-telemetry.js";
   import { loadPeople } from "../common/people/people-roster.svelte.js";
+  import { HQ_CONSOLE_BASE, companyConsoleUrl, consoleCompanySlug } from "../common/hq-console.js";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -257,9 +259,27 @@
     remember();
   }
 
-  function openStripe(action: "upgrade" | "portal"): void {
-    const url = stripeDestination(action);
-    openExternal?.(url);
+  function consoleBillingUrl(query = ""): string {
+    const known = consoleCompanySlug(slug);
+    return known ? `${companyConsoleUrl(known)}/billing${query}` : HQ_CONSOLE_BASE;
+  }
+
+  let openingPortal = $state(false);
+
+  async function openPortal(): Promise<void> {
+    if (openingPortal) return;
+    openingPortal = true;
+    try {
+      const uid = companyUid;
+      const mint = uid && company?.createBillingPortalSession ? () => company!.createBillingPortalSession!(uid) : null;
+      openExternal?.(await billingPortalUrl(mint, consoleBillingUrl()));
+    } finally {
+      openingPortal = false;
+    }
+  }
+
+  function openUpgrade(): void {
+    openExternal?.(consoleBillingUrl("?upgrade=team"));
   }
 
 </script>
@@ -457,7 +477,7 @@
           <p class="sub">Plan, seats and payment · billed to {snap.general.name || companyLabel}</p>
         </div>
         <span class="grow"></span>
-        <RailButton icon="external" type="button" data-testid="manage-payment" onclick={() => openStripe("portal")}>Manage payment</RailButton>
+        <RailButton icon="external" type="button" data-testid="manage-payment" disabled={openingPortal} onclick={() => void openPortal()}>Manage payment</RailButton>
       </div>
       <div class="plan">
         <div data-testid="workforce-seats">
@@ -476,9 +496,9 @@
       <div class="up">
         <div>
           <b>Need more seats or agents?</b>
-          Upgrade continues to Stripe checkout in your browser. The desktop collects no card data.
+          Upgrade continues to billing in your browser. The desktop collects no card data.
         </div>
-        <RailButton icon="arrow-right" variant="primary" type="button" data-testid="workforce-upgrade" onclick={() => openStripe("upgrade")}>Upgrade</RailButton>
+        <RailButton icon="arrow-right" variant="primary" type="button" data-testid="workforce-upgrade" onclick={openUpgrade}>Upgrade</RailButton>
       </div>
       <p class="note">Manage payment opens the Stripe customer portal in your browser.</p>
     {/if}
