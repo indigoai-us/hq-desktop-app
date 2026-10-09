@@ -705,8 +705,17 @@ fn daemon_update_error_class(value: &str) -> Option<ClientHealthDaemonHqCloudUpd
 fn daemon_update_timestamp(value: &str) -> Option<String> {
     chrono::DateTime::parse_from_rfc3339(value)
         .ok()
-        .filter(|timestamp| timestamp.offset().local_minus_utc() == 0)
-        .map(|_| value.to_string())
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        })
+}
+
+fn pending_host_runner_health(
+    npx_version: Option<String>,
+) -> (Option<String>, DaemonRunnerHealth) {
+    (npx_version, DaemonRunnerHealth::default())
 }
 
 fn select_daemon_runner_health(
@@ -715,46 +724,49 @@ fn select_daemon_runner_health(
 ) -> (Option<String>, DaemonRunnerHealth) {
     use ClientHealthSyncRunnerSource as S;
     match status {
-        Ok(status) => match status
-            .runner_source
-            .as_deref()
-            .and_then(daemon_runner_source)
-            .zip(
-                status
-                    .hq_cloud_version
-                    .as_deref()
-                    .and_then(sanitized_version),
-            ) {
-            Some((source, version)) => (
-                Some(version),
-                DaemonRunnerHealth {
-                    source: Some(source),
-                    last_check_at: status
-                        .hq_cloud_update_last_check_at
-                        .as_deref()
-                        .and_then(daemon_update_timestamp),
-                    outcome: status
-                        .hq_cloud_update_outcome
-                        .as_deref()
-                        .and_then(daemon_update_outcome),
-                    target: status
-                        .hq_cloud_update_target
-                        .as_deref()
-                        .and_then(sanitized_version),
-                    error_class: status
-                        .hq_cloud_update_error_class
-                        .as_deref()
-                        .and_then(daemon_update_error_class),
-                },
-            ),
-            None => (
-                npx_version,
-                DaemonRunnerHealth {
-                    source: Some(S::Unknown),
-                    ..Default::default()
-                },
-            ),
-        },
+        Ok(status) => {
+            let version = status
+                .hq_cloud_version
+                .as_deref()
+                .and_then(sanitized_version);
+            match version {
+                Some(version) => (
+                    Some(version),
+                    DaemonRunnerHealth {
+                        source: Some(
+                            status
+                                .runner_source
+                                .as_deref()
+                                .and_then(daemon_runner_source)
+                                .unwrap_or(S::Unknown),
+                        ),
+                        last_check_at: status
+                            .hq_cloud_update_last_check_at
+                            .as_deref()
+                            .and_then(daemon_update_timestamp),
+                        outcome: status
+                            .hq_cloud_update_outcome
+                            .as_deref()
+                            .and_then(daemon_update_outcome),
+                        target: status
+                            .hq_cloud_update_target
+                            .as_deref()
+                            .and_then(sanitized_version),
+                        error_class: status
+                            .hq_cloud_update_error_class
+                            .as_deref()
+                            .and_then(daemon_update_error_class),
+                    },
+                ),
+                None => (
+                    npx_version,
+                    DaemonRunnerHealth {
+                        source: Some(S::Unknown),
+                        ..Default::default()
+                    },
+                ),
+            }
+        }
         Err(_) => (
             npx_version,
             DaemonRunnerHealth {
@@ -794,13 +806,9 @@ async fn collect_versions() -> (ClientHealthVersions, DaemonRunnerHealth) {
             .unwrap_or_else(|error| Err(format!("daemon status task failed: {error}")));
             select_daemon_runner_health(status, npx_runner)
         }
-        crate::commands::hq_daemon_host::HostPhase::Pending => (
-            npx_runner,
-            DaemonRunnerHealth {
-                source: Some(ClientHealthSyncRunnerSource::Unknown),
-                ..Default::default()
-            },
-        ),
+        crate::commands::hq_daemon_host::HostPhase::Pending => {
+            pending_host_runner_health(npx_runner)
+        }
     };
 
     (
@@ -1131,7 +1139,7 @@ mod tests {
     #[test]
     fn daemon_runner_health_uses_active_daemon_version_and_optional_update_state() {
         let status = crate::commands::hq_daemon_host::parse_daemon_sync_status(
-            r#"{"running":true,"paused":false,"syncOwner":"daemon","unitStatus":"running","logPath":"/tmp/hq-sync.log","hqCloudVersion":"6.18.54","runnerSource":"managed-full-package","hqCloudUpdateLastCheckAt":"2026-10-08T12:00:00.000Z","hqCloudUpdateOutcome":"pinned","hqCloudUpdateTarget":"6.18.54"}"#,
+            r#"{"running":true,"paused":false,"syncOwner":"daemon","unitStatus":"running","logPath":"/tmp/hq-sync.log","hqCloudVersion":"6.18.54","runnerSource":"managed-full-package","hqCloudUpdateLastCheckAt":"2026-10-08T12:00:00+00:00","hqCloudUpdateOutcome":"pinned","hqCloudUpdateTarget":"6.18.54"}"#,
         );
         let (version, health) = select_daemon_runner_health(status, Some("6.18.35".to_string()));
         assert_eq!(version.as_deref(), Some("6.18.54"));
@@ -1143,7 +1151,56 @@ mod tests {
             health.outcome,
             Some(ClientHealthDaemonHqCloudUpdateOutcome::Pinned)
         );
+        assert_eq!(
+            health.last_check_at.as_deref(),
+            Some("2026-10-08T12:00:00.000Z")
+        );
         assert_eq!(health.target.as_deref(), Some("6.18.54"));
+    }
+
+    #[test]
+    fn daemon_runner_version_survives_missing_or_unknown_source() {
+        for source in ["", r#","runnerSource":"future-source""#] {
+            let status = crate::commands::hq_daemon_host::parse_daemon_sync_status(&format!(
+                r#"{{"running":true,"paused":false,"syncOwner":"daemon","unitStatus":"running","logPath":"/tmp/hq-sync.log","hqCloudVersion":"6.18.56"{source}}}"#
+            ));
+            let (version, health) =
+                select_daemon_runner_health(status, Some("6.18.35".to_string()));
+            assert_eq!(version.as_deref(), Some("6.18.56"));
+            assert_eq!(health.source, Some(ClientHealthSyncRunnerSource::Unknown));
+        }
+    }
+
+    #[test]
+    fn daemon_update_timestamps_normalize_to_contract_utc_format_or_drop() {
+        assert_eq!(
+            daemon_update_timestamp("2026-10-08T12:00:00+00:00").as_deref(),
+            Some("2026-10-08T12:00:00.000Z")
+        );
+        assert_eq!(
+            daemon_update_timestamp("2026-10-08T14:00:00.123456+02:00").as_deref(),
+            Some("2026-10-08T12:00:00.123Z")
+        );
+        assert_eq!(daemon_update_timestamp("not-a-timestamp"), None);
+    }
+
+    #[test]
+    fn pending_host_resolution_omits_sync_runner_source_from_heartbeat() {
+        let (version, health) = pending_host_runner_health(Some("6.18.35".to_string()));
+        assert_eq!(version.as_deref(), Some("6.18.35"));
+        assert!(health.source.is_none());
+
+        let mut heartbeat = build_heartbeat_payload(
+            &state_with_id(413),
+            full_versions(),
+            false,
+            false,
+            now_iso(),
+        );
+        heartbeat.versions.sync_runner = version;
+        heartbeat.sync_runner_source = health.source;
+        let wire = serde_json::to_value(&heartbeat).unwrap();
+        assert!(wire.get("syncRunnerSource").is_none());
     }
 
     #[test]
