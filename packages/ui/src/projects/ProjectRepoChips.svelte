@@ -48,25 +48,29 @@
 {/if}
 
 <style>
+  /* One quiet metadata line: never wraps; repos keep their room and the
+     branch truncates first. */
   .repo-chips {
     display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 12px;
     min-width: 0;
+    overflow: hidden;
   }
 
   .repo-chip {
     display: inline-flex;
     align-items: center;
     gap: 4px;
+    flex: 0 1 auto;
     max-width: 100%;
     min-width: 0;
-    height: 20px;
-    padding: 0 6px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 5px;
+    height: 16px;
+    padding: 0;
+    border: 0;
     background: transparent;
-    color: var(--v4-text-2);
+    color: var(--v4-text-3);
     font-size: 13px;
     line-height: 1;
   }
@@ -83,8 +87,14 @@
     color: var(--v4-text-3);
   }
 
+  .repo-chip.more {
+    flex: none;
+  }
+
   .repo-chip.branch {
-    max-width: 160px;
+    flex: 1 1 0;
+    min-width: 48px;
+    font-family: var(--font-mono);
   }
 
   .repo-text {

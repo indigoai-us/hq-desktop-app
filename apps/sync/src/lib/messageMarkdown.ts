@@ -1,5 +1,6 @@
 import { renderMarkdown, safeHref } from './markdown';
 import { replaceEmojiShortcodesInHtml } from './emojiShortcodes';
+import { relabelRawUrlLinks, type PageTitleLookup } from '@hq/ui/link-preview';
 
 function trimBlankBoundaryLines(lines: string[]): string[] {
   let start = 0;
@@ -314,12 +315,18 @@ function autolinkMessageUrls(html: string): string {
   return out;
 }
 
-export function renderMessageBodyMarkdown(body: string): string {
+export function renderMessageBodyMarkdown(
+  body: string,
+  pageTitle?: PageTitleLookup,
+): string {
   const markdown = applyChatLineBreaks(normalizeMessageMarkdown(body));
   // Emoji conversion runs on already-escaped HTML after autolinking + mention
   // wrapping, so <a>/<code>/<pre> contents (URLs, code spans, fences) and the
-  // tags themselves are never rewritten.
+  // tags themselves are never rewritten. Raw-URL links are relabelled before
+  // mention wrapping so an `@` inside a URL never becomes a mention.
   return replaceEmojiShortcodesInHtml(
-    wrapMessageMentions(autolinkMessageUrls(renderMarkdown(markdown))),
+    wrapMessageMentions(
+      relabelRawUrlLinks(autolinkMessageUrls(renderMarkdown(markdown)), pageTitle),
+    ),
   );
 }
