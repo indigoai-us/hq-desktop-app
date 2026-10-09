@@ -1,5 +1,6 @@
 <script lang="ts">
   import SignInPrompt from '../src/components/SignInPrompt.svelte';
+  import { loadBrief } from '@hq/ui';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
   import { createLifecycleInvoke, resolveLifecycleOptions } from './lifecycle-scenario';
@@ -234,7 +235,13 @@
   }
 </script>
 
-{#if view === 'forward'}
+{#if view === 'brief'}
+  <!-- Daily Brief page alone. Add ?briefDemo=1|fail or ?briefDemoAt=0..1|fail
+       (packages/ui/src/brief/brief-demo.ts) to review the Create brief sunrise. -->
+  {#await loadBrief() then mod}
+    <div style="height:100vh;overflow:auto"><mod.BriefRunsPage adapter={{}} companies={[]} source={null} /></div>
+  {/await}
+{:else if view === 'forward'}
   <!-- The Forward message dialog with fictional destinations. ~900x760 viewport. -->
   <ForwardPickerPreview />
 {:else if view === 'activity'}

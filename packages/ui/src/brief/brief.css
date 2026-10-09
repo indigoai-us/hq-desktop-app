@@ -408,23 +408,39 @@
   background: rgba(0, 0, 0, 0.28);
   box-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.4);
 }
+/* Engine marks: the rail's brand marks at 14px. Muted until chosen; the
+   chosen one sits on the light chip in full contrast (Claude in its clay). */
 .daily-brief .launch .eng button {
   all: unset;
   cursor: pointer;
-  font-family: var(--b-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
-  padding: 4px 7px;
+  display: inline-grid;
+  place-items: center;
+  height: 14px;
+  padding: 3px 6px;
   border-radius: 999px;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(255, 255, 255, 0.55);
   transition: background 0.2s, color 0.2s;
+}
+.daily-brief .launch .eng .mark {
+  display: block;
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  stroke: none;
 }
 .daily-brief .launch .eng button:hover {
   color: #fff;
 }
+.daily-brief .launch .eng button:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.7);
+  outline-offset: 1px;
+}
 .daily-brief .launch .eng button[aria-pressed="true"] {
   background: rgba(255, 255, 255, 0.9);
-  color: #2a1a5c;
+  color: #1b1b1e;
+}
+.daily-brief .launch .eng button[aria-pressed="true"] .mark.clay {
+  fill: #d97757;
 }
 .daily-brief .launch .copy {
   all: unset;

@@ -17,8 +17,9 @@
     create?: BriefCreateRun | null;
     /** Files the shown run is missing, by name. */
     missing?: readonly string[];
+    oncreate?: () => void;
   }
-  let { entries, selectedRunId, latestRunId, now, onselect, create = null, missing = [] }: Props = $props();
+  let { entries, selectedRunId, latestRunId, now, onselect, create = null, missing = [], oncreate }: Props = $props();
 
   const step = $derived(stepRun(entries, selectedRunId));
   const selected = $derived(entries.find((e) => e.runId === selectedRunId) ?? null);
@@ -95,20 +96,12 @@
 
   {#if create}
     <div class="create" aria-live="polite">
-      {#if phase.kind === "dispatching" || phase.kind === "waiting" || phase.kind === "running"}
-        <div class="prog" data-testid="brief-progress">
-          <span class="steptext">{phase.kind === "running" ? phase.step : phase.kind === "waiting" ? "Waiting for your bot to start" : "Sending to your bot"}</span>
-          <span class="bar"><span style="width:{Math.round((phase.kind === 'running' ? phase.progress : 0.02) * 100)}%"></span></span>
-        </div>
-      {:else if phase.kind === "blocked"}
+      {#if phase.kind === "blocked"}
         <span class="msg" data-testid="brief-blocked">{phase.message}</span>
         <button type="button" class="btn" onclick={() => void runFix()} disabled={fixing} data-testid="brief-fix">
           {fixing ? "Working…" : BRIEF_FIX_LABEL[phase.fix]}
         </button>
         {#if fixError}<span class="msg">{fixError}</span>{/if}
-      {:else if phase.kind === "failed"}
-        <span class="msg err" data-testid="brief-create-failed">{phase.message}</span>
-        <button type="button" class="btn ghost" onclick={() => create?.dismiss()}>Dismiss</button>
       {/if}
       {#if phase.kind !== "blocked"}
         <button
@@ -116,7 +109,7 @@
           class="btn primary"
           disabled={create.busy}
           aria-busy={create.busy}
-          onclick={() => void create?.start()}
+          onclick={() => (oncreate ? oncreate() : void create?.start())}
           data-testid="brief-create"
         >{create.busy ? "Creating…" : "Create brief"}</button>
       {/if}
@@ -167,11 +160,6 @@
     color: #1b1b1e;
     background: var(--b-sun);
   }
-  .btn.ghost {
-    background: transparent;
-    box-shadow: none;
-    color: var(--b-t2);
-  }
   .tag,
   .chip {
     display: inline-flex;
@@ -193,27 +181,5 @@
     align-items: center;
     gap: 10px;
     margin-left: auto;
-  }
-  .prog {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 180px;
-  }
-  .bar {
-    display: block;
-    height: 3px;
-    border-radius: 2px;
-    background: var(--b-line);
-    overflow: hidden;
-  }
-  .bar span {
-    display: block;
-    height: 100%;
-    background: var(--b-sun);
-    transition: width 0.4s ease;
-  }
-  .msg.err {
-    color: var(--b-red);
   }
 </style>

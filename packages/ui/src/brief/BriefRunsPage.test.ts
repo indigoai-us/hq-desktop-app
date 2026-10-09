@@ -125,7 +125,23 @@ describe("BriefRunsPage", () => {
     expect(q("brief-missing")?.textContent).toContain("brief-data.json");
   });
 
-  it("with no runs, renders the old per-day brief and no history", async () => {
+  it("with no runs and a creator, shows the pre-dawn empty state with one Create brief button", async () => {
+    const creator: BriefCreator = {
+      company: () => null,
+      check: async () => ({ ok: false, bot: null, fix: "create-bot", message: "x" }),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render({}, { creator });
+    await settle();
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("idle");
+    expect(target.textContent).toContain("Your first brief is waiting");
+    expect(target.querySelectorAll('[data-testid="brief-create"]')).toHaveLength(1);
+    expect(q("daily-brief")).toBeNull();
+  });
+
+  it("with no runs and no creator, renders the old per-day brief and no history", async () => {
     const reads = render({});
     await settle();
     expect(q("daily-brief")).not.toBeNull();
@@ -174,11 +190,14 @@ describe("BriefRunsPage", () => {
       await settle();
       q("brief-create")!.click();
       await settle();
-      expect(q("brief-progress")?.textContent).toContain("Waiting for your bot to start");
+      // No runs yet: the progress plays in the full-page sunrise.
+      expect(q("brief-dawn-step")?.textContent).toContain("Waiting for your bot to start");
+      expect(q("brief-dawn")?.getAttribute("data-progress")).toBe("0.00");
       await vi.advanceTimersByTimeAsync(2_100);
       await settle();
-      expect(q("brief-progress")?.textContent).toContain("Sweeping your day");
-      expect((q("brief-create") as HTMLButtonElement).disabled).toBe(true);
+      expect(q("brief-dawn-step")?.textContent).toContain("Sweeping your day");
+      expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("running");
+      expect(q("brief-dawn")?.getAttribute("data-progress")).toBe("0.40");
     } finally {
       vi.useRealTimers();
     }
