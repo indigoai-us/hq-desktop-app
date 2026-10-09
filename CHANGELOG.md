@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- The Tokens per day chart in My Telemetry now says UTC next to its title, because HQ counts each day from midnight UTC rather than your local midnight. The highlighted bar and the "today" label now mean today where you are: in the evening in the Americas, the newest bar is already tomorrow in UTC, so it shows its date instead of "today".
+- The Tokens per day chart in My Telemetry now says UTC next to its title, because HQ counts each day from midnight UTC rather than your local midnight. The highlighted bar and the "today" label now mean today where you are: in the evening in the Americas, the newest bar is already tomorrow in UTC, so it shows its date instead of "today". The app now sends your time zone with the request, and the UTC note goes away once HQ reports that it counted the days in your zone.
 - Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
 
 ## [0.11.0] — 2026-10-08

@@ -20,7 +20,7 @@
   import ProviderMark from "../common/ProviderMark.svelte";
   import type { TelemetryCache } from "./telemetry-cache.js";
   import {
-    DAY_ZONE_LABEL,
+    dayZoneLabel,
     LIST_RATE_LABEL,
     bandPercent,
     chartBandLabels,
@@ -75,6 +75,8 @@
   let range = $state<TelemetryRange>("30d");
   // Every figure on screen reads the snapshot recomputed for the chosen range.
   const snapshot = $derived(base ? snapshotForRange(base, range) : null);
+  // "UTC" next to the chart title unless hq-pro cut the days in this Mac's zone.
+  const zoneLabel = $derived(dayZoneLabel(snapshot?.bucketTz));
 
   const maxStack = $derived(snapshot ? stackMax(snapshot.days) : 0);
   // Chart bands are the By-model rows plus Other, in table order.
@@ -299,7 +301,7 @@
       </section>
 
       <section data-section="tokens-per-day" tabindex="-1">
-        <div class="sech">Tokens per day · stacked by model <span class="zone" data-testid="telemetry-day-zone" title="Days start at midnight UTC, not your local midnight">{DAY_ZONE_LABEL}</span><span class="grow"></span>
+        <div class="sech">Tokens per day · stacked by model {#if zoneLabel}<span class="zone" data-testid="telemetry-day-zone" title="Days start at midnight UTC, not your local midnight">{zoneLabel}</span>{/if}<span class="grow"></span>
           <span class="lg" data-testid="telemetry-legend">{#each bandLabels as label (label)}<span class="lgi" data-legend={label}><ProviderMark provider={vizSlotFor(label).provider} color={vizColor(label)} />{label}</span>{/each}</span>
         </div>
         <div class="chart" data-testid="telemetry-bars">

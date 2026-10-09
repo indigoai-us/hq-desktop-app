@@ -4,6 +4,7 @@ import {
   LIST_RATE_LABEL,
   LIST_RATES,
   formatUsd,
+  dayZoneLabel,
   latestDayLabel,
   listRateUsd,
   localIsoDate,
@@ -125,5 +126,20 @@ describe("telemetry days and the local date", () => {
     const view = snapshotForRange(TELEMETRY_SMOKE, "7d", Date.parse("2026-10-01T02:30:00Z"), "America/Denver");
     expect(view.dayLabels.at(-1)).toBe("Oct 1");
     expect(view.dayLabels).not.toContain("today");
+  });
+});
+
+describe("chart zone label", () => {
+  it("drops UTC only when the server cut days in the user's own zone", () => {
+    expect(dayZoneLabel("America/Denver", "America/Denver")).toBe("");
+    expect(dayZoneLabel("UTC", "UTC")).toBe("");
+  });
+
+  it("keeps UTC when the server ignored tz or used another zone", () => {
+    // Older server: no bucketTz on the response.
+    expect(dayZoneLabel(undefined, "America/Denver")).toBe("UTC");
+    // Current server that could only cut UTC days.
+    expect(dayZoneLabel("UTC", "America/Denver")).toBe("UTC");
+    expect(dayZoneLabel("Europe/London", "America/Denver")).toBe("UTC");
   });
 });
