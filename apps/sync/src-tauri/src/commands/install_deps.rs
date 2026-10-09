@@ -2922,6 +2922,7 @@ pub fn format_install_error(exit_code: i32, stderr_lines: &[String]) -> String {
 #[cfg(not(windows))]
 #[tauri::command]
 pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_homebrew")?;
     run_streaming(
         &app,
         "/bin/bash",
@@ -3557,6 +3558,7 @@ async fn install_jq_macos(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_jq(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_jq")?;
     #[cfg(not(windows))]
     {
         install_jq_macos(app).await
@@ -4228,6 +4230,7 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_node<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_node")?;
     #[cfg(not(windows))]
     {
         install_node_macos(app).await
@@ -4258,6 +4261,7 @@ pub(crate) async fn install_node_for_repair<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn install_git(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_git")?;
     #[cfg(not(windows))]
     {
         install_git_macos(app).await
@@ -4270,6 +4274,7 @@ pub async fn install_git(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_gh(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_gh")?;
     #[cfg(not(windows))]
     {
         install_gh_macos(app).await
@@ -4282,6 +4287,7 @@ pub async fn install_gh(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_yq(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_yq")?;
     #[cfg(not(windows))]
     {
         install_yq_macos(app).await
@@ -4294,6 +4300,7 @@ pub async fn install_yq(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_claude_code")?;
     #[cfg(not(windows))]
     {
         install_claude_code_macos(app).await
@@ -4422,6 +4429,7 @@ async fn install_npm_cli_windows(
 /// Install the Codex CLI via `npm install -g @openai/codex`.
 #[tauri::command]
 pub async fn install_codex(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_codex")?;
     let (spec, bin) = session_provider_npm_spec("codex")?;
     #[cfg(not(windows))]
     {
@@ -4436,6 +4444,7 @@ pub async fn install_codex(app: AppHandle) -> Result<String, String> {
 /// Install the Grok CLI via `npm install -g @xai-official/grok`.
 #[tauri::command]
 pub async fn install_grok(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_grok")?;
     let (spec, bin) = session_provider_npm_spec("grok")?;
     #[cfg(not(windows))]
     {
@@ -4451,6 +4460,7 @@ pub async fn install_grok(app: AppHandle) -> Result<String, String> {
 /// hunting binaries. Ensures npm/Node first, then the provider package.
 #[tauri::command]
 pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_session_provider")?;
     match tool.as_str() {
         "claude" => {
             let _ = npm_bin_or_install_node(&app, "claude").await?;
@@ -4473,6 +4483,7 @@ pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<St
 
 #[tauri::command]
 pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_qmd")?;
     #[cfg(not(windows))]
     {
         install_qmd_macos(app).await
@@ -4485,6 +4496,7 @@ pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_hq_cli(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_hq_cli")?;
     #[cfg(not(windows))]
     {
         install_hq_cli_macos(app).await
@@ -6000,6 +6012,7 @@ fn managed_node_arch() -> Option<&'static str> {
 #[cfg(windows)]
 #[tauri::command]
 pub async fn install_pnpm(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_pnpm")?;
     emit_progress(&app, "Installing pnpm via npm...");
     let prefix = managed_npm_prefix();
     let prefix = prefix.to_string_lossy().into_owned();
@@ -6620,6 +6633,7 @@ async fn rescue_rsync_is_ready() -> Result<(), String> {
 #[cfg(windows)]
 #[tauri::command]
 pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_rsync")?;
     install_rsync_with_progress(|message| emit_progress(&app, message)).await
 }
 
@@ -7888,6 +7902,10 @@ static QMD_ABI_REPAIR_STARTED: AtomicBool = AtomicBool::new(false);
 /// Launch-time repair for a desktop-installed qmd whose sqlite addon was built
 /// for a different Node ABI than HQ's managed Node. Runs once per process.
 pub fn setup_qmd_abi_repair(app: &AppHandle) {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("qmd ABI repair");
+        return;
+    }
     if QMD_ABI_REPAIR_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -8007,6 +8025,7 @@ pub async fn install_deps(
     app: AppHandle,
     failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
 ) -> Result<(), String> {
+    crate::scratch_build::refuse_install("install_deps")?;
     clear_onboarding_failure_detail("deps", failure_scope.as_ref());
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);

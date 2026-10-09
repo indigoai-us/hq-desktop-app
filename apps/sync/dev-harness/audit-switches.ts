@@ -28,12 +28,16 @@
  *   ?firstrun=visual-import[-fast|-slow|-empty|-error|-fail|-update]  as visual, and the
  *       "Bring in your context" scan replays a fixture stream (import-scan-fixture.ts).
  *       Plain ?firstrun=visual leaves the scan command unhandled: the stream-failed state.
+ *   ?team=invites|member|many|fail and ?apps=on|empty|forbidden|fail  with a ?firstrun= switch:
+ *       the "Your team", Note taker and Project management screens (first-run-fixtures.ts).
+ *       Without ?team= the roster is the persona's; without ?apps= the catalog is the usual mock.
  *
  * Combine freely with ?persona=, ?theme= and ?route=.
  */
 import { emit } from '@tauri-apps/api/event';
 import { isBootCommand } from './state-flags';
 import { cancelImportScan, replayImportScan, type ImportVariant } from './import-scan-fixture';
+import { firstRunScreensAnswer } from './first-run-fixtures';
 
 function params(search?: string | null): URLSearchParams {
   const raw = search ?? (typeof window === 'undefined' ? '' : window.location.search);
@@ -221,6 +225,8 @@ export function switchedHandler(
         },
       };
     }
+    const screens = firstRunScreensAnswer(cmd, args, search);
+    if (screens) return screens;
     if (cmd === 'agent_session_preflight') return { value: firstRunPreflight(firstRun !== 'visual-notools') };
     if (cmd === 'local_bots_list') return { value: { bots: [] } };
     // "Bring in your context": replay a scan (import-scan-fixture.ts). The
