@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - The company Grants page now matches the web console. It is for granting one of your company's groups access to other companies, and for seeing which outside groups have access to yours. Pick a group, the companies to grant it to, and Read or Write, then press Grant access; the button says Granting… until HQ answers and cannot be pressed twice. Active grants list each group, company and role with a Revoke button that asks before it removes access. Revoked grants stay listed so you can see what was taken away. The Grants tab shows External groups with access. Admin is no longer offered, because grants to other companies are Read or Write only. A company HQ cannot name shows as "Unknown company" instead of an id, and a failed read says so with Try again. The folder-by-folder grant counts that used to be here are gone; who can open a folder is still shown on the company's Files access screen.
+- Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
 
 ## [0.11.0] — 2026-10-08
 
