@@ -64,6 +64,9 @@ export interface BriefIndexEntry {
   lead: string;
   counts: { decisions: number; shipped: number; incidents: number };
   headline: string;
+  /** Optional run length the skill may record (`duration_s` / `finished_at`). */
+  durationMs?: number | null;
+  finishedAt?: string | null;
 }
 
 function runState(v: unknown): BriefRunState | null {
@@ -111,6 +114,8 @@ export function parseBriefIndex(text: string): { entries: BriefIndexEntry[]; ski
       lead: str(r.lead),
       counts: { decisions: num(c.decisions), shipped: num(c.shipped), incidents: num(c.incidents) },
       headline: str(r.headline),
+      durationMs: typeof r.duration_s === "number" && Number.isFinite(r.duration_s) ? r.duration_s * 1000 : null,
+      finishedAt: str(r.finished_at) || null,
     });
   }
   const entries = [...byId.values()].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
@@ -149,6 +154,30 @@ export function relativeRunLabel(createdAt: string, now: Date): string {
 
 // ── status.json ─────────────────────────────────────────────────────────────
 
+export type BriefActivityState = "running" | "done" | "skipped" | "failed";
+
+/** One line of the run's activity list (status.json `activity`, newest last). */
+export interface BriefActivity {
+  at: string;
+  label: string;
+  state: BriefActivityState;
+  detail: string | null;
+}
+
+/** status.json `activity`; malformed entries dropped, newest last, at most 12. */
+export function parseActivity(raw: unknown): BriefActivity[] {
+  if (!Array.isArray(raw)) return [];
+  const out: BriefActivity[] = [];
+  for (const item of raw) {
+    const r = rec(item);
+    const label = str(r.label);
+    const state = r.state;
+    if (!label || (state !== "running" && state !== "done" && state !== "skipped" && state !== "failed")) continue;
+    out.push({ at: str(r.at), label, state, detail: str(r.detail) || null });
+  }
+  return out.slice(-12);
+}
+
 export interface BriefRunStatus {
   runId: string;
   state: BriefRunState;
@@ -159,6 +188,8 @@ export interface BriefRunStatus {
   error: string | null;
   sources: Record<string, unknown>;
   housekeeping: Record<string, unknown> | null;
+  /** Empty when the skill that wrote it predates the activity list. */
+  activity: BriefActivity[];
 }
 
 export function parseBriefStatus(text: string): BriefRunStatus | null {
@@ -182,6 +213,7 @@ export function parseBriefStatus(text: string): BriefRunStatus | null {
     error: str(r.error) || null,
     sources: rec(r.sources),
     housekeeping: r.housekeeping && typeof r.housekeeping === "object" ? rec(r.housekeeping) : null,
+    activity: parseActivity(r.activity),
   };
 }
 
@@ -202,6 +234,7 @@ export type BriefCreatePhase =
       progress: number;
       lastChangeAt: number;
       updatedAt: string | null;
+      activity?: BriefActivity[];
     }
   | { kind: "ready"; runId: string }
   | { kind: "failed"; runId: string | null; message: string };
@@ -246,6 +279,7 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
       progress: status.progress,
       lastChangeAt,
       updatedAt: status.updatedAt,
+      activity: status.activity,
     };
   }
   // No usable status yet: absent, mid-write, or a read error.
@@ -259,6 +293,78 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
     return { kind: "failed", runId, message: "Your bot did not start the brief. Check that it is running, then try again." };
   }
   return phase;
+}
+
+// ── Elapsed, estimate, still working ────────────────────────────────────────
+
+/** status.json unchanged this long: show a calm "Still working on …" line. */
+export const BRIEF_QUIET_MS = 90_000;
+
+/** "45s", "2m 14s", "1h 3m". */
+export function elapsedLabel(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/**
+ * How long a past run took. index.jsonl lines are appended when a run ends,
+ * so `duration_s` or `finished_at` when present, else `created_at` against the
+ * start time in the run id. Implausible values (under 30 s, over 2 h) are left out.
+ */
+export function runDurationMs(entry: BriefIndexEntry & { durationMs?: number | null; finishedAt?: string | null }): number | null {
+  if (entry.durationMs != null) return entry.durationMs;
+  const start = runIdTime(entry.runId)?.getTime();
+  const end = Date.parse(entry.finishedAt ?? entry.createdAt);
+  if (start == null || !Number.isFinite(end)) return null;
+  const ms = end - start;
+  return ms >= 30_000 && ms <= 2 * 3_600_000 ? ms : null;
+}
+
+/** "usually ~12 min", from the median of two or more past ready runs; else null. */
+export function estimateLabel(entries: readonly BriefIndexEntry[]): string | null {
+  const ds = entries
+    .filter((e) => e.state === "ready")
+    .map((e) => runDurationMs(e))
+    .filter((d): d is number => d != null)
+    .sort((a, b) => a - b);
+  if (ds.length < 2) return null;
+  const mid = ds.length / 2;
+  const median = ds.length % 2 ? ds[Math.floor(mid)]! : (ds[mid - 1]! + ds[mid]!) / 2;
+  return `usually ~${Math.max(1, Math.round(median / 60_000))} min`;
+}
+
+/** Which files a run has written, for naming the phase when activity is missing. */
+export interface BriefRunFiles {
+  briefData: boolean;
+  brief: boolean;
+}
+
+/** The phase the run is in, from the files it has written so far. */
+export function phaseFromFiles(files: BriefRunFiles | null, step: string): string {
+  if (files?.brief) return "Finishing up";
+  if (files?.briefData) return "Writing your brief";
+  return step || "your brief";
+}
+
+/**
+ * The calm line shown when status.json has been quiet for 90 s (until the
+ * 10-minute stall rule ends the run). Names the running activity item when
+ * there is one, else the phase the run folder shows.
+ */
+export function stillWorkingLine(
+  phase: BriefCreatePhase,
+  now: number,
+  files: BriefRunFiles | null = null,
+): string | null {
+  if (phase.kind !== "running" && phase.kind !== "waiting") return null;
+  const since = phase.kind === "running" ? phase.lastChangeAt : phase.sentAt;
+  if (now - since < BRIEF_QUIET_MS) return null;
+  const running = phase.kind === "running" ? [...(phase.activity ?? [])].reverse().find((a) => a.state === "running") : undefined;
+  const what = running?.label ?? phaseFromFiles(files, phase.kind === "running" ? phase.step : "Waiting for your bot to start");
+  return `Still working on ${what.charAt(0).toLowerCase()}${what.slice(1)}…`;
 }
 
 // ── The bot that runs the job ───────────────────────────────────────────────
@@ -323,11 +429,12 @@ export const BRIEF_FIX_LABEL: Record<BriefBotFix, string> = {
  * The job message the bot receives: the skill invocation first so the bot
  * runs it as written, then the run id and company in plain words.
  */
-export function briefJobMessage(runId: string, company: string | null): string {
-  const co = company?.trim() ?? "";
+export function briefJobMessage(runId: string, company: string): string {
+  const co = company.trim();
   return (
-    `/daily-brief${co ? ` ${co}` : ""} --run-id ${runId}\n\n` +
-    `Run the daily-brief skill now with run_id ${runId}${co ? ` for company ${co}` : ""}. ` +
+    `/daily-brief ${co} --run-id ${runId}\n\n` +
+    `Run the daily-brief skill now with run_id ${runId} for company ${co}. ` +
+    `The company is ${co}, the one open in the HQ app; do not pick another company. ` +
     `Write workspace/brief/${runId}/status.json at every step and append workspace/brief/index.jsonl when the run ends.`
   );
 }

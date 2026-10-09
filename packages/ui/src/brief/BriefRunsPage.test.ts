@@ -127,7 +127,7 @@ describe("BriefRunsPage", () => {
 
   it("with no runs and a creator, shows the pre-dawn empty state with one Create brief button", async () => {
     const creator: BriefCreator = {
-      company: () => null,
+      company: () => "indigo",
       check: async () => ({ ok: false, bot: null, fix: "create-bot", message: "x" }),
       dispatch: vi.fn(async () => null),
       fix: vi.fn(async () => null),
@@ -207,7 +207,7 @@ describe("BriefRunsPage", () => {
     const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
     const f: Record<string, string> = {};
     const creator: BriefCreator = {
-      company: () => null,
+      company: () => "indigo",
       check: async () => ({ ok: true, bot }),
       dispatch: vi.fn(async () => null),
       fix: vi.fn(async () => null),

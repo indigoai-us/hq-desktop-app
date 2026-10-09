@@ -4975,7 +4975,18 @@
    */
   const briefCreator: BriefCreator | null = adapter.bots
     ? {
-        company: () => railCompanyRoster.find((c) => c.uid === tenantCompanyId)?.slug ?? null,
+        async company() {
+          const open = railCompanyRoster.find((c) => c.uid === tenantCompanyId)?.slug;
+          if (open) return open;
+          const bound = await adapter.appShell.getActiveCompany?.();
+          if (bound?.ok && bound.value) return bound.value;
+          const recent = readSettingsPrefs().companyRecentIds ?? [];
+          for (const uid of recent) {
+            const slug = railCompanyRoster.find((c) => c.uid === uid)?.slug;
+            if (slug) return slug;
+          }
+          return railCompanyRoster.length === 1 ? (railCompanyRoster[0]!.slug ?? null) : null;
+        },
         async check() {
           await refreshLocalBots();
           await loadLocalBotRuntimeReady(true);
@@ -5054,7 +5065,10 @@
     if (!p) return null;
     if (p.kind === "dispatching") return { progress: 0, step: "Waking your bot…" };
     if (p.kind === "waiting") return { progress: 0, step: "Waiting for your bot to start" };
-    if (p.kind === "running") return { progress: p.progress, step: p.step };
+    if (p.kind === "running") {
+      const latest = p.activity?.at(-1)?.label;
+      return { progress: p.progress, step: latest ?? p.step };
+    }
     return null;
   });
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {

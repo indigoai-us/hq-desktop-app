@@ -10,6 +10,8 @@
   import DailyBrief from "./DailyBrief.svelte";
   import BriefRunBar from "./BriefRunBar.svelte";
   import BriefDawn from "./BriefDawn.svelte";
+  import BriefActivity from "./BriefActivity.svelte";
+  import { elapsedLabel, estimateLabel, stillWorkingLine } from "./brief-runs.js";
   import { briefDemoFromUrl } from "./brief-demo.js";
   import type { DawnPhase } from "./brief-dawn.js";
   import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
@@ -162,6 +164,24 @@
         return null;
     }
   });
+  // A one-second clock while a run is in flight, for the elapsed time and
+  // the "still working" line.
+  let tickNow = $state(Date.now());
+  $effect(() => {
+    if (!run?.busy) return;
+    const t = setInterval(() => (tickNow = Date.now()), 1000);
+    return () => clearInterval(t);
+  });
+  const runInfo = $derived.by(() => {
+    if (cp.kind !== "waiting" && cp.kind !== "running") return null;
+    return {
+      activity: cp.kind === "running" ? (cp.activity ?? []) : [],
+      elapsed: elapsedLabel(tickNow - cp.sentAt),
+      estimate: estimateLabel(entries),
+      still: stillWorkingLine(cp, tickNow, run?.files ?? null),
+    };
+  });
+
   /** No runs yet and a way to make one: the pre-dawn empty state. */
   const empty = $derived(!!run && entries.length === 0 && (cp.kind === "idle" || cp.kind === "blocked"));
 
@@ -204,6 +224,14 @@
       {#if dawn.phase === "failed"}
         <button type="button" class="cta" onclick={createBrief} data-testid="brief-retry">Try again</button>
         <button type="button" class="ghost" onclick={() => run?.dismiss()}>Dismiss</button>
+      {:else if runInfo}
+        <BriefActivity
+          activity={runInfo.activity}
+          visible={size === "page" ? 5 : 2}
+          elapsed={runInfo.elapsed}
+          estimate={runInfo.estimate}
+          stillWorking={runInfo.still}
+        />
       {/if}
     </BriefDawn>
   {:else}

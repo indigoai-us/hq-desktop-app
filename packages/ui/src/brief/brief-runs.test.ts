@@ -87,6 +87,8 @@ describe("parseBriefIndex", () => {
       lead: "decisions",
       counts: { decisions: 3, shipped: 5, incidents: 1 },
       headline: "Three calls wait on you",
+      durationMs: null,
+      finishedAt: null,
     });
   });
 
@@ -262,6 +264,11 @@ describe("the bot that runs the job", () => {
     const msg = briefJobMessage("brief-20261008-090000", "indigo");
     expect(msg.startsWith("/daily-brief indigo --run-id brief-20261008-090000")).toBe(true);
     expect(msg).toContain("workspace/brief/brief-20261008-090000/status.json");
-    expect(briefJobMessage("brief-20261008-090000", null).startsWith("/daily-brief --run-id")).toBe(true);
+    // The company is always the first argument and said again in plain words,
+    // so a bot in several companies never picks one itself.
+    const indigo = briefJobMessage("brief-20261009-090122", "indigo");
+    expect(indigo.split("\n")[0]).toBe("/daily-brief indigo --run-id brief-20261009-090122");
+    expect(indigo).toContain("for company indigo");
+    expect(indigo).toContain("do not pick another company");
   });
 });

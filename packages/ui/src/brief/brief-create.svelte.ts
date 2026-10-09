@@ -8,6 +8,8 @@
 import type { LocalBotRow } from "@hq/platform";
 import {
   BRIEF_POLL_MS,
+  BRIEF_QUIET_MS,
+  type BriefRunFiles,
   BRIEF_STALL_TIMEOUT_MS,
   BRIEF_START_TIMEOUT_MS,
   isBriefRunId,
@@ -25,8 +27,11 @@ import {
 
 /** What the host provides so the brief can start a run on a local bot. */
 export interface BriefCreator {
-  /** Company slug the run is bound to; null lets the bot use its session's company. */
-  company(): string | null;
+  /**
+   * The app's active company slug. The job always names it: a bot that
+   * belongs to several companies would otherwise pick one itself.
+   */
+  company(): string | null | Promise<string | null>;
   /** Fresh bot list and model check. */
   check(): Promise<BriefBotCheck>;
   /** Send the job to the bot. Resolves to a plain error sentence, or null when sent. */
@@ -57,6 +62,9 @@ type Finished = Extract<BriefCreatePhase, { kind: "ready" | "failed" }>;
 
 export class BriefCreateRun {
   phase = $state<BriefCreatePhase>({ kind: "idle" });
+  /** What the run folder holds, probed while status.json is quiet. */
+  files = $state<BriefRunFiles | null>(null);
+  private lastProbe = 0;
   private blockedBot: LocalBotRow | null = null;
   private timer: unknown = null;
   private stopped = false;
@@ -110,9 +118,21 @@ export class BriefCreateRun {
       this.phase = { kind: "blocked", message: check.message, fix: check.fix };
       return;
     }
+    let company: string | null;
+    try {
+      company = (await creator.company())?.trim() || null;
+    } catch (err) {
+      this.log("active company read failed", err instanceof Error ? err.message : err);
+      company = null;
+    }
+    if (this.stopped) return;
+    if (!company) {
+      this.finish({ kind: "failed", runId: null, message: "Open a company first, then create the brief." });
+      return;
+    }
     let error: string | null;
     try {
-      error = await creator.dispatch(check.bot, briefJobMessage(runId, creator.company()), runId);
+      error = await creator.dispatch(check.bot, briefJobMessage(runId, company), runId);
     } catch (err) {
       this.log("dispatch failed", err instanceof Error ? err.message : err);
       error = "Could not reach your bot. Try again in a moment.";
@@ -163,7 +183,16 @@ export class BriefCreateRun {
         }
         this.stopped = false;
         this.remember(runId);
-        this.phase = { kind: "running", runId, sentAt: now, step: status.step || "Working", progress: status.progress, lastChangeAt: now, updatedAt: status.updatedAt };
+        this.phase = {
+          kind: "running",
+          runId,
+          sentAt: runIdTime(runId)?.getTime() ?? now,
+          step: status.step || "Working",
+          progress: status.progress,
+          lastChangeAt: now,
+          updatedAt: status.updatedAt,
+          activity: status.activity,
+        };
         this.schedule();
         return true;
       }
@@ -232,13 +261,31 @@ export class BriefCreateRun {
       this.log("status read failed", reading.error);
     }
     if (this.stopped || this.phase !== phase) return;
-    const next = advanceBriefRun(phase, reading, this.now().getTime());
+    const nowMs = this.now().getTime();
+    const next = advanceBriefRun(phase, reading, nowMs);
+    if (next.kind === "running" && nowMs - next.lastChangeAt >= BRIEF_QUIET_MS && nowMs - this.lastProbe >= 15_000) {
+      this.lastProbe = nowMs;
+      void this.probeFiles(next.runId);
+    }
     if (next.kind === "ready" || next.kind === "failed") {
       this.finish(next);
       return;
     }
     this.phase = next;
     this.schedule();
+  }
+
+  /** Which run files exist, so a quiet run can name its phase. */
+  private async probeFiles(runId: string): Promise<void> {
+    const has = async (file: "brief-data.json" | "brief.json") => {
+      try {
+        return (await this.deps.read(briefRunPath(runId, file))) != null;
+      } catch {
+        return false;
+      }
+    };
+    const [briefData, brief] = await Promise.all([has("brief-data.json"), has("brief.json")]);
+    this.files = { briefData, brief };
   }
 
   private schedule(): void {
