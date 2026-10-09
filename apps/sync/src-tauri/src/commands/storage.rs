@@ -1,6 +1,8 @@
 //! Settings › Storage: how much disk HQ backups use, and pruning old ones.
 //!
-//! Shells out to `hq storage status --json` and `hq storage prune ... --json`.
+//! Shells out to `hq storage status --json`, `hq storage prune ... --json` and
+//! `hq storage offload ... --json` (Big files: move big idle files and old
+//! copies of big files to HQ cloud storage, leaving `.hqcloud` placeholders).
 //! The CLI owns the git and S3 work; this module only builds argv, runs the
 //! command off the main thread, and parses the JSON into typed structs.
 //!
@@ -70,10 +72,64 @@ pub struct CloudStorage {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
+pub struct CountBytes {
+    pub count: u64,
+    pub bytes: u64,
+}
+
+/// `status --json` → `offload`: big files that could move to HQ cloud, and
+/// placeholders already there. Absent on CLIs that predate offload.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OffloadStatus {
+    /// Old copies of big files in local backup history.
+    pub history_candidates: CountBytes,
+    /// Big files in the HQ folder not opened or changed for a while.
+    pub current_candidates: CountBytes,
+    /// `.hqcloud` placeholders on this computer.
+    pub placeholders: CountBytes,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct StorageStatus {
     pub local: LocalStorage,
     pub cloud: Vec<CloudStorage>,
+    pub offload: Option<OffloadStatus>,
     pub generated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OffloadHistory {
+    pub uploaded: u64,
+    pub bytes: u64,
+    pub freed_bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OffloadedFile {
+    pub path: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OffloadCurrent {
+    pub offloaded: Vec<OffloadedFile>,
+    pub freed_bytes: u64,
+}
+
+/// `hq storage offload --json` (with `--dry-run`: what would move).
+/// `errors` items are passed through untyped; the UI only counts them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OffloadResult {
+    pub history: OffloadHistory,
+    pub current: OffloadCurrent,
+    pub errors: Vec<serde_json::Value>,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -178,10 +234,25 @@ pub fn prune_args(req: &PruneRequest, dry_run: bool) -> Result<Vec<OsString>, St
     Ok(args)
 }
 
+/// `hq storage offload` with the CLI defaults (50 MB, 14 idle days, history
+/// and current files).
+pub fn offload_args(dry_run: bool) -> Vec<OsString> {
+    ["storage", "offload", if dry_run { "--dry-run" } else { "--yes" }, "--json"]
+        .iter()
+        .map(OsString::from)
+        .collect()
+}
+
+pub fn parse_offload(stdout: &str) -> Result<OffloadResult, String> {
+    serde_json::from_str(stdout.trim()).map_err(|e| format!("parse storage offload: {e}"))
+}
+
 /// True when stderr says the CLI does not know the `storage` command.
 fn is_old_cli(stderr: &str) -> bool {
     let s = stderr.to_ascii_lowercase();
-    s.contains("unknown command") || s.contains("unknown subcommand")
+    s.contains("unknown command")
+        || s.contains("unknown subcommand")
+        || s.contains("unknown option '--dry-run'")
 }
 
 pub fn parse_status(stdout: &str) -> Result<StorageStatus, String> {
@@ -192,7 +263,7 @@ pub fn parse_prune(stdout: &str) -> Result<PruneResult, String> {
     serde_json::from_str(stdout.trim()).map_err(|e| format!("parse storage prune: {e}"))
 }
 
-async fn run_hq(args: Vec<OsString>) -> Result<String, String> {
+pub(crate) async fn run_hq(args: Vec<OsString>) -> Result<String, String> {
     let hq = paths::resolve_bin("hq");
     let folder = resolve_hq_folder();
     let mut cmd = paths::tokio_spawn_command(&hq, &[]);
@@ -252,6 +323,21 @@ pub async fn run_storage_prune(request: PruneRequest) -> Result<PruneResult, Str
     log("storage", &format!("prune requested: {request:?}"));
     let stdout = run_hq(prune_args(&request, false)?).await?;
     parse_prune(&stdout)
+}
+
+/// `hq storage offload --dry-run --json`: what "Move to cloud" would move.
+#[tauri::command]
+pub async fn preview_storage_offload() -> Result<OffloadResult, String> {
+    let stdout = run_hq(offload_args(true)).await?;
+    parse_offload(&stdout)
+}
+
+/// `hq storage offload --yes --json`: uploads, verifies, then frees space.
+#[tauri::command]
+pub async fn run_storage_offload() -> Result<OffloadResult, String> {
+    log("storage", "offload requested");
+    let stdout = run_hq(offload_args(false)).await?;
+    parse_offload(&stdout)
 }
 
 #[cfg(test)]
@@ -408,6 +494,51 @@ mod tests {
         };
         let args = rendered(&prune_args(&local_only, false).unwrap());
         assert!(!args.contains(&"--cloud-before".to_string()));
+    }
+
+    #[test]
+    fn parses_offload_status_and_its_absence() {
+        let s = parse_status(
+            r#"{"local":{"available":true},"cloud":[],
+                "offload":{"history_candidates":{"count":660,"bytes":55900000000},
+                           "current_candidates":{"count":3,"bytes":900000000},
+                           "placeholders":{"count":2,"bytes":1048576000}}}"#,
+        )
+        .unwrap();
+        let o = s.offload.unwrap();
+        assert_eq!(o.history_candidates.count, 660);
+        assert_eq!(o.history_candidates.bytes, 55_900_000_000);
+        assert_eq!(o.current_candidates.bytes, 900_000_000);
+        assert_eq!(o.placeholders.count, 2);
+        assert!(parse_status(STATUS).unwrap().offload.is_none());
+    }
+
+    // Shape from the offload contract (hq storage offload --json).
+    #[test]
+    fn parses_offload_result() {
+        let r = parse_offload(
+            r#"{"history":{"uploaded":660,"bytes":55900000000,"freed_bytes":55000000000},
+                "current":{"offloaded":[{"path":"companies/acme/media/promo.mp4","bytes":524288000}],
+                           "freed_bytes":524288000},
+                "errors":[{"path":"a.mov","message":"upload failed"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.history.uploaded, 660);
+        assert_eq!(r.history.freed_bytes, 55_000_000_000);
+        assert_eq!(r.current.offloaded[0].path, "companies/acme/media/promo.mp4");
+        assert_eq!(r.current.freed_bytes, 524_288_000);
+        assert_eq!(r.errors.len(), 1);
+        assert!(!r.dry_run);
+        let empty = parse_offload(r#"{"history":{},"current":{},"errors":[],"dry_run":true}"#).unwrap();
+        assert!(empty.dry_run);
+        assert!(empty.current.offloaded.is_empty());
+        assert!(parse_offload("error: unknown command 'offload'").is_err());
+    }
+
+    #[test]
+    fn offload_args_shape() {
+        assert_eq!(rendered(&offload_args(true)), ["storage", "offload", "--dry-run", "--json"]);
+        assert_eq!(rendered(&offload_args(false)), ["storage", "offload", "--yes", "--json"]);
     }
 
     #[test]

@@ -2,6 +2,10 @@
   /**
    * Settings › Storage — how much disk HQ backups use, and deleting old ones.
    *
+   * Big files (top, the page's primary action): `hq storage offload` moves big
+   * idle files and old copies of big files to HQ cloud and leaves `.hqcloud`
+   * placeholders. Previewed with `--dry-run`, then confirmed in plain words.
+   *
    * Reads `hq storage status --json` and prunes with `hq storage prune` via
    * the desktop-only `adapter.storage` group. Every delete is previewed first
    * (dry run) and needs an explicit confirm. Copy stays plain; raw CLI errors
@@ -10,6 +14,7 @@
   import { onMount } from "svelte";
   import type {
     PlatformAdapter,
+    StorageOffloadResult,
     StoragePruneRequest,
     StoragePruneResult,
     StorageStatus,
@@ -22,6 +27,13 @@
   import { formatBytes } from "../common/sync-model.js";
   import {
     UPDATE_HQ_CODE,
+    BIG_FILE_MB,
+    IDLE_DAYS,
+    OFFLOAD_CONFIRM_COPY,
+    offloadCandidates,
+    offloadErrorsCopy,
+    offloadFreedBytes,
+    offloadSummary,
     CLOUD_ADMIN_ONLY_COPY,
     bookmarksCopy,
     canDeleteCloud,
@@ -60,6 +72,68 @@
   let roles = $state<Map<string, string>>(new Map());
 
   const api = $derived(adapter?.storage ?? null);
+
+  type OffloadPhase = "idle" | "previewing" | "confirm" | "moving";
+  let offloadPhase = $state<OffloadPhase>("idle");
+  let offloadPreview = $state<StorageOffloadResult | null>(null);
+  let offloadError = $state<string | null>(null);
+  let offloadResult = $state<{ freed: number; errors: string } | null>(null);
+
+  const bigFiles = $derived(offloadCandidates(status?.offload));
+  const placeholders = $derived(status?.offload?.placeholders ?? null);
+  /** Either flow running locks the whole page. */
+  const busy = $derived(phase !== "idle" || offloadPhase !== "idle");
+
+  async function startOffload(): Promise<void> {
+    if (!api || busy) return;
+    offloadPhase = "previewing";
+    offloadError = null;
+    offloadResult = null;
+    const res = await api.previewOffload();
+    if (!res.ok) {
+      console.error("storage offload preview failed:", res.message);
+      offloadError = res.message?.includes(UPDATE_HQ_CODE)
+        ? "Update HQ to move big files to the cloud."
+        : "We couldn't check which files would move. Try again in a moment.";
+      offloadPhase = "idle";
+      return;
+    }
+    if (!offloadSummary(res.value)) {
+      offloadError = "Nothing to move right now.";
+      offloadPhase = "idle";
+      return;
+    }
+    offloadPreview = res.value;
+    offloadPhase = "confirm";
+  }
+
+  async function confirmOffload(): Promise<void> {
+    if (!api || offloadPhase !== "confirm") return;
+    offloadPhase = "moving";
+    const res = await api.offload();
+    offloadPreview = null;
+    if (!res.ok) {
+      console.error("storage offload failed:", res.message);
+      offloadError = res.message?.includes(UPDATE_HQ_CODE)
+        ? "Update HQ to move big files to the cloud."
+        : "We couldn't move your files. Nothing was removed from this Mac. Try again in a moment.";
+    } else {
+      offloadResult = { freed: offloadFreedBytes(res.value), errors: offloadErrorsCopy(res.value) };
+    }
+    await load();
+    offloadPhase = "idle";
+  }
+
+  function cancelOffload(): void {
+    offloadPreview = null;
+    offloadPhase = "idle";
+  }
+
+  const offloadConfirmMessage = $derived(
+    offloadPreview
+      ? `${offloadSummary(offloadPreview)}. This frees about ${formatBytes(offloadFreedBytes(offloadPreview))}. ${OFFLOAD_CONFIRM_COPY}`
+      : "",
+  );
 
   const localBands = $derived<StorageBand[]>(
     (status?.local.tranches ?? []).map((t) => ({
@@ -129,7 +203,7 @@
   }
 
   async function startDelete(): Promise<void> {
-    if (!api || phase !== "idle") return;
+    if (!api || busy) return;
     const requests = currentRequests();
     if (requests.length === 0) return;
     phase = "previewing";
@@ -243,11 +317,58 @@
       <RailButton
         icon="refresh"
         onclick={() => void load()}
-        disabled={loading || phase !== "idle"}
+        disabled={loading || busy}
         aria-busy={loading}
         data-testid="settings-storage-refresh"
       >{loading ? "Refreshing…" : "Refresh"}</RailButton>
     </div>
+
+    <div class="set-subhead" data-testid="settings-storage-big-files"><div class="sn">Big files</div>
+      <div class="sd">Files over {BIG_FILE_MB} MB you haven't opened in {IDLE_DAYS} days, and old copies of big files in your backup history. Moving them to your HQ cloud frees space on this Mac. They still show in your HQ folder and download when you open them.</div>
+    </div>
+    {#if !status.offload}
+      <div class="set-row unavailable" data-testid="settings-storage-big-files-update">
+        <div class="sd">Update HQ to move big files to the cloud.</div>
+      </div>
+    {:else}
+      <div class="set-row actions">
+        <div>
+          <div class="sn" data-testid="settings-storage-big-files-total">
+            {bigFiles.count > 0 ? `${formatBytes(bigFiles.bytes)} in big files` : "No big files to move"}
+          </div>
+          {#if bigFiles.count > 0}
+            <div class="sd">
+              {status.offload.current_candidates.count.toLocaleString()} idle files in your HQ folder ({formatBytes(status.offload.current_candidates.bytes)}) · {status.offload.history_candidates.count.toLocaleString()} old copies in backup history ({formatBytes(status.offload.history_candidates.bytes)})
+            </div>
+          {/if}
+          {#if placeholders && placeholders.count > 0}
+            <div class="sd" data-testid="settings-storage-placeholders">
+              {placeholders.count.toLocaleString()} {placeholders.count === 1 ? "file is" : "files are"} already in HQ cloud ({formatBytes(placeholders.bytes)}).
+            </div>
+          {/if}
+          {#if offloadError}
+            <div class="sd error" role="alert" data-testid="settings-storage-offload-error">{offloadError}</div>
+          {/if}
+          {#if offloadPhase === "moving"}
+            <div class="sd" role="status" data-testid="settings-storage-offloading">Uploading and checking each file before freeing space. This can take a while for big files.</div>
+          {/if}
+          {#if offloadResult}
+            <div class="sd" role="status" data-testid="settings-storage-offload-result">
+              Moved to HQ cloud. Freed {formatBytes(offloadResult.freed)}.
+              {#if offloadResult.errors}<br />{offloadResult.errors}{/if}
+            </div>
+          {/if}
+        </div>
+        <RailButton
+          icon="upload"
+          variant="primary"
+          disabled={bigFiles.bytes === 0 || busy}
+          aria-busy={offloadPhase === "previewing" || offloadPhase === "moving"}
+          onclick={() => void startOffload()}
+          data-testid="settings-storage-offload"
+        >{offloadPhase === "previewing" ? "Checking…" : offloadPhase === "moving" ? "Moving…" : `Move to cloud and free ~${formatBytes(bigFiles.bytes)}`}</RailButton>
+      </div>
+    {/if}
 
     <div class="set-subhead"><div class="sn">Local backup history</div>
       <div class="sd">HQ keeps a snapshot every time your files change. Older snapshots can be deleted to free space. The last 7 days are always kept.</div>
@@ -271,7 +392,7 @@
                   aria-label={`Delete ${band.label}`}
                   data-testid={`storage-local-band-${band.id}`}
                   checked={isBandSelected(localCutoff, i)}
-                  disabled={locked || phase !== "idle"}
+                  disabled={locked || busy}
                   onchange={() => (localCutoff = toggleBand(localBands, localCutoff, i))}
                 />
               </td>
@@ -322,7 +443,7 @@
                       aria-label={`Delete ${entry.company} ${band.label}`}
                       data-testid={`storage-cloud-${entry.company}-band-${band.id}`}
                       checked={isBandSelected(cutoff, i)}
-                      disabled={locked || !canDelete || phase !== "idle"}
+                      disabled={locked || !canDelete || busy}
                       onchange={() =>
                         (cloudCutoffs = {
                           ...cloudCutoffs,
@@ -362,7 +483,7 @@
       <RailButton
         icon="trash"
         variant="danger"
-        disabled={selectedTotal === 0 || phase !== "idle"}
+        disabled={selectedTotal === 0 || busy}
         aria-busy={phase === "previewing" || phase === "deleting"}
         onclick={() => void startDelete()}
         data-testid="settings-storage-delete"
@@ -370,6 +491,15 @@
     </div>
   {/if}
 </div>
+
+<ConfirmDialog
+  open={offloadPhase === "confirm"}
+  title="Move big files to HQ cloud?"
+  message={offloadConfirmMessage}
+  confirmLabel="Move to cloud"
+  onconfirm={() => void confirmOffload()}
+  oncancel={cancelOffload}
+/>
 
 <ConfirmDialog
   open={phase === "confirm"}

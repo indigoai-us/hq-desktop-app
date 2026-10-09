@@ -2319,7 +2319,44 @@ export interface StorageStatus {
     extra_refs?: number;
   };
   cloud: StorageCloudCompany[];
+  /** Big files that can move to HQ cloud. Absent on CLIs without offload. */
+  offload?: StorageOffloadStatus | null;
   generated_at?: string | null;
+}
+
+export interface StorageCountBytes {
+  count: number;
+  bytes: number;
+}
+
+/** `hq storage status --json` → `offload`. */
+export interface StorageOffloadStatus {
+  /** Old copies of big files in local backup history. */
+  history_candidates: StorageCountBytes;
+  /** Big files in the HQ folder not opened or changed for a while. */
+  current_candidates: StorageCountBytes;
+  /** `.hqcloud` placeholders already on this computer. */
+  placeholders: StorageCountBytes;
+}
+
+/** `hq storage offload --json` (with `--dry-run`: what would move). */
+export interface StorageOffloadResult {
+  history: { uploaded: number; bytes: number; freed_bytes: number };
+  current: { offloaded: Array<{ path: string; bytes: number }>; freed_bytes: number };
+  /** Per-file failures; the UI only counts them. */
+  errors: unknown[];
+  dry_run?: boolean;
+}
+
+/** Native event while HQ opens a `.hqcloud` placeholder. */
+export const CLOUD_FILE_EVENT = "cloud-file://fetch";
+
+export interface CloudFileEventPayload {
+  /** Original file name, e.g. `promo.mp4`. */
+  name: string;
+  phase: "fetching" | "opened" | "error";
+  /** `offline` | `no-access` | `update-hq` | `open-failed` | `failed`. */
+  error?: string | null;
 }
 
 export interface StoragePruneRequest {
@@ -2374,6 +2411,12 @@ export interface StorageApi {
   status(): AdapterPromise<StorageStatus>;
   previewPrune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
   prune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
+  /** `hq storage offload --dry-run --json`. */
+  previewOffload(): AdapterPromise<StorageOffloadResult>;
+  /** `hq storage offload --yes --json`: upload, verify, free space. */
+  offload(): AdapterPromise<StorageOffloadResult>;
+  /** Download a `.hqcloud` placeholder's original and open it. */
+  openCloudFile(path: string): AdapterPromise<string>;
 }
 
 export interface ContextImportApi {

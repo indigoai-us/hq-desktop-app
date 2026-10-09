@@ -37,7 +37,9 @@
     startJitteredPoll,
     type PlatformAdapter,
     type UpdateGateStatus,
-} from "@hq/platform";
+    CLOUD_FILE_EVENT,
+    type CloudFileEventPayload,
+  } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -148,6 +150,7 @@
     atlasShortcutTarget,
   } from "./advertised-shortcuts.js";
   import { dismissToastByKey, pushToast } from "./toast-stack.svelte.js";
+  import { cloudFileToast } from "../settings/storage-model.js";
   import { updateToastCopy } from "./update-toast.js";
   import {
     isSyncToastDismissed,
@@ -1829,6 +1832,41 @@
     });
   });
   $effect(() => () => dismissToastByKey(SYNC_TOAST_KEY));
+
+  // Double-clicking a `.hqcloud` placeholder: the native side downloads the
+  // original and opens it (cloud_file.rs); this shows each step as a toast.
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void host
+      .listen(CLOUD_FILE_EVENT, (event) => {
+        const payload = (event?.payload ?? {}) as Partial<CloudFileEventPayload>;
+        if (typeof payload.name !== "string" || !payload.phase) return;
+        const copy = cloudFileToast(payload as CloudFileEventPayload);
+        pushToast({
+          key: `cloud-file:${payload.name}`,
+          kind: copy.sticky ? "sticky" : "quiet",
+          tone: copy.tone,
+          testId: "cloud-file-toast",
+          title: copy.title,
+          detail: copy.detail,
+          progress: copy.progress,
+        });
+      })
+      .then(
+        (un) => {
+          if (disposed) un();
+          else unlisten = un;
+        },
+        (err) => console.error("cloud file: event subscribe failed:", err),
+      );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
 
   /**
    * Per-file conflict rows for the Core popover. Separate from the reducer

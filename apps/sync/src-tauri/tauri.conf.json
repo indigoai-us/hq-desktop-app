@@ -69,6 +69,20 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "fileAssociations": [
+      {
+        "ext": ["hqcloud"],
+        "name": "HQ Cloud File",
+        "description": "A file stored in HQ cloud storage. Open it in HQ to download it.",
+        "role": "Viewer",
+        "rank": "Owner",
+        "mimeType": "application/x-hqcloud",
+        "exportedType": {
+          "identifier": "ai.indigo.hq-sync-menubar.cloudfile",
+          "conformsTo": ["public.data"]
+        }
+      }
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

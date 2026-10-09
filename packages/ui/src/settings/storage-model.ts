@@ -8,7 +8,13 @@
  * band is never deletable, so recent history always survives.
  */
 
-import type { StoragePruneRequest, StoragePruneResult } from "@hq/platform";
+import type {
+  CloudFileEventPayload,
+  StorageOffloadResult,
+  StorageOffloadStatus,
+  StoragePruneRequest,
+  StoragePruneResult,
+} from "@hq/platform";
 
 export interface StorageBand {
   id: string;
@@ -191,4 +197,96 @@ export function rolesFromMemberships(rows: ReadonlyArray<Record<string, unknown>
 /** True when a cloud prune error is the CLI's access-denied message. */
 export function isPermissionError(message: string): boolean {
   return /access denied/i.test(message);
+}
+
+// --- Big files: move to HQ cloud ---------------------------------------------
+
+/** Files over this size are "big" (CLI default `--min-size 50MB`). */
+export const BIG_FILE_MB = 50;
+/** Current files untouched this long move (CLI default `--idle-days 14`). */
+export const IDLE_DAYS = 14;
+
+export const OFFLOAD_CONFIRM_COPY =
+  "These files will be stored in your HQ cloud. They'll still show in your HQ folder and download when you open them.";
+
+/** Everything Big files could move right now. */
+export function offloadCandidates(o: StorageOffloadStatus | null | undefined): {
+  count: number;
+  bytes: number;
+} {
+  if (!o) return { count: 0, bytes: 0 };
+  return {
+    count: (o.history_candidates?.count ?? 0) + (o.current_candidates?.count ?? 0),
+    bytes: (o.history_candidates?.bytes ?? 0) + (o.current_candidates?.bytes ?? 0),
+  };
+}
+
+/**
+ * Space an offload frees (or would free, on a dry run). Falls back to the
+ * moved size when the CLI leaves `freed_bytes` at 0 on a dry run.
+ */
+export function offloadFreedBytes(r: StorageOffloadResult): number {
+  const history = r.history ?? { uploaded: 0, bytes: 0, freed_bytes: 0 };
+  const current = r.current ?? { offloaded: [], freed_bytes: 0 };
+  const currentMoved = (current.offloaded ?? []).reduce((s, f) => s + (f.bytes ?? 0), 0);
+  const h = history.freed_bytes || (r.dry_run ? history.bytes ?? 0 : 0);
+  const c = current.freed_bytes || (r.dry_run ? currentMoved : 0);
+  return h + c;
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n.toLocaleString()} ${n === 1 ? one : many}`;
+}
+
+/** One plain line listing what an offload covers. */
+export function offloadSummary(r: StorageOffloadResult): string {
+  const parts: string[] = [];
+  const copies = r.history?.uploaded ?? 0;
+  const files = r.current?.offloaded?.length ?? 0;
+  if (copies > 0) parts.push(`${plural(copies, "old copy", "old copies")} of big files in your backup history`);
+  if (files > 0) parts.push(`${plural(files, "big file", "big files")} you haven't opened in ${IDLE_DAYS} days`);
+  return parts.join(" and ");
+}
+
+/** Result line for failed files; empty when none failed. */
+export function offloadErrorsCopy(r: StorageOffloadResult): string {
+  const n = r.errors?.length ?? 0;
+  if (n === 0) return "";
+  return n === 1
+    ? "1 file couldn't be moved. It's still on this Mac."
+    : `${n.toLocaleString()} files couldn't be moved. They're still on this Mac.`;
+}
+
+/** Plain copy for a failed `.hqcloud` open. Never raw CLI text. */
+export function cloudFileErrorCopy(code: string | null | undefined): string {
+  switch (code) {
+    case "offline":
+      return "You're offline. Connect and try again.";
+    case "no-access":
+      return "You don't have access to this file in HQ cloud. Ask the person who shared it.";
+    case UPDATE_HQ_CODE:
+      return "Update HQ to open files stored in HQ cloud.";
+    case "open-failed":
+      return "It downloaded, but no app on this Mac could open it.";
+    default:
+      return "We couldn't download it. Try again in a moment.";
+  }
+}
+
+/** Toast for each step of opening a `.hqcloud` placeholder. */
+export function cloudFileToast(ev: CloudFileEventPayload): {
+  title: string;
+  detail: string;
+  tone: "ok" | "err" | "neutral";
+  progress: "indeterminate" | null;
+  sticky: boolean;
+} {
+  const name = ev.name || "your file";
+  if (ev.phase === "fetching") {
+    return { title: `Downloading ${name}`, detail: "Getting it from HQ cloud.", tone: "neutral", progress: "indeterminate", sticky: true };
+  }
+  if (ev.phase === "opened") {
+    return { title: `${name} is ready`, detail: "Opened it for you. It stays on this Mac while you use it.", tone: "ok", progress: null, sticky: false };
+  }
+  return { title: `Couldn't open ${name}`, detail: cloudFileErrorCopy(ev.error), tone: "err", progress: null, sticky: true };
 }
