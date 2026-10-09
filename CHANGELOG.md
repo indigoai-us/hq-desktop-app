@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Activity page now shows which models each person uses. The team list adds a short line under each name with their most-used model, such as "Opus 5.5 +1" when they used more than one. A person's detail panel has a Models section listing each model with its share of their tokens, most used first. Export includes the models too. People with no model data show neither.
+
 ## [0.11.0] — 2026-10-08
 
 This release brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
