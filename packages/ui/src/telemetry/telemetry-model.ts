@@ -123,6 +123,11 @@ export interface TelemetrySnapshot {
   rangeLabel: string;
   /** ISO date (YYYY-MM-DD) of the last day in `days`. */
   endDate?: string;
+  /**
+   * IANA zone hq-pro cut the days in (`bucketTz` on the response). Absent from
+   * older servers, which always cut days at midnight UTC.
+   */
+  bucketTz?: string;
   subtitle: string;
   sessions: number;
   sessionsDelta: string;
@@ -302,6 +307,41 @@ function shortDate(date: Date): string {
   return `${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
 }
 
+/**
+ * hq-pro returns daily rollups keyed by UTC date and takes no time zone, so
+ * chart days are UTC days. The chart says so instead of passing them off as
+ * local days.
+ */
+export const DAY_ZONE_LABEL = "UTC";
+
+/** The user's time zone, from the system. */
+export function localTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/**
+ * Zone label for the chart title: empty when the server cut the days in the
+ * user's own zone, otherwise "UTC" (an older server, or one that could not
+ * honour the requested zone, reports UTC or nothing).
+ */
+export function dayZoneLabel(bucketTz: string | undefined, timeZone: string = localTimeZone()): string {
+  return bucketTz && bucketTz === timeZone ? "" : DAY_ZONE_LABEL;
+}
+
+/** YYYY-MM-DD of `now` in `timeZone` (the user's local date by default). */
+export function localIsoDate(now: number = Date.now(), timeZone: string = localTimeZone()): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+}
+
+/**
+ * Axis label for the newest UTC day: "today" only when it is the user's local
+ * date. In the evening west of UTC the newest UTC day is already tomorrow
+ * locally, so it is labelled with its date.
+ */
+export function latestDayLabel(iso: string, now: number = Date.now(), timeZone: string = localTimeZone()): string {
+  return iso === localIsoDate(now, timeZone) ? "today" : shortDate(shiftDate(iso, 0));
+}
+
 export function dayTotal(day: DayStack): number {
   if (day.bands) return Object.values(day.bands).reduce((sum, n) => sum + n, 0);
   return day.opus + day.sonnet + day.haiku;
@@ -317,7 +357,12 @@ function scale(n: number, f: number): number {
  * totals for another range scale by that window's share of daily tokens.
  * Session rows are filtered by age. Without `endDate` the base is returned unchanged.
  */
-export function snapshotForRange(base: TelemetrySnapshot, range: TelemetryRange): TelemetrySnapshot {
+export function snapshotForRange(
+  base: TelemetrySnapshot,
+  range: TelemetryRange,
+  now: number = Date.now(),
+  timeZone: string = localTimeZone(),
+): TelemetrySnapshot {
   if (!base.endDate) return base;
   const span = RANGE_DAYS[range];
   if (range === base.range) {
@@ -346,7 +391,7 @@ export function snapshotForRange(base: TelemetrySnapshot, range: TelemetryRange)
   for (let i = 0; i < days.length - 1; i += labelStep) {
     if (days.length - 1 - i >= labelStep / 2) dayLabels.push(shortDate(shiftDate(end, days.length - 1 - i)));
   }
-  dayLabels.push("today");
+  dayLabels.push(latestDayLabel(end, now, timeZone));
   const io = models.reduce(
     (acc, m) => ({
       input: acc.input + m.input,

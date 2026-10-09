@@ -4,7 +4,10 @@ import {
   LIST_RATE_LABEL,
   LIST_RATES,
   formatUsd,
+  dayZoneLabel,
+  latestDayLabel,
   listRateUsd,
+  localIsoDate,
   outcomesForFilter,
   sessionsForFilter,
   snapshotForRange,
@@ -69,7 +72,7 @@ describe("telemetry range (QA-002)", () => {
   });
 
   it("recomputes interval, totals, chart, sessions and skills for 7d", () => {
-    const view = snapshotForRange(TELEMETRY_SMOKE, "7d");
+    const view = snapshotForRange(TELEMETRY_SMOKE, "7d", Date.parse("2026-10-01T12:00:00Z"), "UTC");
     expect(view.rangeLabel).toBe("Sep 25 – Oct 1");
     expect(view.days).toHaveLength(7);
     expect(view.sessions).toBeLessThan(128);
@@ -92,5 +95,51 @@ describe("telemetry range (QA-002)", () => {
   it("leaves a snapshot without an end date unchanged", () => {
     const legacy = { ...TELEMETRY_SMOKE, endDate: undefined };
     expect(snapshotForRange(legacy, "7d")).toBe(legacy);
+  });
+});
+
+describe("telemetry days and the local date", () => {
+  // Evening of Oct 8 in Denver (MDT, UTC-6) is already Oct 9 in UTC.
+  const DENVER_EVENING = Date.parse("2026-10-09T02:30:00Z");
+
+  it("reads the local date in the user's time zone, not UTC", () => {
+    expect(localIsoDate(DENVER_EVENING, "America/Denver")).toBe("2026-10-08");
+    expect(localIsoDate(DENVER_EVENING, "UTC")).toBe("2026-10-09");
+  });
+
+  it("follows Denver across both DST changes", () => {
+    // Spring forward (Mar 8 2026): 06:30Z is 23:30 MST the day before, then 00:30 MDT.
+    expect(localIsoDate(Date.parse("2026-03-08T06:30:00Z"), "America/Denver")).toBe("2026-03-07");
+    expect(localIsoDate(Date.parse("2026-03-09T06:30:00Z"), "America/Denver")).toBe("2026-03-09");
+    // Fall back (Nov 1 2026): 06:30Z is 00:30 MDT, then a day later 23:30 MST.
+    expect(localIsoDate(Date.parse("2026-11-01T06:30:00Z"), "America/Denver")).toBe("2026-11-01");
+    expect(localIsoDate(Date.parse("2026-11-02T06:30:00Z"), "America/Denver")).toBe("2026-11-01");
+  });
+
+  it("labels the newest UTC day today only when it is today locally", () => {
+    expect(latestDayLabel("2026-10-09", DENVER_EVENING, "UTC")).toBe("today");
+    expect(latestDayLabel("2026-10-09", DENVER_EVENING, "America/Denver")).toBe("Oct 9");
+    expect(latestDayLabel("2026-10-08", DENVER_EVENING, "America/Denver")).toBe("today");
+  });
+
+  it("does not call the newest bar today in Denver when it is tomorrow there", () => {
+    const view = snapshotForRange(TELEMETRY_SMOKE, "7d", Date.parse("2026-10-01T02:30:00Z"), "America/Denver");
+    expect(view.dayLabels.at(-1)).toBe("Oct 1");
+    expect(view.dayLabels).not.toContain("today");
+  });
+});
+
+describe("chart zone label", () => {
+  it("drops UTC only when the server cut days in the user's own zone", () => {
+    expect(dayZoneLabel("America/Denver", "America/Denver")).toBe("");
+    expect(dayZoneLabel("UTC", "UTC")).toBe("");
+  });
+
+  it("keeps UTC when the server ignored tz or used another zone", () => {
+    // Older server: no bucketTz on the response.
+    expect(dayZoneLabel(undefined, "America/Denver")).toBe("UTC");
+    // Current server that could only cut UTC days.
+    expect(dayZoneLabel("UTC", "America/Denver")).toBe("UTC");
+    expect(dayZoneLabel("Europe/London", "America/Denver")).toBe("UTC");
   });
 });

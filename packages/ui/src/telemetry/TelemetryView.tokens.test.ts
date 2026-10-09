@@ -77,6 +77,8 @@ describe("Telemetry Models section (QA-081)", () => {
     const note = target.querySelector("[data-testid='telemetry-model-other-note']")?.textContent ?? "";
     expect(note).toBe("200 tokens were recorded without a model.");
     expect(target.textContent).not.toContain("non-Claude");
+    // hq-pro days are UTC days; the chart says so.
+    expect(target.querySelector("[data-testid='telemetry-day-zone']")?.textContent).toBe("UTC");
   });
 });
 

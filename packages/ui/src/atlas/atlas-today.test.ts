@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { atlasAgo, atlasHumanTitle, atlasTodayChanges, atlasTodayGroups, atlasTodayKind } from "./atlas-today.js";
+import { atlasAgo, atlasBoardStories, atlasHumanTitle, atlasTodayChanges, atlasTodayGroups, atlasTodayKind, atlasTodayProjects } from "./atlas-today.js";
 import type { AtlasNode } from "./atlas-model.js";
 
 const NOW = Date.UTC(2026, 8, 30, 12);
@@ -111,5 +111,35 @@ describe("Today panel titles and kinds", () => {
     expect(k("project", "projects/a/references.md")).toBe("knowledge");
     expect(k("project", "projects/a/")).toBe("project");
     expect(k("repo", "repos/private/app/")).toBe("repo");
+  });
+});
+
+describe("Today panel: projects worked on today", () => {
+  it("lists each project once, most recent first, from its own change or a file in it", () => {
+    const rail = at("project", "projects/rail/", { folder: true, touched: NOW - 20 * 60_000 });
+    const explorer = at("project", "projects/explorer/", { folder: true, touched: NOW - 5 * 86_400_000 });
+    const brief = at("project", "projects/explorer/brainstorm.md", { touched: NOW - 2 * 60_000, parentId: explorer.id });
+    const pricing = at("knowledge", "knowledge/pricing.md", { touched: NOW - 60_000 });
+    const nodes = [rail, explorer, brief, pricing];
+    const projects = atlasTodayProjects(atlasTodayGroups(atlasTodayChanges(nodes, NOW), nodes));
+    expect(projects.map((p) => [p.slug, p.node?.id, p.touched])).toEqual([
+      ["explorer", explorer.id, NOW - 2 * 60_000],
+      ["rail", rail.id, NOW - 20 * 60_000],
+    ]);
+  });
+
+  it("counts done stories from the live Board view, and none when it has no stories", () => {
+    const view = {
+      projectId: "rail",
+      stories: [
+        { id: "US-1", status: "done" },
+        { id: "US-2", status: "in_progress" },
+        { id: "US-3", passes: true },
+        { id: "US-4", status: "queued" },
+      ],
+    };
+    expect(atlasBoardStories(view)).toEqual({ done: 2, total: 4, fraction: 0.5, text: "2/4 stories" });
+    expect(atlasBoardStories({ projectId: "rail", stories: [] })).toBeNull();
+    expect(atlasBoardStories(null)).toBeNull();
   });
 });
