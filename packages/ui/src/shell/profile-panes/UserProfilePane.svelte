@@ -111,7 +111,8 @@
   .idn { display: flex; gap: 12px; align-items: center; }
   .av { position: relative; flex: none; display: block; line-height: 0; }
   .ld {
-    position: absolute; right: 0; bottom: 0; width: 11px; height: 11px; border-radius: 50%;
+    /* Top right: the bottom right holds the tier mark (badges/TierMark). */
+    position: absolute; right: 0; top: 0; width: 11px; height: 11px; border-radius: 50%;
     background: var(--v4-ok); border: 2px solid var(--v4-ground, var(--side-bg));
   }
   .nm { font-size: 20px; line-height: 1.25; font-weight: 500; }

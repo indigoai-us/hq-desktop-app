@@ -30,12 +30,41 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
+/** A badge's level as a number: Bronze 1 to Legendary 4 (Founding Member is Legendary, Founder Gold). */
+export function badgeLevel(b: EarnedBadge): number {
+  if (b.id === 'founding') return 4;
+  if (b.id === 'founder') return 3;
+  return b.tier === 'L' ? 4 : (b.tier ?? 1);
+}
+
+/**
+ * Each person's highest level, so the avatar tier marks show every tier in
+ * the harness: the regular cast is pinned, anyone else gets one by name.
+ * 0 is no badges at all.
+ */
+const TOP_LEVEL: Readonly<Record<string, number>> = {
+  'ada lovelace': 4,
+  'corey epstein': 3,
+  'maya chen': 2,
+  'jacob moore': 1,
+  'stefan johnson': 0,
+  'grace hopper': 3,
+  'katherine johnson': 2,
+  'priya natarajan': 1,
+  'leo park': 4,
+};
+
 export const sampleBadges: BadgeSource = ({ kind, name }) => {
-  const h = hash(name.trim().toLowerCase());
+  const key = name.trim().toLowerCase();
+  const h = hash(key);
   if (kind === 'bot') return BOTS.slice(0, 2 + (h % 3));
-  // Everyone gets a different mix; a few people have only one or two badges.
-  const count = 1 + (h % PEOPLE.length);
-  return PEOPLE.filter((_, i) => ((h >> i) & 1) === 1 || i < 1).slice(0, count);
+  const top = TOP_LEVEL[key] ?? h % 5;
+  const allowed = PEOPLE.filter((b) => badgeLevel(b) <= top);
+  if (!allowed.length) return [];
+  // Always the badge at their top level, then a mix of the rest by name.
+  const lead = allowed.find((b) => badgeLevel(b) === top) ?? allowed[0]!;
+  const rest = allowed.filter((b) => b !== lead && ((h >> PEOPLE.indexOf(b)) & 1) === 1);
+  return [lead, ...rest];
 };
 
 /**

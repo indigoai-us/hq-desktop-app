@@ -19,7 +19,8 @@ const block = (file: string, selector: string) => {
 describe("channel header control height", () => {
   it("the notify pill reads the standard button height", () => {
     expect(block("chat/ChannelMuteControl.svelte", ".mute-toggle,\n  .mute-chevron")).toMatch(/height:\s*var\(--hq-btn-h\)/);
-    expect(block("chat/ChannelMuteControl.svelte", ".mute-toggle")).toMatch(/width:\s*var\(--hq-btn-h\)/);
+    // Width comes from the standard padding and icon gap, as the Launch pill (owner review 2026-10-09).
+    expect(block("chat/ChannelMuteControl.svelte", ".mute-toggle")).toMatch(/padding:\s*0 calc\(var\(--hq-btn-gap\) \/ 2\) 0 var\(--hq-btn-pad-inline\)/);
   });
 
   it.each([".project-tabs", ".member-count-btn"])("%s reads the standard button height, border box", (selector) => {

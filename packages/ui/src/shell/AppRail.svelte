@@ -9,6 +9,10 @@
   import Tooltip from "../common/Tooltip.svelte";
   import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
+  import RailYouCard from "./RailYouCard.svelte";
+  import TierMark from "../badges/TierMark.svelte";
+  import { topBadge } from "../badges/badge-tier.js";
+  import type { EarnedBadge, ResolvedBadge } from "../badges/badge-catalog.js";
   import { railInitials, railTooltip, type RailItem, type RailItemId } from "./app-rail.js";
 
   interface Props {
@@ -29,6 +33,12 @@
     youLive?: boolean;
     /** Hover line for current work. Empty keeps the default tooltip. */
     youWork?: string;
+    /** Your earned badges. Any at all turn the You tooltip into a hover card that shows them. */
+    youBadges?: readonly EarnedBadge[];
+    /** The hover card's "See all": your profile panel. */
+    onyoubadges?: () => void;
+    /** A badge in the hover card: its detail in your profile panel. */
+    onyoubadge?: (badge: ResolvedBadge) => void;
   }
 
   let {
@@ -44,12 +54,17 @@
     youExpanded = false,
     youLive = false,
     youWork = "",
+    youBadges = [],
+    onyoubadges,
+    onyoubadge,
   }: Props = $props();
 
   let dragUid = $state("");
 
   const top = $derived(items.filter((item) => item.kind !== "you"));
   const you = $derived(items.find((item) => item.kind === "you") ?? null);
+  /** Your tier mark on the You picture; the hover card names your badges. */
+  const youTop = $derived(topBadge(youBadges));
 
   const initials = railInitials;
 
@@ -90,14 +105,31 @@
 </script>
 
 {#snippet railButton(item: RailItem)}
-  <Tooltip
-    label={item.kind === "you" && youWork
-      ? `${item.label} · ${youWork}`
-      : railTooltip(item, { unread: unreadCount })}
-    side="right"
-    delay={150}
-  >
-    {#snippet trigger(describedBy: string)}
+  {#if item.kind === "you" && youBadges.length}
+    <RailYouCard
+      name={item.label}
+      work={youWork}
+      badges={youBadges}
+      suppressed={youExpanded}
+      onseeall={onyoubadges}
+      onselect={onyoubadge}
+    >
+      {#snippet trigger()}{@render railControl(item, "")}{/snippet}
+    </RailYouCard>
+  {:else}
+    <Tooltip
+      label={item.kind === "you" && youWork
+        ? `${item.label} · ${youWork}`
+        : railTooltip(item, { unread: unreadCount })}
+      side="right"
+      delay={150}
+    >
+      {#snippet trigger(describedBy: string)}{@render railControl(item, describedBy)}{/snippet}
+    </Tooltip>
+  {/if}
+{/snippet}
+
+{#snippet railControl(item: RailItem, describedBy: string)}
       <button
         type="button"
         class="rail-btn"
@@ -168,14 +200,12 @@
         {:else if item.id === "outpost"}
           <RailIcon name="hard-drives" size={18} />
         {:else if item.kind === "you"}
-          <span class="avatar" aria-hidden="true">{youInitials || initials(item.label)}</span>
+          <span class="avatar" aria-hidden="true">{youInitials || initials(item.label)}{#if youTop}<TierMark tier={youTop.tier} avatar={26} anySize />{/if}</span>
           {#if youLive}
-            <span class="live you-live" data-testid="rail-you-live" aria-hidden="true"></span>
+            <span class="live you-live" class:with-tier={Boolean(youTop)} data-testid="rail-you-live" aria-hidden="true"></span>
           {/if}
         {/if}
       </button>
-    {/snippet}
-  </Tooltip>
 {/snippet}
 
 <nav class="app-rail" aria-label="Primary" data-testid="app-rail">
@@ -206,7 +236,9 @@
        tooltips. Twelve 40 px targets fit the 600 px minimum window height. */
     overflow: visible;
     position: relative;
-    z-index: 3;
+    /* Above the side menu's width handle (z-index 10), so the rail's hover
+       cards, which open over it, keep the pointer instead of the handle. */
+    z-index: 11;
     background: var(--v4-sidebar);
     border-right: 1px solid var(--v4-hairline);
   }
@@ -325,6 +357,17 @@
     bottom: 4px;
     right: 4px;
   }
+
+  /* The tier mark takes the bottom right, so the live dot moves up. */
+  .you-live.with-tier {
+    top: 4px;
+    bottom: auto;
+  }
+
+  /* The tier mark's cut-out follows the button behind it. */
+  .rail-btn .avatar { position: relative; --tier-cutout: var(--v4-sidebar); }
+  .rail-btn:hover .avatar { --tier-cutout: var(--v4-control-bg); }
+  .rail-btn[aria-current="page"] .avatar { --tier-cutout: var(--v4-active-row); }
 
   @keyframes dot-pulse {
     0% { opacity: 1; }

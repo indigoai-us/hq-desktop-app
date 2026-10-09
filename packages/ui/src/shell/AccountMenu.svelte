@@ -9,6 +9,8 @@
   import { focusReturn } from "./focus-return.js";
   import { confirmSignOut } from "../settings/confirm-sign-out.js";
   import type { AccountPageId } from "./account-menu.js";
+  import TierMark from "../badges/TierMark.svelte";
+  import type { ResolvedBadge } from "../badges/badge-catalog.js";
 
   interface Props {
     name: string;
@@ -16,6 +18,8 @@
     initials?: string;
     live?: boolean;
     work?: string;
+    /** The badge behind your tier mark on the picture (badges/TierMark). */
+    topBadge?: ResolvedBadge | null;
     anchorLeft?: number;
     anchorBottom?: number;
     onclose?: () => void;
@@ -29,6 +33,7 @@
     initials = "",
     live = false,
     work = "",
+    topBadge = null,
     anchorLeft = 64,
     anchorBottom = 16,
     onclose,
@@ -81,10 +86,12 @@
 >
   <!-- OWNER-R21: the name block opens Settings at Profile; Profile and
        Billing are items in the one Settings list, not separate entries. -->
+  <div class="head">
   <button type="button" class="who" role="menuitem" data-testid="account-identity" onclick={() => choose("profile")}>
     <span class="avatar" aria-hidden="true">
       {mark()}
       {#if live}<span class="live" data-testid="account-menu-live"></span>{/if}
+      {#if topBadge}<TierMark tier={topBadge.tier} avatar={32} badge={topBadge} />{/if}
     </span>
     <span class="copy">
       <span class="name">{name}</span>
@@ -94,13 +101,15 @@
       <span class="chip" data-testid="account-menu-live-chip" title={work || undefined}><i aria-hidden="true"></i>{work || "Live"}</span>
     {/if}
   </button>
+  </div>
   <button type="button" class="row" role="menuitem" data-testid="account-settings" onclick={() => choose("settings")}>
     <span class="row-ico" aria-hidden="true"><RailIcon name="settings" size={15} /></span>
     <span class="t">Settings</span>
   </button>
   <div class="foot">
     <button type="button" class="row signout" role="menuitem" data-testid="account-sign-out" onclick={signOut}>
-      <span class="t indent">Sign out</span>
+      <span class="row-ico" aria-hidden="true"><RailIcon name="logout" size={15} /></span>
+      <span class="t">Sign out</span>
     </button>
   </div>
 </div>
@@ -143,12 +152,19 @@
     display: flex;
     gap: 10px;
     align-items: center;
-    padding: 6px 8px 10px;
-    border-bottom: 1px solid var(--v4-rowline);
+    padding: 6px 8px;
+  }
+
+  /* The divider sits under the name block, not on it, with the same gaps
+     as the one above Sign out: a hovered row never runs into a line. */
+  .head {
     margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--v4-rowline);
   }
 
   .avatar {
+    --tier-cutout: var(--overlay-bg);
     position: relative;
     width: 32px;
     height: 32px;
@@ -161,10 +177,11 @@
     color: var(--v4-text-1);
   }
 
+  /* Top right: the bottom right holds the tier mark (badges/TierMark). */
   .live {
     position: absolute;
     right: -1px;
-    bottom: -1px;
+    top: -1px;
     width: 8px;
     height: 8px;
     border-radius: 50%;
@@ -223,10 +240,6 @@
     color: var(--v4-text-2);
   }
 
-  .indent {
-    padding-left: 23px;
-  }
-
   .row {
     width: 100%;
     display: flex;
@@ -262,7 +275,8 @@
     border-top: 1px solid var(--v4-rowline);
   }
 
-  .signout {
+  .signout,
+  .signout .row-ico {
     color: var(--v4-text-3);
   }
 </style>

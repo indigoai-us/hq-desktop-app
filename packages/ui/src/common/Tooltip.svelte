@@ -238,9 +238,11 @@
     --tooltip-base: 0px;
   }
 
+  /* Rail buttons sit about 8px in from the rail's right edge: 18px keeps
+     the bubble about 8px clear of the rail's border. */
   .tooltip-bubble.side-right {
     top: 50%;
-    left: calc(100% + 8px);
+    left: calc(100% + 18px);
     right: auto;
     transform: translateY(-50%);
     animation-name: tooltip-in-right;

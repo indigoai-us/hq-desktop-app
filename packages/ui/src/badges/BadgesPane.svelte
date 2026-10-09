@@ -216,10 +216,12 @@
   .b.locked { cursor: default; }
   /* Locked: a dim outline of the mark; the words stay readable. */
   .mark { display: block; opacity: 0.45; }
-  .nm { max-width: 100%; color: var(--v4-text-1); line-height: 1.3; overflow-wrap: anywhere; }
+  /* Same sizes as the profile's Badges section: the name 12px, the level
+     or progress under it 11px (owner review 2026-10-08). */
+  .nm { max-width: 100%; font-size: 12px; color: var(--v4-text-1); line-height: 1.3; overflow-wrap: anywhere; }
   .locked .nm { color: var(--v4-text-2); }
-  .tr { color: var(--v4-text-3); }
-  .pg { margin-top: 2px; color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
+  .tr { font-size: 11px; line-height: 1.4; color: var(--v4-text-3); }
+  .pg { margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
   .b:focus-visible { outline: 2px solid var(--v4-focus, var(--v4-text-2)); outline-offset: -2px; }
 
   /* What earns the badge: a small hover card under the tile (on hover or

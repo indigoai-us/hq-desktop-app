@@ -2,6 +2,9 @@
   import RailIcon from "../../common/button/RailIcon.svelte";
   import { agentAvatarFor } from "./agent-avatars";
   import { paintableAvatarSrc } from "../../avatars/csp-image-src.js";
+  import TierMark from "../../badges/TierMark.svelte";
+  import { TIER_MARK_MIN_AVATAR, topBadgeFor } from "../../badges/badge-tier.js";
+  import type { BadgeTier } from "../../badges/badge-catalog.js";
 
   interface Props {
     kind?: "person" | "group" | "agent" | "channel" | "file";
@@ -15,6 +18,11 @@
     /** Agent uid — drives the deterministic generated avatar when the agent
      *  has no assigned photo. Ignored for non-agent kinds. */
     agentUid?: string | null;
+    /**
+     * The tier mark at the bottom right. Left out, a person's tier comes
+     * from their badges by name (as on their profile); null shows none.
+     */
+    tier?: BadgeTier | null;
   }
 
   let {
@@ -26,7 +34,15 @@
     online = false,
     avatarUrl = null,
     agentUid = null,
+    tier = undefined,
   }: Props = $props();
+
+  const AVATAR_PX = { small: 22, regular: 32, large: 48 } as const;
+  /** The badge behind the mark, looked up only when no tier is given. */
+  const top = $derived(
+    tier === undefined && kind === "person" && label.trim() ? topBadgeFor({ kind: "person", name: label }) : null,
+  );
+  const shownTier = $derived(tier !== undefined ? tier : (top?.tier ?? null));
 
   // Photo > deterministic generated avatar (agents only) > monogram/glyph.
   // paintableAvatarSrc drops arbitrary http(s); the packaged CSP would
@@ -95,6 +111,7 @@
     <span class="monogram">{initials(label)}</span>
   {/if}
   {#if online}<span class="presence"></span>{/if}
+  {#if shownTier && AVATAR_PX[size] >= TIER_MARK_MIN_AVATAR}<TierMark tier={shownTier} avatar={AVATAR_PX[size]} badge={top} />{/if}
 </span>
 
 <style>
@@ -190,14 +207,21 @@
   .channel-lock {
     display: inline-flex;
   }
+  /* Top right: the bottom right holds the tier mark (badges/TierMark).
+     Small pictures carry no mark, so theirs stays at the bottom right. */
   .presence {
     position: absolute;
     right: -1px;
-    bottom: 0;
+    top: 0;
     width: 6px;
     height: 6px;
     border: 1.5px solid var(--v4-ground, var(--pop-bg));
     border-radius: 50%;
     background: var(--v4-ok, #42d77d);
+  }
+
+  .small .presence {
+    top: auto;
+    bottom: 0;
   }
 </style>

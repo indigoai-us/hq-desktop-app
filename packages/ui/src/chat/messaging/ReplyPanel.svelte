@@ -1023,15 +1023,32 @@
         {#if root}
           {@const rootId = root.eventId}
           {@const rootRich = richContentForMessage(root)}
-          <span class="reply-avatar" aria-hidden="true">
-            <IdentityMark
+          <!-- The picture opens the author's profile, as the name does. -->
+          {#if onopenprofile && (root.fromPersonUid ?? "").trim()}
+            <button
+              type="button"
+              class="reply-avatar reply-avatar-btn"
+              data-testid="reply-avatar-open"
+              aria-label={`Open ${messageAuthor(root)}'s profile`}
+              onclick={() => openAuthorProfile(root)}
+            ><IdentityMark
+              kind={isAgent(root) ? "agent" : "person"}
+              label={messageAuthor(root)}
+              avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
+              agentUid={root.fromPersonUid}
+              size="regular"
+            /></button>
+          {:else}
+            <span class="reply-avatar" aria-hidden="true">
+              <IdentityMark
               kind={isAgent(root) ? "agent" : "person"}
               label={messageAuthor(root)}
               avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
               agentUid={root.fromPersonUid}
               size="regular"
             />
-          </span>
+            </span>
+          {/if}
           <div class="reply-col">
             <div class="reply-meta">
               {#if onopenprofile && (root.fromPersonUid ?? "").trim()}
@@ -1215,15 +1232,32 @@
             data-event-id={msg.eventId}
             data-send-status={msg.sendStatus ?? ""}
           >
-            <span class="reply-avatar" aria-hidden="true">
-              <IdentityMark
+            <!-- The picture opens the author's profile, as the name does. -->
+            {#if onopenprofile && (msg.fromPersonUid ?? "").trim()}
+              <button
+                type="button"
+                class="reply-avatar reply-avatar-btn"
+                data-testid="reply-avatar-open"
+                aria-label={`Open ${messageAuthor(msg)}'s profile`}
+                onclick={() => openAuthorProfile(msg)}
+              ><IdentityMark
+                kind={isAgent(msg) ? "agent" : "person"}
+                label={messageAuthor(msg)}
+                avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
+                agentUid={msg.fromPersonUid}
+                size="regular"
+              /></button>
+            {:else}
+              <span class="reply-avatar" aria-hidden="true">
+                <IdentityMark
                 kind={isAgent(msg) ? "agent" : "person"}
                 label={messageAuthor(msg)}
                 avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                 agentUid={msg.fromPersonUid}
                 size="regular"
               />
-            </span>
+              </span>
+            {/if}
             <div class="reply-col">
               <div class="reply-meta">
                 {#if onopenprofile && (msg.fromPersonUid ?? "").trim()}
@@ -1838,6 +1872,24 @@
     width: 32px;
     min-height: 1px;
     padding-top: var(--msg-avatar-pad-top, 2px);
+  }
+
+  /* The picture as a button: no chrome, the same box as the plain one. */
+  button.reply-avatar-btn {
+    margin: 0;
+    padding: var(--msg-avatar-pad-top, 2px) 0 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  button.reply-avatar-btn:focus-visible {
+    outline: 2px solid var(--v4-focus, var(--t2));
+    outline-offset: 2px;
+    border-radius: 50%;
   }
 
   .reply-row:hover {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import RailIcon from "../common/button/RailIcon.svelte";
+  import Caret from "../common/Caret.svelte";
   /**
    * Channel-header mute control. A bell icon (bell-slash when muted) toggles
    * Muted against the channel's last non-muted level; the chevron (or a
@@ -115,7 +116,7 @@
     aria-label="Channel notification level"
     onclick={() => (open = !open)}
   >
-    <RailIcon name="chevron-down" size={10} />
+    <Caret size="var(--hq-btn-caret)" />
   </button>
 
   {#if open}
@@ -161,6 +162,8 @@
     border: 1px solid transparent;
     border-radius: 8px;
     background: var(--btn-bg);
+    /* The app's one icon tone (--t2, as the sidebar's add, search and
+       filter icons), shared with the members button beside it. */
     color: var(--t2);
   }
 
@@ -188,19 +191,19 @@
     cursor: pointer;
   }
 
+  /* The button standard's inline padding at the ends and its icon gap
+     between bell and caret, split across the two halves, as the Launch
+     pill lays out icon, label and caret. */
   .mute-toggle {
-    width: var(--hq-btn-h);
+    width: auto;
+    padding: 0 calc(var(--hq-btn-gap) / 2) 0 var(--hq-btn-pad-inline);
     border-radius: 8px 0 0 8px;
   }
 
   .mute-chevron {
-    width: 18px;
+    width: auto;
+    padding: 0 var(--hq-btn-pad-inline) 0 calc(var(--hq-btn-gap) / 2);
     border-radius: 0 8px 8px 0;
-  }
-
-  .mute-toggle:hover,
-  .mute-chevron:hover {
-    color: var(--t1);
   }
 
   .mute-toggle:disabled {

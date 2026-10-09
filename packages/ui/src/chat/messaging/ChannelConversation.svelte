@@ -2203,7 +2203,7 @@
               data-reply-count={msg.replyCount ?? 0}
             >
               {#if groupStart}
-                <span class="dm-msg-avatar">
+                {#snippet authorMark()}
                   {#if isAgent(msg)}
                     <IdentityMark
                       kind="agent"
@@ -2222,7 +2222,19 @@
                       online={actorOnline(msg.fromPersonUid)}
                     />
                   {/if}
-                </span>
+                {/snippet}
+                <!-- The picture opens the author's profile, as the name does. -->
+                {#if onopenprofile && (msg.fromPersonUid ?? "").trim()}
+                  <button
+                    type="button"
+                    class="dm-msg-avatar dm-msg-avatar-btn"
+                    data-testid="conversation-avatar-open"
+                    aria-label={`Open ${messageAuthor(msg)}'s profile`}
+                    onclick={() => openAuthorProfile(msg)}
+                  >{@render authorMark()}</button>
+                {:else}
+                  <span class="dm-msg-avatar">{@render authorMark()}</span>
+                {/if}
               {:else}
                 <span class="dm-msg-avatar-spacer" aria-hidden="true">
                   <span class="dm-msg-gutter-time"
@@ -2914,6 +2926,24 @@
   /* Hit area (AUDIT-2-11): the name clips with an ellipsis, which would clip
      a pseudo-element pad too, so the clickable box grows with padding that a
      matching negative margin takes back out of the layout. */
+  /* The picture as a button: no chrome, the same box as the plain one. */
+  button.dm-msg-avatar-btn {
+    margin: 0;
+    padding: var(--msg-avatar-pad-top, 2px) 0 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  button.dm-msg-avatar-btn:focus-visible {
+    outline: 2px solid var(--v4-focus, var(--t2));
+    outline-offset: 2px;
+    border-radius: 50%;
+  }
+
   button.dm-msg-author-btn {
     padding: 5px 0;
     margin-block: -5px;
@@ -3455,7 +3485,8 @@
     border: 0;
     border-radius: 6px;
     background: transparent;
-    color: var(--t1);
+    /* The app's one icon tone; the hovered button darkens. */
+    color: var(--t2);
     /* Recorded Messages type (AUDIT-2-06): 12px. */
     font-size: 12px;
     line-height: 1;

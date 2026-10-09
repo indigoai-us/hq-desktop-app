@@ -73,9 +73,11 @@
   .b:hover:not(:disabled) { background: var(--hover, var(--v4-hover)); }
   .b:focus-visible { outline: 2px solid var(--v4-focus, var(--v4-text-2)); outline-offset: -2px; }
   .b:disabled { cursor: default; }
-  .nm { max-width: 100%; color: var(--v4-text-1); line-height: 1.3; overflow-wrap: anywhere; }
-  /* Level text matches the badge detail's description size. */
-  .tr { font-size: 13px; line-height: 1.45; color: var(--v4-text-3); }
+  /* Small under the mark, so a two-word name and its level stay compact
+     (owner review 2026-10-08). */
+  .nm { max-width: 100%; font-size: 12px; color: var(--v4-text-1); line-height: 1.3; overflow-wrap: anywhere; }
+  /* The level reads quieter than the name. */
+  .tr { font-size: 11px; line-height: 1.4; color: var(--v4-text-3); }
   /* What earns the badge: the app's hover-card style (not the system
      tooltip), under the badge on hover or keyboard focus. The outer columns
      align to their edge so the card stays inside the pane. */

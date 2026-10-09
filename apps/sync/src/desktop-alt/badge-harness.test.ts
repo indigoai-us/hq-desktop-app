@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { earnedFromUrl, sampleProgress } from '../../dev-harness/badge-fixtures';
+import { badgeLevel, earnedFromUrl, sampleBadges, sampleProgress } from '../../dev-harness/badge-fixtures';
 
 // Badge cards, step 3 (owner decision 2026-10-08): the design harness demos
 // the "You earned" notice and the card reveal with ?earn=<badge>[:<tier>].
@@ -34,5 +34,19 @@ describe('badge harness switches', () => {
       expect(p.current).toBeLessThanOrEqual(p.target);
       expect(p.unit).toMatch(/s$/);
     }
+  });
+});
+
+// Avatar tier marks (owner review 2026-10-09): the harness cast spans every
+// tier, so the preview shows more than Legendary.
+describe('sample badges span the tiers', () => {
+  it('gives the regular cast a top badge at each level, and someone none', () => {
+    // 4 Legendary, 3 Gold, 2 Silver, 1 Bronze, 0 none.
+    const top = (name: string) => Math.max(0, ...sampleBadges({ kind: 'person', name }).map(badgeLevel));
+    expect(top('Ada Lovelace')).toBe(4);
+    expect(top('Corey Epstein')).toBe(3);
+    expect(top('Maya Chen')).toBe(2);
+    expect(top('Jacob Moore')).toBe(1);
+    expect(top('Stefan Johnson')).toBe(0);
   });
 });

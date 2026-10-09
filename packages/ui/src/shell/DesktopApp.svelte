@@ -94,6 +94,9 @@
     rosterNamesFromRows,
   } from "./atlas-landing.js";
   import AccountMenu from "./AccountMenu.svelte";
+  import { badgesFor } from "../badges/badge-source.js";
+  import { topBadge } from "../badges/badge-tier.js";
+  import type { ResolvedBadge } from "../badges/badge-catalog.js";
   import {
     accountPageId,
     accountPlaceholderForPage,
@@ -7850,7 +7853,16 @@
       : (openProfileMember?.avatarUrl ?? null),
   );
 
+  /** Where the profile panel opens; the rail's badge hover card opens it on badges. */
+  type ProfileStart = { view: "profile" | "badges"; badgeId?: string | null };
+  let profileStart = $state<{ view: "profile" | "badges"; badgeId: string | null; key: number }>({
+    view: "profile",
+    badgeId: null,
+    key: 0,
+  });
+
   function openMemberProfile(row: StatusPersonRow): void {
+    profileStart = { view: "profile", badgeId: null, key: profileStart.key + 1 };
     // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
     openArtifactView = null;
@@ -12140,11 +12152,15 @@
     loadCallerRole({ companyUid: uid, selfUid: self?.uid ?? null, selfEmail: self?.email ?? null, company: adapter.company ?? null });
   });
 
+  /** Rail popovers open this far beside their button: about 8px clear of
+   *  the rail's edge, like the rail's hover cards (Tooltip, RailYouCard). */
+  const RAIL_POPOVER_GAP = 16;
+
   function placeMoreCompanies(): void {
     const button = document.querySelector("[data-testid='rail-more-companies']");
     if (button instanceof HTMLElement) {
       const rect = button.getBoundingClientRect();
-      moreCompaniesAnchor = { top: rect.top, left: rect.right + 8 };
+      moreCompaniesAnchor = { top: rect.top, left: rect.right + RAIL_POPOVER_GAP };
     }
   }
 
@@ -12153,10 +12169,50 @@
     if (button instanceof HTMLElement) {
       const rect = button.getBoundingClientRect();
       accountMenuAnchor = {
-        left: rect.right + 8,
+        left: rect.right + RAIL_POPOVER_GAP,
         bottom: Math.max(8, window.innerHeight - rect.bottom),
       };
     }
+  }
+
+  /** Your earned badges, for the hover card on the rail's You button. */
+  const youBadges = $derived(
+    badgesFor({ kind: "person", name: resolvedAccountLabel ?? "", email: self?.email ?? null }),
+  );
+  /** The badge behind your tier mark, on your picture in the account menu. */
+  const youTopBadge = $derived(topBadge(youBadges));
+
+  /**
+   * Your own profile panel, from the You hover card: on the Badges page
+   * ("See all") or on one badge. The panel sits beside a conversation; with
+   * none open, your profile settings stand in for it.
+   */
+  async function openSelfProfile(start: ProfileStart): Promise<void> {
+    const uid = self?.uid?.trim();
+    const row = selectedRow;
+    accountMenuOpen = false;
+    if (!uid || !row) {
+      openAccountPage("profile");
+      return;
+    }
+    // From another page, back to the open conversation the panel sits beside.
+    if (view !== "conversation") {
+      await navigate(destinationFromConversation(row, { ...currentConversationNested(), replyRootEventId: null }));
+    }
+    openMemberProfile(
+      {
+        personUid: uid,
+        // The account name, so the panel shows the same badges as the card.
+        displayName: resolvedAccountLabel ?? "You",
+        email: self?.email?.trim() || null,
+        avatarUrl: selfAvatarUrl,
+        description: selfDescription,
+        role: null,
+        statusIcon: "idle",
+        online: youPresence.live,
+      },
+    );
+    profileStart = { view: start.view, badgeId: start.badgeId ?? null, key: profileStart.key };
   }
 
   function toggleAccountMenu(): void {
@@ -13049,6 +13105,9 @@
       youExpanded={accountMenuOpen}
       youLive={youPresence.live}
       youWork={youPresence.work}
+      {youBadges}
+      onyoubadges={() => void openSelfProfile({ view: "badges" })}
+      onyoubadge={(badge: ResolvedBadge) => void openSelfProfile({ view: "profile", badgeId: badge.def.id })}
     />
     {#if accountMenuOpen}
       <AccountMenu
@@ -13057,6 +13116,7 @@
         initials={resolvedAccountInitials ?? ""}
         live={youPresence.live}
         work={youPresence.work}
+        topBadge={youTopBadge}
         anchorLeft={accountMenuAnchor.left}
         anchorBottom={accountMenuAnchor.bottom}
         onclose={() => (accountMenuOpen = false)}
@@ -14024,7 +14084,7 @@
                     <span class="member-count-num"
                       >{memberPillCount || "·"}</span
                     >
-                    <Caret tone="var(--t3)" size="0.9em" />
+                    <Caret tone="var(--t2)" size="var(--hq-btn-caret)" />
                   </button>
                   {#if membersOpen && selectedRow}
                     <ChannelStatusPopover
@@ -14690,6 +14750,9 @@
                     props={{
                       kind: "person",
                       name: openProfileMember.displayName,
+                      view: profileStart.view,
+                      badgeId: profileStart.badgeId,
+                      openKey: profileStart.key,
                       email: openProfileMember.email,
                       role: openProfileMember.role,
                       company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
@@ -15664,9 +15727,10 @@
     box-sizing: border-box;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    /* The button standard's gap and inline padding, as the Launch pill. */
+    gap: var(--hq-btn-gap);
     height: var(--hq-btn-h);
-    padding: 0 12px;
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid transparent;
     border-radius: 8px;
     background: var(--btn-bg);
@@ -15682,10 +15746,12 @@
     color: var(--t1);
   }
 
+  /* The app's one icon tone (--t2, as the sidebar's add, search and
+     filter icons). */
   .member-count-icon {
     display: grid;
     place-items: center;
-    color: var(--t3);
+    color: var(--t2);
   }
 
   .member-count-num {

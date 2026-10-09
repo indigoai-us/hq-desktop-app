@@ -763,7 +763,7 @@
             onclick={toggleLaunch}
           ><RailIcon name="play" />
             Launch
-            <Caret tone="var(--t3)" />
+            <Caret tone="var(--t2)" size="var(--hq-btn-caret)" />
           </button>
         {/snippet}
       </Tooltip>

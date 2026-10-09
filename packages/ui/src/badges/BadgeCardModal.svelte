@@ -14,21 +14,28 @@
    * `reveal` stages the entrance when a badge is earned, at every tier: a soft glow,
    * then the card turns over from its back to its face (about a second), then
    * the normal tilt. Reduced motion skips straight to the face.
+   *
+   * Clicking the card (or "Flip card") turns it over to its back, the story
+   * of how it was earned (BadgeCardBack.svelte), and back again. Reduced
+   * motion swaps the sides without the turn.
    */
   import RailIcon from "../common/button/RailIcon.svelte";
   import { suspendShortcuts } from "../common/keyboard-shortcuts.js";
   import { portal } from "../chat/portal.js";
   import { focusIntoDialog, inertOutside, restoreFocus, trapTab } from "../chat/messaging/card-modal.js";
   import BadgeCard from "./BadgeCard.svelte";
+  import BadgeCardBack from "./BadgeCardBack.svelte";
+  import BadgeShareMenu from "./BadgeShareMenu.svelte";
   import { TIER_NAME, type ResolvedBadge } from "./badge-catalog.js";
   import { REVEAL_FLIP_MS, REVEAL_GLOW_MS, prefersReducedMotion } from "./badge-card.js";
 
   interface Props {
     open: boolean;
     badge: ResolvedBadge;
-    /** Whose card it is, shown under it when it is someone else's. */
+    /** Whose card it is, shown under it when it is someone else's. None means
+      your own: the story on the back speaks to you. */
     owner?: string | null;
-    /** Stage the Gold / Legendary entrance. */
+    /** Stage the entrance for a badge just earned. */
     reveal?: boolean;
     onclose: () => void;
     /** Where focus goes on close. Default: what had focus when it opened. */
@@ -39,6 +46,16 @@
 
   type Phase = "glow" | "flip" | "done";
   let phase = $state<Phase>("done");
+  /** Showing the back: the story of how it was earned. */
+  let flipped = $state(false);
+  /** The Download menu is open; Escape closes it before the stage. */
+  let shareOpen = $state(false);
+  /** The reveal runs on its own; the card turns over only once it settles. */
+  const canFlip = $derived(phase === "done");
+
+  function flip(): void {
+    if (canFlip) flipped = !flipped;
+  }
   let panelEl = $state<HTMLDivElement | null>(null);
   let returnFocusNow: HTMLElement | null = null;
   $effect.pre(() => {
@@ -50,6 +67,8 @@
   // The staged entrance runs once per opening.
   $effect(() => {
     if (!open) return;
+    flipped = false;
+    shareOpen = false;
     if (!reveal || prefersReducedMotion()) {
       phase = "done";
       return;
@@ -88,6 +107,11 @@
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
+        if (shareOpen) {
+          shareOpen = false;
+          panelEl?.querySelector<HTMLElement>('[data-testid="badge-card-share"]')?.focus();
+          return;
+        }
         onclose();
         return;
       }
@@ -121,18 +145,34 @@
         <RailIcon name="x" size={14} />
       </button>
       {#if reveal}<span class="bc-glow" aria-hidden="true"></span>{/if}
-      <div class="bc-card">
-        <div class="bc-flip">
-          <BadgeCard {badge} interactive={phase === "done"} />
-          {#if reveal}
-            <div class="bc-back" aria-hidden="true">
+      <!-- The card turns over on click; "Flip card" below is the same action for
+           the keyboard and screen readers. -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="bc-card" class:can-flip={canFlip} data-testid="badge-card-flipper" onclick={flip}>
+        <div class="bc-flip" class:flipped data-flipped={flipped ? "true" : "false"}>
+          <div class="bc-face" aria-hidden={flipped ? "true" : undefined}>
+            <BadgeCard {badge} interactive={canFlip && !flipped} />
+          </div>
+          <div class="bc-back" aria-hidden={flipped ? undefined : "true"}>
+            {#if reveal && phase !== "done"}
               <span class="bc-back-frame"></span>
               <svg class="bc-back-logo" viewBox="0 0 577 330"><path d="M176.594 7.54293H243.149V318.135H176.594V185.024H66.5555V318.135H0V7.54293H66.5555V118.469H176.594V7.54293Z"/><path d="M529.768 329.671L496.49 296.837C484.806 304.824 471.938 311.036 457.888 315.473C443.985 319.91 429.343 322.128 413.961 322.128C392.959 322.128 373.214 317.987 354.727 309.705C336.239 301.274 319.97 289.738 305.919 275.096C291.869 260.306 280.85 243.223 272.863 223.848C264.877 204.325 260.883 183.397 260.883 161.064C260.883 138.879 264.877 118.099 272.863 98.7239C280.85 79.201 291.869 62.0445 305.919 47.2544C319.97 32.4642 336.239 20.928 354.727 12.6455C373.214 4.21517 392.959 0 413.961 0C435.111 0 454.93 4.21517 473.417 12.6455C491.905 20.928 508.174 32.4642 522.225 47.2544C536.275 62.0445 547.22 79.201 555.059 98.7239C563.045 118.099 567.039 138.879 567.039 161.064C567.039 177.185 564.82 192.641 560.383 207.431C556.094 222.073 550.178 235.754 542.635 248.474L576.8 282.639L529.768 329.671ZM413.961 255.573C420.025 255.573 425.867 254.907 431.487 253.576C437.255 252.245 442.802 250.396 448.126 248.03L429.491 229.394L476.523 182.362L492.94 198.779C495.454 193.011 497.303 186.947 498.486 180.587C499.818 174.227 500.483 167.72 500.483 161.064C500.483 148.049 498.191 135.847 493.606 124.459C489.169 113.07 482.957 103.087 474.97 94.5087C466.984 85.7826 457.74 78.9791 447.239 74.0984C436.886 69.0698 425.793 66.5554 413.961 66.5554C402.129 66.5554 390.962 69.0698 380.461 74.0984C370.108 78.9791 360.939 85.7826 352.952 94.5087C344.965 103.087 338.679 113.07 334.094 124.459C329.657 135.847 327.439 148.049 327.439 161.064C327.439 174.079 329.657 186.355 334.094 197.892C338.679 209.28 344.965 219.337 352.952 228.063C360.939 236.642 370.108 243.371 380.461 248.252C390.962 253.133 402.129 255.573 413.961 255.573Z"/></svg>
-            </div>
-          {/if}
+            {:else}
+              <BadgeCardBack {badge} {owner} interactive={canFlip && flipped} />
+            {/if}
+          </div>
         </div>
       </div>
-      {#if owner}<p class="bc-owner" data-testid="badge-card-owner">Earned by {owner}</p>{/if}
+      <div class="bc-foot">
+        {#if owner}<p class="bc-owner" data-testid="badge-card-owner">Earned by {owner}</p>{/if}
+        <div class="bc-actions">
+          <button type="button" class="bc-flip-btn" data-testid="badge-card-flip" aria-pressed={flipped} disabled={!canFlip} onclick={flip}>
+            <RailIcon name="arrows-clockwise" size={14} />Flip card
+          </button>
+          <BadgeShareMenu {badge} {owner} bind:open={shareOpen} disabled={!canFlip} />
+        </div>
+      </div>
     </div>
   </div>
 {/if}
@@ -169,13 +209,26 @@
     /* The card's own shadow on the stage. */
     filter: drop-shadow(0 24px 40px rgba(0, 0, 0, 0.55));
   }
-  .bc-flip { position: relative; transform-style: preserve-3d; }
-  .bc-flip > :global(.badge-card) { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .bc-card.can-flip { cursor: pointer; }
+  .bc-flip { position: relative; transform-style: preserve-3d; transition: transform 640ms cubic-bezier(0.45, 0, 0.2, 1); }
+  .bc-flip.flipped { transform: rotateY(180deg); }
+  .bc-face { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .bc-foot { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .bc-actions { display: flex; align-items: center; gap: 12px; }
   .bc-owner { margin: 0; color: rgba(250, 250, 250, 0.56); }
+  /* A quiet text button under the card; it dims on hover, no underline. */
+  .bc-flip-btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px;
+    border: 0; border-radius: 6px; background: none;
+    color: rgba(250, 250, 250, 0.72); font: inherit; cursor: pointer;
+  }
+  .bc-flip-btn:hover:not(:disabled) { color: rgba(250, 250, 250, 0.5); }
+  .bc-flip-btn:disabled { opacity: 0.4; cursor: default; }
+  .bc-flip-btn:focus-visible { outline: 2px solid rgba(250, 250, 250, 0.7); outline-offset: 2px; }
 
   /* The card's back, for the reveal. */
   .bc-back {
-    position: absolute; inset: 0; display: grid; place-items: center;
+    position: absolute; inset: 0; display: grid; place-items: center; container-type: inline-size;
     border-radius: 4.3% / 3.07%; overflow: hidden;
     background:
       repeating-radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.035) 0 1px, rgba(255, 255, 255, 0) 1px 7px),
@@ -214,6 +267,10 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .bc-layer { animation: none; }
-    .bc-glow, .bc-flip { animation: none !important; transform: none !important; }
+    .bc-glow, .bc-flip { animation: none !important; transform: none !important; transition: none; }
+    /* No turn: the sides swap in place. */
+    .bc-back { transform: none; visibility: hidden; }
+    .bc-flip.flipped .bc-back { visibility: visible; }
+    .bc-flip.flipped .bc-face { visibility: hidden; }
   }
 </style>

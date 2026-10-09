@@ -19,5 +19,7 @@
   --hq-btn-gap: 6px;
   --hq-btn-radius: 8px;
   --hq-btn-icon: 14px;
+  /* The dropdown caret after a label or icon (common/Caret.svelte). */
+  --hq-btn-caret: 11px;
   --hq-btn-h: calc(var(--hq-btn-font-size) * var(--hq-btn-line-height) + 2 * var(--hq-btn-pad-block) + 2 * var(--hq-btn-border));
 }

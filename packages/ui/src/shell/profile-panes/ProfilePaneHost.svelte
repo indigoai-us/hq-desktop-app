@@ -11,7 +11,8 @@
   import { badgeProgressFor, badgesFor } from "../../badges/badge-source.js";
   import BadgeDetailPane from "../../badges/BadgeDetailPane.svelte";
   import BadgesPane from "../../badges/BadgesPane.svelte";
-  import type { ResolvedBadge } from "../../badges/badge-catalog.js";
+  import { resolveEarned, type ResolvedBadge } from "../../badges/badge-catalog.js";
+  import { untrack } from "svelte";
   import type { AgentsApi } from "@hq/platform";
   import {
     defaultTelemetryRange,
@@ -54,6 +55,12 @@
     runtimeKind?: "local" | "cloud" | null;
     companyUid?: string | null;
     agents?: AgentsApi | null;
+    /** Where it opens: the profile, or straight to the Badges page ("See all"). */
+    view?: "profile" | "badges";
+    /** Opens straight to this earned badge's detail. */
+    badgeId?: string | null;
+    /** Changes on each open, so a repeat open of the same profile starts over at `view`. */
+    openKey?: number;
   }
 
   let {
@@ -74,6 +81,9 @@
     runtimeKind = null,
     companyUid = null,
     agents = null,
+    view = "profile",
+    badgeId = null,
+    openKey = 0,
   }: Props = $props();
 
   let mode = $state<"profile" | "session">("profile");
@@ -214,9 +224,12 @@
   $effect(() => {
     void kind;
     void name;
-    openBadge = null;
-    badgesPage = false;
-    badgesTab = "badges";
+    void openKey;
+    untrack(() => {
+      openBadge = badgeId ? (resolveEarned(badges).find((b) => b.def.id === badgeId) ?? null) : null;
+      badgesPage = view === "badges";
+      badgesTab = "badges";
+    });
   });
   const badgeProgress = $derived(
     badgesPage ? badgeProgressFor({ kind, name: kind === "bot" ? botName : name, email }) : [],

@@ -62,7 +62,9 @@ describe("detail panes follow the Messages profile pane rhythm", () => {
       const sizes = [...css.matchAll(/font-size:\s*([^;]+);/g)].map((m) =>
         m[1].replace(/\s*!important/, "").trim(),
       );
-      expect(sizes.filter((s) => !ALLOWED_SIZES.includes(s))).toEqual([]);
+      // A badge's level under its name is 11px, quieter than the name (owner review 2026-10-08).
+      const allowed = name === "ProfileBadges.svelte" || name === "BadgesPane.svelte" ? [...ALLOWED_SIZES, "11px"] : ALLOWED_SIZES;
+      expect(sizes.filter((s) => !allowed.includes(s))).toEqual([]);
       expect(css).not.toMatch(/font-weight:\s*(550|600|650|700|bold)/);
       expect(css).not.toMatch(/text-transform:\s*uppercase/);
       expect(css).not.toMatch(/letter-spacing:\s*0\.\d+em/);
@@ -110,8 +112,15 @@ describe("detail panes follow the Messages profile pane rhythm", () => {
     expect(src).toMatch(/\.b:hover \.hc, \.b:focus-visible \.hc \{[^}]*opacity: 1; visibility: visible;/);
   });
 
-  it("the profile badge level text is 13px", () => {
-    expect(read("../../badges/ProfileBadges.svelte")).toMatch(/\.tr \{[^}]*font-size: 13px/);
+  // Smaller than the panel's body text, the level smallest (owner review 2026-10-08).
+  it.each(["ProfileBadges.svelte", "BadgesPane.svelte"])("%s: a badge's name is 12px and its level 11px", (file) => {
+    const src = read(`../../badges/${file}`);
+    expect(src).toMatch(/\n  \.nm \{[^}]*font-size: 12px/);
+    expect(src).toMatch(/\n  \.tr \{[^}]*font-size: 11px/);
+  });
+
+  it("the Badges page shows progress at the level's size", () => {
+    expect(read("../../badges/BadgesPane.svelte")).toMatch(/\n  \.pg \{[^}]*font-size: 11px/);
   });
 
   it("the bot pane keeps UID copy, scheduled jobs and 30-day usage", () => {
