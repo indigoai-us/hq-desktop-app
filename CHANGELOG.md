@@ -21,6 +21,7 @@ The release moves it under the version it ships in.
 - Policies and Deployments open faster in large companies. Both lists now show 50 rows at a time and load more as you scroll, the way Team and Grants already did. On a test company with 1,700 policies, opening Policies went from about 200ms with 1.4 seconds of frozen screen to under 30ms. The Hard and Soft headers still count every policy.
 - Signing out now clears the company and personal data the window kept in memory, so the next account starts clean.
 - The company pages stop refreshing in the background while the window is hidden, and refresh once when you come back.
+- The Messages sidebar is one list ordered by latest activity when a company is picked. A company's channels used to sit in a separate Activity block above Today, so a channel last used days ago, or never, showed above the direct message you got a minute ago. Now they sit under Today, Yesterday and the earlier days with your direct messages and project channels, and channels nobody has written in go to No messages yet at the bottom. The order is the same whether you open the app, switch company, open a project channel or follow a link.
 
 ## [0.11.0] — 2026-10-08
 
