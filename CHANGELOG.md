@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Links in messages now show a short readable title instead of the full web address. A Google Calendar invite reads as the event name and date, a GitHub link as the repository and number (such as indigoai-us/hq-desktop-app#1512), and a deployed app as its name. Other links show the page's own title when HQ can read it, otherwise the site and the end of the path. Links written with their own text keep that text. Hover over a link, or move to it with the keyboard, to see a card with the details: date, time, time zone, repeat and place for a calendar invite, with Add to calendar; repository and number for GitHub; app and host for a deploy; and the full address with Copy link for anything else. Escape closes the card, and clicking the link still opens it. Page titles are read by the app itself, without your sign-ins or cookies, and only from public web addresses.
+- Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
 
 ## [0.11.0] — 2026-10-08
 

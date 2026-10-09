@@ -5,6 +5,8 @@ import {
   companyPageId,
   companyPagePlaceholderForPage,
   companyPaneModel,
+  companyProjectsDestination,
+  companyProjectsFocus,
   companyRowDestination,
   companyRowForPage,
 } from "./company-pane.js";
@@ -114,5 +116,21 @@ describe("company pane project count scope (QA-006)", () => {
     const row = model.sections.flatMap((s) => s.rows).find((r) => r.id === "projects");
     expect(row?.count).toBe(7);
     expect(row?.countScope).toBe("7 on the company board");
+  });
+});
+
+describe("companyProjectsDestination", () => {
+  it("opens the company Projects row, optionally on one project and tab", () => {
+    expect(companyProjectsDestination("co_a")).toEqual({ kind: "extra", page: "company-page-projects", companyUid: "co_a" });
+    const dest = companyProjectsDestination("co_a", "billing v2", "tasks");
+    expect(dest).toEqual({ kind: "extra", page: "company-page-projects", companyUid: "co_a", param: "project=billing+v2&tab=tasks" });
+    expect(dest.kind === "extra" && companyProjectsFocus(dest.param)).toEqual({ project: "billing v2", tab: "tasks" });
+  });
+
+  it("reads no focus from an empty or unrelated param", () => {
+    expect(companyProjectsFocus(null)).toBeNull();
+    expect(companyProjectsFocus("")).toBeNull();
+    expect(companyProjectsFocus("tab=tasks")).toBeNull();
+    expect(companyProjectsFocus("project=x&tab=bogus")).toEqual({ project: "x", tab: null });
   });
 });
