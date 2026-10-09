@@ -14,6 +14,7 @@ const store = vi.hoisted(() => ({
   inviteBot: vi.fn(),
   cancelBot: vi.fn(),
   inviteBotByUrl: vi.fn(),
+  scheduledBots: [] as ScheduledBot[],
 }));
 vi.mock("./meetings-store.svelte", () => ({ meetingsStore: store }));
 
@@ -50,6 +51,7 @@ beforeEach(() => {
   store.inviteBot.mockReset();
   store.cancelBot.mockReset();
   store.inviteBotByUrl.mockReset();
+  store.scheduledBots = [];
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -93,6 +95,12 @@ describe("OWNER-R3 notetaker words", () => {
     expect(notetakerStatus(scheduled)).toEqual({ label: "Notetaker invited", action: "remove" });
     expect(notetakerStatus({ ...scheduled, status: "recording" })).toEqual({ label: "Notetaker is in the meeting", action: "remove" });
     expect(notetakerStatus({ ...scheduled, status: "processing" })).toEqual({ label: "Notetaker is saving the notes", action: "none" });
+    expect(notetakerStatus({ ...scheduled, status: "failed", failureReason: "Zoom requires sign-in." })).toEqual({
+      label: "Notetaker couldn't join", action: "invite", detail: "Zoom requires sign-in.",
+    });
+    expect(notetakerStatus({ ...scheduled, status: "failed" })).toEqual({
+      label: "Notetaker couldn't join", action: "invite", detail: "The notetaker couldn't join this meeting.",
+    });
   });
 });
 
@@ -144,6 +152,14 @@ describe("OWNER-R3 Invite notetaker on an upcoming meeting", () => {
     q<HTMLButtonElement>(el, "meeting-notetaker-remove")!.click();
     await settle();
     expect(store.cancelBot).toHaveBeenCalledWith(event);
+  });
+
+  it("renders the failed join reason with a retry action", () => {
+    const failed = { ...scheduled, status: "failed", failureReason: "Zoom requires sign-in." };
+    const el = render(NotetakerControl, { event, bot: failed, url: event.meetingUrl });
+    expect(q(el, "meeting-notetaker-status")?.textContent).toBe("Notetaker couldn't join");
+    expect(q(el, "meeting-notetaker-detail")?.textContent).toBe("Zoom requires sign-in.");
+    expect(q<HTMLButtonElement>(el, "meeting-notetaker-invite")?.textContent).toContain("Try again");
   });
 });
 
@@ -200,5 +216,15 @@ describe("OWNER-R3 Invite notetaker to a meeting (header +)", () => {
     await settle();
     expect(store.inviteBotByUrl).toHaveBeenCalledTimes(2);
     expect(q(el, "invite-notetaker-done")).not.toBeNull();
+  });
+
+  it("shows the server's terminal join reason after an invite refresh", async () => {
+    store.scheduledBots = [{ ...scheduled, status: "failed", failureReason: "Zoom requires sign-in." }];
+    store.inviteBotByUrl.mockResolvedValueOnce({ kind: "info", text: "Notetaker invited." });
+    const el = render(InviteNotetakerSheet, { onclose: vi.fn() });
+    type(q<HTMLInputElement>(el, "invite-notetaker-link")!, scheduled.meetingUrl);
+    q<HTMLButtonElement>(el, "invite-notetaker-confirm")!.click();
+    await settle();
+    expect(q(el, "invite-notetaker-failed")?.textContent).toBe("Zoom requires sign-in.");
   });
 });

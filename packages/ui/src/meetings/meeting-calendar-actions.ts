@@ -7,6 +7,7 @@
 
 import { pushToast } from "../shell/toast-stack.svelte.js";
 import { meetingsStore, type ToastDescriptor } from "./meetings-store.svelte";
+import { meetingUrlsMatch } from "./meetings-model";
 
 export type OpenExternal = (url: string) => void | Promise<void>;
 
@@ -49,14 +50,24 @@ export async function disconnectCalendarAccount(accountId: string, email: string
 }
 
 /** Open the pasted room in the browser, then send the notetaker to it. */
-export async function joinPastedLink(url: string, openExternal?: OpenExternal): Promise<void> {
+export async function joinPastedLink(
+  url: string,
+  openExternal?: OpenExternal,
+): Promise<{ failureDetail: string | null }> {
   try {
     if (!openExternal) throw new Error("no browser opener");
     await openExternal(url);
   } catch (err) {
     console.warn("[meetings] open pasted link failed", err);
     toast({ kind: "warn", text: "Couldn't open the meeting link." });
-    return;
+    return { failureDetail: "Couldn't open the meeting link." };
   }
-  toast(await meetingsStore.inviteBotByUrl(url, null));
+  const result = await meetingsStore.inviteBotByUrl(url, null);
+  const failedBot = meetingsStore.scheduledBots.find(
+    (bot) => bot.status === "failed" && meetingUrlsMatch(bot.meetingUrl, url),
+  );
+  const failureDetail = failedBot?.failureReason?.trim()
+    || (result?.kind === "warn" ? result.text || "The notetaker couldn't join this meeting." : null);
+  toast(result);
+  return { failureDetail };
 }
