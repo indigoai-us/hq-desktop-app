@@ -924,7 +924,9 @@
   import {
     mergePaletteRows,
     paletteConversationItems,
+    paletteProjectDestination,
     paletteProjectItems,
+    paletteProjectsCommandDestination,
   } from "./palette-rows.js";
   import {
     joinableMemberships,
@@ -4511,7 +4513,7 @@
         detail: "Open a company's project board",
         shortcut: shortcutLabel("view.projects"),
         action: () => {
-          void navigate({ kind: "projects" });
+          void navigate(paletteProjectsCommandDestination(tenantCompanyId));
         },
       });
       nav.push({
@@ -4641,11 +4643,7 @@
       companyUid: item.companyUid,
       personal: item.personal,
       action: () => {
-        void navigate({
-          kind: "projects",
-          company: item.companySlug,
-          project: item.projectId,
-        });
+        void navigate(paletteProjectDestination(item));
       },
     }));
     return [...projectItems, ...nav, ...conversations];
