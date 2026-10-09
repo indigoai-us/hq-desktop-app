@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 - Warning, error, info and success boxes in chat messages are quieter: they now use a neutral background, and only the icon is colored.
 - The Tokens per day chart in My Telemetry now says UTC next to its title, because HQ counts each day from midnight UTC rather than your local midnight. The highlighted bar and the "today" label now mean today where you are: in the evening in the Americas, the newest bar is already tomorrow in UTC, so it shows its date instead of "today".
+- The Activity page now shows which models each person uses. The team list adds a short line under each name with their most-used model, such as "Opus 5.5 +1" when they used more than one. A person's detail panel has a Models section listing each model with its share of their tokens, most used first. Export includes the models too. People with no model data show neither.
 - Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
 
 ## [0.11.0] — 2026-10-08

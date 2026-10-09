@@ -31,8 +31,75 @@ export interface ActivityMember {
   /** Per-day tokens, oldest first (hq-pro perMember.trend). */
   trend?: number[];
   tokensByModel?: { model: string; total: number }[];
+  /** Sessions per model id, when the read sends `sessionsByModel`. */
+  sessionsByModel?: { model: string; count: number }[];
   skills?: { skill: string; count: number }[];
   services?: { service: string; count: number }[];
+}
+
+/** One model a member used in the range, most used first. */
+export interface MemberModel {
+  id: string;
+  label: string;
+  tokens: number;
+  /** Share of the member's model tokens, 0 to 100; null with no token counts. */
+  share: number | null;
+  sessions: number | null;
+}
+
+const title = (word: string): string => (word ? word[0].toUpperCase() + word.slice(1) : word);
+
+/**
+ * Short human name for a model id: claude-opus-5-5 is "Opus 5.5",
+ * gpt-5.6-sol is "GPT-5.6 Sol", grok-4.5 is "Grok 4.5". Unknown ids show the
+ * raw id, shortened.
+ */
+export function modelLabel(id: string): string {
+  const raw = id.trim().replace(/^(us\.anthropic|anthropic|openai|xai)[./:]/i, "");
+  if (!raw) return "Unknown";
+  const claude = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:[-.](\d{1,2}))?(?:[-@\[].*)?$/i.exec(raw);
+  if (claude) return `${title(claude[1].toLowerCase())} ${claude[2]}${claude[3] ? `.${claude[3]}` : ""}`;
+  const gpt = /^gpt-([\d.]+[a-z]?)(?:-(.+))?$/i.exec(raw);
+  if (gpt) return `GPT-${gpt[1]}${gpt[2] ? ` ${gpt[2].split("-").map(title).join(" ")}` : ""}`;
+  if (/codex/i.test(raw)) return raw.split("-").map(title).join(" ");
+  const grok = /^grok-([\d.]+)(?:-(.+))?$/i.exec(raw);
+  if (grok) return `Grok ${grok[1]}${grok[2] ? ` ${grok[2].split("-").map(title).join(" ")}` : ""}`;
+  return raw.length > 20 ? `${raw.slice(0, 19)}…` : raw;
+}
+
+/**
+ * The member's models for the range, most used first: by sessions when the
+ * read counts them, else by tokens. Ids that map to the same label merge.
+ */
+export function memberModels(member: Pick<ActivityMember, "tokensByModel" | "sessionsByModel">): MemberModel[] {
+  const byLabel = new Map<string, MemberModel>();
+  const row = (id: string): MemberModel => {
+    const label = modelLabel(id);
+    let entry = byLabel.get(label);
+    if (!entry) {
+      entry = { id, label, tokens: 0, share: null, sessions: null };
+      byLabel.set(label, entry);
+    }
+    return entry;
+  };
+  for (const t of member.tokensByModel ?? []) if (t.model && t.total > 0) row(t.model).tokens += t.total;
+  for (const s of member.sessionsByModel ?? []) {
+    if (!s.model || s.count <= 0) continue;
+    const entry = row(s.model);
+    entry.sessions = (entry.sessions ?? 0) + s.count;
+  }
+  const list = [...byLabel.values()];
+  const total = list.reduce((sum, m) => sum + m.tokens, 0);
+  for (const m of list) m.share = total > 0 ? Math.round((m.tokens / total) * 100) : null;
+  return list.sort(
+    (a, b) => (b.sessions ?? 0) - (a.sessions ?? 0) || b.tokens - a.tokens || a.label.localeCompare(b.label),
+  );
+}
+
+/** "Opus 5.5", "Opus 5.5 +1"; empty with no model data. */
+export function modelSummary(models: readonly MemberModel[]): string {
+  if (models.length === 0) return "";
+  return models.length === 1 ? models[0].label : `${models[0].label} +${models.length - 1}`;
 }
 
 export interface ActivitySnapshot {
@@ -142,6 +209,7 @@ export function activityToCsv(snapshot: ActivitySnapshot, range: ActivityRange):
     "prs",
     "deploys",
     "top_skill",
+    "models",
     "outcomes_per_1m",
     "spend_usd",
     "range",
@@ -156,6 +224,7 @@ export function activityToCsv(snapshot: ActivitySnapshot, range: ActivityRange):
       member.prs ?? "",
       member.deploys,
       member.topSkill,
+      memberModels(member).map((m) => m.label).join("; "),
       member.outcomesPerMillion ?? "",
       member.spendUsd ?? "",
       range,
@@ -277,8 +346,8 @@ function tokenTotal(tokensByModel: unknown): number {
   return modelRows(tokensByModel).reduce((sum, row) => sum + row.total, 0);
 }
 
-/** Skill or service counts: `[{ skill, count }]` lists or a `{ [name]: count }` map. */
-function countRows(value: unknown, key: "skill" | "service"): { name: string; count: number }[] {
+/** Skill, service or per-model session counts: `[{ skill, count }]` lists or a `{ [name]: count }` map. */
+function countRows(value: unknown, key: "skill" | "service" | "model"): { name: string; count: number }[] {
   const list = Array.isArray(value)
     ? value.map((k) => ({ name: String(rec(k)[key] ?? ""), count: num(rec(k).count) }))
     : Object.entries(rec(value)).map(([name, count]) => ({ name, count: num(count) }));
@@ -360,6 +429,7 @@ export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
       tokensByModel: modelRows(totals.tokensByModel)
         .filter((t) => t.model && t.total > 0)
         .sort((a, b) => b.total - a.total),
+      sessionsByModel: countRows(totals.sessionsByModel, "model").map((k) => ({ model: k.name, count: k.count })),
       skills: skills.map((k) => ({ skill: k.name, count: k.count })),
       services: services.map((k) => ({ service: k.name, count: k.count })),
     });
