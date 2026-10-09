@@ -18,6 +18,7 @@
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import PageHeader from "../shell/PageHeader.svelte";
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
+  import StorageSettingsPane from "./StorageSettingsPane.svelte";
   import AgentsSettingsPane from "./AgentsSettingsPane.svelte";
   import BotsSettingsPane from "./BotsSettingsPane.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
@@ -53,7 +54,8 @@
     | "notifications"
     | "sync"
     | "meetings"
-    | "updates";
+    | "updates"
+    | "storage";
 
   const ALL_SECTIONS: ReadonlyArray<{ id: ShellSettingsSection | "sep"; label: string }> =
     [
@@ -69,6 +71,7 @@
       { id: "sync", label: "Sync" },
       { id: "meetings", label: "Meetings" },
       { id: "updates", label: "Updates" },
+      { id: "storage", label: "Storage" },
       { id: "agents", label: "AI tools" },
       { id: "bots", label: "Bots" },
     ];
@@ -443,6 +446,8 @@
       if (section.id === "updates") {
         return adapter?.isAvailable("canSelfUpdate") ?? false;
       }
+      // Storage shells to the local hq CLI; desktop host only.
+      if (section.id === "storage") return Boolean(adapter?.storage);
       if (section.id === "agents")
         return Boolean(adapter?.sessions?.preflight);
       // Bots: the Cloud group reads adapter.agents (every host); the Local
@@ -714,6 +719,8 @@
         <BillingSettingsPane {openExternal} />
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
+      {:else if active === "storage"}
+        <StorageSettingsPane {adapter} />
       {:else if active === "bots"}
         <BotsSettingsPane {adapter} {companies} {onnewbot} />
       {:else}

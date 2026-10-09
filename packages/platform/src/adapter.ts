@@ -2276,6 +2276,84 @@ export interface ImportScanEndView {
  * host validates each line and emits it as `IMPORT_SCAN_EVENT` with the
  * scan's id; nothing leaves the computer. One scan at a time.
  */
+/** Settings > Storage (`hq storage status --json`). Desktop-only. */
+export interface StorageLocalTranche {
+  id: string;
+  label: string;
+  from?: string | null;
+  to?: string | null;
+  commit_count: number;
+  est_bytes: number;
+}
+
+export interface StorageCloudTranche {
+  id: string;
+  label: string;
+  count: number;
+  bytes: number;
+}
+
+export interface StorageCloudCompany {
+  company: string;
+  available: boolean;
+  error?: string | null;
+  current_bytes: number;
+  noncurrent_bytes: number;
+  noncurrent_count: number;
+  delete_markers: number;
+  tranches: StorageCloudTranche[];
+}
+
+export interface StorageStatus {
+  local: {
+    available: boolean;
+    reason?: string | null;
+    root?: string | null;
+    git_dir_bytes: number;
+    working_tree_bytes: number;
+    commit_count: number;
+    oldest_commit_at?: string | null;
+    newest_commit_at?: string | null;
+    tranches: StorageLocalTranche[];
+  };
+  cloud: StorageCloudCompany[];
+  generated_at?: string | null;
+}
+
+export interface StoragePruneRequest {
+  /** YYYY-MM-DD; local snapshots older than this are removed. */
+  localBefore?: string | null;
+  /** YYYY-MM-DD; old cloud file versions older than this are removed. */
+  cloudBefore?: string | null;
+  company?: string | null;
+}
+
+export interface StoragePruneResult {
+  dry_run: boolean;
+  local?: {
+    freed_bytes: number;
+    commits_removed: number;
+    error?: string | null;
+  } | null;
+  cloud: Array<{
+    company: string;
+    freed_bytes: number;
+    deleted_count: number;
+    delete_markers_removed: number;
+    error?: string | null;
+  }>;
+}
+
+/**
+ * Desktop-only. A failure whose message is `update-hq` means the hq CLI is
+ * missing or predates `hq storage`.
+ */
+export interface StorageApi {
+  status(): AdapterPromise<StorageStatus>;
+  previewPrune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
+  prune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
+}
+
 export interface ContextImportApi {
   /** Run a scan under this id. Resolves when it ends, however it ends. */
   scanStart(scanId: string): AdapterPromise<ImportScanEndView>;
@@ -2564,6 +2642,8 @@ export interface PlatformAdapter {
   readonly bots?: LocalBotsApi;
   /** Optional: only the desktop host can read this computer's context. */
   readonly contextImport?: ContextImportApi;
+  /** Optional: only the desktop host can read and prune local HQ backups. */
+  readonly storage?: StorageApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
   /** Native calling (US-014). Unsupported hosts implement it as refusals. */

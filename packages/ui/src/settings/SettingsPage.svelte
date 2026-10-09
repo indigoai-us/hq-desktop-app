@@ -37,6 +37,7 @@
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import { updateStore } from "./update-store.svelte.js";
   import { autoUpdateRow } from "../account/account-pages.js";
+  import StorageSettingsPane from "./StorageSettingsPane.svelte";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -2728,6 +2729,17 @@
                 </label>
               {/if}
             </div>
+          {/if}
+        </section>
+
+        <section
+          id="storage"
+          class="settings-section"
+          hidden={activeTab !== "storage"}
+        >
+          <h2>Storage</h2>
+          {#if activeTab === "storage"}
+            <StorageSettingsPane {adapter} />
           {/if}
         </section>
 

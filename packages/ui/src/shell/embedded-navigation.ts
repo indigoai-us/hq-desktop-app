@@ -25,6 +25,7 @@ export const EMBEDDED_SETTINGS_SECTIONS = [
   'sync',
   'meetings',
   'updates',
+  'storage',
 ] as const;
 
 export type EmbeddedSettingsSection =

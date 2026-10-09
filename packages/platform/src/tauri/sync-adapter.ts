@@ -1722,6 +1722,14 @@ export function createSyncPlatformAdapter(
     // Visual first run, "Bring in your context": `hq import scan --json
     // --stream` behind the same launch boundary (src-tauri/src/commands/
     // import_scan.rs). Lines arrive as IMPORT_SCAN_EVENT events.
+    // Settings > Storage: `hq storage status|prune --json`
+    // (src-tauri/src/commands/storage.rs).
+    storage: {
+      status: () => call('get_storage_status'),
+      previewPrune: (request) => call('preview_storage_prune', { request }),
+      prune: (request) => call('run_storage_prune', { request }),
+    },
+
     contextImport: {
       scanStart: (scanId) => call('import_scan_start', { scanId }),
       scanCancel: (scanId) => call('import_scan_cancel', { scanId }),

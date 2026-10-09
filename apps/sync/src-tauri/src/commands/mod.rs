@@ -36,6 +36,7 @@ pub mod dm_notify;
 pub mod dock;
 pub mod drift_detail;
 pub mod feedback;
+pub mod storage;
 pub mod first_push;
 pub mod setup_secret;
 pub mod first_run;
