@@ -1450,6 +1450,12 @@ export function createSyncPlatformAdapter(
         ),
       listAccessGroups: (companyUid) =>
         hqProJson('GET', `/secrets/${encodeURIComponent(companyUid)}/groups`),
+      listOutboundGroupGrants: (sourceCompanyUid, groupId) =>
+        hqProJson('GET', withQuery('/group-grants/outbound', { sourceCompanyUid, groupId })),
+      listInboundGroupGrants: (companyUid) =>
+        hqProJson('GET', withQuery('/group-grants/inbound', { companyUid })),
+      createGroupGrant: (input) => hqProJson('POST', '/group-grants', input),
+      revokeGroupGrant: (input) => hqProJson('POST', '/group-grants/revoke', input),
       atlasLocal: {
         firstPage: (companySlug) => call('atlas_local_first_page', { companySlug }),
         listing: (companySlug) => call('atlas_local_listing', { companySlug }),

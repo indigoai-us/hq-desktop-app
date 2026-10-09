@@ -7,24 +7,18 @@
    * Manage payment opens the Stripe portal. Delete group asks first.
    */
   import {
-    GRANT_FILTERS,
     emptySnapshot,
-    expiringGrantCount,
-    filterGrants,
-    grantFilterLabel,
-    grantLevelLabel,
     metadata,
     readSettingsCache,
     stripeDestination,
     writeSettingsCache,
-    type GrantFilter,
     type SettingsSnapshot,
     type SettingsTab,
   } from "./company-settings.js";
   import type { CompanyApi, FilesApi, MessagingApi } from "@hq/platform";
   import ReadLoader from "../common/ReadLoader.svelte";
-  import ShowMoreRow from "../shell/ShowMoreRow.svelte";
-  import { pageRows } from "../shell/list-paging.js";
+  import GroupGrantsPane from "./GroupGrantsPane.svelte";
+  import type { GrantTarget } from "./group-grants.js";
   import {
     DEFAULT_TOP_FOLDERS,
     WHOLE_COMPANY,
@@ -32,7 +26,6 @@
     cacheGroups,
     cachedGrants,
     cachedGroups,
-    grantSections,
     groupGrantSummaries,
     groupsFromBody,
     readCompanyGrants,
@@ -62,9 +55,11 @@
     role?: string | null;
     /** Vault reads for the live Groups and Grants panes. */
     files?: FilesApi | null;
+    /** The caller's other companies, for the Grants pane's target picker. */
+    targets?: GrantTarget[];
   }
 
-  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true, section = "general", role = null, files = null }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true, section = "general", role = null, files = null, targets = [] }: Props = $props();
 
   // OWNER-R24: one pane per panel row; Billing carries the plan (seats and
   // hosted agents, formerly "HQ Workforce") at its top.
@@ -72,7 +67,6 @@
   const showPlan = $derived(section === "billing");
   const canEdit = $derived(role === "Owner");
   let saved = $state("");
-  let grantFilter = $state<GrantFilter>("all");
   let selectedGroup = $state<string | null>(null);
   let snap = $state<SettingsSnapshot>(emptySnapshot("", ""));
   const dirty = $derived(saved !== "" && JSON.stringify({ g: snap.general, b: snap.brand }) !== saved);
@@ -138,7 +132,8 @@
   // when opened, paint the last good read first, and show loading and failed
   // states instead of a silent zero.
   type ReadState = "unavailable" | "loading" | "ready" | "failed";
-  const accessPane = $derived(tab === "groups" || tab === "grants");
+  // Grants has its own pane (GroupGrantsPane); this read feeds Groups only.
+  const accessPane = $derived(tab === "groups");
   const canRead = $derived(Boolean(companyUid && files?.listAccessGroups && files?.getAccessTree));
   let liveGroups = $state<CompanyGroup[]>([]);
   let groupsState = $state<ReadState>("loading");
@@ -147,7 +142,6 @@
   let grantsState = $state<ReadState>("loading");
   let grantsProgress = $state<{ done: number; total: number } | null>(null);
   let accessNonce = $state(0);
-  let openFolder = $state<string | null>(null);
 
   async function topFolders(): Promise<string[]> {
     if (!files || !slug) return [...DEFAULT_TOP_FOLDERS];
@@ -238,13 +232,8 @@
     if (!liveGroups.some((g) => g.id === selectedGroup)) selectedGroup = liveGroups[0]?.id ?? null;
   });
 
-  const visibleGrants = $derived(filterGrants(liveGrants, grantFilter));
-  const sections = $derived(grantSections(visibleGrants));
   const groupSummaries = $derived(groupGrantSummaries(liveGrants));
-  const unreadFolders = $derived(grantFolders.filter((f) => f.status !== "ok"));
   const group = $derived(liveGroups.find((g) => g.id === selectedGroup) ?? liveGroups[0] ?? null);
-  let rowPages = $state(1);
-  const openRows = $derived(pageRows(sections.find((s) => s.folder === openFolder)?.grants ?? [], rowPages));
   const folderLabel = (folder: string): string => (folder === WHOLE_COMPANY ? "Whole company" : `${folder}/`);
   const n = (value: number): string => value.toLocaleString();
 
@@ -371,85 +360,7 @@
         </div>
       {/if}
     {:else if tab === "grants"}
-      <div class="page-head">
-        <div>
-          <h2>Grants</h2>
-          <p class="sub" data-testid="grants-sub">
-            {#if grantsState === "ready"}
-              {n(liveGrants.length)} folder grants · {expiringGrantCount(liveGrants)} expire within 7 days
-            {:else if grantsState === "loading" && grantsProgress}
-              Reading grants · {grantsProgress.done} of {grantsProgress.total} folders
-            {:else}
-              Who can open which folders
-            {/if}
-          </p>
-        </div>
-      </div>
-      {#if grantsState === "loading"}
-        <ReadLoader testid="grants-loading" onretry={() => (accessNonce += 1)} />
-      {:else if grantsState === "failed"}
-        <p class="note" data-testid="grants-failed">Could not read this company's grants.</p>
-        <RailButton icon="refresh" type="button" data-testid="grants-retry" onclick={() => (accessNonce += 1)}>Try again</RailButton>
-      {:else if grantsState === "unavailable"}
-        <p class="note" data-testid="grants-unavailable">Grants are read from the company vault. This company is not in the cloud on this device.</p>
-      {:else}
-      <div class="seg" role="tablist" data-testid="grant-filters">
-        {#each GRANT_FILTERS as id (id)}
-          <button type="button" class="tab" role="tab" aria-selected={grantFilter === id} data-testid={`grant-filter-${id}`} onclick={() => (grantFilter = id)}>
-            {grantFilterLabel(id)}
-          </button>
-        {/each}
-      </div>
-      <div class="sec-hd"><span>Folder</span><span>People</span><span>Groups</span><span>Bots</span><span>Guests</span><span>Total</span></div>
-      {#each sections as s (s.folder)}
-        <button
-          type="button"
-          class="sec-row"
-          data-testid="grant-section"
-          data-folder={s.folder}
-          aria-expanded={openFolder === s.folder}
-          onclick={() => {
-            openFolder = openFolder === s.folder ? null : s.folder;
-            rowPages = 1;
-          }}
-        >
-          <span class="mono nm">{folderLabel(s.folder)}</span>
-          <span>{n(s.counts.person)}</span>
-          <span>{n(s.counts.group)}</span>
-          <span>{n(s.counts.agent)}</span>
-          <span>{n(s.counts.guest)}</span>
-          <span class="nm">{n(s.total)}</span>
-        </button>
-        {#if openFolder === s.folder}
-          <div class="rows" data-testid="grant-rows">
-            <div class="gt hd"><span>Who</span><span>Folder</span><span>Level</span><span>Expiry</span></div>
-            {#each openRows.rows as g (g.id)}
-              <div class="gt" data-testid="grant-row">
-                <span class="nm" title={g.detail}>{g.principal}</span>
-                <span class="mono">{g.path}</span>
-                <span>{grantLevelLabel(g.level)}</span>
-                <span class:soon={g.expiring}>{g.expiry}</span>
-              </div>
-            {/each}
-            {#if openRows.remaining > 0}
-              <ShowMoreRow shown={openRows.rows.length} total={openRows.total} next={openRows.next} noun="grants" testid="grant-rows-show-more" onmore={() => (rowPages += 1)} />
-            {/if}
-          </div>
-        {/if}
-      {:else}
-        <p class="note" data-testid="grants-filter-empty">
-          {grantFilter === "expiring" ? "No folder grants have an expiry date." : "No grants in this filter."}
-        </p>
-      {/each}
-      {#if unreadFolders.length}
-        <div class="unread" data-testid="grants-unread">
-          {#each unreadFolders as f (f.folder)}
-            <p class="note"><span class="mono">{folderLabel(f.folder)}</span> · {f.note}</p>
-          {/each}
-          <RailButton icon="refresh" type="button" data-testid="grants-retry-folders" onclick={() => (accessNonce += 1)}>Try again</RailButton>
-        </div>
-      {/if}
-      {/if}
+      <GroupGrantsPane {companyUid} {companyLabel} {targets} {files} />
     {:else}
       <div class="page-head">
         <div>
@@ -571,7 +482,7 @@
   .sw { cursor: pointer; }
   .sw.on { color: var(--t1); }
   .split { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; }
-  .line, .gt {
+  .line {
     display: grid;
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 80px 120px;
     gap: 8px;
@@ -584,29 +495,7 @@
     font-size: 13px;
     color: var(--t2);
   }
-  .gt.hd { color: var(--t3); }
-  .sec-hd, .sec-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1.6fr) repeat(5, 72px);
-    gap: 8px;
-    align-items: center;
-    min-height: 31px;
-    box-sizing: border-box;
-    padding: 7px 8px;
-    line-height: 17px;
-    border-bottom: 1px solid var(--line);
-    font-size: 13px;
-    color: var(--t2);
-    font-variant-numeric: tabular-nums;
-  }
-  .sec-hd { color: var(--t3); margin-top: 12px; }
-  .sec-row { width: 100%; font: inherit; font-size: 13px; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; }
-  .sec-row:hover { background: var(--hover); }
-  .sec-row[aria-expanded="true"] { background: var(--sel); }
-  .rows { padding-left: 12px; }
-  .unread { margin-top: 12px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   .nm { color: var(--t1); }
-  .soon { color: var(--t3); }
   .plan { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 520px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
   .plan span { display: block; color: var(--t3); font-size: 13px; }
   .up { display: flex; align-items: center; gap: 12px; margin-top: 18px; max-width: 720px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }

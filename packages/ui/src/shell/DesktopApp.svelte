@@ -12244,6 +12244,23 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  // Grants pane: the caller's other companies, grantable where they are an
+  // owner or admin (hq-pro enforces the same rule).
+  const grantsOpen = $derived(railPlaceholder?.id === "grants");
+  $effect(() => {
+    if (!grantsOpen) return;
+    for (const company of railCompanyRoster) {
+      loadCallerRole({ companyUid: company.uid, selfUid: self?.uid ?? null, selfEmail: self?.email ?? null, company: adapter.company ?? null });
+    }
+  });
+  const grantTargets = $derived(
+    grantsOpen
+      ? railCompanyRoster.map((company) => {
+          const role = callerRole(company.uid);
+          return { uid: company.uid, label: company.label, eligible: role === "Owner" || role === "Admin" };
+        })
+      : [],
+  );
   $effect(() => {
     const uid = companyPaneCompany?.uid;
     if (!uid) return;
@@ -13724,6 +13741,7 @@
             messaging={adapter.messaging ?? null}
             seatLimit={railGate(RAIL_WORKFORCE_LIMITS_FLAG)}
             files={adapter.files ?? null}
+            targets={grantTargets}
           />
         {:else if railPlaceholder?.id === "bots" && companyPaneCompany}
           <BotsPage
