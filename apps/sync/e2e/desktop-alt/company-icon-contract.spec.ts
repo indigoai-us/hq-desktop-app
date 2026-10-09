@@ -173,7 +173,9 @@ describe('company icon — surfaces', () => {
   it('sizes the mark 16px in the rail and larger in headers/switcher/cmd-K', () => {
     expect(sidebar).toContain('size={16}');
     expect(sidebar).toContain('size={24}');
-    expect(shell).toContain('size={22}');
+    // The channel header's mark is sized to the `#` beside other channels'
+    // names and centred on the line (owner design fix, PR #1508).
+    expect(shell).toContain('<CompanyIcon iconUrl={selectedCompanyIcon} size={17} />');
     expect(ui('src/common/CommandPalette.svelte')).toContain('size={20}');
   });
 });
