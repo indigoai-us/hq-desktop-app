@@ -4,7 +4,7 @@
 import type { Workspace } from '../../src/lib/workspaces';
 import { personaHasLocalHq, resolveHarnessPersona, type ShellPersona } from '../personas';
 import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../state-flags';
-import { readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
+import { conflictNoticesSwitch, readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
@@ -2021,6 +2021,10 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   const search = typeof window === 'undefined' ? null : window.location.search;
   if (cmd === 'hq_pro_fetch' && typeof window !== 'undefined') {
     ((window as Window & { __hqFetchUrls?: string[] }).__hqFetchUrls ??= []).push(String(args?.url ?? ''));
+  }
+  if (cmd === 'get_pending_conflict_notices') {
+    const conflicts = conflictNoticesSwitch(search);
+    if (conflicts) return conflicts as T;
   }
   const switched = switchedHandler(cmd, args, search);
   if (switched) return switched.value as T;
