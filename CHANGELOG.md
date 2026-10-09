@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-10-09
+
 - Update now appears on every Updates row that has an update available, including the CLI.
 
 ## [0.11.1] — 2026-10-09
