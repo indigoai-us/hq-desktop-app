@@ -14,6 +14,7 @@
 import type { PresenceSnapshot } from "@hq/core";
 import type { SidepaneRosterEntry } from "./sidepane-models.js";
 import type { NavigationDestination } from "./navigation-history.js";
+import { companyProjectsDestination } from "./company-pane.js";
 import { agentAvatarFor, authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
 
 /**
@@ -223,17 +224,25 @@ export interface AtlasActionNode {
  * Where the Atlas inspector's Open files / Open board buttons go (QA-066).
  * Open files shows a file, not a tree (owner, 2026-10-04): a file opens in
  * the Files explorer, and a folder opens on its main file (README, PRD, SKILL
- * and so on) there. A project with no such file falls back to the Projects
- * page Files tab, and any other folder to the company vault. Open board goes
- * to the project's Tasks tab. Null when there is no company.
+ * and so on) there. A project with no such file falls back to its Files tab
+ * on the company Projects page, and any other folder to the company vault.
+ * Open board goes to the project's Tasks tab on the company Projects page.
+ *
+ * Project destinations stay in the company: they open the company pane's
+ * Projects row (`companyProjectsDestination`), keyed by the company's
+ * membership uid when known, else its slug. The cross-company `projects`
+ * view closed the company pane and showed Home's chat list instead.
+ * Null when there is no company.
  */
 export function atlasNodeDestination(
   node: AtlasActionNode,
   companySlug: string | null | undefined,
   action: "files" | "board",
+  companyUid?: string | null,
 ): NavigationDestination | null {
   const slug = companySlug?.trim();
   if (!slug) return null;
+  const companyKey = companyUid?.trim() || slug;
   const path = node.path.replace(/^\/+|\/+$/g, "");
   const project = node.type === "project" ? /^projects\/([^/]+)/.exec(path)?.[1] : undefined;
   const vault = `company:${slug}`;
@@ -242,9 +251,9 @@ export function atlasNodeDestination(
     return { kind: "explorer", vault, path: `companies/${slug}/${file}` };
   }
   if (project) {
-    return { kind: "projects", company: slug, project, tab: action === "files" ? "files" : "tasks" };
+    return companyProjectsDestination(companyKey, project, action === "files" ? "files" : "tasks");
   }
-  if (action === "board") return { kind: "projects", company: slug };
+  if (action === "board") return companyProjectsDestination(companyKey);
   if (node.folder || !path) return { kind: "explorer", vault, path: null };
   return { kind: "explorer", vault, path: `companies/${slug}/${path}` };
 }
