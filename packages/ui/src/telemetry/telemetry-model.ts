@@ -123,6 +123,11 @@ export interface TelemetrySnapshot {
   rangeLabel: string;
   /** ISO date (YYYY-MM-DD) of the last day in `days`. */
   endDate?: string;
+  /**
+   * IANA zone hq-pro cut the days in (`bucketTz` on the response). Absent from
+   * older servers, which always cut days at midnight UTC.
+   */
+  bucketTz?: string;
   subtitle: string;
   sessions: number;
   sessionsDelta: string;
@@ -312,6 +317,15 @@ export const DAY_ZONE_LABEL = "UTC";
 /** The user's time zone, from the system. */
 export function localTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/**
+ * Zone label for the chart title: empty when the server cut the days in the
+ * user's own zone, otherwise "UTC" (an older server, or one that could not
+ * honour the requested zone, reports UTC or nothing).
+ */
+export function dayZoneLabel(bucketTz: string | undefined, timeZone: string = localTimeZone()): string {
+  return bucketTz && bucketTz === timeZone ? "" : DAY_ZONE_LABEL;
 }
 
 /** YYYY-MM-DD of `now` in `timeZone` (the user's local date by default). */

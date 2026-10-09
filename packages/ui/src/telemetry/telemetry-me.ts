@@ -25,7 +25,7 @@ import { exactModels } from "./telemetry-models.js";
 import { modelFamilyOf } from "./telemetry-colors.js";
 
 export interface MyTelemetryApi {
-  getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
+  getMyTelemetry?(from: string, to: string, tz?: string): AdapterPromise<Json>;
 }
 
 /**
@@ -324,6 +324,7 @@ export function snapshotFromMe(
       other: Math.max(0, 100 - deployedShare - shippedShare),
     },
     exactModels: exactModels(totals.tokensByModel),
+    ...(typeof root.bucketTz === "string" && root.bucketTz ? { bucketTz: root.bucketTz } : {}),
     notice: "",
     sessionsAvailable: false,
     optedOut: root.optedOut === true,
@@ -347,7 +348,7 @@ export function createMyTelemetryFetcher(api: MyTelemetryApi | null | undefined,
       throw new TelemetryLoadError(telemetryErrorReason("unavailable", ""), "getMyTelemetry missing");
     }
     const window = rangeWindow(range, now());
-    const res = await api.getMyTelemetry(window.from, window.to);
+    const res = await api.getMyTelemetry(window.from, window.to, localTimeZone());
     if (!res.ok) {
       throw new TelemetryLoadError(
         telemetryErrorReason(res.code, res.message),
