@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Project board cards have more room and a clearer order: the title first, then the description, then repos and branch on one quiet line that never wraps, then progress. The extra green dots are gone, and teammates' initials no longer overlap. In the task drawer, section names are quieter than their content, done tasks show a check and muted text, open tasks show an empty ring, the branch sits on one line with a Copy button, and acceptance items have more space between them. The company switcher's search field has room around it and no stacked outlines, and the scrollbar no longer crowds the list.
+- Project board cards have more room and a clearer order: the title first, then the description, then repos and branch on one quiet line that never wraps, then progress. Board column headers no longer sit on a shaded band. The extra green dots are gone, and teammates' initials no longer overlap. In the task drawer, section names are quieter than their content, done tasks show a check and muted text, open tasks show an empty ring, the branch sits on one line with a Copy button, and acceptance items have more space between them. The company switcher's search field has room around it and no stacked outlines, and the scrollbar no longer crowds the list.
 
 ## [0.11.0] — 2026-10-08
 

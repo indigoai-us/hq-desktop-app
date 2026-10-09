@@ -1,6 +1,7 @@
 <script lang="ts">
   import ProjectRow from '../../../packages/ui/src/projects/ProjectRow.svelte';
   import TaskViewPane from '../../../packages/ui/src/projects/TaskViewPane.svelte';
+  import StoryKanban from '../../../packages/ui/src/projects/StoryKanban.svelte';
   import MoreCompaniesPopover from '../../../packages/ui/src/shell/MoreCompaniesPopover.svelte';
   import type { Project, Story } from '../../../packages/ui/src/projects/projects-model';
 
@@ -79,6 +80,10 @@
   {/if}
 </div>
 
+<div class="kanban-stage">
+  <StoryKanban stories={stories} showToolbar={false} {now} />
+</div>
+
 <MoreCompaniesPopover
   companies={[
     { uid: 'a', name: 'Indigo', slug: 'indigo', liveCount: 2 },
@@ -100,6 +105,12 @@
     display: flex;
     gap: 24px;
     height: 760px;
+    padding: 24px;
+    background: var(--v4-window, var(--v4-secondary-sidebar));
+    color: var(--v4-text-1);
+    font-family: var(--font-ui);
+  }
+  .kanban-stage {
     padding: 24px;
     background: var(--v4-window, var(--v4-secondary-sidebar));
     color: var(--v4-text-1);
