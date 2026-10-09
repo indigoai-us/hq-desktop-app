@@ -23,6 +23,8 @@ import { parseRecordedMeetings, signalBodyText } from "../meetings/recorded-meet
 import { localSessionsFromNative } from "../telemetry/telemetry-local-sessions.js";
 import { briefSeed } from "./brief-seed.js";
 import { parseSweep, sweepToInput } from "./brief-sweep.js";
+import { parseBriefItems, parseHousekeeping, type BriefHousekeeping } from "./brief-run-files.js";
+import { briefRunPath } from "./brief-runs.js";
 import type {
   BriefActionItem,
   BriefCalendarEvent,
@@ -63,9 +65,13 @@ export interface BriefSweepSource {
   readHqFile(relPath: string): Promise<string | null>;
 }
 
-/** Where the morning sweep writes its output, relative to the HQ root. */
-export function sweepPath(now: Date): string {
-  return `workspace/brief/${localDay(now)}/brief-data.json`;
+/**
+ * Where a sweep's output lives, relative to the HQ root. A run reads its own
+ * folder (`workspace/brief/<run_id>/`); with no run, the older per-day folder
+ * is still read so a brief made before runs existed keeps rendering.
+ */
+export function sweepPath(now: Date, runId?: string | null): string {
+  return runId ? briefRunPath(runId, "brief-data.json") : `workspace/brief/${localDay(now)}/brief-data.json`;
 }
 
 /** A sweep source over the adapter's HQ file read, when the host has one. */
@@ -74,7 +80,11 @@ export function adapterSweepSource(files: { getFileContent?(path: string): Adapt
   return {
     async readHqFile(relPath) {
       const res = await files.getFileContent!(relPath);
-      return res.ok ? res.value : null;
+      if (res.ok) return res.value;
+      // Absent is normal (no run yet); anything else is worth a log line.
+      const why = res.message ?? res.reason;
+      if (!/not found/i.test(why)) console.warn(`[daily-brief] could not read ${relPath}: ${why}`);
+      return null;
     },
   };
 }
@@ -93,6 +103,11 @@ export interface GatherOptions {
   sweep?: BriefSweepSource | null;
   /** Company the sweep's work belongs to; defaults to the first company. */
   sweepCompanyUid?: string | null;
+  /**
+   * The run to render. Its brief-data.json replaces the per-day sweep, and
+   * its brief.json supplies decisions, waits and incidents with their prompts.
+   */
+  runId?: string | null;
   log?: (message: string, err?: unknown) => void;
 }
 
@@ -287,7 +302,54 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
   };
   const sweep = opts.sweep === undefined ? adapterSweepSource(adapter.files) : opts.sweep;
   if (sweep) await mergeSweep(input, sweep, opts, now, yesterday, fail);
+  if (sweep && opts.runId) await mergeRunItems(input, sweep, opts, fail);
   return { input, failures };
+}
+
+/** The synthesized items win over the adapter's raw ones: they carry the run's prompts. */
+async function mergeRunItems(
+  input: BriefInput,
+  source: BriefSweepSource,
+  opts: GatherOptions,
+  fail: (name: string, err: unknown) => void,
+): Promise<void> {
+  let text: string | null;
+  try {
+    text = await source.readHqFile(briefRunPath(opts.runId!, "brief.json"));
+  } catch (err) {
+    fail("brief.json", err);
+    return;
+  }
+  if (text == null) {
+    fail("brief.json", new SourceError("brief.json: not written"));
+    return;
+  }
+  const items = parseBriefItems(text, opts.sweepCompanyUid ?? opts.companies[0]?.uid ?? null);
+  if (!items) {
+    fail("brief.json", new SourceError("brief.json: not valid JSON"));
+    return;
+  }
+  if (items.decisions.length) input.decisions = items.decisions;
+  if (items.waiting.length) input.waitingOn = items.waiting;
+  input.risks = [...items.incidents, ...input.risks];
+}
+
+/** A run's housekeeping.json, or null when it is absent or unreadable (logged). */
+export async function readRunHousekeeping(
+  source: BriefSweepSource,
+  runId: string,
+  log: (message: string, err?: unknown) => void = (m, e) => console.warn(`[daily-brief] ${m}`, e ?? ""),
+): Promise<BriefHousekeeping | null> {
+  try {
+    const text = await source.readHqFile(briefRunPath(runId, "housekeeping.json"));
+    if (text == null) return null;
+    const parsed = parseHousekeeping(text);
+    if (!parsed) log("housekeeping.json is not valid JSON");
+    return parsed;
+  } catch (err) {
+    log("housekeeping.json failed", err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 /**
@@ -305,12 +367,15 @@ async function mergeSweep(
 ): Promise<void> {
   let text: string | null;
   try {
-    text = await source.readHqFile(sweepPath(now));
+    text = await source.readHqFile(sweepPath(now, opts.runId));
   } catch (err) {
     fail("sweep", err);
     return;
   }
-  if (text == null) return;
+  if (text == null) {
+    if (opts.runId) fail("brief-data.json", new SourceError("brief-data.json: not written"));
+    return;
+  }
   const sweep = parseSweep(text);
   if (!sweep) {
     fail("sweep", new SourceError("sweep: brief-data.json is not valid JSON"));

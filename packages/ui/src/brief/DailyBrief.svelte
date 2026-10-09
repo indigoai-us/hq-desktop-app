@@ -24,6 +24,9 @@
   import BriefTeam from "./BriefTeam.svelte";
   import BriefTodayStrip from "./BriefTodayStrip.svelte";
   import BriefWaiting from "./BriefWaiting.svelte";
+  import BriefHousekeeping from "./BriefHousekeeping.svelte";
+  import type { Snippet } from "svelte";
+  import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
   import {
     BriefState,
     launchBriefPromptViaClipboard,
@@ -39,8 +42,12 @@
     companies?: readonly BriefCompanyLogo[];
     /** Opens a session with the prompt pre-filled. Defaults to copying it. */
     onlaunch?: BriefLaunch;
+    /** Run controls (Create brief, history) shown in the header. */
+    header?: Snippet;
+    /** The shown run's housekeeping.json, when it has one. */
+    housekeeping?: BriefHousekeepingData | null;
   }
-  let { input, companies = [], onlaunch }: Props = $props();
+  let { input, companies = [], onlaunch, header, housekeeping = null }: Props = $props();
 
   const state = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
@@ -100,6 +107,7 @@
       {#each plan.provenance as p (p.label)}<span><b>{p.n}</b> {p.label}</span>{/each}
     </div>
   </header>
+  {#if header}<div class="b-runs">{@render header()}</div>{/if}
 
   <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} />
 
@@ -145,10 +153,15 @@
     {/each}
   </main>
 
+  {#if housekeeping}<BriefHousekeeping {housekeeping} />{/if}
+
   <BriefPeek />
 </div>
 
 <style>
+  .b-runs {
+    margin: -6px 0 14px;
+  }
   .slot {
     display: flex;
     min-width: 0;

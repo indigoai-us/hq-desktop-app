@@ -64,6 +64,8 @@ export interface BriefDecision {
   origin: BriefOrigin;
   /** The generator shows `why` on the card itself only when this is set. */
   important?: boolean;
+  /** Launch prompt written by the brief run; replaces the built-in one. */
+  prompt?: string;
   detail?: {
     why: string;
     unlocks: BriefLine[];
@@ -90,6 +92,8 @@ export interface BriefRisk {
   /** Fix PRs or links in flight. */
   links: { label: string; origin: BriefOrigin }[];
   origin: BriefOrigin;
+  /** Launch prompt written by the brief run; replaces the built-in one. */
+  prompt?: string;
 }
 
 export interface BriefShipped {
@@ -107,6 +111,8 @@ export interface BriefWaiting {
   sample?: boolean;
   who: string;
   what: string;
+  /** Launch prompt written by the brief run; replaces the built-in one. */
+  prompt?: string;
 }
 
 export interface BriefTeammate {

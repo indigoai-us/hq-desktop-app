@@ -65,6 +65,8 @@
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
+  import { checkBriefBot } from "../brief/brief-runs.js";
+  import type { BriefCreator } from "../brief/brief-create.svelte.js";
   import {
     RAIL_ATLAS_FLAG,
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
@@ -4965,6 +4967,50 @@
     const error = await actions.launchGrok();
     return error ?? (copied ? "Prompt copied. Paste it into Grok." : null);
   }
+  /**
+   * Create brief: the daily-brief job runs on the main local bot (the setup
+   * bot, else the first personal bot). The job goes to the bot as an
+   * agent-only DM (no notification, hidden from the conversation), keyed by
+   * the run id so a repeated send reaches the bot once.
+   */
+  const briefCreator: BriefCreator | null = adapter.bots
+    ? {
+        company: () => railCompanyRoster.find((c) => c.uid === tenantCompanyId)?.slug ?? null,
+        async check() {
+          await refreshLocalBots();
+          await loadLocalBotRuntimeReady(true);
+          return checkBriefBot(localBots, localBotRuntimeReady);
+        },
+        async dispatch(bot, body, idempotencyKey) {
+          const res = await adapter.messaging.sendDm(bot.agentUid, body, { audience: "agent", idempotencyKey });
+          if (res.ok) return null;
+          console.warn("[daily-brief] job send failed", res.reason, res.code ?? "", res.message ?? "");
+          return `Could not send the brief job to ${bot.displayName?.trim() || bot.name}. Try again in a moment.`;
+        },
+        async fix(fix, bot) {
+          if (fix === "create-bot") {
+            const started = await runSetupBotStart();
+            return started.ok ? null : started.reason;
+          }
+          if (!bot) return null;
+          if (fix === "start-bot") {
+            const started = await startBotByName(bot.name, bot.agentUid);
+            return started.ok ? null : started.reason;
+          }
+          // Sign-in and model setup live in the bot's conversation.
+          openSetupBotDm({ agentUid: bot.agentUid, name: bot.name });
+          return null;
+        },
+        notify(title, body) {
+          pushToast({ title, detail: body, tone: "ok" });
+          void adapter.appShell
+            .showOsNotification({ title, body, route: "brief" })
+            .then((res) => {
+              if (!res.ok) console.warn("[daily-brief] OS notification not shown", res.reason);
+            });
+        },
+      }
+    : null;
   /** The finish buttons: open the HQ folder in a coding tool with `/startwork` ready to go. */
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
     setupLaunchError = null;
@@ -13867,6 +13913,7 @@
             {adapter}
             companies={railCompanyRoster.map((company) => ({ uid: company.uid, slug: company.slug, label: company.label, iconUrl: company.iconUrl }))}
             onlaunch={launchBriefPrompt}
+            creator={briefCreator}
           />
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}

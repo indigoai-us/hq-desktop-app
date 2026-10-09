@@ -67,9 +67,9 @@ export function actionItemPrompt(a: BriefActionItem): string {
 /** Prompt per actionable item id, for every item the brief can act on. */
 export function briefPrompts(input: BriefInput): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const d of input.decisions) out[d.id] = decisionPrompt(d);
-  for (const r of input.risks) out[r.id] = r.severity === "incident" ? incidentPrompt(r) : riskPrompt(r);
-  for (const w of input.waitingOn) out[w.id] = waitingPrompt(w);
+  for (const d of input.decisions) out[d.id] = d.prompt || decisionPrompt(d);
+  for (const r of input.risks) out[r.id] = r.prompt || (r.severity === "incident" ? incidentPrompt(r) : riskPrompt(r));
+  for (const w of input.waitingOn) out[w.id] = w.prompt || waitingPrompt(w);
   for (const a of input.actionItems) out[a.id] = actionItemPrompt(a);
   return out;
 }
