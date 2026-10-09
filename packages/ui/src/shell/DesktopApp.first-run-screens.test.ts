@@ -281,7 +281,8 @@ describe("visual first run with Your team, Note taker and Project management", (
     next().click();
     await settle();
     expect(step()).toBe("done");
-    expect(q('[data-testid="first-run-summary-team"]')?.textContent).toBe("Joined Acme Robotics");
+    expect(q('[data-testid="first-run-summary-team"]')?.textContent).toMatch(/^Joined /);
+    expect(q('[data-testid="first-run-summary-team"] .company-label-name')?.textContent).toBe("Acme Robotics");
     expect(q('[data-testid="first-run-summary-notes"]')?.textContent?.trim()).toBe("Granola, connected");
     expect(q('[data-testid="first-run-summary-projects"]')?.textContent?.trim()).toBe("Skipped");
     expect(sendDm).not.toHaveBeenCalled();
@@ -321,6 +322,58 @@ describe("visual first run with Your team, Note taker and Project management", (
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     expect(sendDm).not.toHaveBeenCalled();
     expect(claim).not.toHaveBeenCalled();
+  });
+});
+
+describe("settled parts reach the assistant whatever the order", () => {
+  it("team settled before the create rides in the kickoff; apps settled after go in the closing note", async () => {
+    // The first create fails (it runs at the name step, before Your team);
+    // Retry runs it after the team is settled, as a create that waited for a
+    // coding tool would.
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false as const, reason: "unavailable" as const, message: "Claude Code is not signed in." })
+      .mockResolvedValue(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const claim = vi.fn(async () => ok({ ok: true, claimedSlugs: ["acme"], message: "Joined" }));
+    const integrations = integrationsApi();
+    const { platform, sendDm } = adapter({ create: create as never, flag: true, claim, integrations });
+    await boot(platform, ROSTER);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Biscuit");
+    pressEnter();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    await settle();
+    expect(step()).toBe("team");
+    q<HTMLButtonElement>('[data-testid="first-run-team-invite:acme"]')!.click();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await vi.waitFor(() => expect(step()).toBe("tools"));
+    await vi.waitFor(() => expect(q('[data-testid="first-run-retry"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-retry"]')!.click();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    const input = (create.mock.calls as unknown as Array<[{ kickoff: string }]>)[1]![0];
+    expect(input.kickoff).toContain('"team":{"kind":"company","how":"joined","name":"Acme Robotics","slug":"acme"}');
+    expect(input.kickoff).not.toContain('"apps"');
+    await vi.waitFor(() => expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("ready"));
+
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await vi.waitFor(() => expect(step()).toBe("notes"));
+    await vi.waitFor(() => expect(q('[data-testid="first-run-connect-granola.ai"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-connect-granola.ai"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-notes-connected"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await vi.waitFor(() => expect(step()).toBe("projects"));
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await vi.waitFor(() => expect(step()).toBe("done"));
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const body = (sendDm.mock.calls[0] as unknown as [string, string])[1];
+    // Only what the kickoff did not carry: the two app screens.
+    expect(body).toBe(
+      firstRunSettledNotice({ team: null, apps: { notes: { name: "Granola", domain: "granola.ai" }, projects: null } }),
+    );
+    expect(JSON.parse(body.match(/Handoff from the app: (\{.*?\})\. /)![1]!).done).toEqual(["noteTaker", "projectManagement"]);
   });
 });
 

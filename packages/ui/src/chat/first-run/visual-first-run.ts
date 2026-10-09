@@ -411,13 +411,24 @@ function settledSentence(handoff: Pick<FirstRunHandoff, "team" | "apps">): strin
     out +=
       team.kind === "personal"
         ? "I chose to work alone for now, so the company question is settled: do not ask me to join or start a company. "
-        : `The company question is settled (${team.how === "created" ? "I started" : team.how === "joined" ? "I joined" : "I work in"} ${team.name}): do not ask it again. `;
+        : // The company's name stays inside the JSON: an inviter chose it, so
+          // it is data for the bot, never words it reads as an instruction.
+          `The company question is settled (${team.how === "created" ? "I started a company" : team.how === "joined" ? "I joined a company" : "I work in a company"}, named in "team" in the handoff): do not ask it again. `;
   }
   const apps = handoff.apps ? firstRunAppsJson(handoff.apps) : null;
   if (apps && Object.keys(apps).length) {
     out += "The note taker and project management choices are in the handoff: do not ask about them again. ";
   }
   return out;
+}
+
+/**
+ * The assistant's name in prose only when it passes the display-name rule
+ * (letters, spaces, apostrophes, periods, hyphens); anything else is named
+ * by its place in the JSON.
+ */
+function proseName(name: string, before: string, after: string, otherwise: string): string {
+  return name && !assistantNameIssue(name) ? `${before}${name}${after}` : otherwise;
 }
 
 /** The words the kickoff and the notices add about the import, when it ran. */
@@ -485,7 +496,7 @@ function buildKickoff(handoff: FirstRunHandoff, opts: { noun?: string }): string
     "and your hello already went out, so do not greet again or repeat the plan. " +
     `Handoff from the app: ${firstRunHandoffNote(handoff)}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
-    `I chose your name, ${name}, so keep it. ` +
+    `${proseName(name, "I chose your name, ", ", so keep it. ", "I chose your name (\"name\" in the handoff), so keep it. ")}` +
     `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. ` +
     importSentence(handoff.imported) +
     settledSentence(handoff) +
@@ -515,7 +526,7 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
     "Setup note from the HQ desktop app: I just went through the app's visual setup, which finished some setup steps for you. " +
     `Handoff from the app: ${firstRunHandoffNote(handoff)}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
-    `I named you ${name}, so use that name. ` +
+    `${proseName(name, "I named you ", ", so use that name. ", "I named you (\"name\" in the handoff), so use that name. ")}` +
     `The coding tool sign-in is finished: signed in on this ${noun}: ${tools}. Do not ask me to pick or sign in to a coding tool. ` +
     importSentence(handoff.imported) +
     settledSentence(handoff) +
@@ -545,6 +556,40 @@ export function firstRunImportNotice(imported: FirstRunImportHandoff): string {
     "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
   // eslint-disable-next-line no-control-regex
   return notice.replace(/[\u0000-\u001f\u007f]/g, " ");
+}
+
+/** The parts of the later screens that are delivered to the bot one by one. */
+export type FirstRunSettledPart = "team" | "notes" | "projects";
+/** What the bot already has of each part: the part's JSON when it was sent. */
+export type FirstRunSettledSent = Partial<Record<FirstRunSettledPart, string>>;
+
+/** Each settled part's JSON, for the parts present. */
+export function firstRunSettledParts(settled: Pick<FirstRunHandoff, "team" | "apps">): FirstRunSettledSent {
+  const out: FirstRunSettledSent = {};
+  const team = settled.team ? firstRunTeamJson(settled.team) : null;
+  if (team) out.team = JSON.stringify(team);
+  const apps = settled.apps ? firstRunAppsJson(settled.apps) : {};
+  if (apps.notes !== undefined) out.notes = JSON.stringify(apps.notes);
+  if (apps.projects !== undefined) out.projects = JSON.stringify(apps.projects);
+  return out;
+}
+
+/**
+ * The parts the bot does not have yet (or has with another value): what a
+ * settled notice still needs to carry after the kickoff or an earlier note.
+ */
+export function firstRunSettledSince(
+  settled: Pick<FirstRunHandoff, "team" | "apps">,
+  sent: FirstRunSettledSent,
+): Pick<FirstRunHandoff, "team" | "apps"> {
+  const now = firstRunSettledParts(settled);
+  const apps: FirstRunAppsHandoff = {};
+  if (now.notes !== undefined && now.notes !== sent.notes) apps.notes = settled.apps?.notes ?? null;
+  if (now.projects !== undefined && now.projects !== sent.projects) apps.projects = settled.apps?.projects ?? null;
+  return {
+    team: now.team !== undefined && now.team !== sent.team ? (settled.team ?? null) : null,
+    apps,
+  };
 }
 
 /**

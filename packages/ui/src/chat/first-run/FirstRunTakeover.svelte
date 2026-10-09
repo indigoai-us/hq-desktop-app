@@ -77,6 +77,7 @@
     type FirstRunStepId,
   } from "./visual-first-run.js";
   import FirstRunTeamStep from "./FirstRunTeamStep.svelte";
+  import CompanyLabel from "../../company/CompanyLabel.svelte";
   import FirstRunAppStep from "./FirstRunAppStep.svelte";
   import {
     TEAM_COPY,
@@ -87,6 +88,7 @@
     teamHandoff,
     teamPickKey,
     teamSummary,
+    teamVerb,
     type FirstRunTeamChoice,
     type FirstRunTeamCompany,
     type FirstRunTeamOptions,
@@ -203,6 +205,10 @@
   const teamRunner = createTeamActionRunner((next) => {
     teamAction = next;
     if (next.state === "done") {
+      if (next.choice.kind === "company" && next.choice.how === "created") {
+        createdChoice = next.choice;
+        companyName = next.choice.company.name;
+      }
       settleTeam(next.choice);
       // The press that started it moves on once it is done.
       if (step === "team") goTo(nextFirstRunStep("team", shownSteps));
@@ -241,22 +247,55 @@
     ),
   );
 
+  /**
+   * The app a screen has connected: the one connected here, else the first of
+   * its apps the company already had (the screen shows it as Connected).
+   */
+  function connectedAppOf(kind: FirstRunAppKind): FirstRunApp | null {
+    const state = appConnect[kind];
+    if (state.state === "connected") return state.app;
+    const catalog = appCatalog[kind];
+    if (!catalog || catalog.state !== "loaded" || !catalog.ok) return null;
+    const already = new Set(catalog.connected);
+    return catalog.apps.find((app) => already.has(app.domain)) ?? null;
+  }
+
   function settled(): FirstRunSettled {
     const apps: FirstRunAppsHandoff = {};
     for (const kind of ["notes", "projects"] as const) {
       if (!appsPassed[kind]) continue;
-      const state = appConnect[kind];
-      apps[kind] = state.state === "connected" ? { name: state.app.name, domain: state.app.domain } : null;
+      const app = connectedAppOf(kind);
+      // A connect still running is not settled either way: left out until it answers.
+      if (!app && appConnect[kind].state === "connecting") continue;
+      apps[kind] = app ? { name: app.name, domain: app.domain } : null;
     }
     return { team: teamChoice ? teamHandoff(teamChoice) : null, apps };
   }
   function report(): void {
     onsettled?.(settled());
   }
-  function settleTeam(choice: FirstRunTeamChoice): void {
+  function companyUidOf(choice: FirstRunTeamChoice | null): string | null {
+    return choice?.kind === "company" ? choice.company.companyUid : null;
+  }
+  /**
+   * Take a team choice. When it moves the company the apps connect to, the
+   * app screens start over first, so nothing reported belongs to the old one.
+   */
+  function applyTeam(choice: FirstRunTeamChoice): void {
     teamChoice = choice;
+    const uid = appsHost ? companyUidOf(choice) : null;
+    if (uid !== appsCompanyUid) resetApps(uid);
+  }
+  function settleTeam(choice: FirstRunTeamChoice): void {
+    applyTeam(choice);
     report();
   }
+  /** The company Join or Start is working on, for the held Next button. */
+  let teamPending = $state<{ verb: string; name: string; companyUid: string | null } | null>(null);
+  /** The company a successful "Start a company" made: Next keeps it, never makes a second. */
+  let createdChoice = $state<FirstRunTeamChoice | null>(null);
+  /** Calls off an app connect still waiting when the takeover goes away. */
+  const appsAbort = new AbortController();
 
   function runnerFor(kind: FirstRunAppKind): AppConnectRunner | null {
     const company = appsCompany;
@@ -266,7 +305,7 @@
     let runner = appRunners.get(key);
     if (!runner) {
       runner = createAppConnectRunner(
-        (app) => host.connect(company.uid, app),
+        (app) => host.connect(company.uid, app, appsAbort.signal),
         (state) => {
           // A company changed meanwhile: this answer is not the screen's any more.
           if (appsCompany?.uid !== company.uid) return;
@@ -298,19 +337,22 @@
       });
   }
 
-  // The company the apps connect to changed: the screens start over.
+  function resetApps(uid: string | null): void {
+    appsCompanyUid = uid;
+    appCatalog = { notes: null, projects: null };
+    appConnect = { notes: { state: "idle" }, projects: { state: "idle" } };
+    appsPassed = { notes: false, projects: false };
+    for (const kind of ["notes", "projects"] as const) {
+      const runner = uid ? appRunners.get(`${kind}:${uid}`) : null;
+      if (runner) appConnect[kind] = runner.current();
+    }
+  }
+  // The company the apps connect to changed (the default moved with the
+  // roster): the screens start over.
   $effect(() => {
     const uid = appsCompany?.uid ?? null;
     untrack(() => {
-      if (uid === appsCompanyUid) return;
-      appsCompanyUid = uid;
-      appCatalog = { notes: null, projects: null };
-      appConnect = { notes: { state: "idle" }, projects: { state: "idle" } };
-      appsPassed = { notes: false, projects: false };
-      for (const kind of ["notes", "projects"] as const) {
-        const runner = uid ? appRunners.get(`${kind}:${uid}`) : null;
-        if (runner) appConnect[kind] = runner.current();
-      }
+      if (uid !== appsCompanyUid) resetApps(uid);
     });
   });
   // An app screen opens: its list loads the first time.
@@ -398,6 +440,7 @@
     if (untrack(() => importHost)) firstRunImportDoor.preload();
   });
   onDestroy(() => {
+    appsAbort.abort();
     importRunner.dispose();
     importClock?.dispose();
   });
@@ -430,7 +473,7 @@
     for (let i = Math.max(0, from); i < to; i += 1) {
       const id = shownSteps[i]?.id;
       if (id === "team" && !teamChoice && canTeam) {
-        teamChoice = defaultTeamChoice(teamOpts);
+        applyTeam(defaultTeamChoice(teamOpts));
         changed = true;
       }
       if ((id === "notes" || id === "projects") && i === from && !appsPassed[id]) {
@@ -451,6 +494,11 @@
       goTo(nextFirstRunStep("team", shownSteps));
       return;
     }
+    if (pick.kind === "create" && createdChoice) {
+      settleTeam(createdChoice);
+      goTo(nextFirstRunStep("team", shownSteps));
+      return;
+    }
     if (pick.kind === "personal") {
       settleTeam({ kind: "personal" });
       goTo(nextFirstRunStep("team", shownSteps));
@@ -463,13 +511,15 @@
     }
     const host = teamHost;
     if (pick.kind === "invite") {
+      teamPending = { verb: "Joining ", name: pick.company.name, companyUid: pick.company.companyUid ?? pick.company.slug };
       teamRunner.run(key, `Joining ${pick.company.name}…`, () => host.join(pick.company));
       return;
     }
     companyNameTried = true;
     if (companyNameIssue(companyName)) return;
     const typed = companyName.split(/\s+/).filter(Boolean).join(" ");
-    teamRunner.run(`${key}:${typed}`, `Starting ${typed}…`, () => host.create(typed));
+    teamPending = { verb: "Starting ", name: typed, companyUid: null };
+    teamRunner.run(key, `Starting ${typed}…`, () => host.create(typed));
   }
 
   /** The person chose a card: the roster arriving later no longer moves the pick. */
@@ -717,6 +767,7 @@
                 oncompanyname={(next) => (companyName = next)}
                 nameIssue={companyIssue}
                 busy={teamAction.state === "running"}
+                nameLocked={!!createdChoice}
                 onsubmit={teamNext}
               />
             {:else if appKind && appCopy}
@@ -766,7 +817,13 @@
                     <span class="first-run-summary-dot ready" aria-hidden="true"></span>
                     <span class="first-run-summary-text">
                       <span class="first-run-summary-label">Your team</span>
-                      <span class="first-run-summary-value" data-testid="first-run-summary-team">{teamSummary(effectiveTeam)}</span>
+                      <span class="first-run-summary-value" data-testid="first-run-summary-team"
+                        >{#if effectiveTeam?.kind === "company"}{teamVerb(effectiveTeam)}<CompanyLabel
+                            name={effectiveTeam.company.name}
+                            companyUid={effectiveTeam.company.companyUid ?? effectiveTeam.company.slug}
+                            size={16}
+                          />{:else}{teamSummary(effectiveTeam)}{/if}</span
+                      >
                     </span>
                   </li>
                 {/if}
@@ -796,7 +853,7 @@
                       <span class="first-run-summary-text">
                         <span class="first-run-summary-label">{kind === "notes" ? "Note taker" : "Project management"}</span>
                         <span class="first-run-summary-value" data-testid={`first-run-summary-${kind}`}>
-                          {appSummary(state.state === "connected" ? state.app : null, appsPassed[kind])}
+                          {appSummary(connectedAppOf(kind), appsPassed[kind])}
                         </span>
                       </span>
                     </li>
@@ -863,7 +920,7 @@
                   disabled={!canLeave || teamBusy}
                   aria-busy={teamBusy ? "true" : undefined}
                   onclick={() => (step === "team" ? teamNext() : goTo(nextFirstRunStep(step, shownSteps)))}
-                >{teamBusy && teamAction.state === "running" ? teamAction.label : firstRunNextLabel(step, shownSteps)}{#if !teamBusy}<RailIcon name="arrow-right" />{/if}</button>
+                >{#if teamBusy && teamPending}{teamPending.verb}<CompanyLabel name={teamPending.name} companyUid={teamPending.companyUid} size={14} />…{:else}{firstRunNextLabel(step, shownSteps)}<RailIcon name="arrow-right" />{/if}</button>
                 {#if offersFinish}
                   <button
                     type="button"

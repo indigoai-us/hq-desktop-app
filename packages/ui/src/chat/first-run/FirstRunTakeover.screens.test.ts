@@ -140,7 +140,9 @@ describe("Your team", () => {
     flushSync();
     next().click();
     flushSync();
-    expect(next().textContent).toContain("Joining Acme Robotics…");
+    expect(next().textContent).toContain("Joining");
+    // The company is named through CompanyLabel, like every other surface.
+    expect(next().querySelector(".company-label-name")?.textContent).toBe("Acme Robotics");
     expect(next().disabled).toBe(true);
     expect(next().getAttribute("aria-busy")).toBe("true");
     next().click();
@@ -197,7 +199,8 @@ describe("Your team", () => {
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     flushSync();
-    expect(next().textContent).toContain("Starting Pickle Works…");
+    expect(next().textContent).toContain("Starting");
+    expect(next().querySelector(".company-label-name")?.textContent).toBe("Pickle Works");
     next().click();
     await settle();
     expect(teamHost!.create).toHaveBeenCalledTimes(1);
@@ -335,5 +338,101 @@ describe("hosts without the new screens (today's slice 1 and 4 takeover)", () =>
     await settle();
     expect(document.querySelectorAll('[data-testid="new-bot-progress"] span')).toHaveLength(3);
     expect(q('[data-testid="new-bot-continue-name"]')?.textContent).toContain("Next: Your coding tools");
+  });
+});
+
+describe("review fixes in the takeover", () => {
+  it("an app the company already had counts as connected in the handoff and on Done", async () => {
+    const { handlers } = render({
+      initialStep: "notes",
+      apps: {
+        catalog: vi.fn(async (_u: string, kind: "notes" | "projects") => ({
+          ok: true as const,
+          apps: kind === "notes" ? [GRANOLA] : [LINEAR],
+          connected: ["granola.ai"],
+        })),
+      },
+    });
+    await settle();
+    expect(q('[data-testid="first-run-connect-granola.ai"]')?.textContent).toBe("Connected");
+    next().click();
+    await settle();
+    expect(handlers.onsettled).toHaveBeenLastCalledWith({ team: null, apps: { notes: { name: "Granola", domain: "granola.ai" } } });
+  });
+
+  it("a connect still running when the screen is passed is left out, not reported as skipped", async () => {
+    const connect = deferred<AppConnectResult>();
+    const { handlers } = render({ initialStep: "notes", apps: { connect: vi.fn(() => connect.promise) } });
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-connect-fathom.video"]')!.click();
+    next().click();
+    await settle();
+    expect(handlers.onsettled).toHaveBeenLastCalledWith({ team: null, apps: {} });
+    connect.resolve({ ok: true });
+    await settle();
+    expect(handlers.onsettled).toHaveBeenLastCalledWith({ team: null, apps: { notes: { name: "Fathom", domain: "fathom.video" } } });
+  });
+
+  it("a connect still waiting is called off when the takeover goes away", async () => {
+    let seen: AbortSignal | undefined;
+    render({
+      initialStep: "notes",
+      apps: {
+        connect: vi.fn((_u: string, _a: FirstRunApp, signal?: AbortSignal) => {
+          seen = signal;
+          return new Promise<AppConnectResult>(() => {});
+        }),
+      },
+    });
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-connect-fathom.video"]')!.click();
+    await settle();
+    expect(seen?.aborted).toBe(false);
+    await unmount(component!);
+    component = null;
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it("changing the team after the app screens reports no apps from the old company", async () => {
+    const { handlers } = render({ initialStep: "notes" });
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-connect-granola.ai"]')!.click();
+    await settle();
+    next().click();
+    await settle();
+    expect(handlers.onsettled).toHaveBeenLastCalledWith({ team: null, apps: { notes: { name: "Granola", domain: "granola.ai" } } });
+    for (let i = 0; i < 4 && step() !== "team"; i += 1) {
+      q<HTMLButtonElement>('[data-testid="first-run-back"]')!.click();
+      await settle();
+    }
+    expect(step()).toBe("team");
+    handlers.onsettled.mockClear();
+    q<HTMLButtonElement>('[data-testid="first-run-team-personal"]')!.click();
+    next().click();
+    await settle();
+    expect(handlers.onsettled).toHaveBeenCalled();
+    for (const [arg] of handlers.onsettled.mock.calls) expect(arg).toEqual({ team: { kind: "personal" }, apps: {} });
+  });
+
+  it("after a company was started, Back, a new name and Next keep it: no second company", async () => {
+    const { teamHost } = render();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-team-create"]')!.click();
+    await settle();
+    const field = q<HTMLInputElement>('[data-testid="first-run-company-name"]')!;
+    field.value = "Pickle Works";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    next().click();
+    await settle();
+    expect(step()).toBe("tools");
+    q<HTMLButtonElement>('[data-testid="first-run-back"]')!.click();
+    await settle();
+    expect(step()).toBe("team");
+    expect(q<HTMLInputElement>('[data-testid="first-run-company-name"]')?.disabled).toBe(true);
+    expect(q('[data-testid="first-run-company-started"]')).toBeTruthy();
+    next().click();
+    await settle();
+    expect(step()).toBe("tools");
+    expect(teamHost!.create).toHaveBeenCalledTimes(1);
   });
 });

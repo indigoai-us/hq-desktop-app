@@ -220,6 +220,24 @@ const ROSTER = [workspace("acme", "Acme Robotics", "pending")];
 
 
 describe("VITE_HQ_DEV_FIRST_RUN_FORCE + VITE_HQ_DEV_FIRST_RUN_DRY", () => {
+  it("after a dry walk, #welcome's Start makes a real setup bot, never opens the pretend one", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform } = adapter({ create, flag: false });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Biscuit");
+    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-continue-in-chat"]')!.click();
+    await settle();
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(document.body.innerHTML).not.toContain("agt_first_run_dry");
+  });
+
   it("opens the takeover even after setup ran and the takeover finished, without reading the flag", async () => {
     window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
     window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
@@ -246,7 +264,8 @@ describe("VITE_HQ_DEV_FIRST_RUN_FORCE + VITE_HQ_DEV_FIRST_RUN_DRY", () => {
     q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
     await settle();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
-    expect(q('[data-testid="first-run-summary-team"]')?.textContent).toBe("Joined Acme Robotics");
+    expect(q('[data-testid="first-run-summary-team"]')?.textContent).toMatch(/^Joined /);
+    expect(q('[data-testid="first-run-summary-team"] .company-label-name')?.textContent).toBe("Acme Robotics");
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();

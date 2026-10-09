@@ -30,8 +30,12 @@ export interface FirstRunTeamHost {
 /** Reads the catalog and connects apps for Note taker and Project management. */
 export interface FirstRunAppsHost {
   catalog(companyUid: string, kind: FirstRunAppKind): Promise<AppCatalogResult>;
-  /** Resolves once the app is connected (or failed). */
-  connect(companyUid: string, app: FirstRunApp): Promise<AppConnectResult>;
+  /**
+   * Resolves once the app is connected (or failed). `signal` aborts a wait
+   * still running when the takeover goes away: it then answers a quiet
+   * failure and reads nothing more.
+   */
+  connect(companyUid: string, app: FirstRunApp, signal?: AbortSignal): Promise<AppConnectResult>;
 }
 /** What the later screens settled, for the setup bot's handoff. */
 export interface FirstRunSettled {
@@ -39,7 +43,20 @@ export interface FirstRunSettled {
   apps: FirstRunAppsHandoff;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+
+/** A wait called off because the takeover went away. Never shown. */
+export const CONNECT_ABORTED: AppConnectResult = { ok: false, reason: "", retry: false };
 
 // ── Your team ──────────────────────────────────────────────────────────────
 
@@ -122,16 +139,35 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
   const timeoutMs = deps.timeoutMs ?? CONNECTING_TIMEOUT_MS;
   const now = deps.now ?? Date.now;
 
-  async function waitForConnection(companyUid: string, app: FirstRunApp, since: number): Promise<AppConnectResult> {
+  /** The ids of the company's connections to this app's domain, or null when the list cannot be read. */
+  async function connectionIds(companyUid: string, domain: string): Promise<Set<string> | null> {
     const list = deps.listConnections;
-    if (!list) return { ok: false, reason: `Could not check on ${app.name}. Try again.`, retry: true };
-    while (now() - since <= timeoutMs) {
-      await sleep(pollMs);
-      const read = await list(companyUid).catch(() => null);
-      if (!read?.ok) continue;
-      const facts = readCompanyConnections(read.value);
-      const made = facts?.connections.find((c) => c.domain === app.domain && Date.parse(c.createdAt) > since);
-      if (made) return { ok: true };
+    if (!list) return null;
+    const read = await list(companyUid).catch(() => null);
+    if (!read?.ok) return null;
+    const facts = readCompanyConnections(read.value);
+    return new Set((facts?.connections ?? []).filter((c) => c.domain === domain).map((c) => c.id));
+  }
+
+  /**
+   * Wait for a connection to the app's domain that was not on the list before
+   * the browser opened. Ids are compared, never the server's clock against
+   * this computer's. Only this computer's clock times the wait.
+   */
+  async function waitForConnection(
+    companyUid: string,
+    app: FirstRunApp,
+    before: Set<string>,
+    signal?: AbortSignal,
+  ): Promise<AppConnectResult> {
+    if (!deps.listConnections) return { ok: false, reason: `Could not check on ${app.name}. Try again.`, retry: true };
+    const started = now();
+    while (now() - started <= timeoutMs) {
+      await sleep(pollMs, signal);
+      if (signal?.aborted) return CONNECT_ABORTED;
+      const ids = await connectionIds(companyUid, app.domain);
+      if (signal?.aborted) return CONNECT_ABORTED;
+      if (ids && [...ids].some((id) => !before.has(id))) return { ok: true };
     }
     return { ok: false, reason: `${app.name} did not finish connecting. Try again.`, retry: true };
   }
@@ -149,7 +185,7 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
       const listed = deps.listConnections ? await deps.listConnections(companyUid).catch(() => null) : null;
       return { ok: true, apps, connected: listed?.ok ? connectedDomains(listed.value) : [] };
     },
-    async connect(companyUid, app) {
+    async connect(companyUid, app, signal) {
       if (deps.dry) {
         await sleep(delay);
         return { ok: true };
@@ -161,6 +197,9 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
         return { ok: false, reason: why.sentence, retry: why.retry };
       }
       if (app.authClass === "key") return { ok: false, reason: `${app.name} needs an access key. Connect it later from Integrations.`, retry: false };
+      // What is there before the browser opens: only a connection not in
+      // this set answers the press.
+      const before = await connectionIds(companyUid, app.domain);
       const started = deps.startOAuth
         ? await deps.startOAuth({ companyUid, domain: app.domain, ...(app.entryId ? { catalogEntryId: app.entryId } : {}) })
         : null;
@@ -168,9 +207,9 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
         const why = connectFailureSentence(started && !started.ok ? started : null, app.name);
         return { ok: false, reason: why.sentence, retry: why.retry };
       }
-      const since = now();
+      if (signal?.aborted) return CONNECT_ABORTED;
       deps.openUrl(started.value.authorizationUrl);
-      return waitForConnection(companyUid, app, since);
+      return waitForConnection(companyUid, app, before ?? new Set(), signal);
     },
   };
 }

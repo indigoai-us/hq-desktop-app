@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ok } from "@hq/platform";
 
-import { CREATE_UNAVAILABLE, createFirstRunAppsHost, createFirstRunTeamHost } from "./first-run-hosts.js";
+import { CONNECT_ABORTED, CREATE_UNAVAILABLE, createFirstRunAppsHost, createFirstRunTeamHost } from "./first-run-hosts.js";
 import type { FirstRunApp } from "./app-step.js";
 
 const ACME = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
@@ -87,29 +87,30 @@ describe("apps host", () => {
     expect(install).toHaveBeenCalledWith({ companyUid: "cmp_acme", domain: "granola.ai" });
   });
 
-  it("an OAuth app opens the sign-in page and answers once the connection list shows it", async () => {
-    let t = 1_000;
+  it("an OAuth app opens the sign-in page and answers once a connection that was not there before shows", async () => {
+    const existing = { id: "c0", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "linear.app" } };
+    const made = { id: "c1", status: "connected", createdAt: "1999-01-01T00:00:00Z", installation: { domain: "linear.app" } };
     const startOAuth = vi.fn(async () =>
       ok({ provider: "linear", displayName: "Linear", authorizationUrl: "https://linear.app/oauth", state: "s", expiresAt: "x" }),
     );
     const listConnections = vi
       .fn()
-      .mockResolvedValueOnce(ok({ connections: [] }))
-      .mockResolvedValueOnce(
-        ok({ connections: [{ id: "c1", provider: "factory:linear", status: "connected", createdAt: new Date(5_000).toISOString(), installation: { domain: "linear.app" } }] }),
-      );
+      .mockResolvedValueOnce(ok({ connections: [existing] }))
+      .mockResolvedValueOnce(ok({ connections: [existing] }))
+      .mockResolvedValueOnce(ok({ connections: [existing, made] }));
     const openUrl = vi.fn();
-    const host = createFirstRunAppsHost({ startOAuth, listConnections, openUrl, dry: false, pollMs: 0, now: () => (t += 1) });
+    const host = createFirstRunAppsHost({ startOAuth, listConnections, openUrl, dry: false, pollMs: 0 });
+    // A server clock far behind this computer's does not matter: ids are compared.
     expect(await host.connect("cmp_acme", app("linear.app", "oauth"))).toEqual({ ok: true });
     expect(startOAuth).toHaveBeenCalledWith({ companyUid: "cmp_acme", domain: "linear.app", catalogEntryId: "cat_linear.app" });
     expect(openUrl).toHaveBeenCalledWith("https://linear.app/oauth");
-    expect(listConnections).toHaveBeenCalledTimes(2);
+    expect(listConnections).toHaveBeenCalledTimes(3);
   });
 
   it("a connection that was already there, or never comes, is not an answer", async () => {
     let t = 10_000;
     const listConnections = vi.fn(async () =>
-      ok({ connections: [{ id: "c1", status: "connected", createdAt: new Date(1).toISOString(), installation: { domain: "linear.app" } }] }),
+      ok({ connections: [{ id: "c1", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "linear.app" } }] }),
     );
     const host = createFirstRunAppsHost({
       startOAuth: async () => ok({ provider: "l", displayName: "L", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
@@ -125,6 +126,25 @@ describe("apps host", () => {
       reason: "linear did not finish connecting. Try again.",
       retry: true,
     });
+  });
+
+  it("an aborted wait stops reading the list and answers quietly", async () => {
+    const abort = new AbortController();
+    const listConnections = vi.fn(async () => ok({ connections: [] }));
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ok({ provider: "l", displayName: "L", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
+      listConnections,
+      openUrl: vi.fn(),
+      dry: false,
+      pollMs: 60_000,
+    });
+    const waiting = host.connect("cmp_acme", app("linear.app", "oauth"), abort.signal);
+    await new Promise((r) => setTimeout(r, 0));
+    abort.abort();
+    expect(await waiting).toEqual(CONNECT_ABORTED);
+    const reads = listConnections.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 5));
+    expect(listConnections.mock.calls.length).toBe(reads);
   });
 
   it("a refused start is a plain sentence; a key app is never started here", async () => {

@@ -58,6 +58,7 @@ export const TEAM_COPY = {
   nameLabel: "Company name",
   filterLabel: "Find a company",
   noMatch: "No company matches that.",
+  started: "Started. Next keeps this company.",
 } as const;
 
 function label(w: Workspace): string {
@@ -115,6 +116,12 @@ export function teamPickKey(pick: FirstRunTeamPick): string {
 export function teamHandoff(choice: FirstRunTeamChoice): FirstRunTeamHandoff {
   if (choice.kind === "personal") return { kind: "personal" };
   return { kind: "company", how: choice.how, name: choice.company.name, slug: choice.company.slug };
+}
+
+/** The words before a company's label on Done ("Joined ", "Started ", or none). */
+export function teamVerb(choice: FirstRunTeamChoice | null): string {
+  if (!choice || choice.kind === "personal") return "";
+  return choice.how === "joined" ? "Joined " : choice.how === "created" ? "Started " : "";
 }
 
 /** The Done summary line for a choice. */

@@ -31,11 +31,13 @@
     nameIssue?: string | null;
     /** Join or Create is running: the cards hold still. */
     busy?: boolean;
+    /** The company was started: its name stays as it is. */
+    nameLocked?: boolean;
     /** Enter in the name field. */
     onsubmit?: () => void;
   }
 
-  let { options, pick, onpick, companyName, oncompanyname, nameIssue = null, busy = false, onsubmit }: Props = $props();
+  let { options, pick, onpick, companyName, oncompanyname, nameIssue = null, busy = false, nameLocked = false, onsubmit }: Props = $props();
 
   let filter = $state("");
   let nameEl = $state<HTMLInputElement | null>(null);
@@ -154,7 +156,7 @@
     maxlength={COMPANY_NAME_MAX + 20}
     autocomplete="off"
     spellcheck="false"
-    disabled={busy}
+    disabled={busy || nameLocked}
     aria-invalid={nameIssue ? "true" : undefined}
     oninput={(event) => oncompanyname((event.currentTarget as HTMLInputElement).value)}
     onkeydown={(event) => {
@@ -165,6 +167,7 @@
     }}
   />
   {#if nameIssue}<p class="new-bot-create-error" role="alert" data-testid="first-run-company-name-issue">{nameIssue}</p>{/if}
+  {#if nameLocked}<p class="new-bot-price" data-testid="first-run-company-started">{TEAM_COPY.started}</p>{/if}
 {/if}
 
 <style>

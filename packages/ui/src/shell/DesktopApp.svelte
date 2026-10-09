@@ -292,6 +292,9 @@
     firstRunKickoffCarry,
     firstRunRoute,
     firstRunSettledNotice,
+    firstRunSettledParts,
+    firstRunSettledSince,
+    type FirstRunSettledSent,
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
@@ -3015,9 +3018,11 @@
       // for it and open that one instead.
       // A bot it already made this session is used too: the local list can
       // lag behind a create that just answered.
-      const firstRun =
-        firstRunCreateInFlight ??
-        (firstRunCreatedBot ? Promise.resolve<FirstRunAssistantResult>({ ok: true, bot: firstRunCreatedBot }) : null);
+      // A dry walk (dev-switches.ts) made no bot: start for real from here.
+      const firstRun = firstRunDev.dry
+        ? null
+        : (firstRunCreateInFlight ??
+          (firstRunCreatedBot ? Promise.resolve<FirstRunAssistantResult>({ ok: true, bot: firstRunCreatedBot }) : null));
       if (firstRun) {
         const created = await firstRun;
         if (created.ok) {
@@ -3401,7 +3406,8 @@
     const imported = firstRunImport;
     if (imported) firstRunImportDelivered = true;
     const { team, apps } = firstRunSettled;
-    if (firstRunHasSettled()) firstRunSettledDelivered = true;
+    // The notice carries what is settled now; a later part goes at close.
+    firstRunSettledSent = firstRunSettledParts({ team, apps });
     void sendBotNotice(
       bot.agentUid,
       firstRunHandoffNotice({ name: displayName, runtime, toolsReady, imported, team, apps }, { noun: hostComputerNoun() }),
@@ -3444,7 +3450,9 @@
     // What does not fit the kickoff goes later as a note (firstRunKickoffCarry).
     const carry = firstRunKickoffCarry({ name: displayName, runtime, toolsReady, imported, team, apps }, { noun });
     if (imported && carry.importWhole) firstRunImportDelivered = true;
-    if (carry.settled) firstRunSettledDelivered = true;
+    // The kickoff carries what was settled when it went out; a part settled
+    // later (the create waited for a coding tool) goes at close.
+    if (carry.settled) firstRunSettledSent = firstRunSettledParts({ team, apps });
     const created = await createBotEntry(
       {
         name: SETUP_BOT_NAME,
@@ -3491,27 +3499,26 @@
    * takeover closes, unless the kickoff carried it.
    */
   let firstRunSettled: FirstRunSettled = { team: null, apps: {} };
-  let firstRunSettledDelivered = false;
+  /** Each part the assistant already has (in its kickoff or a note), by its JSON. */
+  let firstRunSettledSent: FirstRunSettledSent = {};
   let firstRunSettledSending = false;
   /** The takeover closed (Done or Continue in chat): what it settled is final. */
   let firstRunLeft = false;
-  function firstRunHasSettled(): boolean {
-    return !!firstRunSettled.team || Object.keys(firstRunSettled.apps).length > 0;
-  }
   function recordFirstRunSettled(next: FirstRunSettled): void {
     firstRunSettled = next;
   }
   function deliverFirstRunSettled(): void {
-    if (firstRunDev.dry || !firstRunLeft || firstRunSettledDelivered || firstRunSettledSending) return;
+    if (firstRunDev.dry || !firstRunLeft || firstRunSettledSending) return;
     const bot = firstRunCreatedBot;
     if (!bot) return;
-    const body = firstRunSettledNotice(firstRunSettled);
+    const settled = firstRunSettled;
+    const body = firstRunSettledNotice(firstRunSettledSince(settled, firstRunSettledSent));
     if (!body) return;
     const key = `first-run-settled:${bot.agentUid}`;
     firstRunSettledSending = true;
     void sendBotNotice(bot.agentUid, body, key, key, true).then((sent) => {
       firstRunSettledSending = false;
-      if (sent) firstRunSettledDelivered = true;
+      if (sent) firstRunSettledSent = { ...firstRunSettledSent, ...firstRunSettledParts(settled) };
     });
   }
   /** The person's companies and invites, once the roster answered. */
@@ -3580,6 +3587,8 @@
     if (!firstRunDev.dry) markVisualFirstRunFinished();
     firstRunLeft = true;
     deliverFirstRunSettled();
+    // A dry walk's pretend assistant must not be what #welcome's Start opens.
+    if (firstRunDev.dry) firstRunCreatedBot = null;
     visualFirstRunFinished = true;
     visualFirstRunOpen = false;
     // Nothing starts from the takeover once it is closed.
