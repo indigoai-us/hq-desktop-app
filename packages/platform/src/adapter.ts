@@ -2328,20 +2328,36 @@ export interface StoragePruneRequest {
   company?: string | null;
 }
 
+/**
+ * `hq storage prune --json`. `local` is the hq-core script's output with
+ * `available` added: a dry run reports `would_remove_commits`/`est_bytes`, a
+ * real run `removed_commits` and git dir size `before`/`after`.
+ * `retained_refs` counts other refs that can keep old history alive.
+ */
+export interface StorageLocalPruneResult {
+  available: boolean;
+  reason?: string | null;
+  would_remove_commits: number;
+  est_bytes: number;
+  removed_commits: number;
+  total_commits_before: number;
+  flattened_merges: number;
+  retained_refs: number;
+  before?: { git_dir_bytes: number } | null;
+  after?: { git_dir_bytes: number } | null;
+}
+
+export interface StorageCloudPruneResult {
+  company: string;
+  deleted_count: number;
+  deleted_bytes: number;
+  errors: string[];
+}
+
 export interface StoragePruneResult {
+  local?: StorageLocalPruneResult | null;
+  cloud: StorageCloudPruneResult[];
   dry_run: boolean;
-  local?: {
-    freed_bytes: number;
-    commits_removed: number;
-    error?: string | null;
-  } | null;
-  cloud: Array<{
-    company: string;
-    freed_bytes: number;
-    deleted_count: number;
-    delete_markers_removed: number;
-    error?: string | null;
-  }>;
 }
 
 /**

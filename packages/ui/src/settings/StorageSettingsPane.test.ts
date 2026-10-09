@@ -25,6 +25,17 @@ afterEach(async () => {
 
 const GB = 1024 * 1024 * 1024;
 
+/** Zeroed local prune fields; tests spread the dry-run or real-run values over it. */
+const LOCAL_PRUNE = {
+  available: true,
+  would_remove_commits: 0,
+  est_bytes: 0,
+  removed_commits: 0,
+  total_commits_before: 0,
+  flattened_merges: 0,
+  retained_refs: 0,
+};
+
 export const SAMPLE_STATUS: StorageStatus = {
   local: {
     available: true,
@@ -34,10 +45,10 @@ export const SAMPLE_STATUS: StorageStatus = {
     commit_count: 5200,
     tranches: [
       { id: "7d", label: "Last 7 days", commit_count: 120, est_bytes: 0.4 * GB },
-      { id: "30d", label: "7 to 30 days ago", commit_count: 400, est_bytes: 2 * GB },
-      { id: "90d", label: "1 to 3 months ago", commit_count: 900, est_bytes: 9 * GB },
-      { id: "365d", label: "3 to 12 months ago", commit_count: 2100, est_bytes: 30 * GB },
-      { id: "older", label: "Older than a year", commit_count: 1680, est_bytes: 34.9 * GB },
+      { id: "30d", label: "7–30 days", commit_count: 400, est_bytes: 2 * GB },
+      { id: "90d", label: "30–90 days", commit_count: 900, est_bytes: 9 * GB },
+      { id: "365d", label: "90 days–1 year", commit_count: 2100, est_bytes: 30 * GB },
+      { id: "older", label: "Older than 1 year", commit_count: 1680, est_bytes: 34.9 * GB },
     ],
   },
   cloud: [
@@ -50,8 +61,10 @@ export const SAMPLE_STATUS: StorageStatus = {
       delete_markers: 420,
       tranches: [
         { id: "7d", label: "Last 7 days", count: 500, bytes: 0.2 * GB },
-        { id: "30d", label: "7 to 30 days ago", count: 2500, bytes: 1 * GB },
-        { id: "older", label: "Older than 30 days", count: 15000, bytes: 4.8 * GB },
+        { id: "30d", label: "8-30 days", count: 2500, bytes: 1 * GB },
+        { id: "90d", label: "31-90 days", count: 0, bytes: 0 },
+        { id: "365d", label: "91-365 days", count: 0, bytes: 0 },
+        { id: "older", label: "Older than a year", count: 15000, bytes: 4.8 * GB },
       ],
     },
     {
@@ -160,12 +173,29 @@ describe("Settings › Storage pane", () => {
   });
 
   it("previews, requires confirm, deletes, and reports the result", async () => {
-    const result = (freed: number, dry: boolean): AdapterResult<StoragePruneResult> => ({
+    // Shapes from hq-cli `storage prune --json` with the hq-core script's local output.
+    const previewPrune = vi.fn(async (): Promise<AdapterResult<StoragePruneResult>> => ({
       ok: true,
-      value: { dry_run: dry, local: { freed_bytes: freed, commits_removed: 3 }, cloud: [] },
-    });
-    const previewPrune = vi.fn(async () => result(64 * GB, true));
-    const prune = vi.fn(async (_req: StoragePruneRequest) => result(64 * GB, false));
+      value: {
+        local: { ...LOCAL_PRUNE, would_remove_commits: 3990, est_bytes: 64 * GB, retained_refs: 0 },
+        cloud: [],
+        dry_run: true,
+      },
+    }));
+    const prune = vi.fn(async (_req: StoragePruneRequest): Promise<AdapterResult<StoragePruneResult>> => ({
+      ok: true,
+      value: {
+        local: {
+          ...LOCAL_PRUNE,
+          removed_commits: 3990,
+          total_commits_before: 4200,
+          before: { git_dir_bytes: 80 * GB },
+          after: { git_dir_bytes: 16 * GB },
+        },
+        cloud: [],
+        dry_run: false,
+      },
+    }));
     const status = vi.fn(async () => ({ ok: true as const, value: SAMPLE_STATUS }));
     await render({ status, previewPrune, prune });
 
@@ -196,7 +226,10 @@ describe("Settings › Storage pane", () => {
     const prune = vi.fn();
     await render({
       status: async () => ({ ok: true, value: SAMPLE_STATUS }),
-      previewPrune: async () => ({ ok: true, value: { dry_run: true, local: { freed_bytes: 1, commits_removed: 1 }, cloud: [] } }),
+      previewPrune: async () => ({
+        ok: true,
+        value: { local: { ...LOCAL_PRUNE, would_remove_commits: 1, est_bytes: 1 }, cloud: [], dry_run: true },
+      }),
       prune,
     });
     (q("storage-local-band-older") as HTMLInputElement).click();
@@ -207,6 +240,61 @@ describe("Settings › Storage pane", () => {
     Array.from(dialog!.querySelectorAll("button")).find((b) => b.textContent?.includes("Cancel"))!.click();
     await settle();
     expect(prune).not.toHaveBeenCalled();
+  });
+
+  it("notes when other tools still hold old local history", async () => {
+    await render({
+      status: async () => ({ ok: true, value: SAMPLE_STATUS }),
+      previewPrune: async () => ({
+        ok: true,
+        value: {
+          local: { ...LOCAL_PRUNE, would_remove_commits: 10, est_bytes: GB, retained_refs: 3 },
+          cloud: [],
+          dry_run: true,
+        },
+      }),
+      prune: vi.fn(),
+    });
+    expect(q("settings-storage-retained-note")).toBeNull();
+    (q("storage-local-band-older") as HTMLInputElement).click();
+    await settle();
+    q("settings-storage-delete")?.click();
+    await settle();
+    expect(q("settings-storage-retained-note")?.textContent).toBe(
+      "Some older history is still held by other tools, so less space may be freed.",
+    );
+  });
+
+  it("reports per-company cloud errors in plain words", async () => {
+    await render({
+      status: async () => ({ ok: true, value: SAMPLE_STATUS }),
+      previewPrune: async () => ({ ok: true, value: { local: null, cloud: [], dry_run: true } }),
+      prune: async () => ({
+        ok: true,
+        value: {
+          local: null,
+          cloud: [
+            {
+              company: "indigo",
+              deleted_count: 0,
+              deleted_bytes: 0,
+              errors: ["Access denied deleting old versions (needs s3:DeleteObjectVersion on the vault bucket)."],
+            },
+          ],
+          dry_run: false,
+        },
+      }),
+    });
+    (q("storage-local-band-older") as HTMLInputElement).click();
+    await settle();
+    q("settings-storage-delete")?.click();
+    await settle();
+    const dialog = document.querySelector("[data-testid='confirm-dialog']");
+    Array.from(dialog!.querySelectorAll("button")).find((b) => b.textContent?.includes("Delete"))!.click();
+    await settle();
+    const text = q("settings-storage-result")?.textContent ?? "";
+    expect(text).toContain("indigo: some old versions couldn't be deleted.");
+    expect(text).not.toContain("s3:");
   });
 });
 

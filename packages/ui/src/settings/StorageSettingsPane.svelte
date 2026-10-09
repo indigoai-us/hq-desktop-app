@@ -22,9 +22,11 @@
   import { formatBytes } from "../common/sync-model.js";
   import {
     UPDATE_HQ_CODE,
+    hasRetainedRefs,
     isBandSelected,
     isProtectedBand,
     pruneRequests,
+    prunedBytes,
     selectedBytes,
     storageErrorCopy,
     toggleBand,
@@ -49,6 +51,8 @@
   let preview = $state<{ bytes: number; lines: string[] } | null>(null);
   let actionError = $state<string | null>(null);
   let result = $state<{ freed: number; errors: string[] } | null>(null);
+  /** The last preview or prune said other tools still hold old history. */
+  let retainedRefs = $state(false);
 
   const api = $derived(adapter?.storage ?? null);
 
@@ -112,13 +116,6 @@
     }
   }
 
-  function freedBytes(r: StoragePruneResult): number {
-    return (
-      (r.local?.freed_bytes ?? 0) +
-      (r.cloud ?? []).reduce((sum, c) => sum + (c.freed_bytes ?? 0), 0)
-    );
-  }
-
   function describeRequest(req: StoragePruneRequest): string {
     if (req.localBefore) {
       return `Backups on this Mac from before ${req.localBefore}`;
@@ -133,6 +130,7 @@
     phase = "previewing";
     actionError = null;
     result = null;
+    retainedRefs = false;
     let bytes = 0;
     const lines: string[] = [];
     for (const req of requests) {
@@ -145,7 +143,8 @@
         phase = "idle";
         return;
       }
-      const freed = freedBytes(res.value);
+      if (hasRetainedRefs(res.value)) retainedRefs = true;
+      const freed = prunedBytes(res.value);
       bytes += freed;
       lines.push(`${describeRequest(req)} (about ${formatBytes(freed)})`);
     }
@@ -166,10 +165,13 @@
         errors.push(`${where}: couldn't delete. Try again later.`);
         continue;
       }
-      freed += freedBytes(res.value);
-      if (res.value.local?.error) errors.push("this Mac: some backups couldn't be deleted.");
+      freed += prunedBytes(res.value);
+      if (hasRetainedRefs(res.value)) retainedRefs = true;
+      if (res.value.local && res.value.local.available === false) {
+        errors.push("this Mac: some backups couldn't be deleted.");
+      }
       for (const c of res.value.cloud ?? []) {
-        if (c.error) errors.push(`${c.company}: some old versions couldn't be deleted.`);
+        if ((c.errors ?? []).length > 0) errors.push(`${c.company}: some old versions couldn't be deleted.`);
       }
     }
     result = { freed, errors };
@@ -267,6 +269,9 @@
           {/each}
         </tbody>
       </table>
+    {/if}
+    {#if retainedRefs}
+      <div class="set-row"><div class="sd" data-testid="settings-storage-retained-note">Some older history is still held by other tools, so less space may be freed.</div></div>
     {/if}
 
     <div class="set-subhead"><div class="sn">Cloud file history</div>

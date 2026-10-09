@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   cutoffDate,
+  hasRetainedRefs,
   isBandSelected,
   pruneRequests,
+  prunedBytes,
   selectedBytes,
   storageErrorCopy,
   toggleBand,
@@ -92,5 +94,47 @@ describe("storage error copy", () => {
 
   it("never shows raw CLI text", () => {
     expect(storageErrorCopy("hq storage failed: EACCES /Users/x")).not.toContain("EACCES");
+  });
+});
+
+describe("prunedBytes / hasRetainedRefs (hq storage prune --json)", () => {
+  const local = {
+    available: true,
+    would_remove_commits: 0,
+    est_bytes: 0,
+    removed_commits: 0,
+    total_commits_before: 0,
+    flattened_merges: 0,
+    retained_refs: 0,
+  };
+
+  it("uses the estimate on a dry run plus cloud deleted_bytes", () => {
+    expect(
+      prunedBytes({
+        local: { ...local, would_remove_commits: 9, est_bytes: 1000 },
+        cloud: [{ company: "indigo", deleted_count: 2, deleted_bytes: 50, errors: [] }],
+        dry_run: true,
+      }),
+    ).toBe(1050);
+  });
+
+  it("uses git dir before minus after on a real run", () => {
+    expect(
+      prunedBytes({
+        local: { ...local, removed_commits: 9, before: { git_dir_bytes: 900 }, after: { git_dir_bytes: 300 } },
+        cloud: [],
+        dry_run: false,
+      }),
+    ).toBe(600);
+  });
+
+  it("counts nothing for an unavailable or absent local result", () => {
+    expect(prunedBytes({ local: { ...local, available: false, est_bytes: 5 }, cloud: [], dry_run: true })).toBe(0);
+    expect(prunedBytes({ local: null, cloud: [], dry_run: true })).toBe(0);
+  });
+
+  it("flags retained refs", () => {
+    expect(hasRetainedRefs({ local: { ...local, retained_refs: 2 }, cloud: [], dry_run: true })).toBe(true);
+    expect(hasRetainedRefs({ local: null, cloud: [], dry_run: true })).toBe(false);
   });
 });

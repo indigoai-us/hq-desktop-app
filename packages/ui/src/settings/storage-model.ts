@@ -8,7 +8,7 @@
  * band is never deletable, so recent history always survives.
  */
 
-import type { StoragePruneRequest } from "@hq/platform";
+import type { StoragePruneRequest, StoragePruneResult } from "@hq/platform";
 
 export interface StorageBand {
   id: string;
@@ -133,4 +133,27 @@ export function storageErrorCopy(message: string | null | undefined): string {
     return "Update HQ to manage storage.";
   }
   return "We couldn't read your backup sizes. Try again in a moment.";
+}
+
+/**
+ * Bytes a prune frees (or would free, on a dry run). Local real runs report
+ * the git dir size before and after; dry runs report an estimate.
+ */
+export function prunedBytes(r: StoragePruneResult): number {
+  let total = 0;
+  const local = r.local;
+  if (local && local.available !== false) {
+    if (r.dry_run) {
+      total += local.est_bytes ?? 0;
+    } else if (local.before && local.after) {
+      total += Math.max(0, local.before.git_dir_bytes - local.after.git_dir_bytes);
+    }
+  }
+  for (const c of r.cloud ?? []) total += c.deleted_bytes ?? 0;
+  return total;
+}
+
+/** True when other refs (tags, stash, tool markers) keep old local history. */
+export function hasRetainedRefs(r: StoragePruneResult): boolean {
+  return (r.local?.retained_refs ?? 0) > 0;
 }

@@ -76,28 +76,45 @@ pub struct StorageStatus {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
+pub struct GitDirSize {
+    pub git_dir_bytes: u64,
+}
+
+/// `core/scripts/hq-storage.sh prune --json`, passed through by the CLI with
+/// `available` added. A dry run reports `would_remove_commits` / `est_bytes`;
+/// a real run reports `removed_commits` and the git dir size before and after.
+/// `retained_refs` counts refs other than the current branch (tags, stash,
+/// tool markers) that can keep old history from being freed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct LocalPruneResult {
-    pub freed_bytes: u64,
-    pub commits_removed: u64,
-    pub error: Option<String>,
+    pub available: bool,
+    pub reason: Option<String>,
+    pub would_remove_commits: u64,
+    pub est_bytes: u64,
+    pub removed_commits: u64,
+    pub total_commits_before: u64,
+    pub flattened_merges: u64,
+    pub retained_refs: u64,
+    pub before: Option<GitDirSize>,
+    pub after: Option<GitDirSize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct CloudPruneResult {
     pub company: String,
-    pub freed_bytes: u64,
     pub deleted_count: u64,
-    pub delete_markers_removed: u64,
-    pub error: Option<String>,
+    pub deleted_bytes: u64,
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PruneResult {
-    pub dry_run: bool,
     pub local: Option<LocalPruneResult>,
     pub cloud: Vec<CloudPruneResult>,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -288,17 +305,59 @@ mod tests {
         assert!(parse_status("Usage: hq storage").is_err());
     }
 
+    // Shapes copied from hq-cli `storage prune --json` (src/commands/storage.ts)
+    // and hq-core `core/scripts/hq-storage.sh prune --json`.
     #[test]
-    fn parses_prune_result_with_errors() {
+    fn parses_dry_run_prune() {
         let r = parse_prune(
-            r#"{"dry_run":false,"local":{"freed_bytes":100,"commits_removed":4},
-                "cloud":[{"company":"indigo","freed_bytes":7,"deleted_count":2},
-                         {"company":"acme","error":"denied"}]}"#,
+            r#"{"local":{"available":true,"would_remove_commits":3990,"est_bytes":52000000000,
+                 "flattened_merges":2,"retained_refs":5},
+                "cloud":[{"company":"indigo","deleted_count":12,"deleted_bytes":4096,"errors":[]}],
+                "dry_run":true}"#,
         )
         .unwrap();
-        assert_eq!(r.local.unwrap().freed_bytes, 100);
+        assert!(r.dry_run);
+        let local = r.local.unwrap();
+        assert!(local.available);
+        assert_eq!(local.would_remove_commits, 3990);
+        assert_eq!(local.est_bytes, 52_000_000_000);
+        assert_eq!(local.retained_refs, 5);
+        assert!(local.before.is_none());
+        assert_eq!(r.cloud[0].deleted_bytes, 4096);
+        assert!(r.cloud[0].errors.is_empty());
+    }
+
+    #[test]
+    fn parses_real_prune_with_errors() {
+        let r = parse_prune(
+            r#"{"local":{"available":true,"removed_commits":3990,"total_commits_before":4200,
+                 "flattened_merges":2,"retained_refs":5,
+                 "before":{"git_dir_bytes":81927340032},"after":{"git_dir_bytes":30000000000}},
+                "cloud":[{"company":"indigo","deleted_count":2,"deleted_bytes":7,"errors":[]},
+                         {"company":"acme","deleted_count":0,"deleted_bytes":0,
+                          "errors":["Access denied deleting old versions."]}],
+                "dry_run":false}"#,
+        )
+        .unwrap();
+        let local = r.local.unwrap();
+        assert_eq!(local.removed_commits, 3990);
+        assert_eq!(local.before.unwrap().git_dir_bytes, 81_927_340_032);
+        assert_eq!(local.after.unwrap().git_dir_bytes, 30_000_000_000);
         assert_eq!(r.cloud[0].deleted_count, 2);
-        assert_eq!(r.cloud[1].error.as_deref(), Some("denied"));
+        assert_eq!(r.cloud[1].errors.len(), 1);
+    }
+
+    #[test]
+    fn parses_cloud_only_prune_and_unavailable_local() {
+        let r = parse_prune(r#"{"local":null,"cloud":[],"dry_run":true}"#).unwrap();
+        assert!(r.local.is_none());
+        let r = parse_prune(
+            r#"{"local":{"available":false,"reason":"update HQ"},"cloud":[],"dry_run":true}"#,
+        )
+        .unwrap();
+        let local = r.local.unwrap();
+        assert!(!local.available);
+        assert_eq!(local.reason.as_deref(), Some("update HQ"));
     }
 
     #[test]
