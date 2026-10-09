@@ -22,6 +22,8 @@
 
 import { isAgentUid } from "../chat/agent-channel.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
+import { companyProjectsDestination } from "./company-pane.js";
+import type { NavigationDestination } from "./navigation-history.js";
 import {
   isStrictlyRicherConversationRow,
   resolveRailCompanyName,
@@ -546,4 +548,32 @@ export function paletteProjectItems(
     });
   }
   return items;
+}
+
+/**
+ * Where a palette project row goes. A company project opens on that
+ * company's own Projects page (the sidepane Projects row), so the company
+ * stays selected. The cross-company Projects view closed the company pane
+ * and showed Home's chat list. Personal projects have no company pane and
+ * keep the Projects view.
+ */
+export function paletteProjectDestination(
+  item: Pick<PaletteProjectItem, "companyUid" | "personal" | "companySlug" | "projectId">,
+): NavigationDestination {
+  const key = item.companyUid?.trim() || item.companySlug.trim();
+  if (item.personal || !key) {
+    return { kind: "projects", company: item.companySlug, project: item.projectId };
+  }
+  return companyProjectsDestination(key, item.projectId);
+}
+
+/**
+ * Where the palette's Projects command goes: the selected company's own
+ * Projects page, or the cross-company Projects view from Home.
+ */
+export function paletteProjectsCommandDestination(
+  companyUid: string | null | undefined,
+): NavigationDestination {
+  const key = companyUid?.trim();
+  return key ? companyProjectsDestination(key) : { kind: "projects" };
 }
