@@ -9,6 +9,9 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
+- Policies and Deployments open faster in large companies. Both lists now show 50 rows at a time and load more as you scroll, the way Team and Grants already did. On a test company with 1,700 policies, opening Policies went from about 200ms with 1.4 seconds of frozen screen to under 30ms. The Hard and Soft headers still count every policy.
+- Signing out now clears the company and personal data the window kept in memory, so the next account starts clean.
+- The company pages stop refreshing in the background while the window is hidden, and refresh once when you come back.
 
 ## [0.11.0] — 2026-10-08
 

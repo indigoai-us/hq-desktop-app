@@ -9,6 +9,7 @@ import { isAgentUid } from "./agent-thinking.js";
 import { channelSlug } from "./create-flow.js";
 import type { ChatSidebarApi } from "./chat-api.js";
 import type { ConversationRow, DmContactInput } from "./sidebar-model.js";
+import { registerAccountCache } from "../common/account-caches.js";
 
 export type PeoplePickerKind = "person" | "group" | "agent" | "guest";
 
@@ -219,6 +220,7 @@ export function channelPathPreview(companySlug: string, name: string): string {
  * picker built from them alone showed "No matches" for most of the company.
  */
 const rosterCache = new Map<string, DmContactInput[]>();
+registerAccountCache(() => rosterCache.clear());
 
 /** Cached roster for a company, or an empty list before the first read. */
 export function readPickerRoster(companyUid: string): DmContactInput[] {

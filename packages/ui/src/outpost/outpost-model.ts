@@ -5,6 +5,7 @@
  * Custom cadence is a five-field cron expression, validated before save, with
  * the next five runs previewed. Logs append incrementally and paint a window.
  */
+import { registerAccountCache } from "../common/account-caches.js";
 
 export const metadata = {
   performanceBudget: {
@@ -162,6 +163,7 @@ export function freshnessLabel(fetchedAt: string | null, refreshFailed: boolean,
 }
 
 const caches = new Map<string, OutpostCache>();
+registerAccountCache(() => caches.clear());
 
 export function readOutpostCache(owner: string): OutpostCache | null {
   return caches.get(owner) ?? null;
