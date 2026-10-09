@@ -7,12 +7,13 @@
  * person. The setup chat stays the fallback ("Continue in chat") and the
  * place the rest of setup happens.
  *
- * The full plan has seven screens: 1 Name your HQ assistant, 2 Your team,
+ * The plan has seven screens: 1 Name your HQ assistant, 2 Your team,
  * 3 Your coding tools, 4 Bring in your context, 5 Note taker, 6 Project
- * management, 7 Done. Slice 1 shipped 1, 3 and 7; slice 4 adds 4 (the
- * knowledge tree, knowledge-tree/). The step list below is data: a later
- * slice inserts its screen into `FIRST_RUN_STEPS` and the progress bars,
- * "Next: <step>" labels and Back follow without other edits.
+ * management, 7 Done. Slice 1 shipped 1, 3 and 7; slice 4 added 4 (the
+ * knowledge tree, knowledge-tree/); slices 2 and 5 add 2, 5 and 6
+ * (team-step.ts, app-step.ts). The step list below is data: the progress
+ * bars, "Next: <step>" labels and Back follow it, and `firstRunStepsFor`
+ * leaves out the screens a host cannot run.
  *
  * This module is pure: steps, copy, the name rule, the handoff kickoff, the
  * "never again" marker, the routing decision and the one-create-at-a-time
@@ -26,10 +27,7 @@ import { SETUP_BOT_KICKOFF_PREFIX, SETUP_BOT_RUNTIME_ORDER, type SetupBotRef } f
 
 export type FirstRunRuntime = LocalBotRow["runtime"];
 
-/**
- * Every screen the finished flow will have. Only the ids listed in
- * `FIRST_RUN_STEPS` are shown; the rest belong to later slices.
- */
+/** Every screen of the flow. */
 export type FirstRunStepId = "name" | "team" | "tools" | "context" | "notes" | "projects" | "done";
 
 export interface FirstRunStep {
@@ -38,24 +36,49 @@ export interface FirstRunStep {
   label: string;
 }
 
-/** The screens this build shows, in order. The last one is always Done. */
+/** The screens of the flow, in order. The last one is always Done. */
 export const FIRST_RUN_STEPS: readonly FirstRunStep[] = [
   { id: "name", label: "Name your assistant" },
+  { id: "team", label: "Your team" },
   { id: "tools", label: "Your coding tools" },
   { id: "context", label: "Bring in your context" },
+  { id: "notes", label: "Note taker" },
+  { id: "projects", label: "Project management" },
   { id: "done", label: "Done" },
 ];
 
+/** What the host can run, which decides the screens shown. */
+export interface FirstRunHostCaps {
+  /** The context scan on this computer (the desktop app). */
+  canImport: boolean;
+  /** Reading the person's companies and invites, joining and creating one. */
+  canTeam?: boolean;
+  /** Reading the integrations catalog and connecting an app. */
+  canConnectApps?: boolean;
+  /**
+   * The person works alone ("Just me"): no company to connect apps to, so
+   * the Note taker and Project management screens are left out.
+   */
+  personal?: boolean;
+}
+
 /**
- * The steps a host can show. "Bring in your context" needs a host that can
- * run the scan on this computer (the desktop app); without one the step is
- * left out rather than shown broken.
+ * The steps a host can show. A screen the host cannot run is left out
+ * rather than shown broken: "Bring in your context" needs the scan, "Your
+ * team" the company reads, and the two app screens the integrations
+ * catalog and a company to connect to.
  */
 export function firstRunStepsFor(
-  host: { canImport: boolean },
+  host: FirstRunHostCaps,
   steps: readonly FirstRunStep[] = FIRST_RUN_STEPS,
 ): readonly FirstRunStep[] {
-  return host.canImport ? steps : steps.filter((step) => step.id !== "context");
+  const apps = host.canConnectApps === true && host.personal !== true;
+  return steps.filter((step) => {
+    if (step.id === "context") return host.canImport;
+    if (step.id === "team") return host.canTeam === true;
+    if (step.id === "notes" || step.id === "projects") return apps;
+    return true;
+  });
 }
 
 function indexOfStep(id: FirstRunStepId, steps: readonly FirstRunStep[]): number {
@@ -124,6 +147,9 @@ export function firstRunCanLeave(
 ): boolean {
   return id === "tools" ? anyToolReady(ready) : true;
 }
+
+/** Dashes the copy never uses (owner rule: plain copy without em or en dashes). */
+export const FIRST_RUN_BANNED_DASHES = [String.fromCharCode(0x2014), String.fromCharCode(0x2013)] as const;
 
 // ── copy ────────────────────────────────────────────────────────────────────
 
@@ -219,6 +245,27 @@ export interface FirstRunImportHandoff {
   report: string | null;
 }
 
+/**
+ * "Your team": the company the person works in, or alone. `how` says
+ * whether they joined it from an invite, started it here, or already
+ * belonged to it. Only the display name and slug go to the bot.
+ */
+export type FirstRunTeamHandoff =
+  | { kind: "personal" }
+  | { kind: "company"; how: "joined" | "created" | "existing"; name: string; slug: string | null };
+
+/** An app connected on Note taker or Project management, or the screen skipped (null). */
+export interface FirstRunAppHandoff {
+  name: string;
+  domain: string;
+}
+
+/** The two app screens. A key is present once its screen was passed; null there means skipped. */
+export interface FirstRunAppsHandoff {
+  notes?: FirstRunAppHandoff | null;
+  projects?: FirstRunAppHandoff | null;
+}
+
 /** What the takeover settled, handed to the setup bot so it never asks again. */
 export interface FirstRunHandoff {
   /** The assistant's display name, as the person confirmed it. */
@@ -229,12 +276,70 @@ export interface FirstRunHandoff {
   toolsReady: readonly FirstRunRuntime[];
   /** The context scan, when it finished before this was written. */
   imported?: FirstRunImportHandoff | null;
+  /** "Your team", once settled. */
+  team?: FirstRunTeamHandoff | null;
+  /** Note taker and Project management, once passed. */
+  apps?: FirstRunAppsHandoff | null;
 }
 
 /** Setup steps the takeover finished. Later slices add theirs. */
 export const FIRST_RUN_SETTLED_STEPS = ["name", "codingTools"] as const;
 /** Marked done once the context scan finished. */
 export const FIRST_RUN_IMPORT_STEP = "import";
+/** Marked done once "Your team" is settled (the setup worker's company question). */
+export const FIRST_RUN_TEAM_STEP = "company";
+/** Marked done once the Note taker screen was passed (connected or skipped). */
+export const FIRST_RUN_NOTES_STEP = "noteTaker";
+/** Marked done once the Project management screen was passed (connected or skipped). */
+export const FIRST_RUN_PROJECTS_STEP = "projectManagement";
+
+const TEAM_NAME_MAX = 60;
+const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const APP_NAME_MAX = 40;
+const DOMAIN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
+/** A display name as the bot may see it: one line, no path-like or control text, capped. */
+function handoffLabel(value: string, max: number): string | null {
+  const flat = value.split(/\s+/).filter(Boolean).join(" ");
+  if (!flat || hasControlChars(flat)) return null;
+  if (/[\\/]/.test(flat) || flat.startsWith("~")) return null;
+  return [...flat].slice(0, max).join("");
+}
+
+/** The team part of the handoff JSON, or null when nothing clean is left. */
+export function firstRunTeamJson(team: FirstRunTeamHandoff): Record<string, string> | null {
+  if (team.kind === "personal") return { kind: "personal" };
+  const name = handoffLabel(team.name, TEAM_NAME_MAX);
+  if (!name) return null;
+  const slug = team.slug && SLUG.test(team.slug) ? team.slug : null;
+  return { kind: "company", how: team.how, name, ...(slug ? { slug } : {}) };
+}
+
+function appJson(app: FirstRunAppHandoff | null | undefined): Record<string, string> | null {
+  if (!app) return null;
+  const name = handoffLabel(app.name, APP_NAME_MAX);
+  const domain = app.domain.trim().toLowerCase();
+  if (!name || domain.length > 80 || !DOMAIN.test(domain)) return null;
+  return { name, domain };
+}
+
+/** The apps part of the handoff JSON: each passed screen, its app or "skipped". */
+export function firstRunAppsJson(apps: FirstRunAppsHandoff): Record<string, Record<string, string> | "skipped"> {
+  const out: Record<string, Record<string, string> | "skipped"> = {};
+  if ("notes" in apps) out.notes = appJson(apps.notes) ?? "skipped";
+  if ("projects" in apps) out.projects = appJson(apps.projects) ?? "skipped";
+  return out;
+}
+
+/** The settled step keys for a handoff, in the flow's order. */
+export function firstRunDoneSteps(handoff: Pick<FirstRunHandoff, "imported" | "team" | "apps">): string[] {
+  const done: string[] = [...FIRST_RUN_SETTLED_STEPS];
+  if (handoff.team && firstRunTeamJson(handoff.team)) done.push(FIRST_RUN_TEAM_STEP);
+  if (handoff.imported) done.push(FIRST_RUN_IMPORT_STEP);
+  if (handoff.apps && "notes" in handoff.apps) done.push(FIRST_RUN_NOTES_STEP);
+  if (handoff.apps && "projects" in handoff.apps) done.push(FIRST_RUN_PROJECTS_STEP);
+  return done;
+}
 
 /** Report paths longer than this are left out of the handoff (the counts still go). */
 export const FIRST_RUN_REPORT_PATH_MAX = 240;
@@ -283,15 +388,36 @@ export function firstRunImportJson(imported: FirstRunImportHandoff): Record<stri
 
 /** The machine-readable part of the kickoff: one JSON object, one line. */
 export function firstRunHandoffNote(handoff: FirstRunHandoff): string {
+  const team = handoff.team ? firstRunTeamJson(handoff.team) : null;
+  const apps = handoff.apps ? firstRunAppsJson(handoff.apps) : null;
   return JSON.stringify({
     from: "desktop-visual-first-run",
     v: 1,
-    done: handoff.imported ? [...FIRST_RUN_SETTLED_STEPS, FIRST_RUN_IMPORT_STEP] : FIRST_RUN_SETTLED_STEPS,
+    done: firstRunDoneSteps(handoff),
     name: normalizeAssistantName(handoff.name),
     runtime: handoff.runtime,
     toolsReady: [...new Set(handoff.toolsReady)],
     ...(handoff.imported ? { import: firstRunImportJson(handoff.imported) } : {}),
+    ...(team ? { team } : {}),
+    ...(apps && Object.keys(apps).length ? { apps } : {}),
   });
+}
+
+/** The words the kickoff and the notices add about the team and the apps, when settled. */
+function settledSentence(handoff: Pick<FirstRunHandoff, "team" | "apps">): string {
+  let out = "";
+  const team = handoff.team ? firstRunTeamJson(handoff.team) : null;
+  if (team) {
+    out +=
+      team.kind === "personal"
+        ? "I chose to work alone for now, so the company question is settled: do not ask me to join or start a company. "
+        : `The company question is settled (${team.how === "created" ? "I started" : team.how === "joined" ? "I joined" : "I work in"} ${team.name}): do not ask it again. `;
+  }
+  const apps = handoff.apps ? firstRunAppsJson(handoff.apps) : null;
+  if (apps && Object.keys(apps).length) {
+    out += "The note taker and project management choices are in the handoff: do not ask about them again. ";
+  }
+  return out;
 }
 
 /** The words the kickoff and the notices add about the import, when it ran. */
@@ -314,12 +440,40 @@ export const FIRST_RUN_KICKOFF_MAX = 1900;
  * words) so the bot skips them, and otherwise follows the usual opening.
  */
 export function firstRunKickoff(handoff: FirstRunHandoff, opts: { noun?: string } = {}): string {
-  const kickoff = buildKickoff(handoff, opts);
-  // A long report path is the one part that can push it past the bound: drop it.
-  if (kickoff.length > FIRST_RUN_KICKOFF_MAX && handoff.imported?.report) {
-    return buildKickoff({ ...handoff, imported: { ...handoff.imported, report: null } }, opts);
+  return firstRunKickoffCarry(handoff, opts).kickoff;
+}
+
+/** A kickoff and what it carried, so the host can send the rest as a note. */
+export interface FirstRunKickoffCarry {
+  kickoff: string;
+  /** The team and app screens rode in the kickoff. */
+  settled: boolean;
+  /** The import rode in the kickoff with its report path (when it had one). */
+  importWhole: boolean;
+}
+
+/**
+ * The kickoff, kept under `FIRST_RUN_KICKOFF_MAX`. What does not fit is left
+ * for a bot-only note, never lost: first the team and app choices (the host
+ * sends them with `firstRunSettledNotice`), and only if it still does not
+ * fit, the report path (the host then sends `firstRunImportNotice`, which
+ * always keeps it). The counts and the settled-step words always stay.
+ */
+export function firstRunKickoffCarry(handoff: FirstRunHandoff, opts: { noun?: string } = {}): FirstRunKickoffCarry {
+  const hasSettled = !!(handoff.team || (handoff.apps && Object.keys(handoff.apps).length));
+  const hasReport = !!(handoff.imported && handoffReportPath(handoff.imported.report));
+  const full = buildKickoff(handoff, opts);
+  if (full.length <= FIRST_RUN_KICKOFF_MAX) return { kickoff: full, settled: hasSettled, importWhole: true };
+  const lean: FirstRunHandoff = { ...handoff, team: null, apps: null };
+  const withoutSettled = buildKickoff(lean, opts);
+  if (withoutSettled.length <= FIRST_RUN_KICKOFF_MAX || !hasReport) {
+    return { kickoff: withoutSettled, settled: false, importWhole: true };
   }
-  return kickoff;
+  return {
+    kickoff: buildKickoff({ ...lean, imported: { ...handoff.imported!, report: null } }, opts),
+    settled: false,
+    importWhole: false,
+  };
 }
 
 function buildKickoff(handoff: FirstRunHandoff, opts: { noun?: string }): string {
@@ -334,6 +488,7 @@ function buildKickoff(handoff: FirstRunHandoff, opts: { noun?: string }): string
     `I chose your name, ${name}, so keep it. ` +
     `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. ` +
     importSentence(handoff.imported) +
+    settledSentence(handoff) +
     "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
     "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and whether any other tool HQ leans on is missing, and fix what you can yourself. " +
     "I chose to jump straight in, so do not ask whether I want HQ explained first. " +
@@ -363,6 +518,7 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
     `I named you ${name}, so use that name. ` +
     `The coding tool sign-in is finished: signed in on this ${noun}: ${tools}. Do not ask me to pick or sign in to a coding tool. ` +
     importSentence(handoff.imported) +
+    settledSentence(handoff) +
     "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
   // eslint-disable-next-line no-control-regex
   return notice.replace(/[\u0000-\u001f\u007f]/g, " ");
@@ -386,6 +542,39 @@ export function firstRunImportNotice(imported: FirstRunImportHandoff): string {
     `Handoff from the app: ${note}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     importSentence(imported) +
+    "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
+  // eslint-disable-next-line no-control-regex
+  return notice.replace(/[\u0000-\u001f\u007f]/g, " ");
+}
+
+/**
+ * What the later screens settled ("Your team", Note taker, Project
+ * management, and the import when it is not delivered yet), for an
+ * assistant whose kickoff already went out: a bot-only note in its DM. One
+ * line, no control characters, under 2000 characters. Null when nothing is
+ * left to say.
+ */
+export function firstRunSettledNotice(
+  settled: Pick<FirstRunHandoff, "imported" | "team" | "apps">,
+): string | null {
+  const team = settled.team ? firstRunTeamJson(settled.team) : null;
+  const apps = settled.apps ? firstRunAppsJson(settled.apps) : null;
+  const done = firstRunDoneSteps(settled).filter((step) => !(FIRST_RUN_SETTLED_STEPS as readonly string[]).includes(step));
+  if (!done.length) return null;
+  const note = JSON.stringify({
+    from: "desktop-visual-first-run",
+    v: 1,
+    done,
+    ...(settled.imported ? { import: firstRunImportJson(settled.imported) } : {}),
+    ...(team ? { team } : {}),
+    ...(apps && Object.keys(apps).length ? { apps } : {}),
+  });
+  const notice =
+    "Setup note from the HQ desktop app: I just finished more of the app's visual setup. " +
+    `Handoff from the app: ${note}. ` +
+    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
+    importSentence(settled.imported) +
+    settledSentence(settled) +
     "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
   // eslint-disable-next-line no-control-regex
   return notice.replace(/[\u0000-\u001f\u007f]/g, " ");

@@ -1,0 +1,176 @@
+/**
+ * What the visual first-run takeover asks of its host for "Your team",
+ * Note taker and Project management, what it reports back, and the desktop's
+ * implementations over the platform adapter.
+ *
+ * Every action goes through the same calls the rest of the app uses:
+ * joining through `company.claimPendingInvite` (the invite bell's Join),
+ * starting a company through the `create_company` card (the New company
+ * sheet), reading the catalog and connections and connecting an app through
+ * `integrations` (the company Integrations page and the bot connection
+ * cards). A dry walk (`VITE_HQ_DEV_FIRST_RUN_DRY`, dev-switches.ts) still
+ * reads, but every action only pretends.
+ */
+
+import type { AdapterResult, IntegrationAppRef, IntegrationInstallInput, IntegrationOAuthStart, Json } from "@hq/platform";
+
+import { catalogFailureLine } from "../../company/files-connect/integration-apps.js";
+import { CONNECTING_TIMEOUT_MS } from "../messaging/connection-card-model.js";
+import { connectFailureSentence, readCompanyConnections } from "../messaging/integration-cards-model.js";
+import { appsForKind, catalogEntries, type AppCatalogResult, type AppConnectResult, type FirstRunApp, type FirstRunAppKind } from "./app-step.js";
+import { FIRST_RUN_DRY_DELAY_MS } from "./dev-switches.js";
+import { companySlugFromName, type FirstRunTeamCompany, type TeamActionResult } from "./team-step.js";
+import type { FirstRunAppsHandoff, FirstRunTeamHandoff } from "./visual-first-run.js";
+
+/** Joins and starts companies for "Your team". */
+export interface FirstRunTeamHost {
+  join(company: FirstRunTeamCompany): Promise<TeamActionResult>;
+  create(name: string): Promise<TeamActionResult>;
+}
+/** Reads the catalog and connects apps for Note taker and Project management. */
+export interface FirstRunAppsHost {
+  catalog(companyUid: string, kind: FirstRunAppKind): Promise<AppCatalogResult>;
+  /** Resolves once the app is connected (or failed). */
+  connect(companyUid: string, app: FirstRunApp): Promise<AppConnectResult>;
+}
+/** What the later screens settled, for the setup bot's handoff. */
+export interface FirstRunSettled {
+  team: FirstRunTeamHandoff | null;
+  apps: FirstRunAppsHandoff;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ── Your team ──────────────────────────────────────────────────────────────
+
+export interface TeamHostDeps {
+  /** `adapter.company.claimPendingInvite`. */
+  claimInvite?: ((slug: string) => Promise<AdapterResult<Json>>) | null;
+  /** The New company sheet's create (the `create_company` card). */
+  createCompany?:
+    | ((name: string, slug: string) => Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string }>)
+    | null;
+  /** After a join or a create: pin, refresh the roster. Never navigates. */
+  joined?: (companyUid: string | null) => void | Promise<void>;
+  created?: (companyUid: string | null) => void | Promise<void>;
+  dry: boolean;
+  delayMs?: number;
+}
+
+export const JOIN_FAILURE = "Couldn't join the company. Try again.";
+export const CREATE_UNAVAILABLE = "Starting a company isn't available here yet. Continue in chat to start one.";
+
+export function createFirstRunTeamHost(deps: TeamHostDeps): FirstRunTeamHost {
+  const delay = deps.delayMs ?? FIRST_RUN_DRY_DELAY_MS;
+  return {
+    async join(company) {
+      if (deps.dry) {
+        await sleep(delay);
+        return { ok: true, choice: { kind: "company", how: "joined", company } };
+      }
+      if (!deps.claimInvite) return { ok: false, reason: JOIN_FAILURE };
+      const claim = await deps.claimInvite(company.slug);
+      const { inviteClaimOutcome } = await import("../../inbox/company-invite-requests.js");
+      const outcome = inviteClaimOutcome(claim, company.companyUid ?? "", []);
+      if (!outcome.ok) return { ok: false, reason: outcome.message };
+      await deps.joined?.(company.companyUid);
+      return { ok: true, choice: { kind: "company", how: "joined", company } };
+    },
+    async create(name) {
+      const slug = companySlugFromName(name);
+      if (!slug) return { ok: false, reason: "Use at least three letters or digits, starting with a letter." };
+      if (deps.dry) {
+        await sleep(delay);
+        return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: "cmp_dry_run", slug, name } } };
+      }
+      if (!deps.createCompany) return { ok: false, reason: CREATE_UNAVAILABLE };
+      const result = await deps.createCompany(name, slug);
+      if (!result.ok) return { ok: false, reason: result.reason };
+      await deps.created?.(result.companyUid);
+      return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: result.companyUid, slug, name } } };
+    },
+  };
+}
+
+// ── Note taker and Project management ──────────────────────────────────────
+
+export interface AppsHostDeps {
+  catalogSearch?: ((companyUid: string, query: string, limit?: number) => Promise<AdapterResult<Json>>) | null;
+  listConnections?: ((companyUid: string) => Promise<AdapterResult<Json>>) | null;
+  startOAuth?: ((input: IntegrationAppRef) => Promise<AdapterResult<IntegrationOAuthStart>>) | null;
+  install?: ((input: IntegrationInstallInput) => Promise<AdapterResult<Json>>) | null;
+  /** Opens the provider's sign-in page in the system browser. */
+  openUrl: (url: string) => void;
+  dry: boolean;
+  delayMs?: number;
+  /** How often the connection list is read while a browser sign-in runs. */
+  pollMs?: number;
+  timeoutMs?: number;
+  now?: () => number;
+}
+
+/** The catalog's server bound (1..100): one read covers both screens' apps. */
+export const CATALOG_LIMIT = 100;
+
+function connectedDomains(json: unknown): string[] {
+  return (readCompanyConnections(json)?.connections ?? []).map((c) => c.domain).filter((d): d is string => !!d);
+}
+
+export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
+  const delay = deps.delayMs ?? FIRST_RUN_DRY_DELAY_MS;
+  const pollMs = deps.pollMs ?? 3000;
+  const timeoutMs = deps.timeoutMs ?? CONNECTING_TIMEOUT_MS;
+  const now = deps.now ?? Date.now;
+
+  async function waitForConnection(companyUid: string, app: FirstRunApp, since: number): Promise<AppConnectResult> {
+    const list = deps.listConnections;
+    if (!list) return { ok: false, reason: `Could not check on ${app.name}. Try again.`, retry: true };
+    while (now() - since <= timeoutMs) {
+      await sleep(pollMs);
+      const read = await list(companyUid).catch(() => null);
+      if (!read?.ok) continue;
+      const facts = readCompanyConnections(read.value);
+      const made = facts?.connections.find((c) => c.domain === app.domain && Date.parse(c.createdAt) > since);
+      if (made) return { ok: true };
+    }
+    return { ok: false, reason: `${app.name} did not finish connecting. Try again.`, retry: true };
+  }
+
+  return {
+    async catalog(companyUid, kind) {
+      const search = deps.catalogSearch;
+      if (!search) return { ok: false, reason: "Apps can't be listed here. You can skip this.", retry: false };
+      const res = await search(companyUid, "", CATALOG_LIMIT);
+      if (!res.ok) {
+        const verdict = catalogFailureLine(res);
+        return { ok: false, reason: verdict.line, retry: verdict.retry };
+      }
+      const apps = appsForKind(catalogEntries(res.value), kind);
+      const listed = deps.listConnections ? await deps.listConnections(companyUid).catch(() => null) : null;
+      return { ok: true, apps, connected: listed?.ok ? connectedDomains(listed.value) : [] };
+    },
+    async connect(companyUid, app) {
+      if (deps.dry) {
+        await sleep(delay);
+        return { ok: true };
+      }
+      if (app.authClass === "none") {
+        const installed = deps.install ? await deps.install({ companyUid, domain: app.domain }) : null;
+        if (installed?.ok) return { ok: true };
+        const why = connectFailureSentence(installed && !installed.ok ? installed : null, app.name);
+        return { ok: false, reason: why.sentence, retry: why.retry };
+      }
+      if (app.authClass === "key") return { ok: false, reason: `${app.name} needs an access key. Connect it later from Integrations.`, retry: false };
+      const started = deps.startOAuth
+        ? await deps.startOAuth({ companyUid, domain: app.domain, ...(app.entryId ? { catalogEntryId: app.entryId } : {}) })
+        : null;
+      if (!started?.ok || !/^https:\/\//i.test(started.value.authorizationUrl ?? "")) {
+        const why = connectFailureSentence(started && !started.ok ? started : null, app.name);
+        return { ok: false, reason: why.sentence, retry: why.retry };
+      }
+      const since = now();
+      deps.openUrl(started.value.authorizationUrl);
+      return waitForConnection(companyUid, app, since);
+    },
+  };
+}

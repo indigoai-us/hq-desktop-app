@@ -16,6 +16,12 @@
    * time; leaving the step (Next, Finish, Back, Continue in chat) cancels a
    * scan that is still running. A finished scan's counts and report path go
    * to the host (`onimport`) for the setup bot's handoff.
+   *
+   * Slice 2 adds "Your team" (`teamOptions` + `teamHost`): Next joins or
+   * starts the picked company, one action at a time. Slice 5 adds Note taker
+   * and Project management (`appsHost`) for the company picked there; a
+   * connect never holds Next. What they settle goes to the host
+   * (`onsettled`) for the setup bot's handoff.
    */
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import LazyDoor from "../../shell/LazyDoor.svelte";
@@ -70,7 +76,40 @@
     type FirstRunStep,
     type FirstRunStepId,
   } from "./visual-first-run.js";
+  import FirstRunTeamStep from "./FirstRunTeamStep.svelte";
+  import FirstRunAppStep from "./FirstRunAppStep.svelte";
+  import {
+    TEAM_COPY,
+    companyNameIssue,
+    createTeamActionRunner,
+    defaultTeamChoice,
+    defaultTeamPick,
+    teamHandoff,
+    teamPickKey,
+    teamSummary,
+    type FirstRunTeamChoice,
+    type FirstRunTeamCompany,
+    type FirstRunTeamOptions,
+    type FirstRunTeamPick,
+    type TeamActionResult,
+    type TeamActionState,
+  } from "./team-step.js";
+  import {
+    appStepCopy,
+    appSummary,
+    createAppConnectRunner,
+    type AppCatalogResult,
+    type AppCatalogState,
+    type AppConnectResult,
+    type AppConnectRunner,
+    type AppConnectState,
+    type FirstRunApp,
+    type FirstRunAppKind,
+  } from "./app-step.js";
+  import type { FirstRunAppsHandoff } from "./visual-first-run.js";
+  import type { FirstRunAppsHost, FirstRunSettled, FirstRunTeamHost } from "./first-run-hosts.js";
   import "../create-bot/new-bot-takeover.css";
+
 
   interface Props {
     /** The suggested name the name step opens with. */
@@ -112,6 +151,13 @@
     onimport?: ((result: FirstRunImportHandoff) => void) | null;
     /** Test seam for the context step: null follows prefers-reduced-motion. */
     reducedMotion?: boolean | null;
+    /** The person's companies and invites. Without it (or `teamHost`) there is no "Your team". */
+    teamOptions?: FirstRunTeamOptions | null;
+    teamHost?: FirstRunTeamHost | null;
+    /** Without it there are no Note taker and Project management screens. */
+    appsHost?: FirstRunAppsHost | null;
+    /** Every change to what "Your team" and the app screens settled. */
+    onsettled?: ((settled: FirstRunSettled) => void) | null;
   }
 
   let {
@@ -138,10 +184,143 @@
     importHost = null,
     onimport = null,
     reducedMotion = null,
+    teamOptions = null,
+    teamHost = null,
+    appsHost = null,
+    onsettled = null,
   }: Props = $props();
 
-  /** The steps this host can show (no context step without a scan host). */
-  const shownSteps = $derived(firstRunStepsFor({ canImport: !!importHost }, steps));
+  // ── Your team ──────────────────────────────────────────────────────────
+  const canTeam = $derived(!!teamOptions && !!teamHost);
+  const teamOpts = $derived<FirstRunTeamOptions>(teamOptions ?? { invites: [], companies: [] });
+  /** The card picked on the screen; starts on the default. */
+  let teamPick = $state<FirstRunTeamPick>(untrack(() => defaultTeamPick(teamOptions ?? { invites: [], companies: [] })));
+  /** What the person settled on; null until they pass the screen. */
+  let teamChoice = $state<FirstRunTeamChoice | null>(null);
+  let companyName = $state("");
+  let companyNameTried = $state(false);
+  let teamAction = $state<TeamActionState>({ state: "idle" });
+  const teamRunner = createTeamActionRunner((next) => {
+    teamAction = next;
+    if (next.state === "done") {
+      settleTeam(next.choice);
+      // The press that started it moves on once it is done.
+      if (step === "team") goTo(nextFirstRunStep("team", shownSteps));
+    }
+  });
+  /** The choice as the later screens and the handoff see it: settled, else the default. */
+  const effectiveTeam = $derived<FirstRunTeamChoice | null>(
+    teamChoice ?? (canTeam ? defaultTeamChoice(teamOpts) : null),
+  );
+  const appsCompany = $derived(
+    effectiveTeam?.kind === "company" && effectiveTeam.company.companyUid
+      ? { uid: effectiveTeam.company.companyUid, name: effectiveTeam.company.name }
+      : null,
+  );
+  const companyIssue = $derived(teamPick.kind === "create" && companyNameTried ? companyNameIssue(companyName) : null);
+
+  // ── Note taker and Project management ─────────────────────────────────
+  let appCatalog = $state<Record<FirstRunAppKind, AppCatalogState | null>>({ notes: null, projects: null });
+  let appConnect = $state<Record<FirstRunAppKind, AppConnectState>>({ notes: { state: "idle" }, projects: { state: "idle" } });
+  /** Screens passed forward (Next or Finish from them). */
+  let appsPassed = $state<Record<FirstRunAppKind, boolean>>({ notes: false, projects: false });
+  /** One runner per screen and company: a different company starts over. */
+  const appRunners = new Map<string, AppConnectRunner>();
+  let appsCompanyUid: string | null = null;
+
+  /** The steps this host can show (no context step without a scan host, and so on). */
+  const shownSteps = $derived(
+    firstRunStepsFor(
+      {
+        canImport: !!importHost,
+        canTeam,
+        canConnectApps: !!appsHost && !!appsCompany,
+        personal: !appsCompany,
+      },
+      steps,
+    ),
+  );
+
+  function settled(): FirstRunSettled {
+    const apps: FirstRunAppsHandoff = {};
+    for (const kind of ["notes", "projects"] as const) {
+      if (!appsPassed[kind]) continue;
+      const state = appConnect[kind];
+      apps[kind] = state.state === "connected" ? { name: state.app.name, domain: state.app.domain } : null;
+    }
+    return { team: teamChoice ? teamHandoff(teamChoice) : null, apps };
+  }
+  function report(): void {
+    onsettled?.(settled());
+  }
+  function settleTeam(choice: FirstRunTeamChoice): void {
+    teamChoice = choice;
+    report();
+  }
+
+  function runnerFor(kind: FirstRunAppKind): AppConnectRunner | null {
+    const company = appsCompany;
+    const host = appsHost;
+    if (!company || !host) return null;
+    const key = `${kind}:${company.uid}`;
+    let runner = appRunners.get(key);
+    if (!runner) {
+      runner = createAppConnectRunner(
+        (app) => host.connect(company.uid, app),
+        (state) => {
+          // A company changed meanwhile: this answer is not the screen's any more.
+          if (appsCompany?.uid !== company.uid) return;
+          appConnect = { ...appConnect, [kind]: state };
+          if (state.state === "connected") report();
+        },
+      );
+      appRunners.set(key, runner);
+    }
+    return runner;
+  }
+
+  function loadCatalog(kind: FirstRunAppKind): void {
+    const company = appsCompany;
+    const host = appsHost;
+    if (!company || !host) return;
+    appCatalog = { ...appCatalog, [kind]: { state: "loading" } };
+    void Promise.resolve()
+      .then(() => host.catalog(company.uid, kind))
+      .then(
+        (result) => result,
+        (err: unknown): AppCatalogResult => {
+          console.warn("[hq-desktop] first-run catalog read threw:", err);
+          return { ok: false, reason: "Could not load the apps. Try again.", retry: true };
+        },
+      )
+      .then((result) => {
+        if (appsCompany?.uid === company.uid) appCatalog = { ...appCatalog, [kind]: { ...result, state: "loaded" } };
+      });
+  }
+
+  // The company the apps connect to changed: the screens start over.
+  $effect(() => {
+    const uid = appsCompany?.uid ?? null;
+    untrack(() => {
+      if (uid === appsCompanyUid) return;
+      appsCompanyUid = uid;
+      appCatalog = { notes: null, projects: null };
+      appConnect = { notes: { state: "idle" }, projects: { state: "idle" } };
+      appsPassed = { notes: false, projects: false };
+      for (const kind of ["notes", "projects"] as const) {
+        const runner = uid ? appRunners.get(`${kind}:${uid}`) : null;
+        if (runner) appConnect[kind] = runner.current();
+      }
+    });
+  });
+  // An app screen opens: its list loads the first time.
+  $effect(() => {
+    if (step !== "notes" && step !== "projects") return;
+    const kind = step;
+    untrack(() => {
+      if (!appCatalog[kind]) loadCatalog(kind);
+    });
+  });
 
   let step = $state<FirstRunStepId>(untrack(() => initialStep));
   /** The name as typed or confirmed. */
@@ -234,7 +413,82 @@
   function goTo(next: FirstRunStepId | null): void {
     if (!next) return;
     if (step === "context" && next !== "context") leaveContext();
+    const from = shownSteps.findIndex((s) => s.id === step);
+    const to = shownSteps.findIndex((s) => s.id === next);
+    if (to > from) passForward(from, to);
     step = next;
+  }
+
+  /**
+   * Moving forward past screens settles them: "Your team" takes its default
+   * when it was never answered (Finish with defaults), and an app screen
+   * left forward counts as passed (connected or skipped). An app screen
+   * jumped over is not passed: the setup bot still asks about it.
+   */
+  function passForward(from: number, to: number): void {
+    let changed = false;
+    for (let i = Math.max(0, from); i < to; i += 1) {
+      const id = shownSteps[i]?.id;
+      if (id === "team" && !teamChoice && canTeam) {
+        teamChoice = defaultTeamChoice(teamOpts);
+        changed = true;
+      }
+      if ((id === "notes" || id === "projects") && i === from && !appsPassed[id]) {
+        appsPassed = { ...appsPassed, [id]: true };
+        changed = true;
+      }
+    }
+    if (changed) report();
+  }
+
+  /** Next on "Your team": settle the picked card, joining or starting a company first. */
+  function teamNext(): void {
+    if (teamAction.state === "running" || !teamHost) return;
+    const pick = teamPick;
+    const key = teamPickKey(pick);
+    if (teamAction.state === "done" && teamAction.key === key) {
+      settleTeam(teamAction.choice);
+      goTo(nextFirstRunStep("team", shownSteps));
+      return;
+    }
+    if (pick.kind === "personal") {
+      settleTeam({ kind: "personal" });
+      goTo(nextFirstRunStep("team", shownSteps));
+      return;
+    }
+    if (pick.kind === "existing") {
+      settleTeam({ kind: "company", how: "existing", company: pick.company });
+      goTo(nextFirstRunStep("team", shownSteps));
+      return;
+    }
+    const host = teamHost;
+    if (pick.kind === "invite") {
+      teamRunner.run(key, `Joining ${pick.company.name}…`, () => host.join(pick.company));
+      return;
+    }
+    companyNameTried = true;
+    if (companyNameIssue(companyName)) return;
+    const typed = companyName.split(/\s+/).filter(Boolean).join(" ");
+    teamRunner.run(`${key}:${typed}`, `Starting ${typed}…`, () => host.create(typed));
+  }
+
+  /** The person chose a card: the roster arriving later no longer moves the pick. */
+  let teamPickTouched = false;
+  function pickTeam(pick: FirstRunTeamPick): void {
+    teamPickTouched = true;
+    teamPick = pick;
+    teamRunner.clear();
+  }
+  // The roster can answer after the takeover opened: the untouched pick follows the default.
+  $effect(() => {
+    const opts = teamOpts;
+    untrack(() => {
+      if (!teamPickTouched && !teamChoice) teamPick = defaultTeamPick(opts);
+    });
+  });
+
+  function connectApp(kind: FirstRunAppKind, app: FirstRunApp): void {
+    runnerFor(kind)?.connect(app);
   }
 
   function confirmName(next: string, finish: boolean): void {
@@ -279,6 +533,12 @@
   const announcement = $derived(
     step === "context" && importAnnouncement
       ? importAnnouncement
+      : step === "team" && teamAction.state === "running"
+      ? teamAction.label
+      : step === "team" && teamAction.state === "failed"
+      ? teamAction.reason
+      : (step === "notes" || step === "projects") && appConnect[step].state === "failed"
+      ? (appConnect[step] as { reason: string }).reason
       : creation.state === "failed"
       ? creation.reason
       : creation.state === "creating"
@@ -306,11 +566,29 @@
         (step === "name" && locked
           ? card.querySelector<HTMLElement>('[data-testid="new-bot-continue-name"]')
           : card.querySelector<HTMLElement>(
-              'input:not([disabled]), [data-testid="first-run-import-start"]:not([disabled]), [data-testid="first-run-next"]:not([disabled]), [data-testid="first-run-talk"]:not([disabled])',
+              'input:not([disabled]), button[role=radio][aria-checked=true]:not([disabled]), [data-testid="first-run-import-start"]:not([disabled]), [data-testid="first-run-next"]:not([disabled]), [data-testid="first-run-talk"]:not([disabled])',
             )) ?? card;
       target.focus();
     });
   });
+
+  /** The finished scan's counts, for the Done summary. */
+  const importSummary = $derived(importRun.phase === "done" ? (importResultOf(importRun.events)?.summary ?? null) : null);
+  const contextSummary = $derived.by(() => {
+    const s = importSummary;
+    if (!s) return importRun.phase === "running" ? "Still reading…" : "Not brought in";
+    const parts: string[] = [];
+    const companies = s.companies ?? 0;
+    const projects = s.projects ?? 0;
+    if (companies) parts.push(`${companies} ${companies === 1 ? "company" : "companies"}`);
+    if (projects) parts.push(`${projects} ${projects === 1 ? "project" : "projects"}`);
+    return parts.length ? parts.join(", ") : "Brought in";
+  });
+  const summaryRows = $derived(
+    2 +
+      (canTeam ? 1 : 0) +
+      shownSteps.filter((s) => s.id === "context" || s.id === "notes" || s.id === "projects").length,
+  );
 
   const talkLabel = $derived(
     leaving === "talk"
@@ -414,7 +692,9 @@
             oncontinue={(next) => confirmName(next, false)}
           />
         {:else}
-          {@const title = step === "tools" ? toolsTitle : doneTitle}
+          {@const appKind = step === "notes" || step === "projects" ? step : null}
+          {@const appCopy = appKind ? appStepCopy(appKind, shownName, appsCompany?.name ?? "") : null}
+          {@const title = step === "tools" ? toolsTitle : step === "team" ? TEAM_COPY : appCopy ?? doneTitle}
           {@const isLast = nextFirstRunStep(step, shownSteps) === null}
           {@const canLeave = firstRunCanLeave(step, runtimeReady)}
           <NewBotStepHead
@@ -428,7 +708,30 @@
             em={title.em}
           />
           <section class="new-bot-step new-bot-step--fit" data-testid={`first-run-${step}`}>
+            {#if step === "team"}
+              <FirstRunTeamStep
+                options={teamOpts}
+                pick={teamPick}
+                onpick={pickTeam}
+                {companyName}
+                oncompanyname={(next) => (companyName = next)}
+                nameIssue={companyIssue}
+                busy={teamAction.state === "running"}
+                onsubmit={teamNext}
+              />
+            {:else if appKind && appCopy}
+              <FirstRunAppStep
+                kind={appKind}
+                copy={appCopy}
+                company={appsCompany?.name ?? ""}
+                catalog={appCatalog[appKind] ?? { state: "loading" }}
+                connect={appConnect[appKind]}
+                onconnect={(app) => connectApp(appKind, app)}
+                onreload={() => loadCatalog(appKind)}
+              />
+            {:else}
             <p class="new-bot-create-copy">{title.copy}</p>
+            {/if}
             {#if step === "tools"}
               <HomeStep
                 runtimeOnly
@@ -450,7 +753,7 @@
                 {onrequestaitools}
               />
             {:else if step === "done"}
-              <ul class="first-run-summary" data-testid="first-run-summary">
+              <ul class="first-run-summary" class:dense={summaryRows > 3} data-testid="first-run-summary">
                 <li>
                   <span class="first-run-summary-orb" aria-hidden="true"><NewBotOrbIcon kind="local" size={34} /></span>
                   <span class="first-run-summary-text">
@@ -458,6 +761,15 @@
                     <span class="first-run-summary-value" data-testid="first-run-summary-name">{shownName}</span>
                   </span>
                 </li>
+                {#if canTeam}
+                  <li>
+                    <span class="first-run-summary-dot ready" aria-hidden="true"></span>
+                    <span class="first-run-summary-text">
+                      <span class="first-run-summary-label">Your team</span>
+                      <span class="first-run-summary-value" data-testid="first-run-summary-team">{teamSummary(effectiveTeam)}</span>
+                    </span>
+                  </li>
+                {/if}
                 <li>
                   <span class="first-run-summary-dot" class:ready={!!botRuntime} aria-hidden="true"></span>
                   <span class="first-run-summary-text">
@@ -467,13 +779,54 @@
                     </span>
                   </span>
                 </li>
+                {#if shownSteps.some((s) => s.id === "context")}
+                  <li>
+                    <span class="first-run-summary-dot" class:ready={!!importSummary} aria-hidden="true"></span>
+                    <span class="first-run-summary-text">
+                      <span class="first-run-summary-label">Your context</span>
+                      <span class="first-run-summary-value" data-testid="first-run-summary-context">{contextSummary}</span>
+                    </span>
+                  </li>
+                {/if}
+                {#each ["notes", "projects"] as const as kind (kind)}
+                  {#if shownSteps.some((s) => s.id === kind)}
+                    {@const state = appConnect[kind]}
+                    <li>
+                      <span class="first-run-summary-dot" class:ready={state.state === "connected"} aria-hidden="true"></span>
+                      <span class="first-run-summary-text">
+                        <span class="first-run-summary-label">{kind === "notes" ? "Note taker" : "Project management"}</span>
+                        <span class="first-run-summary-value" data-testid={`first-run-summary-${kind}`}>
+                          {appSummary(state.state === "connected" ? state.app : null, appsPassed[kind])}
+                        </span>
+                      </span>
+                    </li>
+                  {/if}
+                {/each}
               </ul>
             {/if}
           </section>
 
           <footer class="new-bot-create-foot">
+            <!-- A failed join, start or connect on this screen comes first. -->
+            {#if step === "team" && teamAction.state === "failed"}
+              <p class="new-bot-price first-run-status" data-testid="first-run-team-status" data-state="failed">
+                {teamAction.reason}
+                <button type="button" class="new-bot-inline-link" data-testid="first-run-team-retry" onclick={() => teamRunner.retry()}>{FIRST_RUN_COPY.retry}</button>
+                <span aria-hidden="true">·</span>
+                <button type="button" class="new-bot-inline-link" data-testid="first-run-team-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
+              </p>
+            {:else if appKind && appConnect[appKind].state === "failed"}
+              {@const failed = appConnect[appKind] as { reason: string; retry: boolean }}
+              <p class="new-bot-price first-run-status" data-testid={`first-run-${appKind}-status`} data-state="failed">
+                {failed.reason}
+                {#if failed.retry}<button type="button" class="new-bot-inline-link" data-testid={`first-run-${appKind}-retry`} onclick={() => runnerFor(appKind)?.retry()}>{FIRST_RUN_COPY.retry}</button>
+                <span aria-hidden="true">·</span>{/if}
+                <button type="button" class="new-bot-inline-link" data-testid={`first-run-${appKind}-chat`} disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
+              </p>
+            {:else if appKind && appConnect[appKind].state === "idle" && creation.state !== "failed"}
+              <p class="new-bot-price first-run-status" data-testid={`first-run-${appKind}-hint`}>Don't use one? Skip this with Next.</p>
             <!-- Creating the assistant runs behind the screens: one quiet line. -->
-            {#if creation.state === "failed"}
+            {:else if creation.state === "failed"}
               <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="failed">
                 {creation.reason}
                 <button type="button" class="new-bot-inline-link" data-testid="first-run-retry" onclick={onretry}>{FIRST_RUN_COPY.retry}</button>
@@ -501,20 +854,22 @@
               </div>
             {:else}
               {@const offersFinish = firstRunOffersFinish(step, shownSteps)}
+              {@const teamBusy = step === "team" && teamAction.state === "running"}
               <div class="new-bot-foot-actions" class:single={!offersFinish}>
                 <button
                   type="button"
                   class={offersFinish ? "new-bot-create-next" : "new-bot-create-submit"}
                   data-testid="first-run-next"
-                  disabled={!canLeave}
-                  onclick={() => goTo(nextFirstRunStep(step, shownSteps))}
-                >{firstRunNextLabel(step, shownSteps)}<RailIcon name="arrow-right" /></button>
+                  disabled={!canLeave || teamBusy}
+                  aria-busy={teamBusy ? "true" : undefined}
+                  onclick={() => (step === "team" ? teamNext() : goTo(nextFirstRunStep(step, shownSteps)))}
+                >{teamBusy && teamAction.state === "running" ? teamAction.label : firstRunNextLabel(step, shownSteps)}{#if !teamBusy}<RailIcon name="arrow-right" />{/if}</button>
                 {#if offersFinish}
                   <button
                     type="button"
                     class="new-bot-create-submit"
                     data-testid="first-run-finish"
-                    disabled={!canLeave}
+                    disabled={!canLeave || (step === "team" && teamAction.state === "running")}
                     onclick={() => goTo(firstRunFinishTarget(runtimeReady, shownSteps))}
                   >{FIRST_RUN_COPY.finish}</button>
                 {/if}
@@ -565,6 +920,16 @@
     border-radius: 12px;
     padding: 10px 14px;
     background: rgba(9, 9, 11, 0.36);
+  }
+  /* Six rows fit without scrolling as two columns of shorter rows. */
+  .first-run-summary.dense {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .first-run-summary.dense li {
+    min-height: 50px;
+    gap: 10px;
+    padding: 8px 12px;
   }
   .first-run-summary-orb {
     display: inline-grid;
