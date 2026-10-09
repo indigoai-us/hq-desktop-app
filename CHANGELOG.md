@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Update now appears on every Updates row that has an update available, including the CLI.
+
 ## [0.11.1] — 2026-10-09
 
 - Meetings now explains why a notetaker could not join and offers a retry after the meeting settings are fixed.
