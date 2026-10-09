@@ -47,6 +47,8 @@ export interface BriefAdapter {
     readRecordedBody?(url: string): AdapterPromise<string>;
   } | null;
   files?: { getFileContent?(path: string): AdapterPromise<string> } | null;
+  /** Live DM thread reads for the Team card. */
+  messaging?: { fetchDmThread?(args: { withPersonUid: string; limit?: number }): AdapterPromise<Json> } | null;
   notifications?: { fetchDmThreads?(opts?: Json): AdapterPromise<Json> } | null;
   agents?: {
     listLocalSessions?(

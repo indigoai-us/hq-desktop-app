@@ -22,8 +22,10 @@
     creator?: BriefCreator | null;
     /** The shell's run service, so a run outlives this page. */
     run?: BriefCreateRun | null;
+    /** Opens the DM with this uid in Messages. */
+    onopenthread?: (uid: string) => void;
   }
-  let { adapter, companies, onlaunch, creator = null, run = null }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run = null, onopenthread }: Props = $props();
 
   let mod = $state<BriefModule | null>(null);
   let failed = $state(false);
@@ -46,7 +48,7 @@
 
 <div class="host" data-testid="brief-host">
   {#if mod}
-    <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} />
+    <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} {onopenthread} />
   {:else if failed}
     <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
   {:else}

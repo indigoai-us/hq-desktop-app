@@ -124,6 +124,8 @@ export interface BriefTeammate {
   tone: BriefTone;
   /** Fleet agent (agt_ uid) rather than a person. */
   isAgent?: boolean;
+  /** DMs from them in the brief's window, shown as a small badge. */
+  dmCount?: number;
   detail?: {
     status: string;
     between: BriefLine[];

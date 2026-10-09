@@ -2,6 +2,8 @@
   /** What the team is on. Each row reveals a DM-draft action on hover; the peek shows what is between you. */
   import { copyBriefPrompt, peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import type { BriefTeammate } from "./brief-types.js";
+  import { onMount } from "svelte";
+  import { previewLine, shortAgo, teammateReplyPrompt } from "./brief-dms.js";
 
   let { team, rows }: { team: BriefTeammate[]; rows: number } = $props();
   const brief = useBrief();
@@ -11,12 +13,28 @@
   const needYou = $derived(team.filter((t) => t.tone === "decision").length);
   let copied = $state<string | null>(null);
 
+  /** Real senders (a uid, not a sample) have live DMs to read. */
+  const live = (t: BriefTeammate) => !t.sample && /^(prs|agt)_/.test(t.id);
+  const latest = (t: BriefTeammate) => {
+    const l = brief.dms[t.id];
+    return l?.state === "ready" ? (l.dms[0] ?? null) : null;
+  };
+
   function dmPrompt(t: BriefTeammate): string {
-    const about = t.detail?.next ?? t.doing;
-    return `Draft a short, friendly DM to ${t.name} in my voice. Context: ${t.doing}. ${about} Do not send it; show me the draft.`;
+    const l = brief.dms[t.id];
+    if (l?.state === "ready") return teammateReplyPrompt(t.name, l.dms, t.isAgent);
+    const about = t.detail?.next ? ` ${t.detail.next}` : "";
+    return `Draft a short, friendly DM to ${t.name} in my voice.${about} Do not send it; show me the draft.`;
   }
 
+  onMount(() => {
+    for (const t of shown) if (live(t)) void brief.loadDms(t.id);
+  });
+
   function content(t: BriefTeammate): PeekContent {
+    if (live(t)) {
+      return { title: t.name, status: t.isAgent ? "Agent" : t.detail?.status, sections: [], dms: { uid: t.id, name: t.name, isAgent: !!t.isAgent } };
+    }
     const sections: PeekContent["sections"] = [];
     if (t.detail?.between.length) sections.push({ label: "Between you", lines: t.detail.between });
     if (t.detail?.owns.length) sections.push({ label: "Owns", lines: t.detail.owns.map((o) => ({ label: o, state: "" })) });
@@ -41,7 +59,15 @@
     {#each shown as t, i (t.id)}
       <div class="p" role="group" aria-label={t.name} use:peek={{ state: brief, content: () => content(t) }}>
         <div class="mono" style="background:linear-gradient(145deg,{GRAD[i % GRAD.length]});--s:{DOT[t.tone]}">{t.name[0]}</div>
-        <div class="txt"><div class="n">{t.name}</div><div class="d">{t.doing}</div></div>
+        <div class="txt">
+          <div class="n">{t.name}{#if t.dmCount}<span class="cnt" title="{t.dmCount} DMs to you" data-testid="brief-team-count">{t.dmCount}</span>{/if}</div>
+          {#if latest(t)}
+            {@const m = latest(t)!}
+            <div class="d" data-testid="brief-team-preview">{#if t.isAgent}<span class="ag">Agent · </span>{/if}{previewLine(m.text, 56)} <span class="ago">· {shortAgo(m.at)}</span></div>
+          {:else}
+            <div class="d">{t.doing}</div>
+          {/if}
+        </div>
         <button type="button" class="act" style="--g:{GRAD[i % GRAD.length]}" title="Copy a DM-draft prompt" onclick={() => void draft(t)}>{copied === t.id ? "COPIED" : "DM"}</button>
       </div>
     {/each}
@@ -101,6 +127,28 @@
   .n {
     font-size: 13px;
     font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cnt {
+    font-family: var(--b-mono);
+    font-size: 10px;
+    font-weight: 400;
+    padding: 0 6px;
+    border-radius: 999px;
+    line-height: 16px;
+    color: var(--b-t2);
+    box-shadow: var(--b-well);
+  }
+  .ag,
+  .ago {
+    color: rgba(255, 255, 255, 0.4);
+  }
+  .d {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .d {
     font-size: 11.5px;

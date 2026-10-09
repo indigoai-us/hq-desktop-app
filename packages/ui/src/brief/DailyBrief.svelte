@@ -27,6 +27,7 @@
   import BriefHousekeeping from "./BriefHousekeeping.svelte";
   import type { Snippet } from "svelte";
   import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
+  import type { BriefDmApi } from "./brief-dms.js";
   import {
     BriefState,
     launchBriefPromptViaClipboard,
@@ -46,12 +47,17 @@
     header?: Snippet;
     /** The shown run's housekeeping.json, when it has one. */
     housekeeping?: BriefHousekeepingData | null;
+    /** Live DM reads for the Team card. */
+    dmApi?: BriefDmApi | null;
+    /** Opens the DM with this uid in Messages. */
+    onopenthread?: (uid: string) => void;
   }
-  let { input, companies = [], onlaunch, header, housekeeping = null }: Props = $props();
+  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread }: Props = $props();
 
   const state = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
     () => companies,
+    { dmApi: () => dmApi, openThread: () => onopenthread },
   );
   provideBrief(state);
 

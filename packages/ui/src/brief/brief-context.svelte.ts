@@ -5,6 +5,7 @@
 
 import { getContext, setContext } from "svelte";
 import type { BriefLine } from "./brief-types.js";
+import { loadSenderDms, type BriefDmApi, type BriefDmLoad } from "./brief-dms.js";
 
 export type BriefEngine = "claude" | "codex" | "grok";
 export const ENGINES: { id: BriefEngine; label: string; short: string }[] = [
@@ -24,6 +25,8 @@ export interface PeekContent {
   sample?: boolean;
   /** Actionable items show their full prompt and the launch controls. */
   prompt?: { id: string; text: string };
+  /** A person or agent: the peek lists their recent DMs, read live. */
+  dms?: { uid: string; name: string; isAgent: boolean };
 }
 
 export interface BriefCompanyLogo {
@@ -66,9 +69,16 @@ export class BriefState {
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   private showTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Each sender's recent DMs, loaded on demand and kept for this brief. */
+  dms = $state<Record<string, BriefDmLoad>>({});
+
   constructor(
     readonly launch: BriefLaunch,
     readonly companies: () => readonly BriefCompanyLogo[],
+    readonly links: {
+      dmApi?: () => BriefDmApi | null | undefined;
+      openThread?: () => ((uid: string) => void) | undefined;
+    } = {},
   ) {
     try {
       const saved = typeof localStorage === "undefined" ? null : localStorage.getItem(ENGINE_KEY);
@@ -76,6 +86,24 @@ export class BriefState {
     } catch {
       // Storage refused: keep the default engine.
     }
+  }
+
+  /** Load a sender's DMs once; again after an error or when forced. */
+  async loadDms(uid: string, force = false): Promise<void> {
+    const cur = this.dms[uid];
+    if (cur && !force && cur.state !== "error") return;
+    this.dms = { ...this.dms, [uid]: { state: "loading" } };
+    const next = await loadSenderDms(this.links.dmApi?.(), uid);
+    this.dms = { ...this.dms, [uid]: next };
+  }
+
+  /** The host can open a DM in Messages. */
+  get canOpenThread(): boolean {
+    return !!this.links.openThread?.();
+  }
+
+  openThread(uid: string): void {
+    this.links.openThread?.()?.(uid);
   }
 
   setEngine(engine: BriefEngine): void {

@@ -5033,6 +5033,22 @@
     void briefRun?.rehydrate();
     return () => briefRun?.stop();
   });
+  /** The Brief's "Open thread": the DM with that person or agent, in Messages. */
+  function openBriefDm(uid: string): void {
+    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === uid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${uid}`,
+        kind: "dm",
+        title: localBots.find((b) => b.agentUid === uid)?.name ?? "Message",
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: uid,
+      },
+    );
+  }
   const briefRailRun = $derived.by(() => {
     const p = briefRun?.phase;
     if (!p) return null;
@@ -13945,6 +13961,7 @@
             onlaunch={launchBriefPrompt}
             creator={briefCreator}
             run={briefRun}
+            onopenthread={openBriefDm}
           />
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}

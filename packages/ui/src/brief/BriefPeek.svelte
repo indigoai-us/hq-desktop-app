@@ -1,6 +1,7 @@
 <script lang="ts">
   /** The detail card beside whatever is hovered. Actionable items show the full prompt before launch. */
   import BriefLaunch from "./BriefLaunch.svelte";
+  import BriefPeekDms from "./BriefPeekDms.svelte";
   import { useBrief } from "./brief-context.svelte.js";
 
   const brief = useBrief();
@@ -16,6 +17,7 @@
     data-testid="brief-peek"
     style:left="{p.x}px"
     style:top="{p.y}px"
+    style:max-height="calc(100vh - {p.y + 16}px)"
     onmouseenter={() => brief.keepPeek()}
     onmouseleave={() => brief.hidePeekSoon()}
   >
@@ -31,7 +33,10 @@
         {/each}
       </div>
     {/each}
-    {#if p.content.prompt}
+    {#if p.content.dms}
+      {#key p.content.dms.uid}<BriefPeekDms {...p.content.dms} />{/key}
+    {/if}
+    {#if p.content.prompt && !p.content.dms}
       <div class="sec">
         <div class="eyebrow">Prompt</div>
         <div class="prompt" data-testid="brief-peek-prompt">{p.content.prompt.text}</div>

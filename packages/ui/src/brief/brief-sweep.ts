@@ -142,7 +142,8 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
     seen.set(name, {
       id: m.from_uid || name,
       name: name.split(/\s+/)[0]!,
-      doing: `${agent ? "Agent · " : ""}${count} DM${count === 1 ? "" : "s"} to you`,
+      doing: agent ? "Agent" : "Messaged you",
+      dmCount: count,
       tone: agent ? "neutral" : "ok",
       isAgent: agent,
     });
