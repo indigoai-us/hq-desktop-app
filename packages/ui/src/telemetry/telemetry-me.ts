@@ -11,6 +11,8 @@ import type { AdapterPromise, Json } from "@hq/platform";
 import {
   OTHER_BAND,
   dayTotal,
+  localIsoDate,
+  localTimeZone,
   listRateUsd,
   type DayStack,
   type ModelId,
@@ -136,7 +138,12 @@ function unattributedNote(hiddenModels: string[], noModelTokens: number): string
 type RowAcc = Buckets & { models: Set<string>; family?: ModelId };
 
 /** Build the view snapshot from a `/v1/telemetry/me` body. */
-export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetrySnapshot {
+export function snapshotFromMe(
+  body: unknown,
+  range: TelemetryRange,
+  now: number = Date.now(),
+  timeZone: string = localTimeZone(),
+): TelemetrySnapshot {
   const root = record(body);
   const totals = record(root.totals);
   const daily = Array.isArray(root.daily) ? root.daily : [];
@@ -208,7 +215,9 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
   // (no model id), go into the Other band, so each day adds up.
   const shownLabels = models.map((m) => m.label);
   const stackBands = unattributed ? [...shownLabels, OTHER_BAND] : shownLabels;
-  const days: DayStack[] = daily.map((point, i) => {
+  // Days are UTC dates; the highlighted day is the one that is today locally.
+  const localToday = localIsoDate(now, timeZone);
+  const days: DayStack[] = daily.map((point) => {
     const p = record(point);
     const stack: DayStack = { label: dayLabel(String(p.date ?? "")), opus: 0, sonnet: 0, haiku: 0, bands: {} };
     const bands = stack.bands!;
@@ -226,7 +235,7 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
     const noModel = bucketTotal(buckets(p.tokens)) - modelTokens;
     if (noModel > 0) bands[OTHER_BAND] = (bands[OTHER_BAND] ?? 0) + noModel;
     if (bands[OTHER_BAND] && !stackBands.includes(OTHER_BAND)) stackBands.push(OTHER_BAND);
-    if (i === daily.length - 1) stack.today = true;
+    if (p.date === localToday) stack.today = true;
     return stack;
   });
   const peak = days.reduce((m, d) => Math.max(m, dayTotal(d)), 0);

@@ -20,6 +20,7 @@
   import ProviderMark from "../common/ProviderMark.svelte";
   import type { TelemetryCache } from "./telemetry-cache.js";
   import {
+    DAY_ZONE_LABEL,
     LIST_RATE_LABEL,
     bandPercent,
     chartBandLabels,
@@ -298,7 +299,7 @@
       </section>
 
       <section data-section="tokens-per-day" tabindex="-1">
-        <div class="sech">Tokens per day · stacked by model <span class="grow"></span>
+        <div class="sech">Tokens per day · stacked by model <span class="zone" data-testid="telemetry-day-zone" title="Days start at midnight UTC, not your local midnight">{DAY_ZONE_LABEL}</span><span class="grow"></span>
           <span class="lg" data-testid="telemetry-legend">{#each bandLabels as label (label)}<span class="lgi" data-legend={label}><ProviderMark provider={vizSlotFor(label).provider} color={vizColor(label)} />{label}</span>{/each}</span>
         </div>
         <div class="chart" data-testid="telemetry-bars">
@@ -477,6 +478,7 @@
   .toolbar h1 { font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); margin: 0 4px 0 0; white-space: nowrap; }
   .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .grow { flex: 1; }
+  .zone { color: var(--t3, var(--v4-text-3)); font-weight: 400; }
   .canvas { flex: 1; min-height: 0; padding: 16px 20px 20px; overflow: auto; display: flex; flex-direction: column; gap: 24px; }
   section:focus { outline: none; }
   /* Totals: one tier. Numbers at the canvas's second size (20px, regular so
