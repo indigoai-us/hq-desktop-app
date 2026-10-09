@@ -66,7 +66,7 @@
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
   import { checkBriefBot } from "../brief/brief-runs.js";
-  import type { BriefCreator } from "../brief/brief-create.svelte.js";
+  import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
     RAIL_ATLAS_FLAG,
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
@@ -5012,6 +5012,35 @@
       }
     : null;
   /** The finish buttons: open the HQ folder in a coding tool with `/startwork` ready to go. */
+  /**
+   * The shell's one brief run. It lives as long as the shell, so a run keeps
+   * polling while the person is on another page, the rail shows its progress,
+   * and ready still notifies. A reload resumes the remembered run.
+   */
+  const briefRun: BriefCreateRun | null = briefCreator
+    ? new BriefCreateRun({
+        creator: briefCreator,
+        read: async (path) => {
+          const res = await adapter.files.getFileContent(path);
+          if (res.ok) return res.value;
+          const why = res.message ?? res.reason;
+          if (!/not found/i.test(why)) console.warn("[daily-brief] could not read", path, why);
+          return null;
+        },
+      })
+    : null;
+  onMount(() => {
+    void briefRun?.rehydrate();
+    return () => briefRun?.stop();
+  });
+  const briefRailRun = $derived.by(() => {
+    const p = briefRun?.phase;
+    if (!p) return null;
+    if (p.kind === "dispatching") return { progress: 0, step: "Waking your bot…" };
+    if (p.kind === "waiting") return { progress: 0, step: "Waiting for your bot to start" };
+    if (p.kind === "running") return { progress: p.progress, step: p.step };
+    return null;
+  });
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
     setupLaunchError = null;
     const res = await adapter.settings.getSetupStatus();
@@ -13233,6 +13262,7 @@
       youExpanded={accountMenuOpen}
       youLive={youPresence.live}
       youWork={youPresence.work}
+      briefRun={briefRailRun}
     />
     {#if accountMenuOpen}
       <AccountMenu
@@ -13914,6 +13944,7 @@
             companies={railCompanyRoster.map((company) => ({ uid: company.uid, slug: company.slug, label: company.label, iconUrl: company.iconUrl }))}
             onlaunch={launchBriefPrompt}
             creator={briefCreator}
+            run={briefRun}
           />
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}

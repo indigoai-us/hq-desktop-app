@@ -25,10 +25,16 @@
     onlaunch?: BriefLaunch;
     /** Starts runs on the main local bot. Absent on hosts without local bots. */
     creator?: BriefCreator | null;
+    /**
+     * The shell's run service. It outlives this page, so a run keeps going
+     * (and keeps polling) while the person is elsewhere. Without one the page
+     * makes its own from `creator`.
+     */
+    run?: BriefCreateRun | null;
     /** Test seam; defaults to the adapter's HQ file read. */
     source?: BriefSweepSource | null;
   }
-  let { adapter, companies, onlaunch, creator = null, source: sourceProp }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, source: sourceProp }: Props = $props();
 
   const LAST_KEY = "hq.brief.lastOpenedAt";
   // Fixed for the page's life; the host remounts the page for a new adapter.
@@ -105,21 +111,25 @@
   // The host passes one creator for the page's life.
   // svelte-ignore state_referenced_locally
   const hostCreator = demo ? demo.creator : creator;
-  const run = hostCreator
-    ? new BriefCreateRun({
-        creator: hostCreator,
-        read: async (path) => (source ? source.readHqFile(path) : null),
-        onfinish: async (phase) => {
-          entries = await loadIndex();
-          if (!alive) return;
-          // Ready: show the new brief. Failed: show whatever the run did write.
-          if (phase.runId) await show(phase.runId);
-        },
-      })
-    : null;
+  // svelte-ignore state_referenced_locally
+  const ownsRun = demo != null || !sharedRun;
+  // svelte-ignore state_referenced_locally
+  const run: BriefCreateRun | null = !ownsRun
+    ? sharedRun
+    : hostCreator
+      ? new BriefCreateRun({ creator: hostCreator, read: async (path) => (source ? source.readHqFile(path) : null) })
+      : null;
+  // Ready: show the new brief. Failed: show whatever the run did write.
+  const unsubscribe = run?.subscribe(async (phase) => {
+    entries = await loadIndex();
+    if (alive && phase.runId) await show(phase.runId);
+  });
 
-  /** Set when the ready bloom has played, so the sunrise gives way to the brief. */
-  let bloomDone = $state(false);
+  /**
+   * Set when the ready bloom has played, so the sunrise gives way to the
+   * brief. A run that finished while the page was closed does not replay it.
+   */
+  let bloomDone = $state(run?.phase.kind === "ready");
   const cp = $derived(run?.phase ?? { kind: "idle" as const });
   /** Where the sun was when a run failed, so it stalls there. */
   let lastProgress = 0;
@@ -135,7 +145,7 @@
     }
     switch (cp.kind) {
       case "dispatching":
-        return { phase: "running", progress: 0, step: "Sending to your bot" };
+        return { phase: "running", progress: 0, step: "Waking your bot…" };
       case "waiting":
         return { phase: "running", progress: 0, step: "Waiting for your bot to start" };
       case "running":
@@ -160,12 +170,16 @@
     void (async () => {
       entries = await loadIndex();
       if (!alive) return;
+      // Resume a run already in flight (a reload, or one started elsewhere).
+      if (run && !run.busy) void run.rehydrate(entries.filter((e) => e.state === "running").map((e) => e.runId));
       await show(latestReadyRun(entries)?.runId ?? null);
     })();
   });
   onDestroy(() => {
     alive = false;
-    run?.stop();
+    unsubscribe?.();
+    // A shared run keeps polling in the background; only a page-owned one stops.
+    if (ownsRun) run?.stop();
   });
 </script>
 

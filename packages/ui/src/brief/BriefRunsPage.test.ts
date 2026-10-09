@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import type { LocalBotRow } from "@hq/platform";
 import BriefRunsPage from "./BriefRunsPage.svelte";
-import type { BriefCreator } from "./brief-create.svelte.js";
+import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
 import type { BriefSweepSource } from "./brief-data.js";
 
 const NEW = "brief-20261008-090000";
@@ -201,5 +201,50 @@ describe("BriefRunsPage", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("a shared run survives the page unmounting and shows its progress on return", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    const f: Record<string, string> = {};
+    const creator: BriefCreator = {
+      company: () => null,
+      check: async () => ({ ok: true, bot }),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    const timers: (() => void)[] = [];
+    const shared = new BriefCreateRun({
+      creator,
+      read: async (p) => f[p] ?? null,
+      storage: null,
+      setTimer: (fn) => (timers.push(fn), timers.length),
+      clearTimer: () => {},
+      log: () => {},
+    });
+    render(f, { creator, run: shared });
+    await settle();
+    q("brief-create")!.click();
+    // The first frame is the sunrise, painted before the bot check resolves.
+    flushSync();
+    expect(q("brief-dawn-step")?.textContent).toContain("Waking your bot");
+    await settle();
+    const runId = (shared.phase as { runId: string }).runId;
+    unmount(app!);
+    app = null;
+    target.remove();
+
+    // Elsewhere in the app: the shared poller keeps going.
+    f[`workspace/brief/${runId}/status.json`] = JSON.stringify({ run_id: runId, state: "running", step: "Sweeping your day", progress: 0.6 });
+    timers.shift()!();
+    await settle();
+    expect(shared.phase).toMatchObject({ kind: "running", progress: 0.6 });
+
+    render(f, { creator, run: shared });
+    await settle();
+    expect(q("brief-dawn-step")?.textContent).toContain("Sweeping your day");
+    expect(q("brief-create")).toBeNull();
+    expect(creator.dispatch).toHaveBeenCalledTimes(1);
+    shared.stop();
   });
 });

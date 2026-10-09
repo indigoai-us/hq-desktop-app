@@ -8,6 +8,11 @@
 import type { LocalBotRow } from "@hq/platform";
 import {
   BRIEF_POLL_MS,
+  BRIEF_STALL_TIMEOUT_MS,
+  BRIEF_START_TIMEOUT_MS,
+  isBriefRunId,
+  parseBriefStatus,
+  runIdTime,
   advanceBriefRun,
   briefJobMessage,
   briefRunId,
@@ -41,7 +46,14 @@ export interface BriefCreateDeps {
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   log?: (message: string, err?: unknown) => void;
+  /** Where the active run id is kept so a reload resumes it. Default: localStorage. */
+  storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
 }
+
+/** localStorage key holding the run id while a run is in flight. */
+export const ACTIVE_RUN_KEY = "hq.brief.activeRun";
+
+type Finished = Extract<BriefCreatePhase, { kind: "ready" | "failed" }>;
 
 export class BriefCreateRun {
   phase = $state<BriefCreatePhase>({ kind: "idle" });
@@ -52,8 +64,11 @@ export class BriefCreateRun {
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
   private readonly log: (message: string, err?: unknown) => void;
+  private readonly storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+  private readonly listeners = new Set<(phase: Finished) => void>();
 
   constructor(private readonly deps: BriefCreateDeps) {
+    this.storage = deps.storage !== undefined ? deps.storage : defaultStorage();
     this.now = deps.now ?? (() => new Date());
     this.setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
@@ -65,19 +80,36 @@ export class BriefCreateRun {
     return k === "dispatching" || k === "waiting" || k === "running";
   }
 
-  /** Check the bot, send the job, start polling. No-op while a run is in flight. */
-  async start(): Promise<void> {
-    if (this.busy) return;
+  /**
+   * Check the bot, send the job, start polling. No-op while a run is in
+   * flight. The phase flips to `dispatching` synchronously, before any await,
+   * so the click paints the sunrise at once; the bot lookup, model check and
+   * send happen after that.
+   */
+  start(): Promise<void> {
+    if (this.busy) return Promise.resolve();
     this.stopped = false;
+    const runId = briefRunId(this.now());
+    this.phase = { kind: "dispatching", runId };
+    return this.dispatch(runId);
+  }
+
+  private async dispatch(runId: string): Promise<void> {
     const { creator } = this.deps;
-    const check = await creator.check();
+    let check: Awaited<ReturnType<BriefCreator["check"]>>;
+    try {
+      check = await creator.check();
+    } catch (err) {
+      this.log("bot check failed", err instanceof Error ? err.message : err);
+      this.finish({ kind: "failed", runId: null, message: "Could not check your bot. Try again in a moment." });
+      return;
+    }
+    if (this.stopped) return;
     if (!check.ok) {
       this.blockedBot = check.bot;
       this.phase = { kind: "blocked", message: check.message, fix: check.fix };
       return;
     }
-    const runId = briefRunId(this.now());
-    this.phase = { kind: "dispatching", runId };
     let error: string | null;
     try {
       error = await creator.dispatch(check.bot, briefJobMessage(runId, creator.company()), runId);
@@ -89,8 +121,85 @@ export class BriefCreateRun {
       this.finish({ kind: "failed", runId: null, message: error });
       return;
     }
+    this.remember(runId);
     this.phase = { kind: "waiting", runId, sentAt: this.now().getTime() };
     this.schedule();
+  }
+
+  /**
+   * Pick up a run that was in flight before this page, window or app started:
+   * the remembered run id first, then any `running` entry from index.jsonl.
+   * A run whose status is still fresh resumes polling; one that finished
+   * meanwhile ends here (ready still notifies). Returns true when it found one.
+   */
+  async rehydrate(indexRunning: readonly string[] = []): Promise<boolean> {
+    if (this.busy || this.phase.kind === "ready") return false;
+    const stored = this.storage?.getItem(ACTIVE_RUN_KEY) ?? null;
+    const ids = [...new Set([...(stored && isBriefRunId(stored) ? [stored] : []), ...indexRunning])];
+    for (const runId of ids) {
+      let text: string | null;
+      try {
+        text = await this.deps.read(briefRunPath(runId, "status.json"));
+      } catch (err) {
+        this.log("status read failed", err instanceof Error ? err.message : err);
+        continue;
+      }
+      if (this.busy) return true;
+      const now = this.now().getTime();
+      const status = text != null ? parseBriefStatus(text) : null;
+      if (status && status.runId === runId) {
+        if (status.state === "ready") {
+          this.finish({ kind: "ready", runId });
+          return true;
+        }
+        if (status.state === "failed") {
+          this.finish({ kind: "failed", runId, message: status.error ?? "The brief stopped before it finished." });
+          return true;
+        }
+        const updated = status.updatedAt ? Date.parse(status.updatedAt) : NaN;
+        if (Number.isFinite(updated) && now - updated > BRIEF_STALL_TIMEOUT_MS) {
+          if (runId === stored) this.forget();
+          continue;
+        }
+        this.stopped = false;
+        this.remember(runId);
+        this.phase = { kind: "running", runId, sentAt: now, step: status.step || "Working", progress: status.progress, lastChangeAt: now, updatedAt: status.updatedAt };
+        this.schedule();
+        return true;
+      }
+      // Sent but not started yet: wait out the rest of the start window.
+      const sentAt = runIdTime(runId)?.getTime() ?? NaN;
+      if (runId === stored && Number.isFinite(sentAt) && now - sentAt < BRIEF_START_TIMEOUT_MS) {
+        this.stopped = false;
+        this.phase = { kind: "waiting", runId, sentAt };
+        this.schedule();
+        return true;
+      }
+      if (runId === stored) this.forget();
+    }
+    return false;
+  }
+
+  /** Called with every finished run; returns the unsubscribe. */
+  subscribe(fn: (phase: Finished) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  private remember(runId: string): void {
+    try {
+      this.storage?.setItem(ACTIVE_RUN_KEY, runId);
+    } catch (err) {
+      this.log("could not remember the active run", err);
+    }
+  }
+
+  private forget(): void {
+    try {
+      this.storage?.removeItem(ACTIVE_RUN_KEY);
+    } catch (err) {
+      this.log("could not clear the active run", err);
+    }
   }
 
   /** Run the blocked check's fix, then go back to idle so the person can retry. */
@@ -140,11 +249,21 @@ export class BriefCreateRun {
     }, BRIEF_POLL_MS);
   }
 
-  private finish(phase: Extract<BriefCreatePhase, { kind: "ready" | "failed" }>): void {
+  private finish(phase: Finished): void {
     this.phase = phase;
+    this.forget();
     if (phase.kind === "ready") {
       this.deps.creator.notify("Your daily brief is ready", "Open HQ to read it.");
     }
     this.deps.onfinish?.(phase);
+    for (const fn of this.listeners) fn(phase);
+  }
+}
+
+function defaultStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
   }
 }

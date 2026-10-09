@@ -10,7 +10,7 @@
   import { loadBrief } from "./brief-lazy.js";
   import type { BriefAdapter } from "../brief/brief-data.js";
   import type { BriefLaunch } from "../brief/brief-context.svelte.js";
-  import type { BriefCreator } from "../brief/brief-create.svelte.js";
+  import type { BriefCreateRun, BriefCreator } from "../brief/brief-create.svelte.js";
 
   type BriefModule = Awaited<ReturnType<typeof loadBrief>>;
 
@@ -20,8 +20,10 @@
     companies: { uid: string; slug?: string | null; label: string; iconUrl?: string | null }[];
     onlaunch?: BriefLaunch;
     creator?: BriefCreator | null;
+    /** The shell's run service, so a run outlives this page. */
+    run?: BriefCreateRun | null;
   }
-  let { adapter, companies, onlaunch, creator = null }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run = null }: Props = $props();
 
   let mod = $state<BriefModule | null>(null);
   let failed = $state(false);
@@ -44,7 +46,7 @@
 
 <div class="host" data-testid="brief-host">
   {#if mod}
-    <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} />
+    <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} />
   {:else if failed}
     <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
   {:else}

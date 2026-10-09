@@ -28,6 +28,8 @@
     youLive?: boolean;
     /** Hover line for current work. Empty keeps the default tooltip. */
     youWork?: string;
+    /** A Daily Brief run in progress: a slim bar on the Brief item, step on hover. */
+    briefRun?: { progress: number; step: string } | null;
   }
 
   let {
@@ -43,6 +45,7 @@
     youExpanded = false,
     youLive = false,
     youWork = "",
+    briefRun = null,
   }: Props = $props();
 
   let dragUid = $state("");
@@ -92,7 +95,9 @@
   <Tooltip
     label={item.kind === "you" && youWork
       ? `${item.label} · ${youWork}`
-      : railTooltip(item, { unread: unreadCount })}
+      : item.kind === "brief" && briefRun
+        ? `Daily Brief · ${briefRun.step} · ${Math.round(briefRun.progress * 100)}%`
+        : railTooltip(item, { unread: unreadCount })}
     side="right"
     delay={150}
   >
@@ -136,6 +141,17 @@
           {#if unreadCount > 0}<span class="badge" data-testid="rail-home-badge" aria-hidden="true"></span>{/if}
         {:else if item.kind === "brief"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18M6 17a6 6 0 0 1 12 0M12 5v2M5.6 8.6l1.4 1.4M18.4 8.6 17 10" /></svg>
+          {#if briefRun}
+            <span
+              class="run-bar"
+              role="progressbar"
+              aria-label="Daily Brief in progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(briefRun.progress * 100)}
+              data-testid="rail-brief-progress"
+            ><span style="width:{Math.max(6, Math.round(briefRun.progress * 100))}%"></span></span>
+          {/if}
         {:else if item.kind === "meetings"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="13" height="10" rx="2" /><path d="m16 11 5-3v8l-5-3" /></svg>
         {:else if item.kind === "company"}
@@ -263,6 +279,23 @@
     stroke-linejoin: round;
   }
 
+  .run-bar {
+    position: absolute;
+    left: 9px;
+    right: 9px;
+    bottom: 5px;
+    height: 3px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--v4-text-1) 14%, transparent);
+    overflow: hidden;
+  }
+  .run-bar > span {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: #ffb580;
+    transition: width 0.6s ease;
+  }
   .badge {
     position: absolute;
     top: 7px;
