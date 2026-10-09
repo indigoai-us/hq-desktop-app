@@ -197,7 +197,7 @@ describe("Settings › Storage › Big files", () => {
 
     release();
     await settle();
-    expect(q("settings-storage-offload-result")?.textContent).toContain("Moved to HQ cloud. Freed 365.0 MB.");
+    expect(q("settings-storage-offload-result")?.textContent).toContain("to HQ cloud. Freed 365.0 MB on this");
     expect(status).toHaveBeenCalledTimes(2);
   });
 
@@ -358,7 +358,7 @@ describe("Big files model", () => {
     });
     expect(offloadOutcome({ ...someFreed, errors: [] }, "this PC")).toEqual({
       ok: true,
-      lines: ["Moved to HQ cloud. Freed 100.0 MB."],
+      lines: ["Moved 6 old copies (361.0 MB) to HQ cloud. Freed 100.0 MB on this PC."],
     });
   });
 

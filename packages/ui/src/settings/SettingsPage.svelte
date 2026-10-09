@@ -2739,7 +2739,7 @@
         >
           <h2>Storage</h2>
           {#if activeTab === "storage"}
-            <StorageSettingsPane {adapter} />
+            <StorageSettingsPane {adapter} showHeading={false} />
           {/if}
         </section>
 

@@ -10,6 +10,8 @@
 
 import type {
   CloudFileEventPayload,
+  StorageHoldingRef,
+  StorageLocalPruneResult,
   StorageOffloadResult,
   StorageOffloadStatus,
   StoragePruneRequest,
@@ -144,21 +146,153 @@ export function storageErrorCopy(message: string | null | undefined): string {
 }
 
 /**
- * Bytes a prune frees (or would free, on a dry run). Local real runs report
- * the git dir size before and after; dry runs report an estimate.
+ * Short local date and time for "freed by <time>", e.g. "Oct 10, 3:26 PM".
+ * `null` when the CLI sent nothing usable.
+ */
+export function localTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return null;
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/** Bytes a local prune freed right away: the CLI's figure, else the git dir delta. */
+function localFreedNow(l: StorageLocalPruneResult): number {
+  if (typeof l.freed_bytes === "number") return l.freed_bytes;
+  if (l.before && l.after) return Math.max(0, l.before.git_dir_bytes - l.after.git_dir_bytes);
+  return 0;
+}
+
+/**
+ * Bytes the 24 h undo backup still holds. Older CLIs send only
+ * `backup_ref` with the estimate, so the rest of the estimate is pending.
+ */
+function localPending(l: StorageLocalPruneResult): number {
+  if (typeof l.pending_reclaim_bytes === "number") return l.pending_reclaim_bytes;
+  if (l.backup_ref) return Math.max(0, (l.est_bytes ?? 0) - localFreedNow(l));
+  return 0;
+}
+
+/**
+ * Branches, tags or saved versions that keep a local prune from freeing
+ * anything, or `null` when nothing holds it. A dry run reports them with an
+ * estimate of 0; a real run refuses with `refused: "nothing_to_free"`.
+ */
+export function pruneHolders(r: StoragePruneResult): { count: number; refs: StorageHoldingRef[] } | null {
+  const l = r.local;
+  if (!l || l.available === false) return null;
+  const refs = l.holding_refs ?? [];
+  const count = l.holding_refs_count ?? refs.length;
+  const held = l.refused === "nothing_to_free" || (r.dry_run && (l.est_bytes ?? 0) === 0 && count > 0);
+  return held ? { count, refs } : null;
+}
+
+/** Plain copy when old history can't be freed yet. Never suggests deleting a stash. */
+export function holdersCopy(count: number): string {
+  if (count <= 0) return "Nothing can be freed yet. Older branches or saved versions still use this history.";
+  return count === 1
+    ? "Nothing can be freed yet. 1 older branch or saved version still uses this history."
+    : `Nothing can be freed yet. ${count.toLocaleString()} older branches or saved versions still use this history.`;
+}
+
+/** Plain name for a holding ref, e.g. "Branch side", "Saved version v1". */
+export function holderLabel(ref: StorageHoldingRef): string {
+  const name = ref.name;
+  if (name === "refs/stash") return "Changes set aside for later";
+  if (name.startsWith("refs/heads/")) return `Branch ${name.slice("refs/heads/".length)}`;
+  if (name.startsWith("refs/tags/")) return `Saved version ${name.slice("refs/tags/".length)}`;
+  return name.replace(/^refs\//, "");
+}
+
+/**
+ * Bytes a prune frees (or would free, on a dry run). A real local run counts
+ * what was freed at once plus what the undo backup frees later.
  */
 export function prunedBytes(r: StoragePruneResult): number {
   let total = 0;
   const local = r.local;
-  if (local && local.available !== false) {
-    if (r.dry_run) {
-      total += local.est_bytes ?? 0;
-    } else if (local.before && local.after) {
-      total += Math.max(0, local.before.git_dir_bytes - local.after.git_dir_bytes);
-    }
+  if (local && local.available !== false && !local.refused) {
+    total += r.dry_run ? local.est_bytes ?? 0 : localFreedNow(local) + localPending(local);
   }
   for (const c of r.cloud ?? []) total += c.deleted_bytes ?? 0;
   return total;
+}
+
+/** Latest `reclaim_after` among local results (dry or real). */
+export function pruneReclaimAfter(results: readonly StoragePruneResult[]): string | null {
+  let latest: string | null = null;
+  for (const r of results) {
+    const at = r.local?.reclaim_after;
+    if (at && (!latest || Date.parse(at) > Date.parse(latest))) latest = at;
+  }
+  return latest;
+}
+
+/**
+ * Result lines for real prunes. Never a "Freed" line for a refused or failed
+ * local prune; space the undo backup still holds reads "will be freed by".
+ * Cloud errors are added by the caller.
+ */
+export function pruneOutcome(
+  results: readonly StoragePruneResult[],
+  device: string = thisComputerNoun(),
+): { lines: string[]; errors: string[] } {
+  let freedNow = 0;
+  let pending = 0;
+  let removed = false;
+  const notes: string[] = [];
+  const errors: string[] = [];
+  for (const r of results) {
+    const l = r.local;
+    if (l) {
+      const holders = pruneHolders(r);
+      if (holders) notes.push(holdersCopy(holders.count));
+      else if (l.available === false && /free nothing/i.test(l.reason ?? "")) notes.push(holdersCopy(0));
+      else if (l.available === false) errors.push(`${device}: some backups couldn't be deleted.`);
+      else {
+        removed = true;
+        freedNow += localFreedNow(l);
+        pending += localPending(l);
+      }
+    }
+    for (const c of r.cloud ?? []) {
+      if ((c.deleted_count ?? 0) > 0 || (c.deleted_bytes ?? 0) > 0) removed = true;
+      freedNow += c.deleted_bytes ?? 0;
+    }
+  }
+  const lines: string[] = [];
+  if (removed) {
+    const by = localTime(pruneReclaimAfter(results));
+    lines.push(
+      pending > 0 && by
+        ? `Old backups removed. About ${formatBytes(freedNow + pending)} will be freed by ${by}.`
+        : `Old backups removed. Freed ${formatBytes(freedNow)}.`,
+    );
+  }
+  return { lines: [...lines, ...notes], errors };
+}
+
+/**
+ * The delete confirm. Local backups keep a 24 h undo; deleted cloud versions
+ * are gone at once.
+ */
+export function pruneConfirmCopy(opts: {
+  parts: readonly string[];
+  bytes: number;
+  notes: readonly string[];
+  local: boolean;
+  cloud: boolean;
+  reclaimAfter?: string | null;
+}): string {
+  const list = opts.parts.join(" and ");
+  const by = opts.local ? localTime(opts.reclaimAfter) : null;
+  const frees = `This frees about ${formatBytes(opts.bytes)}${by ? ` by ${by}` : ""}.`;
+  const undo: string[] = [];
+  if (opts.local) undo.push("You can undo this for 24 hours. After that, these old versions are gone for good.");
+  if (opts.cloud) {
+    undo.push(opts.local ? "Deleted cloud versions can't be restored." : "This can't be undone. You won't be able to restore these old versions.");
+  }
+  return [`This deletes ${list}.`, frees, ...opts.notes, ...undo].join(" ");
 }
 
 /** Tool bookmarks a dry run says prune will clear (0 when not reported). */
@@ -343,8 +477,22 @@ export function offloadOutcome(
       ],
     };
   }
-  if (freed > 0) return { ok: true, lines: [`Moved to HQ cloud. Freed ${formatBytes(freed)}.`] };
-  return { ok: true, lines: ["Nothing needed moving."] };
+  const h = r.history?.available === false ? null : r.history;
+  const current = currentMoved(r);
+  const moved = (h?.uploaded ?? 0) + current.count;
+  if (moved === 0 && freed === 0) return { ok: true, lines: ["Nothing needed moving."] };
+  const movedBytes = (h?.bytes ?? 0) + current.bytes;
+  const what =
+    current.count === 0 ? plural(moved, "old copy", "old copies") : plural(moved, "file", "files");
+  const head = movedBytes > 0 ? `Moved ${what} (${formatBytes(movedBytes)}) to HQ cloud.` : `Moved ${what} to HQ cloud.`;
+  const by = localTime(h?.reclaim_after);
+  const pending = h?.pending_reclaim_bytes ?? 0;
+  if (freed > 0) {
+    const lines = [`${head} Freed ${formatBytes(freed)} on ${device}.`];
+    if (pending > 0 && by) lines.push(`About ${formatBytes(pending)} more will be freed by ${by}.`);
+    return { ok: true, lines };
+  }
+  return { ok: true, lines: [by ? `${head} Space is freed by ${by}.` : `${head} The space on ${device} is freed shortly.`] };
 }
 
 /** Plain copy for a failed `.hqcloud` open. Never raw CLI text. */
@@ -354,6 +502,10 @@ export function cloudFileErrorCopy(code: string | null | undefined, device: stri
       return "You're offline. Connect and try again.";
     case "no-access":
       return "You don't have access to this file in HQ cloud. Ask the person who shared it.";
+    case "orphaned":
+      return "A teammate deleted this file. It's no longer in your team's cloud.";
+    case "not-member":
+      return "You're no longer a member of this company, so this file can't be downloaded.";
     case UPDATE_HQ_CODE:
       return "Update HQ to open files stored in HQ cloud.";
     case "open-failed":

@@ -46,6 +46,31 @@ pub struct LocalStorage {
     pub tranches: Vec<LocalTranche>,
     /// Refs (tool bookmarks such as refs/cmux/last-turn/*) that prune clears.
     pub extra_refs: u64,
+    /// Branches, tags or a stash that still reach old history, so pruning
+    /// it frees nothing until they move.
+    pub holding_refs: Vec<HoldingRef>,
+    pub holding_refs_count: Option<u64>,
+    /// Bytes an undo backup still holds, freed at `reclaim_after`.
+    pub pending_reclaim_bytes: Option<u64>,
+    pub reclaim_after: Option<String>,
+}
+
+/// A branch, tag or stash that keeps old history alive.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct HoldingRef {
+    pub name: String,
+    pub commit_date: Option<String>,
+}
+
+/// Top-level `reclaim`: the CLI dropped expired undo backups first.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Reclaim {
+    pub available: bool,
+    pub dropped: Option<u64>,
+    pub freed_bytes: Option<u64>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -97,6 +122,8 @@ pub struct OffloadStatus {
     /// `true` only once the CLI can move current files. Absent means it
     /// can't, so `current_candidates` is not offered.
     pub current_available: Option<bool>,
+    /// Why current files can't move yet; the UI never shows it raw.
+    pub current_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -108,6 +135,7 @@ pub struct StorageStatus {
     /// Cloud history could not be read at all (e.g. signed out).
     pub cloud_error: Option<String>,
     pub generated_at: Option<String>,
+    pub reclaim: Option<Reclaim>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -122,6 +150,11 @@ pub struct OffloadHistory {
     /// `Some(false)` with a `reason` when this half could not run.
     pub available: Option<bool>,
     pub reason: Option<String>,
+    /// Undo backup the rewrite kept (normally none: offload frees at once).
+    pub backup_ref: Option<String>,
+    /// When `pending_reclaim_bytes` are freed (dry run: an estimate).
+    pub reclaim_after: Option<String>,
+    pub pending_reclaim_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -150,6 +183,7 @@ pub struct OffloadResult {
     pub current: OffloadCurrent,
     pub errors: Vec<serde_json::Value>,
     pub dry_run: bool,
+    pub reclaim: Option<Reclaim>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -178,8 +212,20 @@ pub struct LocalPruneResult {
     pub refs_to_remove: u64,
     /// Real run: extra refs prune deleted.
     pub refs_removed: u64,
+    pub refs_to_remove_sample: Vec<String>,
     pub before: Option<GitDirSize>,
     pub after: Option<GitDirSize>,
+    /// `nothing_to_free` when branches, tags or a stash still reach the old
+    /// history; nothing was changed.
+    pub refused: Option<String>,
+    pub holding_refs: Vec<HoldingRef>,
+    pub holding_refs_count: Option<u64>,
+    /// Real run: bytes freed right away.
+    pub freed_bytes: Option<u64>,
+    /// The 24 h undo backup, and when the bytes it holds are freed.
+    pub backup_ref: Option<String>,
+    pub reclaim_after: Option<String>,
+    pub pending_reclaim_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -197,6 +243,7 @@ pub struct PruneResult {
     pub local: Option<LocalPruneResult>,
     pub cloud: Vec<CloudPruneResult>,
     pub dry_run: bool,
+    pub reclaim: Option<Reclaim>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -595,6 +642,45 @@ mod tests {
         assert_passthrough::<OffloadResult>(&fixture("offload-dry.json"));
         assert_passthrough::<OffloadResult>(&fixture("offload-real.json"));
         assert_passthrough::<PruneResult>(&fixture("prune-dry.json"));
+        // Round-2 e2e captures (backup and holder fields).
+        assert_passthrough::<StorageStatus>(&fixture("status-holders.json"));
+        assert_passthrough::<PruneResult>(&fixture("prune-dry-holders.json"));
+        assert_passthrough::<PruneResult>(&fixture("prune-dry-clean.json"));
+        assert_passthrough::<PruneResult>(&fixture("prune-real-clean-backup.json"));
+        assert_passthrough::<PruneResult>(&fixture("prune-real-holders-r2.json"));
+        assert_passthrough::<OffloadResult>(&fixture("offload-real-backup.json"));
+        // Round-3 contract shapes (reclaim, refusal, pending bytes).
+        assert_passthrough::<StorageStatus>(&fixture("status-r3.json"));
+        assert_passthrough::<PruneResult>(&fixture("prune-dry-r3.json"));
+        assert_passthrough::<PruneResult>(&fixture("prune-real-r3.json"));
+        assert_passthrough::<PruneResult>(&fixture("prune-refused-r3.json"));
+        assert_passthrough::<OffloadResult>(&fixture("offload-dry-r3.json"));
+        assert_passthrough::<OffloadResult>(&fixture("offload-real-r3.json"));
+    }
+
+    #[test]
+    fn prune_refusal_and_backup_fields_survive() {
+        let r = parse_prune(&fixture("prune-refused-r3.json")).unwrap();
+        let local = r.local.unwrap();
+        assert!(local.available);
+        assert_eq!(local.refused.as_deref(), Some("nothing_to_free"));
+        assert_eq!(local.holding_refs_count, Some(6));
+        assert_eq!(local.holding_refs[0].name, "refs/stash");
+        assert!(local.freed_bytes.is_none());
+        let r = parse_prune(&fixture("prune-real-r3.json")).unwrap();
+        let local = r.local.unwrap();
+        assert_eq!(local.freed_bytes, Some(16384));
+        assert_eq!(local.pending_reclaim_bytes, Some(125_921_912));
+        assert_eq!(local.reclaim_after.as_deref(), Some("2026-10-10T21:26:58Z"));
+        assert!(local
+            .backup_ref
+            .unwrap()
+            .starts_with("refs/hq-storage/backup/"));
+        let s = parse_status(&fixture("status-r3.json")).unwrap();
+        assert_eq!(s.local.pending_reclaim_bytes, Some(125_921_912));
+        assert_eq!(s.local.holding_refs.len(), 6);
+        assert!(s.offload.unwrap().current_reason.is_some());
+        assert_eq!(s.reclaim.unwrap().dropped, Some(0));
     }
 
     #[test]

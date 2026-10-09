@@ -461,7 +461,7 @@
 <section class="shell-settings" data-testid="settings-two-column">
   <PageHeader
     title="Settings"
-    subtitle="yours — moved here from the Core menu"
+    subtitle="Your account and app preferences"
     subtitleTestId="settings-subtitle"
     backTestId="settings-back"
     onback={() => onback?.()}

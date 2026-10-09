@@ -1,0 +1,23 @@
+{
+  "history": {
+    "uploaded": 6,
+    "bytes": 378535936,
+    "freed_bytes": 378535936,
+    "candidates": 6,
+    "candidate_bytes": 378535936,
+    "backup_ref": null,
+    "reclaim_after": "2026-10-10T21:20:00Z",
+    "pending_reclaim_bytes": 378535936
+  },
+  "current": {
+    "offloaded": [],
+    "freed_bytes": 0
+  },
+  "errors": [],
+  "dry_run": true,
+  "reclaim": {
+    "available": true,
+    "dropped": 0,
+    "freed_bytes": 0
+  }
+}

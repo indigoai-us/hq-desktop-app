@@ -2319,6 +2319,12 @@ export interface StorageStatus {
     tranches: StorageLocalTranche[];
     /** Tool bookmarks (e.g. refs/cmux/last-turn/*) that prune clears. */
     extra_refs?: number;
+    /** Branches, tags or a stash that still reach old history. */
+    holding_refs?: StorageHoldingRef[];
+    holding_refs_count?: number;
+    /** Bytes an undo backup still holds, freed at `reclaim_after`. */
+    pending_reclaim_bytes?: number | null;
+    reclaim_after?: string | null;
   };
   cloud: StorageCloudCompany[];
   /** Big files that can move to HQ cloud. Absent on CLIs without offload. */
@@ -2326,6 +2332,21 @@ export interface StorageStatus {
   /** Cloud history could not be read at all (e.g. signed out). */
   cloud_error?: string | null;
   generated_at?: string | null;
+  reclaim?: StorageReclaim | null;
+}
+
+/** A branch, tag or stash that keeps old backup history alive. */
+export interface StorageHoldingRef {
+  name: string;
+  commit_date?: string | null;
+}
+
+/** Top-level `reclaim`: expired undo backups the CLI dropped first. */
+export interface StorageReclaim {
+  available: boolean;
+  dropped?: number | null;
+  freed_bytes?: number | null;
+  reason?: string | null;
 }
 
 export interface StorageCountBytes {
@@ -2349,6 +2370,8 @@ export interface StorageOffloadStatus {
    * so `current_candidates` is not offered.
    */
   current_available?: boolean | null;
+  /** Why current files can't move yet. Never shown raw. */
+  current_reason?: string | null;
 }
 
 /** `hq storage offload --json` (with `--dry-run`: what would move). */
@@ -2363,6 +2386,11 @@ export interface StorageOffloadResult {
     /** `false` with a `reason` when history copies could not move. */
     available?: boolean | null;
     reason?: string | null;
+    /** Undo backup the rewrite kept (normally none: offload frees at once). */
+    backup_ref?: string | null;
+    /** When `pending_reclaim_bytes` are freed (dry run: an estimate). */
+    reclaim_after?: string | null;
+    pending_reclaim_bytes?: number | null;
   };
   current: {
     offloaded: Array<{ path: string; bytes: number }>;
@@ -2374,6 +2402,7 @@ export interface StorageOffloadResult {
   /** Per-file failures; the UI only counts them. */
   errors: unknown[];
   dry_run?: boolean;
+  reclaim?: StorageReclaim | null;
 }
 
 /** Native event while HQ opens a `.hqcloud` placeholder. */
@@ -2385,7 +2414,10 @@ export interface CloudFileEventPayload {
   /** Full placeholder path; keys the toast. */
   path?: string | null;
   phase: "fetching" | "opened" | "error";
-  /** `offline` | `no-access` | `update-hq` | `open-failed` | `failed`. */
+  /**
+   * `offline` | `no-access` | `orphaned` | `not-member` | `update-hq` |
+   * `open-failed` | `failed`.
+   */
   error?: string | null;
 }
 
@@ -2416,8 +2448,19 @@ export interface StorageLocalPruneResult {
   refs_to_remove?: number;
   /** Real run: tool bookmarks prune cleared. */
   refs_removed?: number;
+  refs_to_remove_sample?: string[];
   before?: { git_dir_bytes: number } | null;
   after?: { git_dir_bytes: number } | null;
+  /** `nothing_to_free`: branches, tags or a stash still reach the history. */
+  refused?: string | null;
+  holding_refs?: StorageHoldingRef[];
+  holding_refs_count?: number;
+  /** Real run: bytes freed right away. */
+  freed_bytes?: number | null;
+  /** The 24 h undo backup, and when the bytes it holds are freed. */
+  backup_ref?: string | null;
+  reclaim_after?: string | null;
+  pending_reclaim_bytes?: number | null;
 }
 
 export interface StorageCloudPruneResult {
@@ -2431,6 +2474,7 @@ export interface StoragePruneResult {
   local?: StorageLocalPruneResult | null;
   cloud: StorageCloudPruneResult[];
   dry_run: boolean;
+  reclaim?: StorageReclaim | null;
 }
 
 /**

@@ -45,6 +45,13 @@
     canDeleteCloud,
     isPermissionError,
     refsToRemove,
+    holderLabel,
+    holdersCopy,
+    localTime,
+    pruneConfirmCopy,
+    pruneHolders,
+    pruneOutcome,
+    pruneReclaimAfter,
     rolesFromMemberships,
     isBandSelected,
     isProtectedBand,
@@ -57,11 +64,15 @@
     type StorageBand,
   } from "./storage-model.js";
 
+  import type { StorageHoldingRef } from "@hq/platform";
+
   interface Props {
     adapter?: PlatformAdapter | null;
+    /** Off where the host page already titles the section. */
+    showHeading?: boolean;
   }
 
-  let { adapter = null }: Props = $props();
+  let { adapter = null, showHeading = true }: Props = $props();
 
   /** "this Mac" / "this PC" / "this computer". */
   let hostNoun = $state(hostComputerNoun());
@@ -75,9 +86,18 @@
   let localCutoff = $state<BandCutoff>(null);
   let cloudCutoffs = $state<Record<string, BandCutoff>>({});
   let phase = $state<Phase>("idle");
-  let preview = $state<{ bytes: number; lines: string[]; notes: string[] } | null>(null);
+  let preview = $state<{
+    bytes: number;
+    lines: string[];
+    notes: string[];
+    local: boolean;
+    cloud: boolean;
+    reclaimAfter: string | null;
+  } | null>(null);
   let actionError = $state<string | null>(null);
-  let result = $state<{ freed: number; errors: string[] } | null>(null);
+  /** Branches or saved versions keeping old history, shown under the error. */
+  let holders = $state<StorageHoldingRef[]>([]);
+  let result = $state<{ lines: string[]; errors: string[] } | null>(null);
   /** Company slug → the person's role, from their memberships. */
   let roles = $state<Map<string, string>>(new Map());
 
@@ -210,9 +230,9 @@
 
   function describeRequest(req: StoragePruneRequest): string {
     if (req.localBefore) {
-      return `Backups on ${device} from before ${req.localBefore}`;
+      return `backups on ${device} from before ${req.localBefore}`;
     }
-    return `Old file versions in ${req.company} from before ${req.cloudBefore}`;
+    return `old file versions in ${req.company} from before ${req.cloudBefore}`;
   }
 
   async function startDelete(): Promise<void> {
@@ -221,10 +241,12 @@
     if (requests.length === 0) return;
     phase = "previewing";
     actionError = null;
+    holders = [];
     result = null;
     let bytes = 0;
     const lines: string[] = [];
     const notes: string[] = [];
+    const previews: StoragePruneResult[] = [];
     for (const req of requests) {
       const res = await api.previewPrune(req);
       if (!res.ok) {
@@ -235,20 +257,36 @@
         phase = "idle";
         return;
       }
+      const held = pruneHolders(res.value);
+      if (held) {
+        // Nothing would be freed; say why instead of offering "about 0 B".
+        actionError = holdersCopy(held.count);
+        holders = held.refs;
+        phase = "idle";
+        return;
+      }
+      previews.push(res.value);
       const freed = prunedBytes(res.value);
       bytes += freed;
       lines.push(`${describeRequest(req)} (about ${formatBytes(freed)})`);
       const bookmarks = bookmarksCopy(refsToRemove(res.value));
       if (bookmarks) notes.push(bookmarks);
     }
-    preview = { bytes, lines, notes };
+    preview = {
+      bytes,
+      lines,
+      notes,
+      local: requests.some((r) => Boolean(r.localBefore)),
+      cloud: requests.some((r) => Boolean(r.cloudBefore)),
+      reclaimAfter: pruneReclaimAfter(previews),
+    };
     phase = "confirm";
   }
 
   async function confirmDelete(): Promise<void> {
     if (!api || phase !== "confirm") return;
     phase = "deleting";
-    let freed = 0;
+    const done: StoragePruneResult[] = [];
     const errors: string[] = [];
     for (const req of currentRequests()) {
       const res = await api.prune(req);
@@ -258,17 +296,15 @@
         errors.push(`${where}: couldn't delete. Try again later.`);
         continue;
       }
-      freed += prunedBytes(res.value);
-      if (res.value.local && res.value.local.available === false) {
-        errors.push(`${device}: some backups couldn't be deleted.`);
-      }
+      done.push(res.value);
       for (const c of res.value.cloud ?? []) {
         const errs = c.errors ?? [];
         if (errs.some(isPermissionError)) errors.push(`${c.company}: ${CLOUD_ADMIN_ONLY_COPY}`);
         else if (errs.length > 0) errors.push(`${c.company}: some old versions couldn't be deleted.`);
       }
     }
-    result = { freed, errors };
+    const outcome = pruneOutcome(done, device);
+    result = { lines: outcome.lines, errors: [...outcome.errors, ...errors] };
     preview = null;
     phase = "done";
     await load();
@@ -282,9 +318,23 @@
 
   const confirmMessage = $derived(
     preview
-      ? `${preview.lines.join(". ")}. This frees about ${formatBytes(preview.bytes)}.${preview.notes.map((n) => ` ${n}`).join("")} This can't be undone. You won't be able to restore these old versions.`
+      ? pruneConfirmCopy({
+          parts: preview.lines,
+          bytes: preview.bytes,
+          notes: preview.notes,
+          local: preview.local,
+          cloud: preview.cloud,
+          reclaimAfter: preview.reclaimAfter,
+        })
       : "",
   );
+
+  const pendingReclaim = $derived.by(() => {
+    const local = status?.local;
+    const bytes = local?.pending_reclaim_bytes ?? 0;
+    const by = localTime(local?.reclaim_after);
+    return local?.available && bytes > 0 && by ? `${formatBytes(bytes)} will be freed by ${by}.` : null;
+  });
 
   async function loadRoles(): Promise<void> {
     const res = await adapter?.identity?.listWorkspaces?.().catch(() => null);
@@ -315,6 +365,12 @@
       {/if}
     </div>
   {:else if status}
+    {#if showHeading}
+      <div class="pane-head" data-testid="settings-storage-heading">
+        <h2>Storage</h2>
+        <div class="sd">Space HQ uses on {device}, and ways to free it.</div>
+      </div>
+    {/if}
     <div class="set-row" data-testid="settings-storage-header">
       <div>
         <div class="sn" data-testid="settings-storage-total">
@@ -323,6 +379,7 @@
         <div class="sd">
           {#if status.local.available}
             Your HQ folder itself uses {formatBytes(status.local.working_tree_bytes)}.
+            {#if pendingReclaim}<span data-testid="settings-storage-pending-reclaim">{pendingReclaim}</span>{/if}
           {:else}
             Update HQ to see your backup history.
           {/if}
@@ -493,14 +550,21 @@
         </div>
         {#if actionError}
           <div class="sd error" role="alert" data-testid="settings-storage-action-error">{actionError}</div>
+          {#if holders.length > 0}
+            <details class="holders" data-testid="settings-storage-holders">
+              <summary>What's still using it</summary>
+              <ul>
+                {#each holders as ref (ref.name)}<li>{holderLabel(ref)}</li>{/each}
+              </ul>
+            </details>
+          {/if}
         {/if}
         {#if phase === "deleting"}
           <div class="sd" role="status" data-testid="settings-storage-deleting">Deleting old backups. This can take a few minutes.</div>
         {/if}
         {#if result}
           <div class="sd" role="status" data-testid="settings-storage-result">
-            Freed {formatBytes(result.freed)}.
-            {#each result.errors as err (err)}<br />{err}{/each}
+            {#each [...result.lines, ...result.errors] as line, i (i)}{#if i > 0}<br />{/if}{line}{/each}
           </div>
         {/if}
       </div>
@@ -550,6 +614,25 @@
     gap: 12px;
     border-top: 1px solid var(--line);
     padding: 14px 16px;
+  }
+
+  .pane-head {
+    padding: 4px 16px 6px;
+  }
+
+  .pane-head h2 {
+    margin: 0 0 4px;
+    font-size: inherit;
+    font-weight: 600;
+  }
+
+  .holders summary {
+    cursor: pointer;
+  }
+
+  .holders ul {
+    margin: 4px 0 0;
+    padding-left: 18px;
   }
 
   .set-row.unavailable {

@@ -171,6 +171,13 @@ pub fn classify_fetch_error(message: &str) -> &'static str {
         return UPDATE_HQ_ERROR;
     }
     let m = message.to_ascii_lowercase();
+    // Retrying can never fix these two, so they get their own copy.
+    if m.contains("deleted by a teammate") {
+        return "orphaned";
+    }
+    if m.contains("not an active member") {
+        return "not-member";
+    }
     if [
         "access denied",
         "forbidden",
@@ -480,6 +487,17 @@ This file is stored in HQ cloud storage. Open it in HQ, or run the command above
         assert_eq!(
             classify_fetch_error("hq storage failed: checksum mismatch"),
             "failed"
+        );
+        // hq-cli storage-offload.ts and storage.ts, verbatim.
+        assert_eq!(
+            classify_fetch_error(
+                "hq storage failed: This file was deleted by a teammate. It's no longer in the cloud for your team."
+            ),
+            "orphaned"
+        );
+        assert_eq!(
+            classify_fetch_error("hq storage failed: You are not an active member of 'acme'."),
+            "not-member"
         );
     }
 

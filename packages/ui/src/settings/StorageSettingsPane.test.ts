@@ -214,7 +214,9 @@ describe("Settings › Storage pane", () => {
     expect(previewPrune).toHaveBeenCalledTimes(1);
     expect(prune).not.toHaveBeenCalled();
     const dialog = document.querySelector("[data-testid='confirm-dialog']");
-    expect(dialog?.textContent).toContain("This can't be undone. You won't be able to restore these old versions.");
+    expect(dialog?.textContent).toContain("This deletes backups on this");
+    expect(dialog?.textContent).toContain("You can undo this for 24 hours. After that, these old versions are gone for good.");
+    expect(dialog?.textContent).not.toContain("can't be undone");
     expect(dialog?.textContent).toContain("64.00 GB");
 
     const confirm = Array.from(dialog!.querySelectorAll("button")).find((b) =>
@@ -225,7 +227,7 @@ describe("Settings › Storage pane", () => {
 
     expect(prune).toHaveBeenCalledTimes(1);
     expect(prune.mock.calls[0]![0]).toHaveProperty("localBefore");
-    expect(q("settings-storage-result")?.textContent).toContain("Freed 64.00 GB");
+    expect(q("settings-storage-result")?.textContent).toContain("Old backups removed. Freed 64.00 GB.");
     expect(status).toHaveBeenCalledTimes(2);
   });
 

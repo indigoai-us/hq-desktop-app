@@ -1,0 +1,42 @@
+{
+  "local": {
+    "available": true,
+    "would_remove_commits": 144,
+    "est_bytes": 0,
+    "flattened_merges": 1,
+    "retained_refs": 9,
+    "holding_refs": [
+      {
+        "name": "refs/stash",
+        "commit_date": "2026-10-09T21:22:34Z"
+      },
+      {
+        "name": "refs/tags/v-new",
+        "commit_date": "2026-07-10T13:13:28Z"
+      },
+      {
+        "name": "refs/heads/side",
+        "commit_date": "2026-04-10T05:13:38Z"
+      },
+      {
+        "name": "refs/heads/old-branch",
+        "commit_date": "2025-06-21T22:49:28Z"
+      },
+      {
+        "name": "refs/tags/v-old-annot",
+        "commit_date": "2025-06-03T16:25:28Z"
+      },
+      {
+        "name": "refs/tags/v-old-light",
+        "commit_date": "2025-06-03T16:25:28Z"
+      }
+    ],
+    "holding_refs_count": 6,
+    "refs_to_remove": 1,
+    "refs_to_remove_sample": [
+      "refs/cmux/last-turn/a"
+    ]
+  },
+  "cloud": [],
+  "dry_run": true
+}
