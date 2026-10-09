@@ -152,7 +152,7 @@
   });
 
   function openNode(node: AtlasActionNode, action: "files" | "board"): void {
-    const destination = atlasNodeDestination(node, slug, action);
+    const destination = atlasNodeDestination(node, slug, action, companyUid);
     if (destination) onnavigate?.(destination);
   }
 
