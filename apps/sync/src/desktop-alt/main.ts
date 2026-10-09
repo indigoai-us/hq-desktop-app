@@ -12,6 +12,7 @@ import '@hq/ui/button-standard.css';
 import GlobalErrorBoundary from '../components/GlobalErrorBoundary.svelte';
 import { installDesktopZoom } from '../lib/desktopZoom';
 import { installAppearancePreferences } from '../lib/appearancePreferences';
+import { installLinkTitleFetcher } from '../lib/linkTitleFetcher';
 import { bootDesktopAltWindow } from './boot';
 import { dismissBootLoader } from './boot-loader';
 import { installUiHotUpdates, reportUiBootFailure, signalUiBoot } from '../lib/ui-hot';
@@ -36,6 +37,7 @@ const transcriptSources = createTranscriptSourceSync(invoke);
 const transcriptDrain = createTranscriptOutboxDrain(invoke, () => { void transcriptSources.sync(); });
 window.addEventListener('pagehide', () => { transcriptDrain.dispose(); transcriptSources.dispose(); }, {once:true});
 installDesktopZoom();
+installLinkTitleFetcher();
 installAppearancePreferences({
   applyNativeTheme: (theme) => setTheme(theme),
   // Pre-Tahoe Macs get the vibrancy fallback, not Liquid Glass; the surfaces

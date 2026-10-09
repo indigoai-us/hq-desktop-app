@@ -28,6 +28,7 @@ pub mod hq_daemon_host;
 pub mod deploy_preview;
 pub mod deploy_preview_pass;
 pub mod deploy_snapshot;
+pub mod link_title;
 pub mod hq_anywhere;
 pub mod desktop_alt;
 pub mod desktop_auth;

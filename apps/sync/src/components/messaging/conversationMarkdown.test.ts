@@ -95,7 +95,7 @@ pnpm test
     expect(conversation).toContain('overflow-x: auto;');
 
     expect(conversation).toContain('class="dm-bubble-body selectable-text"');
-    expect(conversation).toContain('{@html renderMessageBodyMarkdown(msg.body)}');
+    expect(conversation).toContain('{@html renderMessageBodyMarkdown(msg.body, linkCards.pageTitles())}');
     expect(conversation).toContain(
       'onclick={(event) => void onBodyLinkActivate(event)}',
     );

@@ -17,6 +17,10 @@
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import {
     LinkContextMenu,
+    LinkHovercard,
+    LinkHovercardController,
+    copyLinkToClipboard,
+    insideLinkCard,
     handleLinkActivate,
     presenceStatus,
     type LinkMenuAnchor,
@@ -231,12 +235,17 @@
   }
 
   function onBodyLinkActivate(event: Event): boolean {
+    if (insideLinkCard(event.target)) return false;
+    if (event.type !== 'keydown') linkCards.hide();
     return handleLinkActivate(event, {
       onopenurl: openConversationLink,
       onmenu: (menu) => (linkMenu = menu),
       mode: 'message',
     });
   }
+
+  const linkCards = new LinkHovercardController();
+  $effect(() => linkCards.connect());
 
   let replyText = $state('');
   // Tracks the last successful copy so the "Copied!" feedback stays scoped to
@@ -503,9 +512,14 @@
   onauxclick={(event) => void onBodyLinkActivate(event)}
   oncontextmenu={(event) => void onBodyLinkActivate(event)}
   onkeydown={(event) => {
+    linkCards.onkeydown(event);
     if (event.key === 'Enter' || event.key === ' ')
       void onBodyLinkActivate(event);
   }}
+  onpointerover={linkCards.onpointerover}
+  onpointerout={linkCards.onpointerout}
+  onfocusin={linkCards.onfocusin}
+  onfocusout={linkCards.onfocusout}
 >
   <div
     class="dm-thread"
@@ -673,7 +687,7 @@
               if (event.key === 'Enter' || event.key === ' ')
                 void onBodyLinkActivate(event);
             }}
-          >{@html renderMessageBodyMarkdown(msg.body)}</div>
+          >{@html renderMessageBodyMarkdown(msg.body, linkCards.pageTitles())}</div>
         {/if}
         {#if msg.details}
           <div class="dm-bubble-details selectable-text">{msg.details}</div>
@@ -805,6 +819,22 @@
       menu={linkMenu}
       onopenurl={openConversationLink}
       onclose={() => (linkMenu = null)}
+    />
+  {/if}
+  {#if linkCards.card}
+    <LinkHovercard
+      id={linkCards.id}
+      href={linkCards.card.href}
+      preview={linkCards.card.preview}
+      pageTitle={linkCards.pageTitle}
+      rect={linkCards.card.rect}
+      onopen={(url) => {
+        linkCards.hide();
+        openConversationLink(url);
+      }}
+      oncopy={copyLinkToClipboard}
+      onpointerenter={linkCards.hold}
+      onpointerleave={linkCards.scheduleClose}
     />
   {/if}
 </div>
