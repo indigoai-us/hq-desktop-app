@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Warning, error, info and success boxes in chat messages are quieter: they now use a neutral background, and only the icon is colored.
+- Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
 
 ## [0.11.0] — 2026-10-08
 
