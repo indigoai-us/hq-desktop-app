@@ -83,10 +83,14 @@ export const SAMPLE_STATUS: StorageStatus = {
 
 type StorageMock = NonNullable<PlatformAdapter["storage"]>;
 
-function adapter(storage: Partial<StorageMock> | null): PlatformAdapter {
+function adapter(
+  storage: Partial<StorageMock> | null,
+  memberships?: Record<string, unknown>[],
+): PlatformAdapter {
   return {
     isAvailable: () => false,
     storage: storage ?? undefined,
+    identity: memberships ? { listWorkspaces: async () => ({ ok: true, value: memberships }) } : undefined,
   } as unknown as PlatformAdapter;
 }
 
@@ -98,12 +102,15 @@ async function settle(): Promise<void> {
   flushSync();
 }
 
-async function render(storage: Partial<StorageMock> | null): Promise<void> {
+async function render(
+  storage: Partial<StorageMock> | null,
+  memberships?: Record<string, unknown>[],
+): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(StorageSettingsPane, {
     target: host,
-    props: { adapter: adapter(storage) },
+    props: { adapter: adapter(storage, memberships) },
   });
   await settle();
 }
@@ -242,27 +249,38 @@ describe("Settings › Storage pane", () => {
     expect(prune).not.toHaveBeenCalled();
   });
 
-  it("notes when other tools still hold old local history", async () => {
+  it("says in the confirm dialog that old tool bookmarks will be cleared", async () => {
     await render({
       status: async () => ({ ok: true, value: SAMPLE_STATUS }),
       previewPrune: async () => ({
         ok: true,
         value: {
-          local: { ...LOCAL_PRUNE, would_remove_commits: 10, est_bytes: GB, retained_refs: 3 },
+          local: { ...LOCAL_PRUNE, would_remove_commits: 10, est_bytes: GB, refs_to_remove: 3 },
           cloud: [],
           dry_run: true,
         },
       }),
       prune: vi.fn(),
     });
-    expect(q("settings-storage-retained-note")).toBeNull();
     (q("storage-local-band-older") as HTMLInputElement).click();
     await settle();
     q("settings-storage-delete")?.click();
     await settle();
-    expect(q("settings-storage-retained-note")?.textContent).toBe(
-      "Some older history is still held by other tools, so less space may be freed.",
+    const dialog = document.querySelector("[data-testid='confirm-dialog']");
+    expect(dialog?.textContent).toContain("3 old bookmarks other tools left behind will also be cleared.");
+  });
+
+  it("members see cloud sizes but cannot tick cloud bands", async () => {
+    await render({
+      status: async () => ({ ok: true, value: SAMPLE_STATUS }),
+      previewPrune: vi.fn(),
+      prune: vi.fn(),
+    }, [{ companySlug: "indigo", role: "member", status: "active" }]);
+    expect(q("settings-storage-cloud-indigo-admin-only")?.textContent).toBe(
+      "Only company owners and admins can delete cloud history.",
     );
+    expect((q("storage-cloud-indigo-band-older") as HTMLInputElement).disabled).toBe(true);
+    expect(q("settings-storage-cloud-indigo")?.textContent).toContain("old versions");
   });
 
   it("reports per-company cloud errors in plain words", async () => {
@@ -293,7 +311,7 @@ describe("Settings › Storage pane", () => {
     Array.from(dialog!.querySelectorAll("button")).find((b) => b.textContent?.includes("Delete"))!.click();
     await settle();
     const text = q("settings-storage-result")?.textContent ?? "";
-    expect(text).toContain("indigo: some old versions couldn't be deleted.");
+    expect(text).toContain("indigo: Only company owners and admins can delete cloud history.");
     expect(text).not.toContain("s3:");
   });
 });

@@ -153,7 +153,42 @@ export function prunedBytes(r: StoragePruneResult): number {
   return total;
 }
 
-/** True when other refs (tags, stash, tool markers) keep old local history. */
-export function hasRetainedRefs(r: StoragePruneResult): boolean {
-  return (r.local?.retained_refs ?? 0) > 0;
+/** Tool bookmarks a dry run says prune will clear (0 when not reported). */
+export function refsToRemove(r: StoragePruneResult): number {
+  return r.local?.refs_to_remove ?? 0;
+}
+
+/** Plain copy for the confirm dialog about bookmarks other tools left. */
+export function bookmarksCopy(count: number): string {
+  if (count <= 0) return "";
+  return count === 1
+    ? "1 old bookmark other tools left behind will also be cleared."
+    : `${count.toLocaleString()} old bookmarks other tools left behind will also be cleared.`;
+}
+
+export const CLOUD_ADMIN_ONLY_COPY = "Only company owners and admins can delete cloud history.";
+
+/**
+ * False only when the person is known to be neither owner nor admin of the
+ * company. Unknown role: the CLI's permission error decides.
+ */
+export function canDeleteCloud(roles: ReadonlyMap<string, string>, company: string): boolean {
+  const role = (roles.get(company) ?? "").trim().toLowerCase();
+  return !role || role === "owner" || role === "admin";
+}
+
+/** Slug → role from `identity.listWorkspaces()` membership rows. */
+export function rolesFromMemberships(rows: ReadonlyArray<Record<string, unknown>>): Map<string, string> {
+  const roles = new Map<string, string>();
+  for (const row of rows) {
+    const slug = row.companySlug ?? row.slug;
+    const role = row.role;
+    if (typeof slug === "string" && typeof role === "string") roles.set(slug, role);
+  }
+  return roles;
+}
+
+/** True when a cloud prune error is the CLI's access-denied message. */
+export function isPermissionError(message: string): boolean {
+  return /access denied/i.test(message);
 }

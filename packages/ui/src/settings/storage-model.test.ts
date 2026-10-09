@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   cutoffDate,
-  hasRetainedRefs,
+  bookmarksCopy,
+  canDeleteCloud,
+  isPermissionError,
+  refsToRemove,
+  rolesFromMemberships,
   isBandSelected,
   pruneRequests,
   prunedBytes,
@@ -133,8 +137,30 @@ describe("prunedBytes / hasRetainedRefs (hq storage prune --json)", () => {
     expect(prunedBytes({ local: null, cloud: [], dry_run: true })).toBe(0);
   });
 
-  it("flags retained refs", () => {
-    expect(hasRetainedRefs({ local: { ...local, retained_refs: 2 }, cloud: [], dry_run: true })).toBe(true);
-    expect(hasRetainedRefs({ local: null, cloud: [], dry_run: true })).toBe(false);
+  it("reads refs_to_remove and words the bookmarks note", () => {
+    expect(refsToRemove({ local: { ...local, refs_to_remove: 3 }, cloud: [], dry_run: true })).toBe(3);
+    expect(refsToRemove({ local: null, cloud: [], dry_run: true })).toBe(0);
+    expect(bookmarksCopy(0)).toBe("");
+    expect(bookmarksCopy(1)).toBe("1 old bookmark other tools left behind will also be cleared.");
+    expect(bookmarksCopy(3)).toBe("3 old bookmarks other tools left behind will also be cleared.");
+  });
+});
+
+describe("cloud delete permission", () => {
+  it("allows owners, admins and unknown roles; blocks members", () => {
+    const roles = rolesFromMemberships([
+      { companySlug: "indigo", role: "owner" },
+      { companySlug: "acme", role: "Admin" },
+      { companySlug: "beta", role: "member" },
+    ]);
+    expect(canDeleteCloud(roles, "indigo")).toBe(true);
+    expect(canDeleteCloud(roles, "acme")).toBe(true);
+    expect(canDeleteCloud(roles, "beta")).toBe(false);
+    expect(canDeleteCloud(roles, "unknown")).toBe(true);
+  });
+
+  it("recognises the CLI access-denied message", () => {
+    expect(isPermissionError("Access denied deleting old versions (needs s3:DeleteObjectVersion on the vault bucket).")).toBe(true);
+    expect(isPermissionError("NoSuchBucket")).toBe(false);
   });
 });

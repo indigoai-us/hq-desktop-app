@@ -2315,6 +2315,8 @@ export interface StorageStatus {
     oldest_commit_at?: string | null;
     newest_commit_at?: string | null;
     tranches: StorageLocalTranche[];
+    /** Tool bookmarks (e.g. refs/cmux/last-turn/*) that prune clears. */
+    extra_refs?: number;
   };
   cloud: StorageCloudCompany[];
   generated_at?: string | null;
@@ -2343,6 +2345,10 @@ export interface StorageLocalPruneResult {
   total_commits_before: number;
   flattened_merges: number;
   retained_refs: number;
+  /** Dry run: tool bookmarks prune would clear. */
+  refs_to_remove?: number;
+  /** Real run: tool bookmarks prune cleared. */
+  refs_removed?: number;
   before?: { git_dir_bytes: number } | null;
   after?: { git_dir_bytes: number } | null;
 }

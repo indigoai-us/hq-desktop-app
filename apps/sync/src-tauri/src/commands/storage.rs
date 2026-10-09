@@ -42,6 +42,8 @@ pub struct LocalStorage {
     pub oldest_commit_at: Option<String>,
     pub newest_commit_at: Option<String>,
     pub tranches: Vec<LocalTranche>,
+    /// Refs (tool bookmarks such as refs/cmux/last-turn/*) that prune clears.
+    pub extra_refs: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -96,6 +98,10 @@ pub struct LocalPruneResult {
     pub total_commits_before: u64,
     pub flattened_merges: u64,
     pub retained_refs: u64,
+    /// Dry run: extra refs prune would delete.
+    pub refs_to_remove: u64,
+    /// Real run: extra refs prune deleted.
+    pub refs_removed: u64,
     pub before: Option<GitDirSize>,
     pub after: Option<GitDirSize>,
 }
@@ -281,6 +287,7 @@ mod tests {
         assert_eq!(s.local.tranches.len(), 2);
         assert_eq!(s.local.tranches[1].id, "older");
         assert_eq!(s.local.tranches[1].commit_count, 3000);
+        assert_eq!(s.local.extra_refs, 0);
         assert_eq!(s.cloud.len(), 2);
         assert_eq!(s.cloud[0].delete_markers, 2);
         assert_eq!(s.cloud[0].tranches[0].bytes, 5);
@@ -311,7 +318,8 @@ mod tests {
     fn parses_dry_run_prune() {
         let r = parse_prune(
             r#"{"local":{"available":true,"would_remove_commits":3990,"est_bytes":52000000000,
-                 "flattened_merges":2,"retained_refs":5},
+                 "flattened_merges":2,"retained_refs":5,"refs_to_remove":3,
+                 "refs_to_remove_sample":["refs/cmux/last-turn/a"]},
                 "cloud":[{"company":"indigo","deleted_count":12,"deleted_bytes":4096,"errors":[]}],
                 "dry_run":true}"#,
         )
@@ -322,6 +330,7 @@ mod tests {
         assert_eq!(local.would_remove_commits, 3990);
         assert_eq!(local.est_bytes, 52_000_000_000);
         assert_eq!(local.retained_refs, 5);
+        assert_eq!(local.refs_to_remove, 3);
         assert!(local.before.is_none());
         assert_eq!(r.cloud[0].deleted_bytes, 4096);
         assert!(r.cloud[0].errors.is_empty());
@@ -331,7 +340,7 @@ mod tests {
     fn parses_real_prune_with_errors() {
         let r = parse_prune(
             r#"{"local":{"available":true,"removed_commits":3990,"total_commits_before":4200,
-                 "flattened_merges":2,"retained_refs":5,
+                 "flattened_merges":2,"retained_refs":5,"refs_removed":3,
                  "before":{"git_dir_bytes":81927340032},"after":{"git_dir_bytes":30000000000}},
                 "cloud":[{"company":"indigo","deleted_count":2,"deleted_bytes":7,"errors":[]},
                          {"company":"acme","deleted_count":0,"deleted_bytes":0,
@@ -341,6 +350,7 @@ mod tests {
         .unwrap();
         let local = r.local.unwrap();
         assert_eq!(local.removed_commits, 3990);
+        assert_eq!(local.refs_removed, 3);
         assert_eq!(local.before.unwrap().git_dir_bytes, 81_927_340_032);
         assert_eq!(local.after.unwrap().git_dir_bytes, 30_000_000_000);
         assert_eq!(r.cloud[0].deleted_count, 2);

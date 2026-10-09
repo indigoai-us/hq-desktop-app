@@ -22,7 +22,12 @@
   import { formatBytes } from "../common/sync-model.js";
   import {
     UPDATE_HQ_CODE,
-    hasRetainedRefs,
+    CLOUD_ADMIN_ONLY_COPY,
+    bookmarksCopy,
+    canDeleteCloud,
+    isPermissionError,
+    refsToRemove,
+    rolesFromMemberships,
     isBandSelected,
     isProtectedBand,
     pruneRequests,
@@ -48,11 +53,11 @@
   let localCutoff = $state<BandCutoff>(null);
   let cloudCutoffs = $state<Record<string, BandCutoff>>({});
   let phase = $state<Phase>("idle");
-  let preview = $state<{ bytes: number; lines: string[] } | null>(null);
+  let preview = $state<{ bytes: number; lines: string[]; notes: string[] } | null>(null);
   let actionError = $state<string | null>(null);
   let result = $state<{ freed: number; errors: string[] } | null>(null);
-  /** The last preview or prune said other tools still hold old history. */
-  let retainedRefs = $state(false);
+  /** Company slug → the person's role, from their memberships. */
+  let roles = $state<Map<string, string>>(new Map());
 
   const api = $derived(adapter?.storage ?? null);
 
@@ -130,9 +135,9 @@
     phase = "previewing";
     actionError = null;
     result = null;
-    retainedRefs = false;
     let bytes = 0;
     const lines: string[] = [];
+    const notes: string[] = [];
     for (const req of requests) {
       const res = await api.previewPrune(req);
       if (!res.ok) {
@@ -143,12 +148,13 @@
         phase = "idle";
         return;
       }
-      if (hasRetainedRefs(res.value)) retainedRefs = true;
       const freed = prunedBytes(res.value);
       bytes += freed;
       lines.push(`${describeRequest(req)} (about ${formatBytes(freed)})`);
+      const bookmarks = bookmarksCopy(refsToRemove(res.value));
+      if (bookmarks) notes.push(bookmarks);
     }
-    preview = { bytes, lines };
+    preview = { bytes, lines, notes };
     phase = "confirm";
   }
 
@@ -166,12 +172,13 @@
         continue;
       }
       freed += prunedBytes(res.value);
-      if (hasRetainedRefs(res.value)) retainedRefs = true;
       if (res.value.local && res.value.local.available === false) {
         errors.push("this Mac: some backups couldn't be deleted.");
       }
       for (const c of res.value.cloud ?? []) {
-        if ((c.errors ?? []).length > 0) errors.push(`${c.company}: some old versions couldn't be deleted.`);
+        const errs = c.errors ?? [];
+        if (errs.some(isPermissionError)) errors.push(`${c.company}: ${CLOUD_ADMIN_ONLY_COPY}`);
+        else if (errs.length > 0) errors.push(`${c.company}: some old versions couldn't be deleted.`);
       }
     }
     result = { freed, errors };
@@ -188,12 +195,18 @@
 
   const confirmMessage = $derived(
     preview
-      ? `${preview.lines.join(". ")}. This frees about ${formatBytes(preview.bytes)}. This can't be undone. You won't be able to restore these old versions.`
+      ? `${preview.lines.join(". ")}. This frees about ${formatBytes(preview.bytes)}.${preview.notes.map((n) => ` ${n}`).join("")} This can't be undone. You won't be able to restore these old versions.`
       : "",
   );
 
+  async function loadRoles(): Promise<void> {
+    const res = await adapter?.identity?.listWorkspaces?.().catch(() => null);
+    if (res?.ok) roles = rolesFromMemberships(res.value as Record<string, unknown>[]);
+  }
+
   onMount(() => {
     void load();
+    void loadRoles();
   });
 </script>
 
@@ -270,9 +283,6 @@
         </tbody>
       </table>
     {/if}
-    {#if retainedRefs}
-      <div class="set-row"><div class="sd" data-testid="settings-storage-retained-note">Some older history is still held by other tools, so less space may be freed.</div></div>
-    {/if}
 
     <div class="set-subhead"><div class="sn">Cloud file history</div>
       <div class="sd">Old versions of files your companies keep in the cloud. Current files are never touched.</div>
@@ -294,8 +304,12 @@
             </div>
           </div>
         </div>
+        {#if entry.available && entry.bands.length > 0 && !canDeleteCloud(roles, entry.company)}
+          <div class="set-row"><div class="sd" data-testid={`settings-storage-cloud-${entry.company}-admin-only`}>{CLOUD_ADMIN_ONLY_COPY}</div></div>
+        {/if}
         {#if entry.available && entry.bands.length > 0}
           {@const cutoff = cloudCutoffs[entry.company] ?? null}
+          {@const canDelete = canDeleteCloud(roles, entry.company)}
           <table class="bands">
             <thead><tr><th></th><th>Age</th><th class="num">Old versions</th><th class="num">Size</th></tr></thead>
             <tbody>
@@ -308,7 +322,7 @@
                       aria-label={`Delete ${entry.company} ${band.label}`}
                       data-testid={`storage-cloud-${entry.company}-band-${band.id}`}
                       checked={isBandSelected(cutoff, i)}
-                      disabled={locked || phase !== "idle"}
+                      disabled={locked || !canDelete || phase !== "idle"}
                       onchange={() =>
                         (cloudCutoffs = {
                           ...cloudCutoffs,
