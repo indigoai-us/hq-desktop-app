@@ -9,11 +9,11 @@
 //!
 //! The desktop therefore asks `GET /entity/{uid}` about uids it was handed but
 //! cannot place: a manifest `cloud_uid` with no membership, a channel whose
-//! `companyUid` is not in the company list, a bot DM peer. Only an explicit
-//! "gone" answer (404 or `deleted: true`) marks a uid retired. A failed read
-//! marks nothing, and a company created a moment ago reads as live, so a new
-//! company whose channel arrives before the company list refreshes stays
-//! visible.
+//! `companyUid` is not in the company list, or a bot DM peer. Only a readable
+//! `deleted: true` answer marks a uid retired. Entity reads are caller-scoped,
+//! so a 404 can also mean the user cannot read a live cross-company entity;
+//! that ambiguity stays visible. A failed read also marks nothing, and a
+//! company created a moment ago stays visible while the company list refreshes.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};

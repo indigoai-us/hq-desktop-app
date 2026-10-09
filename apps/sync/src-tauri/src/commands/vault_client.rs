@@ -43,11 +43,13 @@ impl From<reqwest::Error> for VaultClientError {
 /// Whether `GET /entity/{uid}` still has a live entity behind a uid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntityLiveness {
-    /// 404, or a row stamped `deleted: true` (soft tombstone).
+    /// A readable row stamped `deleted: true` (soft tombstone).
     Gone,
-    /// A live entity. For a bot (`agt_*`) `company_uids` lists the companies
-    /// its agent config names (`companyMemberships`, plus the host
-    /// `companyUid`); empty for companies and for bots with no company.
+    /// A live entity, or an entity whose read is ambiguous because the caller
+    /// is not allowed to read it. For a bot (`agt_*`) `company_uids` lists the
+    /// companies its agent config names (`companyMemberships`, plus the host
+    /// `companyUid`); empty for companies, unreadable entities, and bots with
+    /// no company.
     Live { company_uids: Vec<String> },
 }
 
@@ -595,13 +597,12 @@ impl VaultClient {
     /// that another server list referenced (a channel's `companyUid`, a DM
     /// peer's `agt_*` uid, a manifest `cloud_uid`).
     ///
-    /// hq-pro answers a tombstoned (`hq cloud retire company`) or purged
-    /// entity with 404, and `/membership/me` silently drops tombstoned
-    /// companies, so this read is the only place the desktop can learn that a
-    /// uid it was handed no longer has a live entity. 404 or `deleted: true`
-    /// is [`EntityLiveness::Gone`]; any other success is live. Transport and
-    /// non-404 HTTP errors are returned as errors so callers never hide
-    /// something on a failed read.
+    /// A readable tombstone is a reliable retirement signal. A 404 is not:
+    /// entity reads are caller-authorized, so the server returns 404 for a
+    /// live cross-company channel, bot DM peer, or manifest uid that the user
+    /// cannot read. Preserve those rows unless a response explicitly says
+    /// `deleted: true`. Transport and non-404 HTTP errors are returned as
+    /// errors so callers never hide something on a failed read.
     pub async fn entity_liveness(&self, uid: &str) -> Result<EntityLiveness, VaultClientError> {
         let resp = self
             .client
@@ -610,7 +611,9 @@ impl VaultClient {
             .send_retrying()
             .await?;
         if resp.status().as_u16() == 404 {
-            return Ok(EntityLiveness::Gone);
+            return Ok(EntityLiveness::Live {
+                company_uids: Vec::new(),
+            });
         }
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         Ok(entity_liveness_from_json(&wrapper["entity"]))
@@ -1421,6 +1424,91 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn entity_liveness_404_keeps_a_non_member_company_channel_visible() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_external_channel"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(&json!({"error": "not found"})))
+            .mount(&server)
+            .await;
+
+        let result = VaultClient::with_own_pool(server.uri(), "test-token")
+            .entity_liveness("cmp_external_channel")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            EntityLiveness::Live {
+                company_uids: Vec::new(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn entity_liveness_404_keeps_a_cross_company_bot_dm_visible() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/agt_external_bot"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(&json!({"error": "not found"})))
+            .mount(&server)
+            .await;
+
+        let result = VaultClient::with_own_pool(server.uri(), "test-token")
+            .entity_liveness("agt_external_bot")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            EntityLiveness::Live {
+                company_uids: Vec::new(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn entity_liveness_404_keeps_an_unplaced_manifest_cloud_uid_visible() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_manifest_external"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(&json!({"error": "not found"})))
+            .mount(&server)
+            .await;
+
+        let result = VaultClient::with_own_pool(server.uri(), "test-token")
+            .entity_liveness("cmp_manifest_external")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            EntityLiveness::Live {
+                company_uids: Vec::new(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn entity_liveness_hides_a_members_readable_tombstone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_member_tombstone"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": { "uid": "cmp_member_tombstone", "deleted": true }
+            })))
+            .mount(&server)
+            .await;
+
+        let result = VaultClient::with_own_pool(server.uri(), "test-token")
+            .entity_liveness("cmp_member_tombstone")
+            .await
+            .unwrap();
+
+        assert_eq!(result, EntityLiveness::Gone);
     }
 
     #[tokio::test]
