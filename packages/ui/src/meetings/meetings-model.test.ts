@@ -458,7 +458,7 @@ describe("meetings-model", () => {
       );
     });
 
-    it("ignores inactive series bots so failed cancels can be retried by inviting again", () => {
+    it("shows failed series bots until a successful retry becomes active", () => {
       const event = {
         ...eventAt(
           "series-1_20260527T190000Z",
@@ -471,7 +471,14 @@ describe("meetings-model", () => {
         calendarSeriesId: "series-1",
       });
 
-      expect(botForEvent(event, new Map(), [failedBot])).toBeUndefined();
+      const retry = bot({
+        botId: "retry",
+        status: "scheduled",
+        calendarSeriesId: "series-1",
+      });
+
+      expect(botForEvent(event, new Map(), [failedBot])?.botId).toBe(failedBot.botId);
+      expect(botForEvent(event, new Map(), [failedBot, retry])?.botId).toBe("retry");
     });
 
     // US-005 — join priority: event ID → series ID → normalized URL.
@@ -880,10 +887,10 @@ describe("meetings-model", () => {
       ).toBe("processing");
     });
 
-    it("a failed/unknown status falls back to invite regardless of sourceLanded", () => {
+    it("a failed status stays failed so callers can show the recovery detail", () => {
       expect(
         rowButtonKind(bot({ status: "failed", sourceLanded: false })),
-      ).toBe("invite");
+      ).toBe("failed");
     });
   });
 

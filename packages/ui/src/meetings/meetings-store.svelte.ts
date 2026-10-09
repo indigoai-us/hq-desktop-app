@@ -873,8 +873,11 @@ function persistSnapshot(): void {
 function buildBotMap(bots: ScheduledBot[]): Map<string, ScheduledBot> {
   const m = new Map<string, ScheduledBot>();
   for (const b of bots) {
-    if (b.calendarEventId && isActiveStatus(b.status)) {
-      m.set(b.calendarEventId, b);
+    if (b.calendarEventId && (isActiveStatus(b.status) || b.status === "failed")) {
+      const current = m.get(b.calendarEventId);
+      if (!current || isActiveStatus(b.status) || !isActiveStatus(current.status)) {
+        m.set(b.calendarEventId, b);
+      }
     }
   }
   return m;
