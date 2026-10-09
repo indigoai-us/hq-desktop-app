@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Messages from a company you cannot open no longer disappear just because HQ cannot read that company's entity. The same safeguard keeps cross-company bot conversations and valid company references in your local manifest visible. Companies that HQ can read and has marked deleted still disappear.
+
 ## [0.11.1] — 2026-10-09
 
 - Meetings now explains why a notetaker could not join and offers a retry after the meeting settings are fixed.
