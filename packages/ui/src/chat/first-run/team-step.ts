@@ -186,10 +186,30 @@ export interface TeamActionRunner {
 
 export const TEAM_GENERIC_FAILURE = "That did not work. Try again in a moment.";
 
+/**
+ * How long a join or create may run before the screen calls it failed. The
+ * team step comes before "Bring in your context", where the takeover offers
+ * no Continue in chat, so a call that never answers must not hold the
+ * screen: after this it shows the failure line with Retry, and another card
+ * works again.
+ */
+export const TEAM_ACTION_TIMEOUT_MS = 30_000;
+
+export interface TeamActionRunnerOptions {
+  /** Test seam; defaults to TEAM_ACTION_TIMEOUT_MS. */
+  timeoutMs?: number;
+}
+
 /** `onchange` gets "running" synchronously, so the pending label shows on the same frame as the press. */
-export function createTeamActionRunner(onchange: (state: TeamActionState) => void): TeamActionRunner {
+export function createTeamActionRunner(
+  onchange: (state: TeamActionState) => void,
+  opts: TeamActionRunnerOptions = {},
+): TeamActionRunner {
+  const timeoutMs = opts.timeoutMs ?? TEAM_ACTION_TIMEOUT_MS;
   let state: TeamActionState = { state: "idle" };
   let last: { key: string; label: string; action: () => Promise<TeamActionResult> } | null = null;
+  /** The run whose answer still counts; a timed-out run's late answer is ignored. */
+  let token = 0;
   const set = (next: TeamActionState): void => {
     state = next;
     onchange(next);
@@ -198,15 +218,28 @@ export function createTeamActionRunner(onchange: (state: TeamActionState) => voi
     if (state.state === "running") return;
     if (state.state === "done" && state.key === key) return;
     last = { key, label, action };
+    const mine = ++token;
     set({ state: "running", key, label });
+    const timer = setTimeout(() => {
+      if (mine !== token) return;
+      token += 1;
+      console.warn("[hq-desktop] first-run team action timed out");
+      set({ state: "failed", key, label, reason: TEAM_GENERIC_FAILURE });
+    }, timeoutMs);
+    const settle = (next: TeamActionState): void => {
+      clearTimeout(timer);
+      if (mine !== token) return;
+      token += 1;
+      set(next);
+    };
     void Promise.resolve()
       .then(action)
       .then(
         (result) =>
-          set(result.ok ? { state: "done", key, choice: result.choice } : { state: "failed", key, label, reason: result.reason }),
+          settle(result.ok ? { state: "done", key, choice: result.choice } : { state: "failed", key, label, reason: result.reason }),
         (err: unknown) => {
           console.warn("[hq-desktop] first-run team action threw:", err);
-          set({ state: "failed", key, label, reason: TEAM_GENERIC_FAILURE });
+          settle({ state: "failed", key, label, reason: TEAM_GENERIC_FAILURE });
         },
       );
   }
