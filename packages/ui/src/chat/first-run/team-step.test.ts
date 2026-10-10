@@ -78,7 +78,29 @@ describe("company names", () => {
     expect(companySlugFromName("  Café  Olé!! ")).toBe("cafe-ole");
     expect(companySlugFromName("42 Labs")).toBe("labs");
     expect(companySlugFromName("A")).toBeNull();
-    expect(companySlugFromName("x".repeat(80))).toHaveLength(40);
+    expect(companySlugFromName("x".repeat(80))).toHaveLength(30);
+  });
+
+  it("makes handles the server accepts: a letter first, at most 30 long", () => {
+    // hq-pro src/lifecycle/actions/company-slug-availability.ts COMPANY_SLUG_RE.
+    const serverRule = /^[a-z][a-z0-9-]{0,29}$/;
+    for (const name of [
+      "Pickle Works",
+      "StefanTest123",
+      "42 Labs",
+      "The Very Long Company Name of Many Words Incorporated",
+      "Acme 2024 Holdings and Partners Worldwide",
+      "x".repeat(80),
+    ]) {
+      const slug = companySlugFromName(name);
+      expect(slug, name).not.toBeNull();
+      expect(slug!.length, name).toBeLessThanOrEqual(30);
+      expect(serverRule.test(slug!), `${name} -> ${slug}`).toBe(true);
+    }
+    expect(companySlugFromName("StefanTest123")).toBe("stefantest123");
+    // A cut that lands on a hyphen does not leave it trailing.
+    expect(companySlugFromName("abcdefghijklmnopqrstuvwxyzabc def")).toBe("abcdefghijklmnopqrstuvwxyzabc");
+    expect(companyNameIssue("StefanTest123")).toBeNull();
   });
 
   it("says why a name cannot be used", () => {

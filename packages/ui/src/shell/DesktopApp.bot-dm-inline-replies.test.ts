@@ -9,6 +9,7 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
+import { firstRunHandoffNotice, firstRunSettledNotice } from "../chat/first-run/visual-first-run.js";
 
 /**
  * Owner walkthrough, 2026-10-02: a hosted bot answered in a thread, so its
@@ -272,5 +273,68 @@ describe("DesktopApp: which rows opening with the app's words are hidden", () =>
     expect(text).toContain(`${LEAD} a bot wrote this in the channel`);
     expect(text).not.toContain(`${LEAD} a teammate wrote this`);
     expect(text).toContain(`${LEAD} I wrote this`);
+  });
+});
+
+/**
+ * Owner finding, round 2: after the visual first run the setup assistant's
+ * chat showed a message from the person ("Test Engineer", avatar TE) holding
+ * the raw handoff. The server's thread read returns the app's bot-only notes
+ * with no lane, so the conversation has to know them by what they say.
+ */
+describe("DesktopApp: the setup assistant's chat after the visual first run", () => {
+  it("never shows the app's handoff notes, and nothing with the handoff is shown as the person's", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const settled = firstRunSettledNotice({ imported: null, team: { kind: "personal" }, apps: null })!;
+    const handoff = firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], imported: null, team: null, apps: null });
+    const page = [
+      { eventId: "s4", fromPersonUid: "agt_setup", fromDisplayName: "Biscuit", body: "You're working alone, noted. Which project first?", createdAt: "2026-10-10T13:55:10.000Z" },
+      { eventId: "s3", fromPersonUid: "prs_me", fromDisplayName: "Test Engineer", body: settled, createdAt: "2026-10-10T13:54:50.000Z" },
+      { eventId: "s2", fromPersonUid: "prs_me", fromDisplayName: "Test Engineer", body: handoff, createdAt: "2026-10-10T13:54:30.000Z" },
+      { eventId: "s1", fromPersonUid: "agt_setup", fromDisplayName: "Biscuit", body: "Hi, I'm Biscuit, your HQ assistant.", createdAt: "2026-10-10T13:54:20.000Z" },
+    ];
+    const value = {
+      kind: "web",
+      isAvailable: () => false,
+      capabilities: {},
+      messaging: {
+        listContacts: async () => ok({ contacts: [] }),
+        listChannelMembers: async () => ok({ members: [] }),
+        fetchChannel: async () => ok({ messages: [], nextCursor: null }),
+        fetchDmThread: async () => ok({ messages: page }),
+      },
+      agents: {
+        getStatus: async () => ok({ setupState: { phase: "ready" }, agent: { runtime: { syncOkAt: "2026-10-10T14:20:00.000Z" } } }),
+      },
+      settings: { getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }) },
+      shell: { detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }) },
+    } as unknown as PlatformAdapter;
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: value,
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_me", displayName: "Test Engineer", email: "te@example.com" },
+        initialRow: { id: "dm:agt_setup", kind: "dm", title: "Biscuit", personUid: "agt_setup", companyUid: null } as ConversationRow,
+        wakes: createChatWakeBus(),
+        coreFixtures: false,
+      },
+    });
+    const thread = (): string => host.querySelector('[data-testid="conversation-thread"]')?.textContent ?? "";
+    await vi.waitFor(() => expect(thread()).toContain("Which project first?"));
+    await settle();
+    const text = thread();
+    expect(text).toContain("Hi, I'm Biscuit, your HQ assistant.");
+    expect(text).not.toContain("Handoff from the app");
+    expect(text).not.toContain("desktop-visual-first-run");
+    expect(text).not.toContain("Setup note from the HQ desktop app");
+    expect(text).not.toContain("Do not greet me again");
+    // Only the assistant's two messages are drawn. The person wrote nothing,
+    // so nothing is shown as theirs.
+    const drawn = [...host.querySelectorAll('[data-testid="conversation-message"]')];
+    expect(drawn).toHaveLength(2);
+    expect(drawn.filter((el) => (el.textContent ?? "").includes("Test Engineer"))).toHaveLength(0);
   });
 });

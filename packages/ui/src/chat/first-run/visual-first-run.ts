@@ -23,6 +23,7 @@
 import type { LocalBotRow } from "@hq/platform";
 
 import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
+import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "../agent-channel.js";
 import { SETUP_BOT_KICKOFF_PREFIX, SETUP_BOT_RUNTIME_ORDER, type SetupBotRef } from "../setup-bot.js";
 
 export type FirstRunRuntime = LocalBotRow["runtime"];
@@ -263,14 +264,14 @@ export function normalizeAssistantName(name: string): string {
 
 /**
  * Why a name cannot be the assistant's display name, or null. The same rule
- * as the host's `validate_display_name` (apps/sync bots.rs): letters first,
- * then letters, spaces, apostrophes, periods and hyphens, at most 35.
+ * as the host's `validate_display_name` (apps/sync bots.rs): a letter first,
+ * then letters, numbers, spaces, apostrophes, periods and hyphens, at most 35.
  */
 export function assistantNameIssue(name: string): string | null {
   const collapsed = normalizeAssistantName(name);
   if (!collapsed) return "Give your assistant a name.";
   if ([...collapsed].length > ASSISTANT_NAME_MAX) return `Keep the name under ${ASSISTANT_NAME_MAX} characters.`;
-  if (!/^\p{L}[\p{L} .'-]*$/u.test(collapsed)) return "Use letters, spaces, apostrophes, periods and hyphens.";
+  if (!/^\p{L}[\p{L}\p{N} .'-]*$/u.test(collapsed)) return "Use letters, numbers, spaces, apostrophes, periods and hyphens.";
   return null;
 }
 
@@ -464,8 +465,8 @@ function settledSentence(handoff: Pick<FirstRunHandoff, "team" | "apps">): strin
 
 /**
  * The assistant's name in prose only when it passes the display-name rule
- * (letters, spaces, apostrophes, periods, hyphens); anything else is named
- * by its place in the JSON.
+ * (a letter, then letters, numbers, spaces, apostrophes, periods, hyphens);
+ * anything else is named by its place in the JSON.
  */
 function proseName(name: string, before: string, after: string, otherwise: string): string {
   return name && !assistantNameIssue(name) ? `${before}${name}${after}` : otherwise;
@@ -534,7 +535,7 @@ function buildKickoff(handoff: FirstRunHandoff, opts: { noun?: string }): string
   const kickoff =
     `${SETUP_BOT_KICKOFF_PREFIX} setup started in the HQ desktop app's visual setup, where I already finished some steps, ` +
     "and your hello already went out, so do not greet again or repeat the plan. " +
-    `Handoff from the app: ${firstRunHandoffNote(handoff)}. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${firstRunHandoffNote(handoff)}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     `${proseName(name, "I chose your name, ", ", so keep it. ", "I chose your name (\"name\" in the handoff), so keep it. ")}` +
     `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. ` +
@@ -563,8 +564,8 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
   const name = normalizeAssistantName(handoff.name);
   const tools = [...new Set(handoff.toolsReady)].map(runtimeLabel).join(", ") || runtimeLabel(handoff.runtime);
   const notice =
-    "Setup note from the HQ desktop app: I just went through the app's visual setup, which finished some setup steps for you. " +
-    `Handoff from the app: ${firstRunHandoffNote(handoff)}. ` +
+    `${FIRST_RUN_NOTE_LEAD} I just went through the app's visual setup, which finished some setup steps for you. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${firstRunHandoffNote(handoff)}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     `${proseName(name, "I named you ", ", so use that name. ", "I named you (\"name\" in the handoff), so use that name. ")}` +
     `The coding tool sign-in is finished: signed in on this ${noun}: ${tools}. Do not ask me to pick or sign in to a coding tool. ` +
@@ -589,8 +590,8 @@ export function firstRunImportNotice(imported: FirstRunImportHandoff): string {
     import: firstRunImportJson(imported),
   });
   const notice =
-    "Setup note from the HQ desktop app: I just finished the context import in the app's visual setup. " +
-    `Handoff from the app: ${note}. ` +
+    `${FIRST_RUN_NOTE_LEAD} I just finished the context import in the app's visual setup. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${note}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     importSentence(imported) +
     "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
@@ -655,8 +656,8 @@ export function firstRunSettledNotice(
     ...(apps && Object.keys(apps).length ? { apps } : {}),
   });
   const notice =
-    "Setup note from the HQ desktop app: I just finished more of the app's visual setup. " +
-    `Handoff from the app: ${note}. ` +
+    `${FIRST_RUN_NOTE_LEAD} I just finished more of the app's visual setup. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${note}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     importSentence(settled.imported) +
     settledSentence(settled) +

@@ -5022,8 +5022,7 @@ fn heal_blocked_managed_shadow(latest: &str) -> Option<HqCliUpdateInfo> {
 }
 
 pub fn setup_hq_cli_update_checker(app: &AppHandle) {
-    if crate::scratch_build::active() {
-        crate::scratch_build::skip("hq CLI update checker");
+    if !crate::scratch_build::launch_side_effect_allowed("hq CLI update checker") {
         return;
     }
     let handle = app.clone();
