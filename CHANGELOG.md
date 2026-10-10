@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- New Bot with Claude: after you paste the code from Claude and press Submit code, the code now stays in the field and the screen says Checking until your sign-in is confirmed, then moves on by itself. If Claude's answer is not seen, HQ sends the code once more for you. If it still cannot confirm the sign-in you see a plain message and Try again; if Claude does not accept the code, or what you pasted is not a Claude code, the screen says so and you can paste a new one. Pressing Submit twice no longer sends the code twice.
 - On Bring in your context, Bring it in is now the one main button, and Skip for now is a small link under it. Continue in chat no longer shows at the top of that screen; it only appears there if the screen itself cannot load.
 
 - On the Your team screen, pressing Retry while a join or a new company is still being set up now waits for that same request instead of sending a second one. If starting a company failed or took too long, Retry first checks whether the company was made after all and uses it, instead of starting it again. Closing setup while a join or start is still running no longer leaves anything running behind it.
