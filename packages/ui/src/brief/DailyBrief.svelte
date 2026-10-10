@@ -35,7 +35,7 @@
     type BriefCompanyLogo,
     type BriefLaunch,
   } from "./brief-context.svelte.js";
-  import { generateBrief, leadLabel } from "./brief-generate.js";
+  import { candidates, FITS, generateBrief, leadLabel, type BriefSlotSize, type BriefWidget } from "./brief-generate.js";
   import type { BriefInput } from "./brief-types.js";
 
   interface Props {
@@ -56,15 +56,15 @@
   }
   let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings }: Props = $props();
 
-  const state = new BriefState(
+  const briefState = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
     () => companies,
     { dmApi: () => dmApi, openThread: () => onopenthread },
   );
-  provideBrief(state);
+  provideBrief(briefState);
 
   const plan = $derived(generateBrief(input));
-  const cleared = $derived(input.decisions.filter((d) => state.cleared[d.id]).length);
+  const cleared = $derived(input.decisions.filter((d) => briefState.cleared[d.id]).length);
   const incident = $derived(input.risks.find((r) => r.severity === "incident") ?? null);
   const watch = $derived(input.risks.find((r) => r.severity === "watch") ?? null);
   const nowDate = $derived(new Date(input.now));
@@ -102,7 +102,29 @@
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
       .map((s) => ({ at: s.startedAt, title: s.title }));
   });
+
+  // Review mode (Shift+A on the page): every card that has data, each at its
+  // first size, labelled, so the owner can give feedback card by card.
+  let allCards = $state(false);
+  const SPAN: Record<BriefSlotSize, [number, number]> = { XL: [3, 3], L: [3, 2], M: [2, 2], W: [2, 1], W3: [3, 1], S: [1, 1] };
+  const everyCard = $derived.by((): BriefWidget[] => {
+    const kinds = [...new Set([...candidates(input, "decisions", plan.sessions), ...candidates(input, "momentum", plan.sessions)])];
+    if (input.decisions[0]) kinds.push("oneThing");
+    return kinds.map((kind) => {
+      const size = FITS[kind][0]!;
+      const [cols, rows] = SPAN[size];
+      return { kind, slot: kind, size, cols, rows };
+    });
+  });
+  const shownWidgets = $derived(allCards ? everyCard : plan.widgets);
+  function onkey(e: KeyboardEvent) {
+    if (e.shiftKey && (e.key === "A" || e.key === "a") && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+      allCards = !allCards;
+    }
+  }
 </script>
+
+<svelte:window onkeydown={onkey} />
 
 <div class="daily-brief" data-testid="daily-brief" data-lead={plan.lead} data-density={plan.density}>
   <header class="b-head">
@@ -124,9 +146,21 @@
 
   <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} {onopenmeetings} />
 
-  <main class="b-grid" style="grid-template-rows:repeat({plan.areas.length}, minmax(196px, auto));grid-template-areas:{plan.areas.map((a) => `'${a}'`).join(' ')}">
-    {#each plan.widgets as w, i (w.kind)}
-      <div class="slot" style="grid-area:{w.kind};animation-delay:{i * 70}ms" data-widget={w.kind}>
+  {#if allCards}<div class="b-review" data-testid="brief-review">Review mode · every card with data · Shift+A to go back</div>{/if}
+  <main
+    class="b-grid"
+    class:review={allCards}
+    style={allCards
+      ? "grid-auto-flow:row dense;grid-auto-rows:minmax(196px, auto)"
+      : `grid-template-rows:repeat(${plan.areas.length}, minmax(196px, auto));grid-template-areas:${plan.areas.map((a) => `'${a}'`).join(" ")}`}
+  >
+    {#each shownWidgets as w, i (w.kind)}
+      <div
+        class="slot"
+        style="{allCards ? `grid-column:span ${w.cols};grid-row:span ${w.rows}` : `grid-area:${w.kind}`};animation-delay:{i * 70}ms"
+        data-widget={w.kind}
+      >
+        {#if allCards}<span class="kind-tag">{w.kind} · {w.size}</span>{/if}
         {#if w.kind === "sunrise"}
           <BriefSunrise
             total={input.decisions.length}
@@ -173,6 +207,29 @@
 </div>
 
 <style>
+  .b-review {
+    margin-top: 12px;
+    font-family: var(--b-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--b-sun);
+  }
+  .review .slot {
+    position: relative;
+  }
+  .kind-tag {
+    position: absolute;
+    z-index: 3;
+    top: -8px;
+    left: 14px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-family: var(--b-mono);
+    font-size: 9.5px;
+    color: #1b1b1e;
+    background: var(--b-sun);
+  }
   .b-runs {
     margin: -6px 0 14px;
   }

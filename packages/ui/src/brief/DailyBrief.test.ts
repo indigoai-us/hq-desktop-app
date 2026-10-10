@@ -23,6 +23,19 @@ afterEach(() => {
 });
 
 describe("DailyBrief", () => {
+  it("Shift+A toggles review mode: every card with data, labelled, then back to the plan", () => {
+    render({});
+    const planned = target.querySelectorAll("[data-widget]").length;
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    flushSync();
+    expect(target.querySelector('[data-testid="brief-review"]')).not.toBeNull();
+    expect(target.querySelectorAll("[data-widget]").length).toBeGreaterThanOrEqual(planned);
+    expect(target.querySelector(".kind-tag")?.textContent).toContain("sunrise");
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    flushSync();
+    expect(target.querySelector('[data-testid="brief-review"]')).toBeNull();
+  });
+
   it("renders the generated plan: lead, widgets, today strip, logos and repos", () => {
     render({ companies: [{ uid: "cmp_indigo", label: "Indigo", iconUrl: null }] });
     const root = target.querySelector('[data-testid="daily-brief"]')!;
