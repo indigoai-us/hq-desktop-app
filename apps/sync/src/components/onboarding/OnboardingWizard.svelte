@@ -2973,6 +2973,12 @@
     inviteTeammateContext = null;
     showInviteTeammateStep = false;
     if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
+    // The lookup could not say which company this person is in. The app's
+    // active company still names one when there is one; the connector import
+    // is skipped only when there is none.
+    const active = await activeCompanyForConnectorImport();
+    if (!stillCurrent()) return;
+    connectorImportCompany = active;
     if (setupCompleted) {
       // After setup there is no later attempt: settle on no company step.
       companyRouteResolved = true;
@@ -4114,6 +4120,16 @@
     });
   }
 
+  /** The app's active company slug, or null when there is none or it cannot be read. */
+  async function activeCompanyForConnectorImport(): Promise<string | null> {
+    try {
+      const slug = await invokeCommand<string | null>('get_desktop_active_company');
+      return typeof slug === 'string' && slug.trim() ? slug.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Make the chosen company the app's active one. Best effort. */
   async function selectCompany(slug: string | null): Promise<void> {
     if (!slug) return;
@@ -4135,7 +4151,7 @@
           ? 'joined_invite'
           : result.outcome;
     const details: StepTelemetryDetails = { outcome };
-    connectorImportCompany = null;
+    connectorImportCompany = result.outcome === 'skipped' ? (result.company ?? null) : null;
     if (result.outcome === 'created') {
       connectorImportCompany = result.companyUid;
       recordWorkspaceSelected(result.companyUid);

@@ -154,29 +154,64 @@ pub fn detect_claude_desktop_connectors() -> ClaudeDesktopConnectors {
 /// category, first stderr line) so the next failure can be diagnosed there.
 #[tauri::command]
 pub async fn import_claude_desktop_connectors(company: Option<String>) -> ConnectorImportResult {
-    let Some(company) = connector_import_company(company.as_deref()) else {
-        return log_connector_import(
-            ConnectorImportResult {
+    import_connectors_with(company.as_deref(), run_hq_integrations_import, |line| {
+        crate::util::logfile::log("ai-tools", line)
+    })
+    .await
+}
+
+/// One import attempt: what it returned, the CLI exit code when it ran, and
+/// the short detail (first stderr line or the app-side reason) for the log.
+struct ImportAttempt {
+    result: ConnectorImportResult,
+    exit_code: Option<i32>,
+    detail: Option<String>,
+}
+
+/// The import with its CLI runner and logger injected, so tests can prove the
+/// CLI is never run without a company and never touch the real hq-sync.log.
+async fn import_connectors_with<Run, Fut>(
+    company: Option<&str>,
+    run: Run,
+    log: impl Fn(&str),
+) -> ConnectorImportResult
+where
+    Run: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = ImportAttempt>,
+{
+    let attempt = match connector_import_company(company) {
+        Some(company) => run(company).await,
+        None => ImportAttempt {
+            result: ConnectorImportResult {
                 ok: false,
                 message: "No company selected for the connector import.".to_string(),
                 error_category: "not-found",
             },
-            None,
-            Some("no company selected".to_string()),
-        );
+            exit_code: None,
+            detail: Some("no company selected".to_string()),
+        },
     };
+    log(&connector_import_log_line(
+        &attempt.result,
+        attempt.exit_code,
+        attempt.detail.as_deref(),
+    ));
+    attempt.result
+}
+
+async fn run_hq_integrations_import(company: String) -> ImportAttempt {
     let hq_root = match resolve_hq_path() {
         Ok(path) => path,
         Err(error) => {
-            return log_connector_import(
-                ConnectorImportResult {
+            return ImportAttempt {
+                result: ConnectorImportResult {
                     ok: false,
                     message: error,
                     error_category: "not-found",
                 },
-                None,
-                Some("HQ folder not resolved".to_string()),
-            )
+                exit_code: None,
+                detail: Some("HQ folder not resolved".to_string()),
+            }
         }
     };
     let hq = paths::resolve_bin("hq");
@@ -191,19 +226,19 @@ pub async fn import_claude_desktop_connectors(company: Option<String>) -> Connec
         .await;
 
     match output {
-        Ok(output) if output.status.success() => log_connector_import(
-            ConnectorImportResult {
+        Ok(output) if output.status.success() => ImportAttempt {
+            result: ConnectorImportResult {
                 ok: true,
                 message: hq_command_message(&output.stdout, &output.stderr, "Import completed."),
                 error_category: "unknown",
             },
-            output.status.code(),
-            None,
-        ),
+            exit_code: output.status.code(),
+            detail: None,
+        },
         Ok(output) => {
             let code = output.status.code();
-            log_connector_import(
-                ConnectorImportResult {
+            ImportAttempt {
+                result: ConnectorImportResult {
                     ok: false,
                     message: hq_command_message(
                         &output.stdout,
@@ -215,19 +250,19 @@ pub async fn import_claude_desktop_connectors(company: Option<String>) -> Connec
                     ),
                     error_category: "exit-nonzero",
                 },
-                code,
-                first_line(&output.stderr),
-            )
+                exit_code: code,
+                detail: first_line(&output.stderr),
+            }
         }
-        Err(error) => log_connector_import(
-            ConnectorImportResult {
+        Err(error) => ImportAttempt {
+            result: ConnectorImportResult {
                 ok: false,
                 message: format!("Failed to spawn hq integrations import: {error}"),
                 error_category: "spawn-failed",
             },
-            None,
-            Some(error.to_string()),
-        ),
+            exit_code: None,
+            detail: Some(error.to_string()),
+        },
     }
 }
 
@@ -282,18 +317,6 @@ fn connector_import_log_line(
         }
     }
     line
-}
-
-fn log_connector_import(
-    result: ConnectorImportResult,
-    exit_code: Option<i32>,
-    stderr_first_line: Option<String>,
-) -> ConnectorImportResult {
-    crate::util::logfile::log(
-        "ai-tools",
-        &connector_import_log_line(&result, exit_code, stderr_first_line.as_deref()),
-    );
-    result
 }
 
 fn hq_command_message(stdout: &[u8], stderr: &[u8], fallback: &str) -> String {
@@ -864,9 +887,61 @@ mod tests {
 
     #[tokio::test]
     async fn connector_import_without_a_company_never_runs_the_cli() {
-        let result = import_claude_desktop_connectors(None).await;
-        assert!(!result.ok);
-        assert_eq!(result.error_category, "not-found");
+        for company in [None, Some(""), Some("--dry-run")] {
+            let spawned = std::cell::Cell::new(false);
+            let logged = std::cell::RefCell::new(Vec::<String>::new());
+            let result = import_connectors_with(
+                company,
+                |_company| {
+                    spawned.set(true);
+                    async { unreachable!("the CLI must not run without a company") }
+                },
+                |line| logged.borrow_mut().push(line.to_string()),
+            )
+            .await;
+            assert!(!spawned.get(), "{company:?} must not run the CLI");
+            assert!(!result.ok);
+            assert_eq!(result.error_category, "not-found");
+            assert_eq!(
+                logged.into_inner(),
+                vec!["connector import ok=false exit=none category=not-found \
+                     detail=\"no company selected\""
+                    .to_string()]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn connector_import_runs_the_cli_for_the_named_company_and_logs_its_exit() {
+        let ran_for = std::cell::RefCell::new(None::<String>);
+        let logged = std::cell::RefCell::new(Vec::<String>::new());
+        let result = import_connectors_with(
+            Some("acme"),
+            |company| {
+                *ran_for.borrow_mut() = Some(company);
+                async {
+                    ImportAttempt {
+                        result: ConnectorImportResult {
+                            ok: false,
+                            message: "raw".to_string(),
+                            error_category: "exit-nonzero",
+                        },
+                        exit_code: Some(1),
+                        detail: Some("hq: something failed".to_string()),
+                    }
+                }
+            },
+            |line| logged.borrow_mut().push(line.to_string()),
+        )
+        .await;
+        assert_eq!(ran_for.into_inner().as_deref(), Some("acme"));
+        assert_eq!(result.error_category, "exit-nonzero");
+        assert_eq!(
+            logged.into_inner(),
+            vec!["connector import ok=false exit=1 category=exit-nonzero \
+                 detail=\"hq: something failed\""
+                .to_string()]
+        );
     }
 
     #[test]

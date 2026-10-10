@@ -4499,6 +4499,8 @@ describe('company onboarding step', () => {
     connectorCount?: number;
     /** Answer for import_claude_desktop_connectors. */
     importResult?: Record<string, unknown>;
+    /** The app's active company slug (get_desktop_active_company). */
+    activeCompany?: string | null;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
     onboardingFlags.companyNamePrefillEnabled = options.companyNamePrefillEnabled ?? false;
@@ -4537,6 +4539,8 @@ describe('company onboarding step', () => {
               };
         case 'import_claude_desktop_connectors':
           return options.importResult ?? { ok: true, message: 'Imported.' };
+        case 'get_desktop_active_company':
+          return options.activeCompany ?? null;
         case 'web_visitor_anon_id':
           return options.anonId ?? null;
         case 'start_initial_cloud_sync':
@@ -5545,6 +5549,58 @@ describe('company onboarding step', () => {
     await settle();
     expect(onScreen('ready')).toBe(true);
     expect(importCalls()).toHaveLength(1);
+  });
+
+  it('imports into an existing member\'s company by its slug when the company step skips itself', async () => {
+    await reachCompanyScenario({
+      memberships: [
+        { companyUid: 'cmp_demo', companySlug: 'demo', personUid: 'prs_me', status: 'active', role: 'member' },
+      ],
+      connectorCount: 2,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-import"]')));
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    click('connector-import-import');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-success"]')));
+
+    expect(importCalls()).toEqual([{ company: 'demo' }]);
+  });
+
+  it('falls back to the app\'s active company when the company lookup fails', async () => {
+    await reachCompanyScenario({ membershipFailures: 1, activeCompany: 'demo', connectorCount: 1 });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-import"]')));
+    click('connector-import-import');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-success"]')));
+
+    expect(importCalls()).toEqual([{ company: 'demo' }]);
+  });
+
+  it('skips the connector import when the company lookup fails and no company is active', async () => {
+    await reachCompanyScenario({ membershipFailures: 1, activeCompany: null, connectorCount: 1 });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flush();
+
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(commands).toContain('get_desktop_active_company');
+    expect(commands).not.toContain('detect_claude_desktop_connectors');
+    expect(commands).not.toContain('import_claude_desktop_connectors');
+    expect(onScreen('ready')).toBe(true);
+  });
+
+  it('keeps a company made in the flow for the import when setup is skipped while it provisions', async () => {
+    await reachCompanyScenario({ failedStep: 'kms-create', connectorCount: 1 });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-provisioning-retry"]')));
+    click('onboarding-company-skip');
+    await settle();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-import"]')));
+    click('connector-import-import');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-success"]')));
+
+    expect(importCalls()).toEqual([{ company: 'cmp_new' }]);
   });
 
   it('imports into the company created in the flow by its uid', async () => {

@@ -127,7 +127,12 @@ describe('ConnectorImportStep', () => {
         errorCategory: 'exit-nonzero',
       };
     });
-    const oncomplete = mountStep();
+    const oncomplete = vi.fn();
+    const onTelemetry = vi.fn();
+    component = mount(ConnectorImportStep, {
+      target: host,
+      props: { company: 'acme', oncomplete, onTelemetry },
+    });
     await flush();
 
     host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
@@ -151,6 +156,12 @@ describe('ConnectorImportStep', () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="connector-import-skip"]')?.click();
     expect(oncomplete).toHaveBeenCalledOnce();
+    expect(onTelemetry).toHaveBeenLastCalledWith({
+      action: 'skipped',
+      detectedToolCount: 1,
+      detectedSourceSet: undefined,
+      outcome: 'skipped_after_failure',
+    });
   });
 
   it('runs the import again from Try again and reaches success', async () => {

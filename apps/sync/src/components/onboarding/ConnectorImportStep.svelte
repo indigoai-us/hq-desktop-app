@@ -196,7 +196,7 @@
           action: 'skipped',
           detectedToolCount: connectorCount,
           detectedSourceSet,
-          outcome: 'user_skipped',
+          outcome: 'skipped_after_failure',
         });
         complete();
       }}
