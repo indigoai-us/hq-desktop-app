@@ -122,7 +122,7 @@ export interface GatherResult {
 
 /** Recorded meetings read per company, and signal bodies read in total. */
 export const MEETINGS_PER_COMPANY = 5;
-export const BODY_READS = 10;
+export const BODY_READS = 30;
 export const MAX_COMPANIES = 6;
 
 export { configureBriefSeed } from "./brief-seed.js";
@@ -318,7 +318,7 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
       now: now.toISOString(),
       userName,
       companies: companies.flatMap((c) => [c.uid, ...(c.slug ? [c.slug] : [])]),
-      calendarToday: calendar,
+      calendarToday: mergePastMeetings(calendar, meetings.todayRecorded, now),
       meetingsYesterday: meetings.meetings,
       decisions: meetings.decisions,
       actionItems: meetings.actionItems,
@@ -430,20 +430,44 @@ async function mergeSweep(
   input.dmCount = Math.max(input.dmCount ?? 0, s.dmCount ?? 0);
 }
 
+/**
+ * Adds today's recorded meetings that already happened and are missing from
+ * the calendar feed (it only lists what is ahead). A recorded meeting within
+ * 30 minutes of a same-titled calendar event is the same call.
+ */
+export function mergePastMeetings(calendar: BriefCalendarEvent[], recorded: BriefCalendarEvent[], now: Date): BriefCalendarEvent[] {
+  const extra = recorded.filter(
+    (r) =>
+      Date.parse(r.start) <= now.getTime() &&
+      !calendar.some(
+        (c) => c.title.toLowerCase() === r.title.toLowerCase() && Math.abs(Date.parse(c.start) - Date.parse(r.start)) < 30 * 60_000,
+      ),
+  );
+  return [...calendar, ...extra].sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+}
+
 async function readMeetings(
   adapter: BriefAdapter,
   companies: readonly BriefCompanyRef[],
   yesterday: Date,
   fail: (name: string, err: unknown) => void,
-): Promise<{ meetings: BriefMeeting[]; decisions: BriefDecision[]; actionItems: BriefActionItem[]; risks: BriefRisk[] }> {
+): Promise<{
+  meetings: BriefMeeting[];
+  decisions: BriefDecision[];
+  actionItems: BriefActionItem[];
+  risks: BriefRisk[];
+  todayRecorded: BriefCalendarEvent[];
+}> {
   const api = adapter.meetings;
   const meetings: BriefMeeting[] = [];
+  const todayRecorded: BriefCalendarEvent[] = [];
+  const today = new Date(yesterday.getTime() + 86_400_000);
   const decisions: BriefDecision[] = [];
   const actionItems: BriefActionItem[] = [];
   const risks: BriefRisk[] = [];
   if (!api?.listRecorded || !api.getRecorded) {
     fail("meetings", new SourceError("meetings: unavailable on this host"));
-    return { meetings, decisions, actionItems, risks };
+    return { meetings, decisions, actionItems, risks, todayRecorded };
   }
   let reads = BODY_READS;
   const body = async (url: string | null, fallback: string | null): Promise<string | null> => {
@@ -466,6 +490,10 @@ async function readMeetings(
       fail(`meetings ${company.label}`, err);
       continue;
     }
+    // The calendar feed only lists what is still ahead; recorded meetings fill in today's earlier calls.
+    for (const m of rows.filter((r) => sameLocalDay(r.startTime, today))) {
+      todayRecorded.push({ id: `rec:${m.meetingId}`, title: m.title, start: m.startTime, end: m.endTime ?? null, kind: "team" });
+    }
     const mine = rows.filter((m) => sameLocalDay(m.startTime, yesterday)).slice(0, MEETINGS_PER_COMPANY);
     for (const m of mine) {
       let signals: ReturnType<typeof signalsByKind> = { decisions: [], actions: [], risks: [], questions: [] };
@@ -485,8 +513,9 @@ async function readMeetings(
         actions: signals.actions.length,
         risks: signals.risks.length,
         questions: signals.questions.length,
-        decided: signals.decisions.map((d) => d.title).filter((t): t is string => !!t).slice(0, 3),
-        todo: signals.actions.map((a) => a.title).filter((t): t is string => !!t).slice(0, 2),
+        // Signal titles are often only in the body file; read the few the peek shows.
+        decided: (await Promise.all(signals.decisions.slice(0, 3).map((d) => body(d.url, d.title)))).filter((t): t is string => !!t),
+        todo: (await Promise.all(signals.actions.slice(0, 2).map((a) => body(a.url, a.title)))).filter((t): t is string => !!t),
       });
       const origin = { companyUid: company.uid, repo: m.title };
       for (const [i, q] of signals.questions.entries()) {
@@ -514,7 +543,7 @@ async function readMeetings(
     }
   }
   meetings.sort((a, b) => b.decisions + b.actions - (a.decisions + a.actions));
-  return { meetings, decisions, actionItems, risks };
+  return { meetings, decisions, actionItems, risks, todayRecorded };
 }
 
 async function readDms(

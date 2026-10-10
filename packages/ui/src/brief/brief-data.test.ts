@@ -157,3 +157,17 @@ describe("parsers", () => {
     expect([out.decisions.length, out.risks.length, out.actions.length]).toEqual([1, 2, 0]);
   });
 });
+
+describe("mergePastMeetings", () => {
+  it("adds today's earlier recorded calls the calendar feed no longer lists, once", async () => {
+    const { mergePastMeetings } = await import("./brief-data.js");
+    const now = new Date("2026-10-09T21:00:00Z");
+    const cal = [{ id: "c1", title: "Standup", start: "2026-10-09T16:00:00Z", kind: "team" as const }];
+    const rec = [
+      { id: "r1", title: "standup", start: "2026-10-09T16:05:00Z", kind: "team" as const },
+      { id: "r2", title: "Jacob / Amir", start: "2026-10-09T15:00:00Z", kind: "team" as const },
+      { id: "r3", title: "Later", start: "2026-10-09T23:00:00Z", kind: "team" as const },
+    ];
+    expect(mergePastMeetings(cal, rec, now).map((e) => e.id)).toEqual(["r2", "c1"]);
+  });
+});

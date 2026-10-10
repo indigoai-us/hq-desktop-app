@@ -35,6 +35,7 @@
     type BriefCompanyLogo,
     type BriefLaunch,
   } from "./brief-context.svelte.js";
+  import { peek, type PeekContent } from "./brief-context.svelte.js";
   import { candidates, FITS, generateBrief, leadLabel, type BriefSlotSize, type BriefWidget } from "./brief-generate.js";
   import type { BriefInput } from "./brief-types.js";
 
@@ -103,6 +104,35 @@
       .map((s) => ({ at: s.startedAt, title: s.title }));
   });
 
+  // Hover detail for the header counts: what each number is made of, five lines at most.
+  function provPeek(label: string): PeekContent {
+    const line = (l: string, st: string | number = "") => ({ label: l, state: String(st) });
+    if (label.startsWith("session")) {
+      return {
+        title: `${plan.sessions.count} sessions`,
+        status: "By workstream",
+        sections: [{ label: "Most active", lines: plan.sessions.byWorkstream.slice(0, 5).map((w) => line(w.name, w.count)) }],
+      };
+    }
+    if (label.startsWith("DM")) {
+      const people = input.team.filter((t) => t.dmCount).sort((a, b) => (b.dmCount ?? 0) - (a.dmCount ?? 0));
+      return { title: `${input.dmCount ?? 0} DMs`, status: "Who wrote", sections: [{ label: "From", lines: people.slice(0, 5).map((t) => line(t.name, t.dmCount ?? "")) }] };
+    }
+    if (label.startsWith("signal")) {
+      return {
+        title: "Signals from meetings",
+        sections: [
+          { label: "Mix", lines: [line("Decisions to make", input.decisions.length), line("Action items", input.actionItems.length), line("Risks", input.risks.length)] },
+          ...(input.decisions.length ? [{ label: "Latest", lines: input.decisions.slice(0, 3).map((d) => line(d.title)) }] : []),
+        ],
+      };
+    }
+    return {
+      title: `${input.meetingsYesterday.length} meetings yesterday`,
+      sections: [{ label: "Meetings", lines: input.meetingsYesterday.map((m) => line(m.title, m.decisions ? `${m.decisions} decided` : "")) }],
+    };
+  }
+
   // Review mode (Shift+A on the page): every card that has data, each at its
   // first size, labelled, so the owner can give feedback card by card.
   let allCards = $state(false);
@@ -139,7 +169,7 @@
     </div>
     <div class="b-prov" title="What this brief was generated from">
       <span class="leadchip" data-testid="brief-lead">Lead <b>{leadLabel(plan.lead)}</b> · {plan.density} widgets · {plan.reason}</span>
-      {#each plan.provenance as p (p.label)}<span><b>{p.n}</b> {p.label}</span>{/each}
+      {#each plan.provenance as p (p.label)}<span class="prov" role="group" aria-label="{p.n} {p.label}" use:peek={{ state: briefState, content: () => provPeek(p.label) }}><b>{p.n}</b> {p.label}</span>{/each}
     </div>
   </header>
   {#if header}<div class="b-runs">{@render header()}</div>{/if}
@@ -207,6 +237,15 @@
 </div>
 
 <style>
+  .prov {
+    cursor: default;
+    border-radius: 6px;
+    padding: 2px 4px;
+    transition: background 0.15s;
+  }
+  .prov:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
   .b-review {
     margin-top: 12px;
     font-family: var(--b-mono);
