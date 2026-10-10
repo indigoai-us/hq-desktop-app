@@ -4,10 +4,34 @@
  * rest by hour so a busy day reads as a shape instead of a pile of dots.
  */
 
+import type { PeekContent } from "./brief-context.svelte.js";
+
 export interface TimelineSession {
   at: string;
   title: string;
   id?: string;
+  /** Company uid or slug the session ran in. */
+  company?: string | null;
+}
+
+/**
+ * A session that belongs on the sunrise strip: one you started ("you"; rows
+ * with no kind are older records of yours), with a company or a title.
+ * Untitled shells with no company are background noise.
+ */
+export function isTimelineSession(s: { kind?: string; company?: string | null; title?: string | null }): boolean {
+  return (s.kind ?? "you") === "you" && !!(s.company?.trim() || s.title?.trim());
+}
+
+/** "Since yesterday" when the window starts the day before `nowIso`, else "Since Oct 4". */
+export function sinceLabel(fromDay: string, nowIso: string): string {
+  const from = new Date(`${fromDay}T12:00:00`);
+  if (Number.isNaN(from.getTime())) return "Yesterday";
+  const now = new Date(nowIso);
+  const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12).getTime() - from.getTime()) / 86_400_000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Since yesterday";
+  return `Since ${from.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 }
 
 export interface TimelineBucket {
@@ -31,6 +55,33 @@ export interface Timeline {
 }
 
 const HOUR = 3600_000;
+
+/**
+ * The hover card for a session dot, as in the approved mockup: eyebrow
+ * "Session · Oct 8", the company chip, the title, "4:07 PM · session 5 of 8",
+ * and two buttons, Resume in <engine> and Copy prompt. The prompt text itself
+ * is not shown. An empty title reads "Untitled session".
+ */
+export function sessionPeek(s: TimelineSession, index: number, total: number): PeekContent {
+  const at = new Date(s.at);
+  const time = at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const day = at.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const title = s.title.trim() || "Untitled session";
+  const named = s.title.trim() ? `my session "${title}"` : "my untitled session";
+  return {
+    compact: true,
+    eyebrow: `Session · ${day}`,
+    origin: { companyUid: s.company ?? null, label: "sessions" },
+    title,
+    status: `${time} · session ${index + 1} of ${total}`,
+    sections: [],
+    prompt: {
+      id: `session:${s.id ?? s.at}`,
+      verb: "Resume",
+      text: `Pick up where ${named} (started ${time}${s.id ? `, id ${s.id}` : ""}) left off. Read its last state, tell me in two lines where it stopped, then continue.`,
+    },
+  };
+}
 
 /** Sessions HQ starts on its own: checkpoint siblings, auto-checkpoints, resume relaunches. */
 const BACKGROUND = [

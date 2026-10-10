@@ -4,13 +4,18 @@
   import BriefOrigin from "./BriefOrigin.svelte";
   import { peek, useBrief } from "./brief-context.svelte.js";
   import { countUp } from "./count-up.js";
+  import { redAge, riskPeek } from "./brief-peeks.js";
   import type { BriefRisk } from "./brief-types.js";
 
-  let { risk, prompt, rows }: { risk: BriefRisk; prompt: string | undefined; rows: number } = $props();
+  let { risk, prompt, rows, now = new Date().toISOString() }: { risk: BriefRisk; prompt: string | undefined; rows: number; now?: string } = $props();
   const brief = useBrief();
   const tall = $derived(rows > 1);
   const m = $derived(risk.measure);
   const stuck = $derived(m ? m.total - m.healthy : 0);
+  const ci = $derived(risk.ci ?? null);
+  // Red main CI: a short eyebrow, the workflow as the title, then what and since when.
+  const eyebrow = $derived(ci ? `${ci.repo} main CI red` : risk.title);
+  const age = $derived(ci ? redAge(ci, now) : null);
   let probe = $state("");
 </script>
 
@@ -19,12 +24,20 @@
   data-testid="brief-incident"
   role="group"
   aria-label={risk.title}
-  use:peek={{ state: brief, content: () => ({ sample: risk.sample, title: risk.title, status: risk.summary, sections: risk.links.length ? [{ label: "Fixes in review", lines: risk.links.map((l) => ({ label: l.label, state: "REVIEW", tone: "warn" as const })) }] : [], prompt: prompt ? { id: risk.id, text: prompt } : undefined }) }}
+  use:peek={{ state: brief, content: () => riskPeek(risk, prompt) }}
 >
-  <div class="eyebrow"><span class="live"></span> {risk.title} · live</div>
+  <div class="eyebrow inc-eyebrow" data-testid="brief-incident-eyebrow" title={risk.title}><span class="live"></span> {eyebrow} · live</div>
   {#if m}
     <div class="big" style="margin-top:{tall ? 12 : 6}px;font-size:{tall ? 60 : 44}px" use:countUp={stuck}>0</div>
     <div class="sub">of {m.total} {m.unit} stuck.<br />{risk.summary}</div>
+  {:else if ci}
+    <h3 data-testid="brief-incident-title">{ci.workflow ?? risk.title}</h3>
+    <div class="facts" data-testid="brief-incident-facts">
+      {#if ci.job}<div><span>Job</span>{ci.job}</div>{/if}
+      {#if age}<div><span>Since</span>{age}</div>{/if}
+      {#if ci.note && ci.note !== ci.workflow}<div class="note">{ci.note}</div>{/if}
+      {#if !tall && risk.links.length}<div><span>Fixes</span>{risk.links.length} in review</div>{/if}
+    </div>
   {:else}
     <h3>{risk.summary}</h3>
   {/if}
@@ -69,6 +82,31 @@
     100% {
       box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
     }
+  }
+  .inc-eyebrow {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .facts {
+    display: grid;
+    gap: 4px;
+    margin-top: 8px;
+    font-size: 12.5px;
+    line-height: 1.35;
+    color: rgba(255, 255, 255, 0.92);
+  }
+  .facts span {
+    display: inline-block;
+    min-width: 52px;
+    font-family: var(--b-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.6);
+  }
+  .facts .note {
+    color: rgba(255, 255, 255, 0.76);
   }
   .prs {
     display: flex;

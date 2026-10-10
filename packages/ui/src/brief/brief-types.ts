@@ -10,6 +10,8 @@ export interface BriefOrigin {
   companyUid: string | null;
   /** "indigoai-us/hq-core", "Calendar", "Indigo on X"... Shown as a chip. */
   repo: string | null;
+  /** The product the item is about ("Desktop app"), when the writer names it. */
+  product?: string | null;
 }
 
 export type BriefTone = "ok" | "warn" | "decision" | "red" | "neutral";
@@ -19,6 +21,10 @@ export interface BriefLine {
   label: string;
   state: string;
   tone?: BriefTone;
+  /** A small tag after the label, e.g. "you" on your own to-do. */
+  tag?: string;
+  /** A line you can act on: the peek shows Start and Copy prompt under it. */
+  prompt?: { id: string; text: string };
 }
 
 export interface BriefCalendarEvent {
@@ -55,8 +61,24 @@ export interface BriefMeeting {
   summary?: string;
   /** Up to three decisions made in the meeting, for the peek. */
   decided?: string[];
-  /** Up to two action items from the meeting, for the peek. */
-  todo?: string[];
+  /** Action items from the meeting, for the peek; `mine` marks the owner's own. */
+  todo?: BriefTodo[];
+}
+
+export interface BriefTodo {
+  text: string;
+  owner?: string | null;
+  /** The brief owner's own to-do: the peek offers to start it. */
+  mine?: boolean;
+}
+
+/** One of today's priorities, linked to the item it is about. */
+export interface BriefPriority {
+  n: number;
+  text: string;
+  because: string | null;
+  /** id of the decision or incident the row opens. */
+  itemId: string | null;
 }
 
 export type BriefDecisionAction = "cut" | "go" | "decide" | "reply" | "prep";
@@ -106,6 +128,16 @@ export interface BriefRisk {
   origin: BriefOrigin;
   /** Launch prompt written by the brief run; replaces the built-in one. */
   prompt?: string;
+  /** Red main CI: what is red, where, and since when. */
+  ci?: {
+    repo: string;
+    workflow: string | null;
+    job: string | null;
+    /** ISO time it went red. */
+    since: string | null;
+    ageHours: number | null;
+    note: string | null;
+  };
 }
 
 export interface BriefShipped {
@@ -154,6 +186,8 @@ export interface BriefSession {
   workstream: string;
   /** Company uid or slug the session ran in. */
   company: string | null;
+  /** you | agent | lane; absent means yours. */
+  kind?: string;
 }
 
 export interface BriefInput {
@@ -180,6 +214,8 @@ export interface BriefInput {
   lastBriefAt: string | null;
   /** DMs read for this brief, for the provenance line. */
   dmCount?: number;
+  /** Today's priorities from brief.json; absent in older briefs (the page derives them). */
+  priorities?: BriefPriority[];
   /** Fleet agents by status, when the sweep read them. */
   fleet?: { total: number; active: number; dormant: number; provisioning: number } | null;
   /** PRs across the sweep window. */

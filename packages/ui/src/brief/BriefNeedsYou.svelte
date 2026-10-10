@@ -8,12 +8,20 @@
   import BriefLaunch from "./BriefLaunch.svelte";
   import BriefOrigin from "./BriefOrigin.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
+  import { decisionPeek } from "./brief-peeks.js";
   import type { BriefDecision } from "./brief-types.js";
 
   let { decisions, prompts, rows }: { decisions: BriefDecision[]; prompts: Record<string, string>; rows: number } = $props();
   const brief = useBrief();
   const tall = $derived(rows > 1);
+  // At most five rows in a list; a "+N more" row opens the rest in the peek.
   const shown = $derived(tall ? decisions.slice(0, 5) : decisions.slice(0, 2));
+  const rest = $derived(decisions.slice(shown.length));
+  const morePeek = (): PeekContent => ({
+    title: `${rest.length} more decision${rest.length === 1 ? "" : "s"}`,
+    status: "Also waiting on you",
+    sections: [{ label: "Decisions", lines: rest.map((d) => ({ label: d.title, state: brief.cleared[d.id] ? "DONE" : "" })) }],
+  });
   const done = $derived(decisions.filter((d) => brief.cleared[d.id]).length);
 
   const ICON: Record<string, string> = {
@@ -24,19 +32,7 @@
     prep: "M4 5.5h16v14H4zM4 10h16M9 3.5v4M15 3.5v4",
   };
 
-  function content(d: BriefDecision): PeekContent {
-    const sections: PeekContent["sections"] = [];
-    if (d.detail?.why) sections.push({ label: "Why it matters", text: d.detail.why });
-    if (d.detail?.unlocks.length) sections.push({ label: "Clearing it unlocks", lines: d.detail.unlocks });
-    if (d.detail?.risk) sections.push({ label: "Watch", tone: "warn", text: d.detail.risk });
-    return {
-      sample: d.sample,
-      title: d.title,
-      status: d.detail?.source ?? d.summary,
-      sections,
-      prompt: prompts[d.id] ? { id: d.id, text: prompts[d.id]! } : undefined,
-    };
-  }
+  const content = (d: BriefDecision): PeekContent => decisionPeek(d, prompts[d.id]);
 
   function track(event: PointerEvent): void {
     const el = event.currentTarget as HTMLElement;
@@ -67,7 +63,7 @@
           <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={ICON[d.action] ?? ICON.go} /></svg></div>
         {/if}
         <div class="tx">
-          <div class="tt"><span class="t">{d.title}</span>{#if tall}<BriefOrigin origin={d.origin} />{/if}</div>
+          <div class="tt"><span class="t" data-testid="brief-need-title">{d.title}</span>{#if tall}<BriefOrigin origin={d.origin} product />{/if}</div>
           {#if tall}<div class="ts">{d.important && d.detail ? d.detail.why : d.summary}</div>{/if}
           {#if brief.notes[d.id]}<div class="ts note" role="status">{brief.notes[d.id]}</div>{/if}
         </div>
@@ -80,6 +76,11 @@
         </div>
       </div>
     {/each}
+    {#if rest.length}
+      <div class="it more-row" role="button" tabindex="0" data-testid="brief-need-more" use:peek={{ state: brief, content: morePeek }}>
+        +{rest.length} more
+      </div>
+    {/if}
   </div>
   {#if tall}
     <div class="foot"><span>{done} of {decisions.length} cleared</span><span>Hover a row to start it</span></div>
@@ -164,22 +165,45 @@
     flex: 1;
     min-width: 0;
   }
+  /* Two lines of title before the ellipsis; the product chip never truncates. */
+  .tx {
+    container-type: inline-size;
+  }
   .tt {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
     font-size: 13px;
     font-weight: 500;
     line-height: 1.25;
-    white-space: nowrap;
   }
   .tt .t {
+    flex: 1;
+    min-width: 0;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
+    overflow-wrap: anywhere;
   }
   .tt :global(.org) {
+    flex: none;
     margin-left: auto;
     font-size: 9.5px;
+  }
+  /* Too narrow for the product name: keep the logo, hide the text. */
+  @container (max-width: 250px) {
+    .tt :global(.org b) {
+      display: none;
+    }
+  }
+  .more-row {
+    justify-content: center;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.78);
+    cursor: default;
   }
   .ts {
     font-size: 11.5px;

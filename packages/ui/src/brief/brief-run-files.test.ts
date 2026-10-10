@@ -103,7 +103,7 @@ describe("gatherBriefInput with a run id", () => {
     );
     expect(reads).toEqual([`workspace/brief/${RUN}/brief-data.json`, `workspace/brief/${RUN}/brief.json`]);
     expect(failures).not.toContain("brief.json");
-    expect(input.merged).toBe(34);
+    expect(input.merged).toBe(87);
     expect(input.decisions.map((d) => d.id)).toEqual(["pr-412"]);
     expect(input.risks[0]!.title).toBe("Main is red on hq-pro");
     const prompts = briefPrompts(input);

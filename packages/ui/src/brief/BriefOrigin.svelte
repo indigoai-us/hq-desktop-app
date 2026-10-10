@@ -1,20 +1,43 @@
 <script lang="ts">
-  /** Company logo + repo or org, on every item, so sources are easy to tell apart. */
-  import CompanyLabel from "../company/CompanyLabel.svelte";
+  /**
+   * Company logo + repo or org, on every item, so sources are easy to tell
+   * apart. `product` mode (decision rows) shows a clear 20 px company logo
+   * and the product name ("Desktop app"); the name is never cut, and the row
+   * hides it (keeping the logo) when it is too narrow.
+   */
+  import BriefLogo from "./BriefLogo.svelte";
   import { useBrief } from "./brief-context.svelte.js";
+  import { productName, repoShort } from "./brief-origin.js";
   import type { BriefOrigin } from "./brief-types.js";
 
-  let { origin }: { origin: BriefOrigin } = $props();
+  let { origin, product = false }: { origin: BriefOrigin; product?: boolean } = $props();
   const brief = useBrief();
   const company = $derived(brief.company(origin.companyUid));
-  const repo = $derived(origin.repo ? (origin.repo.includes("/") ? origin.repo.split("/").slice(1).join("/") : origin.repo) : "");
+  const repo = $derived(repoShort(origin.repo));
+  const label = $derived(product ? productName(origin.repo, origin.product) : repo);
 </script>
 
-{#if company || repo}
-  <span class="org" title={origin.repo ?? ""} data-testid="brief-origin">
-    {#if company}
-      <span class="lgo"><CompanyLabel name={company.label} iconUrl={company.iconUrl} companyUid={company.uid} size={16} iconOnly /></span>
+{#if company || label}
+  <span class="org" class:product title={origin.repo ?? ""} data-testid="brief-origin">
+    {#if company || (product && origin.companyUid)}
+      <span class="lgo" class:big={product}><BriefLogo {company} fallback={origin.companyUid} size={product ? 20 : 16} /></span>
     {/if}
-    {#if repo}<b>{repo}</b>{/if}
+    {#if label}<b data-testid="brief-origin-label">{label}</b>{/if}
   </span>
 {/if}
+
+<style>
+  .org.product .lgo {
+    width: 20px;
+    height: 20px;
+    background: none;
+    box-shadow: none;
+  }
+  .org.product b {
+    max-width: none;
+    overflow: visible;
+    font-family: var(--b-ui, system-ui);
+    font-size: 11.5px;
+    letter-spacing: 0;
+  }
+</style>

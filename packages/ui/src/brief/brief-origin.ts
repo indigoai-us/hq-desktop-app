@@ -1,0 +1,46 @@
+/**
+ * Origin chips: which product an item is about and which company it belongs
+ * to, said plainly ("Desktop app", not "indigoai-us/hq-desktop-app").
+ */
+
+/** Repo short name to the product people call it. Unknown repos keep their short name. */
+const PRODUCTS: Record<string, string> = {
+  "hq-desktop-app": "Desktop app",
+  "hq-cloud": "HQ Cloud",
+  "hq-core-staging": "HQ core",
+  "hq-core": "HQ core",
+  "hq-pro": "HQ Pro",
+  "hq-finance": "Finance dashboard",
+  "hq-pro-agents": "Fleet",
+  "hq-cli": "CLI",
+  "hq-deploy": "Deploy",
+  "hq-packages": "Packs",
+};
+
+/** "indigoai-us/hq-core" -> "hq-core". */
+export function repoShort(repo: string | null | undefined): string {
+  const r = (repo ?? "").trim();
+  return r.includes("/") ? r.split("/").slice(1).join("/") : r;
+}
+
+/** The product an item is about: the writer's `product` when given, else from the repo. */
+export function productName(repo: string | null | undefined, product?: string | null): string {
+  if (product?.trim()) return product.trim();
+  const short = repoShort(repo);
+  return PRODUCTS[short.toLowerCase()] ?? short;
+}
+
+/** Two letters for a monogram tile: "Indigo" -> "IN", "Live Recover" -> "LR". */
+export function monogram(name: string): string {
+  const parts = name.trim().split(/[\s_-]+/).filter(Boolean);
+  if (!parts.length) return "?";
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
+}
+
+/** A stable hue for a name's monogram tile. */
+export function monogramHue(name: string): number {
+  let h = 0;
+  for (const ch of name.toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return h;
+}

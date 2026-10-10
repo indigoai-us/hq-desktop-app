@@ -8,7 +8,7 @@
   import { onMount } from "svelte";
   import { DAWN_CELL, DAWN_PITCH, dawnNoise } from "../chat/create-bot/NewBotDawn.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
-  import { distillTimeline } from "./brief-timeline.js";
+  import { distillTimeline, sessionPeek, type TimelineSession } from "./brief-timeline.js";
 
   interface Props {
     total: number;
@@ -19,7 +19,7 @@
     quietLine: string;
     big?: boolean;
     /** Sessions from the 24 hours before `now`, oldest first. */
-    timeline?: { at: string; title: string }[];
+    timeline?: TimelineSession[];
     /** End of the timeline window (ISO). */
     now?: string;
   }
@@ -27,19 +27,8 @@
   const end = $derived(Date.parse(now));
   const tl = $derived(distillTimeline(timeline, now));
   const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  // One dot per session; hover opens the session with a resume prompt.
-  function sessionPeek(s: { at: string; title: string; id?: string }, i: number): PeekContent {
-    const day = new Date(s.at).toLocaleDateString([], { month: "short", day: "numeric" }).toUpperCase();
-    return {
-      title: s.title,
-      status: `Session · ${day} · ${hhmm(s.at)} · ${i + 1} of ${tl.items.length}`,
-      sections: [],
-      prompt: {
-        id: `session:${s.id ?? s.at}`,
-        text: `Pick up where my session "${s.title}" (started ${hhmm(s.at)}${s.id ? `, id ${s.id}` : ""}) left off. Read its last state, tell me in two lines where it stopped, then continue.`,
-      },
-    };
-  }
+  // One dot per session; hover opens the session card with Resume and Copy prompt.
+  const dotPeek = (s: TimelineSession, i: number): PeekContent => sessionPeek(s, i, tl.items.length);
   // Hour ticks every 6h across the window, labelled in local time.
   const ticks = $derived(
     [24, 18, 12, 6, 0].map((back) => {
@@ -52,7 +41,7 @@
 
   const left = $derived(total - cleared);
   const line = $derived(
-    !total ? quietLine : left > 0 ? `${left} call${left > 1 ? "s" : ""} before sunrise.` : "Sun's up. Go build.",
+    !total ? quietLine : left > 0 ? `${left} decision${left > 1 ? "s" : ""} before sunrise.` : "Sun's up. Go build.",
   );
   const progress = $derived(total ? 0.1 + (0.9 * cleared) / total : 1);
 
@@ -226,10 +215,13 @@
     </div>
     <div class="sub" style="margin-top:12px;max-width:{big ? 420 : 330}px">{sub}</div>
     <div class="tl">
-      <div class="eyebrow" style="color:rgba(255,190,160,.6)">
-        Last 24 hours · {tl.work ? `${tl.work} session${tl.work === 1 ? "" : "s"}` : "no sessions"}{tl.background
-          ? ` · ${tl.background} background hidden`
-          : ""}
+      <div
+        class="eyebrow tl-head"
+        style="color:rgba(255,190,160,.6)"
+        data-testid="brief-timeline-head"
+        title={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}
+      >
+        Last 24h · {tl.work ? `${tl.work} session${tl.work === 1 ? "" : "s"}` : "no sessions"}
       </div>
       <div class="dots">
         <span class="rule"></span>
@@ -240,9 +232,10 @@
             class="dot"
             class:last={i === tl.items.length - 1}
             style="left:{((tx(Date.parse(it.at)) - 8) / 344) * 100}%;--lift:{lift * -9}px;animation-delay:{0.8 + i * 0.08}s"
-            aria-label="{hhmm(it.at)} {it.title}"
-            use:peek={{ state: brief, content: () => sessionPeek(it, i) }}
-          ></button>
+            aria-label="{hhmm(it.at)} {it.title || 'Untitled session'}"
+            data-testid="brief-session-dot"
+            use:peek={{ state: brief, content: () => dotPeek(it, i) }}
+          ><span class="tip" class:end={tx(Date.parse(it.at)) > 260} class:start={tx(Date.parse(it.at)) < 100}>{hhmm(it.at)} {it.title || "Untitled session"}</span></button>
         {/each}
       </div>
       <svg viewBox="0 0 360 14" aria-hidden="true">
@@ -293,10 +286,16 @@
     margin-top: auto;
     margin-bottom: 12px;
   }
+  .tl-head {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Room above the rule for lifted dots, so they never reach the eyebrow. */
   .dots {
     position: relative;
     height: 22px;
-    margin: 10px 8px 0;
+    margin: 16px 8px 0;
   }
   .dots .rule {
     position: absolute;
@@ -327,8 +326,43 @@
   }
   .dot:hover,
   .dot:focus-visible {
+    z-index: 2;
+    background: #fff;
+    scale: 1.5;
     box-shadow: 0 0 0 4px rgba(255, 181, 128, 0.25);
     outline: none;
+  }
+  /* The hovered dot's time and title, above the strip. */
+  .tip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    translate: -50% 0;
+    scale: 0.667;
+    transform-origin: bottom center;
+    padding: 0;
+    font-family: var(--b-mono);
+    font-size: 10px;
+    white-space: nowrap;
+    color: #fff;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+  }
+  .tip.end {
+    left: auto;
+    right: 0;
+    translate: 0 0;
+    transform-origin: bottom right;
+  }
+  .tip.start {
+    left: 0;
+    translate: 0 0;
+    transform-origin: bottom left;
+  }
+  .dot:hover .tip,
+  .dot:focus-visible .tip {
+    opacity: 1;
   }
   .tl svg {
     display: block;

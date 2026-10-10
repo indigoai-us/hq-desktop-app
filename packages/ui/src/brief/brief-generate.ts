@@ -303,3 +303,14 @@ export function leadLabel(lead: BriefLead): string {
     "catch-up": "Catch-up",
   }[lead];
 }
+
+/** Rows start this short and grow to their content, so short cards leave no dead space. */
+export const BRIEF_ROW_MIN_PX = 120;
+
+/** Inline grid style: the plan's areas (or review mode's dense flow), rows sized to content. */
+export function gridStyle(areas: readonly string[], review: boolean): string {
+  const row = `minmax(${BRIEF_ROW_MIN_PX}px, auto)`;
+  return review
+    ? `grid-auto-flow:row dense;grid-auto-rows:${row}`
+    : `grid-template-rows:repeat(${areas.length}, ${row});grid-template-areas:${areas.map((a) => `'${a}'`).join(" ")}`;
+}

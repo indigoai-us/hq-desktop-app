@@ -10,7 +10,7 @@ const real = () => sweepToInput(sweep, { day: "2026-10-08", companyUid: "cmp_ind
 describe("sweepToInput on the real Oct 8 sweep", () => {
   it("carries the day's real PR totals and the window's PRs by repo", () => {
     const s = real();
-    expect([s.merged, s.opened]).toEqual([34, 30]);
+    expect([s.merged, s.opened]).toEqual([87, 101]);
     expect(s.prWindow).toMatchObject({ from: "2026-10-04", to: "2026-10-08", total: 109, merged: 87 });
     expect(s.prWindow!.byRepo.slice(0, 3)).toEqual([
       { repo: "hq-core-staging", total: 41, merged: expect.any(Number) },
@@ -61,7 +61,7 @@ describe("sweepToInput on the real Oct 8 sweep", () => {
 describe("the preview fixture", () => {
   it("is real where the sweep has data and marks the rest as sample", () => {
     const day = octoberEightBrief(new Date(2026, 9, 9, 7, 40));
-    expect([day.merged, day.opened]).toEqual([34, 30]);
+    expect([day.merged, day.opened]).toEqual([87, 101]);
     expect(day.decisions.every((d) => d.sample)).toBe(true);
     expect(day.waitingOn.every((w) => w.sample)).toBe(true);
     expect(day.calendarSample).toBe(true);
@@ -92,7 +92,7 @@ describe("BriefSweepSource in gatherBriefInput", () => {
     expect(sweepPath(NOW)).toBe("workspace/brief/2026-10-09/brief-data.json");
     // Adapter wins for the calendar; the sweep fills the rest.
     expect(input.calendarToday.map((e) => e.title)).toEqual(["Live standup"]);
-    expect([input.merged, input.opened]).toEqual([34, 30]);
+    expect([input.merged, input.opened]).toEqual([87, 101]);
     expect(input.fleet?.total).toBe(44);
     expect(input.risks.map((r) => r.id)).toEqual(["ci:hq-desktop-app"]);
     expect(input.shipped.length).toBeGreaterThan(0);
@@ -128,7 +128,7 @@ describe("BriefSweepSource in gatherBriefInput", () => {
     const getFileContent = vi.fn(async () => ({ ok: true as const, value: JSON.stringify(sweepJson) }));
     const { input } = await gatherBriefInput({ ...adapter(), files: { getFileContent } }, { now: NOW, companies, log: () => {} });
     expect(getFileContent).toHaveBeenCalledWith("workspace/brief/2026-10-09/brief-data.json");
-    expect(input.merged).toBe(34);
+    expect(input.merged).toBe(87);
     expect(adapterSweepSource(null)).toBeNull();
   });
 });

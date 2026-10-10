@@ -36,8 +36,11 @@
     type BriefLaunch,
   } from "./brief-context.svelte.js";
   import { peek, type PeekContent } from "./brief-context.svelte.js";
-  import { candidates, FITS, generateBrief, leadLabel, type BriefSlotSize, type BriefWidget } from "./brief-generate.js";
+  import { candidates, FITS, generateBrief, gridStyle, leadLabel, type BriefSlotSize, type BriefWidget } from "./brief-generate.js";
+  import BriefPriorities from "./BriefPriorities.svelte";
+  import { briefPriorities } from "./brief-peeks.js";
   import type { BriefInput } from "./brief-types.js";
+  import { isTimelineSession, sinceLabel } from "./brief-timeline.js";
 
   interface Props {
     input: BriefInput;
@@ -65,6 +68,7 @@
   provideBrief(briefState);
 
   const plan = $derived(generateBrief(input));
+  const priorities = $derived(briefPriorities(input));
   const cleared = $derived(input.decisions.filter((d) => briefState.cleared[d.id]).length);
   const incident = $derived(input.risks.find((r) => r.severity === "incident") ?? null);
   const watch = $derived(input.risks.find((r) => r.severity === "watch") ?? null);
@@ -78,7 +82,9 @@
   const sunSub = $derived.by(() => {
     const parts: string[] = [];
     if (input.merged != null) {
-      parts.push(`Yesterday you merged ${input.merged}${input.opened != null ? ` and opened ${input.opened}` : ""}.`);
+      // Same numbers as the loader and the shipped card: the sweep's PR window.
+      const since = input.prWindow ? sinceLabel(input.prWindow.from, input.now) : "Yesterday";
+      parts.push(`${since} you merged ${input.merged}${input.opened != null ? ` and opened ${input.opened}` : ""}.`);
     } else if (input.shipped.length) {
       parts.push(`Yesterday ${input.shipped.length} thing${input.shipped.length === 1 ? "" : "s"} shipped.`);
     } else if (input.meetingsYesterday.length) {
@@ -95,13 +101,14 @@
   const timeline = $derived.by(() => {
     const end = Date.parse(input.now);
     return (input.recentSessions ?? input.sessions)
+      .filter(isTimelineSession)
       .filter((s) => !s.company || input.companies.some((c) => c.toLowerCase() === s.company!.toLowerCase()))
       .filter((s) => {
         const t = Date.parse(s.startedAt);
         return t > end - 24 * 3600_000 && t <= end;
       })
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-      .map((s) => ({ at: s.startedAt, title: s.title, id: s.id }));
+      .map((s) => ({ at: s.startedAt, title: s.title, id: s.id, company: s.company }));
   });
 
   // Hover detail for the header counts: what each number is made of, five lines at most.
@@ -176,17 +183,19 @@
 
   <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} {onopenmeetings} />
 
+  {#if priorities.length}<BriefPriorities {priorities} decisions={input.decisions} risks={input.risks} prompts={plan.prompts} />{/if}
+
   {#if allCards}<div class="b-review" data-testid="brief-review">Review mode · every card with data · Shift+A to go back</div>{/if}
   <main
     class="b-grid"
     class:review={allCards}
-    style={allCards
-      ? "grid-auto-flow:row dense;grid-auto-rows:minmax(196px, auto)"
-      : `grid-template-rows:repeat(${plan.areas.length}, minmax(196px, auto));grid-template-areas:${plan.areas.map((a) => `'${a}'`).join(" ")}`}
+    style={gridStyle(plan.areas, allCards)}
   >
     {#each shownWidgets as w, i (w.kind)}
+      <!-- One-row cards keep their own height (top-aligned); multi-row cards fill their span. -->
       <div
         class="slot"
+        class:short={w.rows === 1}
         style="{allCards ? `grid-column:span ${w.cols};grid-row:span ${w.rows}` : `grid-area:${w.kind}`};animation-delay:{i * 70}ms"
         data-widget={w.kind}
       >
@@ -207,7 +216,7 @@
         {:else if w.kind === "team"}
           <BriefTeam team={input.team} rows={w.rows} />
         {:else if w.kind === "incident" && incident}
-          <BriefIncident risk={incident} prompt={plan.prompts[incident.id]} rows={w.rows} />
+          <BriefIncident risk={incident} prompt={plan.prompts[incident.id]} rows={w.rows} now={input.now} />
         {:else if w.kind === "shipped"}
           <BriefShipped shipped={input.shipped} merged={input.merged ?? null} opened={input.opened ?? null} cols={w.cols} rows={w.rows} prWindow={input.prWindow ?? null} />
         {:else if w.kind === "fleet" && input.fleet}
@@ -279,5 +288,8 @@
   }
   .slot > :global(.w) {
     flex: 1;
+  }
+  .slot.short {
+    align-self: start;
   }
 </style>

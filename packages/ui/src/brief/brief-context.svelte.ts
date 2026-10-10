@@ -24,7 +24,17 @@ export interface PeekContent {
   /** Illustrative content with no real source yet. */
   sample?: boolean;
   /** Actionable items show their full prompt and the launch controls. */
-  prompt?: { id: string; text: string };
+  prompt?: { id: string; text: string; /** Button verb in compact cards: "Resume in Claude". */ verb?: string };
+  /**
+   * Compact card (session dots): eyebrow and origin chip on one line, the
+   * title, the status line, then two pill buttons (<verb> in <engine>, Copy
+   * prompt). No prompt text, no engine switcher.
+   */
+  compact?: boolean;
+  /** Small mono line above the title, e.g. "Session · Oct 8". */
+  eyebrow?: string;
+  /** Company logo chip beside the eyebrow, e.g. "Indigo · sessions". */
+  origin?: { companyUid: string | null; label: string };
   /** Buttons under the peek (e.g. Open in Meetings). */
   actions?: { label: string; run: () => void; testid?: string }[];
   /** A person or agent: the peek lists their recent DMs, read live. */
@@ -33,6 +43,8 @@ export interface PeekContent {
 
 export interface BriefCompanyLogo {
   uid: string;
+  /** Company slug, when the host has it ("indigo"). */
+  slug?: string | null;
   label: string;
   iconUrl?: string | null;
 }
@@ -117,9 +129,16 @@ export class BriefState {
     }
   }
 
+  /** A company by uid, slug or name (brief files name companies by slug). */
   company(uid: string | null): BriefCompanyLogo | null {
     if (!uid) return null;
-    return this.companies().find((c) => c.uid === uid) ?? null;
+    const key = uid.trim().toLowerCase();
+    const all = this.companies();
+    return (
+      all.find((c) => c.uid === uid) ??
+      all.find((c) => c.slug?.toLowerCase() === key || c.label.trim().toLowerCase() === key) ??
+      null
+    );
   }
 
   /** Mark an item done in this brief only. Nothing is sent anywhere. */

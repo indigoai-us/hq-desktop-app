@@ -5,7 +5,8 @@
  * never guessed at.
  */
 
-import type { BriefDecision, BriefDecisionAction, BriefRisk, BriefWaiting } from "./brief-types.js";
+import { humanTitle } from "./brief-distill.js";
+import type { BriefDecision, BriefDecisionAction, BriefPriority, BriefRisk, BriefTodo, BriefWaiting } from "./brief-types.js";
 
 const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
 const rec = (v: unknown): Record<string, unknown> =>
@@ -28,6 +29,10 @@ export interface BriefRunItems {
   decisions: BriefDecision[];
   waiting: BriefWaiting[];
   incidents: BriefRisk[];
+  /** Today's priorities, at most five, as the writer ranked them; empty in older briefs. */
+  priorities: BriefPriority[];
+  /** What each meeting decided and left to do, matched to meetings by title. */
+  meetings: { title: string; decided: string[]; todo: BriefTodo[] }[];
   learnedNotes: string[];
 }
 
@@ -42,16 +47,36 @@ function itemGroup(items: unknown, key: string): Record<string, unknown>[] {
   return list(rec(items)[key]);
 }
 
+/** A red-main-CI incident: from the main_health sweep, or naming a workflow. */
+function isCi(r: Record<string, unknown>): boolean {
+  return str(r.source) === "main_health" || str(r.kind) === "ci" || !!str(r.workflow);
+}
+
+/** Repo, workflow, job and how long it has been red, from the item or its title. */
+function ciDetail(r: Record<string, unknown>, title: string): NonNullable<BriefRisk["ci"]> {
+  const quoted = title.match(/['"‘“]([^'"’”]+)['"’”]/)?.[1] ?? null;
+  const age = r.age_hours;
+  return {
+    repo: str(r.repo) || title.split(":")[0]!.trim(),
+    workflow: str(r.workflow) || quoted,
+    job: str(r.job) || null,
+    since: str(r.red_since) || str(r.since) || null,
+    ageHours: typeof age === "number" && Number.isFinite(age) ? age : null,
+    note: str(r.why) || str(r.summary) || null,
+  };
+}
+
 /** `brief.json`, or null when it is not a JSON object. */
 export function parseBriefItems(text: string, companyUid: string | null): BriefRunItems | null {
   const root = parseJson(text);
   if (!root) return null;
   const items = root.items;
-  const origin = (i: Record<string, unknown>) => ({ companyUid, repo: str(i.repo) || null });
+  const origin = (i: Record<string, unknown>) => ({ companyUid, repo: str(i.repo) || null, ...(str(i.product) ? { product: str(i.product) } : {}) });
 
   const decisions: BriefDecision[] = [];
   for (const [n, d] of itemGroup(items, "decisions").entries()) {
-    const title = str(d.title);
+    // A to-do, not a PR: "<repo> #12: feat(x): ..." loses its reference and prefix.
+    const { text: title, ref } = humanTitle(str(d.title));
     if (!title) continue;
     const action = ACTIONS.find((a) => a === str(d.action)) ?? "decide";
     const prompt = str(d.prompt);
@@ -69,7 +94,7 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
           .filter(Boolean)
           .map((label) => ({ label, state: "" })),
         ...(str(d.risk) ? { risk: str(d.risk) } : {}),
-        source: str(d.source) || "Daily brief",
+        source: [ref, str(d.source) || "Daily brief"].filter(Boolean).join(" · "),
       },
     });
   }
@@ -88,16 +113,47 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
     const title = str(r.title);
     if (!title) continue;
     const prompt = str(r.prompt);
+    const rawLinks: unknown[] = Array.isArray(r.fixes) ? r.fixes : Array.isArray(r.links) ? r.links : [];
+    const links = rawLinks
+      .map((x) => {
+        if (typeof x === "string") return { label: x.trim(), origin: { companyUid, repo: null } };
+        const l = rec(x);
+        const num = typeof l.number === "number" ? `#${l.number}` : "";
+        return { label: str(l.label) || str(l.title) || `${str(l.repo)} ${num}`.trim(), origin: { companyUid, repo: str(l.repo) || null } };
+      })
+      .filter((l) => l.label);
     incidents.push({
       id: str(r.id) || `brief-incident-${n}`,
       title,
       summary: str(r.summary) || str(r.why) || "",
       severity: str(r.severity) === "watch" ? "watch" : "incident",
-      links: [],
+      links,
       origin: origin(r),
       ...(prompt ? { prompt } : {}),
+      ...(isCi(r) ? { ci: ciDetail(r, title) } : {}),
     });
   }
+
+  const priorities: BriefPriority[] = list(root.priorities)
+    .map((p, i) => ({
+      n: typeof p.n === "number" && Number.isFinite(p.n) ? p.n : i + 1,
+      text: str(p.text) || str(p.title),
+      because: str(p.because) || null,
+      itemId: str(p.item_id) || null,
+    }))
+    .filter((p) => p.text)
+    .sort((a, b) => a.n - b.n)
+    .slice(0, 5);
+
+  const meetings = itemGroup(items, "meetings")
+    .map((m) => ({
+      title: str(m.title) || str(m.meeting) || str(m.name),
+      decided: (Array.isArray(m.decided) ? m.decided : []).map((d) => (typeof d === "string" ? d.trim() : str(rec(d).text))).filter(Boolean),
+      todo: (Array.isArray(m.todo) ? m.todo : [])
+        .map((t): BriefTodo => (typeof t === "string" ? { text: t.trim() } : { text: str(rec(t).text), owner: str(rec(t).owner) || null, mine: rec(t).mine === true }))
+        .filter((t) => t.text),
+    }))
+    .filter((m) => m.title);
 
   return {
     runId: str(root.run_id) || null,
@@ -106,6 +162,8 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
     decisions,
     waiting,
     incidents,
+    priorities,
+    meetings,
     learnedNotes: (Array.isArray(root.learned_notes) ? root.learned_notes : []).map((n) => str(n)).filter(Boolean),
   };
 }

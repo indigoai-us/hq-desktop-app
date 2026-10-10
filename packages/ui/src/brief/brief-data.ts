@@ -298,7 +298,8 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
             adapter.agents?.listLocalSessions?.({ from: localDay(yesterday), to: localDay(now) }, { limit: 400 }),
           ),
         );
-        return page.rows.map(
+        // Only sessions you started; untitled shells with no company are background noise.
+        return page.rows.filter(keepNativeSession).map(
           (r): BriefSession => ({
             id: r.id,
             title: r.title,
@@ -342,6 +343,11 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
   return { input, failures };
 }
 
+/** A native session row the brief counts: your own, with a company or a title. */
+export function keepNativeSession(r: { kind?: string; company?: string | null; title?: string | null }): boolean {
+  return (r.kind ?? "you") === "you" && !!(r.company?.trim() || r.title?.trim());
+}
+
 /** The synthesized items win over the adapter's raw ones: they carry the run's prompts. */
 async function mergeRunItems(
   input: BriefInput,
@@ -368,6 +374,15 @@ async function mergeRunItems(
   if (items.decisions.length) input.decisions = items.decisions;
   if (items.waiting.length) input.waitingOn = items.waiting;
   input.risks = [...items.incidents, ...input.risks];
+  if (items.priorities.length) input.priorities = items.priorities;
+  // The writer's decided / to-do lines win over the raw signal titles.
+  const norm = (t: string) => t.trim().toLowerCase();
+  for (const m of items.meetings) {
+    const hit = input.meetingsYesterday.find((x) => norm(x.title) === norm(m.title));
+    if (!hit) continue;
+    if (m.decided.length) hit.decided = m.decided;
+    if (m.todo.length) hit.todo = m.todo;
+  }
 }
 
 /** A run's housekeeping.json, or null when it is absent or unreadable (logged). */
@@ -515,7 +530,9 @@ async function readMeetings(
         questions: signals.questions.length,
         // Signal titles are often only in the body file; read the few the peek shows.
         decided: (await Promise.all(signals.decisions.slice(0, 3).map((d) => body(d.url, d.title)))).filter((t): t is string => !!t),
-        todo: (await Promise.all(signals.actions.slice(0, 2).map((a) => body(a.url, a.title)))).filter((t): t is string => !!t),
+        todo: (await Promise.all(signals.actions.slice(0, 3).map((a) => body(a.url, a.title))))
+          .filter((t): t is string => !!t)
+          .map((text) => ({ text })),
       });
       const origin = { companyUid: company.uid, repo: m.title };
       for (const [i, q] of signals.questions.entries()) {

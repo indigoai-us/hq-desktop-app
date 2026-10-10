@@ -3,9 +3,10 @@
  * written by the brief sweep prompt) mapped into brief input. Pure.
  *
  * What the sweep carries, and where it lands:
- * - days[day].merged / opened ......... the shipped card's totals
- * - prs ............................... shipped cards per repo for the day,
- *                                       window totals and PRs by repo
+ * - prs ............................... merged and opened totals for the PR
+ *                                       window (the one source for those
+ *                                       counts), shipped cards per repo for
+ *                                       the day, window totals by repo
  * - meeting_signals ................... yesterday's meetings with real counts
  * - fleet ............................. fleet breakdown by status
  * - main_health ....................... red main CI becomes a live incident
@@ -77,8 +78,13 @@ export type SweepInput = Pick<
 export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput {
   const org = opts.org ?? "indigoai-us";
   const origin = (repo: string) => ({ companyUid: opts.companyUid, repo: `${org}/${repo}` });
-  const day = sweep.days?.[opts.day] ?? {};
   const prs = sweep.prs ?? [];
+  // One source for merged and opened everywhere: the sweep's PR window
+  // (window.from onward). The per-day rollup is not used for these counts.
+  const from = sweep.window?.from ?? null;
+  const inWindow = (iso: string | undefined) => !!iso && !iso.startsWith("0001") && (!from || iso.slice(0, 10) >= from);
+  const windowMerged = prs.filter((p) => p.state === "merged" && inWindow(p.closed)).length;
+  const windowOpened = prs.filter((p) => (p.state === "open" || p.state === "merged") && inWindow(p.created)).length;
 
   // Shipped: the day's merged PRs grouped by repo, biggest first.
   const mergedToday = prs.filter((p) => p.state === "merged" && isDay(p.closed, opts.day));
@@ -138,6 +144,14 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
       severity: "incident" as const,
       links: [],
       origin: origin(repo),
+      ci: {
+        repo,
+        workflow: h.red.length > 1 ? `${h.red[0]} +${h.red.length - 1} more` : (h.red[0] ?? null),
+        job: null,
+        since: null,
+        ageHours: null,
+        note: `${h.red.length} of ${h.workflows} workflows red on main.`,
+      },
     }));
 
   // Team: who DM'd you that day, newest first; agt_ senders are agents.
@@ -176,8 +190,8 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
     shipped,
     team: [...seen.values()].slice(0, 6),
     sessions,
-    merged: day.merged ?? null,
-    opened: day.opened ?? null,
+    merged: sweep.prs ? windowMerged : null,
+    opened: sweep.prs ? windowOpened : null,
     fleet: sweep.fleet
       ? { total: sweep.fleet.total, active: status.active ?? 0, dormant: status.dormant ?? 0, provisioning: status.provisioning ?? 0 }
       : null,
