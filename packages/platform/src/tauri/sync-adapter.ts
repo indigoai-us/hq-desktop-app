@@ -1267,8 +1267,18 @@ export function createSyncPlatformAdapter(
         hqProRequestWithStatus('GET', AGENT_PATHS.status(agentUid, brain)),
       restartBrainApproval: (agentUid, brain) =>
         hqProJson('POST', AGENT_PATHS.reauth(agentUid), { brain }),
-      submitClaudeLoginCode: (agentUid, code) =>
-        hqProJson('POST', AGENT_PATHS.loginCode(agentUid), { code }, CLAUDE_LOGIN_CODE_TIMEOUT_SECS),
+      // A refusal keeps its HTTP status: the New Bot screen tells a code the
+      // server turned down (4xx) from one whose fate is not known (5xx).
+      submitClaudeLoginCode: async (agentUid, code) => {
+        const attempted = await hqProAttemptWithRetries<Json>(
+          'POST',
+          AGENT_PATHS.loginCode(agentUid),
+          { code },
+          CLAUDE_LOGIN_CODE_TIMEOUT_SECS,
+        );
+        if (!attempted.result.ok && attempted.result.code === 'network') return attempted.result;
+        return withHttpStatus(attempted.result, attempted.status);
+      },
       attachSlack: (agentUid) =>
         hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
       // The token goes in the body only. The path names the bot, nothing else.

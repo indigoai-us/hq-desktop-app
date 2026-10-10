@@ -33,8 +33,19 @@ describe("claudeCodeAnswer", () => {
     // An older server says only ok: the answer is not known.
     expect(claudeCodeAnswer(answer())).toBe("unknown");
     expect(claudeCodeAnswer({ ok: true })).toBe("unknown");
-    expect(claudeCodeAnswer({ ok: false, code: "network", message: "timed out" })).toBe("failed");
-    expect(claudeCodeAnswer(null)).toBe("failed");
+    // Review of #1549: a failure that does not say whether the code reached
+    // the machine is not a refusal.
+    expect(claudeCodeAnswer({ ok: false, code: "network", message: "timed out" })).toBe("transient");
+    expect(claudeCodeAnswer({ ok: false, code: "http-504", message: "x" })).toBe("transient");
+    expect(claudeCodeAnswer({ ok: false, code: "INTERNAL", status: 500, message: "x" })).toBe("transient");
+    expect(claudeCodeAnswer({ ok: false, code: "SOMETHING", message: "x" })).toBe("transient");
+    expect(claudeCodeAnswer(null)).toBe("transient");
+    // Only a 4xx is a refusal, and LOGIN_CODE_INVALID names a bad value.
+    expect(claudeCodeAnswer({ ok: false, code: "http-400", message: "Missing required field: code" })).toBe("failed");
+    expect(claudeCodeAnswer({ ok: false, code: "LOGIN_CODE_NOT_APPLICABLE", status: 400, message: "x" })).toBe("failed");
+    expect(claudeCodeAnswer({ ok: false, code: "http-403", message: "x" })).toBe("failed");
+    expect(claudeCodeAnswer({ ok: false, code: "LOGIN_CODE_INVALID", status: 400, message: "x" })).toBe("invalid");
+    expect(claudeCodeAnswer({ ok: false, code: "LOGIN_CODE_INVALID", message: "x" })).toBe("invalid");
   });
 });
 
@@ -74,14 +85,39 @@ describe("submitClaudeCode", () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
-  it("says failed for a refused request, after one look in case it went through", async () => {
+  it("says failed for a 4xx refusal without waiting or sending again", async () => {
     const confirm = vi.fn(async () => false);
-    const send = vi.fn(async () => ({ ok: false, code: "network", message: "Network error: operation timed out" }));
+    const send = vi.fn(async () => ({ ok: false, code: "http-403", status: 403, message: "Forbidden" }));
     await expect(submitClaudeCode(deps({ send, confirm }))).resolves.toBe("failed");
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
 
-    const thrown = vi.fn(async () => { throw new Error("boom"); });
-    await expect(submitClaudeCode(deps({ send: thrown, confirm: async () => true }))).resolves.toBe("signed-in");
+  it("says invalid for a value the server turns down as not a Claude code", async () => {
+    const confirm = vi.fn(async () => false);
+    const send = vi.fn(async () => ({ ok: false, code: "LOGIN_CODE_INVALID", status: 400, message: "claude login code contains characters outside the URL-safe set" }));
+    await expect(submitClaudeCode(deps({ send, confirm }))).resolves.toBe("invalid");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a network error", async () => ({ ok: false, code: "network", message: "Network error: operation timed out" })],
+    ["a 5xx", async () => ({ ok: false, code: "INTERNAL", status: 500, message: "x" })],
+    ["the gateway's 504", async () => ({ ok: false, code: "http-504", status: 504, message: "x" })],
+    ["a thrown error", async () => { throw new Error("boom"); }],
+  ])("keeps looking for the sign-in after %s, without sending the code again", async (_label, failing) => {
+    const time = clock();
+    const send = vi.fn(failing);
+    const confirm = vi.fn(async () => false);
+    await expect(submitClaudeCode({ send, confirm, now: time.now, sleep: time.sleep })).resolves.toBe("timeout");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls.length).toBeGreaterThan(1);
+    expect(time.now()).toBe(CLAUDE_CODE_RESEND_AFTER_MS);
+
+    const seenLater = clock();
+    const confirmLater = vi.fn(async () => seenLater.now() >= 6_000);
+    await expect(submitClaudeCode({ send: vi.fn(failing), confirm: confirmLater, now: seenLater.now, sleep: seenLater.sleep })).resolves.toBe("signed-in");
   });
 
   it("times out with a bounded wait when the sign-in never shows", async () => {

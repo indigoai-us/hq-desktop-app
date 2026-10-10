@@ -89,6 +89,11 @@
   /** When the server was last asked to re-check during a code submit. */
   let codeRecheckAt = 0;
   let destroyed = false;
+  /**
+   * Counts the status reads a code submit applied. A scheduled read that
+   * started before one of them is older, and is dropped when it lands.
+   */
+  let submitReads = 0;
   let actionBusy = $state(false);
   let actionMessage = $state("");
 
@@ -278,6 +283,7 @@
       const response = result as { ok?: unknown; value?: unknown } | null;
       if (destroyed || response?.ok !== true) return false;
       const next = applyWakingStatus(session, response.value);
+      submitReads += 1;
       onupdate(next);
       return next.phase !== "waking" || !next.approval || next.signedInAt != null;
     } catch {
@@ -285,7 +291,8 @@
     }
   }
 
-  function codeMessage(result: "rejected" | "failed" | "timeout"): string {
+  function codeMessage(result: "rejected" | "invalid" | "failed" | "timeout"): string {
+    if (result === "invalid") return "That doesn't look like a Claude code. Copy the code from Claude and paste it here.";
     if (result === "rejected") return "Claude didn't accept that code. Open Claude again for a new code, then paste it here.";
     if (result === "failed") return "We couldn't send that code. Try again.";
     return "We couldn't confirm your sign-in yet. Try again.";
@@ -329,8 +336,10 @@
         actionMessage = "";
         return;
       }
-      if (result === "rejected") codeAccepted = false;
-      codeRetry = result !== "rejected";
+      if (result === "rejected" || result === "invalid") codeAccepted = false;
+      // A code Claude or the server turned down is not offered again as it
+      // is: the person edits the field and submits.
+      codeRetry = result !== "rejected" && result !== "invalid";
       actionMessage = codeMessage(result);
     } catch (error) {
       console.warn("new-bot: claude code submit failed", error instanceof Error ? error.name : "unknown", lastAnswer ?? "none");
@@ -395,11 +404,25 @@
         checkLater(WAKING_POLL_MS);
         return;
       }
+      // A Claude code submit reads the status itself while it checks. Two
+      // reads in flight could land out of order, and the older one would
+      // overwrite the newer, so this one waits its turn.
+      if (codeChecking) {
+        checkLater(WAKING_POLL_MS);
+        return;
+      }
       checking = true;
+      const readsBefore = submitReads;
       let latest = checkedSession;
       try {
         const result = await getStatus(checkedSession.agentUid, checkedSession.brain ?? undefined);
         if (stopped) return;
+        // A code submit is checking, or applied a read while this one was out:
+        // its reads are newer.
+        if (codeChecking || submitReads !== readsBefore) {
+          checkLater(WAKING_POLL_MS);
+          return;
+        }
         const response = result as { ok?: unknown; value?: unknown };
         let next = response && response.ok === true
           ? applyWakingStatus(checkedSession, response.value)

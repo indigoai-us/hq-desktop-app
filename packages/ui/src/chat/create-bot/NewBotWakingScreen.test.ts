@@ -545,15 +545,82 @@ describe("NewBotWakingScreen", () => {
       expect(document.body.textContent).not.toMatch(/invalid_grant|Login failed|code removed/);
     });
 
-    it("keeps the code and offers Try again when the request fails, with no raw error on screen", async () => {
+    it("keeps looking for the sign-in after a network error, without sending the code again (review of #1549)", async () => {
+      vi.useFakeTimers();
       const submitClaudeLoginCode = vi.fn(async () => ({ ok: false, code: "network", message: "Network error: operation timed out" }));
+      await openAndPaste({ submitClaudeLoginCode });
+      submit().click();
+      await settle();
+      expect(submit().textContent).toContain("Checking...");
+      await vi.advanceTimersByTimeAsync(CLAUDE_CODE_RESEND_AFTER_MS + 5_000);
+      expect(submitClaudeLoginCode).toHaveBeenCalledTimes(1);
+      expect(message()).toBe("We couldn't confirm your sign-in yet. Try again.");
+      expect(field().value).toBe("returned-code");
+      expect(submit().textContent).toContain("Try again");
+      expect(document.body.textContent).not.toMatch(/Network error|timed out/);
+    });
+
+    it("moves on when the sign-in shows up after the gateway's 504", async () => {
+      vi.useFakeTimers();
+      let reached = false;
+      const submitClaudeLoginCode = vi.fn(async () => { reached = true; return { ok: false, code: "http-504", status: 504, message: "Endpoint request timed out" }; });
+      const getStatus = vi.fn(async () => (reached ? signedInStatus : waitingStatus));
+      const { onupdate } = await openAndPaste({ submitClaudeLoginCode, getStatus });
+      submit().click();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(submitClaudeLoginCode).toHaveBeenCalledTimes(1);
+      expect(onupdate.mock.calls.at(-1)?.[0]?.approval).toBeNull();
+    });
+
+    it("says the request failed on a 4xx, keeps the code, and offers Try again", async () => {
+      const submitClaudeLoginCode = vi.fn(async () => ({ ok: false, code: "http-403", status: 403, message: "Forbidden" }));
       await openAndPaste({ submitClaudeLoginCode });
       submit().click();
       await flush();
       expect(message()).toBe("We couldn't send that code. Try again.");
       expect(field().value).toBe("returned-code");
       expect(submit().textContent).toContain("Try again");
-      expect(document.body.textContent).not.toMatch(/Network error|timed out/);
+      expect(document.body.textContent).not.toMatch(/Forbidden/);
+    });
+
+    it("says a value the server turns down is not a Claude code and lets the person edit it (review of #1549)", async () => {
+      const submitClaudeLoginCode = vi.fn(async () => ({
+        ok: false,
+        code: "LOGIN_CODE_INVALID",
+        status: 400,
+        message: "claude login code contains characters outside the URL-safe set",
+      }));
+      await openAndPaste({ submitClaudeLoginCode });
+      submit().click();
+      await flush();
+      expect(message()).toBe("That doesn't look like a Claude code. Copy the code from Claude and paste it here.");
+      expect(field().value).toBe("returned-code");
+      expect(field().disabled).toBe(false);
+      expect(submit().textContent).toContain("Submit code");
+      expect(submit().textContent).not.toContain("Try again");
+      expect(document.body.textContent).not.toMatch(/URL-safe|LOGIN_CODE_INVALID/);
+    });
+
+    it("does not let a slower scheduled status read overwrite the submit's newer one (review of #1549)", async () => {
+      let signedIn = false;
+      let releaseSlow: (value: unknown) => void = () => {};
+      let calls = 0;
+      const getStatus = vi.fn(() => {
+        calls += 1;
+        // The read the screen starts on its own is slow and answers "waiting".
+        if (calls === 1) return new Promise((resolve) => { releaseSlow = resolve; });
+        return Promise.resolve(signedIn ? signedInStatus : waitingStatus);
+      });
+      const submitClaudeLoginCode = vi.fn(async () => { signedIn = true; return answer("accepted"); });
+      const { onupdate } = await openAndPaste({ submitClaudeLoginCode, getStatus });
+      submit().click();
+      await flush();
+      expect(onupdate.mock.calls.at(-1)?.[0]?.approval).toBeNull();
+      const before = onupdate.mock.calls.length;
+      releaseSlow(waitingStatus);
+      await flush();
+      const later = onupdate.mock.calls.slice(before).map((call) => call[0]);
+      expect(later.every((update) => update.approval === null)).toBe(true);
     });
   });
 

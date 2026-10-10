@@ -147,6 +147,20 @@ describe("createSyncPlatformAdapter agents", () => {
     ]);
     expect(result).toMatchObject({ ok: true, value: { outcome: "accepted" } });
   });
+
+  // Review of #1549: the New Bot screen tells a refusal (4xx) from a request
+  // whose fate is not known (5xx), so a failure keeps its HTTP status.
+  it.each([
+    [400, { error: "claude login code contains characters outside the URL-safe set", code: "LOGIN_CODE_INVALID" }, "LOGIN_CODE_INVALID"],
+    [504, { message: "Endpoint request timed out" }, "http-504"],
+  ])("keeps the HTTP status of a refused Claude code paste-back (%i)", async (status, body, code) => {
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => ({ status, body: JSON.stringify(body) }),
+      requestPolicy: { throttle: null },
+    });
+    const result = await adapter.agents.submitClaudeLoginCode!("agt_1", "returned-code");
+    expect(result).toMatchObject({ ok: false, status, code });
+  });
 });
 
 describe("bot removal that names the running machine", () => {

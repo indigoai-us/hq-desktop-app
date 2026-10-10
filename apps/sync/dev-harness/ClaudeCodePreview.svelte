@@ -9,7 +9,8 @@
    *   ?claude=accepted              Claude accepts the first code
    *   ?claude=rejected              Claude does not accept the code
    *   ?claude=never                 the sign-in never shows: the screen times out
-   *   ?claude=fail                  the request fails
+   *   ?claude=fail                  the request fails on the network (no resend)
+   *   ?claude=invalid               the server turns the value down as not a Claude code
    *   ?loadingMs=N                  how long each code request takes (default 1500)
    */
   import NewBotTakeover from '../../../packages/ui/src/chat/create-bot/NewBotTakeover.svelte';
@@ -52,6 +53,7 @@
     sends += 1;
     await wait(delayMs);
     if (variant === 'fail') return { ok: false, code: 'network', message: 'Network error: operation timed out' };
+    if (variant === 'invalid') return { ok: false, code: 'LOGIN_CODE_INVALID', status: 400, message: 'claude login code contains characters outside the URL-safe set' };
     const outcome =
       variant === 'rejected'
         ? 'rejected'

@@ -15,8 +15,15 @@
  * hand. The result is one of four plain outcomes the screen can show.
  */
 
-export type ClaudeCodeAnswer = "accepted" | "rejected" | "unknown" | "failed";
-export type ClaudeCodeResult = "signed-in" | "rejected" | "failed" | "timeout";
+/**
+ * accepted / rejected / unknown: what Claude said, as the server reports it.
+ * transient: the request failed in a way that does not say whether the code
+ * reached the machine (network, client timeout, 5xx including the gateway's
+ * 504). invalid: the server refused the value as not a Claude code.
+ * failed: any other refusal (4xx); the code was not delivered.
+ */
+export type ClaudeCodeAnswer = "accepted" | "rejected" | "unknown" | "transient" | "invalid" | "failed";
+export type ClaudeCodeResult = "signed-in" | "rejected" | "invalid" | "failed" | "timeout";
 
 /** How long one submit keeps checking for the sign-in after each send. */
 export const CLAUDE_CODE_CONFIRM_MS = 45_000;
@@ -31,16 +38,31 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function failureStatus(answer: Record<string, unknown>): number | null {
+  if (typeof answer.status === "number") return answer.status;
+  const match = typeof answer.code === "string" ? /^http-(\d{3})$/i.exec(answer.code.trim()) : null;
+  return match ? Number(match[1]) : null;
+}
+
+/** A failed request: a refusal (4xx) or a fate that is not known. */
+function failedAnswer(answer: Record<string, unknown> | null): ClaudeCodeAnswer {
+  if (!answer) return "transient";
+  const code = typeof answer.code === "string" ? answer.code.trim() : "";
+  if (code === "LOGIN_CODE_INVALID") return "invalid";
+  const status = failureStatus(answer);
+  return status !== null && status >= 400 && status < 500 ? "failed" : "transient";
+}
+
 /**
- * What the server said about one submitted code. A refused or failed request
- * is `failed`. A server that does not report Claude's answer (an older one)
- * reads as `unknown`, so the screen still waits for the sign-in.
+ * What the server said about one submitted code. A server that does not
+ * report Claude's answer (an older one) reads as `unknown`, so the screen
+ * still waits for the sign-in.
  */
 export function claudeCodeAnswer(result: unknown): ClaudeCodeAnswer {
   const answer = record(result);
-  if (!answer || answer.ok !== true) return "failed";
+  if (!answer || answer.ok !== true) return failedAnswer(answer);
   const value = record(answer.value);
-  if (value?.ok === false) return "failed";
+  if (value?.ok === false) return failedAnswer(value);
   const outcome = value?.outcome;
   return outcome === "accepted" || outcome === "rejected" ? outcome : "unknown";
 }
@@ -68,7 +90,7 @@ async function sendOnce(deps: ClaudeCodeSubmitDeps, attempt: number): Promise<Cl
   try {
     answer = claudeCodeAnswer(await deps.send());
   } catch {
-    answer = "failed";
+    answer = "transient";
   }
   deps.log?.("claude-code-sent", { attempt, answer });
   return answer;
@@ -96,13 +118,17 @@ export async function submitClaudeCode(deps: ClaudeCodeSubmitDeps): Promise<Clau
   const confirmMs = deps.confirmMs ?? CLAUDE_CODE_CONFIRM_MS;
   const resendAfterMs = Math.min(deps.resendAfterMs ?? CLAUDE_CODE_RESEND_AFTER_MS, confirmMs);
   let answer: ClaudeCodeAnswer = deps.alreadyAccepted ? "accepted" : await sendOnce(deps, 1);
-  if (answer === "rejected") return "rejected";
-  if (answer === "failed") {
-    // The request may have reached the machine before it failed here: one
-    // look before saying so.
-    const seen = await waitForSignIn(deps, deps.now());
-    deps.log?.("claude-code-result", { result: seen ? "signed-in" : "failed" });
-    return seen ? "signed-in" : "failed";
+  if (answer === "rejected" || answer === "invalid" || answer === "failed") {
+    deps.log?.("claude-code-result", { result: answer });
+    return answer;
+  }
+  if (answer === "transient") {
+    // The request may have reached the machine before it failed here. Look
+    // for the sign-in for a while, and do not send the code again: it may be
+    // on its way already.
+    const seen = await waitForSignIn(deps, deps.now() + resendAfterMs);
+    deps.log?.("claude-code-result", { result: seen ? "signed-in" : "timeout", answer });
+    return seen ? "signed-in" : "timeout";
   }
   if (answer === "unknown") {
     // Claude's answer was not seen. The machine may not have been at the
@@ -110,7 +136,7 @@ export async function submitClaudeCode(deps: ClaudeCodeSubmitDeps): Promise<Clau
     if (await waitForSignIn(deps, deps.now() + resendAfterMs)) return "signed-in";
     if (deps.cancelled?.()) return "timeout";
     answer = await sendOnce(deps, 2);
-    if (answer === "rejected") return "rejected";
+    if (answer === "rejected" || answer === "invalid" || answer === "failed") return answer;
   }
   const seen = await waitForSignIn(deps, deps.now() + confirmMs);
   const result: ClaudeCodeResult = seen ? "signed-in" : "timeout";
