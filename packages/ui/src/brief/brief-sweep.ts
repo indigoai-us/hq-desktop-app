@@ -22,7 +22,16 @@ export interface BriefSweep {
   company?: string;
   window?: { from: string; to: string; today?: string };
   days?: Record<string, { merged?: number; opened?: number; sessions?: number; other_sessions?: number; meetings?: number }>;
-  sessions?: { date: string; time: string; company: string | null; title: string | null }[];
+  sessions?: {
+    date: string;
+    time: string;
+    company: string | null;
+    title: string | null;
+    /** ISO start, written by newer sweeps; older ones only have date + UTC time. */
+    started_at?: string;
+    /** you | agent | lane; absent in older sweeps (all treated as yours). */
+    kind?: string;
+  }[];
   meeting_signals?: { meeting: string; start: string; counts: Record<string, number> }[];
   dms?: { from: string; from_uid?: string; is_agent?: boolean; at: string }[];
   fleet?: { total: number; by_status?: Record<string, number> } | null;
@@ -150,11 +159,12 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
   }
 
   const sessions: BriefSession[] = (sweep.sessions ?? [])
-    .filter((s) => s.date === opts.day && s.company !== "unknown")
+    .filter((s) => s.date === opts.day && s.company !== "unknown" && (s.kind ?? "you") === "you")
     .map((s, i) => ({
       id: `sweep-session-${i}`,
       title: s.title ?? "",
-      startedAt: `${s.date}T${s.time.replace(/Z$/, "")}:00Z`,
+      // Newer sweeps carry an ISO start and a local time; older ones a UTC time.
+      startedAt: s.started_at ?? `${s.date}T${s.time.replace(/Z$/, "")}:00Z`,
       workstream: s.company === sweep.company ? "Work" : "Other",
       company: s.company === sweep.company ? opts.companyUid : s.company,
     }));
