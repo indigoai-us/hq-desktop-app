@@ -199,12 +199,12 @@
 <div
   class="dawn {size}"
   class:failed={phase === "failed"}
-  bind:this={host}
   data-testid="brief-dawn"
   data-phase={phase}
   data-progress={progress.toFixed(2)}
 >
-  <canvas bind:this={canvas} class:fade aria-hidden="true"></canvas>
+  <!-- The sky keeps its own fixed height; the card grows below it to fit the copy. -->
+  <div class="sky" bind:this={host}><canvas bind:this={canvas} class:fade aria-hidden="true"></canvas></div>
   <div class="copy">
     {#if headline}<h2>{headline}</h2>{/if}
     {#if step}<p class="step" aria-live="polite" data-testid="brief-dawn-step">{step}</p>{/if}
@@ -218,14 +218,21 @@
     overflow: hidden;
     border-radius: var(--b-r, 22px);
     background: #121216;
+    min-height: var(--sky-h);
   }
   .dawn.page {
-    height: min(680px, calc(100vh - 120px));
-    min-height: 420px;
+    --sky-h: max(420px, min(680px, calc(100vh - 120px)));
   }
   .dawn.masthead {
-    height: 260px;
+    --sky-h: 260px;
     margin-bottom: var(--b-gap, 14px);
+  }
+  .sky {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--sky-h);
   }
   canvas {
     position: absolute;
@@ -237,20 +244,18 @@
   canvas.fade {
     opacity: 0.55;
   }
+  /* In flow, so a long loader grows the card instead of being clipped. */
   .copy {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 54%;
+    position: relative;
+    padding: calc(var(--sky-h) * 0.54) 24px 22px;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 10px;
     text-align: center;
-    padding: 0 24px;
   }
   .masthead .copy {
-    top: 64%;
+    padding-top: calc(var(--sky-h) * 0.64);
     gap: 6px;
   }
   h2 {
@@ -275,5 +280,6 @@
     gap: 10px;
     flex-wrap: wrap;
     justify-content: center;
+    width: 100%;
   }
 </style>

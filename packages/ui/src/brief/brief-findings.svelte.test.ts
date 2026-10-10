@@ -27,12 +27,25 @@ describe("findings", () => {
     expect(parseFindings([1, 2])).toBeNull();
   });
 
-  it("orders counters by meaning, with tones, sub-counts, and no zero rows", () => {
+  const FIXED = ["decision", "action_item", "risk", "commitment", "key_point", "meetings", "sessions", "dms", "prs", "prs_open", "ci_red", "agents"];
+
+  it("orders counters by meaning, with tones and sub-counts, in one fixed set", () => {
     const rows = findingRows(parseFindings(raw)!);
-    expect(rows.map((r) => r.key)).toEqual(["decision", "action_item", "risk", "key_point", "meetings", "sessions", "dms", "prs", "prs_open", "ci_red", "agents", "int:gmail"]);
+    expect(rows.map((r) => r.key)).toEqual([...FIXED, "int:gmail"]);
+    expect(rows.find((r) => r.key === "commitment")!.value).toBe(0);
     expect(rows.find((r) => r.key === "decision")!.tone).toBe("decision");
     expect(rows.find((r) => r.key === "risk")!.tone).toBe("red");
     expect(rows.find((r) => r.key === "dms")!.sub).toEqual({ value: 4, label: "need you" });
+  });
+
+  it("keeps every tile in the same place as counts arrive; unreported ones have no value yet", () => {
+    const early = findingRows(parseFindings({ signals: { risk: 2 }, sessions: 9 })!);
+    const late = findingRows(parseFindings(raw)!);
+    expect(early.map((r) => r.key)).toEqual(FIXED);
+    expect(late.slice(0, FIXED.length).map((r) => r.key)).toEqual(FIXED);
+    expect(early.find((r) => r.key === "risk")!.value).toBe(2);
+    expect(early.find((r) => r.key === "decision")!.value).toBeNull();
+    expect(early.find((r) => r.key === "agents")!.label).toBe("Agents");
   });
 
   it("status.json carries findings, raw samples and the run's company", () => {
@@ -99,6 +112,25 @@ describe("BriefFindings counters", () => {
     await tick();
     expect(values()).toMatchObject({ decision: "7", sessions: "42", prs: "34" });
     expect(target.querySelectorAll('[data-testid="brief-sample"]')).toHaveLength(1);
+  });
+
+  it("renders a fixed 3-column grid; a tile with no value yet shows a dash and its full label", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    app = mount(BriefFindings, { target, props: { findings: parseFindings({ agents: { total: 48, attention: 17 } })!, reducedMotion: true } });
+    flushSync();
+    await tick();
+    const tiles = target.querySelectorAll('[data-testid="brief-finding"]');
+    expect(tiles).toHaveLength(12);
+    expect(values()).toMatchObject({ decision: "—", risk: "—", agents: "48" });
+    const agents = target.querySelector('[data-key="agents"]')!;
+    expect(agents.querySelector(".name")!.textContent).toBe("Agents");
+    expect(agents.textContent).toContain("17 need attention");
+  });
+
+  it("sample cards drop the PR's conventional-commit prefix", async () => {
+    const out = parseSamples([{ kind: "pr", title: "hq-packages #76: feat(pack): add hq-pack-imessage for local iMessage read/send", company: "indigo", at: "1" }], "indigo");
+    expect(out[0]!.title).toBe("Add hq-pack-imessage for local iMessage read/send");
   });
 
   it("with motion, a counter ticks up from where it was toward the new value", async () => {

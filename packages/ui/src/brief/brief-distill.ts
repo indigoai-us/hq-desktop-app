@@ -43,3 +43,24 @@ export function shippedDigest(lines: readonly BriefLine[], max = 3): { mix: stri
     .map(({ p }) => ({ label: p.text.length > 72 ? `${p.text.slice(0, 71)}…` : p.text, state: p.kind.toUpperCase(), tone: "ok" as const }));
   return { mix, highlights };
 }
+
+const CONVENTIONAL = /^(feat|fix|docs?|chore|ci|build|refactor|test|perf|style|revert|promote)(\([^)]*\))?!?:\s*/i;
+
+/**
+ * A title as a person's to-do, not a PR: drops a leading "<repo> #<n>:" (or
+ * "#<n>") reference and a conventional-commit prefix ("feat(pack):"), then
+ * sentence-cases the rest. The reference comes back as `ref` for the peek.
+ */
+export function humanTitle(title: string): { text: string; ref: string | null } {
+  let body = title.trim().replace(/\s+/g, " ");
+  let ref: string | null = null;
+  const m = body.match(/^((?:[\w.-]+\/)?[\w.-]+\s+)?#(\d+)\s*[:\-–—]?\s+/);
+  if (m) {
+    ref = `${(m[1] ?? "").trim()} #${m[2]}`.trim();
+    body = body.slice(m[0].length);
+  }
+  const stripped = body.replace(CONVENTIONAL, "").trim();
+  const changed = !!ref || stripped !== body;
+  if (!stripped) return { text: title.trim(), ref: null };
+  return { text: changed ? stripped.charAt(0).toUpperCase() + stripped.slice(1) : stripped, ref };
+}

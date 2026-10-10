@@ -14,7 +14,7 @@
   import BriefFindings from "./BriefFindings.svelte";
   import { parseFindings, parseSamples } from "./brief-findings.js";
   import { parseActivity } from "./brief-runs.js";
-  import { elapsedLabel, estimateLabel, stillWorkingLine } from "./brief-runs.js";
+  import { BRIEF_IDLE_MS, elapsedLabel, estimateLabel, stillWorkingLine } from "./brief-runs.js";
   import { briefDemoFromUrl } from "./brief-demo.js";
   import type { DawnPhase } from "./brief-dawn.js";
   import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
@@ -53,6 +53,8 @@
 
   let entries = $state<BriefIndexEntry[]>([]);
   let selectedRunId = $state<string | null>(null);
+  /** The run whose brief.json is parsed and on screen; null for the no-run brief. */
+  let shownRunId = $state<string | null>(null);
   let input = $state<BriefInput | null>(null);
   let housekeeping = $state<BriefHousekeeping | null>(null);
   let missing = $state<string[]>([]);
@@ -107,6 +109,7 @@
       const hk = runId && source ? await readRunHousekeeping(source, runId) : null;
       if (!alive || mine !== seq) return;
       input = day;
+      shownRunId = runId;
       housekeeping = hk;
       missing = runId ? failures.filter((f) => f.endsWith(".json")) : [];
       now = new Date();
@@ -160,7 +163,9 @@
       case "running":
         return { phase: "running", progress: cp.progress, step: cp.step };
       case "ready":
-        return bloomDone ? null : { phase: "ready", progress: 1, step: "Your brief is ready" };
+        // Hold "Your brief is ready" until the new run's brief is loaded, so
+        // the page swaps once and never flashes a placeholder brief.
+        return bloomDone && shownRunId === cp.runId ? null : { phase: "ready", progress: 1, step: "Your brief is ready" };
       case "failed":
         return { phase: "failed", progress: lastProgress, step: cp.message };
       default:
@@ -175,7 +180,18 @@
     const t = setInterval(() => (tickNow = Date.now()), 1000);
     return () => clearInterval(t);
   });
-  const runInfo = $derived.by(() => {
+  /** When the activity list last changed, for the idle line. */
+  let activityKey = "";
+  let activityChangedAt = $state(Date.now());
+  $effect.pre(() => {
+    const list = cp.kind === "running" ? (cp.activity ?? []) : [];
+    const key = list.map((a) => `${a.at}|${a.label}|${a.state}|${a.detail ?? ""}`).join("\n");
+    if (key !== activityKey) {
+      activityKey = key;
+      activityChangedAt = Date.now();
+    }
+  });
+  const liveRunInfo = $derived.by(() => {
     if (demo?.frozen != null && demo.frozen !== "fail") {
       const s = demo.statusAt(demo.frozen);
       return {
@@ -185,6 +201,7 @@
         elapsed: elapsedLabel(demo.frozen * 18_000 + 1500),
         estimate: "usually ~12 min",
         still: null,
+        idle: null,
       };
     }
     if (cp.kind !== "waiting" && cp.kind !== "running") return null;
@@ -195,7 +212,17 @@
       elapsed: elapsedLabel(tickNow - cp.sentAt),
       estimate: estimateLabel(entries),
       still: stillWorkingLine(cp, tickNow, run?.files ?? null),
+      idle:
+        cp.kind === "running" && cp.activity?.length && tickNow - activityChangedAt >= BRIEF_IDLE_MS
+          ? elapsedLabel(tickNow - activityChangedAt)
+          : null,
     };
+  });
+  // The loader's last frame stays up through "Your brief is ready".
+  let heldRunInfo: NonNullable<typeof liveRunInfo> | null = null;
+  const runInfo = $derived.by(() => {
+    if (liveRunInfo) return (heldRunInfo = liveRunInfo);
+    return dawn?.phase === "ready" && heldRunInfo ? { ...heldRunInfo, idle: null, still: null } : null;
   });
 
   /** No runs yet and a way to make one: the pre-dawn empty state. */
@@ -246,16 +273,20 @@
         <button type="button" class="cta" onclick={createBrief} data-testid="brief-retry">Try again</button>
         <button type="button" class="ghost" onclick={() => run?.dismiss()}>Dismiss</button>
       {:else if runInfo}
-        {#if runInfo.findings}
-          <BriefFindings findings={runInfo.findings} samples={runInfo.samples} cards={size === "page" ? 3 : 1} />
-        {/if}
-        <BriefActivity
-          activity={runInfo.activity}
-          visible={runInfo.findings ? 1 : size === "page" ? 5 : 2}
-          elapsed={runInfo.elapsed}
-          estimate={runInfo.estimate}
-          stillWorking={runInfo.still}
-        />
+        <!-- One column: the counters, then the status line in its own slot below. -->
+        <div class="loader" data-testid="brief-loader">
+          {#if runInfo.findings}
+            <BriefFindings findings={runInfo.findings} samples={runInfo.samples} cards={size === "page" ? 3 : 1} />
+          {/if}
+          <BriefActivity
+            activity={runInfo.activity}
+            visible={runInfo.findings ? 1 : size === "page" ? 5 : 2}
+            elapsed={runInfo.elapsed}
+            estimate={runInfo.estimate}
+            stillWorking={runInfo.still}
+            idle={runInfo.idle}
+          />
+        </div>
       {/if}
     </BriefDawn>
   {:else}
@@ -270,7 +301,7 @@
   {/if}
 {/snippet}
 
-{#if (empty || (dawn && !input) || (dawn && entries.length === 0)) && (input || run)}
+{#if (empty || (dawn && (!input || entries.length === 0 || shownRunId === null))) && (input || run)}
   <div class="daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
   {#if dawn}<div class="masthead-wrap">{@render dawnScene("masthead")}</div>{/if}
@@ -296,6 +327,13 @@
   }
   .masthead-wrap {
     padding-bottom: 0;
+  }
+  .loader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
   }
   .cta,
   .ghost {

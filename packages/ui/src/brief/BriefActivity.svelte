@@ -5,7 +5,10 @@
    * are dim, failed ones amber with their reason. New items slide in; the
    * last few stay visible and older ones fade. Below: elapsed time, the usual
    * duration once there are two past runs, and a calm "Still working on …"
-   * line when status.json has been quiet for 90 seconds.
+   * line when status.json has been quiet for 90 seconds. After 20 seconds
+   * with no new activity the last row says "still working…" and for how long,
+   * so a long writing step still shows life. The block keeps a reserved
+   * height so the elapsed line never jumps.
    */
   import { fly } from "svelte/transition";
   import type { BriefActivity } from "./brief-runs.js";
@@ -16,16 +19,19 @@
     elapsed?: string | null;
     estimate?: string | null;
     stillWorking?: string | null;
+    /** How long the activity list has been unchanged, once past the idle threshold. */
+    idle?: string | null;
   }
-  let { activity, visible = 5, elapsed = null, estimate = null, stillWorking = null }: Props = $props();
+  let { activity, visible = 5, elapsed = null, estimate = null, stillWorking = null, idle = null }: Props = $props();
   const shown = $derived(activity.slice(-visible));
   const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 </script>
 
-<div class="act" data-testid="brief-activity">
+<div class="act" data-testid="brief-activity" style:--rows={visible}>
   {#if shown.length}
     <ul>
       {#each shown as a, i (`${a.at}|${a.label}`)}
+        {@const idleHere = !!idle && i === shown.length - 1}
         <li
           class={a.state}
           style:opacity={Math.max(0.35, 1 - (shown.length - 1 - i) * 0.16)}
@@ -34,9 +40,9 @@
           in:fly={{ y: reduced ? 0 : 8, duration: reduced ? 0 : 260 }}
         >
           <span class="mark" aria-hidden="true">
-            {#if a.state === "done"}✓{:else if a.state === "failed"}!{:else if a.state === "skipped"}–{:else}<span class="pulse"></span>{/if}
+            {#if a.state === "done" && !idleHere}✓{:else if a.state === "failed"}!{:else if a.state === "skipped"}–{:else}<span class="pulse"></span>{/if}
           </span>
-          <span class="lbl">{a.label}{#if a.detail}{" "}<span class="det">· {a.detail}</span>{/if}</span>
+          <span class="lbl">{a.label}{#if a.detail}{" "}<span class="det">· {a.detail}</span>{/if}{#if idleHere}{" "}<span class="det idle" data-testid="brief-activity-idle">· still working… {idle}</span>{/if}</span>
         </li>
       {/each}
     </ul>
@@ -52,8 +58,20 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: flex-start;
     gap: 6px;
-    max-width: 440px;
+    width: min(560px, 100%);
+    /* Reserved: the rows plus the elapsed line, so nothing below moves. */
+    min-height: calc(var(--rows, 1) * 19px + 24px);
+  }
+  ul {
+    max-width: 100%;
+  }
+  li .lbl {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   ul {
     list-style: none;

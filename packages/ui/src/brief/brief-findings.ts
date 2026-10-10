@@ -8,6 +8,8 @@
  * sends a sender and a summary).
  */
 
+import { humanTitle } from "./brief-distill.js";
+
 export interface BriefFindings {
   signals: { decision: number; action_item: number; risk: number; commitment: number; key_point: number };
   sessions: number;
@@ -17,6 +19,11 @@ export interface BriefFindings {
   ci_red: number;
   agents: { total: number; attention: number };
   integrations: Record<string, number>;
+  /**
+   * Counter keys the run has reported (see findingRows). A tile whose key is
+   * missing has no value yet and shows "—". Absent: every count is known.
+   */
+  seen?: string[];
 }
 
 export interface BriefSample {
@@ -41,6 +48,17 @@ export function parseFindings(raw: unknown): BriefFindings | null {
   const a = rec(r.agents);
   const integrations: Record<string, number> = {};
   for (const [k, v] of Object.entries(rec(r.integrations))) if (n(v)) integrations[k] = n(v);
+  const has = (o: Record<string, unknown>, k: string) => typeof o[k] === "number" && Number.isFinite(o[k]);
+  const seen = [
+    ...(["decision", "action_item", "risk", "commitment", "key_point"] as const).filter((k) => has(s, k)),
+    ...(has(r, "meetings") ? ["meetings"] : []),
+    ...(has(r, "sessions") ? ["sessions"] : []),
+    ...(has(d, "total") ? ["dms"] : []),
+    ...(has(p, "merged") ? ["prs"] : []),
+    ...(has(p, "open") ? ["prs_open"] : []),
+    ...(has(r, "ci_red") ? ["ci_red"] : []),
+    ...(has(a, "total") ? ["agents"] : []),
+  ];
   return {
     signals: { decision: n(s.decision), action_item: n(s.action_item), risk: n(s.risk), commitment: n(s.commitment), key_point: n(s.key_point) },
     sessions: n(r.sessions),
@@ -50,6 +68,7 @@ export function parseFindings(raw: unknown): BriefFindings | null {
     ci_red: n(r.ci_red),
     agents: { total: n(a.total), attention: n(a.attention) },
     integrations,
+    seen,
   };
 }
 
@@ -69,7 +88,8 @@ export function parseSamples(raw: unknown, company: string | null): BriefSample[
     const title = str(r.title).replace(/\s+/g, " ");
     const co = str(r.company);
     if (!title || !co || norm(co) !== own) continue;
-    out.push({ kind: str(r.kind) || "item", title: title.length > 90 ? `${title.slice(0, 89).trimEnd()}…` : title, company: co, at: str(r.at) });
+    const clean = humanTitle(title).text;
+    out.push({ kind: str(r.kind) || "item", title: clean.length > 90 ? `${clean.slice(0, 89).trimEnd()}…` : clean, company: co, at: str(r.at) });
   }
   return out.slice(-8);
 }
@@ -80,13 +100,18 @@ export type FindingTone = "decision" | "ok" | "warn" | "red" | "neutral" | "sun"
 export interface FindingRow {
   key: string;
   label: string;
-  value: number;
+  /** null: the run has not reported this count yet; the tile shows "—". */
+  value: number | null;
   tone: FindingTone;
   /** A second number in the row, e.g. "4 need you". */
   sub?: { value: number; label: string };
 }
 
-/** The counters to show, in reading order; zero rows are left out. */
+/**
+ * The counters to show: a fixed set in a fixed order, so tiles never reorder
+ * or reflow as counts arrive. A count not reported yet has a null value.
+ * Integrations follow, in the order they first appear.
+ */
 export function findingRows(f: BriefFindings): FindingRow[] {
   const rows: FindingRow[] = [
     { key: "decision", label: "Decisions", value: f.signals.decision, tone: "decision" },
@@ -115,7 +140,8 @@ export function findingRows(f: BriefFindings): FindingRow[] {
     },
     ...Object.entries(f.integrations).map(([app, v]): FindingRow => ({ key: `int:${app}`, label: app, value: v, tone: "neutral" })),
   ];
-  return rows.filter((r) => r.value > 0);
+  const seen = f.seen ? new Set(f.seen) : null;
+  return rows.map((r) => (seen && !r.key.startsWith("int:") && !seen.has(r.key) ? { ...r, value: null, sub: undefined } : r));
 }
 
 /** Color of a sample card's kind tag. */

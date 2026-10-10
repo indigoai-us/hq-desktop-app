@@ -329,6 +329,8 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
 
 /** status.json unchanged this long: show a calm "Still working on …" line. */
 export const BRIEF_QUIET_MS = 90_000;
+/** No new activity for this long and the last activity row says "still working…". */
+export const BRIEF_IDLE_MS = 20_000;
 
 /** "45s", "2m 14s", "1h 3m". */
 export function elapsedLabel(ms: number): string {
