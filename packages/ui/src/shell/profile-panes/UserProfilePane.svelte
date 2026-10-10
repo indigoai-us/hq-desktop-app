@@ -8,6 +8,8 @@
 
   interface Props {
     snapshot: UserProfileSnapshot | null;
+    /** The person's uid (`prs_*`), for the tier mark on their picture. */
+    personUid?: string | null;
     /** Earned accomplishment badges; none hides the section. */
     badges?: readonly EarnedBadge[];
     /** Opens a badge's detail view. */
@@ -21,7 +23,7 @@
     onmanage?: () => void;
   }
 
-  let { snapshot, badges = [], onbadge, onbadges, onclose, onmessage, onatlas, onmanage }: Props = $props();
+  let { snapshot, personUid = null, badges = [], onbadge, onbadges, onclose, onmessage, onatlas, onmanage }: Props = $props();
   const phase = $derived(profilePhase(snapshot?.name));
 </script>
 
@@ -45,7 +47,7 @@
     <div class="body">
       <div class="idn">
         <!-- The same mark as the timeline, so a person looks the same everywhere. -->
-        <span class="av" aria-hidden="true"><IdentityMark kind="person" label={snapshot.name} size="large" />{#if snapshot.live}<i class="ld"></i>{/if}</span>
+        <span class="av" aria-hidden="true"><IdentityMark kind="person" label={snapshot.name} {personUid} size="large" />{#if snapshot.live}<i class="ld"></i>{/if}</span>
         <div>
           <div class="nm">{snapshot.name}</div>
           {#if snapshot.email}<div class="em">{snapshot.email}</div>{/if}

@@ -1109,6 +1109,7 @@
               label={messageAuthor(root)}
               avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
               agentUid={root.fromPersonUid}
+              personUid={isAgent(root) ? null : root.fromPersonUid}
               size="regular"
             /></button>
           {:else}
@@ -1118,6 +1119,7 @@
               label={messageAuthor(root)}
               avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
               agentUid={root.fromPersonUid}
+              personUid={isAgent(root) ? null : root.fromPersonUid}
               size="regular"
             />
             </span>
@@ -1275,6 +1277,7 @@
                 label={messageAuthor(msg)}
                 avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                 agentUid={msg.fromPersonUid}
+                personUid={isAgent(msg) ? null : msg.fromPersonUid}
                 size="regular"
               /></button>
             {:else}
@@ -1284,6 +1287,7 @@
                 label={messageAuthor(msg)}
                 avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                 agentUid={msg.fromPersonUid}
+                personUid={isAgent(msg) ? null : msg.fromPersonUid}
                 size="regular"
               />
               </span>

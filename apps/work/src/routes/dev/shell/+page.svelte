@@ -58,7 +58,7 @@
   import geistSans500 from "../../../../../sync/src/assets/fonts/geist-sans-500.woff2?url";
   import geistSans600 from "../../../../../sync/src/assets/fonts/geist-sans-600.woff2?url";
   // Sample badges, shared with the sync design harness so both show the
-  // same art (there is no badges API yet).
+  // same art.
   import {
     earnedFromUrl,
     sampleBadges,
@@ -470,9 +470,9 @@
   }
 
   /**
-   * Badges. There is no badges API yet, so profile panes show nothing unless
-   * a source is installed — the sync design harness installs these samples,
-   * and so does this one, so a profile opens with its Badges section.
+   * Badges. Production reads them from hq-pro through the platform adapter;
+   * this harness installs the sync harness's samples first (the loader leaves
+   * an installed source alone), so a profile opens with its Badges section.
    */
   if (dev) {
     setBadgeSource(sampleBadges);

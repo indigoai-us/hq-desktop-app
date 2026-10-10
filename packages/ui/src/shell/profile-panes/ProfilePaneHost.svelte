@@ -42,6 +42,8 @@
     kind: "bot" | "person";
     name: string;
     email?: string | null;
+    /** A person's uid (`prs_*`): their badges are read by it. Ignored for bots. */
+    personUid?: string | null;
     role?: string | null;
     owner?: string | null;
     company?: string | null;
@@ -69,6 +71,7 @@
     kind,
     name,
     email = null,
+    personUid = null,
     role = null,
     owner = null,
     company = null,
@@ -237,9 +240,14 @@
     person ?? (name.trim() ? userProfileFromCache({ name, email, role, live, company }) : null),
   );
 
-  const badges = $derived(
-    badgesFor({ kind, name: kind === "bot" ? botName : name, email }),
-  );
+  /** Bots carry no uid, so production shows them no badges. */
+  const badgeSubject = $derived({
+    kind,
+    name: kind === "bot" ? botName : name,
+    email,
+    uid: kind === "person" ? personUid : null,
+  });
+  const badges = $derived(badgesFor(badgeSubject));
   /** A badge opened from the profile; cleared when the profile changes. */
   let openBadge = $state<ResolvedBadge | null>(null);
   /**
@@ -259,7 +267,7 @@
     });
   });
   const badgeProgress = $derived(
-    badgesPage ? badgeProgressFor({ kind, name: kind === "bot" ? botName : name, email }) : [],
+    badgesPage ? badgeProgressFor(badgeSubject) : [],
   );
 
   const totals: SessionTotals = $derived({
@@ -336,7 +344,7 @@
       <BotJobsPane jobs={botJobs} unavailable={jobsUnavailable} onpause={pauseJob} />
     {/snippet}
   {:else}
-    <UserProfilePane snapshot={personView} {badges} onbadge={(b) => (openBadge = b)} onbadges={() => (badgesPage = true)} {onclose} {onmessage} {onatlas} {onmanage} />
+    <UserProfilePane snapshot={personView} {personUid} {badges} onbadge={(b) => (openBadge = b)} onbadges={() => (badgesPage = true)} {onclose} {onmessage} {onatlas} {onmanage} />
   {/if}
   {#if editing}
     <EditBotSheet {name} initialTab={editTab} onclose={() => (editing = false)} onsave={() => (editing = false)} />

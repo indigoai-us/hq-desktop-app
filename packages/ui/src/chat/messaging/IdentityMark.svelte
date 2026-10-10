@@ -18,9 +18,11 @@
     /** Agent uid — drives the deterministic generated avatar when the agent
      *  has no assigned photo. Ignored for non-agent kinds. */
     agentUid?: string | null;
+    /** A person's uid (`prs_*`): their tier mark comes from the badges read by it. */
+    personUid?: string | null;
     /**
      * The tier mark at the bottom right. Left out, a person's tier comes
-     * from their badges by name (as on their profile); null shows none.
+     * from their badges (as on their profile); null shows none.
      */
     tier?: BadgeTier | null;
   }
@@ -34,13 +36,19 @@
     online = false,
     avatarUrl = null,
     agentUid = null,
+    personUid = null,
     tier = undefined,
   }: Props = $props();
 
   const AVATAR_PX = { small: 22, regular: 32, large: 48 } as const;
-  /** The badge behind the mark, looked up only when no tier is given. */
+  /**
+   * The badge behind the mark, looked up only when no tier is given and the
+   * picture is big enough to carry the mark (so small avatars read nothing).
+   */
   const top = $derived(
-    tier === undefined && kind === "person" && label.trim() ? topBadgeFor({ kind: "person", name: label }) : null,
+    tier === undefined && kind === "person" && AVATAR_PX[size] >= TIER_MARK_MIN_AVATAR && (label.trim() || personUid)
+      ? topBadgeFor({ kind: "person", name: label, uid: personUid })
+      : null,
   );
   const shownTier = $derived(tier !== undefined ? tier : (top?.tier ?? null));
 

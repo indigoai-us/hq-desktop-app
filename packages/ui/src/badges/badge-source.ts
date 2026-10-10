@@ -1,8 +1,10 @@
 /**
  * Where profile panes get a person's or bot's earned badges.
  *
- * There is no badges API yet, so production returns none and the Badges
- * section stays hidden. The design harness installs a sample source.
+ * Production installs the hq-pro loader (badge-loader.svelte.ts), which reads
+ * `GET /v1/badges/{uid}` by person uid. With no source, or on any failure,
+ * there are no badges and the Badges section stays hidden. The design
+ * harness installs a sample source first, and the loader leaves it in place.
  */
 
 import type { EarnedBadge } from "./badge-catalog.js";
@@ -11,6 +13,11 @@ export interface BadgeSubject {
   kind: "person" | "bot";
   name: string;
   email?: string | null;
+  /**
+   * The person's uid (`prs_*`). The hq-pro loader looks badges up by uid
+   * only, so a subject without one has none in production. Left out for bots.
+   */
+  uid?: string | null;
 }
 
 export type BadgeSource = (subject: BadgeSubject) => readonly EarnedBadge[];
@@ -22,8 +29,17 @@ export function setBadgeSource(next: BadgeSource | null): void {
   source = next ?? none;
 }
 
+/** Whether a badge source is installed (the harness's samples, or the loader). */
+export function hasBadgeSource(): boolean {
+  return source !== none;
+}
+
+function named(subject: BadgeSubject): boolean {
+  return Boolean(subject.name.trim() || subject.uid?.trim());
+}
+
 export function badgesFor(subject: BadgeSubject): readonly EarnedBadge[] {
-  if (!subject.name.trim()) return [];
+  if (!named(subject)) return [];
   try {
     return source(subject);
   } catch {
@@ -33,8 +49,8 @@ export function badgesFor(subject: BadgeSubject): readonly EarnedBadge[] {
 
 /**
  * How far someone is toward a badge they have not earned yet: "3 of 5
- * skills". Like earned badges there is no API yet, so production returns
- * none and locked badges show only what earns them.
+ * skills". It comes with the earned badges from the same source; with none
+ * installed, locked badges show only what earns them.
  */
 export interface BadgeProgress {
   id: string;
@@ -55,7 +71,7 @@ export function setBadgeProgressSource(next: BadgeProgressSource | null): void {
 }
 
 export function badgeProgressFor(subject: BadgeSubject): readonly BadgeProgress[] {
-  if (!subject.name.trim()) return [];
+  if (!named(subject)) return [];
   try {
     return progressSource(subject);
   } catch {

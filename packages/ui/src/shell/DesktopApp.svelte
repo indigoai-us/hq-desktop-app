@@ -94,6 +94,7 @@
   } from "./atlas-landing.js";
   import AccountMenu from "./AccountMenu.svelte";
   import { badgesFor } from "../badges/badge-source.js";
+  import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
   import type { ResolvedBadge } from "../badges/badge-catalog.js";
   import {
@@ -12301,9 +12302,16 @@
     }
   }
 
+  /**
+   * Badges come from hq-pro (GET /v1/badges/{uid}) through the platform
+   * adapter. Installed while the script runs, before any view reads a badge,
+   * and only when no source is installed yet (the design harness has samples).
+   */
+  onDestroy(installBadgeLoader(untrack(() => adapter.identity)));
+
   /** Your earned badges, for the hover card on the rail's You button. */
   const youBadges = $derived(
-    badgesFor({ kind: "person", name: resolvedAccountLabel ?? "", email: self?.email ?? null }),
+    badgesFor({ kind: "person", name: resolvedAccountLabel ?? "", email: self?.email ?? null, uid: self?.uid ?? null }),
   );
   /** The badge behind your tier mark, on your picture in the account menu. */
   const youTopBadge = $derived(topBadge(youBadges));
@@ -14920,6 +14928,7 @@
                     props={{
                       kind: "person",
                       name: openProfileMember.displayName,
+                      personUid: openProfileMember.personUid,
                       view: profileStart.view,
                       badgeId: profileStart.badgeId,
                       openKey: profileStart.key,
