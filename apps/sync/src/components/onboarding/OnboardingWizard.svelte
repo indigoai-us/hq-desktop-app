@@ -1625,6 +1625,13 @@
     } finally {
       switchingAccount = false;
     }
+    // The next account must never import connectors into, or read from, the
+    // previous account's company. sign_out clears it natively too; this also
+    // covers a sign-out that failed.
+    connectorImportCompany = null;
+    // The cached membership read belongs to the previous account as well.
+    membershipMeRead = null;
+    await selectCompany(null, true);
     existingSessionEmail = null;
     signedInEmail = null;
     if (from === 'company') {
@@ -4130,9 +4137,9 @@
     }
   }
 
-  /** Make the chosen company the app's active one. Best effort. */
-  async function selectCompany(slug: string | null): Promise<void> {
-    if (!slug) return;
+  /** Make the chosen company the app's active one (or clear it). Best effort. */
+  async function selectCompany(slug: string | null, clear = false): Promise<void> {
+    if (!slug && !clear) return;
     try {
       await invokeCommand('set_desktop_active_company', { companySlug: slug });
     } catch (error) {

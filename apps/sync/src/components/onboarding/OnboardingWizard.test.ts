@@ -4499,8 +4499,12 @@ describe('company onboarding step', () => {
     connectorCount?: number;
     /** Answer for import_claude_desktop_connectors. */
     importResult?: Record<string, unknown>;
-    /** The app's active company slug (get_desktop_active_company). */
+    /** The app's active company slug (get_desktop_active_company); set_desktop_active_company changes it. */
     activeCompany?: string | null;
+    /** Every GET /membership/me fails once sign_out has run (the next account's lookup fails). */
+    membershipFailsAfterSignOut?: boolean;
+    /** The create-company action answers without naming the new company's uid. */
+    createWithoutUid?: boolean;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
     onboardingFlags.companyNamePrefillEnabled = options.companyNamePrefillEnabled ?? false;
@@ -4509,6 +4513,8 @@ describe('company onboarding step', () => {
     let provisionCalled = false;
     let activations = 0;
     let membershipReads = 0;
+    let activeCompany = options.activeCompany ?? null;
+    let signedOut = false;
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
     tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       switch (command) {
@@ -4540,7 +4546,19 @@ describe('company onboarding step', () => {
         case 'import_claude_desktop_connectors':
           return options.importResult ?? { ok: true, message: 'Imported.' };
         case 'get_desktop_active_company':
-          return options.activeCompany ?? null;
+          return activeCompany;
+        case 'set_desktop_active_company':
+          activeCompany = (args?.companySlug as string | null | undefined) ?? null;
+          return undefined;
+        case 'sign_out':
+          signedOut = true;
+          return undefined;
+        case 'start_oauth_login':
+          return { authorizeUrl: 'https://placeholder.test/authorize', state: 'oauth-state' };
+        case 'oauth_listen_for_code':
+          return { code: 'placeholder-code' };
+        case 'oauth_exchange_code':
+          return { authenticated: true };
         case 'web_visitor_anon_id':
           return options.anonId ?? null;
         case 'start_initial_cloud_sync':
@@ -4560,6 +4578,9 @@ describe('company onboarding step', () => {
           }
           if (options.createError && args?.cardId === 'card_create_company') {
             throw new Error(options.createError);
+          }
+          if (options.createWithoutUid && args?.cardId === 'card_create_company') {
+            return { state: 'done', companyChannelId: 'ch_new' };
           }
           return { state: 'done', companyUid: 'cmp_new', companyChannelId: 'ch_new' };
         case 'fetch_channel':
@@ -4592,7 +4613,10 @@ describe('company onboarding step', () => {
             if (options.membershipDelayMs) {
               await new Promise((resolve) => setTimeout(resolve, options.membershipDelayMs));
             }
-            if (membershipReads <= (options.membershipFailures ?? 0)) {
+            if (
+              membershipReads <= (options.membershipFailures ?? 0) ||
+              (options.membershipFailsAfterSignOut && signedOut)
+            ) {
               throw new Error('temporary membership lookup failure');
             }
             return {
@@ -5601,6 +5625,51 @@ describe('company onboarding step', () => {
     await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-success"]')));
 
     expect(importCalls()).toEqual([{ company: 'cmp_new' }]);
+  });
+
+  it('never imports into the previous account\'s company after switching account and a failed lookup', async () => {
+    await reachCompanyScenario({
+      signedInEmail: 'me@other.com',
+      pendingByEmail: [{ companyUid: 'cmp_acme', companyName: 'Acme', inviteeEmail: 'me@acme.com' }],
+      activeCompany: 'old-co',
+      membershipFailsAfterSignOut: true,
+      connectorCount: 1,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-switch-account"]')));
+    click('onboarding-company-switch-account');
+    await settle();
+    expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: null });
+
+    await revealSignIn();
+    providerButtons()[0]?.click();
+    await flushUntil(() => tauri.invoke.mock.calls.some(([command]) => command === 'oauth_exchange_code'));
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flush();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.filter(([command]) => command === 'get_desktop_active_company').length > 0 &&
+      onScreen('ready'),
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flush();
+
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(commands).not.toContain('detect_claude_desktop_connectors');
+    expect(importCalls()).toEqual([]);
+    expect(JSON.stringify(importCalls())).not.toContain('old-co');
+  });
+
+  it('imports by handle when the new company\'s uid is unknown and the step hands over', async () => {
+    await reachCompanyScenario({ createWithoutUid: true, connectorCount: 1 });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme Studio');
+    await settle();
+    click('onboarding-company-create');
+    await settle();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-import"]')));
+    click('connector-import-import');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-success"]')));
+
+    expect(importCalls()).toEqual([{ company: 'acme-studio' }]);
   });
 
   it('imports into the company created in the flow by its uid', async () => {
