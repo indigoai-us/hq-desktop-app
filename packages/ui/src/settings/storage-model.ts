@@ -194,17 +194,40 @@ export function pruneHolders(r: StoragePruneResult): { count: number; refs: Stor
   return held ? { count, refs } : null;
 }
 
-/** Plain copy when old history can't be freed yet. Never suggests deleting a stash. */
-export function holdersCopy(count: number): string {
-  if (count <= 0) return "Nothing can be freed yet. Older branches or saved versions still use this history.";
+/** Prefix the CLI uses for a linked worktree that holds history. */
+const WORKTREE_PREFIX = "worktree:";
+
+/** Folder name of a worktree path (its last segment), never the full path. */
+export function worktreeName(path: string): string {
+  const parts = path.replace(/^worktree:/, "").split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+/**
+ * Plain copy when old history can't be freed yet. Never suggests deleting a
+ * stash. Mentions worktrees when one of `refs` is a linked worktree.
+ */
+export function holdersCopy(count: number, refs: readonly StorageHoldingRef[] = []): string {
+  const wt = refs.some((r) => r.name.startsWith(WORKTREE_PREFIX));
+  if (count <= 0) {
+    return wt
+      ? "Nothing can be freed yet. Older branches, saved versions or worktrees still use this history."
+      : "Nothing can be freed yet. Older branches or saved versions still use this history.";
+  }
+  if (wt) {
+    return count === 1
+      ? "Nothing can be freed yet. 1 branch, saved version or worktree still uses this history."
+      : `Nothing can be freed yet. ${count.toLocaleString()} branches, saved versions or worktrees still use this history.`;
+  }
   return count === 1
     ? "Nothing can be freed yet. 1 older branch or saved version still uses this history."
     : `Nothing can be freed yet. ${count.toLocaleString()} older branches or saved versions still use this history.`;
 }
 
-/** Plain name for a holding ref, e.g. "Branch side", "Saved version v1". */
+/** Plain name for a holding ref, e.g. "Branch side", "Saved version v1", "Worktree old-ui". */
 export function holderLabel(ref: StorageHoldingRef): string {
   const name = ref.name;
+  if (name.startsWith(WORKTREE_PREFIX)) return `Worktree ${worktreeName(name)}`;
   if (name === "refs/stash") return "Changes set aside for later";
   if (name.startsWith("refs/heads/")) return `Branch ${name.slice("refs/heads/".length)}`;
   if (name.startsWith("refs/tags/")) return `Saved version ${name.slice("refs/tags/".length)}`;
@@ -253,7 +276,7 @@ export function pruneOutcome(
     const l = r.local;
     if (l) {
       const holders = pruneHolders(r);
-      if (holders) notes.push(holdersCopy(holders.count));
+      if (holders) notes.push(holdersCopy(holders.count, holders.refs));
       else if (l.available === false && /free nothing/i.test(l.reason ?? "")) notes.push(holdersCopy(0));
       else if (l.available === false) errors.push(`${device}: some backups couldn't be deleted.`);
       else {
@@ -393,10 +416,52 @@ export function offloadCandidates(o: StorageOffloadStatus | null | undefined): {
   };
 }
 
+/**
+ * Old big files other HQ worktrees still use, so they stay on this computer.
+ * `null` when the CLI reports none. Names are folder names only.
+ */
+export function historyHeld(
+  o: StorageOffloadStatus | null | undefined,
+): { count: number; bytes: number; names: string[] } | null {
+  const h = o?.history_held;
+  if (!h || o?.available === false || (h.count ?? 0) <= 0) return null;
+  return { count: h.count, bytes: h.bytes ?? 0, names: (h.worktrees ?? []).map(worktreeName) };
+}
+
+/** "X is still used by N other HQ worktrees, so it stays on <device>." */
+export function historyHeldCopy(
+  held: { bytes: number; names: readonly string[] },
+  device: string = thisComputerNoun(),
+): string {
+  const n = held.names.length;
+  const who = n <= 1 ? "another HQ worktree" : `${n.toLocaleString()} other HQ worktrees`;
+  return `${formatBytes(held.bytes)} is still used by ${who}, so it stays on ${device}.`;
+}
+
+/** True when the CLI stopped (or would stop) an offload before changing anything. */
+function offloadRefused(r: StorageOffloadResult): boolean {
+  return Boolean(r.history?.refused);
+}
+
+/**
+ * The CLI's plain sentence for a refused offload, with worktree paths cut to
+ * folder names. Falls back to plain copy when the CLI sent no message.
+ */
+export function offloadRefusedCopy(r: StorageOffloadResult, device: string = thisComputerNoun()): string | null {
+  const h = r.history;
+  if (!h?.refused) return null;
+  const msg = (h.message ?? "").trim();
+  if (msg) return msg.replace(/worktree ([^\s,()]+)/g, (_m, p: string) => `worktree ${worktreeName(p)}`);
+  if (h.refused === "nothing_to_free") {
+    return `Nothing was uploaded or changed. Other HQ worktrees still use these old files, so they stay on ${device}.`;
+  }
+  return "Nothing was uploaded or changed.";
+}
+
 /** History copies a dry run would move: `candidates`, else `uploaded`. */
 function historyPlanned(r: StorageOffloadResult): { count: number; bytes: number } {
   const h = r.history;
-  if (!h || h.available === false) return { count: 0, bytes: 0 };
+  if (!h || h.available === false || offloadRefused(r)) return { count: 0, bytes: 0 };
   return {
     count: h.candidates ?? h.uploaded ?? 0,
     bytes: h.candidate_bytes ?? (h.bytes || h.freed_bytes || 0),
@@ -422,7 +487,7 @@ function currentMoved(r: StorageOffloadResult): { count: number; bytes: number; 
  */
 function historyPending(r: StorageOffloadResult): number {
   const h = r.history;
-  if (!h || h.available === false) return 0;
+  if (!h || h.available === false || offloadRefused(r)) return 0;
   const pending = h.pending_reclaim_bytes ?? 0;
   return (h.freed_bytes ?? 0) === 0 && pending > 0 ? pending : 0;
 }
@@ -473,6 +538,7 @@ export function offloadPreviewBlocker(r: StorageOffloadResult): string | null {
   if (r.history?.available === false && currentMoved(r).count === 0) {
     return offloadUnavailableCopy(r.history.reason);
   }
+  if (offloadRefused(r) && currentMoved(r).count === 0) return offloadRefusedCopy(r);
   if (!offloadSummary(r)) return "Nothing to move right now.";
   return null;
 }
@@ -495,6 +561,9 @@ export function offloadOutcome(
   const errors = r.errors ?? [];
   if (r.history?.available === false && currentMoved(r).count === 0) {
     return { ok: false, lines: [offloadUnavailableCopy(r.history.reason)] };
+  }
+  if (offloadRefused(r) && currentMoved(r).count === 0 && errors.length === 0) {
+    return { ok: true, lines: [offloadRefusedCopy(r, device) ?? "Nothing was uploaded or changed."] };
   }
   if (errors.length > 0) {
     const needsUpdate = errors.some((e) => typeof e === "string" && /update hq/i.test(e));

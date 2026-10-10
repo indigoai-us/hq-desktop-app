@@ -2409,6 +2409,11 @@ export interface StorageOffloadStatus {
   current_available?: boolean | null;
   /** Why current files can't move yet. Never shown raw. */
   current_reason?: string | null;
+  /**
+   * Old big files a linked worktree still uses. They can't be freed, so they
+   * are not in `history_candidates`. `worktrees` are paths; show folder names only.
+   */
+  history_held?: (StorageCountBytes & { worktrees?: string[] | null }) | null;
 }
 
 /** `hq storage offload --json` (with `--dry-run`: what would move). */
@@ -2428,6 +2433,14 @@ export interface StorageOffloadResult {
     /** When `pending_reclaim_bytes` are freed (dry run: an estimate). */
     reclaim_after?: string | null;
     pending_reclaim_bytes?: number | null;
+    /** Old versions a linked worktree still uses: left in place, never counted as freed. */
+    held_by_worktrees?: StorageCountBytes | null;
+    /** Worktree paths that still use old history. Show folder names only. */
+    worktree_holders?: string[] | null;
+    /** Set when the run stops before changing anything, e.g. nothing_to_free. */
+    refused?: string | null;
+    /** The CLI's plain sentence for `refused`. */
+    message?: string | null;
   };
   current: {
     offloaded: Array<{ path: string; bytes: number }>;

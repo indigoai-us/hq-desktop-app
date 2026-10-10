@@ -13,3 +13,8 @@ Built from the round-3 contract (offload-contract.md, "Backups and reclaim"): ev
 Each starts from a round-2 capture above with only the round-3 fields added, because the round-3
 CLI was not pushed when they were made. Replace them with real captures once hq-cli
 feat/hq-storage carries reclaim, the prune refusal JSON and strip-large --no-backup.
+
+Round 4 (hq-cli feat/hq-storage 8c616b80, shapes from src/commands/storage*.test.ts): every *-r4.json file.
+status-held-r4.json adds offload.history_held; offload-dry-held-r4.json adds held_by_worktrees and
+worktree_holders; offload-refused-r4.json and offload-dry-refused-r4.json are the exit-4
+nothing_to_free refusal; prune-refused-worktree-r4.json has a worktree:<path> holder.

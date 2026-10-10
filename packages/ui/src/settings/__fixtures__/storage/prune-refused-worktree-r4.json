@@ -1,0 +1,24 @@
+{
+  "local": {
+    "available": true,
+    "refused": "nothing_to_free",
+    "holding_refs": [
+      {
+        "name": "refs/heads/side",
+        "commit_date": "2026-04-10T05:13:38Z"
+      },
+      {
+        "name": "worktree:.claude/worktrees/old-ui",
+        "commit_date": null
+      }
+    ],
+    "holding_refs_count": 2
+  },
+  "cloud": [],
+  "dry_run": false,
+  "reclaim": {
+    "available": true,
+    "dropped": 0,
+    "freed_bytes": 0
+  }
+}

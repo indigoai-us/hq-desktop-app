@@ -148,6 +148,17 @@ pub struct OffloadStatus {
     pub current_available: Option<bool>,
     /// Why current files can't move yet; the UI never shows it raw.
     pub current_reason: Option<String>,
+    /// Old big files a linked worktree still uses, so they can't be freed.
+    pub history_held: Option<HistoryHeld>,
+}
+
+/// `offload.history_held`: count, bytes and the worktree paths holding them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct HistoryHeld {
+    pub count: u64,
+    pub bytes: u64,
+    pub worktrees: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -179,6 +190,13 @@ pub struct OffloadHistory {
     /// When `pending_reclaim_bytes` are freed (dry run: an estimate).
     pub reclaim_after: Option<String>,
     pub pending_reclaim_bytes: Option<u64>,
+    /// Old versions a linked worktree still uses: left in place, not freed.
+    pub held_by_worktrees: Option<CountBytes>,
+    /// Worktree paths that still use old history.
+    pub worktree_holders: Option<Vec<String>>,
+    /// Set when the run stopped before changing anything (nothing_to_free).
+    pub refused: Option<String>,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -695,6 +713,31 @@ mod tests {
         assert_passthrough::<PruneResult>(&fixture("prune-refused-r3.json"));
         assert_passthrough::<OffloadResult>(&fixture("offload-dry-r3.json"));
         assert_passthrough::<OffloadResult>(&fixture("offload-real-r3.json"));
+        // Round-4 shapes: old versions other worktrees still use.
+        assert_passthrough::<StorageStatus>(&fixture("status-held-r4.json"));
+        assert_passthrough::<OffloadResult>(&fixture("offload-dry-held-r4.json"));
+        assert_passthrough::<OffloadResult>(&fixture("offload-refused-r4.json"));
+        assert_passthrough::<PruneResult>(&fixture("prune-refused-worktree-r4.json"));
+    }
+
+    #[test]
+    fn parses_worktree_held_history_and_offload_refusal() {
+        let s = parse_status(&fixture("status-held-r4.json")).unwrap();
+        let held = s.offload.unwrap().history_held.unwrap();
+        assert_eq!(held.count, 2);
+        assert_eq!(held.worktrees, vec![".claude/worktrees/old-ui".to_string()]);
+        let r = parse_offload(&fixture("offload-refused-r4.json")).unwrap();
+        assert_eq!(r.history.refused.as_deref(), Some("nothing_to_free"));
+        assert!(r.history.message.unwrap().contains("Nothing was uploaded"));
+        assert_eq!(r.history.held_by_worktrees.unwrap().count, 2);
+        let d = parse_offload(&fixture("offload-dry-held-r4.json")).unwrap();
+        assert_eq!(
+            d.history.worktree_holders.unwrap(),
+            vec![".claude/worktrees/old-ui".to_string()]
+        );
+        // Older CLI output has none of these and still parses.
+        let old = parse_offload(&fixture("offload-dry-r3.json")).unwrap();
+        assert!(old.history.refused.is_none() && old.history.held_by_worktrees.is_none());
     }
 
     #[test]

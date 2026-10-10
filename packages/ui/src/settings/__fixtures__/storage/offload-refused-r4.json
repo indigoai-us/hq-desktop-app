@@ -1,0 +1,26 @@
+{
+  "history": {
+    "uploaded": 0,
+    "bytes": 0,
+    "freed_bytes": 0,
+    "candidates": 0,
+    "candidate_bytes": 0,
+    "held_by_worktrees": {
+      "count": 2,
+      "bytes": 126178646
+    },
+    "worktree_holders": [
+      ".claude/worktrees/old-ui"
+    ],
+    "refused": "nothing_to_free",
+    "message": "Nothing was uploaded or changed. 2 old big file version(s) are still used by another worktree (worktree .claude/worktrees/old-ui), so moving them would free no space. HQ never changes other worktrees; the space can be freed once they no longer use this history."
+  },
+  "current": {
+    "offloaded": [],
+    "freed_bytes": 0,
+    "available": false,
+    "reason": "Offloading current files is not available yet: HQ sync would treat the replaced file as deleted."
+  },
+  "errors": [],
+  "dry_run": false
+}

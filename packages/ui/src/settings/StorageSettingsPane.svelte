@@ -47,6 +47,8 @@
     isPermissionError,
     refsToRemove,
     holderLabel,
+    historyHeld,
+    historyHeldCopy,
     holdersCopy,
     localTime,
     pruneConfirmCopy,
@@ -114,6 +116,8 @@
   /** Current files are listed only once the CLI can move them. */
   const showCurrent = $derived(currentOffloadAvailable(status?.offload));
   const placeholders = $derived(status?.offload?.placeholders ?? null);
+  /** Old big files other worktrees still use; they stay on this computer. */
+  const held = $derived(historyHeld(status?.offload));
   /** Either flow running locks the whole page. */
   const busy = $derived(phase !== "idle" || offloadPhase !== "idle");
 
@@ -266,7 +270,7 @@
       const held = pruneHolders(res.value);
       if (held) {
         // Nothing would be freed; say why instead of offering "about 0 B".
-        actionError = holdersCopy(held.count);
+        actionError = holdersCopy(held.count, held.refs);
         holders = held.refs;
         phase = "idle";
         return;
@@ -432,6 +436,17 @@
               {status.offload.history_candidates.count.toLocaleString()} old copies in backup history ({formatBytes(status.offload.history_candidates.bytes)}){#if showCurrent} · {status.offload.current_candidates.count.toLocaleString()} idle files in your HQ folder ({formatBytes(status.offload.current_candidates.bytes)}){/if}
             </div>
           {/if}
+          {#if held}
+            <div class="sd" data-testid="settings-storage-history-held">{historyHeldCopy(held, device)}</div>
+            {#if held.names.length > 0}
+              <details class="holders" data-testid="settings-storage-history-held-list">
+                <summary>What's still using it</summary>
+                <ul>
+                  {#each held.names as name, i (i)}<li>Worktree {name}</li>{/each}
+                </ul>
+              </details>
+            {/if}
+          {/if}
           {#if placeholders && placeholders.count > 0}
             <div class="sd" data-testid="settings-storage-placeholders">
               {placeholders.count.toLocaleString()} {placeholders.count === 1 ? "file is" : "files are"} already in HQ cloud ({formatBytes(placeholders.bytes)}).
@@ -501,7 +516,7 @@
       {#if statusHolders}
         <div class="set-row" data-testid="settings-storage-local-held">
           <div>
-            <div class="sd">{holdersCopy(statusHolders.count)}</div>
+            <div class="sd">{holdersCopy(statusHolders.count, statusHolders.refs)}</div>
             {#if statusHolders.refs.length > 0}
               <details class="holders">
                 <summary>What's still using it</summary>
