@@ -440,6 +440,17 @@ describe("a card that keeps one height", () => {
     const line = cardSource.match(/\.connection-card-line\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(line).toMatch(/-webkit-line-clamp:\s*2\b/);
     expect(line).toMatch(/\bline-clamp:\s*2\b/);
+    // The clamp only works with the shared box rule: the line, the reason and
+    // the note together take the -webkit-box display, hidden overflow and
+    // anywhere wrapping. (A rule once landed inside this selector list by
+    // mistake and silently undid the clamp on every card.)
+    const clampBlock =
+      cardSource.match(/\.connection-card-line,\s*\.connection-card-reason,\s*\.connection-card-note\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(clampBlock).toMatch(/display:\s*-webkit-box/);
+    expect(clampBlock).toMatch(/-webkit-box-orient:\s*vertical/);
+    expect(clampBlock).toMatch(/overflow:\s*hidden/);
+    expect(clampBlock).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(clampBlock).toMatch(/-webkit-line-clamp:\s*2\b/);
     // The bot's reason stays one row under it.
     const reason = cardSource.match(/\.connection-card-reason\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(reason).toMatch(/-webkit-line-clamp:\s*1\b/);

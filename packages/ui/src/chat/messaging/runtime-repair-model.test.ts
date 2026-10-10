@@ -7,6 +7,7 @@ import {
   repairCardView,
   repairFailureNote,
   repairPayloadForMessage,
+  repairProbeNote,
   type RepairAction,
   type RepairCardView,
   type RepairPayload,
@@ -168,6 +169,8 @@ describe("repairCardView", () => {
           ...actions.map((action) => repairCardView(p, { phase: "working", action }, "Pickles")),
           ...actions.map((action) => repairCardView(p, { phase: "fixed", action }, "Pickles")),
           ...actions.map((action) => repairCardView(p, { phase: "offered", note: repairFailureNote(action, runtime, cls) }, "Pickles")),
+          ...actions.map((action) => repairCardView(p, { phase: "offered", note: repairProbeNote(cls, action, runtime) }, "Pickles")),
+          ...actions.map((action) => repairCardView(p, { phase: "offered", note: repairProbeNote(null, action, runtime) }, "Pickles")),
         ];
         for (const view of views) {
           const text = words(view);

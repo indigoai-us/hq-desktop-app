@@ -238,6 +238,28 @@ export function repairFailureNote(action: RepairAction, runtime: RepairRuntime, 
 }
 
 /**
+ * A plain line for a check that ran after an action and still found a
+ * problem, chosen by what the check found rather than by the action: an
+ * update that leaves the bot on a model the tool cannot run says that, not
+ * "could not be updated". An unknown class falls back to the action's note.
+ */
+export function repairProbeNote(found: RepairClass | null, action: RepairAction, runtime: RepairRuntime): string {
+  const tool = RUNTIME_LABEL[runtime];
+  switch (found) {
+    case "signed-out":
+      return `${tool} is still signed out. Try again.`;
+    case "cli-outdated":
+      return `${tool} is still too old. Try again.`;
+    case "model-unsupported":
+      return `${tool} still can't run the model the bot is set to. Use a supported model.`;
+    case "transient":
+      return `${tool} still can't reply. Try again in a moment.`;
+    default:
+      return repairFailureNote(action, runtime, null);
+  }
+}
+
+/**
  * The card for a payload in a state. `updatePath` says whether Update is a
  * button (the app updates the tool) or a plain step (it cannot).
  */

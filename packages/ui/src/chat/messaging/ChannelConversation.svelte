@@ -1950,6 +1950,9 @@
 
 {#snippet bubbleContent(msg: ConversationMessageWire, rich: ExtractedRichContent)}
   {@const repair = repairFor(msg)}
+  <!-- A valid repair block is the whole reply: the card stands in for the
+       plain body, and any other rich block on that message is not drawn.
+       (hq-cli sends the block alone; the body is the fallback text.) -->
   {#if repair && runtimeRepair}
     {@const host = runtimeRepair}
     <RuntimeRepairCard

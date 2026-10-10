@@ -15,6 +15,7 @@
 import {
   parseProbeResult,
   repairFailureNote,
+  repairProbeNote,
   type ProbeResult,
   type RepairAction,
   type RepairCardState,
@@ -114,6 +115,10 @@ export class RuntimeRepairController {
     const back = (stillClass: ProbeResult["class"]): void => {
       this.#set(eventId, { phase: "offered", note: repairFailureNote(action, payload.runtime, stillClass) });
     };
+    /** Back on the problem the check reported, with the note for that problem. */
+    const backAs = (foundClass: ProbeResult["class"]): void => {
+      this.#set(eventId, { phase: "offered", note: repairProbeNote(foundClass, action, payload.runtime) });
+    };
     try {
       let probeModel: string | undefined = deps.botModel?.(payload.botName)?.trim() || undefined;
       if (action === "signIn") {
@@ -134,7 +139,9 @@ export class RuntimeRepairController {
           this.#set(eventId, { phase: "offered" });
           return;
         }
-        return back(probe.class);
+        // The action ran; what the check found now is what the note says.
+        // An update that leaves the model unsupported is not a failed update.
+        return backAs(probe.class);
       }
       if (action === "tryAgain") {
         const text = (options.retryText ?? "").trim() || TRY_AGAIN_TEXT;

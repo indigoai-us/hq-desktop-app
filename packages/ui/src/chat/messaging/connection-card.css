@@ -176,36 +176,6 @@
    ever grows the card. The title attribute holds the whole sentence. */
 .connection-card-line,
 .connection-card-reason,
-/* A runtime repair card (RuntimeRepairCard.svelte) stands alone in a
-   message, not in a row of cards: it keeps the one height and takes the
-   message column's width up to the width of one card. */
-.connection-card[data-kind="runtime-repair"] {
-  flex: 0 0 auto;
-  width: 100%;
-  max-width: 360px;
-  min-width: 0;
-  text-align: left;
-}
-/* While a repair runs the mark is the accent with a small spinner, the
-   connecting card's colour. */
-.connection-card-mark.is-working {
-  gap: 5px;
-  color: var(--cc-accent);
-}
-.connection-card-spin {
-  width: 10px;
-  height: 10px;
-  box-sizing: border-box;
-  border-radius: 50%;
-  border: 1.5px solid rgba(255, 255, 255, 0.2);
-  border-top-color: var(--cc-accent);
-  animation: connection-card-spin 700ms linear infinite;
-}
-@keyframes connection-card-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 .connection-card-note {
   flex: 0 0 auto;
   display: -webkit-box;
@@ -393,6 +363,36 @@
   font-size: 12px;
   line-height: 1.4;
   color: var(--cc-warn);
+}
+/* A runtime repair card (RuntimeRepairCard.svelte) stands alone in a
+   message, not in a row of cards: it keeps the one height and takes the
+   message column's width up to the width of one card. */
+.connection-card[data-kind="runtime-repair"] {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 360px;
+  min-width: 0;
+  text-align: left;
+}
+/* While a repair runs the mark is the accent with a small spinner, the
+   connecting card's colour. */
+.connection-card-mark.is-working {
+  gap: 5px;
+  color: var(--cc-accent);
+}
+.connection-card-spin {
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--cc-accent);
+  animation: connection-card-spin 700ms linear infinite;
+}
+@keyframes connection-card-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .connection-card-btn,

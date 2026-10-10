@@ -93,6 +93,20 @@ describe("RuntimeRepairController", () => {
     expect(c.stateFor("evt_1")).toEqual({ phase: "offered", note: "Claude Code is still signed out. Try again." });
   });
 
+  it("after an action, the note names the problem the check found, not the action that ran", async () => {
+    const d = deps({ probe: vi.fn(async () => ({ ok: false, class: "model-unsupported" })) });
+    const c = new RuntimeRepairController(d);
+    await c.run("evt_1", payload({ class: "cli-outdated", runtime: "codex" }), "update");
+    expect(c.stateFor("evt_1").note).toBe("Codex still can't run the model the bot is set to. Use a supported model.");
+    expect(c.stateFor("evt_1").note).not.toMatch(/updated/);
+    await c.run("evt_2", payload({ class: "signed-out", runtime: "codex" }), "signIn");
+    expect(c.stateFor("evt_2").note).toBe("Codex still can't run the model the bot is set to. Use a supported model.");
+    // An unknown class falls back to the action's own line.
+    const unknown = new RuntimeRepairController(deps({ probe: vi.fn(async () => ({ ok: false, class: "not-installed" })) }));
+    await unknown.run("evt_3", payload({ class: "cli-outdated", runtime: "codex" }), "update");
+    expect(unknown.stateFor("evt_3").note).toBe("Codex could not be updated. Try again.");
+  });
+
   it("a sign-in that does not finish never runs the check and says so plainly", async () => {
     const d = deps({ signIn: vi.fn(async () => false) });
     const c = new RuntimeRepairController(d);
