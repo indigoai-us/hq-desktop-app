@@ -170,14 +170,61 @@ fn global_install_lock() -> &'static Mutex<()> {
 
 /// Apply or remove the current user's HQ Anywhere setup in supported runtimes.
 /// The shell-out stays on the async Tauri runtime and uses the shared HQ CLI runner.
+///
+/// The renderer calls this at startup (`reconcileHqAnywhereGlobalRuntime` in
+/// `App.svelte`) as well as from the setting toggle. Only the shipped HQ
+/// bundle runs it: any other bundle (scratch, Lane Check, worktree builds)
+/// shares the owner's Claude and Codex home folders, so it logs one skip line
+/// and changes nothing. On 2026-10-10 an
+/// `ai.indigo.hq-lane-check.conflict-toast` bundle ran
+/// `hq uninstall --global --runtime claude` from here at launch.
 #[tauri::command]
 pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String> {
     let _guard = global_install_lock().lock().await;
+    let identity = crate::scratch_build::LaunchIdentity::current();
+    if !identity.allows("HQ Anywhere global runtime setup") {
+        return Ok(());
+    }
     let home =
         dirs::home_dir().ok_or_else(|| "Could not resolve the home directory.".to_string())?;
     let path_env = paths::child_path();
     let path_entries = std::env::split_paths(OsStr::new(&path_env)).collect::<Vec<_>>();
-    let runtimes = detect_present_runtimes(&home, &path_entries);
+    apply_global_install(
+        &identity,
+        enabled,
+        &home,
+        &path_entries,
+        || crate::commands::install_directory::resolve_hq_path().map(PathBuf::from),
+        |args, hq_root| async move {
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            crate::commands::install_stages::run_hq_global_runtime_plain(&args, &hq_root).await
+        },
+    )
+    .await
+}
+
+/// The body of [`set_hq_anywhere_global_install`] with the bundle identity,
+/// home folder, PATH, HQ root and `hq` runner passed in, so tests can assert
+/// on exactly which `hq` commands run.
+async fn apply_global_install<R, F, Fut>(
+    identity: &crate::scratch_build::LaunchIdentity,
+    enabled: bool,
+    home: &Path,
+    path_entries: &[PathBuf],
+    resolve_hq_root: R,
+    mut run_hq: F,
+) -> Result<(), String>
+where
+    R: FnOnce() -> Result<PathBuf, String>,
+    F: FnMut(Vec<String>, PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    // The command already gated (and logged); this repeat keeps the seam
+    // itself safe for any other caller.
+    if !identity.is_production() {
+        return Ok(());
+    }
+    let runtimes = detect_present_runtimes(home, path_entries);
     if runtimes.is_empty() {
         log(
             LOG_TAG,
@@ -193,7 +240,7 @@ pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String>
     };
     let mut pending = Vec::new();
     for runtime in runtimes {
-        if enabled && global_runtime_is_installed(&home, runtime) {
+        if enabled && global_runtime_is_installed(home, runtime) {
             log(
                 LOG_TAG,
                 &format!(
@@ -209,13 +256,12 @@ pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String>
         return Ok(());
     }
 
-    let hq_root = PathBuf::from(crate::commands::install_directory::resolve_hq_path()?);
+    let hq_root = resolve_hq_root()?;
     let mut failures = Vec::new();
     for runtime in pending {
         let argv = global_runtime_args(action, runtime);
-        let args = argv.iter().map(String::as_str).collect::<Vec<_>>();
-        log(LOG_TAG, &format!("running hq {}", args.join(" ")));
-        match crate::commands::install_stages::run_hq_global_runtime_plain(&args, &hq_root).await {
+        log(LOG_TAG, &format!("running hq {}", argv.join(" ")));
+        match run_hq(argv, hq_root.clone()).await {
             Ok(()) => log(
                 LOG_TAG,
                 &format!("{} global setup completed", runtime.as_str()),
@@ -243,10 +289,113 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use std::sync::{Arc, Mutex};
+
     use super::{
-        detect_present_runtimes, global_runtime_args, global_runtime_is_installed,
-        safe_renderer_failure, GlobalRuntime, RuntimeAction,
+        apply_global_install, detect_present_runtimes, global_runtime_args,
+        global_runtime_is_installed, safe_renderer_failure, GlobalRuntime, RuntimeAction,
     };
+    use crate::scratch_build::LaunchIdentity;
+
+    const SCRATCH_BUNDLE_ID: &str = "ai.indigo.hq-lane-check.conflict-toast";
+
+    fn bundle(id: Option<&str>) -> LaunchIdentity {
+        LaunchIdentity {
+            scratch_flag: false,
+            bundle_identifier: id.map(str::to_string),
+        }
+    }
+
+    fn production() -> LaunchIdentity {
+        bundle(Some(hq_platform::autostart::PRODUCTION_BUNDLE_IDENTIFIER))
+    }
+
+    /// Runs the startup reconcile body against a home with Claude and Codex
+    /// present. Returns the result, every `hq` argv the runner was asked to
+    /// run, and whether the HQ root was resolved.
+    fn run_startup_reconcile(
+        identity: LaunchIdentity,
+        enabled: bool,
+    ) -> (Result<(), String>, Vec<Vec<String>>, bool) {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let resolved = Arc::new(Mutex::new(false));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let result = runtime.block_on(apply_global_install(
+            &identity,
+            enabled,
+            home.path(),
+            &[],
+            {
+                let resolved = resolved.clone();
+                move || {
+                    *resolved.lock().unwrap() = true;
+                    Ok(PathBuf::from("/tmp/hq-root-for-test"))
+                }
+            },
+            {
+                let calls = calls.clone();
+                move |argv: Vec<String>, _hq_root: PathBuf| {
+                    calls.lock().unwrap().push(argv);
+                    async { Ok(()) }
+                }
+            },
+        ));
+        let calls = calls.lock().unwrap().clone();
+        let resolved = *resolved.lock().unwrap();
+        (result, calls, resolved)
+    }
+
+    #[test]
+    fn a_scratch_bundle_makes_no_install_or_uninstall_call_at_startup() {
+        for enabled in [false, true] {
+            for identity in [
+                bundle(Some(SCRATCH_BUNDLE_ID)),
+                bundle(Some("ai.indigo.hq-lane-check")),
+                bundle(Some("ai.indigo.hq-sync-menubar-dev")),
+                bundle(None),
+                LaunchIdentity {
+                    scratch_flag: true,
+                    bundle_identifier: Some(
+                        hq_platform::autostart::PRODUCTION_BUNDLE_IDENTIFIER.to_string(),
+                    ),
+                },
+            ] {
+                let (result, calls, resolved) = run_startup_reconcile(identity.clone(), enabled);
+                assert_eq!(result, Ok(()), "{identity:?}");
+                assert!(calls.is_empty(), "{identity:?} ran hq {calls:?}");
+                assert!(!resolved, "{identity:?} resolved the HQ root");
+            }
+        }
+    }
+
+    #[test]
+    fn the_production_bundle_still_runs_the_global_runtime_commands() {
+        let (result, calls, resolved) = run_startup_reconcile(production(), false);
+        assert_eq!(result, Ok(()));
+        assert!(resolved);
+        assert_eq!(
+            calls,
+            [
+                ["uninstall", "--global", "--runtime", "claude"],
+                ["uninstall", "--global", "--runtime", "codex"],
+            ]
+        );
+
+        let (result, calls, _) = run_startup_reconcile(production(), true);
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            calls,
+            [
+                ["install", "--global", "--runtime", "claude"],
+                ["install", "--global", "--runtime", "codex"],
+            ]
+        );
+    }
 
     struct TempHome(PathBuf);
 

@@ -2707,16 +2707,21 @@ const UPDATER_DISABLED_MESSAGE: &str = "Updates are turned off for this build";
 /// 2026-10-08 a "HQ Lane Check" bundle pulled 0.11.0-beta.11 that way,
 /// installed it over itself and repointed the login LaunchAgent.
 ///
-/// A scratch build (`HQ_SCRATCH_BUILD`, see `scratch_build.rs`) has the same
-/// switch baked in, so a test bundle opened from Finder (no shell env) is
-/// covered too.
+/// Any bundle that is not the shipped production bundle has the same switch
+/// on: a scratch build (`HQ_SCRATCH_BUILD`) or any other bundle identifier,
+/// decided by `scratch_build::LaunchIdentity::is_production`, the predicate
+/// launch-time autostart and the launch-time installers use. A test bundle
+/// opened from Finder (no shell env) is covered too.
 pub fn updater_disabled() -> bool {
-    updater_disabled_with(dev_env_flag_set(UPDATER_DISABLED_ENV), crate::scratch_build::active())
+    updater_disabled_with(
+        dev_env_flag_set(UPDATER_DISABLED_ENV),
+        !crate::scratch_build::production_bundle(),
+    )
 }
 
 /// `updater_disabled` with its two inputs passed in (testable in any build).
-pub(crate) fn updater_disabled_with(env_switch: bool, scratch_build: bool) -> bool {
-    env_switch || scratch_build
+pub(crate) fn updater_disabled_with(env_switch: bool, non_production_bundle: bool) -> bool {
+    env_switch || non_production_bundle
 }
 
 pub fn setup_update_checker(app: &AppHandle) {

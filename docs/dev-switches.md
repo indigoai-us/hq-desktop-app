@@ -23,6 +23,23 @@ Code: `apps/sync/src-tauri/src/scratch_build.rs`.
 variable for the updater paths. `HQ_SCRATCH_BUILD` covers more, and it is
 baked into the build.
 
+### Bundle identifier
+
+A bundle that does not run as the shipped identifier
+(`ai.indigo.hq-sync-menubar`, which stable, beta and alpha all use) is treated
+the same way at launch even without `HQ_SCRATCH_BUILD`. It skips the HQ
+Anywhere setup (`hq install` and `hq uninstall --global --runtime claude|codex`),
+the Work Mesh unit install and removal, the updater, the login item repair and
+reconcile, UI hot updates and the background hq CLI, pack, HQ Core, qmd and HQ
+Work installers, and logs one line for each skipped step. Scratch, Lane Check,
+worktree and side-by-side bundles all fall under this. One predicate decides:
+`LaunchIdentity::is_production` in `scratch_build.rs`, built on
+`is_production_bundle_identifier` in `crates/hq-platform/src/autostart.rs`.
+Windows has no bundle identifier to read and counts as the shipped one.
+
+Do not open a test bundle on a machine whose HQ folder you care about. Check
+launch behavior in a Tart VM.
+
 ## Interface (Vite) switches
 
 Set these when the interface is built (`pnpm --filter hq-sync build`, or
