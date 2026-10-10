@@ -31,7 +31,7 @@ export interface BadgeDef {
 
 export const BADGES: readonly BadgeDef[] = [
   { id: "founding", name: "Founding Member", icon: "flag", family: "early", crit: "Joined HQ before the public launch", levels: "Limited, never earnable again", tier: 3 },
-  { id: "founder", name: "Founder", icon: "house", family: "early", crit: "Created a company in HQ", levels: "Single level", tier: 3 },
+  { id: "founder", name: "Founder", icon: "house", family: "early", crit: "Started a company in HQ that a teammate joined", levels: "Single level", tier: 3 },
   { id: "bughunter", name: "Bug Hunter", icon: "bug", family: "early", crit: "Sent feedback that helps improve HQ", levels: "3 · 10 · 25 reports", tier: 2 },
   { id: "liftoff", name: "Liftoff", icon: "rocket", family: "usage", crit: "Deploys that went live", levels: "5 · 50 · 250 deploys", tier: 1 },
   { id: "poweruser", name: "Power User", icon: "bolt", family: "usage", crit: "Skills run", levels: "100 · 500 · 2,500 runs", tier: 3 },

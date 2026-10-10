@@ -53,7 +53,7 @@ const STORIES: Readonly<Record<string, StoryDef>> = {
     why: () => "This badge can't be earned anymore. It belongs to the people whose early use and feedback shaped HQ.",
   },
   founder: {
-    did: [(v) => `${v.Subject} created a company in HQ and gave the team one place to work together.`],
+    did: [(v) => `${v.Subject} started a company in HQ, and a teammate joined to work there together.`],
     why: (v) => `Every company in HQ starts with one person setting it up. This one started with ${v.subject}.`,
   },
   bughunter: {
