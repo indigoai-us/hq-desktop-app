@@ -305,7 +305,7 @@
   } from "../chat/first-run/visual-first-run.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
-  import { teamOptionsFrom } from "../chat/first-run/team-step.js";
+  import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
   import {
     createFirstRunAppsHost,
     createFirstRunTeamHost,
@@ -3553,6 +3553,11 @@
           created: () => {
             createCompanyRequested = true;
             void onrefreshroster?.();
+          },
+          findCompany: async (slug) => {
+            await onrefreshroster?.();
+            await svelteTick();
+            return activeCloudCompanyBySlug(companies ?? [], slug);
           },
         })
       : null,

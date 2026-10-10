@@ -37,6 +37,9 @@
  *   ?team=invites|member|many|fail and ?apps=on|empty|forbidden|fail  with a ?firstrun= switch:
  *       the "Your team", Note taker and Project management screens (first-run-fixtures.ts).
  *       Without ?team= the roster is the persona's; without ?apps= the catalog is the usual mock.
+ *       With any ?firstrun= switch, the app's notes to the new assistant (POST /v1/notify/dm)
+ *       come back in its direct message the way the server returns them today: from the
+ *       person and with no audience, so the chat can be checked for leaked handoff text.
  *   ?conflicts=N                                 N parked conflict copies (1-50), to see the
  *       grouped "Conflict copy parked" card over the shell
  *
@@ -46,6 +49,7 @@ import { emit } from '@tauri-apps/api/event';
 import { isBootCommand } from './state-flags';
 import { cancelImportScan, replayImportScan, type ImportVariant } from './import-scan-fixture';
 import { firstRunScreensAnswer } from './first-run-fixtures';
+import { resolveHarnessPersona } from './personas';
 
 function params(search?: string | null): URLSearchParams {
   const raw = search ?? (typeof window === 'undefined' ? '' : window.location.search);
@@ -292,6 +296,52 @@ function atlasObjects(full: boolean): Array<{ key: string; lastModified: string;
   return out;
 }
 
+/** The assistant a first-run switch creates. */
+const FIRST_RUN_BOT_UID = 'agt_PREVIEWSETUP';
+/** The app's notes to the assistant, in the order they were sent. */
+const firstRunNotes: Array<{ eventId: string; body: string; createdAt: string }> = [];
+
+function recordFirstRunNote(raw: unknown): { status: number; body: string } {
+  let body = '';
+  try {
+    const parsed = JSON.parse(typeof raw === 'string' ? raw : '{}') as { body?: unknown };
+    body = typeof parsed.body === 'string' ? parsed.body : '';
+  } catch {
+    body = '';
+  }
+  const eventId = `evt_first_run_note_${firstRunNotes.length + 1}`;
+  const createdAt = new Date().toISOString();
+  if (body) firstRunNotes.push({ eventId, body, createdAt });
+  return { status: 200, body: JSON.stringify({ eventId, createdAt }) };
+}
+
+/**
+ * The assistant's direct message, newest first: its hello, then each note
+ * the app sent. Like the server's thread read today, a note carries the
+ * person as its sender and no audience.
+ */
+function firstRunAssistantThread(search?: string | null): { messages: unknown[]; nextCursor: null } {
+  // The person the harness signs in as (mocks/core.ts `whoami`).
+  const self = resolveHarnessPersona(search)?.whoami ?? { personUid: 'prs_ada', displayName: 'Ada Lovelace' };
+  const hello = {
+    eventId: 'evt_first_run_hello',
+    fromPersonUid: FIRST_RUN_BOT_UID,
+    fromDisplayName: 'Assistant',
+    body: "Hi, I'm your HQ assistant. I'm checking your computer now.",
+    createdAt: '2026-01-01T00:00:00.000Z',
+    direction: 'in',
+  };
+  const notes = firstRunNotes.map((note) => ({
+    eventId: note.eventId,
+    fromPersonUid: self.personUid,
+    fromDisplayName: self.displayName,
+    body: note.body,
+    createdAt: note.createdAt,
+    direction: 'out',
+  }));
+  return { messages: [...notes].reverse().concat([hello]), nextCursor: null };
+}
+
 /**
  * Handlers layered over the normal mock when a switch is on. Returns
  * `undefined` when no switch claims the command.
@@ -328,6 +378,12 @@ export function switchedHandler(
         },
       };
     }
+    if (cmd === 'hq_pro_fetch' && url.startsWith('/v1/notify/dm') && args?.method === 'POST') {
+      return { value: recordFirstRunNote(args?.body) };
+    }
+    if (cmd === 'fetch_dm_thread' && String(args?.withPersonUid ?? '') === FIRST_RUN_BOT_UID) {
+      return { value: firstRunAssistantThread(search) };
+    }
     const screens = firstRunScreensAnswer(cmd, args, search);
     if (screens) return screens;
     if (cmd === 'agent_session_preflight') return { value: firstRunPreflight(firstRun) };
@@ -348,7 +404,7 @@ export function switchedHandler(
         value: new Promise((resolve, reject) =>
           setTimeout(() => {
             if (firstRun === 'visual-fail') reject(new Error('harness: hq bot create failed'));
-            else resolve({ agentUid: 'agt_PREVIEWSETUP', name: 'setup' });
+            else resolve({ agentUid: FIRST_RUN_BOT_UID, name: 'setup' });
           }, ms),
         ),
       };

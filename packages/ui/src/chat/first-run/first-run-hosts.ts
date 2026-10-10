@@ -70,41 +70,118 @@ export interface TeamHostDeps {
   /** After a join or a create: pin, refresh the roster. Never navigates. */
   joined?: (companyUid: string | null) => void | Promise<void>;
   created?: (companyUid: string | null) => void | Promise<void>;
+  /**
+   * Re-read the roster and return the person's company with this slug, or
+   * null. Asked before a create runs again after a failure or a timeout:
+   * the first try may have made the company after all.
+   */
+  findCompany?: ((slug: string) => Promise<FirstRunTeamCompany | null>) | null;
+  /** Test seam; defaults to FIND_COMPANY_TIMEOUT_MS. */
+  findTimeoutMs?: number;
   dry: boolean;
   delayMs?: number;
 }
 
+/**
+ * How long a Retry waits on the roster read before it creates as before. A
+ * read that never answers must not hold Retry.
+ */
+export const FIND_COMPANY_TIMEOUT_MS = 10_000;
+
 export const JOIN_FAILURE = "Couldn't join the company. Try again.";
 export const CREATE_UNAVAILABLE = "Starting a company isn't available here yet. Continue in chat to start one.";
 
+/** The roster read, or null when it fails or has not answered within `ms`. */
+function findWithin(
+  find: (slug: string) => Promise<FirstRunTeamCompany | null>,
+  slug: string,
+  ms: number,
+): Promise<FirstRunTeamCompany | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    find(slug).then(
+      (found) => {
+        clearTimeout(timer);
+        resolve(found);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
 export function createFirstRunTeamHost(deps: TeamHostDeps): FirstRunTeamHost {
   const delay = deps.delayMs ?? FIRST_RUN_DRY_DELAY_MS;
-  return {
-    async join(company) {
-      if (deps.dry) {
-        await sleep(delay);
-        return { ok: true, choice: { kind: "company", how: "joined", company } };
-      }
-      if (!deps.claimInvite) return { ok: false, reason: JOIN_FAILURE };
-      const claim = await deps.claimInvite(company.slug);
-      const { inviteClaimOutcome } = await import("../../inbox/company-invite-requests.js");
-      const outcome = inviteClaimOutcome(claim, company.companyUid ?? "", []);
-      if (!outcome.ok) return { ok: false, reason: outcome.message };
-      await deps.joined?.(company.companyUid);
+  /**
+   * Calls still running, by action and slug. A Retry after the screen gave up
+   * waiting (team-step.ts TEAM_ACTION_TIMEOUT_MS) waits on the same call
+   * instead of joining or creating a second time.
+   */
+  const inFlight = new Map<string, Promise<TeamActionResult>>();
+  /** How the last create for a slug ended, once it has. */
+  const lastCreate = new Map<string, TeamActionResult>();
+  function once(key: string, start: () => Promise<TeamActionResult>): Promise<TeamActionResult> {
+    const running = inFlight.get(key);
+    if (running) return running;
+    const call = start().finally(() => inFlight.delete(key));
+    inFlight.set(key, call);
+    return call;
+  }
+
+  async function join(company: FirstRunTeamCompany): Promise<TeamActionResult> {
+    if (deps.dry) {
+      await sleep(delay);
       return { ok: true, choice: { kind: "company", how: "joined", company } };
+    }
+    if (!deps.claimInvite) return { ok: false, reason: JOIN_FAILURE };
+    const claim = await deps.claimInvite(company.slug);
+    const { inviteClaimOutcome } = await import("../../inbox/company-invite-requests.js");
+    const outcome = inviteClaimOutcome(claim, company.companyUid ?? "", []);
+    if (!outcome.ok) return { ok: false, reason: outcome.message };
+    await deps.joined?.(company.companyUid);
+    return { ok: true, choice: { kind: "company", how: "joined", company } };
+  }
+
+  async function create(name: string, slug: string): Promise<TeamActionResult> {
+    if (deps.dry) {
+      await sleep(delay);
+      return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: "cmp_dry_run", slug, name } } };
+    }
+    if (!deps.createCompany) return { ok: false, reason: CREATE_UNAVAILABLE };
+    const before = lastCreate.get(slug);
+    // The last try made it after the screen gave up waiting: keep that company.
+    if (before?.ok) return before;
+    // The last try failed or never answered: it may have made the company anyway.
+    if (before && deps.findCompany) {
+      const found = await findWithin(deps.findCompany, slug, deps.findTimeoutMs ?? FIND_COMPANY_TIMEOUT_MS);
+      if (found) return { ok: true, choice: { kind: "company", how: "existing", company: found } };
+    }
+    const result = await deps.createCompany(name, slug);
+    if (!result.ok) return { ok: false, reason: result.reason };
+    await deps.created?.(result.companyUid);
+    return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: result.companyUid, slug, name } } };
+  }
+
+  return {
+    join(company) {
+      return once(`join:${company.slug}`, () => join(company));
     },
-    async create(name) {
+    create(name) {
       const slug = companySlugFromName(name);
-      if (!slug) return { ok: false, reason: "Use at least three letters or digits, starting with a letter." };
-      if (deps.dry) {
-        await sleep(delay);
-        return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: "cmp_dry_run", slug, name } } };
-      }
-      if (!deps.createCompany) return { ok: false, reason: CREATE_UNAVAILABLE };
-      const result = await deps.createCompany(name, slug);
-      if (!result.ok) return { ok: false, reason: result.reason };
-      await deps.created?.(result.companyUid);
-      return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: result.companyUid, slug, name } } };
+      if (!slug) return Promise.resolve({ ok: false, reason: "Use at least three letters or digits, starting with a letter." });
+      return once(`create:${slug}`, async () => {
+        let result: TeamActionResult;
+        try {
+          result = await create(name, slug);
+        } catch (err) {
+          lastCreate.set(slug, { ok: false, reason: "" });
+          throw err;
+        }
+        lastCreate.set(slug, result);
+        return result;
+      });
     },
   };
 }

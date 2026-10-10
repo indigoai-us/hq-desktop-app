@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import FirstRunTakeover from "./FirstRunTakeover.svelte";
-import type { FirstRunAppsHost, FirstRunTeamHost } from "./first-run-hosts.js";
+import type { FirstRunAppsHost, FirstRunSettled, FirstRunTeamHost } from "./first-run-hosts.js";
 import type { AppCatalogResult, AppConnectResult } from "./app-step.js";
 import { TEAM_ACTION_TIMEOUT_MS, TEAM_GENERIC_FAILURE, type TeamActionResult } from "./team-step.js";
 import type { FirstRunCreation, FirstRunStepId } from "./visual-first-run.js";
@@ -64,6 +64,7 @@ function render(opts: Opts = {}) {
     ontalk: vi.fn(),
     oncontinueinchat: vi.fn(),
     onimport: vi.fn(),
+    onsettled: vi.fn((_s: FirstRunSettled) => undefined),
   };
   const teamHost: FirstRunTeamHost = {
     join: vi.fn(async (c) => ({ ok: true, choice: { kind: "company", how: "joined", company: c } }) as TeamActionResult),
@@ -196,15 +197,56 @@ describe("no way past Bring in your context before it has run", () => {
     expect(handlers.oncontinueinchat).not.toHaveBeenCalled();
   });
 
-  it("the import step shows Continue in chat, its own Skip for now and Bring it in, but no Finish before it starts", async () => {
+  it("the import step makes Bring it in the one primary button, with Skip for now as a quiet link under it, and no Finish or Continue in chat", async () => {
     render({ initialStep: "tools" });
     await settle();
     click('[data-testid="first-run-next"]');
     await waitForImport();
-    expect(q('[data-testid="first-run-import-start"]')).toBeTruthy();
-    expect(q('[data-testid="first-run-import-skip"]')).toBeTruthy();
+    const start = q<HTMLButtonElement>('[data-testid="first-run-import-start"]')!;
+    expect(start.textContent).toContain("Bring it in");
+    expect(start.classList.contains("new-bot-create-submit")).toBe(true);
+    // The primary sits alone in its row.
+    const row = start.closest(".new-bot-foot-actions")!;
+    expect(row.classList.contains("single")).toBe(true);
+    expect(row.querySelectorAll("button")).toHaveLength(1);
+    // Declining is a small text link after it, not a button beside it.
+    const skip = q<HTMLButtonElement>('[data-testid="first-run-import-skip"]')!;
+    expect(skip.textContent).toBe("Skip for now");
+    expect(skip.classList.contains("fr-link")).toBe(true);
+    expect(skip.classList.contains("new-bot-create-next")).toBe(false);
+    expect(row.contains(skip)).toBe(false);
+    expect(start.compareDocumentPosition(skip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(q('[data-testid="first-run-finish"]')).toBeNull();
+    expect(q('[data-testid="first-run-continue-in-chat"]')).toBeNull();
+  });
+
+  it("the import step keeps Continue in chat hidden while the scan runs, fails or is done", async () => {
+    const { runs } = render({ initialStep: "tools" });
+    await settle();
+    click('[data-testid="first-run-next"]');
+    await waitForImport();
+    click('[data-testid="first-run-import-start"]');
+    await settle();
+    expect(q('[data-testid="first-run-continue-in-chat"]')).toBeNull();
+    runs[0]!.end("failed");
+    await vi.waitFor(() => expect(q('[data-testid="first-run-import-failed"]')).toBeTruthy());
+    expect(q('[data-testid="first-run-continue-in-chat"]')).toBeNull();
+    // Next still moves on, and the header comes back after the import.
+    click('[data-testid="first-run-next"]');
+    await settle();
+    expect(step()).toBe("notes");
     expect(q('[data-testid="first-run-continue-in-chat"]')).toBeTruthy();
+  });
+
+  it("Skip for now, the quiet link, still moves on without scanning", async () => {
+    const { importHost } = render({ initialStep: "tools" });
+    await settle();
+    click('[data-testid="first-run-next"]');
+    await waitForImport();
+    click('[data-testid="first-run-import-skip"]');
+    await settle();
+    expect(importHost.run).not.toHaveBeenCalled();
+    expect(step()).toBe("notes");
   });
 });
 
@@ -323,7 +365,7 @@ describe("a team join or create that never answers is not a dead end", () => {
   }
 
   it("a join that answers after the timeout changes nothing and does not move the flow", async () => {
-    const { resolveLate } = await stuck("join");
+    const { resolveLate, handlers } = await stuck("join");
     await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS);
     await settle();
     expect(q('[data-testid="first-run-team-status"]')?.getAttribute("data-state")).toBe("failed");
@@ -341,5 +383,36 @@ describe("a team join or create that never answers is not a dead end", () => {
     await settle();
     expect(step()).toBe("team");
     expect(q('[data-testid="first-run-team-status"]')).toBeNull();
+    // The handoff and Done show what was picked on screen, not the late join.
+    const teams = handlers.onsettled.mock.calls.map(([settled]) => settled.team);
+    expect(teams.length).toBeGreaterThan(0);
+    expect(teams.at(-1)).toEqual({ kind: "personal" });
+    expect(JSON.stringify(teams)).not.toContain("Acme");
+    click('[data-testid="first-run-next"]');
+    await settle();
+    click('[data-testid="first-run-next"]');
+    await waitForImport();
+    click('[data-testid="first-run-import-skip"]');
+    await settle();
+    expect(step()).toBe("done");
+    expect(q('[data-testid="first-run-summary-team"]')?.textContent).toBe("Just me");
+    expect(handlers.onsettled.mock.calls.at(-1)![0].team).toEqual({ kind: "personal" });
+  });
+
+  it("closing the takeover while a join runs leaves nothing behind: no failure after 30 seconds and no warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { resolveLate, handlers } = await stuck("join");
+      const reports = handlers.onsettled.mock.calls.length;
+      await unmount(component!);
+      component = null;
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS * 2);
+      resolveLate({ ok: true, choice: { kind: "company", how: "joined", company: ACME } });
+      await settle();
+      expect(warn).not.toHaveBeenCalled();
+      expect(handlers.onsettled.mock.calls.length).toBe(reports);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
