@@ -13,6 +13,8 @@ import {
   firstRunIntro,
   firstRunKickoff,
   firstRunNextLabel,
+  firstRunBeforeImport,
+  firstRunOffersChat,
   firstRunOffersFinish,
   firstRunRoute,
   firstRunStepNumber,
@@ -122,14 +124,85 @@ describe("first-run step list", () => {
     expect(firstRunNextLabel("done", shown)).toBe("");
   });
 
-  it("offers Finish with defaults only where it would skip something", () => {
+  it("offers Finish with defaults only from the import on, and only where it would skip something", () => {
     const shown = firstRunStepsFor(ALL);
-    for (const id of ["name", "team", "tools", "context", "notes"] as const) {
+    // Before "Bring in your context" only Next moves forward (owner, 2026-10-10).
+    for (const id of ["name", "team", "tools"] as const) {
+      expect(firstRunOffersFinish(id, shown)).toBe(false);
+    }
+    for (const id of ["context", "notes"] as const) {
       expect(firstRunOffersFinish(id, shown)).toBe(true);
     }
     // Next to Done both buttons would do the same thing.
     expect(firstRunOffersFinish("projects", shown)).toBe(false);
     expect(firstRunOffersFinish("done", shown)).toBe(false);
+  });
+
+  it("a host without the import keeps Finish with defaults on the early steps", () => {
+    const shown = firstRunStepsFor({ ...ALL, canImport: false });
+    for (const id of ["name", "team", "tools", "notes"] as const) {
+      expect(firstRunOffersFinish(id, shown)).toBe(true);
+      expect(firstRunBeforeImport(id, shown)).toBe(false);
+    }
+    expect(firstRunFinishTarget({ claude: true }, shown, "name")).toBe("done");
+  });
+
+  it("knows which steps come before the import", () => {
+    const shown = firstRunStepsFor(ALL);
+    expect(["name", "team", "tools", "context", "notes", "projects", "done"].map((id) => firstRunBeforeImport(id as never, shown))).toEqual([
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it("no control on a step before the import lands past it", () => {
+    const shown = firstRunStepsFor(ALL);
+    const contextAt = shown.findIndex((s) => s.id === "context");
+    for (const from of ["name", "team", "tools"] as const) {
+      for (const ready of [{ claude: true }, { claude: false }, null]) {
+        const target = firstRunFinishTarget(ready, shown, from);
+        expect(shown.findIndex((s) => s.id === target)).toBeLessThanOrEqual(contextAt);
+      }
+      expect(firstRunFinishTarget({ claude: true }, shown, from)).toBe("context");
+      // Next goes one step at a time.
+      const next = nextFirstRunStep(from, shown)!;
+      expect(shown.findIndex((s) => s.id === next)).toBeLessThanOrEqual(contextAt);
+    }
+  });
+
+  it("Finish with defaults from the import on still lands on Done", () => {
+    const shown = firstRunStepsFor(ALL);
+    for (const from of ["context", "notes", "projects"] as const) {
+      expect(firstRunFinishTarget({ claude: true }, shown, from)).toBe("done");
+    }
+  });
+
+  it("Continue in chat shows from the import on, and never on the coding tools step", () => {
+    const shown = firstRunStepsFor(ALL);
+    for (const id of ["name", "team", "tools"] as const) {
+      expect(firstRunOffersChat(id, { claude: true }, shown)).toBe(false);
+    }
+    expect(firstRunOffersChat("name", null, shown)).toBe(false);
+    expect(firstRunOffersChat("team", { claude: false }, shown)).toBe(false);
+    // No coding tool signed in: the screen helps the person sign in instead (owner, 2026-10-10).
+    expect(firstRunOffersChat("tools", { claude: false, codex: false }, shown)).toBe(false);
+    expect(firstRunOffersChat("tools", null, shown)).toBe(false);
+    for (const id of ["context", "notes", "projects", "done"] as const) {
+      expect(firstRunOffersChat(id, { claude: true }, shown)).toBe(true);
+    }
+    const noImport = firstRunStepsFor({ ...ALL, canImport: false });
+    for (const id of ["name", "team"] as const) {
+      expect(firstRunOffersChat(id, { claude: true }, noImport)).toBe(true);
+    }
+    // On every host and in every state.
+    for (const ready of [null, { claude: false }, { claude: true }]) {
+      expect(firstRunOffersChat("tools", ready, noImport)).toBe(false);
+    }
   });
 
   it("is data-driven: bars, labels and Back follow the list", () => {
@@ -148,7 +221,10 @@ describe("first-run step list", () => {
     expect(firstRunCanLeave("team", null)).toBe(true);
     expect(firstRunCanLeave("notes", null)).toBe(true);
     expect(firstRunFinishTarget({ claude: false })).toBe("tools");
-    expect(firstRunFinishTarget({ claude: true })).toBe("done");
+    expect(firstRunFinishTarget({ claude: false }, FIRST_RUN_STEPS, "notes")).toBe("tools");
+    // From the first step the import comes first; from the import on, Done.
+    expect(firstRunFinishTarget({ claude: true })).toBe("context");
+    expect(firstRunFinishTarget({ claude: true }, FIRST_RUN_STEPS, "context")).toBe("done");
   });
 });
 

@@ -4,6 +4,8 @@ import type { Workspace } from "../workspaces.js";
 import {
   companyNameIssue,
   companySlugFromName,
+  TEAM_ACTION_TIMEOUT_MS,
+  TEAM_GENERIC_FAILURE,
   createTeamActionRunner,
   defaultTeamChoice,
   defaultTeamPick,
@@ -127,5 +129,66 @@ describe("one join or create at a time", () => {
     await vi.waitFor(() => expect(runner.current().state).toBe("failed"));
     runner.clear();
     expect(runner.current()).toEqual({ state: "idle" });
+  });
+
+  it("a join that never answers fails after 30 seconds, and its late answer is ignored", async () => {
+    vi.useFakeTimers();
+    try {
+      expect(TEAM_ACTION_TIMEOUT_MS).toBe(30_000);
+      const states: TeamActionState[] = [];
+      let resolveFirst!: (r: TeamActionResult) => void;
+      const action = vi
+        .fn<() => Promise<TeamActionResult>>()
+        .mockImplementationOnce(() => new Promise<TeamActionResult>((r) => (resolveFirst = r)))
+        .mockImplementationOnce(() => new Promise<TeamActionResult>(() => undefined));
+      const runner = createTeamActionRunner((s) => states.push(s));
+      runner.run("invite:acme", "Joining Acme…", action);
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS - 1);
+      expect(runner.current().state).toBe("running");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runner.current()).toEqual({ state: "failed", key: "invite:acme", label: "Joining Acme…", reason: TEAM_GENERIC_FAILURE });
+      // Retry runs it again; the first call's late answer then changes nothing.
+      runner.retry();
+      expect(runner.current().state).toBe("running");
+      resolveFirst({ ok: true, choice: { kind: "personal" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner.current().state).toBe("running");
+      expect(states.filter((s) => s.state === "done")).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS);
+      expect(runner.current().state).toBe("failed");
+      expect(action).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a late success after the timeout does not flip the failure", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolve!: (r: TeamActionResult) => void;
+      const runner = createTeamActionRunner(() => undefined, { timeoutMs: 1000 });
+      runner.run("create", "Starting X…", () => new Promise<TeamActionResult>((r) => (resolve = r)));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(runner.current().state).toBe("failed");
+      resolve({ ok: true, choice: { kind: "personal" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner.current().state).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an answer in time clears the timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const runner = createTeamActionRunner(() => undefined, { timeoutMs: 1000 });
+      runner.run("create", "Starting X…", async () => ({ ok: true, choice: { kind: "personal" } }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner.current().state).toBe("done");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(runner.current().state).toBe("done");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
