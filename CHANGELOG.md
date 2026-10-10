@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run: the Your coding tools screen now helps you sign in instead of offering a way out. While no coding tool is signed in it shows Claude Code and Codex, each with a one-click Sign in that opens your browser. The screen says when the sign-in is still running, notices on its own when it finishes (also when you switch back to HQ), and turns ready with Next as soon as one tool is signed in. A sign-in that does not finish says so with Try again. If Claude Desktop or the ChatGPT app is on your computer, that tool comes first and the screen tells you which account to use. If Claude Desktop is here but its Code tab has not been used yet, the screen says so and offers Open Claude, and still offers Codex. Continue in chat is no longer on this screen, because your assistant needs a signed-in coding tool to work. HQ no longer counts the ChatGPT app as Codex unless the app actually contains Codex.
 - The conflict copy card in the top right of the main window now has a close (X) button. It hides the card without opening Review and stays closed for that set of copies, including after the window reloads; the card comes back when a new conflict copy is parked. HQ also sends one macOS notification for each new set of parked copies, even when the main window is closed. It follows your notification settings, so it stays quiet when OS notifications are off or while you are looking at HQ. Clicking it opens the main window with the Review list open.
 
 ## [0.11.2] — 2026-10-10
