@@ -137,6 +137,13 @@ describe("plainBotFailure", () => {
     }
   });
 
+  it("shows the host's sentence for an older HQ that refuses numbers in a name", () => {
+    // apps/sync bots.rs DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.
+    const sentence =
+      "Names with numbers need a newer version of HQ. Pick a name without numbers, or try again after HQ updates.";
+    expect(plainBotFailure(sentence, "Could not create setup.")).toBe(sentence);
+  });
+
   it("passes a written sentence through, and keeps only its first line", () => {
     expect(plainBotFailure("Claude Code is not signed in.", "x")).toBe("Claude Code is not signed in.");
     expect(plainBotFailure("Claude Code is not signed in.\nRun the sign-in again.", "x")).toBe(

@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Your HQ assistant's name can now include numbers, like "R2D2" or "StefanTest123". It still has to start with a letter. If your HQ tools are too old for a name with numbers, HQ says so in plain words and asks you to pick another name or try again after HQ updates.
+- A company started during first-run setup now gets a handle of at most 30 characters, the limit HQ accepts. Before this, a long company name could make a handle that was too long.
+
 ## [0.11.2] — 2026-10-10
 
 - HQ keeps a channel or bot visible when it can confirm that the company or bot still exists but you cannot open its details. Retired and missing companies and bots still disappear as before.

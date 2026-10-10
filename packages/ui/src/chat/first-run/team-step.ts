@@ -134,10 +134,12 @@ export function teamSummary(choice: FirstRunTeamChoice | null): string {
 
 /**
  * The company handle the create card needs, made from the typed name the
- * way the server's rule reads it: lower case letters, digits and single
- * hyphens, starting with a letter, 3 to 40 long. Null when the name has too
- * few letters or digits to make one.
+ * way the server's rule reads it (hq-pro COMPANY_SLUG_RE): lower case
+ * letters, digits and single hyphens, starting with a letter, 3 to 30 long.
+ * Null when the name has too few letters or digits to make one.
  */
+export const COMPANY_SLUG_MAX = 30;
+
 export function companySlugFromName(name: string): string | null {
   const ascii = name
     .normalize("NFKD")
@@ -145,7 +147,7 @@ export function companySlugFromName(name: string): string | null {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^[^a-z]+/, "")
-    .slice(0, 40)
+    .slice(0, COMPANY_SLUG_MAX)
     .replace(/-+$/g, "");
   return ascii.length >= 3 ? ascii : null;
 }
