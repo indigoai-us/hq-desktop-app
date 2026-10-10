@@ -182,16 +182,16 @@ describe("first-run step list", () => {
     }
   });
 
-  it("Continue in chat shows from the import on, and before it only where the person cannot go forward", () => {
+  it("Continue in chat shows from the import on, and never on the coding tools step", () => {
     const shown = firstRunStepsFor(ALL);
     for (const id of ["name", "team", "tools"] as const) {
       expect(firstRunOffersChat(id, { claude: true }, shown)).toBe(false);
     }
     expect(firstRunOffersChat("name", null, shown)).toBe(false);
     expect(firstRunOffersChat("team", { claude: false }, shown)).toBe(false);
-    // No coding tool signed in: the flow cannot reach the import, so the way out stays.
-    expect(firstRunOffersChat("tools", { claude: false, codex: false }, shown)).toBe(true);
-    expect(firstRunOffersChat("tools", null, shown)).toBe(true);
+    // No coding tool signed in: the screen helps the person sign in instead (owner, 2026-10-10).
+    expect(firstRunOffersChat("tools", { claude: false, codex: false }, shown)).toBe(false);
+    expect(firstRunOffersChat("tools", null, shown)).toBe(false);
     for (const id of ["notes", "projects", "done"] as const) {
       expect(firstRunOffersChat(id, { claude: true }, shown)).toBe(true);
     }
@@ -201,8 +201,12 @@ describe("first-run step list", () => {
     expect(firstRunOffersChat("context", { claude: true }, shown, { importLoadFailed: false })).toBe(false);
     expect(firstRunOffersChat("context", { claude: true }, shown, { importLoadFailed: true })).toBe(true);
     const noImport = firstRunStepsFor({ ...ALL, canImport: false });
-    for (const id of ["name", "team", "tools"] as const) {
+    for (const id of ["name", "team"] as const) {
       expect(firstRunOffersChat(id, { claude: true }, noImport)).toBe(true);
+    }
+    // On every host and in every state.
+    for (const ready of [null, { claude: false }, { claude: true }]) {
+      expect(firstRunOffersChat("tools", ready, noImport)).toBe(false);
     }
   });
 

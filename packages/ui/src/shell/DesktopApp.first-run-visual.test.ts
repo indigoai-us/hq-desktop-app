@@ -43,6 +43,8 @@ interface AdapterOptions {
   /** `desktop.visual-first-run`; undefined leaves `hasFeature` answering false for it. */
   flag?: boolean;
   claudeLoggedIn?: boolean;
+  /** Answer `agent_session_preflight` this way instead. */
+  preflightImpl?: () => Promise<unknown>;
 }
 
 function adapter({
@@ -52,6 +54,7 @@ function adapter({
   bots = [],
   hasFeatureImpl,
   setupStatusImpl,
+  preflightImpl,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
     hasFeatureImpl ?? (async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false)),
@@ -79,7 +82,7 @@ function adapter({
       detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
     },
     sessions: {
-      preflight: async () =>
+      preflight: preflightImpl ?? (async () =>
         ok({
           claudeAvailable: true,
           claudeLoggedIn,
@@ -87,7 +90,7 @@ function adapter({
           codexLoggedIn: false,
           grokAvailable: false,
           grokLoggedIn: false,
-        }),
+        })),
     },
     bots: {
       list: async () => ok({ bots }),
@@ -338,6 +341,37 @@ describe("visual first run, flag on", () => {
     expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
     expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("waiting");
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it("a readiness check that fails does not strand the tools step: each row offers Try again, which recovers", async () => {
+    let fail = true;
+    const preflightImpl = vi.fn(async () =>
+      fail
+        ? { ok: false as const, reason: "error", message: "Setup lookup timed out. Please retry." }
+        : ok({
+            claudeAvailable: true,
+            claudeLoggedIn: true,
+            codexAvailable: false,
+            codexLoggedIn: false,
+            grokAvailable: false,
+            grokLoggedIn: false,
+            claudeStatus: { state: "signedIn" },
+            codexStatus: { state: "notInstalled", searched: [] },
+          }),
+    );
+    const { platform } = adapter({ flag: true, preflightImpl });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+    await settle();
+    expect(step()).toBe("tools");
+    await vi.waitFor(() => expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("recheck"));
+    expect(q('[data-testid="first-run-continue-in-chat"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("timed out");
+    fail = false;
+    q<HTMLButtonElement>('[data-testid="first-run-tool-claude-recheck"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false));
+    expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
   });
 
   it("Continue in chat leaves for #welcome, starts nothing by itself, and the takeover never opens again", async () => {

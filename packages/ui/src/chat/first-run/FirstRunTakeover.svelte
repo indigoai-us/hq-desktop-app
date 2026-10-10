@@ -22,6 +22,12 @@
    * and Project management (`appsHost`) for the company picked there; a
    * connect never holds Next. What they settle goes to the host
    * (`onsettled`) for the setup bot's handoff.
+   *
+   * Your coding tools is required (owner, 2026-10-10): the assistant runs on
+   * a signed-in coding tool, so the screen has no Continue in chat. While no
+   * tool is signed in it shows one Sign in per tool (FirstRunToolsSignIn),
+   * leading with the tool whose desktop app is here, and reads readiness
+   * again when a sign-in ends and when the window comes back into focus.
    */
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import LazyDoor from "../../shell/LazyDoor.svelte";
@@ -80,6 +86,8 @@
   import FirstRunTeamStep from "./FirstRunTeamStep.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   import FirstRunAppStep from "./FirstRunAppStep.svelte";
+  import FirstRunToolsSignIn from "./FirstRunToolsSignIn.svelte";
+  import { preferredSignInTool, toolRowKinds, toolsSignInLead, type SignInTool } from "./tools-signin.js";
   import {
     TEAM_COPY,
     companyNameIssue,
@@ -125,6 +133,10 @@
     signInApi?: RuntimeSignInApi | null;
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     onrecheck?: (() => void | Promise<void>) | null;
+    /** Test seam: how long opening a sign-in may take before it fails. */
+    signInOpenTimeoutMs?: number;
+    /** Test seam: how long a tool may read "Checking…" before Check again shows. */
+    toolCheckingStaleMs?: number;
     aiTools?: AiTools | null;
     hqFolderPath?: string;
     onopenassistant?: (assistant: AssistantId, url: string) => Promise<InstallOutcome>;
@@ -143,7 +155,7 @@
     onretry: () => void;
     /** Done: open the assistant's chat. */
     ontalk: () => void | Promise<void>;
-    /** Leave for the setup chat (every screen, and the failure line). */
+    /** Leave for the setup chat (every screen but Your coding tools, and the failure line). */
     oncontinueinchat: () => void | Promise<void>;
     /**
      * Runs the context scan on this computer. Without it the flow has no
@@ -172,6 +184,8 @@
     signInApi = null,
     onsignedin = null,
     onrecheck = null,
+    signInOpenTimeoutMs = undefined,
+    toolCheckingStaleMs = undefined,
     aiTools = null,
     hqFolderPath = "",
     onopenassistant,
@@ -401,17 +415,67 @@
       : (SETUP_BOT_RUNTIME_ORDER.find((runtime) => runtimeReady?.[runtime] === true) ?? null),
   );
 
-  // A tool signed in later: the picked card follows to a ready one, so the
-  // assistant thinks with what the person sees picked.
+  // ── Your coding tools ──────────────────────────────────────────────────
+  /** What each tool's Sign in row offers (Claude Code and Codex). */
+  const toolKinds = $derived(toolRowKinds(runtimeStatus, runtimeReady, aiTools));
+  /** The tool the screen leads with: the one whose desktop app is here. */
+  const preferredTool = $derived<SignInTool>(preferredSignInTool(toolKinds, aiTools));
+  /** The person picked a tool (a card, or a Sign in): the pick is theirs now. */
+  let runtimePicked = false;
+  /**
+   * The tool the pick moves to while the person has not chosen: the
+   * preferred tool when it is signed in (or none is), else the first signed
+   * in one.
+   */
+  const autoRuntime = $derived<BotRuntime>(
+    !anyToolReady(runtimeReady) || runtimeReady?.[preferredTool] === true
+      ? preferredTool
+      : (SETUP_BOT_RUNTIME_ORDER.find((runtime) => runtimeReady?.[runtime] === true) ?? preferredTool),
+  );
+  // Preselect the preferred tool, and follow a tool signed in later, so the
+  // assistant thinks with what the person sees picked. A pick the person made
+  // stays unless it is not signed in and another one is.
   $effect(() => {
-    const current = untrack(() => draft.runtime);
-    if (runtimeReady?.[current] === true) return;
-    const first = SETUP_BOT_RUNTIME_ORDER.find((runtime) => runtimeReady?.[runtime] === true);
-    if (first && first !== current) {
-      draft = { ...untrack(() => draft), runtime: first };
-      onruntime?.(first);
-    }
+    const target = autoRuntime;
+    untrack(() => {
+      const current = draft.runtime;
+      if (runtimePicked && (runtimeReady?.[current] === true || !anyToolReady(runtimeReady))) return;
+      if (!runtimePicked || runtimeReady?.[target] === true) {
+        if (target !== current) {
+          draft = { ...draft, runtime: target };
+          onruntime?.(target);
+        }
+      }
+    });
   });
+  /** What the tools step asks the one live region to say (a sign-in's state). */
+  let toolsAnnouncement = $state("");
+  onMount(() => {
+    // The rows lead with a desktop app's tool, so ask which apps are here.
+    if (untrack(() => aiTools) == null) onrequestaitools?.();
+  });
+  let focusRecheck = false;
+  /**
+   * Back from the browser or a desktop app: read readiness (and the desktop
+   * apps) again, so a sign-in finished elsewhere shows at once.
+   */
+  async function recheckOnFocus(): Promise<void> {
+    if (step !== "tools" || ready || focusRecheck) return;
+    focusRecheck = true;
+    try {
+      onrequestaitools?.();
+      await onrecheck?.();
+    } finally {
+      focusRecheck = false;
+    }
+  }
+  function pickTool(tool: SignInTool): void {
+    runtimePicked = true;
+    if (draft.runtime !== tool) {
+      draft = { ...draft, runtime: tool };
+      onruntime?.(tool);
+    }
+  }
 
   // ── Bring in your context ──────────────────────────────────────────────
   /** The context scene's clock, started the first time the step opens. */
@@ -591,6 +655,7 @@
   }
 
   function patchDraft(patch: Partial<CreateBotDraft>): void {
+    if (patch.runtime) runtimePicked = true;
     draft = { ...draft, ...patch };
     if (patch.runtime) onruntime?.(patch.runtime);
   }
@@ -608,7 +673,8 @@
 
   function onKeydown(event: KeyboardEvent): void {
     // Escape does not leave a first run by accident: the header's
-    // "Continue in chat" is the way out.
+    // "Continue in chat" is the way out, and on Your coding tools there is
+    // none (a signed-in tool is required).
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -624,6 +690,8 @@
   const announcement = $derived(
     step === "context" && importAnnouncement
       ? importAnnouncement
+      : step === "tools" && toolsAnnouncement && !ready
+      ? toolsAnnouncement
       : step === "team" && teamAction.state === "running"
       ? teamAction.label
       : step === "team" && teamAction.state === "failed"
@@ -657,7 +725,7 @@
         (step === "name" && locked
           ? card.querySelector<HTMLElement>('[data-testid="new-bot-continue-name"]')
           : card.querySelector<HTMLElement>(
-              'input:not([disabled]), button[role=radio][aria-checked=true]:not([disabled]), [data-testid="first-run-import-start"]:not([disabled]), [data-testid="first-run-next"]:not([disabled]), [data-testid="first-run-talk"]:not([disabled])',
+              'input:not([disabled]), button[role=radio][aria-checked=true]:not([disabled]), .first-run-tool-action.primary:not([disabled]), [data-testid="first-run-import-start"]:not([disabled]), [data-testid="first-run-next"]:not([disabled]), [data-testid="first-run-talk"]:not([disabled])',
             )) ?? card;
       target.focus();
     });
@@ -697,7 +765,7 @@
   );
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onfocus={() => void recheckOnFocus()} />
 
 <div
   class="new-bot-takeover chat-shell"
@@ -830,10 +898,34 @@
                 onconnect={(app) => connectApp(appKind, app)}
                 onreload={() => loadCatalog(appKind)}
               />
+            {:else if step === "tools" && !ready}
+            <p class="new-bot-create-copy" data-testid="first-run-tools-lead">{toolsSignInLead(shownName, hostNoun, preferredTool, toolKinds, aiTools)}</p>
             {:else}
             <p class="new-bot-create-copy">{title.copy}</p>
             {/if}
-            {#if step === "tools"}
+            {#if step === "tools" && !ready}
+              <FirstRunToolsSignIn
+                kinds={toolKinds}
+                preferred={preferredTool}
+                noun={hostNoun}
+                {signInApi}
+                {pollMs}
+                openTimeoutMs={signInOpenTimeoutMs}
+                checkingStaleMs={toolCheckingStaleMs}
+                {hqFolderPath}
+                onpick={pickTool}
+                onsignedin={async (tool) => {
+                  await (onsignedin ? onsignedin(tool) : onrecheck?.());
+                }}
+                onrecheck={async () => {
+                  onrequestaitools?.();
+                  await onrecheck?.();
+                }}
+                {onopenassistant}
+                {onassistedinstall}
+                onannounce={(text) => (toolsAnnouncement = text)}
+              />
+            {:else if step === "tools"}
               <HomeStep
                 runtimeOnly
                 {draft}
