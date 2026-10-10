@@ -163,7 +163,9 @@
 .daily-brief .b-grid {
   display: grid;
   gap: var(--b-gap);
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  /* Cards keep a readable width; below ~1250px the page scrolls sideways instead of crushing text. */
+  grid-template-columns: repeat(6, minmax(190px, 1fr));
+  min-width: 1180px;
   grid-template-rows: repeat(3, minmax(196px, auto));
   margin-top: 14px;
 }
