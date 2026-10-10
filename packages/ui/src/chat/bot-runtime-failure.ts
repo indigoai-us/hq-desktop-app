@@ -14,6 +14,7 @@
  */
 
 import type { LocalBotRow } from "@hq/platform";
+import { repairPayloadForMessage } from "./messaging/runtime-repair-model.js";
 
 const RUNTIME_LABELS: Record<string, string> = {
   claude: "Claude Code",
@@ -37,6 +38,14 @@ const CLI_FAILURE_REPLY =
 /** The runtime's error says the tool is not on this computer at all. */
 const RUNTIME_MISSING =
   /not installed|not on PATH|command not found|ENOENT|no such file or directory|could not find (?:the )?(?:claude|codex|grok)/i;
+
+/**
+ * The runtime's error says its login is missing or dead. Only this sends the
+ * person to sign in: a reply that blamed sign-in for every failure sent the
+ * owner to sign in to a Codex that was signed in and only too old.
+ */
+const RUNTIME_SIGNED_OUT =
+  /not (?:logged|signed) in|(?:log|sign)\s?in again|please (?:run .{0,40})?(?:log|sign)\s?in|unauthori[sz]ed|\b401\b|authentication (?:failed|required|error)|invalid api key|(?:token|session|login|credentials?) (?:has )?expired/i;
 
 export interface PlainBotFailureReply {
   /** The sentence shown in place of the CLI's reply. */
@@ -66,24 +75,35 @@ export function plainBotFailureReply(
       runtimeMissing: true,
     };
   }
+  if (RUNTIME_SIGNED_OUT.test(detail)) {
+    return {
+      body: `I couldn't answer because ${label} is signed out on this ${noun}. Sign in, then send your message again.`,
+      runtimeMissing: false,
+    };
+  }
+  // Anything else (busy, too old, a model it cannot run, a crash) is not a
+  // sign-in problem, so the sentence does not send the person to sign in.
   return {
-    body: `I couldn't answer that one. Try again in a bit, or check that ${label} is signed in on this ${noun}.`,
+    body: `I couldn't answer that one because ${label} ran into a problem. Try again in a bit.`,
     runtimeMissing: false,
   };
 }
 
 /**
  * Replace hq-cli failure replies from bots (`agt_` senders) with their plain
- * sentence. Returns the same array when nothing changed, so a derived
- * timeline does not re-render for no reason.
+ * sentence. A reply that carries a runtime repair block is the bot's own
+ * plain text with the class it knows, so it is kept as written (and draws as
+ * a repair card in a local bot's DM). Returns the same array when nothing
+ * changed, so a derived timeline does not re-render for no reason.
  */
 export function withPlainBotFailureReplies<
-  T extends { fromPersonUid?: string | null; body?: string | null },
+  T extends { fromPersonUid?: string | null; body?: string | null; richContent?: unknown },
 >(messages: T[], opts: { noun?: string } = {}): T[] {
   let changed = false;
   const next = messages.map((message) => {
     const from = (message.fromPersonUid ?? "").trim();
     if (!from.startsWith("agt_")) return message;
+    if (repairPayloadForMessage(message)) return message;
     const plain = plainBotFailureReply(message.body, opts);
     if (!plain) return message;
     changed = true;

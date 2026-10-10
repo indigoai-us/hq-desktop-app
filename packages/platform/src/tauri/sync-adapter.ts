@@ -115,6 +115,14 @@ export const RECORDED_DETAIL_TIMEOUT_SECS = 45;
  */
 export const COMPANY_INTEGRATIONS_TIMEOUT_SECS = 45;
 
+/**
+ * POST /v1/agents/{uid}/login-code types the Claude code on the bot's machine
+ * and waits up to 20 s for Claude's answer, plus SSM pickup, before it replies.
+ * The shared 15 s bound cut that wait off, so a code that went through could
+ * read as a failure. The paste-back asks for a longer bound.
+ */
+export const CLAUDE_LOGIN_CODE_TIMEOUT_SECS = 45;
+
 const NOT_MAPPED = unavailable(
   'not-yet-mapped',
   'This capability is not yet mapped on the Sync host.',
@@ -1259,8 +1267,18 @@ export function createSyncPlatformAdapter(
         hqProRequestWithStatus('GET', AGENT_PATHS.status(agentUid, brain)),
       restartBrainApproval: (agentUid, brain) =>
         hqProJson('POST', AGENT_PATHS.reauth(agentUid), { brain }),
-      submitClaudeLoginCode: (agentUid, code) =>
-        hqProJson('POST', AGENT_PATHS.loginCode(agentUid), { code }),
+      // A refusal keeps its HTTP status: the New Bot screen tells a code the
+      // server turned down (4xx) from one whose fate is not known (5xx).
+      submitClaudeLoginCode: async (agentUid, code) => {
+        const attempted = await hqProAttemptWithRetries<Json>(
+          'POST',
+          AGENT_PATHS.loginCode(agentUid),
+          { code },
+          CLAUDE_LOGIN_CODE_TIMEOUT_SECS,
+        );
+        if (!attempted.result.ok && attempted.result.code === 'network') return attempted.result;
+        return withHttpStatus(attempted.result, attempted.status);
+      },
       attachSlack: (agentUid) =>
         hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
       // The token goes in the body only. The path names the bot, nothing else.
@@ -1717,6 +1735,8 @@ export function createSyncPlatformAdapter(
       stop: (name) => call('local_bots_stop', { name }),
       remove: (name) => call('local_bots_remove', { name }),
       configure: (name, settings) => call('local_bots_configure', localBotSettingsArgs(name, settings)),
+      setModel: (name, model) => call('local_bots_set_model', { name, model }),
+      probe: (runtime, model) => call('local_bots_probe', { runtime, model: model ?? null }),
     promote: (name, companyUid) => call("local_bots_promote", { name, companyUid }),
       // Bots come back after a reinstall: the cloud knows every local bot this
       // account owns, and `here` says which of them this computer can run.

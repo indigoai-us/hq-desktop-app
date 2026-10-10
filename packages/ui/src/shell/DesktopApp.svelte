@@ -305,7 +305,7 @@
   } from "../chat/first-run/visual-first-run.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
-  import { teamOptionsFrom } from "../chat/first-run/team-step.js";
+  import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
   import {
     createFirstRunAppsHost,
     createFirstRunTeamHost,
@@ -796,7 +796,9 @@
     botNeedsSignIn,
     restartBotsNeedingSignIn,
     runtimesNeedingSignIn,
+    signInAgain,
   } from "../chat/runtime-sign-in-again.js";
+  import { RuntimeRepairController } from "../chat/messaging/runtime-repair.svelte.js";
   import type {
     BotRestoreResult,
     LocalBotCreateInput,
@@ -3543,6 +3545,11 @@
             createCompanyRequested = true;
             void onrefreshroster?.();
           },
+          findCompany: async (slug) => {
+            await onrefreshroster?.();
+            await svelteTick();
+            return activeCloudCompanyBySlug(companies ?? [], slug);
+          },
         })
       : null,
   );
@@ -3747,6 +3754,68 @@
     await loadLocalBotRuntimeReady();
   }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
+  /**
+   * Runtime repair cards in a local bot's DM (runtime-repair-model.ts). One
+   * controller for the window, so a card keeps its state when it scrolls
+   * away or its conversation is left and opened again. Each button runs the
+   * real fix through the host, and only a passing `hq bot probe` turns the
+   * card to "You're all set".
+   */
+  const runtimeRepairController = new RuntimeRepairController({
+    // The tool's own browser sign-in, then a restart of the bots paused on it
+    // so the one that asked picks the person's message up again.
+    signIn: async (runtime) => {
+      const sessions = adapter.sessions;
+      if (!sessions) return false;
+      const result = await signInAgain(runtime, {
+        sessions,
+        bots: adapter.bots ?? null,
+        gate: {
+          canStart: (bot) => canStartBot(botStartGate, bot.name),
+          onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
+        },
+      });
+      if (!result.ok) console.warn("[runtime-repair] sign-in did not finish", result.reason);
+      return result.ok;
+    },
+    // The app's own install path (install_session_provider): the latest
+    // release into HQ's managed toolchain, no admin password.
+    update: async (runtime) => {
+      const install = adapter.sessions?.installProvider;
+      if (!install) return false;
+      const result = await install(runtime as SessionProviderId);
+      if (!result.ok) console.warn("[runtime-repair] update failed", result.message);
+      return result.ok;
+    },
+    canUpdate: () => Boolean(adapter.sessions?.installProvider),
+    botModel: (botName) => localBots.find((bot) => bot.name === botName)?.model ?? null,
+    setModel: async (botName, model) => {
+      const set = adapter.bots?.setModel;
+      if (!set) return false;
+      const result = await set(botName, model);
+      if (!result.ok) console.warn("[runtime-repair] set-model failed", result.message);
+      return result.ok;
+    },
+    probe: async (runtime, model) => {
+      const probe = adapter.bots?.probe;
+      if (!probe) return { ok: false };
+      const result = await probe(runtime as SessionProviderId, model ?? null);
+      if (!result.ok) {
+        console.warn("[runtime-repair] probe could not run", result.message);
+        return { ok: false };
+      }
+      return result.value;
+    },
+    onfixed: () => refreshLocalBots(),
+  });
+  /** The repair host for the open DM: only a local bot's DM draws repair cards. */
+  const selectedRuntimeRepair = $derived.by(() => {
+    const bot = selectedLocalBot;
+    if (!bot || selectedRow?.kind !== "dm") return null;
+    const botName =
+      (bot.displayName ?? "").trim() || (botDisplayNames[bot.agentUid] ?? "").trim() || bot.name;
+    return { botUid: bot.agentUid, botName, controller: runtimeRepairController };
+  });
   /**
    * The setup bot's DM, once the bot has marked setup finished and the person
    * has not written since: show the finish card. A follow-up puts it away.
@@ -15005,6 +15074,7 @@
                   belowMessages={agentThinkingBelow}
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
+                  runtimeRepair={selectedRuntimeRepair}
                   extraBlocksByEventId={cloudBotExtraCards}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}

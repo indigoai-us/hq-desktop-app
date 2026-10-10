@@ -23,10 +23,13 @@ async function flush(): Promise<void> {
   flushSync();
 }
 
-function mountStep(oncomplete = vi.fn()): ReturnType<typeof vi.fn> {
+function mountStep(
+  oncomplete = vi.fn(),
+  company: string | null = 'acme',
+): ReturnType<typeof vi.fn> {
   component = mount(ConnectorImportStep, {
     target: host,
-    props: { oncomplete },
+    props: { company, oncomplete },
   });
   return oncomplete;
 }
@@ -57,7 +60,7 @@ describe('ConnectorImportStep', () => {
     const onTelemetry = vi.fn();
     component = mount(ConnectorImportStep, {
       target: host,
-      props: { oncomplete: vi.fn(), onTelemetry },
+      props: { company: 'acme', oncomplete: vi.fn(), onTelemetry },
     });
 
     await flush();
@@ -105,30 +108,109 @@ describe('ConnectorImportStep', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
     await flush();
 
-    expect(tauri.invoke).toHaveBeenCalledWith('import_claude_desktop_connectors');
+    expect(tauri.invoke).toHaveBeenCalledWith('import_claude_desktop_connectors', {
+      company: 'acme',
+    });
     expect(host.querySelector('[data-testid="connector-import-success"]')?.textContent).toContain(
       'available in HQ integrations',
     );
   });
 
-  it('keeps completion available when import fails', async () => {
+  it('shows a plain failure with Try again and Skip for now, and no command text', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       if (command === 'detect_claude_desktop_connectors') {
         return { present: true, count: 1, path: '/config' };
       }
-      return { ok: false, message: 'CLI failure' };
+      return {
+        ok: false,
+        message: 'hq: No active company memberships found. Use --company <slug> to specify.',
+        errorCategory: 'exit-nonzero',
+      };
+    });
+    const oncomplete = vi.fn();
+    const onTelemetry = vi.fn();
+    component = mount(ConnectorImportStep, {
+      target: host,
+      props: { company: 'acme', oncomplete, onTelemetry },
+    });
+    await flush();
+
+    host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
+    await flush();
+
+    const failure = host.querySelector('[data-testid="connector-import-failure"]');
+    expect(failure?.textContent).toContain("We couldn't bring in your Claude Desktop connectors.");
+    expect(host.querySelector('[data-testid="connector-import-retry"]')?.textContent).toContain(
+      'Try again',
+    );
+    expect(host.querySelector('[data-testid="connector-import-skip"]')?.textContent).toContain(
+      'Skip for now',
+    );
+    expect(host.querySelector('[data-testid="connector-import-continue"]')).toBeNull();
+    expect(host.querySelector('code')).toBeNull();
+    const text = host.textContent ?? '';
+    expect(text).not.toMatch(/\bhq /);
+    expect(text).not.toContain('--company');
+    expect(text).not.toContain('memberships');
+    expect(text).not.toMatch(/[\u2013\u2014]/);
+
+    host.querySelector<HTMLButtonElement>('[data-testid="connector-import-skip"]')?.click();
+    expect(oncomplete).toHaveBeenCalledOnce();
+    expect(onTelemetry).toHaveBeenLastCalledWith({
+      action: 'skipped',
+      detectedToolCount: 1,
+      detectedSourceSet: undefined,
+      outcome: 'skipped_after_failure',
+    });
+  });
+
+  it('runs the import again from Try again and reaches success', async () => {
+    let attempts = 0;
+    tauri.invoke.mockImplementation(async (command: string) => {
+      if (command === 'detect_claude_desktop_connectors') {
+        return { present: true, count: 1, path: '/config' };
+      }
+      attempts += 1;
+      return attempts === 1
+        ? { ok: false, message: 'temporary', errorCategory: 'exit-nonzero' }
+        : { ok: true, message: 'Imported connector.' };
     });
     const oncomplete = mountStep();
     await flush();
 
     host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
     await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="connector-import-retry"]')?.click();
+    await flush();
 
-    expect(host.querySelector('[data-testid="connector-import-failure"]')?.textContent).toContain(
-      'hq integrations import',
-    );
-    host.querySelector<HTMLButtonElement>('[data-testid="connector-import-continue"]')?.click();
+    expect(attempts).toBe(2);
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'import_claude_desktop_connectors'),
+    ).toEqual([
+      ['import_claude_desktop_connectors', { company: 'acme' }],
+      ['import_claude_desktop_connectors', { company: 'acme' }],
+    ]);
+    expect(host.querySelector('[data-testid="connector-import-success"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="connector-import-failure"]')).toBeNull();
+    expect(oncomplete).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a Personal setup: no detection, no import, no screen', async () => {
+    tauri.invoke.mockResolvedValue({ present: true, count: 3, path: '/config' });
+    const onTelemetry = vi.fn();
+    const oncomplete = vi.fn();
+    component = mount(ConnectorImportStep, {
+      target: host,
+      props: { company: null, oncomplete, onTelemetry },
+    });
+    await flush();
+
     expect(oncomplete).toHaveBeenCalledOnce();
+    expect(tauri.invoke).not.toHaveBeenCalled();
+    expect(onTelemetry).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="connector-import-offer"]')).toBeNull();
+    expect(host.querySelector('[data-testid="connector-import-failure"]')).toBeNull();
+    expect(host.textContent?.trim()).toBe('');
   });
 
   it('reports an import failure with its bounded category and never the importer message', async () => {
@@ -150,7 +232,7 @@ describe('ConnectorImportStep', () => {
     const onTelemetry = vi.fn();
     component = mount(ConnectorImportStep, {
       target: host,
-      props: { oncomplete: vi.fn(), onTelemetry },
+      props: { company: 'acme', oncomplete: vi.fn(), onTelemetry },
     });
     await flush();
 
