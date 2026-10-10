@@ -802,4 +802,30 @@ describe("the visual first run's notes to the setup assistant", () => {
     expect(isAppRequestRow({ eventId: "s", fromPersonUid: ME, body: "What was the setup note from the HQ desktop app?" }, { selfUid: ME })).toBe(false);
     expect(isAppRequestRow({ eventId: "local-send-1", fromPersonUid: ME, body: settled }, { selfUid: ME })).toBe(false);
   });
+
+  it("shows a message the person typed that quotes the handoff JSON further in", () => {
+    const json = settled.match(/Handoff from the app: (\{.*?\})\. /)![1]!;
+    const typed = `I saw this in the chat, what is it? Handoff from the app: ${json}. Is that normal?`;
+    const row = { eventId: "q1", fromPersonUid: ME, body: typed, createdAt: at(6) };
+    expect(isAppRequestRow(row, { selfUid: ME })).toBe(false);
+    expect(messagesForDisplay({ messages: [row] }, { inlineReplies: true, selfUid: ME }).map((r) => r.eventId)).toEqual(["q1"]);
+  });
+
+  it("shows a message the person typed that opens with the note's lead but carries no handoff", () => {
+    const typed = "Setup note from the HQ desktop app: I want to redo the team step.";
+    const row = { eventId: "q2", fromPersonUid: ME, body: typed, createdAt: at(6) };
+    expect(isAppRequestRow(row, { selfUid: ME })).toBe(false);
+    expect(messagesForDisplay({ messages: [row] }, { inlineReplies: true, selfUid: ME }).map((r) => r.eventId)).toEqual(["q2"]);
+  });
+
+  it("still hides every note the three first-run builders write", () => {
+    const withTeamAndApps = firstRunSettledNotice({
+      imported: { summary: { projects: 2 }, report: "workspace/imports/s1/report.json" },
+      team: { kind: "company", how: "joined", name: "Acme", slug: "acme" },
+      apps: { notes: { name: "Granola", domain: "granola.ai" }, projects: null },
+    })!;
+    for (const body of [settled, withTeamAndApps, handoff, imported]) {
+      expect(isAppRequestRow({ eventId: "n", fromPersonUid: ME, body }, { selfUid: ME })).toBe(true);
+    }
+  });
 });

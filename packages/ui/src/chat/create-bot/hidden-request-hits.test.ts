@@ -96,9 +96,9 @@ describe("the visual first run's notes to the setup assistant", () => {
     expect(isHiddenRequestHit(hit({ body: settled, counterpartyUid: "agt_setup" }))).toBe(true);
     expect(isHiddenRequestHit(hit({ body: settled, fromPersonUid: "prs_ada" }), "prs_ada")).toBe(true);
     expect(isHiddenRequestHit(hit({ body: settled, direction: "out" }), "prs_ada")).toBe(true);
-    // A snippet cut from the middle still carries the handoff.
+    // The full body decides when the snippet is cut from the middle.
     const snippet = settled.slice(settled.indexOf("Handoff from the app:"));
-    expect(isHiddenRequestHit(hit({ body: "", snippet, counterpartyUid: "agt_setup" }))).toBe(true);
+    expect(isHiddenRequestHit(hit({ body: settled, snippet, counterpartyUid: "agt_setup" }))).toBe(true);
   });
 
   it("are kept when the bot or another person wrote them", () => {

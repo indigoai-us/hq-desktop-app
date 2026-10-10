@@ -440,8 +440,8 @@ function isAgentUid(uid: string): boolean {
  *   the server says it is for the person: a message the person typed
  *   themselves, even one that starts with the app's opening words.
  * - A row with no audience at all is one only when it is one of the app's
- *   notices (the hello request, a connection notice, a first-run setup note
- *   or anything carrying the first-run handoff, `isAppNoticeBody`) AND the
+ *   notices (the hello request, a connection notice, or a first-run setup
+ *   note: its lead and its handoff JSON, `isAppNoticeBody`) AND the
  *   person sent it AND it is not a message on its way
  *   out (`local-send-`). That is a copy of the request from the host's stored
  *   thread, which does not keep the lane. With `selfUid` the sender must be

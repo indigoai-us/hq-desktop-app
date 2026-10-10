@@ -121,14 +121,16 @@ export const FIRST_RUN_HANDOFF_MARKER = "Handoff from the app:";
 
 /**
  * Whether a body is one of the app's own messages to a bot: the hello
- * request, a connection notice, or a first-run note or kickoff carrying the
- * setup handoff. Says nothing about who sent it; callers decide that.
+ * request, a connection notice, or a first-run note. A first-run note must
+ * open with its lead AND carry the handoff JSON after the marker, so a
+ * message the person typed that only opens with the lead, or quotes the
+ * handoff further in, is not one. Says nothing about who sent it; callers
+ * decide that.
  */
 export function isAppNoticeBody(body: string | null | undefined): boolean {
   const text = body ?? "";
   if (text.startsWith(AGENT_HELLO_REQUEST_LEAD)) return true;
-  if (text.startsWith(FIRST_RUN_NOTE_LEAD)) return true;
-  return text.includes(`${FIRST_RUN_HANDOFF_MARKER} {"from":"desktop-visual-first-run"`);
+  return text.startsWith(FIRST_RUN_NOTE_LEAD) && text.includes(`${FIRST_RUN_HANDOFF_MARKER} {"from":"desktop-visual-first-run"`);
 }
 
 /** How the hello request opens. Tells it apart from the app's later notices. */
