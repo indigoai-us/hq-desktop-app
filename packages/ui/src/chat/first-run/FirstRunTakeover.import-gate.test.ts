@@ -14,7 +14,7 @@ import { mount, tick, unmount } from "svelte";
 import FirstRunTakeover from "./FirstRunTakeover.svelte";
 import type { FirstRunAppsHost, FirstRunTeamHost } from "./first-run-hosts.js";
 import type { AppCatalogResult, AppConnectResult } from "./app-step.js";
-import type { TeamActionResult } from "./team-step.js";
+import { TEAM_ACTION_TIMEOUT_MS, TEAM_GENERIC_FAILURE, type TeamActionResult } from "./team-step.js";
 import type { FirstRunCreation, FirstRunStepId } from "./visual-first-run.js";
 import type { ImportScanEnd, ImportScanHost } from "./knowledge-tree/import-runner.js";
 
@@ -260,5 +260,85 @@ describe("from the import on", () => {
     click('[data-testid="first-run-next"]');
     await settle();
     expect(step()).toBe("notes");
+  });
+});
+
+describe("a team join or create that never answers is not a dead end", () => {
+  async function stuck(kind: "join" | "create") {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let resolveLate!: (r: TeamActionResult) => void;
+    const never = vi.fn(() => new Promise<TeamActionResult>((r) => (resolveLate = r)));
+    const r = render({ initialStep: "team", team: kind === "join" ? { join: never } : { create: never } });
+    await settle();
+    if (kind === "join") {
+      click('[data-testid="first-run-team-invite:acme-robotics"]');
+    } else {
+      click('[data-testid="first-run-team-create"]');
+      await settle();
+      const field = q<HTMLInputElement>('[data-testid="first-run-company-name"]')!;
+      field.value = "Pickle Works";
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await settle();
+    click('[data-testid="first-run-next"]');
+    await settle();
+    expect(never).toHaveBeenCalledTimes(1);
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
+    return { ...r, never, resolveLate: (v: TeamActionResult) => resolveLate(v) };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  for (const kind of ["join", "create"] as const) {
+    it(`a ${kind} still running after 30 seconds shows the failure line with Retry, and another card moves on`, async () => {
+      const { never } = await stuck(kind);
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS - 1);
+      await settle();
+      expect(q('[data-testid="first-run-team-status"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      await settle();
+      const line = q('[data-testid="first-run-team-status"]');
+      expect(line?.getAttribute("data-state")).toBe("failed");
+      expect(line?.textContent).toContain(TEAM_GENERIC_FAILURE);
+      expect(q('[data-testid="first-run-team-retry"]')).toBeTruthy();
+      // Still no way past the import.
+      expect(skipAheadControls()).toEqual([]);
+      // Retry runs it again.
+      click('[data-testid="first-run-team-retry"]');
+      await settle();
+      expect(never).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS);
+      await settle();
+      expect(q('[data-testid="first-run-team-status"]')?.getAttribute("data-state")).toBe("failed");
+      // Another card and Next move on, to the coding tools step, not past the import.
+      click('[data-testid="first-run-team-personal"]');
+      await settle();
+      click('[data-testid="first-run-next"]');
+      await settle();
+      expect(step()).toBe("tools");
+    });
+  }
+
+  it("a join that answers after the timeout changes nothing and does not move the flow", async () => {
+    const { resolveLate } = await stuck("join");
+    await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS);
+    await settle();
+    expect(q('[data-testid="first-run-team-status"]')?.getAttribute("data-state")).toBe("failed");
+    resolveLate({ ok: true, choice: { kind: "company", how: "joined", company: ACME } });
+    await settle();
+    expect(step()).toBe("team");
+    expect(q('[data-testid="first-run-team-status"]')?.getAttribute("data-state")).toBe("failed");
+    // The person moves on with Just me; the summary keeps that choice.
+    click('[data-testid="first-run-team-personal"]');
+    await settle();
+    click('[data-testid="first-run-next"]');
+    await settle();
+    expect(step()).toBe("tools");
+    click('[data-testid="first-run-back"]');
+    await settle();
+    expect(step()).toBe("team");
+    expect(q('[data-testid="first-run-team-status"]')).toBeNull();
   });
 });
