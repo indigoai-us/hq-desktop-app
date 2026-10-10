@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run no longer stops on "Couldn't import" for people who set up HQ for themselves without a company. The Claude Desktop connector import now only appears after you create, join or pick a company, and it imports into that company. If an import fails, the screen says so in plain words and offers Try again and Skip for now.
+
 ## [0.11.2] — 2026-10-10
 
 - HQ keeps a channel or bot visible when it can confirm that the company or bot still exists but you cannot open its details. Retired and missing companies and bots still disappear as before.

@@ -142,25 +142,47 @@ pub fn detect_claude_desktop_connectors() -> ClaudeDesktopConnectors {
     detect_claude_desktop_connectors_in(desktop_installed, config_path.as_deref())
 }
 
-/// Run the existing CLI importer from the configured HQ root. Its output is
-/// returned verbatim enough for diagnostics, but a failed import never turns
-/// into a Tauri command error that could trap the onboarding flow.
+/// Run the existing CLI importer from the configured HQ root for one company.
+///
+/// Integrations are company-scoped. hq-cli only guesses a company when the
+/// person has exactly one active membership, and exits 1 for a person with
+/// none, so the wizard always names the company picked or created in the
+/// flow. Without a valid company this never spawns the CLI.
+///
+/// A failed import never turns into a Tauri command error that could trap the
+/// onboarding flow. Each outcome is written to hq-sync.log (ok, exit code,
+/// category, first stderr line) so the next failure can be diagnosed there.
 #[tauri::command]
-pub async fn import_claude_desktop_connectors() -> ConnectorImportResult {
+pub async fn import_claude_desktop_connectors(company: Option<String>) -> ConnectorImportResult {
+    let Some(company) = connector_import_company(company.as_deref()) else {
+        return log_connector_import(
+            ConnectorImportResult {
+                ok: false,
+                message: "No company selected for the connector import.".to_string(),
+                error_category: "not-found",
+            },
+            None,
+            Some("no company selected".to_string()),
+        );
+    };
     let hq_root = match resolve_hq_path() {
         Ok(path) => path,
         Err(error) => {
-            return ConnectorImportResult {
-                ok: false,
-                message: error,
-                error_category: "not-found",
-            }
+            return log_connector_import(
+                ConnectorImportResult {
+                    ok: false,
+                    message: error,
+                    error_category: "not-found",
+                },
+                None,
+                Some("HQ folder not resolved".to_string()),
+            )
         }
     };
     let hq = paths::resolve_bin("hq");
     let mut command = paths::tokio_spawn_command(&hq, &[]);
     let output = command
-        .args(["integrations", "import"])
+        .args(connector_import_args(&company))
         .current_dir(&hq_root)
         .env("PATH", paths::child_path())
         .env("HQ_NO_UPDATE_CHECK", "1")
@@ -169,29 +191,109 @@ pub async fn import_claude_desktop_connectors() -> ConnectorImportResult {
         .await;
 
     match output {
-        Ok(output) if output.status.success() => ConnectorImportResult {
-            ok: true,
-            message: hq_command_message(&output.stdout, &output.stderr, "Import completed."),
-            error_category: "unknown",
-        },
-        Ok(output) => ConnectorImportResult {
-            ok: false,
-            message: hq_command_message(
-                &output.stdout,
-                &output.stderr,
-                &format!(
-                    "hq integrations import exited with status {}.",
-                    output.status.code().unwrap_or(-1)
-                ),
-            ),
-            error_category: "exit-nonzero",
-        },
-        Err(error) => ConnectorImportResult {
-            ok: false,
-            message: format!("Failed to spawn hq integrations import: {error}"),
-            error_category: "spawn-failed",
-        },
+        Ok(output) if output.status.success() => log_connector_import(
+            ConnectorImportResult {
+                ok: true,
+                message: hq_command_message(&output.stdout, &output.stderr, "Import completed."),
+                error_category: "unknown",
+            },
+            output.status.code(),
+            None,
+        ),
+        Ok(output) => {
+            let code = output.status.code();
+            log_connector_import(
+                ConnectorImportResult {
+                    ok: false,
+                    message: hq_command_message(
+                        &output.stdout,
+                        &output.stderr,
+                        &format!(
+                            "hq integrations import exited with status {}.",
+                            code.unwrap_or(-1)
+                        ),
+                    ),
+                    error_category: "exit-nonzero",
+                },
+                code,
+                first_line(&output.stderr),
+            )
+        }
+        Err(error) => log_connector_import(
+            ConnectorImportResult {
+                ok: false,
+                message: format!("Failed to spawn hq integrations import: {error}"),
+                error_category: "spawn-failed",
+            },
+            None,
+            Some(error.to_string()),
+        ),
     }
+}
+
+/// The company reference handed to `hq integrations import --company`. hq-cli
+/// accepts a company slug or a `cmp_` uid there. Anything else (empty, a
+/// leading dash that could read as a flag, other characters) is refused so
+/// the CLI never receives a guess or an injected option.
+fn connector_import_company(company: Option<&str>) -> Option<String> {
+    let company = company?.trim();
+    let valid = !company.is_empty()
+        && company.len() <= 128
+        && !company.starts_with('-')
+        && company
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    valid.then(|| company.to_string())
+}
+
+fn connector_import_args(company: &str) -> [&str; 4] {
+    ["integrations", "import", "--company", company]
+}
+
+fn first_line(bytes: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(200).collect())
+}
+
+/// One log line per import attempt. Only the first stderr line (or the
+/// app-side reason) is kept, capped at 200 characters, never stdout.
+fn connector_import_log_line(
+    result: &ConnectorImportResult,
+    exit_code: Option<i32>,
+    stderr_first_line: Option<&str>,
+) -> String {
+    let exit = exit_code.map_or_else(|| "none".to_string(), |code| code.to_string());
+    let mut line = format!(
+        "connector import ok={} exit={} category={}",
+        result.ok,
+        exit,
+        if result.ok {
+            "none"
+        } else {
+            result.error_category
+        },
+    );
+    if !result.ok {
+        if let Some(detail) = stderr_first_line.filter(|detail| !detail.is_empty()) {
+            line.push_str(&format!(" detail={detail:?}"));
+        }
+    }
+    line
+}
+
+fn log_connector_import(
+    result: ConnectorImportResult,
+    exit_code: Option<i32>,
+    stderr_first_line: Option<String>,
+) -> ConnectorImportResult {
+    crate::util::logfile::log(
+        "ai-tools",
+        &connector_import_log_line(&result, exit_code, stderr_first_line.as_deref()),
+    );
+    result
 }
 
 fn hq_command_message(stdout: &[u8], stderr: &[u8], fallback: &str) -> String {
@@ -731,6 +833,71 @@ mod tests {
         assert!(detected.present);
         assert_eq!(detected.count, 1);
         assert_eq!(detected.outcome, "servers_detected");
+    }
+
+    #[test]
+    fn connector_import_passes_the_named_company() {
+        assert_eq!(
+            connector_import_company(Some("acme")).as_deref(),
+            Some("acme")
+        );
+        assert_eq!(
+            connector_import_company(Some(" cmp_01ABCdef ")).as_deref(),
+            Some("cmp_01ABCdef")
+        );
+        assert_eq!(
+            connector_import_args("acme"),
+            ["integrations", "import", "--company", "acme"]
+        );
+    }
+
+    #[test]
+    fn connector_import_refuses_a_missing_or_unsafe_company() {
+        assert_eq!(connector_import_company(None), None);
+        assert_eq!(connector_import_company(Some("")), None);
+        assert_eq!(connector_import_company(Some("   ")), None);
+        assert_eq!(connector_import_company(Some("--dry-run")), None);
+        assert_eq!(connector_import_company(Some("acme co")), None);
+        assert_eq!(connector_import_company(Some("acme;rm")), None);
+        assert_eq!(connector_import_company(Some(&"a".repeat(129))), None);
+    }
+
+    #[tokio::test]
+    async fn connector_import_without_a_company_never_runs_the_cli() {
+        let result = import_claude_desktop_connectors(None).await;
+        assert!(!result.ok);
+        assert_eq!(result.error_category, "not-found");
+    }
+
+    #[test]
+    fn connector_import_log_line_names_outcome_exit_and_category() {
+        let failed = ConnectorImportResult {
+            ok: false,
+            message: "stdout noise\nmore".to_string(),
+            error_category: "exit-nonzero",
+        };
+        assert_eq!(
+            connector_import_log_line(
+                &failed,
+                Some(1),
+                Some("hq: No active company memberships found.")
+            ),
+            "connector import ok=false exit=1 category=exit-nonzero \
+             detail=\"hq: No active company memberships found.\""
+        );
+        let ok = ConnectorImportResult {
+            ok: true,
+            message: "Imported 2 connectors".to_string(),
+            error_category: "unknown",
+        };
+        assert_eq!(
+            connector_import_log_line(&ok, Some(0), None),
+            "connector import ok=true exit=0 category=none"
+        );
+        assert_eq!(
+            first_line(b"\n  hq: first line  \nsecond\n").as_deref(),
+            Some("hq: first line")
+        );
     }
 
     #[test]

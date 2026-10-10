@@ -2365,8 +2365,8 @@ describe('onboarding launch handoff', () => {
   });
 });
 
-describe('onboarding connector telemetry', () => {
-  it('forwards connector source and failure category through the wizard adapter', async () => {
+describe('onboarding connector step without a company from this flow', () => {
+  it('skips the connector import quietly when the wizard resumes with no company known', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
         case 'resolve_hq_path':
@@ -2376,7 +2376,7 @@ describe('onboarding connector telemetry', () => {
         case 'detect_claude_desktop_connectors':
           return {
             present: true,
-            count: 1,
+            count: 2,
             outcome: 'servers_detected',
             inspectedSources: 'claude_desktop_config',
           };
@@ -2390,95 +2390,15 @@ describe('onboarding connector telemetry', () => {
       target: host,
       props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
     });
+    await flush();
+    await flush();
 
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
-      ),
-    );
-    host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { step?: string; action?: string } }).properties?.step ===
-            'connector-import' &&
-          (args as { properties?: { action?: string } }).properties?.action === 'failed',
-      ),
-    );
-
-    const connectorEvents = tauri.invoke.mock.calls
-      .filter(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
-      )
-      .map(([, args]) => (args as { properties: Record<string, unknown> }).properties);
-    expect(connectorEvents).toContainEqual(
-      expect.objectContaining({
-        action: 'failed',
-        detectedToolCount: 1,
-        detectedSourceSet: 'claude_desktop_config',
-        outcome: 'import_failed',
-        errorCategory: 'exit-nonzero',
-      }),
-    );
-  });
-
-  it('delivers each auto-skip terminal outcome once and drains its delivery queue', async () => {
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'detect_claude_desktop_connectors':
-          return { present: false, count: 0, path: '/config' };
-        default:
-          return undefined;
-      }
-    });
-    component = mount(OnboardingWizard, {
-      target: host,
-      props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
-    });
-
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.filter(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
-      ).length >= 2,
-    );
-
-    const connectorActions = tauri.invoke.mock.calls
-      .filter(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
-      )
-      .map(([, args]) => (args as { properties: { action: string } }).properties.action);
-    expect(connectorActions).toEqual(['entered', 'skipped']);
-
-    await flushUntil(() => {
-      const pending = JSON.parse(
-        localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}',
-      ) as { pending?: Array<{ event: { properties: { step: string } } }> };
-      return !(pending.pending ?? []).some(
-        (record) => record.event.properties.step === 'connector-import',
-      );
-    });
-
-    const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
-      pending?: Array<{ event: { properties: { step: string; action: string } } }>;
-    };
-    expect(
-      (stored.pending ?? [])
-        .filter((record) => record.event.properties.step === 'connector-import')
-        .map((record) => record.event.properties.action),
-    ).toEqual([]);
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(commands).not.toContain('detect_claude_desktop_connectors');
+    expect(commands).not.toContain('import_claude_desktop_connectors');
+    expect(host.querySelector('[data-testid="connector-import-offer"]')).toBeNull();
+    expect(host.querySelector('[data-testid="connector-import-failure"]')).toBeNull();
+    expect(host.querySelector('.hq-welcome')?.getAttribute('data-current-scene')).toBe('ready');
   });
 });
 
@@ -3134,9 +3054,27 @@ describe('first-folder sync onboarding step', () => {
   // optional follow-on steps are offered once the install is done AND the
   // person has reached the ready screen, which is also where the usage-data
   // question now lives (there is no separate consent screen in first run).
-  async function reachPostSetupStep(enabled: boolean): Promise<void> {
+  async function reachPostSetupStep(enabled: boolean, joinedCompany = false): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = enabled;
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
+    if (joinedCompany) {
+      // A member of one company: the company step selects it, so the
+      // connector import has a company to import into.
+      const base = tauri.invoke.getMockImplementation()!;
+      tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+        if (command === 'hq_pro_fetch' && args?.url === '/membership/me') {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              memberships: [
+                { companyUid: 'cmp_demo', companySlug: 'demo', personUid: 'prs_me', status: 'active', role: 'member' },
+              ],
+            }),
+          };
+        }
+        return base(command, args);
+      });
+    }
     await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
@@ -3197,7 +3135,7 @@ describe('first-folder sync onboarding step', () => {
   });
 
   it('offers the connector import only after the first-folder step, then settles on ready', async () => {
-    await reachPostSetupStep(true);
+    await reachPostSetupStep(true, true);
     const connectorChecks = () =>
       tauri.invoke.mock.calls.filter(
         ([command]) => command === 'detect_claude_desktop_connectors',
@@ -4557,6 +4495,10 @@ describe('company onboarding step', () => {
     /** Answer for check_company_slug; defaults to every handle free. */
     slugAnswer?: (slug: string) => Record<string, unknown>;
     companyNamePrefillEnabled?: boolean;
+    /** Claude Desktop connectors found on this machine; unset leaves detection unanswered. */
+    connectorCount?: number;
+    /** Answer for import_claude_desktop_connectors. */
+    importResult?: Record<string, unknown>;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
     onboardingFlags.companyNamePrefillEnabled = options.companyNamePrefillEnabled ?? false;
@@ -4584,6 +4526,17 @@ describe('company onboarding step', () => {
           };
         case 'claim_pending_company_invite':
           return options.claimResult ?? { ok: true, claimedSlugs: [args?.companySlug], message: 'Joined' };
+        case 'detect_claude_desktop_connectors':
+          return options.connectorCount === undefined
+            ? undefined
+            : {
+                present: true,
+                count: options.connectorCount,
+                outcome: options.connectorCount === 0 ? 'zero_servers' : 'servers_detected',
+                inspectedSources: 'claude_desktop_config',
+              };
+        case 'import_claude_desktop_connectors':
+          return options.importResult ?? { ok: true, message: 'Imported.' };
         case 'web_visitor_anon_id':
           return options.anonId ?? null;
         case 'start_initial_cloud_sync':
@@ -5512,6 +5465,123 @@ describe('company onboarding step', () => {
     await settle();
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(companyRows().some((row) => row.action === 'skipped')).toBe(true);
+  });
+
+  function connectorRows(): Array<Record<string, unknown>> {
+    return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+      const args = rawArgs as { eventName?: string; properties?: Record<string, unknown> };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.properties?.step === 'connector-import'
+        ? [args.properties]
+        : [];
+    });
+  }
+
+  function importCalls(): unknown[] {
+    return tauri.invoke.mock.calls
+      .filter(([command]) => command === 'import_claude_desktop_connectors')
+      .map(([, args]) => args);
+  }
+
+  it('never runs the connector import for a Personal setup (company step skipped)', async () => {
+    await reachCompanyScenario({
+      connectorCount: 2,
+      importResult: {
+        ok: false,
+        message: 'hq: No active company memberships found. Use --company <slug> to specify.',
+        errorCategory: 'exit-nonzero',
+      },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-skip"]')));
+    click('onboarding-company-skip');
+    await settle();
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flush();
+
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(commands).not.toContain('detect_claude_desktop_connectors');
+    expect(commands).not.toContain('import_claude_desktop_connectors');
+    expect(connectorRows()).toEqual([]);
+    expect(host.querySelector('[data-testid="connector-import-offer"]')).toBeNull();
+    expect(host.querySelector('[data-testid="connector-import-failure"]')).toBeNull();
+    expect(host.textContent).not.toContain('Couldn’t import');
+    expect(onScreen('ready')).toBe(true);
+  });
+
+  it('imports into the joined company by name and offers Try again and Skip on failure', async () => {
+    await reachCompanyScenario({
+      memberships: [
+        { companyUid: 'cmp_demo', companySlug: 'demo', personUid: 'prs_me', status: 'active', role: 'member' },
+      ],
+      connectorCount: 1,
+      importResult: {
+        ok: false,
+        message: 'hq: No active company memberships found. Use --company <slug> to specify.',
+        errorCategory: 'exit-nonzero',
+      },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-import"]')));
+    click('connector-import-import');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-failure"]')));
+
+    expect(importCalls()).toEqual([{ company: 'demo' }]);
+    expect(host.querySelector('[data-testid="connector-import-retry"]')?.textContent).toContain('Try again');
+    expect(host.querySelector('[data-testid="connector-import-skip"]')?.textContent).toContain('Skip for now');
+    const failureScene = host.querySelector('[data-testid="onboarding-connector-import"]')?.textContent ?? '';
+    expect(failureScene).not.toMatch(/\bhq /);
+    expect(failureScene).not.toContain('--company');
+    expect(failureScene).not.toContain('memberships');
+    expect(connectorRows()).toContainEqual(
+      expect.objectContaining({
+        action: 'failed',
+        detectedToolCount: 1,
+        detectedSourceSet: 'claude_desktop_config',
+        outcome: 'import_failed',
+        errorCategory: 'exit-nonzero',
+      }),
+    );
+
+    click('connector-import-skip');
+    await settle();
+    expect(onScreen('ready')).toBe(true);
+    expect(importCalls()).toHaveLength(1);
+  });
+
+  it('imports into the company created in the flow by its uid', async () => {
+    await reachCompanyScenario({ connectorCount: 1 });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
+    click('onboarding-plan-choose-starter');
+    await settle();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-import"]')));
+    click('connector-import-import');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="connector-import-success"]')));
+
+    expect(importCalls()).toEqual([{ company: 'cmp_new' }]);
+  });
+
+  it('delivers the zero-connector auto-skip once for a company and drains its queue', async () => {
+    await reachCompanyScenario({
+      memberships: [
+        { companyUid: 'cmp_demo', companySlug: 'demo', personUid: 'prs_me', status: 'active', role: 'member' },
+      ],
+      connectorCount: 0,
+    });
+    await flushUntil(() => connectorRows().length >= 2);
+
+    expect(connectorRows().map((row) => row.action)).toEqual(['entered', 'skipped']);
+    expect(importCalls()).toEqual([]);
+    await flushUntil(() => {
+      const pending = JSON.parse(
+        localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}',
+      ) as { pending?: Array<{ event: { properties: { step: string } } }> };
+      return !(pending.pending ?? []).some(
+        (record) => record.event.properties.step === 'connector-import',
+      );
+    });
   });
 });
 
