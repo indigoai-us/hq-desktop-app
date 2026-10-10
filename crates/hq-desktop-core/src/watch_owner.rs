@@ -26,6 +26,13 @@ pub struct WatchOwnerStatus {
     pub started_at: String,
     #[serde(default)]
     pub heartbeat_at: Option<String>,
+    /// PID of the app that launched the runner. Written by hq-cloud 6.18.60 and
+    /// later; older leases omit it.
+    #[serde(default)]
+    pub parent_pid: Option<u32>,
+    /// macOS bundle identifier of the launching app, when the runner had one.
+    #[serde(default)]
+    pub parent_bundle_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +163,35 @@ pub fn plan_busy_watch_exit_with_unknown_orphan(
     holder_is_child_of_app: bool,
     unknown_is_desktop_orphan: bool,
 ) -> WatchOwnerExitPlan {
+    plan_busy_watch_exit_with_launcher(
+        exit_code,
+        status,
+        holder_is_live_runner,
+        holder_is_child_of_app,
+        unknown_is_desktop_orphan,
+        LauncherState::Unknown,
+        true,
+    )
+}
+
+/// Plan the response to a lease-busy watcher exit (20/21).
+///
+/// A desktop-owned runner that is not this app's child is only taken over
+/// when its launching app is dead or unknown AND its lease heartbeat is stale.
+/// A runner whose launching app is alive belongs to a second HQ app on the
+/// same HQ folder (a test or worktree build next to the installed app): it is
+/// a live peer and is left alone. Before this rule each app killed the other's
+/// watcher as an "orphan" and respawned its own, and the two apps traded the
+/// lease every one to four minutes, hundreds of times on 2026-10-10.
+pub fn plan_busy_watch_exit_with_launcher(
+    exit_code: Option<i32>,
+    status: Option<&WatchOwnerStatus>,
+    holder_is_live_runner: bool,
+    holder_is_child_of_app: bool,
+    unknown_is_desktop_orphan: bool,
+    launcher: LauncherState,
+    lease_is_stale: bool,
+) -> WatchOwnerExitPlan {
     let owner_label = status.map_or_else(|| "unknown".to_string(), |status| status.owner.clone());
     let is_busy_exit = matches!(exit_code, Some(20 | 21));
     if !is_busy_exit || !holder_is_live_runner {
@@ -173,6 +209,22 @@ pub fn plan_busy_watch_exit_with_unknown_orphan(
         };
     }
 
+    let deferral = |owner_label: String, classification: &'static str| WatchOwnerExitPlan {
+        owner_label,
+        classification,
+        take_over_orphan: false,
+        defer_to_daemon: false,
+        record_failure: false,
+        respawn_once: false,
+    };
+    let is_desktop_candidate = !holder_is_child_of_app
+        && (owner_label == "hq-desktop" || (owner_label == "unknown" && unknown_is_desktop_orphan));
+    if is_desktop_candidate && launcher == LauncherState::Alive {
+        return deferral(owner_label, "desktop_peer_deferral");
+    }
+    if is_desktop_candidate && !lease_is_stale {
+        return deferral(owner_label, "orphan_lease_fresh_deferral");
+    }
     if owner_label == "unknown" && unknown_is_desktop_orphan && !holder_is_child_of_app {
         return WatchOwnerExitPlan {
             owner_label,
@@ -380,6 +432,187 @@ pub fn supervisor_should_defer_for_live_owner(
     holder_is_live_runner: bool,
 ) -> bool {
     holder_is_live_runner && !plan.take_over_orphan
+}
+
+/// Supervisor preflight: when a live lease holder must be left in place, the
+/// label to log instead of respawning a watcher that would only exit 20. The
+/// supervisor backs off for a live peer app's watcher and for a desktop
+/// orphan whose lease is still fresh; it proceeds only when the planner would
+/// take the holder over (or there is no live holder).
+pub fn supervisor_preflight_deferral(
+    status: &WatchOwnerStatus,
+    is_live_runner: bool,
+    is_child_of_app: bool,
+    is_unknown_desktop_orphan: bool,
+    launcher: LauncherState,
+    lease_is_stale: bool,
+) -> Option<String> {
+    let plan = plan_busy_watch_exit_with_launcher(
+        Some(20),
+        Some(status),
+        is_live_runner,
+        is_child_of_app,
+        is_unknown_desktop_orphan,
+        launcher,
+        lease_is_stale,
+    );
+    supervisor_should_defer_for_live_owner(&plan, is_live_runner).then(|| {
+        format!(
+            "{} (pid {}, {})",
+            plan.owner_label, status.pid, plan.classification
+        )
+    })
+}
+
+/// Whether a busy-exit plan leaves a live lease holder in place, so the app
+/// should report sync as running rather than failed.
+pub fn plan_defers_to_live_owner(plan: &WatchOwnerExitPlan) -> bool {
+    matches!(
+        plan.classification,
+        "live_owner_deferral" | "desktop_peer_deferral" | "orphan_lease_fresh_deferral"
+    )
+}
+
+/// hq-cloud refreshes the lease heartbeat every 15 seconds. Four missed
+/// heartbeats mean the holder is wedged or gone.
+pub const WATCH_OWNER_STALE_AFTER: Duration = Duration::from_secs(60);
+
+/// Whether the lease heartbeat is older than `stale_after` at `now`. A lease
+/// with no heartbeat, or one that cannot be parsed, carries no proof of
+/// freshness and counts as stale.
+pub fn lease_heartbeat_is_stale(
+    status: &WatchOwnerStatus,
+    now: chrono::DateTime<chrono::Utc>,
+    stale_after: Duration,
+) -> bool {
+    let Some(heartbeat) = status.heartbeat_at.as_deref() else {
+        return true;
+    };
+    let Ok(heartbeat) = chrono::DateTime::parse_from_rfc3339(heartbeat) else {
+        return true;
+    };
+    let age = now.signed_duration_since(heartbeat.with_timezone(&chrono::Utc));
+    match chrono::Duration::from_std(stale_after) {
+        Ok(limit) => age > limit,
+        Err(_) => false,
+    }
+}
+
+/// Liveness of the app that launched a lease holder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LauncherState {
+    /// The launching HQ app process is running.
+    Alive,
+    /// The launcher is gone, or its PID now belongs to a non-HQ process.
+    Dead,
+    /// No usable evidence either way.
+    Unknown,
+}
+
+/// Whether a process command line is an HQ desktop app (installed, test, or
+/// dev build), as opposed to a runner, npx wrapper, or unrelated process.
+pub fn is_desktop_app_process_command(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    if lower.contains("sync-runner") {
+        return false;
+    }
+    if lower.contains("hq-sync-menubar") {
+        return true;
+    }
+    const BUNDLE_EXE_DIR: &str = "/contents/macos/";
+    if let Some(index) = lower.rfind(BUNDLE_EXE_DIR) {
+        let exe = lower[index + BUNDLE_EXE_DIR.len()..]
+            .split_whitespace()
+            .next()
+            .unwrap_or_default();
+        return matches!(exe, "hq" | "hq-desktop");
+    }
+    false
+}
+
+/// The `--watch-parent-pid` value on a runner command line, if present.
+pub fn watch_parent_pid_argument(command: &str) -> Option<u32> {
+    let mut tokens = command.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == "--watch-parent-pid" {
+            return tokens.next().and_then(|value| value.parse().ok());
+        }
+        if let Some(value) = token.strip_prefix("--watch-parent-pid=") {
+            return value.parse().ok();
+        }
+    }
+    None
+}
+
+fn launcher_pid_state<F>(pid: u32, current_app_pid: u32, process: &mut F) -> LauncherState
+where
+    F: FnMut(u32) -> Result<Option<(u32, String)>, String>,
+{
+    if pid <= 1 {
+        return LauncherState::Unknown;
+    }
+    if pid == current_app_pid {
+        return LauncherState::Alive;
+    }
+    match process(pid) {
+        Err(_) => LauncherState::Unknown,
+        Ok(None) => LauncherState::Dead,
+        Ok(Some((_, command))) if is_desktop_app_process_command(&command) => LauncherState::Alive,
+        // The PID was recycled by a process that is not an HQ app.
+        Ok(Some(_)) => LauncherState::Dead,
+    }
+}
+
+/// Decide whether the app that launched a lease holder is still alive.
+///
+/// Evidence, strongest first: the lease's own `parentPid` (hq-cloud 6.18.60+);
+/// the `--watch-parent-pid` on the holder's command line (every desktop launch
+/// since hq-cloud 6.18.38); then the holder's process ancestry, where an HQ
+/// app ancestor means alive and reparenting to PID 1 means the launcher died.
+/// The process lookup is injected so the rules are testable without touching
+/// real processes.
+pub fn desktop_owner_launcher_state<F>(
+    status: &WatchOwnerStatus,
+    holder: Option<&(u32, String)>,
+    current_app_pid: u32,
+    mut process: F,
+) -> LauncherState
+where
+    F: FnMut(u32) -> Result<Option<(u32, String)>, String>,
+{
+    if let Some(parent_pid) = status.parent_pid {
+        return launcher_pid_state(parent_pid, current_app_pid, &mut process);
+    }
+    let Some((holder_parent, holder_command)) = holder else {
+        return LauncherState::Unknown;
+    };
+    if let Some(parent_pid) = watch_parent_pid_argument(holder_command) {
+        return launcher_pid_state(parent_pid, current_app_pid, &mut process);
+    }
+    let mut parent = *holder_parent;
+    for _ in 0..64 {
+        if parent == 0 || parent == status.pid {
+            return LauncherState::Unknown;
+        }
+        if parent == 1 {
+            return LauncherState::Dead;
+        }
+        if parent == current_app_pid {
+            return LauncherState::Alive;
+        }
+        match process(parent) {
+            Err(_) => return LauncherState::Unknown,
+            Ok(None) => return LauncherState::Dead,
+            Ok(Some((_, command))) if is_desktop_app_process_command(&command) => {
+                return LauncherState::Alive;
+            }
+            Ok(Some((next_parent, _))) if next_parent == parent => {
+                return LauncherState::Unknown;
+            }
+            Ok(Some((next_parent, _))) => parent = next_parent,
+        }
+    }
+    LauncherState::Unknown
 }
 
 /// Read the parent PID and command line for one process.
@@ -856,6 +1089,8 @@ mod tests {
             version: "6.18.21".to_string(),
             started_at: "2026-09-30T00:00:00Z".to_string(),
             heartbeat_at: None,
+            parent_pid: None,
+            parent_bundle_id: None,
         }
     }
 
@@ -1196,5 +1431,341 @@ mod tests {
             sibling.display()
         );
         assert!(!command_matches_hq_root(&sibling_command, &root));
+    }
+}
+
+#[cfg(test)]
+mod live_peer_tests {
+    //! Regression coverage for the 2026-10-10 crash loop: two HQ apps on one
+    //! HQ folder each killed the other's watcher as an "orphan" and respawned
+    //! their own, hundreds of times in a day.
+    use super::*;
+
+    const THIS_APP: u32 = 500;
+    const PEER_APP: u32 = 91_415;
+    const RUNNER: u32 = 88_572;
+    const NPM_EXEC: u32 = 87_371;
+
+    const PEER_APP_COMMAND: &str =
+        "/Users/owner/Applications/HQ New Bot Test.app/Contents/MacOS/hq-sync-menubar";
+    const INSTALLED_APP_COMMAND: &str = "/Applications/HQ.app/Contents/MacOS/hq-sync-menubar";
+
+    fn runner_command(watch_parent_pid: Option<u32>) -> String {
+        let mut command = "node /Users/owner/.npm/_npx/7d6c/node_modules/.bin/hq-sync-runner \
+            --companies --hq-root /Users/owner/hq --watch --owner hq-desktop"
+            .to_string();
+        if let Some(pid) = watch_parent_pid {
+            command.push_str(&format!(" --exit-with-parent --watch-parent-pid {pid}"));
+        }
+        command
+    }
+
+    fn lease(parent_pid: Option<u32>, heartbeat_at: Option<&str>) -> WatchOwnerStatus {
+        WatchOwnerStatus {
+            owner: "hq-desktop".to_string(),
+            pid: RUNNER,
+            version: "6.18.60".to_string(),
+            started_at: "2026-10-10T05:39:43.539Z".to_string(),
+            heartbeat_at: heartbeat_at.map(str::to_string),
+            parent_pid,
+            parent_bundle_id: parent_pid.map(|_| "ai.indigo.hq.new-bot-test".to_string()),
+        }
+    }
+
+    fn table(
+        rows: &[(u32, u32, &str)],
+    ) -> impl FnMut(u32) -> Result<Option<(u32, String)>, String> {
+        let rows = rows
+            .iter()
+            .map(|(pid, parent, command)| (*pid, (*parent, command.to_string())))
+            .collect::<std::collections::HashMap<_, _>>();
+        move |pid| Ok(rows.get(&pid).cloned())
+    }
+
+    fn at(timestamp: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(timestamp)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn live_peer_app_watcher_is_left_alone() {
+        let status = lease(Some(PEER_APP), Some("2026-10-10T05:43:20Z"));
+        let launcher = desktop_owner_launcher_state(
+            &status,
+            Some(&(NPM_EXEC, runner_command(Some(PEER_APP)))),
+            THIS_APP,
+            table(&[(PEER_APP, 1, PEER_APP_COMMAND)]),
+        );
+        assert_eq!(launcher, LauncherState::Alive);
+
+        // Even a stale heartbeat does not license killing a live peer's runner.
+        for stale in [false, true] {
+            let plan = plan_busy_watch_exit_with_launcher(
+                Some(20),
+                Some(&status),
+                true,
+                false,
+                false,
+                launcher,
+                stale,
+            );
+            assert_eq!(plan.classification, "desktop_peer_deferral");
+            assert!(
+                !plan.take_over_orphan,
+                "a live peer's runner must never be signalled"
+            );
+            assert!(
+                !plan.respawn_once,
+                "no replacement watcher while a peer holds the lease"
+            );
+            assert!(!plan.record_failure);
+            assert!(plan_defers_to_live_owner(&plan));
+            assert!(supervisor_should_defer_for_live_owner(&plan, true));
+        }
+    }
+
+    #[test]
+    fn dead_parent_with_stale_lease_is_taken_over() {
+        let status = lease(Some(PEER_APP), Some("2026-10-10T05:30:00Z"));
+        let launcher = desktop_owner_launcher_state(
+            &status,
+            Some(&(1, runner_command(Some(PEER_APP)))),
+            THIS_APP,
+            table(&[]),
+        );
+        assert_eq!(launcher, LauncherState::Dead);
+        let stale =
+            lease_heartbeat_is_stale(&status, at("2026-10-10T05:32:00Z"), WATCH_OWNER_STALE_AFTER);
+        assert!(stale);
+        let plan = plan_busy_watch_exit_with_launcher(
+            Some(20),
+            Some(&status),
+            true,
+            false,
+            false,
+            launcher,
+            stale,
+        );
+        assert_eq!(plan.classification, "orphan_takeover");
+        assert!(plan.take_over_orphan && plan.respawn_once);
+        assert!(!plan.record_failure);
+        assert!(!supervisor_should_defer_for_live_owner(&plan, true));
+    }
+
+    #[test]
+    fn dead_parent_with_fresh_lease_waits_for_the_runner_to_exit_on_its_own() {
+        let status = lease(Some(PEER_APP), Some("2026-10-10T05:31:50Z"));
+        let stale =
+            lease_heartbeat_is_stale(&status, at("2026-10-10T05:32:00Z"), WATCH_OWNER_STALE_AFTER);
+        assert!(!stale);
+        let plan = plan_busy_watch_exit_with_launcher(
+            Some(20),
+            Some(&status),
+            true,
+            false,
+            false,
+            LauncherState::Dead,
+            stale,
+        );
+        assert_eq!(plan.classification, "orphan_lease_fresh_deferral");
+        assert!(!plan.take_over_orphan && !plan.respawn_once && !plan.record_failure);
+    }
+
+    #[test]
+    fn launcher_pid_recycled_by_another_process_counts_as_dead() {
+        let status = lease(Some(PEER_APP), None);
+        let launcher = desktop_owner_launcher_state(
+            &status,
+            None,
+            THIS_APP,
+            table(&[(PEER_APP, 1, "/usr/bin/vim notes.txt")]),
+        );
+        assert_eq!(launcher, LauncherState::Dead);
+    }
+
+    #[test]
+    fn unreadable_process_table_is_unknown_and_never_alive() {
+        let status = lease(Some(PEER_APP), None);
+        let launcher =
+            desktop_owner_launcher_state(&status, None, THIS_APP, |_| Err("ps failed".to_string()));
+        assert_eq!(launcher, LauncherState::Unknown);
+    }
+
+    #[test]
+    fn old_lease_without_parent_pid_uses_the_runner_watch_parent_pid_argument() {
+        // Leases written before hq-cloud 6.18.60 have no parentPid, but every
+        // desktop launch since 6.18.38 passes --watch-parent-pid.
+        let status = lease(None, Some("2026-10-10T05:43:20Z"));
+        let alive = desktop_owner_launcher_state(
+            &status,
+            Some(&(NPM_EXEC, runner_command(Some(PEER_APP)))),
+            THIS_APP,
+            table(&[(PEER_APP, 1, INSTALLED_APP_COMMAND)]),
+        );
+        assert_eq!(alive, LauncherState::Alive);
+        let plan = plan_busy_watch_exit_with_launcher(
+            Some(20),
+            Some(&status),
+            true,
+            false,
+            false,
+            alive,
+            true,
+        );
+        assert_eq!(plan.classification, "desktop_peer_deferral");
+
+        let dead = desktop_owner_launcher_state(
+            &status,
+            Some(&(NPM_EXEC, runner_command(Some(PEER_APP)))),
+            THIS_APP,
+            table(&[]),
+        );
+        assert_eq!(dead, LauncherState::Dead);
+    }
+
+    #[test]
+    fn old_lease_without_any_launcher_pid_walks_the_runner_ancestry() {
+        let status = lease(None, None);
+        let alive = desktop_owner_launcher_state(
+            &status,
+            Some(&(NPM_EXEC, runner_command(None))),
+            THIS_APP,
+            table(&[
+                (NPM_EXEC, PEER_APP, "npm exec hq-sync-runner --watch"),
+                (
+                    PEER_APP,
+                    1,
+                    "/tmp/HQ Lane Check conflict-toast.app/Contents/MacOS/hq-sync-menubar",
+                ),
+            ]),
+        );
+        assert_eq!(alive, LauncherState::Alive);
+
+        let reparented = desktop_owner_launcher_state(
+            &status,
+            Some(&(NPM_EXEC, runner_command(None))),
+            THIS_APP,
+            table(&[(NPM_EXEC, 1, "npm exec hq-sync-runner --watch")]),
+        );
+        assert_eq!(reparented, LauncherState::Dead);
+
+        // No heartbeat and a dead launcher: the old behaviour (take over) holds.
+        assert!(lease_heartbeat_is_stale(
+            &status,
+            at("2026-10-10T05:32:00Z"),
+            WATCH_OWNER_STALE_AFTER,
+        ));
+        let plan = plan_busy_watch_exit_with_launcher(
+            Some(20),
+            Some(&status),
+            true,
+            false,
+            false,
+            reparented,
+            true,
+        );
+        assert_eq!(plan.classification, "orphan_takeover");
+    }
+
+    #[test]
+    fn supervisor_preflight_backs_off_for_a_live_peer_and_proceeds_for_a_stale_orphan() {
+        let peer = lease(Some(PEER_APP), Some("2026-10-10T05:43:20Z"));
+        let label =
+            supervisor_preflight_deferral(&peer, true, false, false, LauncherState::Alive, false);
+        assert_eq!(
+            label.as_deref(),
+            Some("hq-desktop (pid 88572, desktop_peer_deferral)")
+        );
+
+        let fresh_orphan =
+            supervisor_preflight_deferral(&peer, true, false, false, LauncherState::Dead, false);
+        assert_eq!(
+            fresh_orphan.as_deref(),
+            Some("hq-desktop (pid 88572, orphan_lease_fresh_deferral)")
+        );
+
+        let stale_orphan =
+            supervisor_preflight_deferral(&peer, true, false, false, LauncherState::Dead, true);
+        assert_eq!(
+            stale_orphan, None,
+            "a stale orphan is taken over, so respawn proceeds"
+        );
+
+        let gone =
+            supervisor_preflight_deferral(&peer, false, false, false, LauncherState::Alive, false);
+        assert_eq!(gone, None, "no live holder means a normal respawn");
+    }
+
+    #[test]
+    fn heartbeat_staleness_uses_the_lease_timestamp() {
+        let now = at("2026-10-10T16:34:00Z");
+        assert!(!lease_heartbeat_is_stale(
+            &lease(None, Some("2026-10-10T16:33:23.587Z")),
+            now,
+            WATCH_OWNER_STALE_AFTER,
+        ));
+        assert!(lease_heartbeat_is_stale(
+            &lease(None, Some("2026-10-10T16:32:00Z")),
+            now,
+            WATCH_OWNER_STALE_AFTER,
+        ));
+        assert!(lease_heartbeat_is_stale(
+            &lease(None, None),
+            now,
+            WATCH_OWNER_STALE_AFTER
+        ));
+        assert!(lease_heartbeat_is_stale(
+            &lease(None, Some("not a time")),
+            now,
+            WATCH_OWNER_STALE_AFTER,
+        ));
+    }
+
+    #[test]
+    fn lease_json_parses_with_and_without_launcher_fields() {
+        let old: WatchOwnerStatus = serde_json::from_str(
+            r#"{"owner":"hq-desktop","pid":88572,"processName":"sync-runner","version":"6.18.59","startedAt":"2026-10-10T16:27:23.360Z","heartbeatAt":"2026-10-10T16:33:23.587Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.parent_pid, None);
+        assert_eq!(old.parent_bundle_id, None);
+
+        let new: WatchOwnerStatus = serde_json::from_str(
+            r#"{"owner":"hq-desktop","pid":88572,"processName":"sync-runner","version":"6.18.60","startedAt":"2026-10-10T16:27:23.360Z","heartbeatAt":"2026-10-10T16:33:23.587Z","parentPid":91415,"parentBundleId":"ai.indigo.hq"}"#,
+        )
+        .unwrap();
+        assert_eq!(new.parent_pid, Some(91_415));
+        assert_eq!(new.parent_bundle_id.as_deref(), Some("ai.indigo.hq"));
+    }
+
+    #[test]
+    fn desktop_app_commands_are_recognised_and_runners_are_not() {
+        for command in [
+            INSTALLED_APP_COMMAND,
+            PEER_APP_COMMAND,
+            "/Applications/HQ.app/Contents/MacOS/HQ",
+            "/repo/apps/sync/src-tauri/target/debug/hq-sync-menubar",
+            r"C:\Program Files\HQ\hq-sync-menubar.exe",
+        ] {
+            assert!(is_desktop_app_process_command(command), "{command}");
+        }
+        for command in [
+            "npm exec hq-sync-runner --watch --watch-parent-pid 91415",
+            "/Applications/Safari.app/Contents/MacOS/Safari",
+            "/usr/local/bin/hq daemon",
+            "/sbin/launchd",
+        ] {
+            assert!(!is_desktop_app_process_command(command), "{command}");
+        }
+        assert_eq!(
+            watch_parent_pid_argument(&runner_command(Some(PEER_APP))),
+            Some(PEER_APP)
+        );
+        assert_eq!(
+            watch_parent_pid_argument("hq-sync-runner --watch-parent-pid=42"),
+            Some(42)
+        );
+        assert_eq!(watch_parent_pid_argument(&runner_command(None)), None);
     }
 }
