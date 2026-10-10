@@ -23,6 +23,7 @@
     brainApprovalLabel,
     type BrainProvider,
   } from "./bot-brain-approval.js";
+  import { claudeCodeAnswer, submitClaudeCode as runClaudeCodeSubmit, type ClaudeCodeAnswer } from "./claude-code-submit.js";
   import { focusOnMount } from "../portal.js";
   import NewBotDawn, { type DawnMode } from "./NewBotDawn.svelte";
 
@@ -77,6 +78,17 @@
   // full interval.
   let lastNudgeAt = Date.now();
   let claudeCode = $state("");
+  /** True from the press of Submit until the sign-in is seen or the wait ends. */
+  let codeChecking = $state(false);
+  /** The last submit ended without an advance; the button offers to try again. */
+  let codeRetry = $state(false);
+  /** Claude accepted the code in the field: a retry only checks again, it does not send it twice. */
+  let codeAccepted = false;
+  /** Set synchronously on the press, so a second press cannot send the code twice. */
+  let codeInFlight = false;
+  /** When the server was last asked to re-check during a code submit. */
+  let codeRecheckAt = 0;
+  let destroyed = false;
   let actionBusy = $state(false);
   let actionMessage = $state("");
 
@@ -240,32 +252,100 @@
     actionBusy = false;
   }
 
+  /** How often a code submit asks the server to re-check while it waits. */
+  const CODE_RECHECK_EVERY_MS = 9_000;
+
+  /**
+   * Ask the server to re-check the sign-in step and read the status once.
+   * True once the sign-in is seen done, or the screen has moved on.
+   */
+  async function confirmClaudeSignIn(): Promise<boolean> {
+    const current = session;
+    if (current.phase !== "waking" || !current.approval) return true;
+    const now = Date.now();
+    if (retryAgent && current.agentUid && now - codeRecheckAt >= CODE_RECHECK_EVERY_MS) {
+      codeRecheckAt = now;
+      lastNudgeAt = now;
+      try {
+        await retryAgent(current.agentUid);
+      } catch {
+        // The status read below still runs.
+      }
+    }
+    if (!getStatus || !current.agentUid || destroyed) return false;
+    try {
+      const result = await getStatus(current.agentUid, current.brain ?? undefined);
+      const response = result as { ok?: unknown; value?: unknown } | null;
+      if (destroyed || response?.ok !== true) return false;
+      const next = applyWakingStatus(session, response.value);
+      onupdate(next);
+      return next.phase !== "waking" || !next.approval || next.signedInAt != null;
+    } catch {
+      return false;
+    }
+  }
+
+  function codeMessage(result: "rejected" | "failed" | "timeout"): string {
+    if (result === "rejected") return "Claude didn't accept that code. Open Claude again for a new code, then paste it here.";
+    if (result === "failed") return "We couldn't send that code. Try again.";
+    return "We couldn't confirm your sign-in yet. Try again.";
+  }
+
   async function submitClaudeCode(): Promise<void> {
-    if (!approval || approval.provider !== "claude" || !submitClaudeLoginCode || actionBusy) return;
+    if (!approval || approval.provider !== "claude" || !submitClaudeLoginCode || codeInFlight || actionBusy) return;
     const code = claudeCode.trim();
     if (!code) {
       actionMessage = "Paste the code from Claude to continue.";
       return;
     }
-    actionBusy = true;
-    actionMessage = "";
+    codeInFlight = true;
+    codeChecking = true;
+    codeRetry = false;
+    actionMessage = "Checking your sign-in.";
+    codeRecheckAt = 0;
+    const agentUid = session.agentUid;
+    const send = submitClaudeLoginCode;
+    let lastAnswer: ClaudeCodeAnswer | null = null;
     try {
-      const result = await submitClaudeLoginCode(session.agentUid, code);
-      if (!(result as { ok?: unknown } | null)?.ok) {
-        actionMessage = "That code could not be submitted. Try again.";
+      const result = await runClaudeCodeSubmit({
+        alreadyAccepted: codeAccepted,
+        send: async () => {
+          const answer = await send(agentUid, code);
+          lastAnswer = claudeCodeAnswer(answer);
+          if (lastAnswer === "accepted") codeAccepted = true;
+          return answer;
+        },
+        confirm: confirmClaudeSignIn,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        now: () => Date.now(),
+        cancelled: () => destroyed,
+        // Outcome names only. The code is never logged.
+        log: (event, detail) => console.info(`new-bot: ${event}`, detail),
+      });
+      if (destroyed) return;
+      if (result === "signed-in") {
+        claudeCode = "";
+        codeAccepted = false;
+        actionMessage = "";
         return;
       }
-      claudeCode = "";
-      actionMessage = "Checking your sign-in.";
-    } catch {
-      actionMessage = "That code could not be submitted. Try again.";
+      if (result === "rejected") codeAccepted = false;
+      codeRetry = result !== "rejected";
+      actionMessage = codeMessage(result);
+    } catch (error) {
+      console.warn("new-bot: claude code submit failed", error instanceof Error ? error.name : "unknown", lastAnswer ?? "none");
+      if (!destroyed) {
+        codeRetry = true;
+        actionMessage = codeMessage("failed");
+      }
     } finally {
-      actionBusy = false;
+      codeInFlight = false;
+      codeChecking = false;
     }
   }
 
   async function restartApproval(): Promise<void> {
-    if (!approval || !restartBrainApproval || actionBusy) return;
+    if (!approval || !restartBrainApproval || actionBusy || codeChecking) return;
     actionBusy = true;
     actionMessage = "";
     try {
@@ -350,6 +430,7 @@
     void check();
     return () => {
       stopped = true;
+      destroyed = true;
       document.removeEventListener("visibilitychange", onVisibility);
       if (timer) clearTimeout(timer);
       if (codeCopiedTimer) clearTimeout(codeCopiedTimer);
@@ -418,7 +499,7 @@
             type="button"
             class="new-bot-waking-action"
             data-testid="new-bot-approval-open"
-            disabled={actionBusy}
+            disabled={actionBusy || codeChecking}
             use:focusOnMount
             onclick={() => void openApproval()}
           ><RailIcon name="external" />{actionBusy
@@ -443,17 +524,23 @@
             class="new-bot-create-input"
             data-testid="new-bot-claude-code"
             value={claudeCode}
-            disabled={actionBusy}
+            disabled={actionBusy || codeChecking}
             autocomplete="off"
-            oninput={(event) => { claudeCode = (event.currentTarget as HTMLInputElement).value; }}
+            oninput={(event) => {
+              claudeCode = (event.currentTarget as HTMLInputElement).value;
+              codeAccepted = false;
+              codeRetry = false;
+            }}
+            onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); void submitClaudeCode(); } }}
           />
           <button
             type="button"
             class="new-bot-waking-action"
             data-testid="new-bot-claude-submit"
-            disabled={actionBusy || !submitClaudeLoginCode}
+            disabled={actionBusy || codeChecking || !submitClaudeLoginCode}
+            aria-busy={codeChecking ? "true" : undefined}
             onclick={() => void submitClaudeCode()}
-          ><RailIcon name="send" />{actionBusy ? "Submitting..." : "Submit code"}</button>
+          ><RailIcon name={codeRetry ? "refresh" : "send"} />{codeChecking ? "Checking..." : codeRetry ? "Try again" : "Submit code"}</button>
         {/if}
 
         {#if approvalOpened && approval.provider !== "claude" && !actionMessage}
@@ -461,7 +548,7 @@
         {/if}
       {/if}
       {#if actionMessage}
-        <p class="new-bot-approval-note" data-testid="new-bot-approval-message">{actionMessage}</p>
+        <p class="new-bot-approval-note" data-testid="new-bot-approval-message" role="status">{actionMessage}</p>
       {/if}
     </div>
   {/if}

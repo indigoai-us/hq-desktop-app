@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { AGENT_PATHS, OUTPOST_PATHS } from "../adapter.js";
 import { TauriPlatformAdapter } from "./index.js";
-import { createSyncPlatformAdapter } from "./sync-adapter.js";
+import { CLAUDE_LOGIN_CODE_TIMEOUT_SECS, createSyncPlatformAdapter } from "./sync-adapter.js";
 
 interface Invocation {
   cmd: string;
@@ -118,6 +118,34 @@ describe("createSyncPlatformAdapter agents", () => {
         },
       },
     ]);
+  });
+
+  // Owner, New Bot with Claude: the first pasted code "disappeared and
+  // nothing happened". The server types the code on the bot's machine and
+  // waits up to 20 s for Claude's answer before it replies; the shared 15 s
+  // bound cut that wait off.
+  it("gives the Claude code paste-back a bound past the server's own wait", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ uid: "agt_1", ok: true, outcome: "accepted", reason: "ok", at: "2026-10-10T00:00:00.000Z" }) };
+      },
+    });
+    const result = await adapter.agents.submitClaudeLoginCode!("agt_1", "returned-code");
+    expect(CLAUDE_LOGIN_CODE_TIMEOUT_SECS).toBeGreaterThanOrEqual(30);
+    expect(calls).toEqual([
+      {
+        cmd: "hq_pro_fetch",
+        args: {
+          url: AGENT_PATHS.loginCode("agt_1"),
+          method: "POST",
+          body: JSON.stringify({ code: "returned-code" }),
+          timeoutSecs: CLAUDE_LOGIN_CODE_TIMEOUT_SECS,
+        },
+      },
+    ]);
+    expect(result).toMatchObject({ ok: true, value: { outcome: "accepted" } });
   });
 });
 

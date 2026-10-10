@@ -115,6 +115,14 @@ export const RECORDED_DETAIL_TIMEOUT_SECS = 45;
  */
 export const COMPANY_INTEGRATIONS_TIMEOUT_SECS = 45;
 
+/**
+ * POST /v1/agents/{uid}/login-code types the Claude code on the bot's machine
+ * and waits up to 20 s for Claude's answer, plus SSM pickup, before it replies.
+ * The shared 15 s bound cut that wait off, so a code that went through could
+ * read as a failure. The paste-back asks for a longer bound.
+ */
+export const CLAUDE_LOGIN_CODE_TIMEOUT_SECS = 45;
+
 const NOT_MAPPED = unavailable(
   'not-yet-mapped',
   'This capability is not yet mapped on the Sync host.',
@@ -1260,7 +1268,7 @@ export function createSyncPlatformAdapter(
       restartBrainApproval: (agentUid, brain) =>
         hqProJson('POST', AGENT_PATHS.reauth(agentUid), { brain }),
       submitClaudeLoginCode: (agentUid, code) =>
-        hqProJson('POST', AGENT_PATHS.loginCode(agentUid), { code }),
+        hqProJson('POST', AGENT_PATHS.loginCode(agentUid), { code }, CLAUDE_LOGIN_CODE_TIMEOUT_SECS),
       attachSlack: (agentUid) =>
         hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
       // The token goes in the body only. The path names the bot, nothing else.
