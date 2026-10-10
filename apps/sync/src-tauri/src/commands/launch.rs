@@ -411,11 +411,27 @@ fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(
     Ok(())
 }
 
-/// Open a new Terminal window at `path` and auto-run `claude`.
+/// Claude Code permission modes a launch may ask for (`claude --permission-mode`).
+const CLAUDE_PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "bypassPermissions"];
+
+/// The `claude` command line for a launch: plain `claude`, or with
+/// `--permission-mode <mode>` when the caller asked for one of the allowed
+/// modes (the Daily Brief asks for `bypassPermissions`). Anything else is
+/// refused, so the renderer can never put free text on the command line.
+fn claude_command(permission_mode: Option<&str>) -> Result<String, String> {
+    match permission_mode.map(str::trim).filter(|m| !m.is_empty()) {
+        None => Ok("claude".to_string()),
+        Some(mode) if CLAUDE_PERMISSION_MODES.contains(&mode) => Ok(format!("claude --permission-mode {mode}")),
+        Some(mode) => Err(format!("unknown Claude permission mode: {mode}")),
+    }
+}
+
+/// Open a new Terminal window at `path` and auto-run `claude`, optionally in
+/// a permission mode (`permissionMode` from the renderer; absent = plain).
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn launch_claude_code(path: String) -> Result<(), String> {
-    let result = spawn_cli_terminal_unix(&path, "claude");
+pub fn launch_claude_code(path: String, permission_mode: Option<String>) -> Result<(), String> {
+    let result = claude_command(permission_mode.as_deref()).and_then(|cmd| spawn_cli_terminal_unix(&path, &cmd));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -464,11 +480,13 @@ end tell"#,
     Ok(())
 }
 
-/// Open a Windows Terminal window at `path` and auto-run `claude`.
+/// Open a Windows Terminal window at `path` and auto-run `claude`, optionally
+/// in a permission mode.
 #[cfg(windows)]
 #[tauri::command]
-pub fn launch_claude_code(path: String) -> Result<(), String> {
-    let result = spawn_cli_terminal_windows(&path, "claude");
+pub fn launch_claude_code(path: String, permission_mode: Option<String>) -> Result<(), String> {
+    let result = claude_command(permission_mode.as_deref())
+        .and_then(|cmd| spawn_cli_terminal_windows_args(&path, "claude", cmd.strip_prefix("claude").unwrap_or("").trim()));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -542,6 +560,14 @@ fn executable_candidate(candidate: &std::path::Path) -> Option<PathBuf> {
 /// command to run in the new console.
 #[cfg(windows)]
 fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
+    spawn_cli_terminal_windows_args(path, binary, "")
+}
+
+/// As `spawn_cli_terminal_windows`, with trusted arguments after the binary
+/// (`args` must come from an allowlist, never the renderer's free text).
+#[cfg(windows)]
+fn spawn_cli_terminal_windows_args(path: &str, binary: &str, args: &str) -> Result<(), String> {
+    let command = if args.is_empty() { binary.to_string() } else { format!("{binary} {args}") };
     let escaped = powershell_single_quote_escape(path);
     let search_path = extended_search_path();
     find_in_search_path(binary, &search_path)
@@ -558,7 +584,7 @@ fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
                 "-NoProfile",
                 "-NoExit",
                 "-Command",
-                binary,
+                &command,
             ])
             .env("PATH", &search_path)
             .creation_flags(CREATE_NEW_CONSOLE)
@@ -566,7 +592,7 @@ fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
             .map(|_| ())
             .map_err(|e| format!("Failed to spawn Windows Terminal: {e}"))?;
     } else {
-        let ps_cmd = format!("Set-Location -LiteralPath '{escaped}'; {binary}");
+        let ps_cmd = format!("Set-Location -LiteralPath '{escaped}'; {command}");
         Command::new("powershell.exe")
             .args(["-NoProfile", "-NoExit", "-Command", &ps_cmd])
             .env("PATH", &search_path)
@@ -621,6 +647,18 @@ pub fn reveal_folder(path: String) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::util::test_support::ENV_MUTEX;
+
+    #[test]
+    fn claude_command_adds_only_an_allowed_permission_mode() {
+        assert_eq!(claude_command(None).unwrap(), "claude");
+        assert_eq!(claude_command(Some("  ")).unwrap(), "claude");
+        assert_eq!(
+            claude_command(Some("bypassPermissions")).unwrap(),
+            "claude --permission-mode bypassPermissions"
+        );
+        assert!(claude_command(Some("bypassPermissions; rm -rf ~")).is_err());
+        assert!(claude_command(Some("yolo")).is_err());
+    }
 
     #[test]
     fn deep_link_accepts_a_well_formed_url() {

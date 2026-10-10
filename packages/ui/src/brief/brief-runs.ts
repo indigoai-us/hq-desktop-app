@@ -328,6 +328,9 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
 // ── Elapsed, estimate, still working ────────────────────────────────────────
 
 /** status.json unchanged this long: show a calm "Still working on …" line. */
+/** Every brief launch into Claude (Start, Resume) opens in this permission mode. */
+export const BRIEF_CLAUDE_PERMISSION_MODE = "bypassPermissions" as const;
+
 export const BRIEF_QUIET_MS = 90_000;
 /** No new activity for this long and the last activity row says "still working…". */
 export const BRIEF_IDLE_MS = 20_000;

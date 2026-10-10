@@ -1566,8 +1566,11 @@ export function createSyncPlatformAdapter(
       openCodexDeepLink: (url) => call('open_codex_deep_link', { url }),
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
-      launchClaudeCode: async (path) => {
-        const result = await call<void>('launch_claude_code', { path });
+      launchClaudeCode: async (path, opts) => {
+        const result = await call<void>(
+          'launch_claude_code',
+          opts?.permissionMode ? { path, permissionMode: opts.permissionMode } : { path },
+        );
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },

@@ -14,7 +14,7 @@
  * the HQ root — no pre-typed command.
  */
 
-import type { ShellApi } from "@hq/platform";
+import type { ClaudePermissionMode, ShellApi } from "@hq/platform";
 import { SETUP_LAUNCH_COMMANDS } from "../chat/setup-channel";
 import { buildClaudeCodeUrl } from "./claude-code-link";
 import {
@@ -56,6 +56,14 @@ export interface LaunchActionsInput {
    * path settles trust before that scan, so it keeps `prompt` unchanged.
    */
   deepLinkPrompt?: string;
+  /**
+   * Claude Code permission mode for the terminal CLI launch
+   * (`claude --permission-mode <mode>`). The Daily Brief passes
+   * "bypassPermissions"; every other caller omits it and launches as before.
+   * The `claude://code/new` deep link has no permission-mode parameter, so
+   * the desktop-app path cannot carry it.
+   */
+  permissionMode?: ClaudePermissionMode;
 }
 
 export interface LaunchActions {
@@ -124,6 +132,7 @@ export function createLaunchActions({
   hqFolderPath,
   prompt,
   deepLinkPrompt,
+  permissionMode,
 }: LaunchActionsInput): LaunchActions {
   const folder = hqFolderPath.trim();
   const prefill = prefillOf(prompt);
@@ -147,7 +156,7 @@ export function createLaunchActions({
       return res.ok ? null : failureMessage(res, "Claude Code");
     }
     if (path === "cli") {
-      const res = await shell.launchClaudeCode(folder);
+      const res = permissionMode ? await shell.launchClaudeCode(folder, { permissionMode }) : await shell.launchClaudeCode(folder);
       return res.ok ? null : failureMessage(res, "Claude Code");
     }
     return claudeNotDetectedMessage(prefill);

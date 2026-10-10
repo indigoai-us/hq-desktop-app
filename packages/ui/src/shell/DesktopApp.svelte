@@ -66,7 +66,7 @@
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
-  import { checkBriefBot } from "../brief/brief-runs.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
     RAIL_ATLAS_FLAG,
@@ -5096,7 +5096,8 @@
     const res = await adapter.settings.getSetupStatus();
     const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
     if (!folder) return "HQ folder is not ready yet.";
-    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt });
+    // Brief launches open Claude in bypassPermissions mode (owner preset).
+    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt, permissionMode: BRIEF_CLAUDE_PERMISSION_MODE });
     if (engine === "claude") return actions.launchClaude();
     if (engine === "codex") return actions.launchCodex();
     let copied = false;
