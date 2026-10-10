@@ -94,6 +94,13 @@
 
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
+  import RuntimeRepairCard from "./RuntimeRepairCard.svelte";
+  import {
+    repairCardView,
+    repairPayloadForMessage,
+    type RepairPayload,
+  } from "./runtime-repair-model.js";
+  import type { RuntimeRepairController } from "./runtime-repair.svelte.js";
   import {
     messageHasVisibleContent,
     replyForSuggestion,
@@ -308,6 +315,20 @@
      */
     connections?: ConversationConnectionCards | null;
     /**
+     * Runtime repair cards, in a local bot's direct message only. A reply of
+     * that bot which carries a `runtime-repair` block (runtime-repair-model.ts)
+     * draws as a repair card in place of its plain text; the controller runs
+     * the card's button and keeps its state. Null: every message draws its
+     * plain text, as before.
+     */
+    runtimeRepair?: {
+      /** The bot of this direct message. Only its own replies draw a card. */
+      botUid: string;
+      /** The bot's name as the person knows it. */
+      botName: string;
+      controller: RuntimeRepairController;
+    } | null;
+    /**
      * Blocks the host attaches to a message that did not carry them, by
      * eventId. They are appended to that message's own blocks when it is
      * drawn; the message itself is not changed.
@@ -413,6 +434,7 @@
     suggestionsFrom = null,
     suggestedReplyText = null,
     connections = null,
+    runtimeRepair = null,
     extraBlocksByEventId = null,
     draftKey = null,
     draftStorage = null,
@@ -445,6 +467,26 @@
     const botUid = connections.botUid ?? suggestionsFrom;
     if (!messageMayDrawCards(msg, { botUid, selfUid: selfPersonUid })) return null;
     return connections.cardsFor(msg);
+  }
+
+  /**
+   * The repair payload a message draws as a card: only a reply of the local
+   * bot of this direct message, never the person's own message.
+   */
+  function repairFor(msg: ConversationMessageWire): RepairPayload | null {
+    const host = runtimeRepair;
+    if (!host) return null;
+    const from = (msg.fromPersonUid ?? "").trim();
+    if (!from || from !== host.botUid || (selfPersonUid && from === selfPersonUid)) return null;
+    return repairPayloadForMessage(msg);
+  }
+
+  /** The person's failed message a repair card's Try again sends again, by its event id. */
+  function retryTextFor(payload: RepairPayload): string | null {
+    if (!payload.retryOf) return null;
+    const original = messages.find((m) => m.eventId === payload.retryOf);
+    if (!original || (selfPersonUid && original.fromPersonUid !== selfPersonUid)) return null;
+    return original.body ?? null;
   }
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -1690,6 +1732,52 @@
     }
   }
 
+  /**
+   * Send the person's failed message again for a repair card's Try again. It
+   * shows in the timeline at once like a typed message, but leaves the
+   * composer and its draft alone. A failure is thrown to the card, which says
+   * so in its own words.
+   */
+  async function sendRepairRetry(body: string): Promise<void> {
+    const text = body.trim();
+    if (!text) return;
+    const eventId = `local-send-${sendSeq++}`;
+    sendMeta.set(eventId, {
+      knownIds: new Set(
+        messages
+          .map((msg) => (msg.eventId ?? "").trim())
+          .filter((id) => id !== ""),
+      ),
+    });
+    localSends = [
+      ...localSends,
+      {
+        eventId,
+        fromDisplayName: selfDisplayName?.trim() || "You",
+        fromPersonUid: selfPersonUid?.trim() || undefined,
+        body: text,
+        createdAt: new Date().toISOString(),
+        direction: "out",
+        mentions: [],
+        attachments: [],
+      },
+    ];
+    try {
+      const persistedId = await onsend?.(text, [], []);
+      if (isQueuedSendToken(persistedId)) {
+        queuedLocalIds = [...queuedLocalIds, eventId];
+      }
+      const meta = sendMeta.get(eventId);
+      if (meta && typeof persistedId === "string" && persistedId.trim() && !isQueuedSendToken(persistedId)) {
+        meta.echoId = persistedId.trim();
+      }
+    } catch (err) {
+      forgetLocalSends(localSends.filter((row) => row.eventId === eventId));
+      localSends = localSends.filter((row) => row.eventId !== eventId);
+      throw err;
+    }
+  }
+
   function onReplyKeydown(e: KeyboardEvent): void {
     syncComposerFromDom();
     if (showMentionPicker) {
@@ -1861,6 +1949,23 @@
 {/snippet}
 
 {#snippet bubbleContent(msg: ConversationMessageWire, rich: ExtractedRichContent)}
+  {@const repair = repairFor(msg)}
+  {#if repair && runtimeRepair}
+    {@const host = runtimeRepair}
+    <RuntimeRepairCard
+      view={repairCardView(
+        repair,
+        host.controller.stateFor(msg.eventId),
+        host.botName,
+        host.controller.updatePathFor(repair.runtime),
+      )}
+      onaction={(action) =>
+        host.controller.run(msg.eventId, repair, action, {
+          retryText: retryTextFor(repair),
+          send: sendRepairRetry,
+        })}
+    />
+  {:else}
   {#if rich.text.trim()}
     {@render bubbleBodyText(msg, rich.text)}
   {/if}
@@ -1872,6 +1977,7 @@
       {answeredChoices}
       connections={cardsForMessage(msg)}
     />
+  {/if}
   {/if}
   {#if msg.details?.trim()}
     <ArtifactCard

@@ -919,6 +919,8 @@ fn main() {
             commands::bots::local_bots_stop,
             commands::bots::local_bots_remove,
             commands::bots::local_bots_configure,
+            commands::bots::local_bots_set_model,
+            commands::bots::local_bots_probe,
             commands::bots::local_bots_promote,
             commands::bots::local_bots_workers,
             commands::bots::local_bots_list_remote,

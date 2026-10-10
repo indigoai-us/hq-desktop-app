@@ -429,7 +429,8 @@ describe("a card that keeps one height", () => {
     // buttons. Owner, 2026-10-04: one row cut "Ask them to share it with
     // ..." off, so the sentence may take two rows. The card's height is the
     // same constant either way, so the cards of one row stay equal.
-    const cardSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ConnectionCard.svelte"), "utf8");
+    // The stylesheet lives in connection-card.css, shared with the runtime repair card.
+    const cardSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "connection-card.css"), "utf8");
     const heightRule = cardSource.match(/--cc-height:\s*(\d+)px/);
     expect(heightRule?.[1]).toBe("168");
     expect(cardSource).toMatch(/\.connection-card\s*\{[^}]*height:\s*var\(--cc-height\)/);
@@ -450,8 +451,7 @@ describe("a card that keeps one height", () => {
   it("has no green edge in any state: a connected card keeps the neutral edge every other card has", () => {
     // Owner, 2026-10-05: "can we get rid of these green borders they're ugly".
     // happy-dom does not apply the component's stylesheet, so the rules are read from the source.
-    const cardSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ConnectionCard.svelte"), "utf8");
-    const css = cardSource.slice(cardSource.indexOf("<style"));
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "connection-card.css"), "utf8");
     const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }));
     for (const rule of rules) {
       if (!/border/.test(rule.body)) continue;

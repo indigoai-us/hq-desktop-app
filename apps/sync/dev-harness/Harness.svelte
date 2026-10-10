@@ -11,6 +11,7 @@
   import MeetingsShot from './MeetingsShot.svelte';
   import AccessShot from './AccessShot.svelte';
   import ActivityShot from './ActivityShot.svelte';
+  import RepairCardsShot from './RepairCardsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
@@ -259,6 +260,9 @@
   <AccessShot />
 {:else if view === 'activity-shot'}
   <ActivityShot />
+{:else if view === 'repair-cards'}
+  <!-- Bot runtime repair cards. &state=signed-out|update|model|transient|signing-in|updating|fixed &live=1 -->
+  <RepairCardsShot />
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />

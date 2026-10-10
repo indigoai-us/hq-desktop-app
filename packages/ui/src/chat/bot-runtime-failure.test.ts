@@ -35,13 +35,41 @@ describe("plainBotFailureReply", () => {
     expect(plainBotFailureReply(KICKOFF_MISSING)?.runtimeMissing).toBe(true);
   });
 
-  it("drops the quoted error for other failures", () => {
+  it("drops the quoted error for other failures, and does not blame sign-in for them", () => {
     const plain = plainBotFailureReply(KEPT_FAILING_OTHER, { noun: "PC" });
     expect(plain).toEqual({
-      body: "I couldn't answer that one. Try again in a bit, or check that Claude Code is signed in on this PC.",
+      body: "I couldn't answer that one because Claude Code ran into a problem. Try again in a bit.",
       runtimeMissing: false,
     });
     expect(plain!.body).not.toContain("529");
+    expect(plain!.body).not.toMatch(/sign/i);
+  });
+
+  it("never tells the person to sign in when Codex is only too old for its model (owner, 2026-10-10)", () => {
+    const tooOld = `Sorry ${EM} I couldn't answer that one (codex kept failing: The 'gpt-5.5' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.). Try again in a bit, or check that codex is signed in on this computer.`;
+    const plain = plainBotFailureReply(tooOld, { noun: "Mac" });
+    expect(plain!.body).toBe("I couldn't answer that one because Codex ran into a problem. Try again in a bit.");
+    expect(plain!.body).not.toMatch(/sign/i);
+  });
+
+  it("names sign-in only when the tool's error is a sign-in problem", () => {
+    for (const detail of ["Not logged in. Please run /login", "API Error: 401 Unauthorized", "Your session has expired, sign in again"]) {
+      const plain = plainBotFailureReply(`Sorry ${EM} I couldn't answer that one (claude kept failing: ${detail}).`, { noun: "Mac" });
+      expect(plain!.body).toBe("I couldn't answer because Claude Code is signed out on this Mac. Sign in, then send your message again.");
+      expect(plain!.body).not.toContain(detail);
+    }
+  });
+
+  it("keeps a reply that carries a runtime repair block as the bot wrote it", () => {
+    const repair = {
+      fromPersonUid: "agt_scout",
+      body: "Codex on this Mac is too old for the model I'm set to. Update it, then send your message again.",
+      richContent: { v: 1, blocks: [{ v: 1, kind: "runtime-repair", class: "cli-outdated", runtime: "codex", action: "update", botName: "scout" }] },
+    };
+    const legacy = { fromPersonUid: "agt_scout", body: KEPT_FAILING_OTHER };
+    const out = withPlainBotFailureReplies([repair, legacy]);
+    expect(out[0]).toBe(repair);
+    expect(out[1]!.body).not.toBe(KEPT_FAILING_OTHER);
   });
 
   it("leaves ordinary bot messages alone", () => {

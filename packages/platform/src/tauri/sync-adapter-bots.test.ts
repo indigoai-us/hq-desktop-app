@@ -237,3 +237,26 @@ describe('local bot promotion adapters', () => {
     expect(result).toEqual({ ok: true, value: { promotion: { agentUid: 'agt_TEST', phase: 'local-stopped' } } });
   });
 });
+
+describe('runtime repair adapters', () => {
+  it.each(['sync', 'tauri'])('%s passes set-model and probe arguments through as named fields', async (kind) => {
+    const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+    const invoke = async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args });
+      return cmd === 'local_bots_probe' ? { ok: false, class: 'signed-out', detail: 'x' } : { ok: true };
+    };
+    const adapter = kind === 'sync'
+      ? createSyncPlatformAdapter({ invoke, fetch: globalThis.fetch })
+      : new TauriPlatformAdapter({ invoke });
+    await adapter.bots!.setModel!('juniper', 'default');
+    const probe = await adapter.bots!.probe!('codex', 'gpt-5.5');
+    await adapter.bots!.probe!('claude');
+    expect(calls).toEqual([
+      { cmd: 'local_bots_set_model', args: { name: 'juniper', model: 'default' } },
+      { cmd: 'local_bots_probe', args: { runtime: 'codex', model: 'gpt-5.5' } },
+      { cmd: 'local_bots_probe', args: { runtime: 'claude', model: null } },
+    ]);
+    // A failing check is a value, not an error.
+    expect(probe).toEqual({ ok: true, value: { ok: false, class: 'signed-out', detail: 'x' } });
+  });
+});
