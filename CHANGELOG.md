@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - First run no longer stops on "Couldn't import" for people who set up HQ for themselves without a company. The Claude Desktop connector import now only appears after you create, join or pick a company, and it imports into that company. If an import fails, the screen says so in plain words and offers Try again and Skip for now.
+- The conflict copy card in the top right of the main window now has a close (X) button. It hides the card without opening Review and stays closed for that set of copies, including after the window reloads; the card comes back when a new conflict copy is parked. HQ also sends one macOS notification for each new set of parked copies, even when the main window is closed. It follows your notification settings, so it stays quiet when OS notifications are off or while you are looking at HQ. Clicking it opens the main window with the Review list open.
 
 ## [0.11.2] — 2026-10-10
 

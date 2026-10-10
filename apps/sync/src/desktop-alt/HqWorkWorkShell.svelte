@@ -54,7 +54,7 @@
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
   import ConflictParkedNotice from '../components/ConflictParkedNotice.svelte';
-  import { mergeConflictNotices, removeConflictNotice, type ConflictParkedNotice as ConflictParkedNoticeRow } from '../lib/conflictNotices';
+  import { isConflictReviewRoute, mergeConflictNotices, removeConflictNotice, type ConflictParkedNotice as ConflictParkedNoticeRow } from '../lib/conflictNotices';
   import { lifecycleForAuthStatus } from './lib/auth-lifecycle';
   import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
@@ -242,6 +242,9 @@
   let watcherLockNotice = $state<string | null>(null);
   let conflictNotices = $state<ConflictParkedNoticeRow[]>([]);
   let conflictNoticeBusyIds = $state<Set<string>>(new Set());
+  // A parked-conflict OS notification click arrives as the `conflicts` route;
+  // it opens the toast's Review list instead of changing screens.
+  let conflictReviewRequested = $state(false);
 
   function setConflictNoticeBusy(id: string, busy: boolean): void {
     const next = new Set(conflictNoticeBusyIds);
@@ -992,7 +995,9 @@
       try {
         const pending = await invokeFn('desktop_alt_consume_pending_route');
         if (cancelled) return;
-        if (!latestLiveNavigation) {
+        if (isConflictReviewRoute(pending)) {
+          conflictReviewRequested = true;
+        } else if (!latestLiveNavigation) {
           applyDesktopAltRoute(
             typeof pending === 'string' ? pending : null,
             navigation,
@@ -1052,6 +1057,10 @@
     }).catch(() => () => {});
 
     const unlistenPromise = listen<string>('desktop:navigate', (event) => {
+      if (isConflictReviewRoute(event.payload)) {
+        conflictReviewRequested = true;
+        return;
+      }
       const target = applyDesktopAltRoute(event.payload, navigation);
       if (target) {
         latestLiveNavigation = target.kind === 'meetings' ? 'meetings' : 'other';
@@ -1415,6 +1424,8 @@
       busyIds={conflictNoticeBusyIds}
       onShowInFinder={showConflictBackup}
       onAcknowledge={acknowledgeConflictBackup}
+      reviewRequested={conflictReviewRequested}
+      onReviewHandled={() => (conflictReviewRequested = false)}
     />
     {#if workspaceError}
       <div class="workspace-warning" data-testid="hq-work-workspace-error" role="status">
