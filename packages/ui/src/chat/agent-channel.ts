@@ -106,6 +106,31 @@ export const AGENT_HELLO_WAIT_MS = 90_000;
 /** Opening words of the hello request. Lets the app recognise its own request. */
 export const AGENT_HELLO_REQUEST_LEAD = "Automatic message from HQ:";
 
+/**
+ * Opening words of the visual first run's notes to the setup assistant
+ * (first-run/visual-first-run.ts). Like the hello request, they go on the
+ * bot-only lane and are never shown to the person.
+ */
+export const FIRST_RUN_NOTE_LEAD = "Setup note from the HQ desktop app:";
+
+/**
+ * The words before the first run's handoff JSON. The setup worker reads the
+ * handoff by this marker, so it must not change.
+ */
+export const FIRST_RUN_HANDOFF_MARKER = "Handoff from the app:";
+
+/**
+ * Whether a body is one of the app's own messages to a bot: the hello
+ * request, a connection notice, or a first-run note or kickoff carrying the
+ * setup handoff. Says nothing about who sent it; callers decide that.
+ */
+export function isAppNoticeBody(body: string | null | undefined): boolean {
+  const text = body ?? "";
+  if (text.startsWith(AGENT_HELLO_REQUEST_LEAD)) return true;
+  if (text.startsWith(FIRST_RUN_NOTE_LEAD)) return true;
+  return text.includes(`${FIRST_RUN_HANDOFF_MARKER} {"from":"desktop-visual-first-run"`);
+}
+
 /** How the hello request opens. Tells it apart from the app's later notices. */
 const AGENT_HELLO_REQUEST_OPENING = `${AGENT_HELLO_REQUEST_LEAD} your setup has just finished`;
 

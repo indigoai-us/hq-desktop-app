@@ -23,6 +23,7 @@
 import type { LocalBotRow } from "@hq/platform";
 
 import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
+import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "../agent-channel.js";
 import { SETUP_BOT_KICKOFF_PREFIX, SETUP_BOT_RUNTIME_ORDER, type SetupBotRef } from "../setup-bot.js";
 
 export type FirstRunRuntime = LocalBotRow["runtime"];
@@ -494,7 +495,7 @@ function buildKickoff(handoff: FirstRunHandoff, opts: { noun?: string }): string
   const kickoff =
     `${SETUP_BOT_KICKOFF_PREFIX} setup started in the HQ desktop app's visual setup, where I already finished some steps, ` +
     "and your hello already went out, so do not greet again or repeat the plan. " +
-    `Handoff from the app: ${firstRunHandoffNote(handoff)}. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${firstRunHandoffNote(handoff)}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     `${proseName(name, "I chose your name, ", ", so keep it. ", "I chose your name (\"name\" in the handoff), so keep it. ")}` +
     `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. ` +
@@ -523,8 +524,8 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
   const name = normalizeAssistantName(handoff.name);
   const tools = [...new Set(handoff.toolsReady)].map(runtimeLabel).join(", ") || runtimeLabel(handoff.runtime);
   const notice =
-    "Setup note from the HQ desktop app: I just went through the app's visual setup, which finished some setup steps for you. " +
-    `Handoff from the app: ${firstRunHandoffNote(handoff)}. ` +
+    `${FIRST_RUN_NOTE_LEAD} I just went through the app's visual setup, which finished some setup steps for you. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${firstRunHandoffNote(handoff)}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     `${proseName(name, "I named you ", ", so use that name. ", "I named you (\"name\" in the handoff), so use that name. ")}` +
     `The coding tool sign-in is finished: signed in on this ${noun}: ${tools}. Do not ask me to pick or sign in to a coding tool. ` +
@@ -549,8 +550,8 @@ export function firstRunImportNotice(imported: FirstRunImportHandoff): string {
     import: firstRunImportJson(imported),
   });
   const notice =
-    "Setup note from the HQ desktop app: I just finished the context import in the app's visual setup. " +
-    `Handoff from the app: ${note}. ` +
+    `${FIRST_RUN_NOTE_LEAD} I just finished the context import in the app's visual setup. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${note}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     importSentence(imported) +
     "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
@@ -615,8 +616,8 @@ export function firstRunSettledNotice(
     ...(apps && Object.keys(apps).length ? { apps } : {}),
   });
   const notice =
-    "Setup note from the HQ desktop app: I just finished more of the app's visual setup. " +
-    `Handoff from the app: ${note}. ` +
+    `${FIRST_RUN_NOTE_LEAD} I just finished more of the app's visual setup. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${note}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     importSentence(settled.imported) +
     settledSentence(settled) +

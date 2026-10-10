@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- After the visual first run, your assistant's chat no longer shows the setup notes the app sends it. They looked like messages from you and held internal setup text. The assistant still gets them; they are now hidden from the chat and from message search.
+
 ## [0.11.2] — 2026-10-10
 
 - HQ keeps a channel or bot visible when it can confirm that the company or bot still exists but you cannot open its details. Retired and missing companies and bots still disappear as before.

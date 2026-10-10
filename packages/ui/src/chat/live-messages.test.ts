@@ -17,6 +17,7 @@ import {
   HUMAN_HISTORY_VIEW,
   TIMELINE_ROOT_PAGE_SIZE,
 } from "./live-messages.js";
+import { firstRunHandoffNotice, firstRunImportNotice, firstRunSettledNotice } from "./first-run/visual-first-run.js";
 
 describe("normalizeConversationMessages", () => {
   it("reads a { messages } page and a bare array", () => {
@@ -733,5 +734,72 @@ describe("audience on conversation rows", () => {
     const rows = messagesForDisplay(BOT_DM, { inlineReplies: true });
     expect(rows.map((row) => row.eventId)).toEqual(["e2"]);
     expect(rows[0]!.audience).toBe("both");
+  });
+});
+
+/**
+ * Owner finding, round 2: after the visual first run, the setup assistant's
+ * chat showed a message from the person themselves holding the raw handoff
+ * ("Setup note from the HQ desktop app: ... Handoff from the app: {...}").
+ * The app sends it on the bot-only lane, but the server's thread read does
+ * not return the lane, so the row arrived untagged and was shown.
+ */
+describe("the visual first run's notes to the setup assistant", () => {
+  const BOT = "agt_setup";
+  const ME = "prs_me";
+  const at = (n: number): string => `2026-10-10T13:5${n}:00.000Z`;
+  const settled = firstRunSettledNotice({ imported: null, team: { kind: "personal" }, apps: null })!;
+  const handoff = firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], imported: null, team: null, apps: null });
+  const imported = firstRunImportNotice({ summary: { projects: 3, repos: 1 }, report: null });
+  /** Newest first, untagged, as the server's direct-message read returns them. */
+  const page = {
+    messages: [
+      { eventId: "e5", fromPersonUid: BOT, body: "You're all set up. What next?", createdAt: at(5) },
+      { eventId: "e4", fromPersonUid: ME, body: imported, createdAt: at(4) },
+      { eventId: "e3", fromPersonUid: ME, body: settled, createdAt: at(3) },
+      { eventId: "e2", fromPersonUid: ME, body: handoff, createdAt: at(2) },
+      { eventId: "e1", fromPersonUid: BOT, body: "Hi, I'm Biscuit.", createdAt: at(1) },
+    ],
+  };
+
+  it("are left out of the conversation, though the server returns them with no lane", () => {
+    const rows = messagesForDisplay(page, { inlineReplies: true, selfUid: ME });
+    expect(rows.map((row) => row.eventId)).toEqual(["e1", "e5"]);
+    const shown = rows.map((row) => row.body ?? "").join("\n");
+    expect(shown).not.toContain("Handoff from the app");
+    expect(shown).not.toContain("desktop-visual-first-run");
+    expect(shown).not.toContain("Setup note from the HQ desktop app");
+    // Nothing the person is shown as sending carries the handoff.
+    expect(rows.filter((row) => row.fromPersonUid === ME)).toEqual([]);
+  });
+
+  it("stay out when merged into an open timeline and when tagged for the bot", () => {
+    const merged = mergeFetchedTimeline([], page, { inlineReplies: true, selfUid: ME });
+    expect(merged.map((row) => row.eventId)).toEqual(["e1", "e5"]);
+    const tagged = { eventId: "t1", fromPersonUid: ME, body: settled, createdAt: at(1), audience: "agent" };
+    expect(isAppRequestRow(tagged, { selfUid: ME })).toBe(true);
+  });
+
+  it("still carry the marker and the JSON the setup worker reads", () => {
+    for (const body of [settled, handoff, imported]) {
+      const json = body.match(/Handoff from the app: (\{.*?\})\. /)?.[1];
+      expect(json).toBeTruthy();
+      const parsed = JSON.parse(json!);
+      expect(parsed.from).toBe("desktop-visual-first-run");
+      expect(parsed.v).toBe(1);
+    }
+    expect(JSON.parse(settled.match(/Handoff from the app: (\{.*?\})\. /)![1]!)).toEqual({
+      from: "desktop-visual-first-run",
+      v: 1,
+      done: ["company"],
+      team: { kind: "personal" },
+    });
+  });
+
+  it("does not hide what a bot or another person wrote, or a message the person typed that only mentions the setup", () => {
+    expect(isAppRequestRow({ eventId: "b", fromPersonUid: BOT, body: settled }, { selfUid: ME })).toBe(false);
+    expect(isAppRequestRow({ eventId: "o", fromPersonUid: "prs_other", body: settled }, { selfUid: ME })).toBe(false);
+    expect(isAppRequestRow({ eventId: "s", fromPersonUid: ME, body: "What was the setup note from the HQ desktop app?" }, { selfUid: ME })).toBe(false);
+    expect(isAppRequestRow({ eventId: "local-send-1", fromPersonUid: ME, body: settled }, { selfUid: ME })).toBe(false);
   });
 });

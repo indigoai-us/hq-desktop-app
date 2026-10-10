@@ -10,6 +10,7 @@ import {
   buildAgentSlackConnectedNotice,
   buildAgentToolConnectedNotice,
 } from "../agent-channel.js";
+import { firstRunSettledNotice } from "../first-run/visual-first-run.js";
 import type { MessageSearchHit } from "../sidebar-model.js";
 import { isHiddenRequestHit, withoutHiddenRequestHits } from "./hidden-request-hits.js";
 
@@ -85,5 +86,23 @@ describe("withoutHiddenRequestHits", () => {
       "evt_person",
       "evt_channel",
     ]);
+  });
+});
+
+describe("the visual first run's notes to the setup assistant", () => {
+  const settled = firstRunSettledNotice({ imported: null, team: { kind: "personal" }, apps: null })!;
+
+  it("are left out of search like the app's other requests to a bot", () => {
+    expect(isHiddenRequestHit(hit({ body: settled, counterpartyUid: "agt_setup" }))).toBe(true);
+    expect(isHiddenRequestHit(hit({ body: settled, fromPersonUid: "prs_ada" }), "prs_ada")).toBe(true);
+    expect(isHiddenRequestHit(hit({ body: settled, direction: "out" }), "prs_ada")).toBe(true);
+    // A snippet cut from the middle still carries the handoff.
+    const snippet = settled.slice(settled.indexOf("Handoff from the app:"));
+    expect(isHiddenRequestHit(hit({ body: "", snippet, counterpartyUid: "agt_setup" }))).toBe(true);
+  });
+
+  it("are kept when the bot or another person wrote them", () => {
+    expect(isHiddenRequestHit(hit({ body: settled, fromPersonUid: "agt_setup" }), "prs_ada")).toBe(false);
+    expect(isHiddenRequestHit(hit({ body: settled, direction: "in" }), "prs_ada")).toBe(false);
   });
 });
