@@ -709,6 +709,71 @@ fn conflict_notice_state_dir() -> Result<PathBuf, String> {
     Ok(home.join(".hq"))
 }
 
+/// Announce a new batch of parked conflict copies once through the OS
+/// notification path. Runs on every change to the pending list; the batch
+/// bookkeeping and the preference gate (`systemNotifications` and the
+/// only-when-unfocused rule) live in `hq_desktop_core::conflict_notify`.
+/// A click opens the desktop window on the conflict Review list.
+pub(crate) fn notify_new_conflict_batch(app: &AppHandle, notices: &[serde_json::Value]) {
+    use hq_desktop_core::conflict_notify::{
+        decide_conflict_notification, ConflictNotifyDecision, CONFLICT_NOTIFY_KIND,
+    };
+    let Ok(state_dir) = conflict_notice_state_dir() else {
+        return;
+    };
+    let decision = decide_conflict_notification(&state_dir, notices, || {
+        let focused = crate::commands::notifications::app_is_focused(app);
+        hq_desktop_core::native_notify::should_native_notify(CONFLICT_NOTIFY_KIND, focused)
+    });
+    let notification = match decision {
+        ConflictNotifyDecision::NoNewBatch => return,
+        ConflictNotifyDecision::Suppressed => {
+            log(
+                LOG_TAG,
+                &format!(
+                    "CONFLICT_NOTIFY_SUPPRESSED {} notice(s) (settings gate)",
+                    notices.len()
+                ),
+            );
+            return;
+        }
+        ConflictNotifyDecision::Send(notification) => notification,
+    };
+    log(
+        LOG_TAG,
+        &format!("CONFLICT_NOTIFY_SEND {} notice(s)", notices.len()),
+    );
+
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::spawn(move || {
+            crate::commands::un_notify::deliver_message(
+                &notification.title,
+                &notification.body,
+                CONFLICT_NOTIFY_KIND,
+                &crate::commands::un_notify::MessageUserInfo {
+                    route: hq_desktop_core::conflict_notify::CONFLICT_REVIEW_ROUTE.to_string(),
+                    ..Default::default()
+                },
+            );
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        if let Err(error) = app
+            .notification()
+            .builder()
+            .title(&notification.title)
+            .body(&notification.body)
+            .show()
+        {
+            log(LOG_TAG, &format!("CONFLICT_NOTIFY_SEND_FAILED err={error}"));
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn acknowledge_conflict_notice(app: AppHandle, notice_id: String) -> Result<(), String> {
     run_daemon_sync_command_blocking(vec![
