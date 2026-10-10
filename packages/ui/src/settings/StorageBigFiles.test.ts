@@ -21,7 +21,9 @@ import {
   offloadFreedBytes,
   offloadOutcome,
   offloadPreviewBlocker,
+  offloadReclaimAfter,
   offloadSummary,
+  localTime,
 } from "./storage-model.js";
 
 // Real `hq storage ... --json` output, captured from hq-cli feat/hq-storage
@@ -30,12 +32,17 @@ import statusJson from "./__fixtures__/storage/status.json";
 import statusAfterJson from "./__fixtures__/storage/status-after-offload.json";
 import dryRunJson from "./__fixtures__/storage/offload-dry.json";
 import realJson from "./__fixtures__/storage/offload-real.json";
+// hq-cli feat/hq-storage @ d737dfad dry run on a core that keeps git's undo
+// history: nothing freed at once, every byte pending until ~30 days out
+// (shape from storage-offload.test.ts "dry run with a core that keeps undo history").
+import dryUndoJson from "./__fixtures__/storage/offload-dry-undo.json";
 
 const STATUS = statusJson as StorageStatus;
 const STATUS_AFTER = statusAfterJson as StorageStatus;
 const DRY_RUN = dryRunJson as StorageOffloadResult;
 /** Uploaded 6 copies, then the history rewrite failed: freed 0, one error. */
 const REAL_PARTIAL = realJson as StorageOffloadResult;
+const DRY_UNDO = dryUndoJson as StorageOffloadResult;
 
 const CANDIDATE_BYTES = 378_535_936;
 const MB = 1024 * 1024;
@@ -146,6 +153,17 @@ describe("Settings › Storage › Big files", () => {
     await render({ status: async () => ({ ok: true, value: noOffload as StorageStatus }) });
     expect(q("settings-storage-big-files-update")?.textContent).toContain("Update HQ to move big files");
     expect(q("settings-storage-offload")).toBeNull();
+  });
+
+  it("says when the space is freed when the CLI keeps undo history", async () => {
+    const previewOffload = vi.fn(async (): Promise<AdapterResult<StorageOffloadResult>> => ({ ok: true, value: DRY_UNDO }));
+    const offload = vi.fn();
+    await render({ status: async () => ({ ok: true, value: STATUS }), previewOffload, offload });
+    q("settings-storage-offload")!.click();
+    await settle();
+    const text = dialog()?.textContent ?? "";
+    expect(text).toContain(`This frees about 361.0 MB by ${localTime("2026-11-08T18:00:00Z")}.`);
+    expect(offload).not.toHaveBeenCalled();
   });
 
   it("disables the action when there is nothing big to move", async () => {
@@ -334,6 +352,20 @@ describe("Big files model", () => {
     // Older dry run without candidates falls back to bytes.
     const legacy = { ...filled, history: { uploaded: 6, bytes: CANDIDATE_BYTES, freed_bytes: 0 } };
     expect(offloadFreedBytes(legacy)).toBe(CANDIDATE_BYTES);
+  });
+
+  it("uses pending bytes and their date when the dry run frees nothing at once", () => {
+    expect(DRY_UNDO.history.freed_bytes).toBe(0);
+    expect(offloadFreedBytes(DRY_UNDO)).toBe(CANDIDATE_BYTES);
+    expect(offloadReclaimAfter(DRY_UNDO)).toBe("2026-11-08T18:00:00Z");
+    // Pending smaller than the candidates: the pending figure wins.
+    const partial = { ...DRY_UNDO, history: { ...DRY_UNDO.history, pending_reclaim_bytes: 100 * MB } };
+    expect(offloadFreedBytes(partial)).toBe(100 * MB);
+    // Older CLI output: no pending bytes, no date, candidate size as before.
+    expect(offloadReclaimAfter(DRY_RUN)).toBeNull();
+    const freedNow = { ...DRY_UNDO, history: { ...DRY_UNDO.history, freed_bytes: CANDIDATE_BYTES, reclaim_after: null, pending_reclaim_bytes: 0 } };
+    expect(offloadFreedBytes(freedNow)).toBe(CANDIDATE_BYTES);
+    expect(offloadReclaimAfter(freedNow)).toBeNull();
   });
 
   it("ignores current files the CLI marks unavailable", () => {

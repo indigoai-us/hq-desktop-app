@@ -38,6 +38,7 @@
     offloadIncludesCurrent,
     offloadOutcome,
     offloadPreviewBlocker,
+    offloadReclaimAfter,
     offloadSummary,
     offloadUnavailableCopy,
     CLOUD_ADMIN_ONLY_COPY,
@@ -162,9 +163,14 @@
     offloadPhase = "idle";
   }
 
+  function offloadBy(r: StorageOffloadResult): string {
+    const by = localTime(offloadReclaimAfter(r));
+    return by ? ` by ${by}` : "";
+  }
+
   const offloadConfirmMessage = $derived(
     offloadPreview
-      ? `${offloadSummary(offloadPreview)}. This frees about ${formatBytes(offloadFreedBytes(offloadPreview))}. ${OFFLOAD_CONFIRM_COPY}${offloadIncludesCurrent(offloadPreview) ? ` ${OFFLOAD_CURRENT_COPY}` : ""}`
+      ? `${offloadSummary(offloadPreview)}. This frees about ${formatBytes(offloadFreedBytes(offloadPreview))}${offloadBy(offloadPreview)}. ${OFFLOAD_CONFIRM_COPY}${offloadIncludesCurrent(offloadPreview) ? ` ${OFFLOAD_CURRENT_COPY}` : ""}`
       : "",
   );
 

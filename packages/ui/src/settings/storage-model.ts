@@ -170,7 +170,8 @@ function localFreedNow(l: StorageLocalPruneResult): number {
 }
 
 /**
- * Bytes the 24 h undo backup still holds. Older CLIs send only
+ * Bytes git's undo history still holds, freed at `reclaim_after` (up to 30
+ * days out; older cores free them after 24 h). Older CLIs send only
  * `backup_ref` with the estimate, so the rest of the estimate is pending.
  */
 function localPending(l: StorageLocalPruneResult): number {
@@ -279,8 +280,8 @@ export function pruneOutcome(
 }
 
 /**
- * The delete confirm. Local backups are kept 24 h before the space is freed; deleted cloud versions
- * are gone at once.
+ * The delete confirm. Local space comes back once git's recent undo history ages out (by the
+ * date shown, up to 30 days); deleted cloud versions are gone at once.
  */
 export function pruneConfirmCopy(opts: {
   parts: readonly string[];
@@ -294,7 +295,13 @@ export function pruneConfirmCopy(opts: {
   const by = opts.local ? localTime(opts.reclaimAfter) : null;
   const frees = `This frees about ${formatBytes(opts.bytes)}${by ? ` by ${by}` : ""}.`;
   const undo: string[] = [];
-  if (opts.local) undo.push("HQ keeps a backup for 24 hours, then frees the space. After that, these old versions are gone for good.");
+  if (opts.local) {
+    undo.push(
+      by
+        ? "HQ keeps recent undo history until then. After that, these old versions are gone for good."
+        : "HQ keeps recent undo history, so the space can take up to 30 days to free. After that, these old versions are gone for good.",
+    );
+  }
   if (opts.cloud) {
     undo.push(opts.local ? "Deleted cloud versions can't be restored." : "This can't be undone. You won't be able to restore these old versions.");
   }
@@ -409,12 +416,31 @@ function currentMoved(r: StorageOffloadResult): { count: number; bytes: number; 
 }
 
 /**
+ * History bytes held by git's undo history after an offload, freed at
+ * `reclaim_after`. Only counted when the CLI says nothing is freed at once
+ * (newer cores); older CLI output reports 0 here.
+ */
+function historyPending(r: StorageOffloadResult): number {
+  const h = r.history;
+  if (!h || h.available === false) return 0;
+  const pending = h.pending_reclaim_bytes ?? 0;
+  return (h.freed_bytes ?? 0) === 0 && pending > 0 ? pending : 0;
+}
+
+/** When an offload's pending history bytes are freed, or `null` when none are pending. */
+export function offloadReclaimAfter(r: StorageOffloadResult): string | null {
+  return historyPending(r) > 0 ? r.history?.reclaim_after ?? null : null;
+}
+
+/**
  * Space an offload frees, or would free on a dry run. A dry run uses the
- * candidate size; a real run only what the CLI says it freed.
+ * pending bytes when the CLI says they come back later (see
+ * `offloadReclaimAfter`), else the candidate size; a real run only what the
+ * CLI says it freed.
  */
 export function offloadFreedBytes(r: StorageOffloadResult): number {
   const current = currentMoved(r);
-  if (r.dry_run) return historyPlanned(r).bytes + (current.freed || current.bytes);
+  if (r.dry_run) return (historyPending(r) || historyPlanned(r).bytes) + (current.freed || current.bytes);
   const h = r.history?.available === false ? 0 : r.history?.freed_bytes ?? 0;
   return h + current.freed;
 }
