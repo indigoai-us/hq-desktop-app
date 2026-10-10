@@ -44,6 +44,9 @@ const BAND_AGE_DAYS: Record<string, number> = {
 
 export const UPDATE_HQ_CODE = "update-hq";
 
+/** Error code `hq storage` calls return when they run too long. */
+export const TIMEOUT_CODE = "storage-timeout";
+
 export function isProtectedBand(band: StorageBand, index: number): boolean {
   return index === 0 || band.id === PROTECTED_BAND_ID;
 }
@@ -141,6 +144,9 @@ export function pruneRequests(
 export function storageErrorCopy(message: string | null | undefined): string {
   if (message && message.includes(UPDATE_HQ_CODE)) {
     return "Update HQ to manage storage.";
+  }
+  if (message && message.includes(TIMEOUT_CODE)) {
+    return "Reading your backup sizes took too long. Try again.";
   }
   return "We couldn't read your backup sizes. Try again in a moment.";
 }
@@ -273,7 +279,7 @@ export function pruneOutcome(
 }
 
 /**
- * The delete confirm. Local backups keep a 24 h undo; deleted cloud versions
+ * The delete confirm. Local backups are kept 24 h before the space is freed; deleted cloud versions
  * are gone at once.
  */
 export function pruneConfirmCopy(opts: {
@@ -288,7 +294,7 @@ export function pruneConfirmCopy(opts: {
   const by = opts.local ? localTime(opts.reclaimAfter) : null;
   const frees = `This frees about ${formatBytes(opts.bytes)}${by ? ` by ${by}` : ""}.`;
   const undo: string[] = [];
-  if (opts.local) undo.push("You can undo this for 24 hours. After that, these old versions are gone for good.");
+  if (opts.local) undo.push("HQ keeps a backup for 24 hours, then frees the space. After that, these old versions are gone for good.");
   if (opts.cloud) {
     undo.push(opts.local ? "Deleted cloud versions can't be restored." : "This can't be undone. You won't be able to restore these old versions.");
   }

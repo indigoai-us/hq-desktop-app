@@ -94,6 +94,7 @@ describe("storage prune cutoff dates", () => {
 describe("storage error copy", () => {
   it("asks for an HQ update when the CLI is missing or old", () => {
     expect(storageErrorCopy("update-hq")).toBe("Update HQ to manage storage.");
+    expect(storageErrorCopy("storage-timeout")).toBe("Reading your backup sizes took too long. Try again.");
   });
 
   it("never shows raw CLI text", () => {

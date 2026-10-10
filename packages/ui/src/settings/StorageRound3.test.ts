@@ -114,10 +114,10 @@ describe("prune (F2)", () => {
     ]);
   });
 
-  it("confirm copy is accurate about the 24 h undo", () => {
+  it("confirm copy says a backup is kept for 24 h before the space is freed", () => {
     const local = pruneConfirmCopy({ parts: ["backups on this Mac from before 2026-01-01 (about 120.1 MB)"], bytes: prunedBytes(DRY_R3), notes: [], local: true, cloud: false, reclaimAfter: DRY_R3.local!.reclaim_after });
     expect(local).toMatch(/^This deletes backups on this Mac/);
-    expect(local).toContain("You can undo this for 24 hours. After that, these old versions are gone for good.");
+    expect(local).toContain("HQ keeps a backup for 24 hours, then frees the space. After that, these old versions are gone for good.");
     expect(local).not.toContain("can't be undone");
     const cloud = pruneConfirmCopy({ parts: ["old file versions in acme from before 2026-01-01 (about 1 GB)"], bytes: 1, notes: [], local: false, cloud: true });
     expect(cloud).toContain("This can't be undone.");

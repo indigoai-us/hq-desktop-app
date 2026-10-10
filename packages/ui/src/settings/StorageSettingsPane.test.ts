@@ -215,7 +215,7 @@ describe("Settings › Storage pane", () => {
     expect(prune).not.toHaveBeenCalled();
     const dialog = document.querySelector("[data-testid='confirm-dialog']");
     expect(dialog?.textContent).toContain("This deletes backups on this");
-    expect(dialog?.textContent).toContain("You can undo this for 24 hours. After that, these old versions are gone for good.");
+    expect(dialog?.textContent).toContain("HQ keeps a backup for 24 hours, then frees the space. After that, these old versions are gone for good.");
     expect(dialog?.textContent).not.toContain("can't be undone");
     expect(dialog?.textContent).toContain("64.00 GB");
 

@@ -11,6 +11,7 @@
 //! instead of showing raw CLI output.
 
 use std::ffi::OsString;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,29 @@ use crate::util::paths;
 
 /// Error code the UI maps to "Update HQ to manage storage".
 pub const UPDATE_HQ_ERROR: &str = "update-hq";
+
+/// Error code the UI maps to a plain "took too long, try again" message when
+/// `hq storage` does not finish in time.
+pub const TIMEOUT_ERROR: &str = "storage-timeout";
+
+/// Reads (status, dry runs) should be quick; cap them so the pane never spins
+/// forever on a stuck CLI.
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Real prune, offload and fetch move data and can take a while, but still
+/// get a ceiling.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How long `run_hq` waits for the given `hq` argv before giving up.
+pub fn timeout_for(args: &[OsString]) -> Duration {
+    let is_read = args.iter().any(|a| a == "--dry-run")
+        || args.get(1).is_some_and(|a| a == "status");
+    if is_read {
+        READ_TIMEOUT
+    } else {
+        WRITE_TIMEOUT
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -334,22 +358,37 @@ pub fn parse_prune(stdout: &str) -> Result<PruneResult, String> {
     serde_json::from_str(stdout.trim()).map_err(|e| format!("parse storage prune: {e}"))
 }
 
+/// Await `fut` for at most `limit`; on expiry log it and return the
+/// `storage-timeout` code instead of raw text.
+async fn run_with_timeout<F: std::future::Future>(
+    fut: F,
+    limit: Duration,
+) -> Result<F::Output, String> {
+    tokio::time::timeout(limit, fut).await.map_err(|_| {
+        log(
+            "storage",
+            &format!("hq storage timed out after {}s", limit.as_secs()),
+        );
+        TIMEOUT_ERROR.to_string()
+    })
+}
+
 pub(crate) async fn run_hq(args: Vec<OsString>) -> Result<String, String> {
     let hq = paths::resolve_bin("hq");
     let folder = resolve_hq_folder();
+    let limit = timeout_for(&args);
     let mut cmd = paths::tokio_spawn_command(&hq, &[]);
-    let output = cmd
-        .args(&args)
+    cmd.args(&args)
         .env("PATH", paths::child_path())
         .current_dir(&folder)
         .env("HQ_NO_UPDATE_CHECK", "1")
         .env("HQ_ROOT", &folder)
-        .output()
-        .await
-        .map_err(|e| {
-            log("storage", &format!("spawn hq failed: {e}"));
-            UPDATE_HQ_ERROR.to_string()
-        })?;
+        // Dropping the future on timeout must not leave `hq` running.
+        .kill_on_drop(true);
+    let output = run_with_timeout(cmd.output(), limit).await?.map_err(|e| {
+        log("storage", &format!("spawn hq failed: {e}"));
+        UPDATE_HQ_ERROR.to_string()
+    })?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -743,6 +782,33 @@ mod tests {
             rendered(&offload_args(false)),
             ["storage", "offload", "--yes", "--json"]
         );
+    }
+
+    #[test]
+    fn timeout_is_short_for_reads_and_bounded_for_writes() {
+        assert_eq!(timeout_for(&status_args()), READ_TIMEOUT);
+        assert_eq!(timeout_for(&offload_args(true)), READ_TIMEOUT);
+        assert_eq!(timeout_for(&offload_args(false)), WRITE_TIMEOUT);
+        let req = PruneRequest {
+            local_before: Some("2026-01-01".into()),
+            ..Default::default()
+        };
+        assert_eq!(timeout_for(&prune_args(&req, true).unwrap()), READ_TIMEOUT);
+        assert_eq!(timeout_for(&prune_args(&req, false).unwrap()), WRITE_TIMEOUT);
+        assert!(READ_TIMEOUT < WRITE_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn stuck_call_returns_plain_timeout_code() {
+        let never = std::future::pending::<()>();
+        let err = run_with_timeout(never, Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert_eq!(err, TIMEOUT_ERROR);
+        let ok = run_with_timeout(async { 7 }, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(ok, 7);
     }
 
     #[test]
