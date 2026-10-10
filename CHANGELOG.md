@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- A locally built test copy of HQ (any bundle identifier other than the shipped HQ app) no longer runs HQ Anywhere setup at startup, so it can no longer remove or add the HQ setup in Claude Code or Codex. It also skips the Work Mesh install, the updater, the login item and the background installers, and logs one line for each step it skips. The shipped app is unchanged.
+
 ## [0.11.2] — 2026-10-10
 
 - HQ keeps a channel or bot visible when it can confirm that the company or bot still exists but you cannot open its details. Retired and missing companies and bots still disappear as before.
