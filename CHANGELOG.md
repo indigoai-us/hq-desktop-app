@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The bundled sync runner moves to hq-cloud 6.18.60. It carries the watch-owner parent lease, the .git sidecar snapshot fix, and the sync conflict re-park fixes.
 - Your HQ assistant's name can now include numbers, like "R2D2" or "StefanTest123". It still has to start with a letter. If your HQ tools are too old for a name with numbers, HQ says so in plain words and asks you to pick another name or try again after HQ updates.
 - A company started during first-run setup now gets a handle of at most 30 characters, the limit HQ accepts. Before this, a long company name could make a handle that was too long.
 - After the visual first run, your assistant's chat no longer shows the setup notes the app sends it. They looked like messages from you and held internal setup text. The assistant still gets them; they are now hidden from the chat and from message search.
