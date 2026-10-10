@@ -62,6 +62,7 @@
     firstRunDoneTitle,
     firstRunFinishTarget,
     firstRunNextLabel,
+    firstRunOffersChat,
     firstRunOffersFinish,
     firstRunStepNumber,
     firstRunStepsFor,
@@ -546,7 +547,7 @@
       name = normalizeAssistantName(next);
       onconfirmname(name, draft.runtime);
     }
-    goTo(finish ? firstRunFinishTarget(runtimeReady, shownSteps) : nextFirstRunStep("name", shownSteps));
+    goTo(finish ? firstRunFinishTarget(runtimeReady, shownSteps, "name") : nextFirstRunStep("name", shownSteps));
   }
 
   function patchDraft(patch: Partial<CreateBotDraft>): void {
@@ -640,6 +641,13 @@
       shownSteps.filter((s) => s.id === "context" || s.id === "notes" || s.id === "projects").length,
   );
 
+  /**
+   * "Continue in chat" ends the takeover, so it is held back on the steps
+   * before the import (firstRunOffersChat): Next is the only way forward
+   * there, and the import is never skipped without being seen.
+   */
+  const offersChat = $derived(firstRunOffersChat(step, runtimeReady, shownSteps));
+
   const talkLabel = $derived(
     leaving === "talk"
       ? FIRST_RUN_COPY.opening
@@ -661,14 +669,14 @@
   <div class="new-bot-takeover-shade" aria-hidden="true"></div>
   <header class="new-bot-takeover-header">
     <span class="new-bot-takeover-wordmark">HQ</span>
-    <button
+    {#if offersChat}<button
       type="button"
       class="new-bot-takeover-cancel"
       data-testid="first-run-continue-in-chat"
       disabled={leaving !== null}
       aria-busy={leaving === "chat" ? "true" : undefined}
       onclick={() => void leave("chat")}
-    >{leaving === "chat" ? FIRST_RUN_COPY.opening : FIRST_RUN_COPY.continueInChat}</button>
+    >{leaving === "chat" ? FIRST_RUN_COPY.opening : FIRST_RUN_COPY.continueInChat}</button>{/if}
   </header>
   {#if step === "context"}
     <!-- Bring in your context: a full-window scene instead of the card. -->
@@ -703,7 +711,7 @@
               onretry: () => importRunner.retry(),
               onrecheck: () => importRunner.recheck(),
               onnext: () => goTo(nextFirstRunStep("context", shownSteps)),
-              onfinish: () => goTo(firstRunFinishTarget(runtimeReady, shownSteps)),
+              onfinish: () => goTo(firstRunFinishTarget(runtimeReady, shownSteps, "context")),
               reducedMotion,
               onannounce: (text: string) => (importAnnouncement = text),
             }}
@@ -869,8 +877,8 @@
               <p class="new-bot-price first-run-status" data-testid="first-run-team-status" data-state="failed">
                 {teamAction.reason}
                 <button type="button" class="new-bot-inline-link" data-testid="first-run-team-retry" onclick={() => teamRunner.retry()}>{FIRST_RUN_COPY.retry}</button>
-                <span aria-hidden="true">·</span>
-                <button type="button" class="new-bot-inline-link" data-testid="first-run-team-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
+                {#if offersChat}<span aria-hidden="true">·</span>
+                <button type="button" class="new-bot-inline-link" data-testid="first-run-team-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>{/if}
               </p>
             {:else if appKind && appConnect[appKind].state === "failed"}
               {@const failed = appConnect[appKind] as { reason: string; retry: boolean }}
@@ -887,8 +895,8 @@
               <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="failed">
                 {creation.reason}
                 <button type="button" class="new-bot-inline-link" data-testid="first-run-retry" onclick={onretry}>{FIRST_RUN_COPY.retry}</button>
-                <span aria-hidden="true">·</span>
-                <button type="button" class="new-bot-inline-link" data-testid="first-run-failed-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
+                {#if offersChat}<span aria-hidden="true">·</span>
+                <button type="button" class="new-bot-inline-link" data-testid="first-run-failed-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>{/if}
               </p>
             {:else if creation.state === "creating" && !isLast}
               <!-- On Done the held button already says it. -->
@@ -927,7 +935,7 @@
                     class="new-bot-create-submit"
                     data-testid="first-run-finish"
                     disabled={!canLeave || (step === "team" && teamAction.state === "running")}
-                    onclick={() => goTo(firstRunFinishTarget(runtimeReady, shownSteps))}
+                    onclick={() => goTo(firstRunFinishTarget(runtimeReady, shownSteps, step))}
                   >{FIRST_RUN_COPY.finish}</button>
                 {/if}
               </div>
