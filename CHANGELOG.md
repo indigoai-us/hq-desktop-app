@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On Bring in your context, Bring it in is now the one main button, and Skip for now is a small link under it. Continue in chat no longer shows at the top of that screen; it only appears there if the screen itself cannot load.
+
+- On the Your team screen, pressing Retry while a join or a new company is still being set up now waits for that same request instead of sending a second one. If starting a company failed or took too long, Retry first checks whether the company was made after all and uses it, instead of starting it again. Closing setup while a join or start is still running no longer leaves anything running behind it.
+
 - First run no longer stops on "Couldn't import" for people who set up HQ for themselves without a company. The Claude Desktop connector import now only appears after you create, join or pick a company, and it imports into that company. If an import fails, the screen says so in plain words and offers Try again and Skip for now.
 - Your HQ assistant's name can now include numbers, like "R2D2" or "StefanTest123". It still has to start with a letter. If your HQ tools are too old for a name with numbers, HQ says so in plain words and asks you to pick another name or try again after HQ updates.
 - A company started during first-run setup now gets a handle of at most 30 characters, the limit HQ accepts. Before this, a long company name could make a handle that was too long.

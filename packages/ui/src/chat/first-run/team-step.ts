@@ -91,6 +91,26 @@ export function teamOptionsFrom(workspaces: readonly Workspace[] | null | undefi
 }
 
 /**
+ * The person's company with this slug in the roster, for a Retry after a
+ * create that failed or timed out (it may have made the company after all).
+ * Only a cloud company the person is an active member of counts: a local
+ * folder with the same name is not a company they started.
+ */
+export function activeCloudCompanyBySlug(
+  workspaces: readonly Workspace[] | null | undefined,
+  slug: string,
+): FirstRunTeamCompany | null {
+  const row = dedupeWorkspaces([...(workspaces ?? [])]).find(
+    (w) =>
+      w.kind === "company" &&
+      w.slug === slug &&
+      w.membershipStatus === "active" &&
+      (w.cloudUid ?? "").trim() !== "",
+  );
+  return row ? toCompany(row) : null;
+}
+
+/**
  * What "Finish with defaults" and an untouched screen settle on: the one
  * company the person already belongs to, else "Just me". An invite is never
  * accepted by default.
@@ -195,6 +215,8 @@ export interface TeamActionRunner {
   /** Forget a failure (the person picked another card). */
   clear(): void;
   current(): TeamActionState;
+  /** The takeover went away: stop the timer, and no answer is reported after this. */
+  dispose(): void;
 }
 
 export const TEAM_GENERIC_FAILURE = "That did not work. Try again in a moment.";
@@ -223,25 +245,30 @@ export function createTeamActionRunner(
   let last: { key: string; label: string; action: () => Promise<TeamActionResult> } | null = null;
   /** The run whose answer still counts; a timed-out run's late answer is ignored. */
   let token = 0;
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const set = (next: TeamActionState): void => {
     state = next;
     onchange(next);
   };
   function run(key: string, label: string, action: () => Promise<TeamActionResult>): void {
+    if (disposed) return;
     if (state.state === "running") return;
     if (state.state === "done" && state.key === key) return;
     last = { key, label, action };
     const mine = ++token;
     set({ state: "running", key, label });
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
+      timer = null;
       if (mine !== token) return;
       token += 1;
       console.warn("[hq-desktop] first-run team action timed out");
       set({ state: "failed", key, label, reason: TEAM_GENERIC_FAILURE });
     }, timeoutMs);
     const settle = (next: TeamActionState): void => {
-      clearTimeout(timer);
       if (mine !== token) return;
+      if (timer) clearTimeout(timer);
+      timer = null;
       token += 1;
       set(next);
     };
@@ -251,6 +278,7 @@ export function createTeamActionRunner(
         (result) =>
           settle(result.ok ? { state: "done", key, choice: result.choice } : { state: "failed", key, label, reason: result.reason }),
         (err: unknown) => {
+          if (mine !== token) return;
           console.warn("[hq-desktop] first-run team action threw:", err);
           settle({ state: "failed", key, label, reason: TEAM_GENERIC_FAILURE });
         },
@@ -269,5 +297,11 @@ export function createTeamActionRunner(
       if (state.state === "failed") set({ state: "idle" });
     },
     current: () => state,
+    dispose() {
+      disposed = true;
+      token += 1;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
   };
 }
