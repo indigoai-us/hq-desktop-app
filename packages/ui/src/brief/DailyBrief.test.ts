@@ -31,12 +31,12 @@ describe("DailyBrief", () => {
     expect([...target.querySelectorAll("[data-widget]")].map((el) => el.getAttribute("data-widget"))).toEqual([
       "sunrise",
       "needs",
-      "team",
       "incident",
-      "shipped",
       "waiting",
       "meetings",
       "fleet",
+      "team",
+      "shipped",
     ]);
     expect(target.querySelector('[data-testid="brief-today"]')?.textContent).toContain("HQ Founder Office Hours");
     expect(target.querySelectorAll('[data-testid="brief-need"]')).toHaveLength(4);

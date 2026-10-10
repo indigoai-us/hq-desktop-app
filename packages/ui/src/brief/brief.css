@@ -58,7 +58,8 @@
   min-height: 0;
   overflow: auto;
   box-sizing: border-box;
-  padding: 22px 28px 28px;
+  /* Content caps at 1360px and centers; the background still fills the window. */
+  padding: 22px max(28px, calc((100% - 1360px) / 2)) 28px;
   background: radial-gradient(1200px 700px at 30% -10%, #232327 0%, var(--b-bg) 60%), var(--b-bg);
   color: var(--b-t1);
   font-family: var(--b-ui);
@@ -163,8 +164,7 @@
   display: grid;
   gap: var(--b-gap);
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  grid-template-rows: repeat(3, minmax(196px, 1fr));
-  min-height: 640px;
+  grid-template-rows: repeat(3, minmax(196px, auto));
   margin-top: 14px;
 }
 .daily-brief .w {

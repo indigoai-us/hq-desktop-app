@@ -170,6 +170,8 @@ export interface BriefInput {
   waitingOn: BriefWaiting[];
   team: BriefTeammate[];
   sessions: BriefSession[];
+  /** Sessions started in the 24 hours before `now`, for the sunrise timeline. */
+  recentSessions?: BriefSession[];
   /** ISO of the last brief the user opened, or null for never. */
   lastBriefAt: string | null;
   /** DMs read for this brief, for the provenance line. */

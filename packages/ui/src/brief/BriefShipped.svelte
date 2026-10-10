@@ -131,8 +131,17 @@
     flex-direction: column;
     border-radius: 14px;
     padding: 10px 12px;
-    background: rgba(255, 255, 255, 0.04);
-    box-shadow: var(--b-well);
+    /* Glass: lit from the top, hairline rim, soft drop. No backdrop-filter
+       (WKWebView draws it as a square that ignores the radius). */
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0.015)),
+      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.06), transparent 60%);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-top-color: rgba(255, 255, 255, 0.18);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 1px 2px rgba(0, 0, 0, 0.3),
+      0 8px 20px -8px rgba(0, 0, 0, 0.5);
     min-width: 0;
   }
   .run :global(.org) {

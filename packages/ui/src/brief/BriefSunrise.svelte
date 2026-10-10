@@ -17,10 +17,21 @@
     /** Line shown when nothing is owed. */
     quietLine: string;
     big?: boolean;
-    /** Yesterday's sessions for the timeline, when the card is tall. */
+    /** Sessions from the 24 hours before `now`, oldest first. */
     timeline?: { at: string; title: string }[];
+    /** End of the timeline window (ISO). */
+    now?: string;
   }
-  let { total, cleared, userName, sub, quietLine, big = false, timeline = [] }: Props = $props();
+  let { total, cleared, userName, sub, quietLine, big = false, timeline = [], now = new Date().toISOString() }: Props = $props();
+  const end = $derived(Date.parse(now));
+  // Hour ticks every 6h across the window, labelled in local time.
+  const ticks = $derived(
+    [24, 18, 12, 6, 0].map((back) => {
+      const t = end - back * 3600_000;
+      const d = new Date(t);
+      return { x: tx(t), label: back === 0 ? "now" : `${d.getHours()}:00` };
+    }),
+  );
   const brief = useBrief();
 
   const left = $derived(total - cleared);
@@ -56,11 +67,11 @@
   const WATER = hex("#FF9696");
   const mix = (a: number[], b: number[], t: number) => a.map((v, i) => Math.round(v + (b[i]! - v) * t));
 
-  function timeX(iso: string): number {
-    const d = new Date(iso);
-    const h = d.getHours() + d.getMinutes() / 60;
-    return 8 + ((Math.min(22, Math.max(12, h)) - 12) / 10) * 344;
+  function tx(t: number): number {
+    const f = (t - (end - 24 * 3600_000)) / (24 * 3600_000);
+    return 8 + Math.min(1, Math.max(0, f)) * 344;
   }
+  const timeX = (iso: string) => tx(Date.parse(iso));
 
   onMount(() => {
     const el = canvas;
@@ -198,23 +209,27 @@
       Morning{userName ? `, ${userName}` : ""}.<br /><span>{line}</span>
     </div>
     <div class="sub" style="margin-top:12px;max-width:{big ? 420 : 330}px">{sub}</div>
-    {#if timeline.length}
-      <div class="tl">
-        <div class="eyebrow" style="color:rgba(255,190,160,.6)">Yesterday · {timeline.length} sessions</div>
-        <svg viewBox="0 0 360 44" aria-hidden="true">
-          <line class="ln" x1="8" y1="26" x2="352" y2="26" stroke="rgba(255,190,160,.35)" stroke-width="1.5" />
-          {#each [12, 14, 16, 18, 20, 22] as h (h)}
-            <text x={8 + ((h - 12) / 10) * 344} y="42" fill="rgba(255,255,255,.3)" font-size="8.5" text-anchor="middle">{h}:00</text>
-          {/each}
-          {#each timeline as s, i (i)}
-            <g class="s">
-              <circle cx={timeX(s.at)} cy="26" r="4" fill="#ffb580" style="animation-delay:{0.8 + i * 0.12}s" class="sd" />
-              <text x={timeX(s.at)} y="12" fill="#fff" font-size="9.5" text-anchor={i > timeline.length - 3 ? "end" : i < 1 ? "start" : "middle"}>{s.title}</text>
-            </g>
-          {/each}
-        </svg>
+    <div class="tl">
+      <div class="eyebrow" style="color:rgba(255,190,160,.6)">
+        Last 24 hours · {timeline.length ? `${timeline.length} session${timeline.length === 1 ? "" : "s"}` : "no sessions"}
       </div>
-    {/if}
+      <svg viewBox="0 0 360 44" aria-hidden="true">
+        <line class="ln" x1="8" y1="26" x2="352" y2="26" stroke="rgba(255,190,160,.35)" stroke-width="1.5" />
+        {#each ticks as t (t.label)}
+          <text x={t.x} y="42" fill="rgba(255,255,255,.3)" font-size="8.5" text-anchor={t.label === "now" ? "end" : "middle"}>{t.label}</text>
+        {/each}
+        {#each timeline as s, i (i)}
+          <g class="s">
+            <title>{s.title}</title>
+            <circle cx={timeX(s.at)} cy="26" r="4" fill={i === timeline.length - 1 ? "#ff809f" : "#ffb580"} style="animation-delay:{0.8 + i * 0.06}s" class="sd" />
+          </g>
+        {/each}
+        {#if timeline.length}
+          {@const last = timeline[timeline.length - 1]!}
+          <text x={timeX(last.at)} y="12" fill="#fff" font-size="9.5" text-anchor={timeX(last.at) > 260 ? "end" : timeX(last.at) < 100 ? "start" : "middle"}>{last.title}</text>
+        {/if}
+      </svg>
+    </div>
     <div class="meter">
       <div class="track"><i style="width:{total ? (cleared / total) * 100 : 100}%"></i></div>
       <b>{total ? `${cleared} / ${total}` : "CLEAR"}</b>

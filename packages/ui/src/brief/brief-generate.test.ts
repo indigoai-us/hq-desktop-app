@@ -87,13 +87,21 @@ describe("generateBrief: density", () => {
     expect(plan.widgets.map((w) => w.kind)).toEqual([
       "sunrise",
       "needs",
-      "team",
       "incident",
-      "shipped",
       "waiting",
       "meetings",
       "fleet",
+      "team",
+      "shipped",
     ]);
+  });
+
+  it("never gives a widget a full-height single column", () => {
+    for (let n = MIN_DENSITY; n <= MAX_DENSITY; n += 1) {
+      for (const w of place(n, Object.keys(FITS) as (keyof typeof FITS)[]).widgets) {
+        expect(w.cols === 1 && w.rows > 1).toBe(false);
+      }
+    }
   });
 
   it("never goes below 4 or above 8", () => {
@@ -102,7 +110,8 @@ describe("generateBrief: density", () => {
       const plan = generateBrief(day);
       expect(plan.density).toBeGreaterThanOrEqual(MIN_DENSITY);
       expect(plan.density).toBeLessThanOrEqual(MAX_DENSITY);
-      expect(plan.areas).toHaveLength(3);
+      expect(plan.areas.length).toBeGreaterThanOrEqual(2);
+      expect(plan.areas.length).toBeLessThanOrEqual(3);
       for (const row of plan.areas) expect(row.split(" ")).toHaveLength(6);
     }
   });
@@ -115,13 +124,14 @@ describe("generateBrief: density", () => {
   });
 
   it("places a template's areas so every widget's span matches its slot", () => {
-    const { areas, widgets } = place(5, ["catchup", "needs", "agenda", "oneThing", "shipped"]);
+    const { areas, widgets } = place(5, ["catchup", "needs", "agenda", "incident", "shipped"]);
     expect(areas).toEqual([
       "catchup catchup catchup needs needs agenda",
-      "catchup catchup catchup needs needs agenda",
-      "oneThing oneThing shipped shipped shipped agenda",
+      "catchup catchup catchup needs needs incident",
+      "catchup catchup catchup shipped shipped shipped",
     ]);
-    expect(widgets.find((w) => w.kind === "catchup")).toMatchObject({ cols: 3, rows: 2 });
+    expect(widgets.find((w) => w.kind === "catchup")).toMatchObject({ cols: 3, rows: 3 });
+    expect(widgets.find((w) => w.kind === "agenda")).toMatchObject({ size: "S", cols: 1, rows: 1 });
     expect(widgets.find((w) => w.kind === "shipped")).toMatchObject({ size: "W3", cols: 3, rows: 1 });
   });
 

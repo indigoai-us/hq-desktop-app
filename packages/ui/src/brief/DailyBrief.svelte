@@ -90,13 +90,18 @@
   const quietLine = $derived(
     input.calendarToday.length ? `${input.calendarToday.length} call${input.calendarToday.length === 1 ? "" : "s"} today.` : "Nothing owed.",
   );
-  const timeline = $derived(
-    plan.sessions.byWorkstream.length && plan.sessions.count <= 10
-      ? input.sessions
-          .filter((s) => !s.company || input.companies.some((c) => c.toLowerCase() === s.company!.toLowerCase()))
-          .map((s) => ({ at: s.startedAt, title: s.title }))
-      : [],
-  );
+  // The sunrise card always shows the last 24 hours of this company's sessions.
+  const timeline = $derived.by(() => {
+    const end = Date.parse(input.now);
+    return (input.recentSessions ?? input.sessions)
+      .filter((s) => !s.company || input.companies.some((c) => c.toLowerCase() === s.company!.toLowerCase()))
+      .filter((s) => {
+        const t = Date.parse(s.startedAt);
+        return t > end - 24 * 3600_000 && t <= end;
+      })
+      .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+      .map((s) => ({ at: s.startedAt, title: s.title }));
+  });
 </script>
 
 <div class="daily-brief" data-testid="daily-brief" data-lead={plan.lead} data-density={plan.density}>
@@ -130,7 +135,8 @@
             sub={sunSub}
             {quietLine}
             big={w.cols >= 3}
-            timeline={w.rows > 1 && w.size !== "XL" ? timeline : []}
+            {timeline}
+            now={input.now}
           />
         {:else if w.kind === "needs"}
           <BriefNeedsYou decisions={input.decisions} prompts={plan.prompts} rows={w.rows} />

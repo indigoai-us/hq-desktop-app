@@ -34,7 +34,7 @@ export type BriefWidgetKind =
   | "oneThing"
   | "catchup";
 
-export type BriefSlotSize = "XL" | "M" | "T" | "W" | "W3" | "S";
+export type BriefSlotSize = "XL" | "L" | "M" | "W" | "W3" | "S";
 
 export interface BriefWidget {
   kind: BriefWidgetKind;
@@ -78,31 +78,36 @@ interface Template {
   cls: Record<string, BriefSlotSize>;
 }
 
+// No full-height single-column slots: short widgets (incident, fleet, waiting,
+// risk) take 1x1 squares so they never stretch into empty columns.
 export const TEMPLATES: Record<number, Template> = {
-  4: { areas: ["a a a b b c", "a a a b b c", "a a a d d c"], cls: { a: "XL", b: "M", c: "T", d: "W" } },
-  5: { areas: ["a a a b b c", "a a a b b c", "d d e e e c"], cls: { a: "XL", b: "M", c: "T", d: "W", e: "W3" } },
-  6: { areas: ["a a b b c d", "a a b b c d", "e e f f c d"], cls: { a: "M", b: "M", c: "T", d: "T", e: "W", f: "W" } },
-  7: { areas: ["a a b b c d", "a a b b c d", "e e f g c d"], cls: { a: "M", b: "M", c: "T", d: "T", e: "W", f: "S", g: "S" } },
+  4: { areas: ["a a a b b b", "a a a b b b", "a a a c c d"], cls: { a: "XL", b: "L", c: "W", d: "S" } },
+  5: { areas: ["a a a b b c", "a a a b b d", "a a a e e e"], cls: { a: "XL", b: "M", c: "S", d: "S", e: "W3" } },
+  6: { areas: ["a a b b c d", "a a b b e f"], cls: { a: "M", b: "M", c: "S", d: "S", e: "S", f: "S" } },
+  7: {
+    areas: ["a a a b b c", "a a a b b d", "e e f f g g"],
+    cls: { a: "L", b: "M", c: "S", d: "S", e: "W", f: "W", g: "W" },
+  },
   8: {
-    areas: ["a a b b c d", "a a b b c d", "e e f g h d"],
-    cls: { a: "M", b: "M", c: "T", d: "T", e: "W", f: "S", g: "S", h: "S" },
+    areas: ["a a b b c d", "a a b b e f", "g g g h h h"],
+    cls: { a: "M", b: "M", c: "S", d: "S", e: "S", f: "S", g: "W3", h: "W3" },
   },
 };
 
 /** Size classes each widget can render in. */
 export const FITS: Record<BriefWidgetKind, BriefSlotSize[]> = {
-  sunrise: ["XL", "M"],
-  needs: ["M", "W"],
-  team: ["T"],
-  incident: ["T", "S"],
-  fleet: ["T", "S"],
-  shipped: ["M", "W", "W3"],
-  waiting: ["S"],
-  meetings: ["T", "S"],
-  risk: ["S"],
-  agenda: ["T", "M"],
-  otherWork: ["M", "S", "W"],
-  oneThing: ["W"],
+  sunrise: ["XL", "L", "M"],
+  needs: ["M", "L", "W"],
+  team: ["M", "W3", "W"],
+  incident: ["S", "W"],
+  fleet: ["S", "W"],
+  shipped: ["L", "M", "W3", "W"],
+  waiting: ["S", "W"],
+  meetings: ["S", "W3", "W"],
+  risk: ["S", "W"],
+  agenda: ["M", "W3", "W", "S"],
+  otherWork: ["S", "W", "M"],
+  oneThing: ["W", "W3"],
   catchup: ["XL"],
 };
 

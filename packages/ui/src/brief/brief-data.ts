@@ -291,9 +291,12 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
     readDms(adapter, now, yesterday, selfUid, fail),
     (async () => {
       try {
-        const day = localDay(yesterday);
+        // Yesterday and today, so the sunrise timeline can cover the last 24 hours.
         const page = localSessionsFromNative(
-          await unwrap("sessions", adapter.agents?.listLocalSessions?.({ from: day, to: day }, { limit: 200 })),
+          await unwrap(
+            "sessions",
+            adapter.agents?.listLocalSessions?.({ from: localDay(yesterday), to: localDay(now) }, { limit: 400 }),
+          ),
         );
         return page.rows.map(
           (r): BriefSession => ({
@@ -325,7 +328,11 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
       opened: null,
       waitingOn: dms.waiting,
       team: dms.team,
-      sessions,
+      sessions: sessions.filter((s) => localDay(new Date(s.startedAt)) === localDay(yesterday)),
+      recentSessions: sessions.filter((s) => {
+        const t = Date.parse(s.startedAt);
+        return t > now.getTime() - 24 * 3600_000 && t <= now.getTime();
+      }),
       lastBriefAt: opts.lastBriefAt ?? null,
       dmCount: dms.count,
   };
