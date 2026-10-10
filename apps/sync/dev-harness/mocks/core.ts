@@ -755,6 +755,16 @@ const previewLocalBots: Array<Record<string, unknown>> = botsTablePreviewEnabled
 const handlers: Record<string, Handler> = {
   local_bots_list: () => ({ bots: previewLocalBots }),
   local_bots_workers: () => ({ workers: [] }),
+  // The readiness check before a local bot is saved passes by default;
+  // `?probe=` (audit-switches.ts) shows each failure.
+  local_bots_probe: (args) => ({
+    ok: true,
+    class: null,
+    detail: 'It answered.',
+    runtime: args?.runtime ?? 'codex',
+    model: args?.model ?? null,
+    durationMs: 900,
+  }),
   local_bots_create: (args) => {
     const name = String(args?.name ?? 'bot');
     const agentUid = `agt_PREVIEW${name.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;

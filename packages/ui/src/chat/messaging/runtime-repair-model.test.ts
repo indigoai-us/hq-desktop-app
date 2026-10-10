@@ -189,5 +189,7 @@ describe("parseProbeResult", () => {
     expect(parseProbeResult({ ok: false, class: "not-installed" })).toEqual({ ok: false, class: null });
     expect(parseProbeResult({ ok: "true" })).toEqual({ ok: false, class: null });
     expect(parseProbeResult(null)).toEqual({ ok: false, class: null });
+    // An hq CLI without `bot probe` answers { supported: false }: a plain failure, no class.
+    expect(parseProbeResult({ supported: false })).toEqual({ ok: false, class: null });
   });
 });

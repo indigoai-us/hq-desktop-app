@@ -2268,11 +2268,14 @@ export interface LocalBotsApi {
   setModel?(name: string, model: string): AdapterPromise<Json>;
   /**
    * Run one test turn with a runtime (and model) exactly as a bot would
-   * (`hq bot probe --runtime <r> [--model <m>]`): `{ ok, class, detail }`.
-   * A failing check is a value with `ok: false`, not an error. Optional for
-   * older hosts.
+   * (`hq bot probe --runtime <r> [--model <m>] [--effort <e>] [--timeout
+   * <s>]`): `{ ok, class, detail, runtime, model, modelFallback? }`. A failing
+   * check is a value with `ok: false`, not an error. An hq CLI that predates
+   * the command answers `{ supported: false }`. The repair card passes the
+   * runtime and model; the New bot flow adds the bot's thinking level and a
+   * shorter timeout. Optional for older hosts.
    */
-  probe?(runtime: SessionProviderId, model?: string | null): AdapterPromise<Json>;
+  probe?(runtime: SessionProviderId, model?: string | null, options?: LocalBotProbeOptions): AdapterPromise<Json>;
   /**
    * The local bots this ACCOUNT owns, each flagged `here` or not
    * (`hq bot list --remote`). The one source of truth for "the person owns
@@ -2540,6 +2543,13 @@ export interface ContextImportApi {
 }
 
 /** Input to `LocalBotsApi.configure`. */
+export interface LocalBotProbeOptions {
+  /** Thinking level the check runs at; null = the runtime's default. */
+  effort?: string | null;
+  /** Give up after this many seconds (the CLI's own default is 120). */
+  timeoutSecs?: number | null;
+}
+
 export interface LocalBotSettingsInput {
   model?: string | null;
   effort?: string | null;

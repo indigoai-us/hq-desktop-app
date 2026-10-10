@@ -812,6 +812,7 @@
   } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import { PROBE_TIMEOUT_SECS } from "../chat/create-bot/runtime-probe.js";
   import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
@@ -2818,7 +2819,18 @@
     // A cached reading is enough unless the person asked to check again.
     if (localBotRuntimeReady && !force) return;
     const result = await preflight();
-    if (!result.ok) return;
+    if (!result.ok) {
+      // The check itself failed (lookup timed out, HQ folder not found). Say
+      // so per runtime, so every screen offers its Try again instead of
+      // sitting on "Checking…" with nothing to press. A runtime already read
+      // as signed in keeps that reading.
+      const failed: Record<string, RuntimeStatus> = { ...(localBotRuntimeStatus ?? {}) };
+      for (const id of ["claude", "codex", "grok"]) {
+        if (localBotRuntimeReady?.[id] !== true) failed[id] = { state: "probeFailed", reason: "" };
+      }
+      localBotRuntimeStatus = failed;
+      return;
+    }
     const rec = result.value as Record<string, unknown>;
     const next: Record<string, boolean> = {};
     const statuses: Record<string, RuntimeStatus> = {};
@@ -3804,8 +3816,9 @@
     };
   });
   async function onBotRuntimeSignedIn(): Promise<void> {
-    localBotRuntimeReady = null;
-    await loadLocalBotRuntimeReady();
+    // Read again with the old reading on screen: clearing it first left the
+    // first run's rows on "Checking…" if the read then failed.
+    await recheckLocalBotRuntimes();
   }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
   /**
@@ -13862,6 +13875,9 @@
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
+          probeBotRuntime={adapter.bots?.probe
+            ? (input) => adapter.bots!.probe!(input.runtime, input.model, { effort: input.effort, timeoutSecs: PROBE_TIMEOUT_SECS })
+            : null}
           {localBots}
           {botDisplayNames}
           {ownedLocalBotUids}
