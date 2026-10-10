@@ -190,6 +190,29 @@ describe("createToolSignInRunner", () => {
     expect(second.runner.current()?.phase).toBe("failed");
   });
 
+  it("a start that never answers is called off at the deadline, so the browser cannot open after the failure", async () => {
+    const hung = api({ loginStart: vi.fn(() => new Promise<never>(() => {})) });
+    const { runner, onfailed } = run(hung, 1000);
+    runner.start("claude");
+    await vi.advanceTimersByTimeAsync(999);
+    expect(hung.loginCancel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runner.current()).toEqual({ tool: "claude", phase: "failed" });
+    expect(hung.loginCancel).toHaveBeenCalledTimes(1);
+    expect(hung.loginCancel).toHaveBeenCalledWith("claude");
+    expect(onfailed).toHaveBeenCalledWith("claude");
+  });
+
+  it("a plain error from the host is not cancelled again", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const host = api({ loginStart: vi.fn(async () => ({ state: "error" as const })) });
+    const { runner } = run(host);
+    runner.start("codex");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runner.current()?.phase).toBe("failed");
+    expect(host.loginCancel).not.toHaveBeenCalled();
+  });
+
   it("Cancel stops polling and asks the host to cancel", async () => {
     const host = api();
     const { runner } = run(host);

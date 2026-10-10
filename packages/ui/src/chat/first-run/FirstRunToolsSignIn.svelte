@@ -19,6 +19,7 @@
     type InstallOutcome,
   } from "../../install-choice/install-choice.js";
   import {
+    TOOL_CHECKING_STALE_MS,
     TOOL_LABEL,
     TOOL_SIGNIN_COPY,
     createToolSignInRunner,
@@ -37,6 +38,8 @@
     signInApi: RuntimeSignInApi | null;
     pollMs?: number;
     openTimeoutMs?: number;
+    /** How long "Checking…" may last before the row offers Check again. */
+    checkingStaleMs?: number;
     hqFolderPath?: string;
     /** A tool is the one the person is signing in to: it becomes the pick. */
     onpick: (tool: SignInTool) => void;
@@ -56,6 +59,7 @@
     signInApi,
     pollMs = 1500,
     openTimeoutMs,
+    checkingStaleMs = TOOL_CHECKING_STALE_MS,
     hqFolderPath = "",
     onpick,
     onsignedin,
@@ -103,6 +107,21 @@
   type Extra = "opening" | "opened" | "openFailed" | "installing" | "installFailed";
   let extra = $state<Record<SignInTool, Extra | null>>({ claude: null, codex: null });
   let rechecking = $state(false);
+
+  /**
+   * A reading that never arrives must not leave the rows with nothing to
+   * press: after a while a "Checking…" row offers Check again.
+   */
+  const anyChecking = $derived(kinds.claude === "checking" || kinds.codex === "checking");
+  let checkingStale = $state(false);
+  $effect(() => {
+    if (!anyChecking) {
+      checkingStale = false;
+      return;
+    }
+    const timer = setTimeout(() => (checkingStale = true), checkingStaleMs);
+    return () => clearTimeout(timer);
+  });
 
   const busy = $derived(
     signIn?.phase === "opening" ||
@@ -224,6 +243,8 @@
       {:else if after === "openFailed"}
         <button type="button" class="first-run-tool-action" data-testid={`first-run-tool-${tool}-retry`} disabled={busy} onclick={() => void openDesktop(tool)}>{TOOL_SIGNIN_COPY.retry}</button>
       {:else if after === "opened" && kind === "openDesktop"}
+        <button type="button" class="first-run-tool-action" data-testid={`first-run-tool-${tool}-recheck`} disabled={rechecking} aria-busy={rechecking ? "true" : undefined} onclick={() => void recheck()}>{rechecking ? TOOL_SIGNIN_COPY.checking : "Check again"}</button>
+      {:else if kind === "checking" && checkingStale}
         <button type="button" class="first-run-tool-action" data-testid={`first-run-tool-${tool}-recheck`} disabled={rechecking} aria-busy={rechecking ? "true" : undefined} onclick={() => void recheck()}>{rechecking ? TOOL_SIGNIN_COPY.checking : "Check again"}</button>
       {:else if toolRowAction(tool, kind) && canPress(kind)}
         <button

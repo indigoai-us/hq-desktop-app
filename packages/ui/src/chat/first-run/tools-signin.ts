@@ -188,6 +188,9 @@ export interface ToolSignInState {
   phase: ToolSignInPhase;
 }
 
+/** How long a row may say "Checking…" before it offers Check again. */
+export const TOOL_CHECKING_STALE_MS = 10_000;
+
 /** How long opening the sign-in may take before the row says it failed. */
 export const TOOL_SIGNIN_OPEN_TIMEOUT_MS = 20_000;
 
@@ -235,11 +238,14 @@ export function createToolSignInRunner(options: ToolSignInRunnerOptions): ToolSi
     pollTimer = undefined;
     openTimer = undefined;
   }
-  function fail(tool: SignInTool, token: number): void {
+  function fail(tool: SignInTool, token: number, cancelHost = false): void {
     if (token !== generation) return;
     generation += 1;
     clearTimers();
     set({ tool, phase: "failed" });
+    // A start that never answered may still open the browser later: call it
+    // off, so nothing opens after the row said it did not finish.
+    if (cancelHost) void Promise.resolve().then(() => options.api.loginCancel?.(tool)).catch(() => {});
     void options.onfailed?.(tool);
   }
   function apply(tool: SignInTool, token: number, result: RuntimeSignInState): void {
@@ -281,7 +287,7 @@ export function createToolSignInRunner(options: ToolSignInRunnerOptions): ToolSi
       const token = generation;
       clearTimers();
       set({ tool, phase: "opening" });
-      openTimer = setTimeout(() => fail(tool, token), openTimeoutMs);
+      openTimer = setTimeout(() => fail(tool, token, true), openTimeoutMs);
       void Promise.resolve()
         .then(() => options.api.loginStart(tool))
         .then(

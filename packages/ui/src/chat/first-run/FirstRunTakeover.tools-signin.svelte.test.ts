@@ -42,6 +42,8 @@ interface Setup {
   aiTools?: AiTools | null;
   creation?: FirstRunCreation;
   api?: RuntimeSignInApi | null;
+  /** What the host's readiness read answers on Check again / Try again. */
+  afterRecheck?: { ready: Record<string, boolean>; status: Record<string, RuntimeStatus> };
   /** What the host's readiness read answers after a sign-in. */
   afterSignIn?: { ready: Record<string, boolean>; status: Record<string, RuntimeStatus> };
 }
@@ -62,7 +64,11 @@ function render(setup: Setup = {}) {
     onrequestaitools: vi.fn(),
     onopenassistant: vi.fn(async () => ({ ok: true })),
     onassistedinstall: vi.fn(async () => ({ ok: true })),
-    onrecheck: vi.fn(async () => {}),
+    onrecheck: vi.fn(async () => {
+      if (!setup.afterRecheck) return;
+      props.runtimeReady = setup.afterRecheck.ready;
+      props.runtimeStatus = setup.afterRecheck.status;
+    }),
     onsignedin: vi.fn(async () => {
       if (!setup.afterSignIn) return;
       props.runtimeReady = setup.afterSignIn.ready;
@@ -90,6 +96,7 @@ function render(setup: Setup = {}) {
       },
       signInApi: setup.api === undefined ? null : setup.api,
       pollMs: 10,
+      toolCheckingStaleMs: 50,
       ...handlers,
     },
   });
@@ -295,5 +302,54 @@ describe("Your coding tools: lead with the desktop app that is here", () => {
     const rows = [...document.querySelectorAll('[data-testid="first-run-tools-signin"] > li')].map((li) => li.getAttribute("data-testid"));
     expect(rows[0]).toBe("first-run-tool-claude");
     expect(q('[data-testid="first-run-tool-codex"]')?.getAttribute("data-kind")).toBe("install");
+  });
+});
+
+describe("Your coding tools: never stuck without something to press", () => {
+  const RECOVERED = { ready: { claude: true, codex: false, grok: false }, status: { claude: IN, codex: OUT } };
+
+  it("a readiness check that failed shows Try again on each row, and Try again recovers", async () => {
+    const failed: RuntimeStatus = { state: "probeFailed", reason: "" };
+    const { handlers } = render({ ready: null, status: { claude: failed, codex: failed }, afterRecheck: RECOVERED });
+    await settle();
+    expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("recheck");
+    expect(q('[data-testid="first-run-tool-claude-note"]')?.textContent?.trim()).toBe("HQ couldn't check Claude Code.");
+    const retry = q<HTMLButtonElement>('[data-testid="first-run-tool-claude-recheck"]')!;
+    expect(retry.disabled).toBe(false);
+    expect(retry.textContent).toBe("Try again");
+    retry.click();
+    await settle();
+    expect(handlers.onrecheck).toHaveBeenCalledTimes(1);
+    expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);
+  });
+
+  it("a reading that never arrives offers Check again after a while, held while it runs, and recovers", async () => {
+    let finish!: () => void;
+    const { handlers, props } = render({ ready: null, status: null });
+    handlers.onrecheck.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            props.runtimeReady = RECOVERED.ready;
+            props.runtimeStatus = RECOVERED.status;
+            resolve();
+          };
+        }),
+    );
+    await settle();
+    expect(q('[data-testid="first-run-tool-claude-note"]')?.textContent?.trim()).toBe("Checking…");
+    expect(q('[data-testid="first-run-tool-claude-recheck"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-tool-claude-recheck"]')).toBeTruthy());
+    const check = q<HTMLButtonElement>('[data-testid="first-run-tool-claude-recheck"]')!;
+    expect(check.textContent).toBe("Check again");
+    check.click();
+    await settle();
+    expect(handlers.onrecheck).toHaveBeenCalledTimes(1);
+    expect(q<HTMLButtonElement>('[data-testid="first-run-tool-claude-recheck"]')?.disabled).toBe(true);
+    finish();
+    await settle();
+    expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);
   });
 });

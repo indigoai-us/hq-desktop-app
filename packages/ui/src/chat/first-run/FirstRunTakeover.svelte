@@ -135,6 +135,8 @@
     onrecheck?: (() => void | Promise<void>) | null;
     /** Test seam: how long opening a sign-in may take before it fails. */
     signInOpenTimeoutMs?: number;
+    /** Test seam: how long a tool may read "Checking…" before Check again shows. */
+    toolCheckingStaleMs?: number;
     aiTools?: AiTools | null;
     hqFolderPath?: string;
     onopenassistant?: (assistant: AssistantId, url: string) => Promise<InstallOutcome>;
@@ -183,6 +185,7 @@
     onsignedin = null,
     onrecheck = null,
     signInOpenTimeoutMs = undefined,
+    toolCheckingStaleMs = undefined,
     aiTools = null,
     hqFolderPath = "",
     onopenassistant,
@@ -866,6 +869,7 @@
                 {signInApi}
                 {pollMs}
                 openTimeoutMs={signInOpenTimeoutMs}
+                checkingStaleMs={toolCheckingStaleMs}
                 {hqFolderPath}
                 onpick={pickTool}
                 onsignedin={async (tool) => {
