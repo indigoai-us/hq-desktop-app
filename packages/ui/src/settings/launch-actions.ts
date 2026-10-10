@@ -156,7 +156,11 @@ export function createLaunchActions({
       return res.ok ? null : failureMessage(res, "Claude Code");
     }
     if (path === "cli") {
-      const res = permissionMode ? await shell.launchClaudeCode(folder, { permissionMode }) : await shell.launchClaudeCode(folder);
+      // With a permission mode (the brief's launches) the CLI also gets the
+      // prompt as its first message; plain callers launch exactly as before.
+      const res = permissionMode
+        ? await shell.launchClaudeCode(folder, { permissionMode, ...(prefill ? { prompt: prefill } : {}) })
+        : await shell.launchClaudeCode(folder);
       return res.ok ? null : failureMessage(res, "Claude Code");
     }
     return claudeNotDetectedMessage(prefill);

@@ -414,24 +414,57 @@ fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(
 /// Claude Code permission modes a launch may ask for (`claude --permission-mode`).
 const CLAUDE_PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "bypassPermissions"];
 
-/// The `claude` command line for a launch: plain `claude`, or with
-/// `--permission-mode <mode>` when the caller asked for one of the allowed
-/// modes (the Daily Brief asks for `bypassPermissions`). Anything else is
-/// refused, so the renderer can never put free text on the command line.
-fn claude_command(permission_mode: Option<&str>) -> Result<String, String> {
+/// POSIX shell single-quoting: the whole value is literal, `'` becomes `'\''`.
+fn sh_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// PowerShell single-quoting: the whole value is literal, `'` becomes `''`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ps_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// The arguments after `claude` for a launch: `--permission-mode <mode>` when
+/// the caller asked for one of the allowed modes (the Daily Brief asks for
+/// `bypassPermissions`), then the initial prompt as one quoted positional
+/// argument. The mode is allowlisted; the prompt is free text, so it is
+/// flattened to one line (control characters become spaces) and quoted by
+/// `quote` for the target shell. Empty input adds nothing.
+fn claude_args(permission_mode: Option<&str>, prompt: Option<&str>, quote: fn(&str) -> String) -> Result<String, String> {
+    let mut args: Vec<String> = Vec::new();
     match permission_mode.map(str::trim).filter(|m| !m.is_empty()) {
-        None => Ok("claude".to_string()),
-        Some(mode) if CLAUDE_PERMISSION_MODES.contains(&mode) => Ok(format!("claude --permission-mode {mode}")),
-        Some(mode) => Err(format!("unknown Claude permission mode: {mode}")),
+        None => {}
+        Some(mode) if CLAUDE_PERMISSION_MODES.contains(&mode) => args.push(format!("--permission-mode {mode}")),
+        Some(mode) => return Err(format!("unknown Claude permission mode: {mode}")),
     }
+    let line = prompt
+        .unwrap_or("")
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !line.is_empty() {
+        args.push(quote(&line));
+    }
+    Ok(args.join(" "))
+}
+
+/// The macOS `claude` command line: `claude [--permission-mode <mode>] ['<prompt>']`.
+fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
+    let args = claude_args(permission_mode, prompt, sh_single_quote)?;
+    Ok(if args.is_empty() { "claude".to_string() } else { format!("claude {args}") })
 }
 
 /// Open a new Terminal window at `path` and auto-run `claude`, optionally in
-/// a permission mode (`permissionMode` from the renderer; absent = plain).
+/// a permission mode and with an initial prompt (`permissionMode` and
+/// `prompt` from the renderer; both absent = the plain launch).
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn launch_claude_code(path: String, permission_mode: Option<String>) -> Result<(), String> {
-    let result = claude_command(permission_mode.as_deref()).and_then(|cmd| spawn_cli_terminal_unix(&path, &cmd));
+pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {
+    let result = claude_command(permission_mode.as_deref(), prompt.as_deref()).and_then(|cmd| spawn_cli_terminal_unix(&path, &cmd));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -484,9 +517,9 @@ end tell"#,
 /// in a permission mode.
 #[cfg(windows)]
 #[tauri::command]
-pub fn launch_claude_code(path: String, permission_mode: Option<String>) -> Result<(), String> {
-    let result = claude_command(permission_mode.as_deref())
-        .and_then(|cmd| spawn_cli_terminal_windows_args(&path, "claude", cmd.strip_prefix("claude").unwrap_or("").trim()));
+pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {
+    let result = claude_args(permission_mode.as_deref(), prompt.as_deref(), ps_single_quote)
+        .and_then(|args| spawn_cli_terminal_windows_args(&path, "claude", &args));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -650,14 +683,34 @@ mod tests {
 
     #[test]
     fn claude_command_adds_only_an_allowed_permission_mode() {
-        assert_eq!(claude_command(None).unwrap(), "claude");
-        assert_eq!(claude_command(Some("  ")).unwrap(), "claude");
+        assert_eq!(claude_command(None, None).unwrap(), "claude");
+        assert_eq!(claude_command(Some("  "), Some("  ")).unwrap(), "claude");
         assert_eq!(
-            claude_command(Some("bypassPermissions")).unwrap(),
+            claude_command(Some("bypassPermissions"), None).unwrap(),
             "claude --permission-mode bypassPermissions"
         );
-        assert!(claude_command(Some("bypassPermissions; rm -rf ~")).is_err());
-        assert!(claude_command(Some("yolo")).is_err());
+        assert!(claude_command(Some("bypassPermissions; rm -rf ~"), None).is_err());
+        assert!(claude_command(Some("yolo"), Some("hi")).is_err());
+    }
+
+    #[test]
+    fn claude_command_passes_the_prompt_as_one_quoted_argument() {
+        let cmd = claude_command(
+            Some("bypassPermissions"),
+            Some("Pick up my session \"Daily brief\" (Corey's) $(rm -rf ~) `x`\nthen continue"),
+        )
+        .unwrap();
+        assert_eq!(
+            cmd,
+            "claude --permission-mode bypassPermissions 'Pick up my session \"Daily brief\" (Corey'\\''s) $(rm -rf ~) `x` then continue'"
+        );
+        // Prompt only, no mode.
+        assert_eq!(claude_command(None, Some("hello")).unwrap(), "claude 'hello'");
+        // Windows (PowerShell) quoting doubles the single quote.
+        assert_eq!(
+            claude_args(Some("bypassPermissions"), Some("Corey's brief"), ps_single_quote).unwrap(),
+            "--permission-mode bypassPermissions 'Corey''s brief'"
+        );
     }
 
     #[test]

@@ -66,6 +66,7 @@ import {
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
+import { claudeLaunchArgs } from './claude-launch.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
 import { withCreateAgentsAdmins } from './provision-refusal.js';
 import { createCallsApi } from '../calls/api.js';
@@ -1569,7 +1570,7 @@ export function createSyncPlatformAdapter(
       launchClaudeCode: async (path, opts) => {
         const result = await call<void>(
           'launch_claude_code',
-          opts?.permissionMode ? { path, permissionMode: opts.permissionMode } : { path },
+          claudeLaunchArgs(path, opts),
         );
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;

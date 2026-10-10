@@ -33,6 +33,7 @@ import {
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
+import { claudeLaunchArgs } from "./claude-launch.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { withCreateAgentsAdmins } from "./provision-refusal.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
@@ -768,7 +769,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     openCodexDeepLink: (url) => this.call("open_codex_deep_link", { url }),
     openFileInClaude: (path) => this.call("open_file_in_claude", { path }),
     launchClaudeCode: (path, opts) =>
-      this.call("launch_claude_code", opts?.permissionMode ? { path, permissionMode: opts.permissionMode } : { path }),
+      this.call("launch_claude_code", claudeLaunchArgs(path, opts)),
     launchCodexWorkspace: (path, prompt) =>
       this.call("launch_codex_workspace", { path, prompt: prompt ?? null }),
     launchCliInTerminal: (args) =>

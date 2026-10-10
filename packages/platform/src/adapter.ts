@@ -1908,6 +1908,8 @@ export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "bypassP
 
 export interface ClaudeLaunchOptions {
   permissionMode?: ClaudePermissionMode;
+  /** Initial prompt, passed to `claude` as its positional prompt argument. */
+  prompt?: string;
 }
 
 export interface ShellApi {
