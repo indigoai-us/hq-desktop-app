@@ -25,10 +25,15 @@ export interface NotetakerStatus {
   /** What the notetaker is doing, in plain words; empty when none is invited. */
   label: string;
   action: "invite" | "remove" | "none";
+  /** Plain-language failure detail, rendered below a failed status. */
+  detail?: string;
 }
 
 export function notetakerStatus(bot: ScheduledBot | undefined): NotetakerStatus {
   const model = notetakerToggleState(bot);
+  if (model.kind === "failed") {
+    return { label: "Notetaker couldn't join", action: "invite", detail: model.detail };
+  }
   if (model.action === "invite") return { label: "", action: "invite" };
   const label =
     model.kind === "invited"

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 /**
  * OWNER-D 4 (AUDIT-3-19): Atlas labels stay readable and never overlap. With
@@ -14,14 +14,19 @@ const MIN_LABEL_PX = 13;
 // small between section names, on every run.
 const FIXTURE_NOW = new Date('2026-11-01T12:00:00.000Z');
 
+async function openPopulatedAtlas(page: Page): Promise<void> {
+  await page.getByTestId('rail-company').click();
+  await expect(page.getByTestId('atlas-landing')).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('[data-testid^="atlas-node-"]')).toHaveCount(25, { timeout: 20_000 });
+}
+
 for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
   test(`Atlas labels at ${width}x${height}: readable, no overlaps`, async ({ page }) => {
     await page.clock.setFixedTime(FIXTURE_NOW);
     await page.setViewportSize({ width, height });
     await page.goto('/desktop-alt.html?window=desktop-alt&theme=light&persona=member&atlas=populated');
     await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
-    await page.evaluate(() => (document.querySelector('[data-testid="rail-company"]') as HTMLElement | null)?.click());
-    await expect(page.locator('[data-testid^="atlas-node-"]')).toHaveCount(25, { timeout: 20_000 });
+    await openPopulatedAtlas(page);
     await expect(page.locator('[data-testid^="atlas-label-"]').first()).toBeVisible();
 
     const result = await page.evaluate(() => {
@@ -63,8 +68,7 @@ for (const theme of ['light', 'dark'] as const) {
     await page.setViewportSize({ width: 1000, height: 700 });
     await page.goto(`/desktop-alt.html?window=desktop-alt&theme=${theme}&persona=member&atlas=populated`);
     await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
-    await page.evaluate(() => (document.querySelector('[data-testid="rail-company"]') as HTMLElement | null)?.click());
-    await expect(page.locator('[data-testid^="atlas-node-"]')).toHaveCount(25, { timeout: 20_000 });
+    await openPopulatedAtlas(page);
 
     const result = await page.evaluate(() => {
       const kinds = new Set([...document.querySelectorAll('[data-atlas-node]')].map((el) => el.getAttribute('data-kind')));
@@ -93,8 +97,7 @@ for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
       await page.setViewportSize({ width, height });
       await page.goto(`/desktop-alt.html?window=desktop-alt&theme=${theme}&persona=member&atlas=populated`);
       await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
-      await page.evaluate(() => (document.querySelector('[data-testid="rail-company"]') as HTMLElement | null)?.click());
-      await expect(page.locator('[data-testid^="atlas-node-"]')).toHaveCount(25, { timeout: 20_000 });
+      await openPopulatedAtlas(page);
       await page.keyboard.press('0');
       const zoomIn = page.getByRole('button', { name: 'Zoom in' });
       const check = () =>

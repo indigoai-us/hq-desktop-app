@@ -734,7 +734,11 @@ describe("shared store keeps pane and popover in lockstep", () => {
       expect(paneHost.textContent).toContain("QUEUED");
     });
     expect(popoverHost.querySelector('[data-testid="core-popover-download-install"]')).toBeNull();
-    expect(paneHost.querySelector('[data-testid="settings-app-download"]')).toBeNull();
+    const paneBusy = paneHost.querySelector<HTMLButtonElement>(
+      '[data-testid="settings-app-download"]',
+    );
+    expect(paneBusy?.disabled).toBe(true);
+    expect(paneBusy?.textContent).toContain("Updating…");
     reportDownloadProgress({ percent: 42 });
     await vi.waitFor(() => {
       flushSync();

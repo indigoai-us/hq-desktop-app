@@ -215,7 +215,7 @@ describe("ChatSidebar rail — company channel marks", () => {
         "image",
       );
     });
-    expect(host.querySelector('[data-testid="company-activity-channels"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="company-activity-channels"]')).toBeNull();
   });
 
   it("renders every row against a v-old server that serves NO icons at all", async () => {
@@ -247,7 +247,7 @@ describe("ChatSidebar rail — company channel marks", () => {
     expect(mark("chn_company_indigo")?.getAttribute("data-company-icon")).toBe(
       "glyph",
     );
-    expect(host.querySelector('[data-testid="company-activity-channels"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="company-activity-channels"]')).toBeNull();
     await unmount(component);
     component = mount(ChatSidebar, {
       target: host,

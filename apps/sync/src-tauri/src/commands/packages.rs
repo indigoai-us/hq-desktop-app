@@ -576,6 +576,10 @@ pub async fn uninstall_package(name: String) -> Result<Value, String> {
 /// CLI updater, this never auto-runs the update — pack updates can be heavier
 /// and should stay user-initiated from the banner.
 pub fn setup_pack_update_checker(app: &AppHandle) {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("pack update checker");
+        return;
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_DELAY).await;

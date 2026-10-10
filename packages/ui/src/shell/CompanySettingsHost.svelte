@@ -7,6 +7,7 @@
   import ReadLoader from "../common/ReadLoader.svelte";
 
   import type { CompanyApi, FilesApi, MessagingApi } from "@hq/platform";
+  import type { GrantTarget } from "../company/group-grants.js";
 
   interface Props {
     slug: string;
@@ -23,9 +24,11 @@
     role?: string | null;
     /** Vault reads for the live Groups and Grants panes. */
     files?: FilesApi | null;
+    /** The caller's companies, for the Grants pane's target picker. */
+    targets?: GrantTarget[];
   }
 
-  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true, section = "general", role = null, files = null }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true, section = "general", role = null, files = null, targets = [] }: Props = $props();
 
   let View = $state<typeof import("../company/CompanySettingsPage.svelte").default | null>(null);
 
@@ -38,7 +41,7 @@
 
 <div class="host" data-testid="company-settings-host">
   {#if View}
-    <View {slug} {companyLabel} {openExternal} {companyUid} {company} {messaging} {seatLimit} {section} {role} {files} />
+    <View {slug} {companyLabel} {openExternal} {companyUid} {company} {messaging} {seatLimit} {section} {role} {files} {targets} />
   {:else}
     <div class="loading" aria-busy="true">
       <ReadLoader testid="company-settings-loading" />

@@ -643,8 +643,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("GET", AGENT_PATHS.owners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to)),
-    getMyTelemetry: (from, to) =>
-      this.hqProJson("GET", AGENT_PATHS.myTelemetry(from, to)),
+    getMyTelemetry: (from, to, tz) =>
+      this.hqProJson("GET", AGENT_PATHS.myTelemetry(from, to, tz)),
   };
 
   readonly integrations: PlatformAdapter["integrations"] = {

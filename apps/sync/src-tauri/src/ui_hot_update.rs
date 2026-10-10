@@ -65,10 +65,18 @@ pub fn init(app: &AppHandle) {
     let _ = APP.set(app.clone());
 }
 
+/// A scratch build (`scratch_build.rs`) never serves hot UI updates.
+pub(crate) fn scratch_mode_override(scratch: bool) -> Option<UiHotMode> {
+    scratch.then_some(UiHotMode::Off)
+}
+
 /// The `uiHotUpdates` setting from `~/.hq/menubar.json` (untyped read, so the
 /// key survives every typed settings round-trip). `HQ_UI_HOT_UPDATES`
 /// overrides it.
 pub fn mode() -> UiHotMode {
+    if let Some(off) = scratch_mode_override(crate::scratch_build::active()) {
+        return off;
+    }
     if let Ok(v) = std::env::var("HQ_UI_HOT_UPDATES") {
         return UiHotMode::from_pref(Some(&v));
     }
@@ -581,6 +589,10 @@ fn check_interval() -> Duration {
 
 /// Launch check plus the 30-minute schedule, with backoff on failures.
 pub fn setup_checker(app: &AppHandle) {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("UI hot update checker");
+        return;
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_CHECK_DELAY).await;

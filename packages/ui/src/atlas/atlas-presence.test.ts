@@ -125,4 +125,29 @@ describe("atlas presence (US-013)", () => {
     }
     expect(onMap.size).toBeGreaterThan(0);
   });
+
+  // Fixture of what the live read carries once the server sends a session's
+  // repo and branch (it does not yet; see the PR).
+  it("places a person with a repo but no project next to that repo, and says where they work", () => {
+    const repo = "repo:repos/private/hq-desktop-app/";
+    const presence = atlasPresenceFromActors(
+      [
+        { actorUid: "u_stefan", name: "Stefan Johnson", bot: false, repo: "indigoai-us/hq-desktop-app", branch: "corey/map" },
+        { actorUid: "u_ada", name: "Ada", bot: false, projectId: "hq-desktop-console-rail", repo: "hq-desktop-app" },
+        { actorUid: "u_zed", name: "Zed", bot: false },
+      ],
+      graph.nodes,
+    );
+    expect(presence.map((p) => [p.actorUid, p.nodeId, p.working, p.unplaced])).toEqual([
+      ["u_stefan", repo, "Working in hq-desktop-app · corey/map", undefined],
+      // Project placement wins; the repo rides along as a second line.
+      ["u_ada", rail, "Working in hq-desktop-app", undefined],
+      ["u_zed", "person:u_zed", undefined, "In a session with no project"],
+    ]);
+    expect(atlasUnplacedActors(presence).map((p) => p.actorUid)).toEqual(["u_zed"]);
+    const { placed } = layoutAtlas(graph.nodes);
+    const chip = atlasDockedChips(placed, presence).find((c) => c.actorUid === "u_stefan")!;
+    expect(chip.nodeId).toBe(repo);
+    expect(chip.working).toBe("Working in hq-desktop-app · corey/map");
+  });
 });

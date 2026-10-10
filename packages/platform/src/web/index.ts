@@ -1118,7 +1118,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
-    getMyTelemetry: (from, to) => this.get(WEB_PATHS.myTelemetry(from, to)),
+    getMyTelemetry: (from, to, tz) => this.get(WEB_PATHS.myTelemetry(from, to, tz)),
   };
 
   readonly integrations: PlatformAdapter["integrations"] = {
@@ -1244,6 +1244,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
       return this.get(`/files/${encodeURIComponent(companyUid)}/acl/tree?${query.toString()}`);
     },
     listAccessGroups: (companyUid) => this.get(`/secrets/${encodeURIComponent(companyUid)}/groups`),
+    listOutboundGroupGrants: (sourceCompanyUid, groupId) =>
+      this.get(`/group-grants/outbound?${new URLSearchParams({ sourceCompanyUid, groupId }).toString()}`),
+    listInboundGroupGrants: (companyUid) =>
+      this.get(`/group-grants/inbound?${new URLSearchParams({ companyUid }).toString()}`),
+    createGroupGrant: (input) => this.post("/group-grants", input),
+    revokeGroupGrant: (input) => this.post("/group-grants/revoke", input),
     presignVaultGet: (companyUid, key) =>
       this.post(WEB_PATHS.filesPresign, {
         company: companyUid,

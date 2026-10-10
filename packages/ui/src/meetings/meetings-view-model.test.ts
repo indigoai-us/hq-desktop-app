@@ -153,6 +153,18 @@ describe("meetings-view-model (US-017)", () => {
       expect(done.kind).toBe("done");
     });
 
+    it("shows a failed bot as retryable with its reason", () => {
+      const failed = notetakerToggleState(bot({
+        status: "failed",
+        failureReason: "This Zoom meeting only admits signed-in Zoom users.",
+      }));
+      expect(failed).toMatchObject({ visual: "off", kind: "failed", action: "invite" });
+      expect(failed.detail).toBe("This Zoom meeting only admits signed-in Zoom users.");
+      expect(notetakerToggleState(bot({ status: "failed" })).detail).toBe(
+        "The notetaker couldn't join this meeting.",
+      );
+    });
+
     it("resolves via event bot maps (exact event id)", () => {
       const event = eventAt("evt-1", new Date(2026, 4, 27, 15, 0, 0));
       const scheduled = bot({

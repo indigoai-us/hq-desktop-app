@@ -6,8 +6,22 @@
     appRowActions,
     appRowIdleHint,
     appRowStatusLabel,
+    isInstallBusyPhase,
     isRecordingRestartDeferral,
   } from "./update-presentation";
+  import { createLaunchActions, type LaunchKey } from "./launch-actions";
+  import {
+    HEAL_TOOLS,
+    QUIET_INSTALL_ATTEMPTS,
+    RESTART_HQ_LABEL,
+    TRY_AGAIN_LABEL,
+    UPDATE_FAILED_QUIET,
+    UPDATE_HEAL_PROMPT,
+    UPDATE_NOW_LABEL,
+    UPDATING_LABEL,
+    quietInstall,
+    type RowInstallPhase,
+  } from "./update-row-actions";
   import { heldRestartTitle, holdReasonText, restartHoldText } from "../shell/update-toast";
   import {
     checkDesktopUpdates,
@@ -293,6 +307,10 @@
       installPhase: updateStore.installPhase,
     }),
   );
+  const appInstallBusy = $derived(isInstallBusyPhase(updateStore.installPhase));
+  const appInstallFailed = $derived(updateStore.installPhase === "failed");
+  let coreInstallPhase = $state<RowInstallPhase>("idle");
+  let cliInstallPhase = $state<RowInstallPhase>("idle");
   const appIdleHint = $derived(appRowIdleHint(updateStore.idleWaitRemainingSecs));
   // #1237: the host's deferral sentence names what holds a requested restart
   // (a recording, a transcript still saving, or an HQ Core update).
@@ -892,7 +910,64 @@
 
   async function queueDesktopUpdate(): Promise<void> {
     if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
-    await downloadDesktopUpdate(updateOrchAdapter());
+    if (updateStore.isInstallBusy) return;
+    for (let i = 0; i < QUIET_INSTALL_ATTEMPTS; i += 1) {
+      await downloadDesktopUpdate(updateOrchAdapter());
+      if (updateStore.installPhase === "ready" || updateStore.installPhase === "queued") {
+        return;
+      }
+      if (updateStore.installPhase !== "failed") return;
+    }
+  }
+
+  async function installCoreRow(): Promise<void> {
+    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    if (coreInstallPhase === "updating") return;
+    const host = adapter;
+    coreInstallPhase = "updating";
+    const ok = await quietInstall(() => host.updates.installCoreUpdate());
+    if (ok) {
+      coreInstallPhase = "idle";
+      await refreshVersions();
+      return;
+    }
+    coreInstallPhase = "failed";
+  }
+
+  async function installCliRow(): Promise<void> {
+    if (!adapter || !adapter.isAvailable("canSelfUpdate")) return;
+    if (cliInstallPhase === "updating") return;
+    const host = adapter;
+    cliInstallPhase = "updating";
+    const ok = await quietInstall(() => host.updates.installCliUpdate());
+    if (ok) {
+      cliInstallPhase = "idle";
+      await refreshVersions();
+      return;
+    }
+    cliInstallPhase = "failed";
+  }
+
+  async function healWith(tool: LaunchKey): Promise<void> {
+    if (!adapter) return;
+    let folder = hqFolder;
+    if (!folder) {
+      const res = await adapter.settings.getSettings();
+      if (res.ok) folder = readFolderFromSettings(res.value);
+    }
+    if (!folder) return;
+    const actions = createLaunchActions({
+      shell: adapter.shell,
+      hqFolderPath: folder,
+      prompt: UPDATE_HEAL_PROMPT,
+    });
+    const err =
+      tool === "claude"
+        ? await actions.launchClaude()
+        : tool === "codex"
+          ? await actions.launchCodex()
+          : await actions.launchGrok();
+    if (err) console.warn("[updates] heal launch failed", err);
   }
 
   async function restartDesktopUpdate(): Promise<void> {
@@ -1718,23 +1793,27 @@
         {/if}
       </div>
       <span class="update-row-end">
-        {#if appRowAction.showDownload}
+        {#if appInstallBusy || appRowAction.showDownload || appInstallFailed}
           <button
             type="button"
             class="chip"
             data-testid="settings-app-download"
-            title={updateStore.installError ?? undefined}
+            disabled={appInstallBusy}
+            aria-busy={appInstallBusy}
             onclick={() => void queueDesktopUpdate()}
-          ><RailIcon name="download" />Download &amp; install</button>
+          >{appInstallBusy ? UPDATING_LABEL : appInstallFailed ? TRY_AGAIN_LABEL : UPDATE_NOW_LABEL}</button>
         {:else if appRowAction.showRestart}
           <button
             type="button"
             class="chip"
             data-testid="settings-app-restart"
             disabled={!!appRestartHold}
-            title={appRestartHold ? heldRestartTitle(appRestartHold) : (updateStore.installError ?? undefined)}
+            title={appRestartHold ? heldRestartTitle(appRestartHold) : undefined}
             onclick={() => void restartDesktopUpdate()}
-          ><RailIcon name="refresh" />Restart to update</button>
+          >{RESTART_HQ_LABEL}</button>
+        {/if}
+        {#if appInstallFailed}
+          {@render healActions("app")}
         {/if}
         <span class="val" class:ok={appRowLabel === "UP TO DATE"} data-testid="settings-app-status">{appRowLabel}</span>
       </span>
@@ -1753,15 +1832,32 @@
                   ? "Version check failed"
                   : "Version unavailable"}
         </div>
-        {#if coreUpdateStatus === "unlocated"}
+        {#if coreInstallPhase === "failed"}
+          <div class="sd">{UPDATE_FAILED_QUIET}</div>
+        {:else if coreUpdateStatus === "unlocated"}
           <div class="sd" data-testid="settings-core-remediation">Choose the HQ root above (or set hqPath/hqFolderPath), then refresh.</div>
         {:else if coreUpdateStatus === "failed"}
-          <div class="sd">Core version probe failed: {coreProbeError ?? "The check did not finish. Try again."}</div>
+          <div class="sd">{coreProbeError ?? "The check did not finish. Try again."}</div>
         {:else if coreUpdateStatus === "unchecked"}
-          <div class="sd">Core update status could not be checked{coreProbeError ? `: ${coreProbeError}` : ""}. Refresh and verify your connection.</div>
+          <div class="sd">{coreProbeError ?? "Core update status could not be checked. Refresh and try again."}</div>
         {/if}
       </div>
-      <span class="val" class:ok={coreUpdateStatus === "up-to-date"}>{coreUpdateStatus === "checking" ? "CHECKING" : coreUpdateStatus === "available" ? "UPDATE AVAILABLE" : coreUpdateStatus === "up-to-date" ? "UP TO DATE" : coreUpdateStatus === "unlocated" ? "ROOT NEEDED" : coreUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+      <span class="update-row-end">
+        {#if coreInstallPhase === "updating" || coreUpdateStatus === "available" || coreInstallPhase === "failed"}
+          <button
+            type="button"
+            class="chip"
+            data-testid="settings-core-update"
+            disabled={coreInstallPhase === "updating"}
+            aria-busy={coreInstallPhase === "updating"}
+            onclick={() => void installCoreRow()}
+          >{coreInstallPhase === "updating" ? UPDATING_LABEL : coreInstallPhase === "failed" ? TRY_AGAIN_LABEL : UPDATE_NOW_LABEL}</button>
+        {/if}
+        {#if coreInstallPhase === "failed"}
+          {@render healActions("core")}
+        {/if}
+        <span class="val" class:ok={coreUpdateStatus === "up-to-date"} data-testid="settings-core-status">{coreUpdateStatus === "checking" ? "CHECKING" : coreUpdateStatus === "available" ? "UPDATE AVAILABLE" : coreUpdateStatus === "up-to-date" ? "UP TO DATE" : coreUpdateStatus === "unlocated" ? "ROOT NEEDED" : coreUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+      </span>
     </div>
     <div class="set-row">
       <div>
@@ -1777,15 +1873,32 @@
                   ? "Version check failed"
                   : "Version unavailable"}
         </div>
-        {#if cliUpdateStatus === "unlocated"}
+        {#if cliInstallPhase === "failed"}
+          <div class="sd">{UPDATE_FAILED_QUIET}</div>
+        {:else if cliUpdateStatus === "unlocated"}
           <div class="sd" data-testid="settings-cli-remediation">HQ could not find the command line tool. Make sure it is installed on this computer, then refresh.</div>
         {:else if cliUpdateStatus === "failed"}
-          <div class="sd">CLI version probe failed: {cliProbeError ?? "The check did not finish. Try again."}</div>
+          <div class="sd">{cliProbeError ?? "The check did not finish. Try again."}</div>
         {:else if cliUpdateStatus === "unchecked"}
-          <div class="sd">CLI update status could not be checked{cliProbeError ? `: ${cliProbeError}` : ""}. Refresh and verify your connection.</div>
+          <div class="sd">{cliProbeError ?? "CLI update status could not be checked. Refresh and try again."}</div>
         {/if}
       </div>
-      <span class="val" class:ok={cliUpdateStatus === "up-to-date"}>{cliUpdateStatus === "checking" ? "CHECKING" : cliUpdateStatus === "available" ? "UPDATE AVAILABLE" : cliUpdateStatus === "up-to-date" ? "UP TO DATE" : cliUpdateStatus === "unlocated" ? "CLI NEEDED" : cliUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+      <span class="update-row-end">
+        {#if cliInstallPhase === "updating" || cliUpdateStatus === "available" || cliInstallPhase === "failed"}
+          <button
+            type="button"
+            class="chip"
+            data-testid="settings-cli-update"
+            disabled={cliInstallPhase === "updating"}
+            aria-busy={cliInstallPhase === "updating"}
+            onclick={() => void installCliRow()}
+          >{cliInstallPhase === "updating" ? UPDATING_LABEL : cliInstallPhase === "failed" ? TRY_AGAIN_LABEL : UPDATE_NOW_LABEL}</button>
+        {/if}
+        {#if cliInstallPhase === "failed"}
+          {@render healActions("cli")}
+        {/if}
+        <span class="val" class:ok={cliUpdateStatus === "up-to-date"} data-testid="settings-cli-status">{cliUpdateStatus === "checking" ? "CHECKING" : cliUpdateStatus === "available" ? "UPDATE AVAILABLE" : cliUpdateStatus === "up-to-date" ? "UP TO DATE" : cliUpdateStatus === "unlocated" ? "CLI NEEDED" : cliUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+      </span>
     </div>
     <div class="set-row">
       <div>
@@ -1825,6 +1938,18 @@
     </div>
   {/if}
 </div>
+
+{#snippet healActions(row: string)}
+  <span class="update-heal" data-testid={`settings-${row}-heal`}>
+    {#each HEAL_TOOLS as tool (tool.key)}
+      <button
+        type="button"
+        class="chip"
+        onclick={() => void healWith(tool.key)}
+      >{tool.label}</button>
+    {/each}
+  </span>
+{/snippet}
 
 <style>
   .proto {
@@ -1970,6 +2095,15 @@
     display: inline-flex;
     align-items: center;
     gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .update-heal {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
   }
 
   .chip {

@@ -161,15 +161,19 @@ describe("ChatSidebar All scope — channels in the date buckets", () => {
     expect(host.querySelector('[data-conversation-id="ch:chn_hq_dev"]')?.textContent).toContain("3");
   });
 
-  it("leaves the single-company scope on its Activity section, without company tags", async () => {
+  it("dates the single-company scope's channels in the same list, without company tags", async () => {
     component = mountSidebar({ scopeUid: "cmp_indigo" });
-    await vi.waitFor(() =>
-      expect(host.querySelector('[data-testid="company-activity-channels"]')).toBeTruthy(),
-    );
-    const ids = [...host.querySelectorAll('[data-testid="company-activity-channels"] [data-conversation-id]')].map((el) => el.getAttribute("data-conversation-id"));
-    expect(ids).toEqual(["ch:chn_hq_dev", "ch:chn_hq_sentry"]);
-    expect(allIds()).not.toContain("ch:chn_hq_dev");
+    await vi.waitFor(() => expect(allIds()).toContain("ch:chn_hq_sentry"));
+    // No separate block above the date buckets.
+    expect(host.querySelector('[data-testid="company-activity-channels"]')).toBeNull();
+    expect(host.querySelector("#chat-activity-label")).toBeNull();
+    const secs = sections();
+    expect(secs[0]![1]).toContain("ch:chn_hq_dev");
+    expect(secs.find(([, ids]) => ids.includes("ch:chn_hq_sentry"))![1]).toEqual([
+      "ch:chn_hq_sentry",
+      "ch:chn_project",
+    ]);
+    expect(allIds()).not.toContain("ch:chn_acme_general");
     expect(companyTag("ch:chn_hq_dev")).toBeNull();
-    expect(host.querySelector('[data-testid="chat-no-messages-section"]')).toBeNull();
   });
 });

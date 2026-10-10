@@ -848,10 +848,10 @@
     display: flex;
     gap: 9px;
     padding: 10px 12px;
-    border: 1px solid var(--tone-line);
-    border-left-width: 3px;
+    /* Neutral surface; the tone color lives on the icon only. */
+    border: 1px solid var(--line, var(--pop-border));
     border-radius: 8px;
-    background: var(--tone-tint);
+    background: var(--raised, var(--pop-hover));
   }
   .rich-callout-icon {
     flex: 0 0 auto;
@@ -865,14 +865,14 @@
   }
   .rich-callout-title {
     font-size: 12px;
-    font-weight: 600;
-    color: var(--tone-ink);
+    font-weight: 500;
+    color: var(--t1, var(--pop-text));
     margin-bottom: 2px;
   }
   .rich-callout-body {
     font-size: 13px;
     line-height: 1.45;
-    color: var(--t1, var(--pop-text));
+    color: var(--t2, var(--pop-muted));
   }
   .rich-callout-body :global(:first-child) {
     margin-top: 0;

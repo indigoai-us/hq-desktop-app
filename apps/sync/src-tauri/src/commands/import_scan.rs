@@ -465,7 +465,11 @@ async fn run_scan(app: &AppHandle, target: &str, scan_id: &str, cancel: &mut one
         log(LOG_TAG, "import scan not run: no HQ folder");
         return ImportScanEnd { status: "no_hq", lines: 0, dropped: 0 };
     };
-    let hq = paths::resolve_bin("hq");
+    // A scratch build may bake in a local hq and scanner (scratch_build.rs);
+    // every other build runs the installed hq with its own scanner.
+    let hq = crate::scratch_build::import_hq_bin()
+        .map(str::to_string)
+        .unwrap_or_else(|| paths::resolve_bin("hq"));
     let mut command =
         paths::tokio_spawn_command(&hq, &["import", "scan", "--json", "--stream", "--hq-root", hq_root.as_str()]);
     command
@@ -480,6 +484,9 @@ async fn run_scan(app: &AppHandle, target: &str, scan_id: &str, cancel: &mut one
         // only when the app shuts down. A closed window cancels the scan through
         // its Destroyed event instead (see import_scan_start).
         .kill_on_drop(true);
+    if let Some(scanner) = crate::scratch_build::import_scanner() {
+        command.env("HQ_IMPORT_SCANNER_OVERRIDE", scanner);
+    }
     #[cfg(unix)]
     command.process_group(0);
     let mut child = match command.spawn() {

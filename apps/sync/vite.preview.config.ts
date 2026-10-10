@@ -61,6 +61,7 @@ export default defineConfig({
         switchStability: resolve(__dirname, 'switch-stability.html'),
         personalSecretsLayout: resolve(__dirname, 'personal-secrets-layout.html'),
         atlasStage: resolve(__dirname, 'atlas-stage.html'),
+        boardPolish: resolve(__dirname, 'board-polish.html'),
       },
     },
   },

@@ -2,42 +2,50 @@ import { expect, test } from '@playwright/test';
 
 /**
  * Atlas Today panel and Not on the map dock, measured in a real engine on the
- * atlas-stage page (the real AtlasView with a /brainstorm run's five files and
- * a dock of people and bots). Set ATLAS_SHOT_DIR to also save screenshots.
+ * atlas-stage page (the real AtlasView with a /brainstorm run's five files, a
+ * person working in a repo, and a dock of people and bots). Set ATLAS_SHOT_DIR to also save screenshots.
  */
 const SHOT_DIR = process.env.ATLAS_SHOT_DIR;
 
 for (const theme of ['dark', 'light'] as const) {
-  test(`Atlas Today groups a brainstorm run under its project (${theme})`, async ({ page }) => {
+  test(`Atlas Today lists projects worked on today with a story counter (${theme})`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`/atlas-stage.html?theme=${theme}`);
-    const today = page.getByTestId('atlas-today-changed');
+    const today = page.getByTestId('atlas-today-projects');
     await expect(today).toBeVisible({ timeout: 30_000 });
 
-    const first = page.getByTestId('atlas-today-group').first();
-    await expect(first.getByTestId('atlas-today-group-title')).toHaveText('HQ explorer');
-    await expect(first.getByTestId('atlas-today-stories')).toContainText('7 of 11 stories');
-    await expect(first.getByTestId('atlas-today-state')).toHaveAttribute('data-column', 'in-progress');
-    await expect(first.getByTestId('atlas-today-row')).toHaveCount(3);
-    await first.getByTestId('atlas-today-group-more').click();
-    const rows = first.getByTestId('atlas-today-row');
-    await expect(rows).toHaveCount(5);
-    await expect(rows.nth(4)).toContainText('References');
-    await expect(rows.nth(4)).toContainText('projects/hq-explorer/');
-
-    // Rows are indented under their group header, and their icons differ by kind.
-    const indent = await page.evaluate(() => {
-      const head = document.querySelector('[data-testid="atlas-today-group-head"] .ticon')!.getBoundingClientRect();
-      const row = document.querySelector('[data-testid="atlas-today-row"] .ticon')!.getBoundingClientRect();
-      return row.left - head.left;
-    });
-    expect(indent).toBeGreaterThanOrEqual(20);
-    const kinds = await page.$$eval('[data-testid="atlas-today-row"]', (els) => [...new Set(els.map((e) => e.getAttribute('data-kind')))]);
-    expect(kinds).toEqual(expect.arrayContaining(['brainstorm', 'knowledge']));
+    const first = page.getByTestId('atlas-today-project').first();
+    await expect(first.getByTestId('atlas-today-project-title')).toHaveText('HQ explorer');
+    await expect(first.getByTestId('atlas-today-stories')).toContainText('12/31 stories');
+    await expect(first).toContainText('34 min ago');
+    // Projects only: no nested file rows, and no Company block above the list.
+    await expect(page.getByTestId('atlas-today-row')).toHaveCount(0);
+    await expect(page.getByTestId('atlas-inspector-rollup')).toHaveCount(0);
+    await expect(page.getByTestId('atlas-inspector').locator('h2')).toHaveCount(0);
+    const bar = await first.locator('.track').boundingBox();
+    expect(bar!.height).toBeLessThanOrEqual(3);
 
     if (SHOT_DIR) {
       await page.mouse.move(0, 0);
       await page.getByTestId('atlas-inspector').screenshot({ path: `${SHOT_DIR}/today-after-${theme}.png` });
+    }
+  });
+
+  test(`Atlas places a person with only a repo next to that repo (${theme})`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/atlas-stage.html?theme=${theme}`);
+    const chip = page.getByTestId('atlas-chip-u_st');
+    await expect(chip).toBeVisible({ timeout: 30_000 });
+    await expect(chip).toHaveAttribute('data-node', 'repo:repos/private/hq-desktop-app/');
+    await expect(page.getByTestId('atlas-unplaced-u_st')).toHaveCount(0);
+    // The live chip pulses, so it never settles for a pointer hover.
+    await chip.dispatchEvent('pointerenter');
+    const card = page.getByTestId('atlas-hover-card');
+    await expect(card).toContainText('Stefan Johnson');
+    await expect(card).toContainText('Working in hq-desktop-app · corey/map');
+
+    if (SHOT_DIR) {
+      await page.screenshot({ path: `${SHOT_DIR}/repo-person-${theme}.png` });
     }
   });
 

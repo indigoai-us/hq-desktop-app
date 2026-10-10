@@ -154,6 +154,29 @@ describe("atlasLiveActors (US-013)", () => {
       { actorUid: "b_box", name: "box", bot: true, avatarUrl: botPicture, repo: "hq-pro", taskId: "US-2", signal: "US-2" },
     ]);
   });
+
+  it("keeps a session's repo and branch next to its project, and the branch with a repo-only session", () => {
+    const live = {
+      participants: [
+        {
+          actorUid: "u_stefan",
+          actorType: "human",
+          displayName: "Stefan Johnson",
+          presence: "online",
+          sessions: [
+            { projectId: "Retention", repo: "indigoai-us/hq-desktop-app", branch: "main", status: "active" },
+            { repo: "hq-pro", branch: "fix/live", status: "open" },
+            { cwd: "/tmp", branch: "orphan", status: "open" },
+          ],
+        },
+      ],
+    };
+    expect(atlasLiveActors(live, new Map(), "co_a", new Map())).toEqual([
+      { actorUid: "u_stefan", name: "Stefan Johnson", bot: false, cwd: "/tmp", signal: undefined },
+      { actorUid: "u_stefan", name: "Stefan Johnson", bot: false, repo: "hq-pro", branch: "fix/live", signal: undefined },
+      { actorUid: "u_stefan", name: "Stefan Johnson", bot: false, projectId: "retention", repo: "indigoai-us/hq-desktop-app", branch: "main", signal: undefined },
+    ]);
+  });
 });
 
 describe("atlasNodeDestination: Open files shows a file, not a tree", () => {
@@ -173,20 +196,25 @@ describe("atlasNodeDestination: Open files shows a file, not a tree", () => {
       vault: "company:indigo",
       path: "companies/indigo/projects/billing-v2/README.md",
     });
-    expect(atlasNodeDestination(project, "indigo", "board")).toEqual({
-      kind: "projects",
-      company: "indigo",
-      project: "billing-v2",
-      tab: "tasks",
+    expect(atlasNodeDestination(project, "indigo", "board", "co_indigo")).toEqual({
+      kind: "extra",
+      page: "company-page-projects",
+      companyUid: "co_indigo",
+      param: "project=billing-v2&tab=tasks",
     });
+  });
+
+  it("keeps Open board in the company pane, never the cross-company Projects view", () => {
+    const board = atlasNodeDestination({ type: "knowledge", path: "knowledge/brand/", folder: true }, "indigo", "board", "co_indigo");
+    expect(board).toEqual({ kind: "extra", page: "company-page-projects", companyUid: "co_indigo" });
   });
 
   it("falls back when a folder has no file to show", () => {
     expect(atlasNodeDestination({ type: "project", path: "projects/empty/", folder: true }, "indigo", "files")).toEqual({
-      kind: "projects",
-      company: "indigo",
-      project: "empty",
-      tab: "files",
+      kind: "extra",
+      page: "company-page-projects",
+      companyUid: "indigo",
+      param: "project=empty&tab=files",
     });
     expect(atlasNodeDestination({ type: "knowledge", path: "knowledge/brand/", folder: true }, "indigo", "files")).toEqual({
       kind: "explorer",

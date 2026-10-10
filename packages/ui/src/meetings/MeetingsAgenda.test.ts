@@ -164,4 +164,14 @@ describe("MeetingsAgenda bot lifecycle rendering (US-005)", () => {
     expect(host.querySelector(".row-icon-processing")).not.toBeNull();
     expect(host.querySelector(".row-icon-done")).toBeNull();
   });
+
+  it("shows a failed join as retryable with its reason, never as invited or done", () => {
+    const failed = bot("failed", { failureReason: "Zoom requires sign-in." });
+    mountAgenda({ botsByEventId: new Map([[event.id, failed]]), scheduledBots: [failed] });
+    const row = host.querySelector('[data-testid="meeting-row"]');
+    expect(row?.getAttribute("data-bot-state")).toBe("failed");
+    expect(host.querySelector('[data-testid="meeting-notetaker-failure"]')?.textContent).toContain("Zoom requires sign-in.");
+    expect(host.querySelector('.row-icon-invite')).not.toBeNull();
+    expect(host.querySelector('.row-icon-done')).toBeNull();
+  });
 });

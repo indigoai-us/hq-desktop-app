@@ -53,6 +53,8 @@
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
+  import ConflictParkedNotice from '../components/ConflictParkedNotice.svelte';
+  import { mergeConflictNotices, removeConflictNotice, type ConflictParkedNotice as ConflictParkedNoticeRow } from '../lib/conflictNotices';
   import { lifecycleForAuthStatus } from './lib/auth-lifecycle';
   import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
@@ -72,6 +74,7 @@
     recordPlanLimitPauses,
     resolvePlanLimitCompanyUids,
     savePlanLimitNotifications,
+    statusPushFilesPause,
     type PlanLimitNotificationRow,
     type StorageLike,
   } from './plan-limit-notifications';
@@ -237,6 +240,38 @@
   // plan-limit-notifications.ts), never as a banner in the shell.
   let planLimitNotices = $state<PlanLimitNotice[]>([]);
   let watcherLockNotice = $state<string | null>(null);
+  let conflictNotices = $state<ConflictParkedNoticeRow[]>([]);
+  let conflictNoticeBusyIds = $state<Set<string>>(new Set());
+
+  function setConflictNoticeBusy(id: string, busy: boolean): void {
+    const next = new Set(conflictNoticeBusyIds);
+    if (busy) next.add(id);
+    else next.delete(id);
+    conflictNoticeBusyIds = next;
+  }
+
+  async function showConflictBackup(notice: ConflictParkedNoticeRow): Promise<void> {
+    setConflictNoticeBusy(notice.id, true);
+    try {
+      await invokeFn('show_conflict_backup', { scope: notice.scope, companySlug: notice.companySlug, backupPath: notice.backupPath });
+    } catch (error) {
+      console.error('Could not reveal the parked conflict copy.', error);
+    } finally {
+      setConflictNoticeBusy(notice.id, false);
+    }
+  }
+
+  async function acknowledgeConflictBackup(notice: ConflictParkedNoticeRow): Promise<void> {
+    setConflictNoticeBusy(notice.id, true);
+    try {
+      await invokeFn('acknowledge_conflict_notice', { noticeId: notice.id });
+      conflictNotices = removeConflictNotice(conflictNotices, notice.id);
+    } catch (error) {
+      console.error('Could not acknowledge the parked conflict notice.', error);
+    } finally {
+      setConflictNoticeBusy(notice.id, false);
+    }
+  }
   let planLimitRows = $state<PlanLimitNotificationRow[]>([]);
   let planLimitRowsAccount = $state<string | null>(null);
 
@@ -565,15 +600,6 @@
    * left to retry) and `false` when the fetch failed for the session that asked.
    */
   let workspaceRequest = 0;
-  const PLAN_LIMIT_WARNING_PCT = 80;
-  const PLAN_LIMIT_STATUS_RESOURCES = [
-    'users',
-    'secrets',
-    'deployments',
-    'storageBytes',
-    'integrations',
-    'agents',
-  ] as const;
 
   function removeStatusPushNotice(company: string): void {
     const existing = planLimitNotices.filter(
@@ -637,35 +663,17 @@
             { method: 'GET' },
           );
           if (!response.ok) throw new Error(`usage-limits returned HTTP ${response.status}`);
-          const status = (await response.json()) as Record<string, unknown>;
+          const status: unknown = await response.json();
           if (!isCurrent()) return;
-          const plan = status.planLimits && typeof status.planLimits === 'object'
-            ? (status.planLimits as Record<string, unknown>)
-            : status;
-          if (
-            plan.plan !== 'free' ||
-            plan.cohort !== 'enforceable' ||
-            plan.planLimitsExempt === true
-          ) {
+          // Only hq-pro's armed `files.create` stop means new files are paused.
+          // A usage row at a warning level, or over on a non-file cap, is not
+          // a pause (statusPushFilesPause).
+          const pause = statusPushFilesPause(status);
+          if (!pause.paused) {
             removeStatusPushNotice(workspace.slug);
             continue;
           }
-          const hasWarning = PLAN_LIMIT_STATUS_RESOURCES.some((resource) => {
-            if (resource === 'agents' && plan.agentsGrandfathered === true) return false;
-            const value = plan[resource];
-            if (!value || typeof value !== 'object') return false;
-            const row = value as Record<string, unknown>;
-            return row.over === true || (
-              typeof row.pctUsed === 'number' &&
-              Number.isFinite(row.pctUsed) &&
-              row.pctUsed >= PLAN_LIMIT_WARNING_PCT
-            );
-          });
-          if (!hasWarning) {
-            removeStatusPushNotice(workspace.slug);
-            continue;
-          }
-          const upgradeUrl = planLimitUpgradeLink(plan.upgradeUrl ?? status.upgradeUrl);
+          const upgradeUrl = planLimitUpgradeLink(pause.upgradeUrl);
           applyStatusPlanLimitNotice(workspace.slug, upgradeUrl);
         } catch (error) {
           console.error(`Could not refresh plan-limit status for ${workspace.slug}.`, error);
@@ -938,6 +946,7 @@
   onMount(() => {
     postReadyActionReady = isPostReadyActionReady();
     let cancelled = false;
+    let receivedConflictNoticeStream = false;
     let latestLiveNavigation: 'meetings' | 'other' | null = null;
     let receivedLiveMeetingFocus = false;
     let revealed = false;
@@ -960,6 +969,24 @@
       console.error('Could not subscribe to watcher lock status.', error);
       return () => {};
     });
+
+    const unlistenConflictNoticesPromise = listen<ConflictParkedNoticeRow[]>(
+      'sync:conflict-notices',
+      (event) => {
+        if (!cancelled && Array.isArray(event.payload)) {
+          receivedConflictNoticeStream = true;
+          conflictNotices = mergeConflictNotices([], event.payload);
+        }
+      },
+    ).catch((error) => {
+      console.error('Could not subscribe to conflict notices.', error);
+      return () => {};
+    });
+    void invokeFn('get_pending_conflict_notices').then((rows) => {
+      if (!cancelled && !receivedConflictNoticeStream && Array.isArray(rows)) {
+        conflictNotices = mergeConflictNotices([], rows as ConflictParkedNoticeRow[]);
+      }
+    }).catch((error) => console.warn('Could not load pending conflict notices.', error));
 
     const restoreInitialNavigation = async () => {
       try {
@@ -1250,6 +1277,7 @@
       void unlistenForcePromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenWatcherStatusPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenConflictNoticesPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
@@ -1382,6 +1410,12 @@
       <button type="button" onclick={() => void hydrateSession()}><RailIcon name="refresh" />Retry</button>
     </section>
   {:else if capabilities}
+    <ConflictParkedNotice
+      notices={conflictNotices}
+      busyIds={conflictNoticeBusyIds}
+      onShowInFinder={showConflictBackup}
+      onAcknowledge={acknowledgeConflictBackup}
+    />
     {#if workspaceError}
       <div class="workspace-warning" data-testid="hq-work-workspace-error" role="status">
         <span>Workspaces couldn’t refresh.</span>

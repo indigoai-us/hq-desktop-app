@@ -8,9 +8,33 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- Update now appears on every Updates row that has an update available, including the CLI.
+
+## [0.11.1] — 2026-10-09
+
+- Meetings now explains why a notetaker could not join and offers a retry after the meeting settings are fixed.
+- The company Grants page now matches the web console. It is for granting one of your company's groups access to other companies, and for seeing which outside groups have access to yours. Pick a group, the companies to grant it to, and Read or Write, then press Grant access; the button says Granting… until HQ answers and cannot be pressed twice. Active grants list each group, company and role with a Revoke button that asks before it removes access. Revoked grants stay listed so you can see what was taken away. The Grants tab shows External groups with access. Admin is no longer offered, because grants to other companies are Read or Write only. A company HQ cannot name shows as "Unknown company" instead of an id, and a failed read says so with Try again. The folder-by-folder grant counts that used to be here are gone; who can open a folder is still shown on the company's Files access screen.
+- Conflict copy notices in the main window are now one small card in the top right, under the title bar. In 0.11.0 each parked copy got its own unstyled row across the top of the window, so several of them pushed the whole app down and covered the window's close, minimize and zoom buttons. The card shows how many copies were parked; Review lists each file with Show in Finder and Dismiss. A single copy shows its file and actions directly.
+- Project board cards have more room and a clearer order: the title first, then the description, then repos and branch on one quiet line that never wraps, then progress. Board column headers no longer sit on a shaded band. The extra green dots are gone, and teammates' initials no longer overlap. In the task drawer, section names are quieter than their content, done tasks show a check and muted text, open tasks show an empty ring, the branch sits on one line with a Copy button, and acceptance items have more space between them. The company switcher's search field has room around it and no stacked outlines, and the scrollbar no longer crowds the list.
+- Atlas: the side panel's Today section now lists only the projects worked on today, newest first. Each row shows the project name, a thin progress bar, a story count such as "12/31 stories" taken from the live Board, and how long ago it changed. Click a row to open the project. The Company block at the top of the side panel (company name and the live, objects and projects-in-progress counts) is gone.
+- Atlas: a person whose session reports a repo but no project now sits on the map next to that repo, and their hover card says "Working in hq-desktop-app" with the branch when known. Someone on a project who also reports a repo shows the repo as a second line. This needs the live sessions read to carry the repo; until the server sends it, those people stay in Not on the map.
+- Links in messages now show a short readable title instead of the full web address. A Google Calendar invite reads as the event name and date, a GitHub link as the repository and number (such as indigoai-us/hq-desktop-app#1512), and a deployed app as its name. Other links show the page's own title when HQ can read it, otherwise the site and the end of the path. Links written with their own text keep that text. Hover over a link, or move to it with the keyboard, to see a card with the details: date, time, time zone, repeat and place for a calendar invite, with Add to calendar; repository and number for GitHub; app and host for a deploy; and the full address with Copy link for anything else. Escape closes the card, and clicking the link still opens it. Page titles are read by the app itself, without your sign-ins or cookies, and only from public web addresses.
+- The Activity page now shows which models each person uses. The team list adds a short line under each name with their most-used model, such as "Opus 5.5 +1" when they used more than one. A person's detail panel has a Models section listing each model with its share of their tokens, most used first. Export includes the models too. People with no model data show neither.
+- The Tokens per day chart in My Telemetry now says UTC next to its title, because HQ counts each day from midnight UTC rather than your local midnight. The highlighted bar and the "today" label now mean today where you are: in the evening in the Americas, the newest bar is already tomorrow in UTC, so it shows its date instead of "today". The app now sends your time zone with the request, and the UTC note goes away once HQ reports that it counted the days in your zone.
+- Warning, error, info and success boxes in chat messages are quieter: they now use a neutral background, and only the icon is colored.
+- Client health now reports the active sync runner version and whether it runs from the daemon or the npx cache. In daemon mode, it also reports the daemon hq-cloud updater's last check and outcome when the installed CLI provides them.
+- Picking a company's project in the ⌘K palette now opens it on that company's Projects page, with the company sidebar open. The palette's Projects command opens the selected company's Projects page. Before, both left the company and showed the Home message list. From Home with no company selected, Projects still opens the Projects page with its company picker. Personal projects open there too.
+- Open board on a project in a company's Atlas now keeps you in that company. It opens the company's Projects page with that project on its Tasks tab, and the company sidebar stays open. Before, it closed the company sidebar and showed the Home message list. Open files on a project with no main file opens the project's Files tab on the same company Projects page.
+- Policies and Deployments open faster in large companies. Both lists now show 50 rows at a time and load more as you scroll, the way Team and Grants already did. On a test company with 1,700 policies, opening Policies went from about 200ms with 1.4 seconds of frozen screen to under 30ms. The Hard and Soft headers still count every policy.
+- Signing out now clears the company and personal data the window kept in memory, so the next account starts clean.
+- The company pages stop refreshing in the background while the window is hidden, and refresh once when you come back.
+- The Messages sidebar is one list ordered by latest activity when a company is picked. A company's channels used to sit in a separate Activity block above Today, so a channel last used days ago, or never, showed above the direct message you got a minute ago. Now they sit under Today, Yesterday and the earlier days with your direct messages and project channels, and channels nobody has written in go to No messages yet at the bottom. The order is the same whether you open the app, switch company, open a project channel or follow a link.
+
+## [0.11.0] — 2026-10-08
+
+This release brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+
 - Goals is no longer in the company sidebar. A saved link or back button that pointed at Goals now opens Atlas. Groups and Grants in the People section now have icons like Team and Bots: two people for Groups and a lock for Grants.
-This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
 - The New message window now looks like the new Forward window. One To field holds the company as a chip and the people you picked as chips. Results are grouped into Recent, Channels, People and Bots, with each person's picture or initials, a green dot when they are online, their email under the name so two people with the same name are easy to tell apart, and the part you typed in bold. Arrow keys move, Enter adds, Backspace removes the last pick, and the button says Start conversation until you pick someone. Picking a channel opens it. The channel invite field uses the same list.
 - A bot's profile panel, next to its messages and on the Bots page, now has Profile and Jobs tabs. Jobs lists the bot's scheduled jobs with a short name, when they run in plain words (such as "Weekdays at 9:00 AM MDT"), the next run, the last run and how it went, and whether the job is on or paused. Failing jobs come first, then the next to run. All, Recurring, One-off and Failed narrow the list. Click a job to see its full prompt with Copy, its schedule and time zone, its last run, and Pause.
 - The company Bots page is now a table. Each bot shows its picture, name and handle, whether it runs on this Mac or in the cloud, its coding tool and model, owner, role, what it is doing now, whether it is live, when it was last seen, and one status: Ready (green), Waiting (amber), Error (red) or Offline (an empty ring). Columns with nothing to show are left out, and the least useful columns step aside as the window narrows. Click Status or Last seen to sort; click a row to open that bot.
@@ -35,7 +59,6 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - New bot screens say "this Mac" on a Mac, and "this PC" or "this computer" elsewhere, including in the installed app. Buttons, fields and choice cards on these screens now have rounded corners, and every step card is the same width.
 - A new bot's conversation is clean again. After you create a bot, its conversation opens with the progress card and then the bot's own intro, as in the current release. The beta also added rows of its own under the intro: a second "Hi, I'm ..." greeting, an access request card for knowledge/, "Pick my skills" and "Verified, I'm ready". Those rows are gone for local and cloud bots. Approving the card did not grant anything, since the app has no way to grant folder access, and a Local bot already works with your own permissions. "Verified" could show while the request was still waiting, and the rows stayed pinned under every later message until the app restarted. Access requests that a bot sends now show the bot's picture instead of gray initials.
 - The "Sign in" link on New bot's coding tool step is now readable on the dark card. A new step-by-step first-run setup (name your HQ assistant, confirm your coding tools, then talk to it) is included but turned off for now; first run still opens the setup chat as before.
-- The new first-run setup (still turned off) gains a "Bring in your context" step. After you choose "Bring it in", it reads what is already on this Mac (past conversations, code repositories, skills and settings) and draws your companies and projects as a growing tree while it scans. When the installed HQ is too old to scan, it says so and offers "Check again" after you update.
 - Activity is now one team view. The Team and Tokens switch, the tokens-by-day chart and the "attributed" line are gone. Each person gets one row: their photo when the app has one (initials otherwise, bots in a rounded square), their role when known, a live dot when they are online, small bars for each day of the range, when they were last active, and their sessions, stories, PRs and deploys. The list puts the most recently active people first; Name sorts it A to Z. The 7d, 30d and 90d range and Export stay.
 - Projects hides complete projects by default on the Board and in the List. A "Show N complete" button where the Complete column was brings them back, and Hide puts them away again; the choice is saved on this computer. Picking Complete in the state filter always shows them. The Projects title now sits on the same line as Activity, Team and Meetings instead of tight under the top bar.
 - Project cards show more at a glance: the repos the project touches and its branch as small chips, a state dot in the column's color, "7 of 15 stories" next to the progress bar, the owner and other people on it, and when it was last updated. The description is one line. Active cards never show a raw id such as "prs_01KQ…"; they show the person's name, or "1 live session" when the name is not known.
@@ -180,7 +203,6 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Daily-use and first-launch records are sent reliably and carry the app version.
 - Startup diagnostics tell more kinds of rejected saved sign-ins apart.
 - HQ recovers when its record of running commands was damaged by an earlier error.
-- Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
 - CI launches of the desktop app no longer add first-run rows to the install funnel.
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline. Persistent timeouts are still reported.
 - When company-name suggestions are turned on, new-company setup can fill in the name from a business email domain. You can still edit it.
@@ -191,28 +213,13 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - CLI update failure reports record which CLI version was running. Onboarding step telemetry can be joined to the install attempt (behind a flag).
 - Sync keeps a company's cloud link when the company is missing from your membership list or its lookup comes back missing. Only a confirmed deletion removes the link.
 - A rejected saved sign-in at startup is treated as signed out, so HQ asks you to sign in again.
-- After a Windows Core update, HQ puts its managed CLI ahead of stale CLI paths in the HQ Claude settings file so the updated version is selected.
 - Shelltest builds report to a separate Sentry environment. Release telemetry is unchanged.
 - More internal tests now check what the desktop UI does instead of searching its source text. Nothing changes in the app.
 
-### Known gaps for the beta
-
-- Telemetry and Outpost editing are available to Indigo team members only for now. Others see Coming soon.
-- The Grok mark in the launch menu is a placeholder.
-- Performance has not yet been measured on a quiet machine, so the new interface may feel slower than it will at release.
-- Atlas is slow to draw the first map for large companies. A faster map needs a server change that is not in this beta.
-- Deployments cannot redeploy from the desktop yet, and the Your bots filter is empty.
-- Workforce shows the seat limit as unavailable until the plan limits are connected.
-- Custom keyboard shortcuts in the Edit shortcuts sheet are not saved yet.
-- Atlas now shows everyone who is working. People and bots whose session names a repo, folder or worker on the map are placed there, and anyone the map cannot place is listed in a small Not on the map group in the corner of the map, with a note saying why when you hover them.
 - Company logos in the left rail now fill their whole circle instead of sitting small inside a grey one. Companies without a logo still show their initials.
 
 - Connection cards in a cloud bot's direct message can now come from the bot itself. A bot on the new runtime sends each card with the state it looked up (whether the app is connected, whether the bot can use it, who connected it, and whether the bot is in Slack), in the message's structured content instead of inside its text. The app draws those cards straight from what the bot sent, without reading the company's connection list: "Nova can use it." when the bot can use the app (for a bot named Nova), "Let Nova use it?" with the button when you connected it, "A teammate connected this. Ask them to share it with Nova." when someone else did, Connect when you can add apps, and "Ask a company admin" when you cannot. When you press one of these cards, the app first checks the live state and then acts on that, and it checks again when a note that a connection changed reaches the bot. Slack is still the first card and a row still shows three cards at most. Messages from older bots, and cards without state, work as before. The app now also keeps a direct message's structured content when it loads the conversation; it used to drop it.
 
-- Connection cards and the first hello in a cloud bot's direct message now read the company's connected apps with the server's faster summary list. For a company with about 135 connections that read took 7 to 9 seconds and should now take under a second. The cards and the hello show the same thing as before. An older server that does not know the summary list answers with the full one, as before.
-- A row of connection cards in a cloud bot's direct message now appears as one: the app waits until it knows every card in the row (the company's connections and each app the bot named), then shows them together, Slack first. If that takes longer than two seconds, it shows the cards it knows and the others join at the end of the row.
-- Connected connection cards no longer have a green border. They keep the same edge as the other cards; the green "Connected" mark stays.
-- In a cloud bot's direct message, the bot's own Slack card is now the first card of every row of connection cards. The app adds it when the bot's message names other apps but not Slack, moves it to the front when the bot named it later in the row, and keeps it, as "Nova is in Slack." (for a bot named Nova), once the bot is in Slack. A row still shows three cards at most, Slack counting as one.
 - The file sync status of a cloud bot moved into the header of its direct message. The full-width "Syncing your company's files" strip and its progress bar under the header are gone. In their place a small sync icon and one short grey line sit to the right of "Direct message", next to the bot's name, for example "Syncing your company's files, 10 files so far", or with a percent when there is a real one. Nothing in it moves. In a narrow window the line is cut with "..." before anything else in the header gives way, and hovering it shows the full text. It goes away when the files are up to date, as the strip did.
 - Files opens a vault with its last known counts while the current index refreshes. The app now prewarms authorized vault indexes after the shell is ready and saves the paths, file metadata, and note links locally for the signed-in account, so the next launch can start with an incremental refresh instead of reading every note again.
 - Deployments now has an All companies filter that lists only scopes with apps, and every column can be sorted forward, reverse, then back to the default order.
@@ -245,6 +252,23 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Atlas shows who is working where at a readable size at every zoom: people and bots appear as markers beside the item they are working on. Hovering an item or a marker opens a card with who is there, what they are doing, story progress, related items and dates.
 - Atlas reads project links for up to 30 seconds before drawing the map without them (was 8), and names up to 16 items when zoomed out (was 8).
 
+### Fixed
+
+- Show a notice when sync parks a conflict copy, with actions to reveal the preserved file or dismiss the notice.
+- "New files are paused" no longer appears for companies whose uploads are working. The notice now shows only when HQ is actually refusing new files for that company, not when a plan allowance is merely close to full.
+- HQ Desktop refreshes its npx-cached sync runner at startup only when npm reports a newer compatible version; it keeps the cache when npm is unavailable or a runner is active.
+- Client health now reports the updater check time, outcome, and error class; a failed check no longer leaves an old `up_to_date` status in place.
+
+### Known gaps
+
+- Telemetry and Outpost editing are available to Indigo team members only for now. Others see Coming soon.
+- The Grok mark in the launch menu is a placeholder.
+- Performance has not yet been measured on a quiet machine, so the new interface may feel slower than it will at release.
+- Atlas is slow to draw the first map for large companies. A faster map needs a server change that is not in this beta.
+- Deployments cannot redeploy from the desktop yet, and the Your bots filter is empty.
+- Workforce shows the seat limit as unavailable until the plan limits are connected.
+- Custom keyboard shortcuts in the Edit shortcuts sheet are not saved yet.
+
 ## [0.10.407] — 2026-10-08
 
 - HQ background tasks run through the signed app, and the login item is only rewritten when its settings change.
@@ -273,6 +297,7 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 
 - Channel unread badges refresh from the full snapshot when an unread invalidation has no channel details.
 
+### Fixed
 
 - The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
 - Sync no longer stalls on slow connections while it downloads the list of deleted files. The app now uses sync engine hq-cloud 6.18.52, which waits for the download to stop making progress instead of giving each page a fixed 60 seconds.
@@ -395,7 +420,6 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 
 - HQ CLI updates that time out while a command is using the package now retry up to three times, ten minutes apart, before returning to the regular six-hour check.
 
-
 ## [0.10.389] — 2026-10-04
 
 - When the auto-sync watcher stops because another sync runner already owns the HQ root (exit 20), the report now says so instead of "exited unexpectedly", even when the runner printed nothing. It names the owning runner's owner, pid, process and start time when the runner reports them, and reads `unknown` for any it does not.
@@ -453,12 +477,9 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Keep a company's cloud binding in `companies/manifest.yaml` when it is absent
   from the signed-in person's membership list. The app now waits for an
   authoritative deletion signal before unlinking a workspace.
-
-- Company names now show the company favicon beside them across the app: the New bot company chips, project header, More companies, command palette, Connections, settings, bot membership lists, Meetings, Telemetry, and Atlas. Companies without a website show their initials instead of a grey dot.
-- Company favicons now show in the left rail for companies that have a website set. The app was dropping the icon the server sends, so every company showed initials. The company list also reloads when you switch companies, so an icon added later replaces the initials.
-- New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
-- Behind `agents.desktop-agent-creation` (Indigo only): New bot in Messages is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
 - Internal tests: four more desktop UI tests (task strip, task chip, page header, agents settings) now render the components instead of searching their source text. Nothing changes in the app.
+- Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
+
 - Internal: CLI update failure reports now record which CLI version was running when the update failed, as a SemVer value or the word unknown, with no file path.
 - Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
 - Add bounded marker and refresh rejection attribution to unexpected startup diagnostics.
@@ -473,7 +494,6 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
 - Past meetings can show meeting transcripts you saved privately on this computer, including older ones, when the personal transcripts feature is turned on for your account. Transcripts from another account signed in on the same computer stay hidden.
 - Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
-- Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
 - After a Windows Core update, HQ puts its managed CLI ahead of stale CLI paths in the HQ Claude settings file so the updated version is selected.
 
@@ -520,7 +540,6 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 
 - Closing the main window no longer logs an error.
 
-- Settings › Updates now shows what is holding a requested restart (a recording, a transcript that is still saving, or an HQ Core update) under the Desktop app row, and the update notice says the same instead of always mentioning a recording.
 - "Restart to update" works again while sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and the update card now says which one instead of always mentioning a recording.
 
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.

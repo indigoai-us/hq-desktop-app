@@ -94,6 +94,8 @@ describe("CompanyProjectsPage hides Complete by default", () => {
     expect(q(card, '[data-testid="project-repo-chips"]')?.textContent).toContain("hq-desktop-app");
     expect(q(card, '[data-testid="project-branch"]')?.textContent).toContain("feature/open");
     expect(q(card, '[data-testid="project-stories"]')?.textContent).toBe("1 of 4 stories");
-    expect(q(card, '[data-testid="project-state-dot"]')?.dataset.column).toBe("in-progress");
+    // One status signal: the column header carries the dot; the card keeps its column.
+    expect(card.dataset.column).toBe("in-progress");
+    expect(q(card, '[data-testid="project-state-dot"]')).toBeNull();
   });
 });

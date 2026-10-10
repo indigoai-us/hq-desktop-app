@@ -33,6 +33,8 @@ graph.nodes.find((n) => n.id === 'knowledge:knowledge/pricing.md')!.touched = NO
 graph.nodes.find((n) => n.id === 'policy:policies/tenancy.md')!.touched = NOW - 50 * 60_000;
 
 const people = [
+  // In a session with no project but a repo: placed next to the repo.
+  { actorUid: 'u_st', name: 'Stefan Johnson', bot: false, repo: 'indigoai-us/hq-desktop-app', branch: 'corey/map' },
   { actorUid: 'u_hs', name: 'Hana Stone', bot: false, idle: true },
   { actorUid: 'u_sm', name: 'Sam Moss', bot: false },
   { actorUid: 'u_sj', name: 'Sara Jones', bot: false, idle: true },
@@ -63,5 +65,10 @@ mount(AtlasView, {
     actors: [...people, ...bots],
     motion: false,
     loadDetail: async () => ATLAS_SMOKE_DETAIL,
+    // Live Board story status for Today's counters (12 of 31 on the explorer).
+    loadProjectView: async (projectId: string) =>
+      projectId === 'hq-explorer'
+        ? { projectId, stories: Array.from({ length: 31 }, (_, i) => ({ id: `US-${i + 1}`, status: i < 12 ? 'done' : 'queued' })) }
+        : null,
   },
 });

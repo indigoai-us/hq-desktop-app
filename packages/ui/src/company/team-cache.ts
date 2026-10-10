@@ -4,8 +4,10 @@
  */
 import type { TeamTelemetryView } from "./team-telemetry.js";
 import type { PendingInvite } from "./team-bots-pages.js";
+import { registerAccountCache } from "../common/account-caches.js";
 
 const teamCache = new Map<string, { view: TeamTelemetryView; invites: PendingInvite[] }>();
+registerAccountCache(() => teamCache.clear());
 
 export function readTeamCache(slug: string): { view: TeamTelemetryView; invites: PendingInvite[] } | null {
   return teamCache.get(slug) ?? null;

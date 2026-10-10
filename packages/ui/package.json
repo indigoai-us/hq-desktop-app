@@ -10,6 +10,8 @@
       "default": "./src/index.ts"
     },
     "./board/thread-model": "./src/board/thread-model.ts",
+    "./link-preview": "./src/common/linkPreview.ts",
+    "./link-titles": "./src/common/linkTitles.ts",
     "./meetings/past-meetings": "./src/meetings/past-meetings.ts",
     "./emoji-shortcodes": {
       "svelte": "./src/common/emojiShortcodes.ts",

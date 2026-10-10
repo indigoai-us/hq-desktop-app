@@ -167,7 +167,7 @@ describe("RichMessageContent renders each block type from fixture data", () => {
     ).toBe(true);
   });
 
-  it("renders a callout: tinted block, per-tone icon, markdown body (no raw HTML)", async () => {
+  it("renders a callout: neutral block, per-tone icon, markdown body (no raw HTML)", async () => {
     const el = render({
       v: 1,
       blocks: [

@@ -324,13 +324,13 @@ describe("ChatSidebar create flow", () => {
       channelId: "chn_new",
       body: "kicking this off",
     });
-    // Company channels paint under Activity for the selected company, not
-    // in the Home day groups. The optimistic upsert still shows immediately.
-    const activity = host.querySelector('[data-testid="company-activity-channels"]');
-    expect(activity?.textContent).toContain("Q4 board");
-    expect(
-      host.querySelector('[data-testid="chat-today"]')?.textContent ?? "",
-    ).not.toContain("Q4 board");
+    // The selected company's channels share the date buckets with DMs; there
+    // is no separate Activity block. The optimistic upsert shows immediately.
+    expect(host.querySelector('[data-testid="company-activity-channels"]')).toBeNull();
+    const dated = [...host.querySelectorAll('.chat-list[aria-labelledby^="chat-sec-"]')]
+      .map((el) => el.textContent ?? "")
+      .join(" ");
+    expect(dated).toContain("Q4 board");
     // …and the open request carries its NAME, so the header never paints the
     // raw `chn_…` id while the directory feed catches up (reported bug).
     expect(takePendingChannelOpen()).toMatchObject({

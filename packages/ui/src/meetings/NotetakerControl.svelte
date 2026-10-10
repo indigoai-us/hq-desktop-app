@@ -39,6 +39,8 @@
     <span class="msg" role="alert" data-testid="meeting-notetaker-failed">{failed}</span>
     <button type="button" class="btn" data-testid="meeting-notetaker-retry" onclick={() => void run(lastAction)}><RailIcon name="refresh" />Try again</button>
   {:else if status.action === "invite"}
+    {#if status.label}<span class="msg" data-testid="meeting-notetaker-status">{status.label}</span>{/if}
+    {#if status.detail}<span class="msg detail" data-testid="meeting-notetaker-detail">{status.detail}</span>{/if}
     <button
       type="button"
       class="btn"
@@ -47,7 +49,7 @@
       aria-busy={pending}
       title={url ? "Sends the notetaker to record and transcribe this meeting" : "This meeting has no link to send the notetaker to"}
       onclick={() => void run("invite")}
-    ><RailIcon name="user-plus" />{pending ? "Inviting…" : "Invite notetaker"}</button>
+    ><RailIcon name="user-plus" />{pending ? "Inviting…" : status.label ? "Try again" : "Invite notetaker"}</button>
   {:else}
     <span class="msg" data-testid="meeting-notetaker-status">{status.label}</span>
     {#if status.action === "remove"}
@@ -59,6 +61,7 @@
 <style>
   .nt { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
   .msg { color: var(--t2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .detail { color: var(--t3); }
   .btn { height: var(--hq-btn-h); padding: 0 var(--hq-btn-pad-inline); border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
   .btn:hover:not(:disabled) { background: var(--hover); }
   .btn:disabled { color: var(--t3); cursor: default; }

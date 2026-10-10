@@ -28,12 +28,18 @@
  *   ?firstrun=visual-import[-fast|-slow|-empty|-error|-fail|-update]  as visual, and the
  *       "Bring in your context" scan replays a fixture stream (import-scan-fixture.ts).
  *       Plain ?firstrun=visual leaves the scan command unhandled: the stream-failed state.
+ *   ?team=invites|member|many|fail and ?apps=on|empty|forbidden|fail  with a ?firstrun= switch:
+ *       the "Your team", Note taker and Project management screens (first-run-fixtures.ts).
+ *       Without ?team= the roster is the persona's; without ?apps= the catalog is the usual mock.
+ *   ?conflicts=N                                 N parked conflict copies (1-50), to see the
+ *       grouped "Conflict copy parked" card over the shell
  *
  * Combine freely with ?persona=, ?theme= and ?route=.
  */
 import { emit } from '@tauri-apps/api/event';
 import { isBootCommand } from './state-flags';
 import { cancelImportScan, replayImportScan, type ImportVariant } from './import-scan-fixture';
+import { firstRunScreensAnswer } from './first-run-fixtures';
 
 function params(search?: string | null): URLSearchParams {
   const raw = search ?? (typeof window === 'undefined' ? '' : window.location.search);
@@ -147,6 +153,22 @@ export function atlasPopulated(search?: string | null): boolean {
   return params(search).get('atlas') === 'populated';
 }
 
+/** ?conflicts=N: N parked conflict-copy notices for get_pending_conflict_notices. */
+export function conflictNoticesSwitch(search?: string | null): unknown[] | null {
+  const count = Number(params(search).get('conflicts'));
+  if (!Number.isInteger(count) || count < 1) return null;
+  return Array.from({ length: Math.min(count, 50) }, (_, i) => ({
+    id: i.toString(16).padStart(64, '0'),
+    scope: 'company',
+    companySlug: 'indigo',
+    relativePath: ['boards/primary.md', 'knowledge/pricing.md', 'projects/launch/prd.json', 'policies/release.md', 'notes/standup.md'][i % 5].replace('.', '-' + i + '.'),
+    backupPath: '.hq/conflict-backups/file-' + i + '.backup',
+    winnerReason: 'remote-newer',
+    sideKept: 'remote',
+    parkedAt: '2026-10-09T00:00:00.000Z',
+  }));
+}
+
 export function toastSwitch(search?: string | null): string | null {
   return params(search).get('toast');
 }
@@ -221,6 +243,8 @@ export function switchedHandler(
         },
       };
     }
+    const screens = firstRunScreensAnswer(cmd, args, search);
+    if (screens) return screens;
     if (cmd === 'agent_session_preflight') return { value: firstRunPreflight(firstRun !== 'visual-notools') };
     if (cmd === 'local_bots_list') return { value: { bots: [] } };
     // "Bring in your context": replay a scan (import-scan-fixture.ts). The

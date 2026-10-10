@@ -1294,8 +1294,8 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', AGENT_PATHS.owners(companyUid, agentUid)),
       getCompanyTelemetry: (companyUid, from, to) =>
         hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
-      getMyTelemetry: (from, to) =>
-        hqProJson('GET', AGENT_PATHS.myTelemetry(from, to)),
+      getMyTelemetry: (from, to, tz) =>
+        hqProJson('GET', AGENT_PATHS.myTelemetry(from, to, tz)),
       listLocalSessions: (range, page) =>
         call('list_local_sessions', { from: range.from, to: range.to, offset: page?.offset ?? 0, limit: page?.limit ?? 50 }),
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
@@ -1450,6 +1450,12 @@ export function createSyncPlatformAdapter(
         ),
       listAccessGroups: (companyUid) =>
         hqProJson('GET', `/secrets/${encodeURIComponent(companyUid)}/groups`),
+      listOutboundGroupGrants: (sourceCompanyUid, groupId) =>
+        hqProJson('GET', withQuery('/group-grants/outbound', { sourceCompanyUid, groupId })),
+      listInboundGroupGrants: (companyUid) =>
+        hqProJson('GET', withQuery('/group-grants/inbound', { companyUid })),
+      createGroupGrant: (input) => hqProJson('POST', '/group-grants', input),
+      revokeGroupGrant: (input) => hqProJson('POST', '/group-grants/revoke', input),
       atlasLocal: {
         firstPage: (companySlug) => call('atlas_local_first_page', { companySlug }),
         listing: (companySlug) => call('atlas_local_listing', { companySlug }),

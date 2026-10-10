@@ -87,7 +87,10 @@ function sidebarApi(): ChatSidebarApi {
             companyUid: COMPANY_UID,
             name: "indigo-ops",
             subtitle: "company",
-            lastActivityAt: new Date().toISOString(),
+            // Newest row whatever the time of day: the fixture stamps rows at
+            // today(7..10), which are still in the future before 10:12 local,
+            // so a plain "now" sinks below them and out of the ⌘K list.
+            lastActivityAt: new Date(Math.max(Date.now(), new Date().setHours(11, 0, 0, 0))).toISOString(),
             unreadCount: 0,
             memberCount: 4,
           },
@@ -232,18 +235,21 @@ describe("Home sidebar is the same however Home is reached", () => {
     expect(homeSidebar()).toEqual(viaRail);
   });
 
-  it("the company picker still narrows Home and shows that company's Activity", { timeout: 30_000 }, async () => {
+  it("the company picker narrows Home to one chronological list, no Activity block", { timeout: 30_000 }, async () => {
     await mountShell();
     await homeViaRail();
     click('[data-testid="chat-scope-pill"]');
     await settle();
     click(`[data-testid="chat-scope-option"][data-scope="${COMPANY_UID}"]`);
     await settle();
-    expect(homeSidebar().activity).toBe(true);
+    expect(homeSidebar().activity).toBe(false);
+    expect(
+      host.querySelector('.chat-list[aria-labelledby^="chat-sec-"] [data-conversation-id="ch:chn_indigo_ops"]'),
+    ).not.toBeNull();
 
     // Opening a conversation from Home keeps the picked company.
     click('[data-conversation-id="ch:chn_indigo_ops"]');
     await settle();
-    expect(homeSidebar().activity).toBe(true);
+    expect(homeSidebar().activity).toBe(false);
   });
 });

@@ -39,6 +39,8 @@ export interface NotetakerToggleModel {
   action: "invite" | "cancel" | "none";
   /** Accessible label for the toggle control. */
   ariaLabel: string;
+  /** Plain-language explanation for a failed join, when present. */
+  detail?: string;
 }
 
 /**
@@ -150,6 +152,15 @@ export function notetakerToggleState(
   bot: ScheduledBot | undefined,
 ): NotetakerToggleModel {
   const kind = rowButtonKind(bot);
+  if (kind === "failed") {
+    return {
+      visual: "off",
+      kind,
+      action: "invite",
+      ariaLabel: "Invite notetaker again",
+      detail: bot?.failureReason?.trim() || "The notetaker couldn't join this meeting.",
+    };
+  }
   if (!bot || !isActiveBotStatus(bot.status) || kind === "invite") {
     return {
       visual: "off",

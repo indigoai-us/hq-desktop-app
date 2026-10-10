@@ -33,7 +33,7 @@ use hq_desktop_core::hq_daemon::{
     SyncHostMode, HQ_DAEMON_FLAG, HQ_DAEMON_HOST_MIN_CLI,
 };
 use hq_desktop_core::hq_resolver::{resolve_hq, HqInvocation};
-use tauri::{AppHandle, Listener, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Listener, Manager, Runtime};
 
 use crate::commands::daemon::{handle_watch_stdout_line, WatcherPhaseContext};
 use crate::commands::process::{
@@ -593,6 +593,227 @@ pub(crate) async fn run_daemon_sync_command_blocking(args: Vec<String>) -> Resul
     })?
 }
 
+#[derive(serde::Deserialize)]
+struct ConflictNoticeFile {
+    schema: u8,
+    notices: Vec<serde_json::Value>,
+}
+
+#[tauri::command]
+pub fn get_pending_conflict_notices() -> Result<Vec<serde_json::Value>, String> {
+    let state_dir = conflict_notice_state_dir()?;
+    read_pending_conflict_notices_from_state_dir(&state_dir)
+}
+
+fn read_pending_conflict_notices_from_state_dir(
+    state_dir: &Path,
+) -> Result<Vec<serde_json::Value>, String> {
+    let notices_path = state_dir.join("conflict-notices.json");
+    let notices: ConflictNoticeFile = match std::fs::read_to_string(&notices_path) {
+        Ok(raw) => match serde_json::from_str(&raw) {
+            Ok(notices) => notices,
+            Err(error) => {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "conflict notice file could not be parsed; treating as empty: {error}"
+                    ),
+                );
+                return Ok(Vec::new());
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("Conflict notices could not be read.".to_string()),
+    };
+    if notices.schema != 1 {
+        log(
+            LOG_TAG,
+            &format!(
+                "conflict notice schema {} is unsupported; treating as empty",
+                notices.schema
+            ),
+        );
+        return Ok(Vec::new());
+    }
+    let acks_path = state_dir.join("conflict-notice-acks.jsonl");
+    let mut acknowledged = std::collections::HashSet::new();
+    match std::fs::read_to_string(acks_path) {
+        Ok(raw) => {
+            let (ids, malformed_lines) = parse_conflict_notice_ack_ids(&raw);
+            acknowledged = ids;
+            if malformed_lines > 0 {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "skipped {malformed_lines} malformed conflict acknowledgement line(s)"
+                    ),
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            log(
+                LOG_TAG,
+                &format!("conflict acknowledgement file could not be read: {error}"),
+            );
+        }
+    }
+    Ok(notices
+        .notices
+        .into_iter()
+        .filter(|notice| {
+            notice
+                .get("id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|id| !acknowledged.contains(id))
+        })
+        .collect())
+}
+
+fn parse_conflict_notice_ack_ids(raw: &str) -> (std::collections::HashSet<String>, usize) {
+    let mut ids = std::collections::HashSet::new();
+    let mut malformed_lines = 0;
+    for line in raw.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(row) => match row.get("id").and_then(|value| value.as_str()) {
+                Some(id)
+                    if id.len() == 64
+                        && id
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                        && row
+                            .get("acknowledgedAt")
+                            .and_then(|value| value.as_str())
+                            .is_some() =>
+                {
+                    ids.insert(id.to_string());
+                }
+                None => malformed_lines += 1,
+                Some(_) => malformed_lines += 1,
+            },
+            Err(_) => malformed_lines += 1,
+        }
+    }
+    (ids, malformed_lines)
+}
+
+fn conflict_notice_state_dir() -> Result<PathBuf, String> {
+    if let Some(dir) = std::env::var_os("HQ_STATE_DIR").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = hq_desktop_core::paths::home_dir()
+        .ok_or_else(|| "HQ state directory could not be resolved.".to_string())?;
+    Ok(home.join(".hq"))
+}
+
+#[tauri::command]
+pub async fn acknowledge_conflict_notice(app: AppHandle, notice_id: String) -> Result<(), String> {
+    run_daemon_sync_command_blocking(vec![
+        "daemon".into(),
+        "sync".into(),
+        "conflicts".into(),
+        "acknowledge".into(),
+        notice_id,
+    ])
+    .await?;
+    let pending = get_pending_conflict_notices()?;
+    app.emit_to(
+        crate::commands::desktop_alt::WINDOW_LABEL,
+        "sync:conflict-notices",
+        &pending,
+    )
+    .map_err(|_| "Conflict notice update could not be delivered.".to_string())
+}
+
+fn safe_conflict_backup_path(value: &str) -> bool {
+    let normalized = value.replace('\\', "/");
+    normalized.starts_with(".hq/conflict-backups/")
+        && Path::new(&normalized)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+}
+
+fn conflict_backup_root(
+    hq_root: &Path,
+    scope: &str,
+    company_slug: Option<&str>,
+) -> Result<PathBuf, String> {
+    match scope {
+        "personal" if company_slug.is_none() => Ok(hq_root.to_path_buf()),
+        "company" => {
+            let slug = company_slug
+                .filter(|value| {
+                    value
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+                })
+                .ok_or_else(|| "Conflict company is invalid.".to_string())?;
+            match hq_desktop_core::workspaces::read_manifest(hq_root) {
+                hq_desktop_core::workspaces::ManifestLoad::Present(entries) => Ok(entries
+                    .into_iter()
+                    .find(|entry| entry.slug == slug)
+                    .map(|entry| entry.path)
+                    .unwrap_or_else(|| hq_root.join("companies").join(slug))),
+                hq_desktop_core::workspaces::ManifestLoad::Absent => {
+                    Ok(hq_root.join("companies").join(slug))
+                }
+                hq_desktop_core::workspaces::ManifestLoad::Failed(error) => {
+                    log(
+                        LOG_TAG,
+                        &format!("could not resolve conflict company from manifest: {error}"),
+                    );
+                    Err("Company folder could not be resolved.".to_string())
+                }
+            }
+        }
+        _ => Err("Conflict scope is invalid.".to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn show_conflict_backup(
+    scope: String,
+    company_slug: Option<String>,
+    backup_path: String,
+) -> Result<(), String> {
+    if !safe_conflict_backup_path(&backup_path) {
+        return Err("Conflict backup path is invalid.".to_string());
+    }
+    let hq_root = PathBuf::from(hq_desktop_core::daemon::resolve_hq_folder_path()?);
+    let company_root = conflict_backup_root(&hq_root, &scope, company_slug.as_deref())?;
+    let candidate = company_root.join(&backup_path);
+    let root = company_root
+        .canonicalize()
+        .map_err(|_| "Company folder could not be found.".to_string())?;
+    let backup = candidate
+        .canonicalize()
+        .map_err(|_| "Conflict backup could not be found.".to_string())?;
+    if !backup.starts_with(&root) || !backup.is_file() {
+        return Err("Conflict backup could not be found.".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&backup)
+        .status();
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer")
+        .arg(format!("/select,{}", backup.display()))
+        .status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let result = std::process::Command::new("xdg-open")
+        .arg(backup.parent().unwrap_or(&root))
+        .status();
+    result
+        .map_err(|_| "File manager could not open the conflict backup.".to_string())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "File manager could not open the conflict backup.".to_string())
+}
+
 pub fn parse_daemon_sync_mode(
     output: &str,
 ) -> Result<crate::commands::vault_client::MembershipSyncConfig, String> {
@@ -632,6 +853,12 @@ pub struct DaemonSyncStatusDetails {
     pub unit_status: String,
     pub reason: Option<String>,
     pub log_path: String,
+    pub hq_cloud_version: Option<String>,
+    pub runner_source: Option<String>,
+    pub hq_cloud_update_last_check_at: Option<String>,
+    pub hq_cloud_update_outcome: Option<String>,
+    pub hq_cloud_update_target: Option<String>,
+    pub hq_cloud_update_error_class: Option<String>,
 }
 
 pub fn parse_daemon_sync_status(output: &str) -> Result<DaemonSyncStatusDetails, String> {
@@ -692,6 +919,30 @@ pub fn parse_daemon_sync_status(output: &str) -> Result<DaemonSyncStatusDetails,
         unit_status: unit_status.to_string(),
         reason,
         log_path: log_path.to_string(),
+        hq_cloud_version: object
+            .get("hqCloudVersion")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        runner_source: object
+            .get("runnerSource")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_last_check_at: object
+            .get("hqCloudUpdateLastCheckAt")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_outcome: object
+            .get("hqCloudUpdateOutcome")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_target: object
+            .get("hqCloudUpdateTarget")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_error_class: object
+            .get("hqCloudUpdateErrorClass")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
     })
 }
 
@@ -702,6 +953,69 @@ pub fn hosted_daemon_sync_status() -> Result<DaemonSyncStatusDetails, String> {
         status.reason = Some(INSTANT_SYNC_UNSUPPORTED_MESSAGE.to_string());
     }
     Ok(status)
+}
+
+/// Client health is best-effort and must not wait on a stuck CLI. Keep this
+/// call below the heartbeat cadence so an old or unhealthy CLI falls back.
+pub fn hosted_daemon_sync_status_bounded() -> Result<DaemonSyncStatusDetails, String> {
+    const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+    let hq = local_hq().ok_or_else(|| HQ_CLI_MISSING_MESSAGE.to_string())?;
+    let mut child =
+        hq_desktop_core::paths::spawn_command(&hq, &["daemon", "sync", "status", "--json"])
+            .env("PATH", hq_desktop_core::paths::child_path())
+            .env("HQ_NO_UPDATE_CHECK", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                log(
+                    LOG_TAG,
+                    &format!("could not start bounded daemon status: {error}"),
+                );
+                "HQ daemon status is unavailable. Tap to retry.".to_string()
+            })?;
+    let deadline = Instant::now() + STATUS_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log(LOG_TAG, "bounded daemon status timed out after 5 seconds");
+                return Err("HQ daemon status timed out. Tap to retry.".to_string());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log(
+                    LOG_TAG,
+                    &format!("could not wait for bounded daemon status: {error}"),
+                );
+                return Err("HQ daemon status is unavailable. Tap to retry.".to_string());
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("could not read bounded daemon status: {error}"),
+        );
+        "HQ daemon status is unavailable. Tap to retry.".to_string()
+    })?;
+    if !output.status.success() {
+        log(LOG_TAG, "bounded daemon status exited unsuccessfully");
+        return Err("HQ daemon status is unavailable. Tap to retry.".to_string());
+    }
+    let output = String::from_utf8(output.stdout).map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("bounded daemon status returned invalid UTF-8: {error}"),
+        );
+        "HQ daemon returned an unreadable sync status. Tap to retry.".to_string()
+    })?;
+    parse_daemon_sync_status(&output)
 }
 
 /// `daemon_status` in daemon mode: the daemon's sync service.
@@ -744,6 +1058,7 @@ pub fn replay_last_pass<R: Runtime>(app: &AppHandle<R>, hq_folder: &str, pass: &
 
 /// Decide who runs background services on this launch, then start them.
 pub fn setup_sync_host(app: &AppHandle) {
+    crate::commands::sync_progress_watch::setup_last_pass_watch(app);
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         // The previous app may have exited during an automatic update after
@@ -1133,7 +1448,6 @@ fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
         );
     }
     std::thread::spawn(watch_env_changes);
-    crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
     // Before setup finishes the hq daemon's sync stays paused, so it does not
     // fill the default HQ folder; setup completion applies the setting again.
     let held_for_setup = crate::commands::lifecycle::sync_held_for_setup();
@@ -1405,12 +1719,81 @@ fn host_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::{Arc, Mutex};
     use tauri::Listener;
     use tempfile::TempDir;
 
+    #[test]
+    fn conflict_backup_root_uses_manifest_path_and_personal_scope() {
+        let hq = TempDir::new().unwrap();
+        fs::create_dir_all(hq.path().join("companies")).unwrap();
+        fs::write(
+            hq.path().join("companies/manifest.yaml"),
+            "companies:\n  indigo:\n    name: Indigo\n    path: workspace/indigo-data\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            conflict_backup_root(hq.path(), "company", Some("indigo")).unwrap(),
+            hq.path().join("workspace/indigo-data"),
+        );
+        assert_eq!(
+            conflict_backup_root(hq.path(), "personal", None).unwrap(),
+            hq.path(),
+        );
+    }
+
     use crate::events::{EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT};
     use hq_desktop_core::hq_daemon::{DaemonState, LastPass};
+
+    #[test]
+    fn pending_conflict_ack_parser_keeps_valid_rows_after_a_torn_line() {
+        let valid_id = "a".repeat(64);
+        let raw = format!(
+            "{{\"id\":\"torn\n{{\"id\":\"{valid_id}\",\"acknowledgedAt\":\"2026-10-08T15:00:00Z\"}}\n"
+        );
+
+        let (ids, malformed_lines) = parse_conflict_notice_ack_ids(&raw);
+
+        assert_eq!(malformed_lines, 1);
+        assert!(ids.contains(&valid_id));
+    }
+
+    #[test]
+    fn pending_conflict_notices_survive_a_torn_final_ack_line() {
+        let state_dir = TempDir::new().unwrap();
+        let notice_id = "b".repeat(64);
+        std::fs::write(
+            state_dir.path().join("conflict-notices.json"),
+            serde_json::json!({
+                "schema": 1,
+                "notices": [{"id": notice_id.clone(), "companySlug": "indigo", "relativePath": "boards/a.md"}]
+            }).to_string(),
+        ).unwrap();
+        std::fs::write(
+            state_dir.path().join("conflict-notice-acks.jsonl"),
+            "{\"id\":\"torn",
+        )
+        .unwrap();
+
+        let pending = read_pending_conflict_notices_from_state_dir(state_dir.path()).unwrap();
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["id"], notice_id);
+    }
+
+    #[test]
+    fn corrupt_conflict_notice_file_is_treated_as_empty() {
+        let state_dir = TempDir::new().unwrap();
+        std::fs::write(state_dir.path().join("conflict-notices.json"), "{torn").unwrap();
+
+        assert!(
+            read_pending_conflict_notices_from_state_dir(state_dir.path())
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     // ── which services run ───────────────────────────────────────────────
 
@@ -1722,6 +2105,26 @@ mod tests {
         );
         assert!(status.reason.is_none());
         assert_eq!(status.log_path, "/tmp/hq-sync.log");
+    }
+
+    #[test]
+    fn daemon_sync_status_parser_retains_runner_and_updater_telemetry() {
+        let status = parse_daemon_sync_status(r#"{"running":true,"paused":false,"syncOwner":"daemon","owner":"hq-daemon","unitStatus":"running","reason":null,"logPath":"/tmp/hq-sync.log","hqCloudVersion":"6.18.54","runnerSource":"managed-full-package","hqCloudUpdateLastCheckAt":"2026-10-08T12:00:00.000Z","hqCloudUpdateOutcome":"failed","hqCloudUpdateTarget":"6.18.54","hqCloudUpdateErrorClass":"registry"}"#).unwrap();
+        assert_eq!(status.hq_cloud_version.as_deref(), Some("6.18.54"));
+        assert_eq!(
+            status.runner_source.as_deref(),
+            Some("managed-full-package")
+        );
+        assert_eq!(
+            status.hq_cloud_update_last_check_at.as_deref(),
+            Some("2026-10-08T12:00:00.000Z")
+        );
+        assert_eq!(status.hq_cloud_update_outcome.as_deref(), Some("failed"));
+        assert_eq!(status.hq_cloud_update_target.as_deref(), Some("6.18.54"));
+        assert_eq!(
+            status.hq_cloud_update_error_class.as_deref(),
+            Some("registry")
+        );
     }
 
     #[test]

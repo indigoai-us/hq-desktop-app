@@ -145,6 +145,7 @@
     companyScopedChannels,
     groupByDay,
     omitCompanyScopedChannels,
+    railInboxRows,
     groupByType,
     historySearchScopeLabel,
     initialsFor,
@@ -1491,16 +1492,16 @@
   );
 
   const companyScoped = $derived(scope !== "all" && scope !== "personal");
-  // Home keeps DMs, bots, and project channels. Company channels render
-  // under Activity only while that company is the pane (US-008).
-  const activityChannelRows = $derived(
+  // Company channels this company's pane prefers on auto-open (US-008).
+  // They are not painted as a separate block: see `railInboxRows`.
+  const companyChannelPool = $derived(
     companyScoped ? companyScopedChannels(filteredRows, scope) : [],
   );
-  // All scope: company channels sort into the date buckets with DMs, by
-  // their most recent message. Home and Personal still omit them.
-  const inboxRows = $derived(
-    scope === "all" ? filteredRows : omitCompanyScopedChannels(filteredRows),
-  );
+  // One chronological list: in All and in a company pane, company channels
+  // sort into the date buckets with DMs by their most recent message.
+  // Home and Personal still omit them.
+  const inboxRows = $derived(railInboxRows(filteredRows, scope));
+  const chronologicalScope = $derived(scope === "all" || companyScoped);
   const railRows = $derived(
     sortMode === "type" || companyScoped
       ? inboxRows
@@ -1574,11 +1575,11 @@
     // and rows that hydrate a beat later — but once the first fetch has
     // settled (or timed out) with nothing else, open #setup so the pane is
     // never an infinite skeleton.
-    // A selected company paints its channels under Activity, not in the
-    // Home day groups. Prefer one of those over a personal DM (US-008).
+    // A selected company prefers one of its channels over a personal DM
+    // (US-008).
     const livePool =
-      companyScoped && activityChannelRows.length > 0
-        ? activityChannelRows
+      companyScoped && companyChannelPool.length > 0
+        ? companyChannelPool
         : // All lists company channels too, but boot never opens one on
           // its own (it did not before they joined the date buckets).
           omitCompanyScopedChannels(inboxRows);
@@ -1612,14 +1613,11 @@
       ? groupByType(railRows)
       : groupByDay(railRows, Date.now(), {
           humanOnly,
-          emptyChannelsLast: scope === "all",
+          emptyChannelsLast: chronologicalScope,
         }),
   );
   /** Rows in painted order — the selection model's range/keyboard order. */
-  const renderedRows = $derived([
-    ...activityChannelRows,
-    ...flattenGrouped(grouped, lastWeekExpanded),
-  ]);
+  const renderedRows = $derived(flattenGrouped(grouped, lastWeekExpanded));
   const orderedRowIds = $derived(renderedRows.map((row) => row.id));
   $effect(() => {
     const emit = ondisplayrows;
@@ -4624,22 +4622,6 @@
             {/if}
           {/each}
         {/if}
-      </div>
-    {/if}
-
-    {#if activityChannelRows.length > 0}
-      <div class="chat-section-label" id="chat-activity-label">
-        <span>ACTIVITY</span>
-      </div>
-      <div
-        class="chat-list"
-        role="list"
-        aria-labelledby="chat-activity-label"
-        data-testid="company-activity-channels"
-      >
-        {#each activityChannelRows as row (row.id)}
-          {@render conversationRow(row)}
-        {/each}
       </div>
     {/if}
 

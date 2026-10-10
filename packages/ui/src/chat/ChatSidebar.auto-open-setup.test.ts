@@ -306,7 +306,7 @@ describe("ChatSidebar boot when the roster already has a company", () => {
       },
     });
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="company-activity-channels"] [data-conversation-id="ch:chn_acme"]')).toBeTruthy();
+      expect(host.querySelector('.chat-list[aria-labelledby^="chat-sec-"] [data-conversation-id="ch:chn_acme"]')).toBeTruthy();
     });
   });
 

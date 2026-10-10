@@ -43,7 +43,11 @@ pub struct MeetingEvent {
     pub organizer: Option<serde_json::Value>,
     #[serde(default, rename = "htmlLink", skip_serializing_if = "Option::is_none")]
     pub html_link: Option<String>,
-    #[serde(default, rename = "conferenceData", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "conferenceData",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub conference_data: Option<serde_json::Value>,
 }
 
@@ -81,6 +85,8 @@ pub struct ScheduledBot {
     pub company_id: Option<String>,
     pub auto_scheduled: bool,
     pub error_message: Option<String>,
+    pub terminal_sub_code: Option<String>,
+    pub failure_reason: Option<String>,
     pub source_landed: bool,
 }
 
@@ -135,6 +141,10 @@ struct ScheduledBotRest {
     auto_scheduled: bool,
     #[serde(default)]
     error_message: Option<String>,
+    #[serde(default)]
+    terminal_sub_code: Option<String>,
+    #[serde(default)]
+    failure_reason: Option<String>,
     #[serde(default, deserialize_with = "null_as_false")]
     source_landed: bool,
 }
@@ -171,6 +181,8 @@ impl From<ScheduledBotWire> for ScheduledBot {
             company_id: r.company_id,
             auto_scheduled: r.auto_scheduled,
             error_message: r.error_message,
+            terminal_sub_code: r.terminal_sub_code,
+            failure_reason: r.failure_reason,
             source_landed: r.source_landed,
         }
     }
@@ -630,6 +642,8 @@ mod tests {
             company_id: None,
             auto_scheduled: false,
             error_message: None,
+            terminal_sub_code: None,
+            failure_reason: None,
             source_landed: false,
         }
     }
@@ -913,7 +927,34 @@ mod tests {
         assert!(!b.recurring_meeting && !b.auto_scheduled && !b.source_landed);
         assert!(parsed.bots[1].recurring_meeting && parsed.bots[1].source_landed);
         let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-        assert!(!log.contains("malformed scheduled-bot"), "unexpected skip: {log}");
+        assert!(
+            !log.contains("malformed scheduled-bot"),
+            "unexpected skip: {log}"
+        );
+    }
+
+    #[test]
+    fn bots_response_preserves_optional_terminal_failure_fields() {
+        let json = r#"{
+            "bots": [{
+                "botId": "bot-failed",
+                "status": "failed",
+                "meetingUrl": "https://zoom.us/j/1",
+                "platform": "zoom",
+                "terminalSubCode": "meeting_requires_sign_in",
+                "failureReason": "This Zoom meeting only admits signed-in Zoom users."
+            }]
+        }"#;
+        let parsed: BotsResponse = serde_json::from_str(json).expect("parse failed bot");
+        let bot = &parsed.bots[0];
+        assert_eq!(
+            bot.terminal_sub_code.as_deref(),
+            Some("meeting_requires_sign_in")
+        );
+        assert_eq!(
+            bot.failure_reason.as_deref(),
+            Some("This Zoom meeting only admits signed-in Zoom users.")
+        );
     }
 
     /// The cancel response shares the same `recallBotId` alias, so it must also
@@ -1407,7 +1448,10 @@ mod event_details_passthrough_tests {
         assert_eq!(out["attendees"][1]["responseStatus"], "needsAction");
         assert_eq!(out["organizer"]["email"], "a@example.com");
         assert_eq!(out["htmlLink"], "https://calendar.google.com/event?eid=1");
-        assert_eq!(out["conferenceData"]["entryPoints"][0]["uri"], "https://zoom.us/j/123");
+        assert_eq!(
+            out["conferenceData"]["entryPoints"][0]["uri"],
+            "https://zoom.us/j/123"
+        );
     }
 
     #[test]

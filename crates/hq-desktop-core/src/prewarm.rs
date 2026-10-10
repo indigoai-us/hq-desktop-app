@@ -29,10 +29,10 @@
 //! can otherwise race a foreground Sync Now or watch-daemon start against the
 //! same tree, occasionally leaving npm to report an `EACCES` / exit-126-style
 //! failure. Every runner launch therefore first calls the same materialization
-//! helper below. The helper takes a cross-process advisory lock only while it
-//! runs the trivial npx payload, then releases it before the real (possibly
-//! long-lived) runner starts. Waiting is bounded, and an OS-released advisory
-//! lock cannot remain stale after an app crash.
+//! helper below. That lock covers only the npx cache write. The process
+//! supervisor then holds a second shared lease for the runner's lifetime;
+//! startup refresh takes that lease exclusively and skips while a runner is
+//! active. Both locks are released by the OS after a crash.
 //!
 //! ## Why `std::thread` and not tokio
 //!
@@ -53,8 +53,9 @@
 //! the cache.
 
 use std::fs::{File, OpenOptions};
-use std::io::ErrorKind;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::io::{ErrorKind, Read};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -73,6 +74,7 @@ const MATERIALIZATION_LOCK_RETRY: Duration = Duration::from_millis(100);
 const MATERIALIZATION_LOCK_TIMEOUT_MESSAGE: &str =
     "HQ Sync is still preparing its npm cache in another window. \
      Wait a moment, then try Sync again.";
+const REGISTRY_METADATA_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Maximum time an automatic Core update waits for this process's startup
 /// prewarm. On expiry the update is deferred to the next automatic cycle.
@@ -140,6 +142,11 @@ impl PrewarmCoordinator {
 
 static PREWARM_COORDINATOR: OnceLock<PrewarmCoordinator> = OnceLock::new();
 static AUTOMATIC_UPDATE_DEFERRALS: AtomicU64 = AtomicU64::new(0);
+static STARTUP_RUNNER_REFRESH_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn claim_startup_runner_refresh(started: &AtomicBool) -> bool {
+    !started.swap(true, Ordering::AcqRel)
+}
 
 fn process_prewarm_coordinator() -> &'static PrewarmCoordinator {
     PREWARM_COORDINATOR.get_or_init(PrewarmCoordinator::new)
@@ -250,6 +257,102 @@ fn acquire_materialization_lock_in(
     Ok(MaterializationLock { file })
 }
 
+fn open_materialization_lock_file() -> Result<(File, std::path::PathBuf), String> {
+    let lock_path = materialization_lock_path()?;
+    let parent = lock_path.parent().ok_or_else(|| {
+        "HQ Sync could not determine where to coordinate the npm cache".to_string()
+    })?;
+    std::fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "HQ Sync cannot prepare its npm cache because {} is not writable: {err}",
+            parent.display()
+        )
+    })?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .map_err(|err| format!("HQ Sync could not open its npm cache lock: {err}"))?;
+    Ok((file, lock_path))
+}
+
+#[derive(Debug)]
+pub struct RunnerCacheUseLock {
+    file: File,
+}
+
+impl Drop for RunnerCacheUseLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn runner_cache_use_lock_path() -> Result<std::path::PathBuf, String> {
+    Ok(paths::hq_config_dir()?.join("npx-hq-cloud-runner-use.lock"))
+}
+
+/// Keep the shared cache stable while an npx-launched runner is using it.
+/// Startup refresh takes the exclusive side and skips when this lease is held.
+pub fn acquire_runner_cache_use_lock() -> Result<RunnerCacheUseLock, String> {
+    acquire_runner_cache_use_lock_in(&runner_cache_use_lock_path()?, MATERIALIZATION_LOCK_WAIT)
+}
+
+fn try_acquire_runner_cache_refresh_lock() -> Result<Option<RunnerCacheUseLock>, String> {
+    try_acquire_runner_cache_refresh_lock_in(&runner_cache_use_lock_path()?)
+}
+
+fn acquire_runner_cache_use_lock_in(
+    lock_path: &std::path::Path,
+    wait: Duration,
+) -> Result<RunnerCacheUseLock, String> {
+    let file = open_lock_file_at(lock_path, "runner-cache use")?;
+    wait_for_materialization_lock(wait, || FileExt::try_lock_shared(&file))?;
+    Ok(RunnerCacheUseLock { file })
+}
+
+fn try_acquire_runner_cache_refresh_lock_in(
+    lock_path: &std::path::Path,
+) -> Result<Option<RunnerCacheUseLock>, String> {
+    let file = open_lock_file_at(lock_path, "runner-cache use")?;
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(Some(RunnerCacheUseLock { file })),
+        Err(err) if is_retryable_materialization_lock_error(&err) => Ok(None),
+        Err(err) => Err(format!(
+            "HQ Sync could not coordinate runner-cache use: {err}"
+        )),
+    }
+}
+
+fn try_acquire_materialization_lock() -> Result<Option<MaterializationLock>, String> {
+    let (file, _) = open_materialization_lock_file()?;
+    match FileExt::try_lock_exclusive(&file) {
+        Ok(()) => Ok(Some(MaterializationLock { file })),
+        Err(err) if is_retryable_materialization_lock_error(&err) => Ok(None),
+        Err(err) => Err(format!(
+            "HQ Sync could not coordinate npm cache preparation: {err}"
+        )),
+    }
+}
+
+fn open_lock_file_at(lock_path: &std::path::Path, purpose: &str) -> Result<File, String> {
+    let parent = lock_path
+        .parent()
+        .ok_or_else(|| format!("HQ Sync could not determine where to coordinate {purpose}"))?;
+    std::fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "HQ Sync cannot coordinate {purpose} because {} is not writable: {err}",
+            parent.display()
+        )
+    })?;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(lock_path)
+        .map_err(|err| format!("HQ Sync could not open its {purpose} lock: {err}"))
+}
+
 fn materialization_lock_path() -> Result<std::path::PathBuf, String> {
     Ok(paths::hq_config_dir()?.join("npx-hq-cloud-materialize.lock"))
 }
@@ -303,25 +406,345 @@ pub fn materialize_hq_cloud_cache() -> Result<(), String> {
     with_materialization_lock(run_materialization_payload)?
 }
 
-fn run_materialization_payload() -> Result<(), String> {
-    let npx = paths::resolve_bin("npx");
-    let package_spec = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
-    let path = paths::child_path();
-    let output = paths::spawn_command(
-        &npx,
-        &["-y", &package_spec, "--", "node", "-e", "process.exit(0)"],
-    )
-    .env("PATH", &path)
-    .output()
-    .map_err(|err| {
-        if err.kind() == ErrorKind::PermissionDenied {
-            "HQ Sync cannot run npx because the Node/npm installation is not executable. \
-             Reinstall Node 20 or newer, then reopen HQ Sync."
-                .to_string()
-        } else {
-            format!("HQ Sync could not start npx to prepare its cache: {err}")
+/// Refresh the exact cached runner once at app startup so a newer patch in
+/// the same requested range reaches existing desktops without a pin bump. The
+/// old entry remains available until npm has materialized its replacement.
+pub fn refresh_hq_cloud_cache_at_startup() -> Result<(), String> {
+    let Some(npx_cache_dir) = crate::runner_target::npx_cache_dir() else {
+        return materialize_hq_cloud_cache();
+    };
+    let package_spec = crate::runner_target::pinned_package_spec();
+    let entry = npx_cache_dir.join(crate::runner_target::npx_cache_entry_hash(&package_spec));
+    if !entry.exists() {
+        return with_materialization_lock(|| {
+            recover_refresh_backup(&entry)?;
+            if entry.exists() {
+                return Ok(());
+            }
+            run_materialization_payload()
+        })?;
+    }
+
+    let installed = match installed_hq_cloud_version(&entry) {
+        Ok(version) => version,
+        Err(error) => {
+            eprintln!("[prewarm] cannot read cached hq-cloud version; keeping cache: {error}");
+            return Ok(());
         }
+    };
+    let latest = match registry_max_satisfying_version() {
+        Ok(version) => version,
+        Err(error) => {
+            eprintln!("[prewarm] registry version check failed; keeping cached runner: {error}");
+            return Ok(());
+        }
+    };
+    if latest <= installed {
+        return Ok(());
+    }
+
+    // Another desktop process may be running this package tree. A process-level
+    // shared lock covers runners started by current releases; the process-table
+    // check also protects a runner left by an older release that predates it.
+    if runner_process_uses_entry(&entry) {
+        eprintln!("[prewarm] cached runner is active; skipping this launch's refresh");
+        return Ok(());
+    }
+    let Some(_runner_use_lock) = try_acquire_runner_cache_refresh_lock()? else {
+        eprintln!("[prewarm] npm cache is in use; skipping this launch's refresh");
+        return Ok(());
+    };
+    let Some(_materialization_lock) = try_acquire_materialization_lock()? else {
+        eprintln!("[prewarm] npm cache materialization is active; skipping this launch's refresh");
+        return Ok(());
+    };
+    recover_refresh_backup(&entry)?;
+    let _ = maybe_refresh_cache_entry(
+        &entry,
+        Ok(latest),
+        runner_process_uses_entry(&entry),
+        || run_materialization_payload_with_preference(true),
+        run_materialization_payload,
+    )?;
+    Ok(())
+}
+
+fn maybe_refresh_cache_entry(
+    entry: &std::path::Path,
+    latest_result: Result<semver::Version, String>,
+    runner_is_active: bool,
+    refresh: impl FnOnce() -> Result<(), String>,
+    fallback: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    let latest = match latest_result {
+        Ok(version) => version,
+        Err(error) => {
+            eprintln!("[prewarm] registry version check failed; keeping cached runner: {error}");
+            return Ok(false);
+        }
+    };
+    let installed = match installed_hq_cloud_version(entry) {
+        Ok(version) => version,
+        Err(error) => {
+            eprintln!("[prewarm] cannot read cached hq-cloud version; keeping cache: {error}");
+            return Ok(false);
+        }
+    };
+    if latest <= installed || runner_is_active {
+        return Ok(false);
+    }
+    refresh_cache_entry(entry, refresh, fallback)?;
+    Ok(true)
+}
+
+fn installed_hq_cloud_version(entry: &std::path::Path) -> Result<semver::Version, String> {
+    let manifest = entry
+        .join("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cloud")
+        .join("package.json");
+    let contents = std::fs::read_to_string(&manifest)
+        .map_err(|err| format!("could not read cached package manifest: {err}"))?;
+    let value: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|err| format!("could not parse cached package manifest: {err}"))?;
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "cached package manifest has no version string".to_string())?;
+    semver::Version::parse(version)
+        .map_err(|err| format!("cached package version is invalid: {err}"))
+}
+
+fn registry_max_satisfying_version() -> Result<semver::Version, String> {
+    let spec = format!("{}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
+    let mut child = Command::new(paths::resolve_bin("npm"))
+        .args(["view", &spec, "version", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("could not start npm metadata request: {err}"))?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < REGISTRY_METADATA_TIMEOUT => {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err("npm metadata request exceeded the 15 second timeout".to_string());
+            }
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(format!("could not wait for npm metadata request: {err}"));
+            }
+        }
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "npm metadata stdout reader failed".to_string())?
+        .map_err(|err| format!("could not read npm metadata response: {err}"))?;
+    let _stderr = stderr_reader
+        .join()
+        .map_err(|_| "npm metadata stderr reader failed".to_string())?
+        .map_err(|err| format!("could not read npm metadata error: {err}"))?;
+    if !status.success() {
+        return Err(format!(
+            "npm metadata request exited with code {:?}",
+            status.code()
+        ));
+    }
+    max_satisfying_version_from_metadata(&stdout)
+}
+
+fn max_satisfying_version_from_metadata(stdout: &[u8]) -> Result<semver::Version, String> {
+    let value: serde_json::Value = serde_json::from_slice(stdout)
+        .map_err(|err| format!("could not parse npm metadata response: {err}"))?;
+    let versions: Vec<&str> = match &value {
+        serde_json::Value::String(version) => vec![version.as_str()],
+        serde_json::Value::Array(versions) => versions.iter().filter_map(|v| v.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    let range = semver::VersionReq::parse(HQ_CLOUD_VERSION)
+        .map_err(|err| format!("invalid HQ cloud package range: {err}"))?;
+    versions
+        .into_iter()
+        .filter_map(|version| semver::Version::parse(version).ok())
+        .filter(|version| range.matches(version))
+        .max()
+        .ok_or_else(|| "npm metadata response contained no matching versions".to_string())
+}
+
+#[cfg(unix)]
+fn runner_process_uses_entry(entry: &std::path::Path) -> bool {
+    let entry = match entry.canonicalize() {
+        Ok(entry) => entry,
+        Err(_) => return true,
+    };
+    let entry = entry.to_string_lossy();
+    let output = match Command::new("/bin/ps")
+        .args(["-eww", "-o", "args="])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return true,
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|args| args.contains(entry.as_ref()) && args.contains("hq-cloud"))
+}
+
+#[cfg(windows)]
+fn runner_process_uses_entry(_entry: &std::path::Path) -> bool {
+    false
+}
+
+fn refresh_cache_entry(
+    entry: &std::path::Path,
+    refresh: impl FnOnce() -> Result<(), String>,
+    fallback: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let parent = entry
+        .parent()
+        .ok_or_else(|| "HQ Sync cannot locate its npm cache entry".to_string())?;
+    let name = entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "HQ Sync cannot name its npm cache entry".to_string())?;
+    let mut suffix = 0u32;
+    let backup = loop {
+        let candidate = parent.join(format!(
+            ".{name}.hq-refresh-{}-{suffix}",
+            std::process::id()
+        ));
+        if !candidate.exists() {
+            break candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    };
+    std::fs::rename(entry, &backup).map_err(|err| {
+        format!("HQ Sync could not preserve its cached runner before refresh: {err}")
     })?;
+
+    match refresh() {
+        Ok(()) if entry.exists() => {
+            remove_cache_path(&backup)?;
+            Ok(())
+        }
+        Ok(()) => {
+            std::fs::rename(&backup, entry).map_err(|err| {
+                format!("HQ Sync could not restore its cached runner after an empty refresh: {err}")
+            })?;
+            fallback().map_err(|fallback_error| {
+                format!("HQ Sync's online runner refresh produced no cache entry and the cached runner could not be used: {fallback_error}")
+            })
+        }
+        Err(refresh_error) => {
+            if entry.exists() {
+                remove_cache_path(entry)?;
+            }
+            std::fs::rename(&backup, entry).map_err(|err| {
+                format!("HQ Sync could not restore its cached runner after refresh failed: {err}")
+            })?;
+            match fallback() {
+                Ok(()) => {
+                    eprintln!("[prewarm] online runner refresh failed; kept the cached runner: {refresh_error}");
+                    Ok(())
+                }
+                Err(fallback_error) => Err(format!(
+                    "HQ Sync could not refresh the runner ({refresh_error}) or use the cached runner ({fallback_error})"
+                )),
+            }
+        }
+    }
+}
+
+fn recover_refresh_backup(entry: &std::path::Path) -> Result<(), String> {
+    let parent = entry
+        .parent()
+        .ok_or_else(|| "HQ Sync cannot locate its npm cache entry".to_string())?;
+    let name = entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "HQ Sync cannot name its npm cache entry".to_string())?;
+    let prefix = format!(".{name}.hq-refresh-");
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!("HQ Sync could not inspect its npm cache: {error}"));
+        }
+    };
+    let mut backups = entries
+        .flatten()
+        .filter(|item| item.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|item| item.path())
+        .collect::<Vec<_>>();
+    backups.sort();
+    if entry.exists() {
+        for backup in backups {
+            remove_cache_path(&backup)?;
+        }
+    } else if let Some(backup) = backups.first() {
+        std::fs::rename(backup, entry).map_err(|err| {
+            format!(
+                "HQ Sync could not recover its cached runner after an interrupted refresh: {err}"
+            )
+        })?;
+        for backup in backups.iter().skip(1) {
+            remove_cache_path(backup)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_cache_path(path: &std::path::Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|err| format!("HQ Sync could not inspect its npm cache entry: {err}"))?;
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+    .map_err(|err| format!("HQ Sync could not remove an obsolete npm cache entry: {err}"))
+}
+
+fn run_materialization_payload() -> Result<(), String> {
+    run_materialization_payload_with_preference(false)
+}
+
+fn run_materialization_payload_with_preference(prefer_online: bool) -> Result<(), String> {
+    let npx = paths::resolve_bin("npx");
+    let path = paths::child_path();
+    let args = materialization_args(prefer_online);
+    let output = paths::spawn_command(&npx, &args.iter().map(String::as_str).collect::<Vec<_>>())
+        .env("PATH", &path)
+        .output()
+        .map_err(|err| {
+            if err.kind() == ErrorKind::PermissionDenied {
+                "HQ Sync cannot run npx because the Node/npm installation is not executable. \
+             Reinstall Node 20 or newer, then reopen HQ Sync."
+                    .to_string()
+            } else {
+                format!("HQ Sync could not start npx to prepare its cache: {err}")
+            }
+        })?;
 
     if output.status.success() {
         Ok(())
@@ -331,6 +754,21 @@ fn run_materialization_payload() -> Result<(), String> {
             &String::from_utf8_lossy(&output.stderr),
         ))
     }
+}
+
+fn materialization_args(prefer_online: bool) -> Vec<String> {
+    let mut args = vec![
+        "-y".to_string(),
+        format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
+        "--".to_string(),
+        "node".to_string(),
+        "-e".to_string(),
+        "process.exit(0)".to_string(),
+    ];
+    if prefer_online {
+        args.insert(0, "--prefer-online".to_string());
+    }
+    args
 }
 
 /// Spawn a detached thread that warms the npx cache for
@@ -386,8 +824,14 @@ fn spawn_prewarm_with(
 }
 
 pub fn spawn_prewarm() {
+    if !claim_startup_runner_refresh(&STARTUP_RUNNER_REFRESH_STARTED) {
+        return;
+    }
     let coordinator = process_prewarm_coordinator().clone();
-    drop(spawn_prewarm_with(coordinator, materialize_hq_cloud_cache));
+    drop(spawn_prewarm_with(
+        coordinator,
+        refresh_hq_cloud_cache_at_startup,
+    ));
 }
 
 #[cfg(test)]
@@ -395,6 +839,228 @@ mod tests {
     use super::*;
     use std::future::Future as _;
     use std::sync::mpsc;
+
+    #[test]
+    fn startup_refresh_is_claimed_once_per_process_launch() {
+        let started = AtomicBool::new(false);
+        assert!(claim_startup_runner_refresh(&started));
+        assert!(!claim_startup_runner_refresh(&started));
+    }
+
+    #[test]
+    fn startup_refresh_recovery_is_a_noop_before_the_npx_cache_exists() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("not-created-yet").join("target-hash");
+        recover_refresh_backup(&entry).unwrap();
+        assert!(!entry.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn startup_refresh_requests_latest_in_the_existing_range() {
+        let args = materialization_args(true);
+        assert!(args.iter().any(|arg| arg == "--prefer-online"));
+        assert!(args
+            .iter()
+            .any(|arg| { arg == &format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION) }));
+    }
+
+    fn write_cached_hq_cloud(entry: &std::path::Path, version: &str) {
+        let package = entry
+            .join("node_modules")
+            .join("@indigoai-us")
+            .join("hq-cloud");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            serde_json::json!({"name": "@indigoai-us/hq-cloud", "version": version}).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn startup_refresh_does_not_rename_or_materialize_when_cache_is_registry_max() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("target-hash");
+        std::fs::create_dir_all(&entry).unwrap();
+        write_cached_hq_cloud(&entry, "6.18.60");
+        let mut refresh_calls = 0;
+
+        let refreshed = maybe_refresh_cache_entry(
+            &entry,
+            Ok(semver::Version::parse("6.18.60").unwrap()),
+            false,
+            || {
+                refresh_calls += 1;
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert!(!refreshed);
+        assert_eq!(refresh_calls, 0);
+        assert_eq!(
+            installed_hq_cloud_version(&entry).unwrap().to_string(),
+            "6.18.60"
+        );
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn startup_refresh_metadata_failure_keeps_cache_without_rename() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("target-hash");
+        std::fs::create_dir_all(&entry).unwrap();
+        write_cached_hq_cloud(&entry, "6.18.59");
+        let mut refresh_calls = 0;
+
+        let refreshed = maybe_refresh_cache_entry(
+            &entry,
+            Err("registry unavailable".to_string()),
+            false,
+            || {
+                refresh_calls += 1;
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert!(!refreshed);
+        assert_eq!(refresh_calls, 0);
+        assert_eq!(
+            installed_hq_cloud_version(&entry).unwrap().to_string(),
+            "6.18.59"
+        );
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn startup_refresh_skips_when_runner_is_using_the_cache_entry() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("target-hash");
+        std::fs::create_dir_all(&entry).unwrap();
+        write_cached_hq_cloud(&entry, "6.18.59");
+        let mut refresh_calls = 0;
+
+        let refreshed = maybe_refresh_cache_entry(
+            &entry,
+            Ok(semver::Version::parse("6.18.60").unwrap()),
+            true,
+            || {
+                refresh_calls += 1;
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert!(!refreshed);
+        assert_eq!(refresh_calls, 0);
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn runner_use_lock_makes_startup_refresh_skip_without_waiting() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join("runner-use.lock");
+        let _runner = acquire_runner_cache_use_lock_in(&lock_path, Duration::ZERO).unwrap();
+
+        assert!(try_acquire_runner_cache_refresh_lock_in(&lock_path)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn registry_metadata_uses_the_highest_version_inside_the_pinned_range() {
+        let latest =
+            max_satisfying_version_from_metadata(br#"["6.18.59","6.19.0","6.18.61"]"#).unwrap();
+
+        assert_eq!(latest, semver::Version::parse("6.18.61").unwrap());
+    }
+
+    #[test]
+    fn newer_in_range_runner_replaces_the_cached_older_runner_at_startup() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("target-hash");
+        std::fs::create_dir(&entry).unwrap();
+        std::fs::write(entry.join("version"), "old").unwrap();
+
+        refresh_cache_entry(
+            &entry,
+            || {
+                std::fs::create_dir(&entry).unwrap();
+                std::fs::write(entry.join("version"), "new").unwrap();
+                Ok(())
+            },
+            || panic!("successful refresh must not use the fallback"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(entry.join("version")).unwrap(),
+            "new"
+        );
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn startup_refresh_uses_cached_runner_when_online_command_produces_no_entry() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("target-hash");
+        std::fs::create_dir(&entry).unwrap();
+        std::fs::write(entry.join("version"), "cached").unwrap();
+
+        refresh_cache_entry(
+            &entry,
+            || Ok(()),
+            || {
+                assert_eq!(
+                    std::fs::read_to_string(entry.join("version")).unwrap(),
+                    "cached"
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(entry.join("version")).unwrap(),
+            "cached"
+        );
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn startup_refresh_restores_cached_runner_when_registry_refresh_fails() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("target-hash");
+        std::fs::create_dir(&entry).unwrap();
+        std::fs::write(entry.join("version"), "cached").unwrap();
+
+        refresh_cache_entry(
+            &entry,
+            || {
+                std::fs::create_dir(&entry).unwrap();
+                std::fs::write(entry.join("partial"), "incomplete").unwrap();
+                Err("registry offline".to_string())
+            },
+            || {
+                assert_eq!(
+                    std::fs::read_to_string(entry.join("version")).unwrap(),
+                    "cached"
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(entry.join("version")).unwrap(),
+            "cached"
+        );
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+    }
 
     /// Build an npx stand-in that records accidental execution without
     /// reading a package or writing npm cache data.

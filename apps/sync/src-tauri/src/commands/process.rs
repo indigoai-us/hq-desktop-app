@@ -2020,6 +2020,53 @@ fn build_spawn_command(path: &str, args: &[String]) -> Command {
     cmd
 }
 
+fn spawn_uses_hq_cloud_npx_cache(spawn: &SpawnArgs) -> bool {
+    spawn.args.iter().any(|arg| {
+        arg.starts_with("--package=@indigoai-us/hq-cloud@")
+            || arg.starts_with("--package @indigoai-us/hq-cloud@")
+    })
+}
+
+#[cfg(test)]
+mod hq_cloud_cache_use_tests {
+    use super::*;
+
+    #[test]
+    fn both_desktop_runner_spawn_shapes_use_the_cache_lifetime_lease() {
+        let manual = SpawnArgs {
+            cmd: "npx".to_string(),
+            args: vec![
+                "-y".to_string(),
+                "--package=@indigoai-us/hq-cloud@~6.18.52".to_string(),
+                "hq-sync-runner".to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+        let watcher = SpawnArgs {
+            cmd: "npx".to_string(),
+            args: vec![
+                "-y".to_string(),
+                "--package=@indigoai-us/hq-cloud@~6.18.52".to_string(),
+                "hq-sync-runner".to_string(),
+                "--watch".to_string(),
+            ],
+            cwd: None,
+            env: None,
+        };
+        let local_override = SpawnArgs {
+            cmd: "node".to_string(),
+            args: vec!["/tmp/sync-runner.js".to_string()],
+            cwd: None,
+            env: None,
+        };
+
+        assert!(spawn_uses_hq_cloud_npx_cache(&manual));
+        assert!(spawn_uses_hq_cloud_npx_cache(&watcher));
+        assert!(!spawn_uses_hq_cloud_npx_cache(&local_override));
+    }
+}
+
 // Test-only spawn boundary used by the real-child ownership regressions. Hooks
 // are keyed by handle so parallel process tests cannot consume one another's
 // synchronization point.
@@ -2751,13 +2798,10 @@ pub fn query_hq_cli_package_roots_with_resources(
 
     let mut files = hq_cli_package_files_for_roots(package_roots);
     let explicit_files = hq_desktop_core::hq_cli_update::select_rm_file_resources(
-        explicit_resources
-            .iter()
-            .cloned()
-            .map(|path| {
-                let is_file = std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file());
-                (path, is_file)
-            }),
+        explicit_resources.iter().cloned().map(|path| {
+            let is_file = std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file());
+            (path, is_file)
+        }),
     );
     files.extend(explicit_files);
     files.sort();
@@ -3775,6 +3819,21 @@ fn run_process_impl_inner<F>(
 where
     F: FnMut(ProcessEvent),
 {
+    // Keep the shared npm package tree stable for the full lifetime of any
+    // hq-cloud process launched from the desktop's npx cache. The startup
+    // refresher takes this lock exclusively and skips when a runner is live.
+    let _runner_cache_use_lock = if spawn_uses_hq_cloud_npx_cache(spawn) {
+        Some(
+            hq_desktop_core::prewarm::acquire_runner_cache_use_lock().map_err(|message| {
+                ProcessError::Spawn {
+                    cmd: spawn.cmd.clone(),
+                    source: io::Error::new(io::ErrorKind::WouldBlock, message),
+                }
+            })?,
+        )
+    } else {
+        None
+    };
     let mut cmd = build_spawn_command(&spawn.cmd, &spawn.args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     put_in_own_process_group(&mut cmd);
@@ -4025,6 +4084,18 @@ where
     S: FnOnce(&mut std::process::Child),
 {
     let pre_registered_generation = generation_for_handle(handle);
+    let _runner_cache_use_lock = if spawn_uses_hq_cloud_npx_cache(spawn) {
+        Some(
+            hq_desktop_core::prewarm::acquire_runner_cache_use_lock().map_err(|message| {
+                ProcessError::Spawn {
+                    cmd: spawn.cmd.clone(),
+                    source: io::Error::new(io::ErrorKind::WouldBlock, message),
+                }
+            })?,
+        )
+    } else {
+        None
+    };
     let mut cmd = build_spawn_command(&spawn.cmd, &spawn.args);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -35,6 +35,8 @@ const ALLOWLIST: Record<string, string> = {
     "The New bot identity line: one ellipsized line, \"Cloud \u00b7 {name}\".",
   "chat/create-bot/NewBotCreateScreen.svelte::selectedCompanyLabel && (step !== 2 || singleCompany) ? ` \u00b7 ${selectedCompanyLabel}` : \"\"":
     "The New bot identity line: one ellipsized line, \"Cloud \u00b7 {name}\".",
+  "chat/first-run/FirstRunAppStep.svelte::company":
+    "Sentence: \"{app} is connected to {name}.\"",
   "chat/create-bot/CloudDetailsStep.svelte::nameError ?? `What ${companyLabel} will call it.`":
     "Help sentence.",
   "chat/create-bot/CloudDetailsStep.svelte::handleError ?? `People @mention it as @${handle} in ${companyLabel}'s channels.`":

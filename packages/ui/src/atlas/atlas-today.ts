@@ -11,6 +11,7 @@
 import { ATLAS_DISTRICTS, districtLabel, type AtlasDistrictType, type AtlasNode } from "./atlas-model.js";
 import { atlasDayStart } from "./atlas-timeline.js";
 import { portfolioColumn, type PortfolioColumn } from "../projects/projects-model.js";
+import { normalizeStoryStage, parseMeshStory } from "@hq/core";
 
 /** Groups shown before "Show N more groups", and added per click after. */
 export const ATLAS_TODAY_GROUPS = 4;
@@ -213,4 +214,45 @@ export function atlasTodayGroups(changes: readonly AtlasNode[], nodes: readonly 
       b.touched - a.touched ||
       a.title.localeCompare(b.title),
   );
+}
+
+/** Projects shown before "Show N more", and added per click after. */
+export const ATLAS_TODAY_PROJECTS = 6;
+
+export type AtlasTodayProject = {
+  key: string;
+  /** Project slug (folder name), the Work Mesh project id. */
+  slug: string;
+  title: string;
+  /** The project on the map; null when the map does not show its folder. */
+  node: AtlasNode | null;
+  touched: number;
+};
+
+/**
+ * Projects worked on today, most recent first: every project group from
+ * `atlasTodayGroups` (the project itself or any file in it changed today).
+ */
+export function atlasTodayProjects(groups: readonly AtlasTodayGroup[]): AtlasTodayProject[] {
+  return groups
+    .filter((g) => g.kind === "project" && !g.key.startsWith("district:"))
+    .map((g) => ({ key: g.key, slug: leaf(g.path).toLowerCase(), title: g.title, node: g.node, touched: g.touched }))
+    .filter((p) => p.slug)
+    .sort((a, b) => b.touched - a.touched || a.title.localeCompare(b.title));
+}
+
+/**
+ * Done and total stories from a Work Mesh project view (the live Board), the
+ * same count the Projects board shows. Null when the view is missing or the
+ * project has no stories.
+ */
+export function atlasBoardStories(raw: unknown): AtlasTodayStories | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const body = raw as { stories?: unknown; userStories?: unknown };
+  const source = Array.isArray(body.stories) ? body.stories : Array.isArray(body.userStories) ? body.userStories : [];
+  const stories = source.map(parseMeshStory).filter((s) => s !== null);
+  const total = stories.length;
+  if (!total) return null;
+  const done = stories.filter((s) => normalizeStoryStage(s) === "done").length;
+  return { done, total, fraction: done / total, text: `${done}/${total} ${total === 1 ? "story" : "stories"}` };
 }

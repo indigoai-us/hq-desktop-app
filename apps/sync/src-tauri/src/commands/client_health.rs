@@ -43,8 +43,10 @@ use tokio::sync::Notify;
 
 use hq_desktop_core::client_health::{
     clear_staged_update_signal_at_process_start, parse_client_health_heartbeat, ClientHealthArch,
+    ClientHealthDaemonHqCloudUpdateErrorClass, ClientHealthDaemonHqCloudUpdateOutcome,
     ClientHealthFailureReason, ClientHealthHeartbeat, ClientHealthInstallOutcome,
-    ClientHealthPlatform, ClientHealthSource, ClientHealthSyncState, ClientHealthUpdateDeferReason,
+    ClientHealthPlatform, ClientHealthSource, ClientHealthSyncRunnerSource, ClientHealthSyncState,
+    ClientHealthUpdateCheckOutcome, ClientHealthUpdateDeferReason, ClientHealthUpdaterErrorClass,
     ClientHealthUpdaterState, ClientHealthVersions, CLIENT_HEALTH_CONTRACT_VERSION,
     CLIENT_HEALTH_MAX_CONFLICT_COUNT, CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES,
 };
@@ -99,6 +101,10 @@ struct ClientHealthState {
     /// Closed `ClientHealthUpdaterState` wire token of the last observed
     /// updater transition. `None` = never observed → reported `unchecked`.
     updater_state: Option<String>,
+    /// Timestamp, outcome, and closed error class for the last updater check.
+    last_update_check_at: Option<String>,
+    update_check_outcome: Option<String>,
+    update_check_error_class: Option<String>,
     /// Closed client-health reason for a staged update whose install is held.
     update_defer_reason: Option<String>,
     /// Closed client-health result for the most recent updater install.
@@ -414,6 +420,44 @@ pub(crate) fn record_updater_status(status: &PendingUpdateStatus) {
     persist_updater_state(updater_wire_state(status));
 }
 
+/// Persist a content-free updater check result so an `up_to_date` heartbeat
+/// can be distinguished from an old successful no-offer result.
+pub(crate) fn record_update_check_result(
+    outcome: ClientHealthUpdateCheckOutcome,
+    error_class: Option<ClientHealthUpdaterErrorClass>,
+) {
+    let checked_at = now_iso();
+    if let Err(error) = with_state(|state| {
+        apply_update_check_result(state, &checked_at, outcome, error_class);
+    }) {
+        eprintln!("[client-health] record-update-check-result failed: {error}");
+    }
+    notify_client_health_state_changed();
+}
+
+fn apply_update_check_result(
+    state: &mut ClientHealthState,
+    checked_at: &str,
+    outcome: ClientHealthUpdateCheckOutcome,
+    error_class: Option<ClientHealthUpdaterErrorClass>,
+) {
+    state.last_update_check_at = Some(checked_at.to_string());
+    state.update_check_outcome = Some(outcome.wire_value().to_string());
+    state.update_check_error_class = error_class.map(|class| class.wire_value().to_string());
+    if outcome == ClientHealthUpdateCheckOutcome::CheckError
+        && matches!(
+            state.updater_state.as_deref(),
+            None | Some("unchecked" | "up_to_date")
+        )
+    {
+        state.updater_state = Some(
+            ClientHealthUpdaterState::UpdateFailed
+                .wire_value()
+                .to_string(),
+        );
+    }
+}
+
 /// A verified package is staged and its automatic install is being held.
 /// Preserve the staged state even if a later updater check reports no update.
 pub(crate) fn record_staged_update_deferred(reason: ClientHealthUpdateDeferReason) {
@@ -616,9 +660,126 @@ fn sanitized_version(raw: &str) -> Option<String> {
 
 /// The four versions: desktop (this build), CLI (installed hq), Core (local
 /// core.yaml), sync runner (resolved hq-cloud runner install).
-async fn collect_versions() -> ClientHealthVersions {
+#[derive(Default)]
+struct DaemonRunnerHealth {
+    source: Option<ClientHealthSyncRunnerSource>,
+    last_check_at: Option<String>,
+    outcome: Option<ClientHealthDaemonHqCloudUpdateOutcome>,
+    target: Option<String>,
+    error_class: Option<ClientHealthDaemonHqCloudUpdateErrorClass>,
+}
+
+fn daemon_runner_source(value: &str) -> Option<ClientHealthSyncRunnerSource> {
+    use ClientHealthSyncRunnerSource as S;
+    match value {
+        "managed-full-package" => Some(S::DaemonManaged),
+        "staged-sync" => Some(S::DaemonStaged),
+        "bundled-full-package" => Some(S::DaemonBundled),
+        _ => None,
+    }
+}
+
+fn daemon_update_outcome(value: &str) -> Option<ClientHealthDaemonHqCloudUpdateOutcome> {
+    use ClientHealthDaemonHqCloudUpdateOutcome as O;
+    match value {
+        "updated" => Some(O::Updated),
+        "up_to_date" => Some(O::UpToDate),
+        "pinned" => Some(O::Pinned),
+        "failed" => Some(O::Failed),
+        _ => None,
+    }
+}
+
+fn daemon_update_error_class(value: &str) -> Option<ClientHealthDaemonHqCloudUpdateErrorClass> {
+    use ClientHealthDaemonHqCloudUpdateErrorClass as E;
+    match value {
+        "registry" => Some(E::Registry),
+        "install" => Some(E::Install),
+        "convergence" => Some(E::Convergence),
+        "filesystem" => Some(E::Filesystem),
+        "unknown" => Some(E::Unknown),
+        _ => None,
+    }
+}
+
+fn daemon_update_timestamp(value: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        })
+}
+
+fn pending_host_runner_health(
+    npx_version: Option<String>,
+) -> (Option<String>, DaemonRunnerHealth) {
+    (npx_version, DaemonRunnerHealth::default())
+}
+
+fn select_daemon_runner_health(
+    status: Result<crate::commands::hq_daemon_host::DaemonSyncStatusDetails, String>,
+    npx_version: Option<String>,
+) -> (Option<String>, DaemonRunnerHealth) {
+    use ClientHealthSyncRunnerSource as S;
+    match status {
+        Ok(status) => {
+            let version = status
+                .hq_cloud_version
+                .as_deref()
+                .and_then(sanitized_version);
+            match version {
+                Some(version) => (
+                    Some(version),
+                    DaemonRunnerHealth {
+                        source: Some(
+                            status
+                                .runner_source
+                                .as_deref()
+                                .and_then(daemon_runner_source)
+                                .unwrap_or(S::Unknown),
+                        ),
+                        last_check_at: status
+                            .hq_cloud_update_last_check_at
+                            .as_deref()
+                            .and_then(daemon_update_timestamp),
+                        outcome: status
+                            .hq_cloud_update_outcome
+                            .as_deref()
+                            .and_then(daemon_update_outcome),
+                        target: status
+                            .hq_cloud_update_target
+                            .as_deref()
+                            .and_then(sanitized_version),
+                        error_class: status
+                            .hq_cloud_update_error_class
+                            .as_deref()
+                            .and_then(daemon_update_error_class),
+                    },
+                ),
+                None => (
+                    npx_version,
+                    DaemonRunnerHealth {
+                        source: Some(S::Unknown),
+                        ..Default::default()
+                    },
+                ),
+            }
+        }
+        Err(_) => (
+            npx_version,
+            DaemonRunnerHealth {
+                source: Some(S::Unknown),
+                ..Default::default()
+            },
+        ),
+    }
+}
+
+async fn collect_versions() -> (ClientHealthVersions, DaemonRunnerHealth) {
     let cli = crate::commands::hq_cli_update::get_hq_cli_version().await;
-    let (core, sync_runner) = tokio::task::spawn_blocking(|| {
+    let (core, npx_runner) = tokio::task::spawn_blocking(|| {
         let core = hq_desktop_core::hq_version::get_local_version();
         let target = hq_desktop_core::runner_target::runner_spawn_target();
         let runner = hq_desktop_core::runner_target::runner_hq_cloud_version(&target);
@@ -628,12 +789,37 @@ async fn collect_versions() -> ClientHealthVersions {
     .map(|(core, runner)| (core, Some(runner)))
     .unwrap_or((None, None));
 
-    ClientHealthVersions {
-        desktop: sanitized_version(crate::app_version::current()),
-        cli: cli.as_deref().and_then(sanitized_version),
-        core: core.as_deref().and_then(sanitized_version),
-        sync_runner: sync_runner.as_deref().and_then(sanitized_version),
-    }
+    let npx_runner = npx_runner.as_deref().and_then(sanitized_version);
+    let (sync_runner, runner_health) = match crate::commands::hq_daemon_host::current_phase() {
+        crate::commands::hq_daemon_host::HostPhase::Legacy => (
+            npx_runner,
+            DaemonRunnerHealth {
+                source: Some(ClientHealthSyncRunnerSource::Npx),
+                ..Default::default()
+            },
+        ),
+        crate::commands::hq_daemon_host::HostPhase::Daemon => {
+            let status = tokio::task::spawn_blocking(
+                crate::commands::hq_daemon_host::hosted_daemon_sync_status_bounded,
+            )
+            .await
+            .unwrap_or_else(|error| Err(format!("daemon status task failed: {error}")));
+            select_daemon_runner_health(status, npx_runner)
+        }
+        crate::commands::hq_daemon_host::HostPhase::Pending => {
+            pending_host_runner_health(npx_runner)
+        }
+    };
+
+    (
+        ClientHealthVersions {
+            desktop: sanitized_version(crate::app_version::current()),
+            cli: cli.as_deref().and_then(sanitized_version),
+            core: core.as_deref().and_then(sanitized_version),
+            sync_runner,
+        },
+        runner_health,
+    )
 }
 
 /// Assemble one heartbeat from persisted + live state. Pure so tests can
@@ -655,6 +841,11 @@ fn build_heartbeat_payload(
         sent_at,
         sequence: state.sequence,
         versions,
+        sync_runner_source: None,
+        daemon_hq_cloud_update_last_check_at: None,
+        daemon_hq_cloud_update_outcome: None,
+        daemon_hq_cloud_update_target: None,
+        daemon_hq_cloud_update_error_class: None,
         sync_state,
         last_sync_attempt_at: state.last_sync_attempt_at.clone(),
         last_sync_success_at: state.last_sync_success_at.clone(),
@@ -669,6 +860,15 @@ fn build_heartbeat_payload(
             .min(CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES),
         conflict_count: Some(state.conflict_count.min(CLIENT_HEALTH_MAX_CONFLICT_COUNT)),
         updater_state: Some(reported_updater_state(state)),
+        last_update_check_at: state.last_update_check_at.clone(),
+        update_check_outcome: state
+            .update_check_outcome
+            .as_deref()
+            .and_then(update_check_outcome_from_wire),
+        update_check_error_class: state
+            .update_check_error_class
+            .as_deref()
+            .and_then(updater_error_class_from_wire),
         update_defer_reason: state
             .update_defer_reason
             .as_deref()
@@ -678,6 +878,31 @@ fn build_heartbeat_payload(
             .as_deref()
             .and_then(install_outcome_from_wire),
         failure_reason: derive_failure_reason(sync_state, state),
+    }
+}
+
+fn update_check_outcome_from_wire(value: &str) -> Option<ClientHealthUpdateCheckOutcome> {
+    use ClientHealthUpdateCheckOutcome as O;
+    match value {
+        "no_update" => Some(O::NoUpdate),
+        "update_available" => Some(O::UpdateAvailable),
+        "check_error" => Some(O::CheckError),
+        "disabled" => Some(O::Disabled),
+        "deferred" => Some(O::Deferred),
+        _ => None,
+    }
+}
+
+fn updater_error_class_from_wire(value: &str) -> Option<ClientHealthUpdaterErrorClass> {
+    use ClientHealthUpdaterErrorClass as E;
+    match value {
+        "network" => Some(E::Network),
+        "signature" => Some(E::Signature),
+        "manifest_parse" => Some(E::ManifestParse),
+        "http_status" => Some(E::HttpStatus),
+        "timeout" => Some(E::Timeout),
+        "other" => Some(E::Other),
+        _ => None,
     }
 }
 
@@ -809,17 +1034,33 @@ async fn emit_client_health_heartbeat_with_desktop(
         Ok(url) => url,
         Err(_) => return HeartbeatOutcome::Failed,
     };
-    let mut versions = collect_versions().await;
+    let (mut versions, runner_health) = collect_versions().await;
     if let Some(installed) = desktop_override {
         versions.desktop = sanitized_version(installed);
     }
-    let heartbeat = match prepare_heartbeat(versions) {
+    let mut heartbeat = match prepare_heartbeat(versions) {
         Ok(heartbeat) => heartbeat,
         Err(e) => {
             eprintln!("[client-health] payload rejected before send: {e}");
             return HeartbeatOutcome::InvalidPayload;
         }
     };
+    heartbeat.sync_runner_source = runner_health.source;
+    heartbeat.daemon_hq_cloud_update_last_check_at = runner_health.last_check_at;
+    heartbeat.daemon_hq_cloud_update_outcome = runner_health.outcome;
+    heartbeat.daemon_hq_cloud_update_target = runner_health.target;
+    heartbeat.daemon_hq_cloud_update_error_class = runner_health.error_class;
+    match serde_json::to_value(&heartbeat) {
+        Ok(value) if parse_client_health_heartbeat(&value).is_ok() => {}
+        Ok(_) => {
+            eprintln!("[client-health] daemon runner telemetry rejected before send");
+            return HeartbeatOutcome::InvalidPayload;
+        }
+        Err(error) => {
+            eprintln!("[client-health] daemon runner telemetry rejected before send: {error}");
+            return HeartbeatOutcome::InvalidPayload;
+        }
+    }
     match post_with_retry(&api_url, &access_token, &heartbeat).await {
         Ok(()) => {
             eprintln!("[client-health] heartbeat seq={} ok", heartbeat.sequence);
@@ -894,6 +1135,96 @@ pub fn setup_client_health_heartbeat() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daemon_runner_health_uses_active_daemon_version_and_optional_update_state() {
+        let status = crate::commands::hq_daemon_host::parse_daemon_sync_status(
+            r#"{"running":true,"paused":false,"syncOwner":"daemon","unitStatus":"running","logPath":"/tmp/hq-sync.log","hqCloudVersion":"6.18.54","runnerSource":"managed-full-package","hqCloudUpdateLastCheckAt":"2026-10-08T12:00:00+00:00","hqCloudUpdateOutcome":"pinned","hqCloudUpdateTarget":"6.18.54"}"#,
+        );
+        let (version, health) = select_daemon_runner_health(status, Some("6.18.35".to_string()));
+        assert_eq!(version.as_deref(), Some("6.18.54"));
+        assert_eq!(
+            health.source,
+            Some(ClientHealthSyncRunnerSource::DaemonManaged)
+        );
+        assert_eq!(
+            health.outcome,
+            Some(ClientHealthDaemonHqCloudUpdateOutcome::Pinned)
+        );
+        assert_eq!(
+            health.last_check_at.as_deref(),
+            Some("2026-10-08T12:00:00.000Z")
+        );
+        assert_eq!(health.target.as_deref(), Some("6.18.54"));
+    }
+
+    #[test]
+    fn daemon_runner_version_survives_missing_or_unknown_source() {
+        for source in ["", r#","runnerSource":"future-source""#] {
+            let status = crate::commands::hq_daemon_host::parse_daemon_sync_status(&format!(
+                r#"{{"running":true,"paused":false,"syncOwner":"daemon","unitStatus":"running","logPath":"/tmp/hq-sync.log","hqCloudVersion":"6.18.56"{source}}}"#
+            ));
+            let (version, health) =
+                select_daemon_runner_health(status, Some("6.18.35".to_string()));
+            assert_eq!(version.as_deref(), Some("6.18.56"));
+            assert_eq!(health.source, Some(ClientHealthSyncRunnerSource::Unknown));
+        }
+    }
+
+    #[test]
+    fn daemon_update_timestamps_normalize_to_contract_utc_format_or_drop() {
+        assert_eq!(
+            daemon_update_timestamp("2026-10-08T12:00:00+00:00").as_deref(),
+            Some("2026-10-08T12:00:00.000Z")
+        );
+        assert_eq!(
+            daemon_update_timestamp("2026-10-08T14:00:00.123456+02:00").as_deref(),
+            Some("2026-10-08T12:00:00.123Z")
+        );
+        assert_eq!(daemon_update_timestamp("not-a-timestamp"), None);
+    }
+
+    #[test]
+    fn pending_host_resolution_omits_sync_runner_source_from_heartbeat() {
+        let (version, health) = pending_host_runner_health(Some("6.18.35".to_string()));
+        assert_eq!(version.as_deref(), Some("6.18.35"));
+        assert!(health.source.is_none());
+
+        let mut heartbeat = build_heartbeat_payload(
+            &state_with_id(413),
+            full_versions(),
+            false,
+            false,
+            now_iso(),
+        );
+        heartbeat.versions.sync_runner = version;
+        heartbeat.sync_runner_source = health.source;
+        let wire = serde_json::to_value(&heartbeat).unwrap();
+        assert!(wire.get("syncRunnerSource").is_none());
+    }
+
+    #[test]
+    fn old_cli_or_failed_status_falls_back_to_npx_and_marks_source_unknown() {
+        let old_cli_status = crate::commands::hq_daemon_host::parse_daemon_sync_status(
+            r#"{"running":true,"paused":false,"syncOwner":"daemon","unitStatus":"running","logPath":"/tmp/hq-sync.log"}"#,
+        );
+        let (old_version, old_health) =
+            select_daemon_runner_health(old_cli_status, Some("6.18.35".to_string()));
+        assert_eq!(old_version.as_deref(), Some("6.18.35"));
+        assert_eq!(
+            old_health.source,
+            Some(ClientHealthSyncRunnerSource::Unknown)
+        );
+        assert!(old_health.outcome.is_none());
+
+        let (failed_version, failed_health) =
+            select_daemon_runner_health(Err("timeout".to_string()), Some("6.18.35".to_string()));
+        assert_eq!(failed_version.as_deref(), Some("6.18.35"));
+        assert_eq!(
+            failed_health.source,
+            Some(ClientHealthSyncRunnerSource::Unknown)
+        );
+    }
     use crate::util::test_support::ENV_MUTEX;
     use hq_desktop_core::events::SyncErrorEvent;
     use serde_json::{json, Value};
@@ -1239,6 +1570,68 @@ mod tests {
             heartbeat.updater_state,
             Some(ClientHealthUpdaterState::Unchecked),
             "this client HAS an updater — absence would claim it is too old to report one"
+        );
+    }
+
+    #[test]
+    fn failed_check_replaces_stale_up_to_date_status_and_reports_timestamp() {
+        let mut state = state_with_id(1);
+        state.updater_state = Some(ClientHealthUpdaterState::UpToDate.wire_value().to_string());
+
+        apply_update_check_result(
+            &mut state,
+            "2026-10-08T18:00:00.000Z",
+            ClientHealthUpdateCheckOutcome::CheckError,
+            Some(ClientHealthUpdaterErrorClass::Network),
+        );
+
+        let heartbeat = build_heartbeat_payload(
+            &state,
+            full_versions(),
+            false,
+            false,
+            "2026-10-08T18:00:01.000Z".to_string(),
+        );
+        assert_eq!(
+            heartbeat.updater_state,
+            Some(ClientHealthUpdaterState::UpdateFailed)
+        );
+        assert_eq!(
+            heartbeat.last_update_check_at.as_deref(),
+            Some("2026-10-08T18:00:00.000Z")
+        );
+        assert_eq!(
+            heartbeat.update_check_outcome,
+            Some(ClientHealthUpdateCheckOutcome::CheckError)
+        );
+        assert_eq!(
+            heartbeat.update_check_error_class,
+            Some(ClientHealthUpdaterErrorClass::Network)
+        );
+    }
+
+    #[test]
+    fn failed_check_preserves_a_known_available_or_staged_update() {
+        let mut state = state_with_id(1);
+        state.updater_state = Some(
+            ClientHealthUpdaterState::UpdateReady
+                .wire_value()
+                .to_string(),
+        );
+        state.update_defer_reason = Some("busy_sync".to_string());
+        state.install_outcome = Some("staged".to_string());
+
+        apply_update_check_result(
+            &mut state,
+            "2026-10-08T18:00:00.000Z",
+            ClientHealthUpdateCheckOutcome::CheckError,
+            Some(ClientHealthUpdaterErrorClass::Network),
+        );
+
+        let heartbeat = build_heartbeat_payload(&state, full_versions(), false, false, now_iso());
+        assert_eq!(
+            heartbeat.updater_state,
+            Some(ClientHealthUpdaterState::UpdateReady)
         );
     }
 

@@ -96,6 +96,10 @@ export interface ScheduledBot {
   scheduledStartTime?: string | null;
   autoScheduled: boolean;
   errorMessage?: string | null;
+  /** Terminal Recall subcode when a bot could not join (optional for older servers). */
+  terminalSubCode?: string | null;
+  /** Plain-language reason for a terminal join failure (optional for older servers). */
+  failureReason?: string | null;
   /** Company whose vault receives the transcript (hq-pro `companyId`). */
   companyId?: string | null;
   /**
@@ -313,8 +317,8 @@ export function meetingUrlsMatch(
  *   2. recurring series ID
  *   3. normalized meeting URL (covers missing/stale calendar IDs)
  *
- * Only active lifecycle statuses match so a failed/cancelled bot never blocks
- * re-invite.
+ * Active bots and terminal failed bots match. A failed bot stays visible long
+ * enough to explain what happened, while its row action still permits re-invite.
  */
 export function botForEvent(
   event: MeetingEvent,
@@ -322,7 +326,14 @@ export function botForEvent(
   scheduledBots: ScheduledBot[] = Array.from(botsByEventId.values()),
 ): ScheduledBot | undefined {
   const exact = botsByEventId.get(event.id);
-  if (exact && isActiveBotStatus(exact.status)) return exact;
+  const activeExact = scheduledBots.find(
+    (bot) => isActiveBotStatus(bot.status) && bot.calendarEventId === event.id,
+  ) ?? (exact && isActiveBotStatus(exact.status) ? exact : undefined);
+  if (activeExact) return activeExact;
+  const failedExact = exact?.status === "failed"
+    ? exact
+    : scheduledBots.find((bot) => bot.status === "failed" && bot.calendarEventId === event.id);
+  if (failedExact) return failedExact;
 
   // A series and a meeting URL are reused by later occurrences. A finished
   // recording belongs only to its own occurrence, never the next meeting.
@@ -335,20 +346,20 @@ export function botForEvent(
 
   const seriesId = recurringSeriesId(event);
   if (seriesId) {
-    const seriesBot = scheduledBots.find((bot) => {
-      if (!isActiveBotStatus(bot.status) || !matchesOccurrence(bot)) return false;
-      return bot.calendarSeriesId?.trim() === seriesId;
-    });
+    const matchesSeries = (bot: ScheduledBot): boolean =>
+      matchesOccurrence(bot) && bot.calendarSeriesId?.trim() === seriesId;
+    const seriesBot = scheduledBots.find((bot) => isActiveBotStatus(bot.status) && matchesSeries(bot))
+      ?? scheduledBots.find((bot) => bot.status === "failed" && matchesSeries(bot));
     if (seriesBot) return seriesBot;
   }
 
   const eventUrl = normalizeMeetingUrl(eventMeetingUrl(event));
   if (!eventUrl) return undefined;
 
-  return scheduledBots.find((bot) => {
-    if (!isActiveBotStatus(bot.status) || !matchesOccurrence(bot)) return false;
-    return normalizeMeetingUrl(bot.meetingUrl) === eventUrl;
-  });
+  const matchesUrl = (bot: ScheduledBot): boolean =>
+    matchesOccurrence(bot) && normalizeMeetingUrl(bot.meetingUrl) === eventUrl;
+  return scheduledBots.find((bot) => isActiveBotStatus(bot.status) && matchesUrl(bot))
+    ?? scheduledBots.find((bot) => bot.status === "failed" && matchesUrl(bot));
 }
 
 /**
@@ -406,7 +417,8 @@ export type BotAttachmentState =
   | "joining"
   | "recording"
   | "processing"
-  | "completed";
+  | "completed"
+  | "failed";
 
 export function botAttachmentState(
   bot: ScheduledBot | undefined,
@@ -424,6 +436,8 @@ export function botAttachmentState(
       return "processing";
     case "done":
       return "completed";
+    case "failed":
+      return "failed";
   }
 }
 
@@ -859,7 +873,13 @@ export function resolveInviteCompanyId(
  *                stays "processing" — see below.
  */
 export type RowButtonKind =
-  "invite" | "invited" | "joining" | "in-call" | "processing" | "done";
+  | "invite"
+  | "invited"
+  | "joining"
+  | "in-call"
+  | "processing"
+  | "done"
+  | "failed";
 
 /**
  * US-010 — "Done — transcript saved" must reflect a transcript that ACTUALLY
@@ -878,6 +898,8 @@ export type RowButtonKind =
 export function rowButtonKind(bot: ScheduledBot | undefined): RowButtonKind {
   if (!bot) return "invite";
   switch (bot.status) {
+    case "failed":
+      return "failed";
     case "scheduled":
       return "invited";
     case "joining":
@@ -913,6 +935,8 @@ export function rowButtonLabel(kind: RowButtonKind, pending: boolean): string {
       return "Processing";
     case "done":
       return "Done";
+    case "failed":
+      return "Couldn't join";
   }
 }
 

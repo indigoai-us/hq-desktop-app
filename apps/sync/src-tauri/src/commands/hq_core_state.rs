@@ -191,6 +191,8 @@ enum CoreAutoUpdateDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CoreUpdateErrorKind {
     AlreadyInProgress,
+    /// Turned off for this build (a scratch build, `scratch_build.rs`).
+    Unavailable,
     InvalidCoreRoot,
     Network,
     RescueSpawn,
@@ -202,6 +204,7 @@ impl CoreUpdateErrorKind {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::AlreadyInProgress => "already_in_progress",
+            Self::Unavailable => "unavailable",
             Self::InvalidCoreRoot => "invalid_core_root",
             Self::Network => "network",
             Self::RescueSpawn => "rescue_spawn",
@@ -1812,6 +1815,7 @@ pub(crate) fn classify_core_update_error(
             classify_spawn_error(detail).unwrap_or_else(|| classify_rescue_stderr_failure(detail))
         }
         CoreUpdateErrorKind::AlreadyInProgress
+        | CoreUpdateErrorKind::Unavailable
         | CoreUpdateErrorKind::InvalidCoreRoot
         | CoreUpdateErrorKind::ChannelConfiguration
         | CoreUpdateErrorKind::Internal => RescueFailureCategory::Unknown,
@@ -1917,6 +1921,19 @@ impl Drop for CoreUpdateRunGuard {
 }
 
 pub(crate) fn try_begin_core_update() -> Result<CoreUpdateRunGuard, CoreUpdateError> {
+    try_begin_core_update_with(crate::scratch_build::active())
+}
+
+/// `try_begin_core_update` with the scratch-build switch passed in, so both
+/// answers can be tested in any build.
+pub(crate) fn try_begin_core_update_with(scratch: bool) -> Result<CoreUpdateRunGuard, CoreUpdateError> {
+    if scratch {
+        crate::scratch_build::skip("HQ Core update");
+        return Err(CoreUpdateError::new(
+            CoreUpdateErrorKind::Unavailable,
+            "HQ Core updates are turned off for this test build",
+        ));
+    }
     CORE_UPDATE_RUNNING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map(|_| CoreUpdateRunGuard)
@@ -6040,6 +6057,10 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
 /// staging-drift) with one and owns automatic Core installation natively.
 /// First check 30s after launch, then every 6h.
 pub fn setup_core_state_checker(app: &AppHandle) {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("HQ Core state checker and auto update");
+        return;
+    }
     let post_sync_handle = app.clone();
     app.listen(crate::events::EVENT_SYNC_ALL_COMPLETE, move |_event| {
         let handle = post_sync_handle.clone();

@@ -33,7 +33,7 @@ async function settle(): Promise<void> {
   }
 }
 
-function mountView(cache = createAtlasCache({ fetcher: async () => smokeAtlasGraph() })) {
+function mountView(cache = createAtlasCache({ fetcher: async () => smokeAtlasGraph() }), extra: Record<string, unknown> = {}) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(AtlasView, {
@@ -45,6 +45,7 @@ function mountView(cache = createAtlasCache({ fetcher: async () => smokeAtlasGra
       nowMs: NOW,
       presence: [{ nodeId: RAIL, name: "Corey", bot: false, signal: "editing" }],
       loadDetail: async () => ATLAS_SMOKE_DETAIL,
+      ...extra,
     },
   });
   return cache;
@@ -361,9 +362,8 @@ describe("Atlas chunk boundary", () => {
     expect(text).toContain("The map didn't load");
     expect(text).not.toContain("401");
     expect(text).not.toContain("raw");
-    // BLANK-2: no zero roll-up or "Nobody is working" next to the failed map.
-    const rollup = host.querySelector(sel("atlas-inspector-rollup"))?.textContent ?? "";
-    expect(rollup).not.toMatch(/\b0 (objects|projects)\b/);
+    // BLANK-2: no zero counts or "Nobody is working" next to the failed map.
+    expect(host.querySelector(sel("atlas-inspector"))?.textContent ?? "").not.toMatch(/\b0 (objects|projects)\b/);
     expect(host.textContent).not.toContain("Nobody is working");
     (host.querySelector(sel("atlas-retry")) as HTMLButtonElement).click();
     await vi.waitFor(() => {
@@ -697,95 +697,96 @@ describe("Atlas playback", () => {
 });
 
 describe("Atlas Today panel", () => {
-  const groupTitles = () => [...host.querySelectorAll(sel("atlas-today-group-title"))].map((el) => el.textContent);
-  const rowTitles = () => [...host.querySelectorAll(sel("atlas-today-row"))].map((r) => r.querySelector(".tt")?.textContent);
+  const projectTitles = () => [...host.querySelectorAll(sel("atlas-today-project-title"))].map((el) => el.textContent);
+  /** A Work Mesh project view with `done` of `total` stories on the Board. */
+  const boardView = (projectId: string, done: number, total: number) => ({
+    companyUid: "cmp_indigo",
+    projectId,
+    stories: Array.from({ length: total }, (_, i) => ({ id: `US-${i + 1}`, title: `Story ${i + 1}`, status: i < done ? "done" : "queued" })),
+  });
 
-  it("titles the section with the company and groups what changed today under each parent, rows flying to it", async () => {
+  it("lists projects worked on today, most recent first, with Board story counters and no file rows", async () => {
     const graph = smokeAtlasGraph();
     graph.nodes.find((x) => x.id === RAIL)!.touched = NOW - 20 * 60_000;
+    graph.nodes.find((x) => x.id === "knowledge:knowledge/pricing.md")!.touched = NOW - 60_000;
+    const explorer = "project:projects/hq-explorer/";
+    graph.nodes.push({ id: `${explorer}brainstorm.md`, type: "project", label: "brainstorm", path: "projects/hq-explorer/brainstorm.md", folder: false, count: 1, touched: NOW - 5 * 60_000, parentId: explorer });
+    const loadProjectView = vi.fn(async (projectId: string) =>
+      projectId === "hq-explorer" ? boardView("hq-explorer", 12, 31) : projectId === "hq-desktop-console-rail" ? boardView("hq-desktop-console-rail", 0, 0) : null,
+    );
+    mountView(createAtlasCache({ fetcher: async () => graph }), { loadProjectView });
+    await settle();
+    await vi.waitFor(() => expect(host.querySelector(sel("atlas-today-stories"))).not.toBeNull());
+    expect(host.querySelector(sel("atlas-today-title"))?.textContent).toBe("Today at Indigo");
+    // A knowledge file and a repo changed today too, but only projects are listed.
+    expect(projectTitles()).toEqual(["HQ explorer", "HQ desktop console rail"]);
+    expect(host.querySelector(sel("atlas-today-count"))?.textContent).toBe("2");
+    expect(host.querySelector(sel("atlas-today-row"))).toBeNull();
+    const rows = [...host.querySelectorAll(sel("atlas-today-project"))];
+    const stories = rows[0]!.querySelector(sel("atlas-today-stories"))!;
+    expect(stories.textContent).toContain("12/31 stories");
+    expect(Number(stories.getAttribute("data-done"))).toBeCloseTo(12 / 31, 3);
+    expect(rows[0]!.textContent).toContain("5 min ago");
+    // Counts come from the Board, not the graph's prd.json rollup (0 of 9 on the rail).
+    expect(rows[1]!.querySelector(sel("atlas-today-stories"))).toBeNull();
+    expect(loadProjectView).toHaveBeenCalledWith("hq-explorer");
+    expect(loadProjectView).toHaveBeenCalledWith("hq-desktop-console-rail");
+    flushSync(() => (rows[0] as HTMLButtonElement).click());
+    expect(inspectorPath()).toBe("projects/hq-explorer/");
+  });
+
+  it("shows rows without a bar when there is no Board read", async () => {
+    const graph = smokeAtlasGraph();
+    graph.nodes.find((x) => x.id === RAIL)!.touched = NOW - 20 * 60_000;
+    mountView(createAtlasCache({ fetcher: async () => graph }));
+    await settle();
+    flushSync();
+    expect(projectTitles()[0]).toBe("HQ desktop console rail");
+    expect(host.querySelector(sel("atlas-today-stories"))).toBeNull();
+  });
+
+  it("shows one quiet line when no project was worked on today", async () => {
+    const graph = smokeAtlasGraph();
+    for (const x of graph.nodes) x.touched = NOW - 3 * 86_400_000;
     graph.nodes.find((x) => x.id === "knowledge:knowledge/pricing.md")!.touched = NOW - 60_000;
     mountView(createAtlasCache({ fetcher: async () => graph }));
     await settle();
     flushSync();
-    expect(host.querySelector(sel("atlas-today-title"))?.textContent).toBe("Today at Indigo");
-    expect(groupTitles()).toEqual(["HQ desktop console rail", "Knowledge", "HQ desktop app"]);
-    const rail = host.querySelector(sel("atlas-today-group"))!;
-    expect(rail.getAttribute("data-kind")).toBe("project");
-    expect(rail.querySelector(sel("atlas-today-stories"))?.textContent).toContain("0 of 9 stories");
-    expect(rail.querySelector(sel("atlas-today-state"))?.getAttribute("data-column")).toBe("not-started");
-    const rows = [...host.querySelectorAll(sel("atlas-today-row"))];
-    expect(rowTitles()).toEqual(["Pricing"]);
-    expect(rows[0]!.querySelector(".mm")?.textContent).toBe("knowledge/ · 1 min ago");
-    flushSync(() => (rows[0] as HTMLButtonElement).click());
-    expect(inspectorPath()).toBe("knowledge/pricing.md");
+    expect(host.querySelector(sel("atlas-today-empty"))?.textContent).toBe("No project was worked on today.");
+    expect(host.querySelector(sel("atlas-today-projects"))).toBeNull();
   });
 
-  it("puts a brainstorm run's files under their project with a counter and progress, by human title", async () => {
+  it("pages a long day with Show N more", async () => {
     const graph = smokeAtlasGraph();
-    const explorer = "project:projects/hq-explorer/";
-    for (const f of ["brainstorm.md", "hq-landscape.md", "market-landscape.md", "opportunity-sizing.md", "references.md"]) {
-      graph.nodes.push({
-        id: `${explorer}${f}`,
-        type: "project",
-        label: f.replace(/-/g, " ").replace(/\.md$/, ""),
-        path: `projects/hq-explorer/${f}`,
-        folder: false,
-        count: 1,
-        touched: NOW - 34 * 60_000,
-        parentId: explorer,
-      });
+    for (let i = 0; i < 8; i += 1) {
+      graph.nodes.push({ id: `project:projects/extra-${i}/`, type: "project", label: `extra ${i}`, path: `projects/extra-${i}/`, folder: true, count: 1, touched: NOW - (i + 1) * 60_000 });
     }
+    for (const x of graph.nodes) if (x.type === "project" && !x.path.includes("extra")) x.touched = NOW - 2 * 3_600_000;
     mountView(createAtlasCache({ fetcher: async () => graph }));
     await settle();
     flushSync();
-    expect(groupTitles()).toEqual(["HQ explorer", "HQ desktop console rail", "HQ desktop app"]);
-    const group = host.querySelector(sel("atlas-today-group"))!;
-    const stories = group.querySelector(sel("atlas-today-stories"))!;
-    expect(stories.textContent).toContain("7 of 11 stories");
-    expect(Number(stories.getAttribute("data-done"))).toBeCloseTo(7 / 11, 3);
-    expect(group.querySelector(sel("atlas-today-state"))?.getAttribute("data-column")).toBe("in-progress");
-    // Three rows, then the group's own "more", which expands in place.
-    expect(rowTitles()).toEqual(["Brainstorm", "HQ landscape", "Market landscape"]);
-    expect(host.querySelector(sel("atlas-today-row"))!.getAttribute("data-kind")).toBe("brainstorm");
-    const more = group.querySelector(sel("atlas-today-group-more")) as HTMLButtonElement;
-    expect(more.textContent).toBe("2 more in HQ explorer");
-    flushSync(() => more.click());
-    expect(rowTitles()).toEqual(["Brainstorm", "HQ landscape", "Market landscape", "Opportunity sizing", "References"]);
-    const refs = [...host.querySelectorAll(sel("atlas-today-row"))][4]!;
-    expect(refs.querySelector(".mm")?.textContent).toBe("projects/hq-explorer/ · 34 min ago");
-    expect(refs.getAttribute("title")).toBe("Doc · projects/hq-explorer/references.md");
-    // The header flies to the project.
-    flushSync(() => (group.querySelector(sel("atlas-today-group-head")) as HTMLButtonElement).click());
-    expect(inspectorPath()).toBe("projects/hq-explorer/");
-  });
-
-  it("shows one quiet line when nothing changed today", async () => {
-    const graph = smokeAtlasGraph();
-    for (const x of graph.nodes) x.touched = NOW - 3 * 86_400_000;
-    mountView(createAtlasCache({ fetcher: async () => graph }));
-    await settle();
-    flushSync();
-    expect(host.querySelector(sel("atlas-today-empty"))?.textContent).toBe("Nothing on the map changed today.");
-    expect(host.querySelector(sel("atlas-today-changed"))).toBeNull();
-  });
-
-  it("pages a long day by group with a real Show N more groups", async () => {
-    const graph = smokeAtlasGraph();
-    for (const x of graph.nodes) x.touched = NOW - 60_000;
-    mountView(createAtlasCache({ fetcher: async () => graph }));
-    await settle();
-    flushSync();
-    // 4 projects, 3 repos, 2 workers, 2 skills are their own groups; policies and knowledge one each.
-    const total = 13;
-    expect(host.querySelector(sel("atlas-today-count"))?.textContent).toBe(String(graph.nodes.length));
-    expect(host.querySelectorAll(sel("atlas-today-group")).length).toBe(4);
+    const total = host.querySelector(sel("atlas-today-count"))?.textContent;
+    expect(Number(total)).toBeGreaterThan(6);
+    expect(host.querySelectorAll(sel("atlas-today-project")).length).toBe(6);
     const more = () => host.querySelector(sel("atlas-today-more")) as HTMLButtonElement | null;
-    expect(more()!.textContent?.replace(/\s+/g, " ").trim()).toBe(`Show ${total - 4} more groups · ${graph.nodes.length - 4} changes`);
+    expect(more()!.textContent?.trim()).toBe(`Show ${Number(total) - 6} more`);
     flushSync(() => more()!.click());
-    expect(host.querySelectorAll(sel("atlas-today-group")).length).toBe(8);
-    flushSync(() => more()!.click());
-    flushSync(() => more()!.click());
-    expect(host.querySelectorAll(sel("atlas-today-group")).length).toBe(total);
+    expect(host.querySelectorAll(sel("atlas-today-project")).length).toBe(Number(total));
     expect(more()).toBeNull();
+  });
+});
+
+describe("Atlas side panel without a selection", () => {
+  it("has no Company block: no company name heading, live, objects or projects-in-progress chips", async () => {
+    mountView();
+    await settle();
+    flushSync();
+    const inspector = host.querySelector(sel("atlas-inspector"))!;
+    expect(host.querySelector(sel("atlas-inspector-rollup"))).toBeNull();
+    expect(inspector.querySelector("h2")).toBeNull();
+    expect(inspector.textContent).not.toMatch(/\bobjects\b/);
+    expect(inspector.textContent).not.toContain("projects in progress");
+    // The Today section is first; no divider sits above it.
+    expect(inspector.firstElementChild?.getAttribute("data-testid")).toBe("atlas-today-title");
   });
 });

@@ -89,6 +89,21 @@
     selected ? taskMark(selected, sessions) : "open",
   );
 
+  let copiedBranch = $state(false);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function copyBranch(): Promise<void> {
+    if (!branch) return;
+    try {
+      await navigator.clipboard.writeText(branch);
+      copiedBranch = true;
+      if (copiedTimer) clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => (copiedBranch = false), 1500);
+    } catch (err) {
+      console.warn("task view: copy branch failed", err);
+    }
+  }
+
   function pick(id: string): void {
     pickedFor = project.id;
     pickedId = id;
@@ -123,14 +138,19 @@
       aria-label="Open project"
       title="Open project"
       data-testid="task-view-open-project"
-      onclick={() => onopenproject(selected?.id ?? null)}>↗</button
+      onclick={() => onopenproject(selected?.id ?? null)}
+      ><svg viewBox="0 0 16 16" aria-hidden="true"
+        ><path d="M6 3.5H3.5v9h9V10M9 3.5h3.5V7M12.5 3.5 7.5 8.5" /></svg
+      ></button
     >
     <button
       type="button"
       class="icon-btn"
       aria-label="Close"
       data-testid="task-view-close"
-      onclick={onclose}>✕</button
+      onclick={onclose}
+      ><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg
+      ></button
     >
   </div>
 
@@ -171,7 +191,11 @@
             data-testid="task-view-item"
             onclick={() => pick(story.id)}
           >
-            <i class={mark} aria-label={mark}></i>
+            <span class="mk {mark}" aria-label={mark}>
+              {#if mark === "done"}
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" /></svg>
+              {/if}
+            </span>
             <span class="ti-t">{story.title}</span>
             <span class="id">{story.id}</span>
           </button>
@@ -184,6 +208,7 @@
           {#if selected.description}
             <p>{selected.description}</p>
           {/if}
+          {#if selectedMark !== "open" || (selected.files && selected.files.length > 0)}
           <div class="chips">
             {#if selectedMark === "live"}
               <span class="chip live"
@@ -192,7 +217,6 @@
             {:else if selectedMark === "done"}
               <span class="chip">Done</span>
             {/if}
-            {#if branch}<span class="chip mono">{branch}</span>{/if}
             {#if selected.files && selected.files.length > 0}
               <span class="chip"
                 >{selected.files.length}
@@ -200,6 +224,34 @@
               >
             {/if}
           </div>
+          {/if}
+          {#if branch}
+            <div class="branch" title={branch}>
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="5" cy="4" r="1.6" />
+                <circle cx="5" cy="12" r="1.6" />
+                <circle cx="11" cy="6" r="1.6" />
+                <path d="M5 5.6v4.8M11 7.6c0 2-2.5 2.2-5.4 3.3" />
+              </svg>
+              <span class="branch-name">{branch}</span>
+              <button
+                type="button"
+                class="icon-btn copy"
+                aria-label={copiedBranch ? "Branch copied" : "Copy branch name"}
+                title={copiedBranch ? "Copied" : "Copy branch name"}
+                data-testid="task-view-copy-branch"
+                onclick={copyBranch}
+              >
+                {#if copiedBranch}
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" /></svg>
+                {:else}
+                  <svg viewBox="0 0 16 16" aria-hidden="true"
+                    ><rect x="5.5" y="5.5" width="7" height="7" rx="1" /><path d="M10.5 5.5V3.5h-7v7h2" /></svg
+                  >
+                {/if}
+              </button>
+            </div>
+          {/if}
           <div class="kind">Acceptance</div>
           {#if selected.acceptanceCriteria.length > 0}
             <div class="ac" data-testid="task-view-acceptance">
@@ -268,7 +320,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 0 12px 0 16px;
+    padding: 0 12px 0 20px;
     border-bottom: 1px solid var(--v4-rowline);
     font-size: 13px;
     font-weight: 500;
@@ -286,14 +338,31 @@
   }
 
   .icon-btn {
+    display: inline-grid;
+    place-items: center;
     width: 26px;
     height: 26px;
     flex: none;
+    padding: 0;
     border: 0;
     border-radius: 6px;
     background: transparent;
     color: var(--v4-text-2);
     cursor: default;
+  }
+
+  .icon-btn svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .icon-btn:hover {
+    color: var(--v4-text-1);
   }
 
   .icon-btn:hover,
@@ -305,15 +374,15 @@
     overflow: auto;
     overscroll-behavior: contain;
     contain: content;
-    padding: 14px 16px 24px;
+    padding: 20px 20px 32px;
   }
 
   .kind {
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 400;
     letter-spacing: 0;
-    color: var(--v4-text-2);
-    margin: 12px 0 6px;
+    color: var(--v4-text-3);
+    margin: 24px 0 8px;
   }
 
   .kind:first-child {
@@ -324,7 +393,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 4px 0 8px;
+    padding: 0;
   }
 
   .now-title {
@@ -344,9 +413,11 @@
   .ti {
     display: grid;
     grid-template-columns: 14px minmax(0, 1fr) auto;
-    gap: 8px;
+    gap: 10px;
     align-items: center;
-    padding: 5px 6px;
+    min-height: 32px;
+    margin: 0 -8px;
+    padding: 6px 8px;
     border: 0;
     border-radius: 6px;
     background: transparent;
@@ -378,19 +449,43 @@
     color: var(--v4-text-3);
   }
 
-  .ti i {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--v4-idle);
+  /* State marks: open = empty ring, done = check, live = pulsing dot. */
+  .mk {
+    display: inline-grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
     justify-self: center;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.25px var(--v4-text-3);
   }
 
-  .ti i.done {
-    background: var(--v4-text-3);
+  .mk.done {
+    box-shadow: none;
+    color: var(--v4-text-3);
   }
 
-  .ti i.live,
+  .mk svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .mk.live {
+    width: 8px;
+    height: 8px;
+    box-shadow: none;
+  }
+
+  .ti[data-mark="done"] .ti-t {
+    color: var(--v4-text-3);
+  }
+
+  .mk.live,
   .ldot {
     background: var(--v4-ok);
     animation: dot-pulse 1.8s ease-in-out infinite;
@@ -405,29 +500,71 @@
   }
 
   .td {
-    margin: 8px 0 4px;
-    padding: 10px 0 0;
+    margin: 20px 0 4px;
+    padding: 20px 0 0;
     border-top: 1px solid var(--v4-rowline);
   }
 
   .td h3 {
     font-size: 13px;
     font-weight: 500;
-    margin: 0 0 4px;
+    line-height: 1.4;
+    margin: 0 0 8px;
+    overflow-wrap: anywhere;
   }
 
   .td p,
   .note {
     font-size: 13px;
     color: var(--v4-text-2);
-    margin: 0 0 8px;
-    line-height: 1.45;
+    margin: 0 0 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
   }
 
   .chips {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+
+  /* Branch: one compact mono line, truncated, with a copy control. */
+  .branch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    height: 28px;
+    padding: 0 2px 0 8px;
+    border-radius: 6px;
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+  }
+
+  .branch > svg {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: var(--v4-text-3);
+    stroke-width: 1.3;
+    stroke-linecap: round;
+  }
+
+  .branch-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+
+  .branch .copy {
+    width: 24px;
+    height: 24px;
   }
 
   .chip {
@@ -443,15 +580,17 @@
   .ac {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 10px;
   }
 
   .ac div {
     display: flex;
-    gap: 8px;
+    gap: 10px;
     font-size: 13px;
+    line-height: 1.5;
     color: var(--v4-text-2);
     align-items: flex-start;
+    overflow-wrap: anywhere;
   }
 
   .ac div::before {
@@ -459,7 +598,7 @@
     width: 12px;
     height: 12px;
     flex: none;
-    margin-top: 2px;
+    margin-top: 3px;
     border: 1px solid var(--v4-control-border);
     border-radius: 3px;
   }
@@ -472,8 +611,8 @@
   .kv {
     display: grid;
     grid-template-columns: 84px minmax(0, 1fr);
-    gap: 4px 8px;
-    margin: 8px 0 0;
+    gap: 8px 12px;
+    margin: 24px 0 0;
     font-size: 13px;
   }
 
@@ -489,9 +628,9 @@
 
   .actions {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     flex-wrap: wrap;
-    margin-top: 12px;
+    margin-top: 24px;
   }
 
 
@@ -507,7 +646,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .ti i.live,
+    .mk.live,
     .ldot {
       animation: none;
     }

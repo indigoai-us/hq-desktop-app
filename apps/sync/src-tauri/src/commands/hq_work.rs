@@ -1331,6 +1331,10 @@ pub fn maybe_co_install_hq_work() {}
 
 /// Fire-and-forget spawn. Callers must not wait on HQ Work download.
 pub fn spawn_maybe_co_install_hq_work() {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("HQ Work co-install");
+        return;
+    }
     tauri::async_runtime::spawn(async {
         if let Err(err) = tauri::async_runtime::spawn_blocking(maybe_co_install_hq_work).await {
             handoff_log(&format!("handoff.failed {err}"));

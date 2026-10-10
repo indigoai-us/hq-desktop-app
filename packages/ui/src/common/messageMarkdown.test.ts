@@ -120,21 +120,21 @@ describe("message Markdown normalization", () => {
 });
 
 describe("message body URL autolinking", () => {
-  it("autolinks bare http and https URLs with rel=noopener noreferrer", () => {
+  it("autolinks bare http and https URLs with rel=noopener noreferrer and a readable label", () => {
     const http = renderMessageBodyMarkdown("see http://example.com/docs");
     expect(http).toContain(
-      '<a href="http://example.com/docs" target="_blank" rel="noopener noreferrer">http://example.com/docs</a>',
+      '<a href="http://example.com/docs" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="auto" title="http://example.com/docs">example.com › docs</a>',
     );
     const https = renderMessageBodyMarkdown("see https://example.com/docs");
     expect(https).toContain(
-      '<a href="https://example.com/docs" target="_blank" rel="noopener noreferrer">https://example.com/docs</a>',
+      '<a href="https://example.com/docs" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="auto" title="https://example.com/docs">example.com › docs</a>',
     );
   });
 
   it("does not swallow a trailing period after a bare URL", () => {
     const html = renderMessageBodyMarkdown("See https://example.com.");
     expect(html).toContain(
-      '<a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a>.',
+      '<a href="https://example.com" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="auto" title="https://example.com">example.com</a>.',
     );
     expect(html).not.toContain('href="https://example.com."');
   });
@@ -151,7 +151,7 @@ describe("message body URL autolinking", () => {
   it("still renders markdown [label](https://…) links", () => {
     const html = renderMessageBodyMarkdown("see [docs](https://example.com/x)");
     expect(html).toContain(
-      '<a href="https://example.com/x" target="_blank" rel="noopener noreferrer">docs</a>',
+      '<a href="https://example.com/x" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="text">docs</a>',
     );
   });
 
@@ -187,7 +187,7 @@ describe("message body URL autolinking", () => {
   it("preserves escaped &amp; in a URL and does not decode it", () => {
     const html = renderMessageBodyMarkdown("https://example.com?a=1&b=2");
     expect(html).toContain(
-      '<a href="https://example.com?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">https://example.com?a=1&amp;b=2</a>',
+      '<a href="https://example.com?a=1&amp;b=2" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="auto" title="https://example.com?a=1&amp;b=2">example.com</a>',
     );
     expect(html).not.toContain('href="https://example.com?a=1&b=2"');
   });

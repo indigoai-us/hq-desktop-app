@@ -133,6 +133,7 @@
   class="project-card"
   class:has-live-run={liveRun !== null}
   data-status={status}
+  data-column={column ?? undefined}
   data-testid="project-row"
 >
   <button
@@ -199,14 +200,6 @@
     {/if}
 
     <div class="card-foot" title={stateContext ?? undefined}>
-      {#if column}
-        <span
-          class="state-dot"
-          data-column={column}
-          data-testid="project-state-dot"
-          aria-hidden="true"
-        ></span>
-      {/if}
       {#if hasProgress}
         <div class="card-progress">
           <div class="progress-track" aria-hidden="true">
@@ -230,12 +223,7 @@
 
       {#if !showPortfolioMeta}
         <span class="status-label" data-status={status}>
-          <span
-            class="status-dot"
-            class:is-live={isLive}
-            data-status={status}
-            aria-hidden="true"
-          ></span>
+          {#if isLive}<span class="status-dot is-live" aria-hidden="true"></span>{/if}
           {PROJECT_LIST_STATUS_LABEL[status]}
         </span>
       {/if}
@@ -258,7 +246,7 @@
       <p class="card-meta" data-testid="project-card-meta">
         {#if activityLabel && !liveRun}
           <span class="card-activity" data-testid="project-activity"
-            ><span class="live-dot" aria-hidden="true"></span>{activityLabel}</span
+            >{activityLabel}</span
           >
         {:else if updated}
           <span data-testid="project-updated">{updated}</span>
@@ -336,12 +324,12 @@
   .project-open {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 6px;
+    gap: 8px;
     width: 100%;
     min-width: 0;
     max-width: 100%;
     overflow: hidden;
-    padding: 12px;
+    padding: 16px;
     border: 0;
     border-radius: inherit;
     background: transparent;
@@ -373,12 +361,12 @@
   .card-name {
     margin: 0;
     /* Leave room for the hover link button in the top-right corner. */
-    padding-right: 22px;
+    padding-right: 24px;
     overflow: hidden;
     color: var(--v4-text-1);
     font-size: 13px;
     font-weight: 500;
-    line-height: 1.35;
+    line-height: 1.4;
     /* Two lines, so projects with similar names can be told apart. */
     display: -webkit-box;
     -webkit-box-orient: vertical;
@@ -390,9 +378,9 @@
   /* One muted line under the title; the full text is in the tooltip. */
   .card-desc {
     min-width: 0;
-    margin: 0;
+    margin: -4px 0 0;
     overflow: hidden;
-    color: var(--v4-text-3);
+    color: var(--v4-text-2);
     font-size: 13px;
     line-height: 1.4;
     text-overflow: ellipsis;
@@ -439,9 +427,11 @@
   .card-foot {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     min-width: 0;
     margin-top: 4px;
+    padding-top: 12px;
+    border-top: 1px solid var(--v4-rowline);
   }
 
   .card-progress {
@@ -454,8 +444,8 @@
 
   .progress-track {
     flex: 1 1 auto;
-    max-width: 120px;
-    height: 3px;
+    min-width: 16px;
+    height: 4px;
     overflow: hidden;
     border-radius: 999px;
     background: var(--v4-control-faint);
@@ -485,7 +475,7 @@
   .progress-count,
   .foot-quiet {
     flex: 0 0 auto;
-    color: var(--v4-text-3);
+    color: var(--v4-text-2);
     font-size: 13px;
     font-variant-numeric: tabular-nums;
     line-height: 16px;
@@ -532,13 +522,14 @@
   .avatar {
     display: inline-grid;
     place-items: center;
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
     border-radius: 999px;
-    background: var(--v4-control-faint);
+    background: var(--v4-raised);
     box-shadow: inset 0 0 0 1px var(--v4-hairline);
     color: var(--v4-text-2);
     font-size: 9px;
+    font-variant-numeric: tabular-nums;
     font-weight: 500;
     letter-spacing: 0;
     line-height: 1;
@@ -546,9 +537,9 @@
 
   /* Owner leads; contributors tuck behind with a ring in the card color. */
   .avatar + .avatar {
-    margin-left: -5px;
+    margin-left: -2px;
     box-shadow:
-      0 0 0 1.5px var(--v4-raised),
+      0 0 0 2px var(--v4-raised),
       inset 0 0 0 1px var(--v4-hairline);
   }
 
@@ -682,6 +673,7 @@
     align-items: center;
     min-width: 0;
     margin: 0;
+    margin-top: -2px;
     color: var(--v4-text-3);
     font-size: 13px;
     line-height: 16px;
@@ -697,31 +689,7 @@
   }
 
   .card-activity {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--v4-text-2);
+    color: var(--v4-text-3);
   }
 
-  /* State dot, colored like the column header dots. */
-  .state-dot {
-    flex: 0 0 auto;
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: var(--v4-text-3);
-  }
-  .state-dot[data-column="not-started"] {
-    background: transparent;
-    box-shadow: inset 0 0 0 1.5px var(--v4-text-3);
-  }
-  .state-dot[data-column="in-progress"] {
-    background: var(--v4-text-2);
-  }
-  .state-dot[data-column="active"] {
-    background: var(--v4-ok);
-  }
-  .state-dot[data-column="complete"] {
-    background: var(--v4-text-1);
-  }
 </style>

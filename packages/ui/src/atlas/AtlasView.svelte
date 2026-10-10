@@ -14,7 +14,7 @@
   import AtlasInspector from "./AtlasInspector.svelte";
   import AtlasScrubber from "./AtlasScrubber.svelte";
   import { atlasFocusOrbit } from "./atlas-focus.js";
-  import { atlasTodayChanges, atlasTodayGroups } from "./atlas-today.js";
+  import { atlasBoardStories, atlasTodayChanges, atlasTodayGroups, atlasTodayProjects, type AtlasTodayStories } from "./atlas-today.js";
   import {
     ATLAS_PULSE_MS,
     atlasMotionAllowed,
@@ -76,10 +76,10 @@
     /** Empty company prompts (US-014): company page row id (projects, team, integrations). */
     onopenpage?: (rowId: string) => void;
     /**
-     * In-progress count from the Projects board (QA-065). When set it wins
-     * over the graph's story rollup, which the local map does not fill.
+     * Live Board project view by project id; Today's story counters come from
+     * it. Without it the rows show no bar.
      */
-    projectsInProgress?: number | null;
+    loadProjectView?: ((projectId: string) => Promise<unknown>) | null;
     /**
      * OWNER-R4: the web Atlas people read (company telemetry, last 30 days),
      * resolving to the raw body. Runs only after the map has painted.
@@ -104,7 +104,7 @@
     onopenboard,
     onmessage,
     onopenpage,
-    projectsInProgress: boardInProgress = null,
+    loadProjectView = null,
     loadPeople = null,
     motion = true,
   }: Props = $props();
@@ -273,18 +273,37 @@
     scrubIndex == null && (graph?.nodes ?? []).every((n) => timeOpacity.has(n.id)),
   );
   const empty = $derived(graph !== null && graph.nodes.length === 0);
-  const today = $derived(graph ? atlasTodayGroups(atlasTodayChanges(graph.nodes, nowMs), graph.nodes) : null);
+  const today = $derived(graph ? atlasTodayProjects(atlasTodayGroups(atlasTodayChanges(graph.nodes, nowMs), graph.nodes)) : null);
+  // Story counters from the live Board, read once per project per company.
+  let todayStories = $state<Record<string, AtlasTodayStories | null>>({});
+  let todayStoriesFor = "";
+  $effect(() => {
+    const load = loadProjectView;
+    const company = companyUid;
+    const projects = today;
+    untrack(() => {
+      if (todayStoriesFor !== company) {
+        todayStoriesFor = company;
+        todayStories = {};
+      }
+      if (!load || !projects) return;
+      for (const project of projects) {
+        if (project.slug in todayStories) continue;
+        todayStories[project.slug] = null;
+        load(project.slug)
+          .then((raw) => {
+            if (todayStoriesFor === company) todayStories[project.slug] = atlasBoardStories(raw);
+          })
+          .catch((err) => console.warn(`Atlas board stories for ${project.slug} failed:`, err));
+      }
+    });
+  });
   const emptyLabels = ATLAS_RING_ORDER.map((type, i) => {
     const a = -Math.PI / 2 + (i / ATLAS_RING_ORDER.length) * Math.PI * 2;
     return { type, label: districtLabel(type), x: 450 + Math.cos(a) * 290, y: 320 + Math.sin(a) * 250 };
   });
   const companyTitle = $derived(companyName ?? graph?.company ?? "This company");
 
-  const projectsInProgress = $derived(
-    boardInProgress ?? (graph?.nodes ?? []).filter(
-      (n) => n.type === "project" && n.stories && n.stories.done < n.stories.total,
-    ).length,
-  );
 
   function measure(): void {
     const box = mapHost?.getBoundingClientRect();
@@ -697,9 +716,8 @@
       onpeopleretry={() => (peopleNonce += 1)}
       personMatches={personIds?.size ?? 0}
       {today}
+      {todayStories}
       company={companyName ?? graph?.company ?? ""}
-      objectCount={loadFailed ? null : (graph?.nodes.length ?? 0)}
-      projectsInProgress={(loadFailed && boardInProgress == null) || projectsInProgress === 0 ? null : projectsInProgress}
       mapFailed={loadFailed}
       {nowMs}
       onselect={selectId}

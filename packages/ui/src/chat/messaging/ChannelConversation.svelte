@@ -85,6 +85,12 @@
   } from "../../common/messageMarkdown.js";
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
+  import LinkHovercard from "./LinkHovercard.svelte";
+  import {
+    LinkHovercardController,
+    copyLinkToClipboard,
+    insideLinkCard,
+  } from "./linkHovercardController.svelte.js";
 
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
@@ -475,9 +481,13 @@
   }
 
   let linkMenu = $state<LinkMenuAnchor | null>(null);
+  const linkCards = new LinkHovercardController();
+  $effect(() => linkCards.connect());
 
   /** Delegated open for markdown/autolinked anchors injected as HTML. */
   function onBodyLinkActivate(event: Event): boolean {
+    if (insideLinkCard(event.target)) return false;
+    if (event.type !== "keydown") linkCards.hide();
     return handleLinkActivate(event, {
       onopenurl,
       onmenu: (menu) => (linkMenu = menu),
@@ -1843,7 +1853,7 @@
       <PlainMessageBody body={text} />
     {:else}
       {@html applyMentionMarkup(
-        renderMessageBodyMarkdown(text),
+        renderMessageBodyMarkdown(text, linkCards.pageTitles()),
         storedMentions(msg),
       )}
     {/if}
@@ -1902,8 +1912,13 @@
   onauxclick={onBodyLinkActivate}
   oncontextmenu={onBodyLinkActivate}
   onkeydown={(e) => {
+    if (linkCards.onkeydown(e)) return;
     if (e.key === "Enter" || e.key === " ") onBodyLinkActivate(e);
   }}
+  onpointerover={linkCards.onpointerover}
+  onpointerout={linkCards.onpointerout}
+  onfocusin={linkCards.onfocusin}
+  onfocusout={linkCards.onfocusout}
 >
   {#if dragActive}
     <div class="drop-overlay" data-testid="composer-drop-overlay">
@@ -2643,6 +2658,22 @@
       menu={linkMenu}
       {onopenurl}
       onclose={() => (linkMenu = null)}
+    />
+  {/if}
+  {#if linkCards.card}
+    <LinkHovercard
+      id={linkCards.id}
+      href={linkCards.card.href}
+      preview={linkCards.card.preview}
+      pageTitle={linkCards.pageTitle}
+      rect={linkCards.card.rect}
+      onopen={(url) => {
+        linkCards.hide();
+        onopenurl?.(url);
+      }}
+      oncopy={copyLinkToClipboard}
+      onpointerenter={linkCards.hold}
+      onpointerleave={linkCards.scheduleClose}
     />
   {/if}
 </div>

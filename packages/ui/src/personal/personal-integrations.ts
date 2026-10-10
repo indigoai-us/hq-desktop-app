@@ -10,6 +10,7 @@
  */
 import type { AdapterPromise, Json } from "@hq/platform";
 import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+import { registerAccountCache } from "../common/account-caches.js";
 
 export const PERSONAL_INTEGRATIONS_URL = `${HQ_CONSOLE_BASE}/personal/integrations`;
 
@@ -149,6 +150,7 @@ export async function loadPersonalIntegrations(api: PersonalIntegrationsApi | nu
 }
 
 const cache = new Map<string, PersonalIntegration[]>();
+registerAccountCache(() => cache.clear());
 
 export function readIntegrationsCache(owner = "personal"): PersonalIntegration[] | null {
   return cache.get(owner) ?? null;

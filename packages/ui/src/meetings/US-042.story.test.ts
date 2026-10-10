@@ -6,11 +6,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
-import type { GoogleAccount, MeetingEvent } from "./meetings-model";
+import type { GoogleAccount, MeetingEvent, ScheduledBot } from "./meetings-model";
 
 const store = vi.hoisted(() => ({
   accounts: [] as GoogleAccount[],
   events: [] as MeetingEvent[],
+  scheduledBots: [] as ScheduledBot[],
   initialLoadPending: false,
   hasLiveSnapshot: true,
   calendarReadFailed: false,
@@ -51,6 +52,7 @@ afterEach(async () => {
 beforeEach(() => {
   store.accounts = [];
   store.events = [];
+  store.scheduledBots = [];
   store.initialLoadPending = false;
   store.hasLiveSnapshot = true;
   store.calendarReadFailed = false;
@@ -171,6 +173,70 @@ describe("US-042 paste detection", () => {
     await settle();
     expect(openExternal).toHaveBeenCalledWith(zoom);
     expect(store.inviteBotByUrl).toHaveBeenCalledWith(zoom, null);
+  });
+
+  it("keeps a terminal notetaker failure visible below the pasted link", async () => {
+    const openExternal = vi.fn();
+    store.scheduledBots = [{
+      botId: "failed-zoom",
+      meetingUrl: zoom,
+      platform: "zoom",
+      status: "failed",
+      autoScheduled: false,
+      failureReason: "This Zoom meeting only admits signed-in Zoom users.",
+    }];
+    store.inviteBotByUrl.mockResolvedValue({ kind: "warn", text: "Couldn't invite the notetaker." });
+    const el = render(MeetingsToolbarControls, { openExternal });
+    (el.querySelector('[data-testid="meetings-paste-link"]') as HTMLButtonElement).click();
+    await opened(el, "paste-link-input");
+    const input = el.querySelector('[data-testid="paste-link-input"]') as HTMLInputElement;
+    input.value = zoom;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    (el.querySelector('[data-testid="paste-link-join"]') as HTMLButtonElement).click();
+    await settle();
+    expect(el.querySelector('[data-testid="paste-link-failure"]')?.textContent).toContain("signed-in Zoom users");
+  });
+
+  it("uses the generic detail when the terminal failure has no server reason", async () => {
+    const openExternal = vi.fn();
+    store.scheduledBots = [{
+      botId: "failed-zoom",
+      meetingUrl: zoom,
+      platform: "zoom",
+      status: "failed",
+      autoScheduled: false,
+    }];
+    store.inviteBotByUrl.mockResolvedValue({ kind: "info", text: "Notetaker invited." });
+    const el = render(MeetingsToolbarControls, { openExternal });
+    (el.querySelector('[data-testid="meetings-paste-link"]') as HTMLButtonElement).click();
+    await opened(el, "paste-link-input");
+    const input = el.querySelector('[data-testid="paste-link-input"]') as HTMLInputElement;
+    input.value = zoom;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    (el.querySelector('[data-testid="paste-link-join"]') as HTMLButtonElement).click();
+    await settle();
+    expect(el.querySelector('[data-testid="paste-link-failure"]')?.textContent).toContain("couldn't join this meeting");
+  });
+
+  it("closes after a successful paste-link retry despite an older failure", async () => {
+    const openExternal = vi.fn();
+    store.scheduledBots = [
+      { botId: "failed-zoom", meetingUrl: zoom, platform: "zoom", status: "failed", autoScheduled: false, failureReason: "Zoom requires sign-in." },
+      { botId: "retry-zoom", meetingUrl: zoom, platform: "zoom", status: "scheduled", autoScheduled: false },
+    ];
+    store.inviteBotByUrl.mockResolvedValue({ kind: "info", text: "Notetaker invited." });
+    const el = render(MeetingsToolbarControls, { openExternal });
+    (el.querySelector('[data-testid="meetings-paste-link"]') as HTMLButtonElement).click();
+    await opened(el, "paste-link-input");
+    const input = el.querySelector('[data-testid="paste-link-input"]') as HTMLInputElement;
+    input.value = zoom;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    (el.querySelector('[data-testid="paste-link-join"]') as HTMLButtonElement).click();
+    await settle();
+    expect(el.querySelector('[data-testid="paste-link-failure"]')).toBeNull();
   });
 });
 

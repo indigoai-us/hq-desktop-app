@@ -221,6 +221,9 @@
                   </span>
                 {/if}
               </div>
+              {#if kind === "failed"}
+                <div class="notetaker-failure" data-testid="meeting-notetaker-failure">Notetaker couldn't join · {notetaker.detail}</div>
+              {/if}
               <div class="mcompany">
                 {#if event.sourceCompanyUid}<CompanyLabel
                     name={companyLabel(event, companyNames)}
@@ -444,6 +447,16 @@
                     <circle cx="9.5" cy="6" r="1" />
                   </svg>
                 </span>
+              {:else if kind === "failed"}
+                <button
+                  type="button"
+                  class="row-icon-btn row-icon-invite notetaker-toggle"
+                  data-testid="meeting-notetaker-toggle"
+                  data-notetaker="failed"
+                  title={notetaker.detail}
+                  aria-label={notetaker.ariaLabel}
+                  onclick={() => onInvite?.(event)}
+                ><RailIcon name="user-plus" /></button>
               {:else}
                 <span
                   class="row-icon-btn row-icon-done notetaker-toggle notetaker-on"
@@ -971,6 +984,12 @@
     font-size: var(--type-body, 13px);
     line-height: 18px;
     border-bottom: none;
+  }
+
+  .notetaker-failure {
+    color: var(--v4-text-3, var(--t3));
+    font-size: 13px;
+    line-height: 17px;
   }
 
   @keyframes livePulse {

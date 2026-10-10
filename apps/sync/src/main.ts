@@ -18,6 +18,7 @@ import { beforeSend } from "./sentry-before-send";
 import { sentryEnvironmentForVersion } from './lib/sentry-environment';
 import { installDesktopZoom } from './lib/desktopZoom';
 import { installAppearancePreferences } from './lib/appearancePreferences';
+import { installLinkTitleFetcher } from './lib/linkTitleFetcher';
 import { signalUiBoot } from './lib/ui-hot';
 
 Sentry.init({
@@ -41,6 +42,7 @@ document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
 // One persisted preference governs every HQ WebView: desktop, Messages,
 // meetings, detail sheets, and the compact menubar surface.
 installDesktopZoom();
+installLinkTitleFetcher();
 installAppearancePreferences({
   ...(windowLabel === 'main' ? { applyNativeTheme: (theme) => setTheme(theme) } : {}),
   // Pre-Tahoe Macs get the vibrancy fallback, not Liquid Glass; the surfaces

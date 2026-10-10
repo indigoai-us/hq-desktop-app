@@ -6,6 +6,7 @@ import type { DeploymentEntry } from "./DeploymentRow.svelte";
 import type { SecretEnv } from "./SecretEnvRow.svelte";
 import { createResourceCache } from "../common/resource-cache.svelte";
 import { withActivityRequestDeadline } from "../common/activity-request";
+import { registerAccountCache } from "../common/account-caches.js";
 
 export type CompanyResource =
   "summary" | "board" | "activity" | "deployments" | "secrets";
@@ -56,6 +57,7 @@ function requireApi(): CompanyApi {
 
 const POLL_INTERVAL_MS = 30_000;
 const cache = createResourceCache({ ttlMs: POLL_INTERVAL_MS });
+registerAccountCache(() => cache.clear());
 const key = (resource: CompanyResource, slug: string) => `${slug}:${resource}`;
 let active: { slug: string; resource: CompanyResource } | null = null;
 let stopPoll: (() => void) | null = null;
@@ -122,6 +124,8 @@ export function startCompanyStore(): void {
   stopPoll = startJitteredPoll({
     intervalMs: POLL_INTERVAL_MS,
     tick: refreshActive,
+    // The focus listener refreshes on return, so a hidden window polls nothing.
+    pauseWhenHidden: true,
   });
   window.addEventListener("focus", refreshActive);
 }

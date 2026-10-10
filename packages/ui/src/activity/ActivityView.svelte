@@ -31,6 +31,8 @@
     activityReadFailure,
     lastActiveDaysAgo,
     lastActiveLabel,
+    memberModels,
+    modelSummary,
     rangeDays,
     readActivityCache,
     saveCsvViaDialog,
@@ -88,6 +90,7 @@
   let readNonce = $state(0);
   let selectedId = $state<string | null>(null);
   const selected = $derived(snapshot?.members.find((m) => m.id === selectedId) ?? null);
+  const selectedModels = $derived(selected ? memberModels(selected) : []);
 
   /** Members with an online presence in the company's live read. */
   const liveIds = $derived.by(() => {
@@ -238,6 +241,7 @@
             {@const live = liveIds.has(member.id)}
             {@const photo = avatarByUid[member.id]}
             {@const when = lastActive(member)}
+            {@const models = modelSummary(memberModels(member))}
             <div
               class="member hq-contain-row"
               role="button"
@@ -259,7 +263,11 @@
                 </span>
                 <span class="who-text">
                   <span class="who-name"><PersonName person={identityFromTelemetry(member)} compact /></span>
-                  {#if member.role}<span class="who-role" data-testid="activity-member-role">{member.role}</span>{/if}
+                  {#if member.role || models}
+                    <span class="who-role">
+                      {#if member.role}<span data-testid="activity-member-role">{member.role}</span>{/if}{#if member.role && models}{" · "}{/if}{#if models}<span data-testid="activity-member-models">{models}</span>{/if}
+                    </span>
+                  {/if}
                 </span>
               </span>
               <span class="bars" aria-label={`Active ${member.trend?.filter((v) => v > 0).length ?? 0} of ${days} days`} data-testid="activity-member-bars">
@@ -299,6 +307,15 @@
           </span>
         {:else}
           <p class="empty">No activity by day in this range.</p>
+        {/if}
+        {#if selectedModels.length > 0}
+          <div class="sech">Models</div>
+          {#each selectedModels as row (row.label)}
+            <div class="who" data-testid="activity-member-model" title={row.id}>
+              <span>{row.label}</span>
+              <span class="r">{[row.sessions !== null ? `${row.sessions} ${row.sessions === 1 ? "session" : "sessions"}` : "", row.share !== null ? `${row.share}% of tokens` : ""].filter(Boolean).join(" · ")}</span>
+            </div>
+          {/each}
         {/if}
         <div class="sech">Top skills</div>
         {#each selected.skills ?? [] as row (row.skill)}

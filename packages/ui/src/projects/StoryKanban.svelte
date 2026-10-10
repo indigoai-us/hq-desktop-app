@@ -202,10 +202,6 @@
 <style>
   .story-kanban {
     container: story-kanban / inline-size;
-    /* Page ground laid over an opaque surface for the sticky column headers,
-       so cards scrolling underneath never show through. */
-    --board-sticky-bg: linear-gradient(var(--v4-ground), var(--v4-ground)),
-      var(--v4-surface-solid);
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-3);
@@ -267,8 +263,7 @@
     outline-offset: 1px;
   }
 
-  /* No overflow here on wide canvases: an overflow value would make this the
-     sticky headers' scroll container and stop them sticking to the page. */
+  /* No overflow here on wide canvases: the page scroller handles long boards. */
   .board-scroll {
     flex: 1 0 auto;
     min-width: 0;
@@ -284,7 +279,7 @@
   }
 
   /* overflow-x: clip keeps cards inside the column without creating a scroll
-     container, so the sticky header still sticks to the page scroller. */
+     container. */
   .kanban-column {
     display: flex;
     flex-direction: column;
@@ -295,20 +290,19 @@
     background: transparent;
   }
 
+  /* Unshaded header: sits directly on the page ground, separated from the
+     cards by spacing alone (no fill, no divider, not sticky). */
   .column-header {
-    position: sticky;
-    top: 0;
-    z-index: 2;
     display: flex;
     align-items: center;
     gap: 8px;
     width: 100%;
     min-height: 36px;
+    margin-bottom: 4px;
     padding: 0 2px;
     border: 0;
-    border-bottom: 1px solid var(--v4-hairline);
     border-radius: 0;
-    background: var(--board-sticky-bg, var(--v4-surface-solid));
+    background: transparent;
     color: inherit;
     font: inherit;
     font-size: 13px;

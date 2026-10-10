@@ -345,7 +345,11 @@
         title: chip.name,
         face: { name: chip.name, bot: chip.bot, avatarUrl: chip.avatarUrl },
         people: [],
-        lines: [on ? `Working on ${on.label}` : "", chip.signal ?? ""].filter(Boolean),
+        // On a repo the repo line is the place; on a project it is a second line.
+        lines: (on?.type === "repo"
+          ? [chip.working ?? `Working in ${on.label}`, chip.signal ?? ""]
+          : [on ? `Working on ${on.label}` : "", chip.working ?? "", chip.signal ?? ""]
+        ).filter(Boolean),
       };
     }
     const node = hovered ? byId.get(hovered) : undefined;

@@ -36,7 +36,7 @@
   import type { TreeEntry, Vault } from "../../files/explorer/vault-model.js";
   import ListEmptyState from "../../common/ListEmptyState.svelte";
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
-  import { pageRows } from "../../shell/list-paging.js";
+  import { LIST_PAGE_SIZE, pageRows } from "../../shell/list-paging.js";
   import type { AdapterPromise, Json } from "@hq/platform";
   import { lastRunCell, mySkillUsage, runsCell, skillUsageRows, teamSkillUsage, type TeamSkillUsage } from "./skill-usage.js";
   import "../../home/tokens.css";
@@ -303,6 +303,14 @@
   const windowed = $derived(virtualWindow(shown.length, scrollTop, 640));
   const slice = $derived(shown.slice(windowed.start, windowed.end));
   const policyGroups = $derived(groupPolicies(policyRows));
+  // Hard and Soft each paint a page at a time; a company can carry 1,700 policies.
+  const policySections = $derived(
+    [{ label: "Hard", rows: policyGroups.hard }, { label: "Soft", rows: policyGroups.soft }]
+      .filter((group) => policyFilter === "all" || policyFilter === group.label.toLowerCase())
+      .map((group) => ({ ...group, page: pageRows(group.rows, pages) })),
+  );
+  const policyRemaining = $derived(policySections.reduce((sum, group) => sum + group.page.remaining, 0));
+  const policyShown = $derived(policySections.reduce((sum, group) => sum + group.page.rows.length, 0));
   // QA-102: the inspector reads the filtered rows, so a search or filter that
   // hides the selection never leaves its detail and actions on screen.
   const selectedSkill = $derived(inspectedRow(skillRows, selected));
@@ -666,10 +674,9 @@
       {#snippet list()}
       <div class="list" onscroll={onListScroll} data-testid="brain-list">
         {#if page === "policies"}
-          {#each [{ label: "Hard", rows: policyGroups.hard }, { label: "Soft", rows: policyGroups.soft }] as group (group.label)}
-            {#if policyFilter === "all" || policyFilter === group.label.toLowerCase()}
+          {#each policySections as group (group.label)}
               <div class="sec">{group.label}<span class="sec-count">{group.rows.length}</span></div>
-              {#each group.rows as row (row.path)}
+              {#each group.page.rows as row (row.path)}
                 {@const triggers = whenTags(row.when)}
                 <button type="button" class="item" aria-current={selectedPolicy?.path === row.path} onclick={() => (selected = row.path)} data-testid="policy-row">
                   <span class="line"><span class="name">{row.title}</span></span>
@@ -680,7 +687,6 @@
                   </span>
                 </button>
               {/each}
-            {/if}
           {/each}
         {:else if page === "knowledge"}
           <!-- Kept mounted on What's fresh so the tree's open folders survive a tab switch. -->
@@ -750,6 +756,9 @@
             {/if}
           {/each}
           <div style:height={`${windowed.padBottom}px`}></div>
+        {/if}
+        {#if page === "policies" && policyRemaining > 0}
+          <ShowMoreRow shown={policyShown} total={policyShown + policyRemaining} next={Math.min(policyRemaining, LIST_PAGE_SIZE * policySections.length)} noun="policies" testid="brain-show-more" onmore={() => (pages += 1)} />
         {/if}
         {#if page !== "policies" && !(page === "knowledge" && lens === "tree") && listPage.remaining > 0}
           <ShowMoreRow shown={listPage.rows.length} total={listPage.total} next={listPage.next} noun={title.toLowerCase()} testid="brain-show-more" onmore={() => (pages += 1)} />

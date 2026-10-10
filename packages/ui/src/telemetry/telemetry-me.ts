@@ -11,6 +11,8 @@ import type { AdapterPromise, Json } from "@hq/platform";
 import {
   OTHER_BAND,
   dayTotal,
+  localIsoDate,
+  localTimeZone,
   listRateUsd,
   type DayStack,
   type ModelId,
@@ -23,7 +25,7 @@ import { exactModels } from "./telemetry-models.js";
 import { modelFamilyOf } from "./telemetry-colors.js";
 
 export interface MyTelemetryApi {
-  getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
+  getMyTelemetry?(from: string, to: string, tz?: string): AdapterPromise<Json>;
 }
 
 /**
@@ -136,7 +138,12 @@ function unattributedNote(hiddenModels: string[], noModelTokens: number): string
 type RowAcc = Buckets & { models: Set<string>; family?: ModelId };
 
 /** Build the view snapshot from a `/v1/telemetry/me` body. */
-export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetrySnapshot {
+export function snapshotFromMe(
+  body: unknown,
+  range: TelemetryRange,
+  now: number = Date.now(),
+  timeZone: string = localTimeZone(),
+): TelemetrySnapshot {
   const root = record(body);
   const totals = record(root.totals);
   const daily = Array.isArray(root.daily) ? root.daily : [];
@@ -208,7 +215,9 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
   // (no model id), go into the Other band, so each day adds up.
   const shownLabels = models.map((m) => m.label);
   const stackBands = unattributed ? [...shownLabels, OTHER_BAND] : shownLabels;
-  const days: DayStack[] = daily.map((point, i) => {
+  // Days are UTC dates; the highlighted day is the one that is today locally.
+  const localToday = localIsoDate(now, timeZone);
+  const days: DayStack[] = daily.map((point) => {
     const p = record(point);
     const stack: DayStack = { label: dayLabel(String(p.date ?? "")), opus: 0, sonnet: 0, haiku: 0, bands: {} };
     const bands = stack.bands!;
@@ -226,7 +235,7 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
     const noModel = bucketTotal(buckets(p.tokens)) - modelTokens;
     if (noModel > 0) bands[OTHER_BAND] = (bands[OTHER_BAND] ?? 0) + noModel;
     if (bands[OTHER_BAND] && !stackBands.includes(OTHER_BAND)) stackBands.push(OTHER_BAND);
-    if (i === daily.length - 1) stack.today = true;
+    if (p.date === localToday) stack.today = true;
     return stack;
   });
   const peak = days.reduce((m, d) => Math.max(m, dayTotal(d)), 0);
@@ -315,6 +324,7 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
       other: Math.max(0, 100 - deployedShare - shippedShare),
     },
     exactModels: exactModels(totals.tokensByModel),
+    ...(typeof root.bucketTz === "string" && root.bucketTz ? { bucketTz: root.bucketTz } : {}),
     notice: "",
     sessionsAvailable: false,
     optedOut: root.optedOut === true,
@@ -338,7 +348,7 @@ export function createMyTelemetryFetcher(api: MyTelemetryApi | null | undefined,
       throw new TelemetryLoadError(telemetryErrorReason("unavailable", ""), "getMyTelemetry missing");
     }
     const window = rangeWindow(range, now());
-    const res = await api.getMyTelemetry(window.from, window.to);
+    const res = await api.getMyTelemetry(window.from, window.to, localTimeZone());
     if (!res.ok) {
       throw new TelemetryLoadError(
         telemetryErrorReason(res.code, res.message),
