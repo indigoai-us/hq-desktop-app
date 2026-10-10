@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The conflict copy card in the top right of the main window now has a close (X) button. It hides the card without opening Review and stays closed for that set of copies, including after the window reloads; the card comes back when a new conflict copy is parked. HQ also sends one macOS notification for each new set of parked copies, even when the main window is closed. It follows your notification settings, so it stays quiet when OS notifications are off or while you are looking at HQ. Clicking it opens the main window with the Review list open.
+
 ## [0.11.2] — 2026-10-10
 
 - HQ keeps a channel or bot visible when it can confirm that the company or bot still exists but you cannot open its details. Retired and missing companies and bots still disappear as before.
