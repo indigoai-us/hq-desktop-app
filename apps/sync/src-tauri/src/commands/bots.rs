@@ -109,6 +109,8 @@ fn validate_kickoff(kickoff: &str) -> Result<String, String> {
 /// Display name handed to `hq bot create --display-name`: the human name
 /// people see. Same bound as the CLI (Slack's 35-character display-name
 /// limit) and the same character set, so a bad name fails here, not mid-create.
+/// Numbers need hq-cli with indigoai-us/hq-cli#1789; an older CLI's refusal is
+/// mapped to plain words in `local_bots_create`.
 const DISPLAY_NAME_MAX_CHARS: usize = 35;
 
 fn validate_display_name(display_name: &str) -> Result<String, String> {
@@ -122,12 +124,33 @@ fn validate_display_name(display_name: &str) -> Result<String, String> {
     if collapsed.chars().count() > DISPLAY_NAME_MAX_CHARS {
         return Err(format!("Keep the display name under {DISPLAY_NAME_MAX_CHARS} characters."));
     }
+    // A letter first, then letters, numbers, spaces, apostrophes, periods and
+    // hyphens ("R2D2", "StefanTest123").
     let mut chars = collapsed.chars();
-    let first_ok = chars.next().map(char::is_alphabetic).unwrap_or(false);
-    if !first_ok || !collapsed.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | '.' | '\'' | '-')) {
-        return Err("Display names use letters, spaces, apostrophes, periods and hyphens.".to_string());
+    // Letter-number characters (Roman numerals, runic Nl) count as alphabetic
+    // in Rust but not as letters for the CLI or the first-run check.
+    let first_ok = chars.next().map(|c| c.is_alphabetic() && !c.is_numeric()).unwrap_or(false);
+    if !first_ok
+        || !collapsed
+            .chars()
+            .all(|c| c.is_alphabetic() || c.is_numeric() || matches!(c, ' ' | '.' | '\'' | '-'))
+    {
+        return Err("Display names use letters, numbers, spaces, apostrophes, periods and hyphens.".to_string());
     }
     Ok(collapsed)
+}
+
+/// What the person reads when the installed hq CLI predates numbers in
+/// display names and refused the name. Plain words with a next step, never
+/// the CLI's own flag text.
+const DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ: &str =
+    "Names with numbers need a newer version of HQ. Pick a name without numbers, or try again after HQ updates.";
+
+/// An hq CLI from before numbers were allowed refuses such a display name
+/// with its old character-set sentence. The bot is not created, so nothing
+/// needs undoing; the name is never dropped silently.
+fn is_old_display_name_charset_refusal(message: &str) -> bool {
+    message.contains("--display-name can use letters, spaces, apostrophes, periods and hyphens")
 }
 
 /// An hq CLI from before `--display-name` refuses the flag outright.
@@ -385,6 +408,10 @@ pub async fn local_bots_create(
                 retry.drain(i..(i + 2).min(retry.len()));
             }
             run_hq_bot(&retry, Duration::from_secs(150)).await
+        }
+        Err(message) if display_name.is_some() && is_old_display_name_charset_refusal(&message) => {
+            log(LOG_TAG, &format!("hq bot create refused a display name with numbers: {}", message.replace('\n', " | ")));
+            Err(DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.to_string())
         }
         other => other,
     }
@@ -714,6 +741,45 @@ mod tests {
         assert_eq!(validate_display_name("Zoë O'Brien-Lee").unwrap(), "Zoë O'Brien-Lee");
         assert!(is_unknown_display_name_flag("error: unknown option '--display-name'"));
         assert!(!is_unknown_display_name_flag("error: unknown option '--kickoff'"));
+    }
+
+    #[test]
+    fn display_names_allow_numbers_after_a_letter() {
+        assert_eq!(validate_display_name("StefanTest123").unwrap(), "StefanTest123");
+        assert_eq!(validate_display_name("R2D2").unwrap(), "R2D2");
+        assert_eq!(validate_display_name("  Scout   2 ").unwrap(), "Scout 2");
+        assert_eq!(
+            create_args("setup", "claude", None, None, None, None, None, None, None, None, Some("StefanTest123")).unwrap(),
+            vec!["create", "setup", "--runtime", "claude", "--display-name", "StefanTest123"]
+        );
+        let refused = "Display names use letters, numbers, spaces, apostrophes, periods and hyphens.";
+        assert_eq!(validate_display_name("123abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("Robo<script>").unwrap_err(), refused);
+        assert_eq!(validate_display_name("   ").unwrap_err(), "The display name is empty.");
+        assert!(validate_display_name(&"x".repeat(36)).is_err());
+        assert!(validate_display_name(&"x".repeat(35)).is_ok());
+        // A letter-number (Roman numeral U+2167, runic U+16EE) cannot lead,
+        // the same as the CLI's \p{L} first and the first-run check; it may follow.
+        assert_eq!(validate_display_name("\u{2167}abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("\u{16EE}abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("Henry \u{2167}").unwrap(), "Henry \u{2167}");
+    }
+
+    #[test]
+    fn an_older_cli_refusing_numbers_reads_as_plain_words() {
+        let old_json = r#"{"ok":false,"message":"--display-name can use letters, spaces, apostrophes, periods and hyphens."}"#;
+        let old_stderr = "error: --display-name can use letters, spaces, apostrophes, periods and hyphens.";
+        assert!(is_old_display_name_charset_refusal(old_json));
+        assert!(is_old_display_name_charset_refusal(old_stderr));
+        // The current CLI's sentence (numbers allowed) and other failures are not this case.
+        assert!(!is_old_display_name_charset_refusal(
+            "--display-name can use letters, numbers, spaces, apostrophes, periods and hyphens."
+        ));
+        assert!(!is_old_display_name_charset_refusal("error: unknown option '--display-name'"));
+        // What the person reads has no flag, no command and a next step.
+        assert!(!DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.contains("--"));
+        assert!(!DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.contains("hq "));
+        assert!(DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.contains("Pick a name without numbers"));
     }
 
     #[test]
