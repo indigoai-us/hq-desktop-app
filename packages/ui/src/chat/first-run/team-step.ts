@@ -132,22 +132,35 @@ export function teamSummary(choice: FirstRunTeamChoice | null): string {
   return choice.company.name;
 }
 
+/** Longest company handle the server accepts (hq-pro COMPANY_SLUG_RE). */
+export const COMPANY_SLUG_MAX = 30;
+
 /**
- * The company handle the create card needs, made from the typed name the
- * way the server's rule reads it: lower case letters, digits and single
- * hyphens, starting with a letter, 3 to 40 long. Null when the name has too
- * few letters or digits to make one.
+ * A company handle made from a typed name the way the server's rule reads it
+ * (hq-pro COMPANY_SLUG_RE, `^[a-z][a-z0-9-]{0,29}$`): lower case letters,
+ * digits and single hyphens, starting with a letter, at most 30 long. Empty
+ * when the name has no letter to start one. Shared by the first-run team step
+ * and the New company sheet, which both send it to the server.
  */
-export function companySlugFromName(name: string): string | null {
-  const ascii = name
+export function serverCompanySlug(name: string): string {
+  return name
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^[^a-z]+/, "")
-    .slice(0, 40)
+    .slice(0, COMPANY_SLUG_MAX)
     .replace(/-+$/g, "");
-  return ascii.length >= 3 ? ascii : null;
+}
+
+/**
+ * The company handle the first-run create card needs: `serverCompanySlug`,
+ * at least 3 long. Null when the name has too few letters or digits to make
+ * one.
+ */
+export function companySlugFromName(name: string): string | null {
+  const slug = serverCompanySlug(name);
+  return slug.length >= 3 ? slug : null;
 }
 
 /** Why a typed company name cannot be used, or null. */
