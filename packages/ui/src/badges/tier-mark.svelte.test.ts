@@ -55,8 +55,8 @@ describe("which tier shows", () => {
     expect(highestTier(MIX)).toBe(3);
   });
 
-  it("counts Founding Member as Legendary", () => {
-    expect(topBadge([...MIX, { id: "founding", earnedAt: "2026-03-02" }])?.tier).toBe("L");
+  it("counts Founding Member as Gold, a single plain tier", () => {
+    expect(topBadge([{ id: "founding", earnedAt: "2026-03-02" }])?.tier).toBe(3);
   });
 
   it("is about 40% of the picture, between 9 and 20px", () => {

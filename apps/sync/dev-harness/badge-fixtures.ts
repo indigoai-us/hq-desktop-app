@@ -1,7 +1,8 @@
 /**
- * Sample earned badges for the design harness. There is no badges API yet;
- * this gives every person and bot a stable, plausible set so the profile
- * panes can be judged with real art. Same name, same badges, every reload.
+ * Sample earned badges for the design harness. Production reads them from
+ * hq-pro (badge-loader.svelte.ts); the harness installs this source first, so
+ * every person and bot gets a stable, plausible set and the profile panes can
+ * be judged with real art. Same name, same badges, every reload.
  */
 import type { BadgeProgress, BadgeProgressSource, BadgeSource, EarnedBadge } from '@hq/ui';
 
@@ -30,10 +31,9 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
-/** A badge's level as a number: Bronze 1 to Legendary 4 (Founding Member is Legendary, Founder Gold). */
+/** A badge's level as a number: Bronze 1 to Gold 3 (Founding Member and Founder are Gold). */
 export function badgeLevel(b: EarnedBadge): number {
-  if (b.id === 'founding') return 4;
-  if (b.id === 'founder') return 3;
+  if (b.id === 'founding' || b.id === 'founder') return 3;
   return b.tier === 'L' ? 4 : (b.tier ?? 1);
 }
 
@@ -43,7 +43,7 @@ export function badgeLevel(b: EarnedBadge): number {
  * 0 is no badges at all.
  */
 const TOP_LEVEL: Readonly<Record<string, number>> = {
-  'ada lovelace': 4,
+  'ada lovelace': 3,
   'corey epstein': 3,
   'maya chen': 2,
   'jacob moore': 1,
@@ -51,14 +51,14 @@ const TOP_LEVEL: Readonly<Record<string, number>> = {
   'grace hopper': 3,
   'katherine johnson': 2,
   'priya natarajan': 1,
-  'leo park': 4,
+  'leo park': 3,
 };
 
 export const sampleBadges: BadgeSource = ({ kind, name }) => {
   const key = name.trim().toLowerCase();
   const h = hash(key);
   if (kind === 'bot') return BOTS.slice(0, 2 + (h % 3));
-  const top = TOP_LEVEL[key] ?? h % 5;
+  const top = TOP_LEVEL[key] ?? h % 4;
   const allowed = PEOPLE.filter((b) => badgeLevel(b) <= top);
   if (!allowed.length) return [];
   // Always the badge at their top level, then a mix of the rest by name.
@@ -72,26 +72,26 @@ export const sampleBadges: BadgeSource = ({ kind, name }) => {
  * Badges page. Targets are each badge's first level in the catalog.
  */
 const PROGRESS: BadgeProgress[] = [
-  { id: 'liftoff', current: 0, target: 1, unit: 'deploys' },
+  { id: 'liftoff', current: 0, target: 5, unit: 'deploys' },
   { id: 'poweruser', current: 64, target: 100, unit: 'runs' },
   { id: 'toolbox', current: 3, target: 5, unit: 'skills' },
-  { id: 'maker', current: 0, target: 1, unit: 'kinds' },
-  { id: 'teambuilder', current: 0, target: 1, unit: 'invites' },
+  { id: 'maker', current: 2, target: 5, unit: 'skills' },
+  { id: 'teambuilder', current: 1, target: 3, unit: 'invites' },
   { id: 'fleet', current: 0, target: 1, unit: 'agents' },
-  { id: 'connector', current: 0, target: 1, unit: 'apps' },
+  { id: 'connector', current: 0, target: 3, unit: 'apps' },
   { id: 'sharer', current: 0, target: 1, unit: 'files' },
   { id: 'shipit', current: 0, target: 1, unit: 'projects' },
   { id: 'closer', current: 7, target: 10, unit: 'stories' },
   { id: 'onfire', current: 4, target: 7, unit: 'days' },
-  { id: 'bughunter', current: 0, target: 1, unit: 'reports' },
+  { id: 'bughunter', current: 1, target: 3, unit: 'reports' },
 ];
 
 export const sampleProgress: BadgeProgressSource = () => PROGRESS;
 
 /**
  * `?view=shell&earn=<badge>[:<tier>]` raises the "You earned" notice a few
- * seconds after the shell loads, to demo the card reveal (Gold and
- * Legendary carry "Reveal card"). Several are comma separated, e.g.
+ * seconds after the shell loads, to demo the card reveal (Gold carries
+ * "Reveal card"). Several are comma separated, e.g.
  * `earn=founding,poweruser:3,liftoff:1`. Harness only: no production code
  * path raises this notice.
  */

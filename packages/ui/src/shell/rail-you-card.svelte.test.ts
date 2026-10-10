@@ -215,7 +215,7 @@ describe("your side-nav picture", () => {
     });
     flushSync();
     const you = document.querySelector("[data-testid='rail-you']")!;
-    expect(you.querySelector("[data-testid='tier-mark']")?.getAttribute("data-tier")).toBe("L");
+    expect(you.querySelector("[data-testid='tier-mark']")?.getAttribute("data-tier")).toBe("3");
     expect(you.querySelector("[data-testid='rail-you-live']")?.classList.contains("with-tier")).toBe(true);
   });
 

@@ -71,7 +71,7 @@ describe("ProfilePaneHost", () => {
     const detail = host.querySelector('[data-testid="badge-detail-pane"]');
     expect(detail?.textContent).toContain("Silver · Earned Oct 6, 2026 by Maya Chen");
     expect([...host.querySelectorAll('[data-testid="badge-level"].current')].map((li) => li.textContent)).toEqual([
-      expect.stringContaining("10 deploys"),
+      expect.stringContaining("50 deploys"),
     ]);
     (host.querySelector('[data-testid="badge-detail-back"]') as HTMLButtonElement).click();
     await tick();

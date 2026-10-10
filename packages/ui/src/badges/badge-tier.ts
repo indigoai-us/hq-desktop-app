@@ -1,7 +1,7 @@
 /**
  * The tier mark on a profile picture: the highest level someone has reached
  * across all their badges. A single-level badge counts at its own tier, so
- * Founding Member counts as Legendary.
+ * Founding Member and Founder count as Gold.
  */
 
 import { resolveEarned, type BadgeTier, type EarnedBadge, type ResolvedBadge } from "./badge-catalog.js";

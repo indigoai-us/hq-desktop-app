@@ -178,9 +178,9 @@ describe("share files", () => {
   });
 
   it("posts your own card in your voice, and someone else's about them", () => {
-    expect(badgeStory(liftoff, null, "first")?.did).toBe("I put 10 deploys live.");
+    expect(badgeStory(liftoff, null, "first")?.did).toBe("I put 50 deploys live.");
     expect(badgeStory({ ...liftoff, def: BADGE_BY_ID.founder, tier: 3 }, null, "first")?.why).toMatch(/started with me\.$/u);
-    expect(badgeStory(liftoff, "Maya Chen", "third")?.did).toBe("Maya put 10 deploys live.");
+    expect(badgeStory(liftoff, "Maya Chen", "third")?.did).toBe("Maya put 50 deploys live.");
   });
 });
 

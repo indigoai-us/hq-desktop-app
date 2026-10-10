@@ -12,9 +12,9 @@ export type BadgeTier = 1 | 2 | 3 | "L";
 
 export type BadgeIcon =
   | "flag" | "house" | "bug" | "rocket" | "bolt" | "toolbox" | "bulb" | "people"
-  | "robot" | "plug" | "plane" | "calendar" | "box" | "clipboard" | "flame" | "sprout";
+  | "robot" | "plug" | "plane" | "calendar" | "box" | "clipboard" | "flame";
 
-export type BadgeFamily = "early" | "usage" | "training";
+export type BadgeFamily = "early" | "usage";
 
 export interface BadgeDef {
   id: string;
@@ -30,22 +30,21 @@ export interface BadgeDef {
 }
 
 export const BADGES: readonly BadgeDef[] = [
-  { id: "founding", name: "Founding Member", icon: "flag", family: "early", crit: "Joined HQ before the public launch", levels: "Limited, never earnable again", tier: "L" },
+  { id: "founding", name: "Founding Member", icon: "flag", family: "early", crit: "Joined HQ before the public launch", levels: "Limited, never earnable again", tier: 3 },
   { id: "founder", name: "Founder", icon: "house", family: "early", crit: "Created a company in HQ", levels: "Single level", tier: 3 },
-  { id: "bughunter", name: "Bug Hunter", icon: "bug", family: "early", crit: "Sent feedback that helps improve HQ", levels: "1 · 5 · 20 reports", tier: 2 },
-  { id: "liftoff", name: "Liftoff", icon: "rocket", family: "usage", crit: "Deploys that went live", levels: "1 · 10 · 50 deploys", tier: 1 },
-  { id: "poweruser", name: "Power User", icon: "bolt", family: "usage", crit: "Skills run", levels: "100 · 1,000 · 10,000 runs", tier: 3 },
+  { id: "bughunter", name: "Bug Hunter", icon: "bug", family: "early", crit: "Sent feedback that helps improve HQ", levels: "3 · 10 · 25 reports", tier: 2 },
+  { id: "liftoff", name: "Liftoff", icon: "rocket", family: "usage", crit: "Deploys that went live", levels: "5 · 50 · 250 deploys", tier: 1 },
+  { id: "poweruser", name: "Power User", icon: "bolt", family: "usage", crit: "Skills run", levels: "100 · 500 · 2,500 runs", tier: 3 },
   { id: "toolbox", name: "Toolbox", icon: "toolbox", family: "usage", crit: "Different skills used", levels: "5 · 15 · 40 skills", tier: 2 },
-  { id: "maker", name: "Maker", icon: "bulb", family: "usage", crit: "Wrote your own skill, policy or knowledge", levels: "1 · 2 · all 3 kinds", tier: 1 },
-  { id: "teambuilder", name: "Team Builder", icon: "people", family: "usage", crit: "Teammates who accepted your invite", levels: "1 · 5 · 20 invites", tier: 2 },
-  { id: "fleet", name: "Fleet Commander", icon: "robot", family: "usage", crit: "Agents created and put to work", levels: "1 agent · 100 · 1,000 runs", tier: 3 },
-  { id: "connector", name: "Connector", icon: "plug", family: "usage", crit: "Apps connected to HQ", levels: "1 · 3 · 6 apps", tier: 1 },
+  { id: "maker", name: "Maker", icon: "bulb", family: "usage", crit: "Skills you wrote", levels: "5 · 50 · 250 skills", tier: 1 },
+  { id: "teambuilder", name: "Team Builder", icon: "people", family: "usage", crit: "Teammates who accepted your invite", levels: "3 · 10 · 25 invites", tier: 2 },
+  { id: "fleet", name: "Fleet Commander", icon: "robot", family: "usage", crit: "Agents you created", levels: "1 · 5 · 15 agents", tier: 3 },
+  { id: "connector", name: "Connector", icon: "plug", family: "usage", crit: "Apps connected to HQ", levels: "3 · 6 · 10 apps", tier: 1 },
   { id: "sharer", name: "Sharer", icon: "plane", family: "usage", crit: "Files shared with teammates", levels: "1 · 10 · 50 files", tier: 2 },
   { id: "regular", name: "Regular", icon: "calendar", family: "usage", crit: "Kept coming back to HQ", levels: "Week 2 · Month 1 · Month 6", tier: 3 },
   { id: "shipit", name: "Ship It", icon: "box", family: "usage", crit: "Projects shipped", levels: "1 · 5 · 20 projects", tier: 1 },
   { id: "closer", name: "Closer", icon: "clipboard", family: "usage", crit: "Stories completed", levels: "10 · 100 · 500 stories", tier: 2 },
   { id: "onfire", name: "On Fire", icon: "flame", family: "usage", crit: "Days in a row using HQ", levels: "7 · 30 · 100 days", tier: 1 },
-  { id: "signedup", name: "Signed Up", icon: "sprout", family: "training", crit: "Registered for an HQ workshop", levels: "Single level", tier: 1 },
 ];
 
 export const BADGE_BY_ID: Readonly<Record<string, BadgeDef>> = Object.fromEntries(BADGES.map((b) => [b.id, b]));
@@ -94,7 +93,6 @@ export const SMALL_ICONS: Readonly<Record<BadgeIcon, AsciiIcon>> = {
   box: { c: "#e3a36e", a: "#f7d35c", acc: "=", art: [" ____", "/___/|", "|== ||", "|___|/"] },
   clipboard: { c: "#e3c9a6", a: "#8fd6a0", acc: "v", art: [" _[_]_", "|  v  |", "| --- |", "|_____|"] },
   flame: { c: "#ff9f45", a: "#ffe27a", acc: "_", art: ["  )", " ) \\", "/ ) (", "\\(_)/"] },
-  sprout: { c: "#8fd6a0", a: "#c78a5a", acc: "\\_/", art: [" _   _", "(_\\ /_)", "   |", " \\___/"] },
 };
 
 /** Micro version (54px): only a 2–3 character icon stays legible. */
@@ -114,7 +112,6 @@ export const MICRO_ICONS: Readonly<Record<BadgeIcon, AsciiIcon>> = {
   box: { c: "#e3a36e", a: "#f7d35c", acc: "_", art: ["___", "|_|"] },
   clipboard: { c: "#e3c9a6", a: "#8fd6a0", acc: "v", art: ["|v|", "|_|"] },
   flame: { c: "#ff9f45", a: "#ffe27a", acc: "_", art: [" ( ", ")\\(", "(_)"] },
-  sprout: { c: "#8fd6a0", a: "#c78a5a", acc: "_", art: ["\\|/", "_|_"] },
 };
 
 export interface ResolvedBadge {
