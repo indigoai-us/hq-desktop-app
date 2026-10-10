@@ -90,7 +90,7 @@ describe("generateBrief: density", () => {
       "incident",
       "waiting",
       "meetings",
-      "fleet",
+      "risk",
       "team",
       "shipped",
     ]);
@@ -162,6 +162,6 @@ describe("other-company sessions", () => {
     const text = JSON.stringify(plan);
     expect(text).not.toContain("Acme");
     expect(plan.sessions.otherCompanyCount).toBe(2);
-    expect(plan.widgets.map((w) => w.kind)).toContain("otherWork");
+    expect(plan.widgets.map((w) => w.kind)).not.toContain("otherWork");
   });
 });

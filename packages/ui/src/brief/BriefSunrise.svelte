@@ -8,6 +8,7 @@
   import { onMount } from "svelte";
   import { DAWN_CELL, DAWN_PITCH, dawnNoise } from "../chat/create-bot/NewBotDawn.svelte";
   import { useBrief } from "./brief-context.svelte.js";
+  import { distillTimeline } from "./brief-timeline.js";
 
   interface Props {
     total: number;
@@ -24,6 +25,8 @@
   }
   let { total, cleared, userName, sub, quietLine, big = false, timeline = [], now = new Date().toISOString() }: Props = $props();
   const end = $derived(Date.parse(now));
+  const tl = $derived(distillTimeline(timeline, now));
+  const peak = $derived(Math.max(1, ...tl.buckets.map((b) => b.count)));
   // Hour ticks every 6h across the window, labelled in local time.
   const ticks = $derived(
     [24, 18, 12, 6, 0].map((back) => {
@@ -211,23 +214,32 @@
     <div class="sub" style="margin-top:12px;max-width:{big ? 420 : 330}px">{sub}</div>
     <div class="tl">
       <div class="eyebrow" style="color:rgba(255,190,160,.6)">
-        Last 24 hours · {timeline.length ? `${timeline.length} session${timeline.length === 1 ? "" : "s"}` : "no sessions"}
+        Last 24 hours · {tl.work ? `${tl.work} session${tl.work === 1 ? "" : "s"}` : "no sessions"}{tl.background
+          ? ` · ${tl.background} background hidden`
+          : ""}
       </div>
+      {#if tl.latest}<div class="latest">Latest: {tl.latest.title}</div>{/if}
       <svg viewBox="0 0 360 44" aria-hidden="true">
-        <line class="ln" x1="8" y1="26" x2="352" y2="26" stroke="rgba(255,190,160,.35)" stroke-width="1.5" />
+        <line class="ln" x1="8" y1="30" x2="352" y2="30" stroke="rgba(255,190,160,.25)" stroke-width="1" />
+        {#each tl.buckets as b, i (b.start)}
+          {#if b.count}
+            {@const w = 344 / tl.buckets.length}
+            {@const h = 4 + (b.count / peak) * 24}
+            <rect
+              class="sd"
+              x={tx(b.start) + 1}
+              y={30 - h}
+              width={w - 2}
+              height={h}
+              rx="1.5"
+              fill={i === tl.buckets.length - 1 || b.titles.includes(tl.latest?.title ?? "") ? "#ff809f" : "#ffb580"}
+              style="animation-delay:{0.8 + i * 0.03}s"
+            ><title>{new Date(b.start).getHours()}:00 · {b.count} session{b.count === 1 ? "" : "s"}{"\n"}{b.titles.join("\n")}</title></rect>
+          {/if}
+        {/each}
         {#each ticks as t (t.label)}
           <text x={t.x} y="42" fill="rgba(255,255,255,.3)" font-size="8.5" text-anchor={t.label === "now" ? "end" : "middle"}>{t.label}</text>
         {/each}
-        {#each timeline as s, i (i)}
-          <g class="s">
-            <title>{s.title}</title>
-            <circle cx={timeX(s.at)} cy="26" r="4" fill={i === timeline.length - 1 ? "#ff809f" : "#ffb580"} style="animation-delay:{0.8 + i * 0.06}s" class="sd" />
-          </g>
-        {/each}
-        {#if timeline.length}
-          {@const last = timeline[timeline.length - 1]!}
-          <text x={timeX(last.at)} y="12" fill="#fff" font-size="9.5" text-anchor={timeX(last.at) > 260 ? "end" : timeX(last.at) < 100 ? "start" : "middle"}>{last.title}</text>
-        {/if}
       </svg>
     </div>
     <div class="meter">

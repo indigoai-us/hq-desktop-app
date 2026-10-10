@@ -124,7 +124,7 @@
 
   <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} {onopenmeetings} />
 
-  <main class="b-grid" style="grid-template-areas:{plan.areas.map((a) => `'${a}'`).join(' ')}">
+  <main class="b-grid" style="grid-template-rows:repeat({plan.areas.length}, minmax(196px, auto));grid-template-areas:{plan.areas.map((a) => `'${a}'`).join(' ')}">
     {#each plan.widgets as w, i (w.kind)}
       <div class="slot" style="grid-area:{w.kind};animation-delay:{i * 70}ms" data-widget={w.kind}>
         {#if w.kind === "sunrise"}

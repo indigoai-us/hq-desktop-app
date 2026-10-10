@@ -204,11 +204,13 @@ export function candidates(input: BriefInput, lead: BriefLead, sessions: BriefSe
     oneThing: input.decisions.length > 0,
     catchup: true,
   };
+  // Fleet (every agent in the company) and other-company session counts are
+  // left out: neither reflects what the user worked on in the last day.
   const order: Record<BriefLead, BriefWidgetKind[]> = {
-    decisions: ["sunrise", "needs", "team", "incident", "shipped", "waiting", "meetings", "fleet", "risk", "otherWork", "agenda"],
-    incident: ["sunrise", "incident", "needs", "team", "shipped", "fleet", "waiting", "risk", "meetings", "otherWork", "agenda"],
-    momentum: ["sunrise", "shipped", "meetings", "team", "fleet", "waiting", "needs", "risk", "otherWork", "agenda"],
-    "your-day": ["sunrise", "agenda", "shipped", "meetings", "otherWork", "needs", "team", "waiting", "risk"],
+    decisions: ["sunrise", "needs", "team", "incident", "shipped", "waiting", "meetings", "risk", "agenda"],
+    incident: ["sunrise", "incident", "needs", "team", "shipped", "waiting", "risk", "meetings", "agenda"],
+    momentum: ["sunrise", "shipped", "meetings", "team", "waiting", "needs", "risk", "agenda"],
+    "your-day": ["sunrise", "agenda", "shipped", "meetings", "needs", "team", "waiting", "risk"],
     "catch-up": ["catchup", "needs", "agenda", "team", "oneThing", "shipped", "incident"],
   };
   return order[lead].filter((kind) => has[kind]);

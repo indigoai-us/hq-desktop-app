@@ -485,6 +485,8 @@ async function readMeetings(
         actions: signals.actions.length,
         risks: signals.risks.length,
         questions: signals.questions.length,
+        decided: signals.decisions.map((d) => d.title).filter((t): t is string => !!t).slice(0, 3),
+        todo: signals.actions.map((a) => a.title).filter((t): t is string => !!t).slice(0, 2),
       });
       const origin = { companyUid: company.uid, repo: m.title };
       for (const [i, q] of signals.questions.entries()) {

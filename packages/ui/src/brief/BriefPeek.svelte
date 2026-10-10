@@ -1,4 +1,5 @@
 <script lang="ts">
+  const PEEK_MAX_LINES = 5;
   /** The detail card beside whatever is hovered. Actionable items show the full prompt before launch. */
   import BriefLaunch from "./BriefLaunch.svelte";
   import BriefPeekDms from "./BriefPeekDms.svelte";
@@ -24,6 +25,11 @@
     {#if p.content.sample}<div class="sample" data-testid="brief-sample">Sample · no live source yet</div>{/if}
 
 <style>
+  .more {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--b-t3);
+  }
   .peek-act {
     all: unset;
     cursor: pointer;
@@ -41,9 +47,11 @@
       <div class="sec">
         <div class="eyebrow {s.tone ? `tone-${s.tone}` : ''}">{s.label}</div>
         {#if s.text}<p>{s.text}</p>{/if}
-        {#each s.lines ?? [] as line, j (j)}
+        <!-- Never more than five lines: past that a list stops being readable. -->
+        {#each (s.lines ?? []).slice(0, PEEK_MAX_LINES) as line, j (j)}
           <div class="li">{line.label}<span class="tone-{line.tone ?? 'neutral'}">{line.state}</span></div>
         {/each}
+        {#if (s.lines?.length ?? 0) > PEEK_MAX_LINES}<div class="more">+{s.lines!.length - PEEK_MAX_LINES} more</div>{/if}
       </div>
     {/each}
     {#if p.content.actions?.length}

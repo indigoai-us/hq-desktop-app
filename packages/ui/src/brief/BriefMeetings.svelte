@@ -1,6 +1,6 @@
 <script lang="ts">
   /** Yesterday's meetings and how many signals each left behind. */
-  import { peek, useBrief } from "./brief-context.svelte.js";
+  import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import { countUp } from "./count-up.js";
   import type { BriefMeeting } from "./brief-types.js";
 
@@ -8,6 +8,21 @@
   const brief = useBrief();
   const decisions = $derived(meetings.reduce((n, m) => n + m.decisions, 0));
   const shown = $derived(meetings.slice(0, rows > 1 ? 6 : 3));
+
+  // Zoom in on what came out of the meeting, not its counts.
+  function meetingPeek(m: BriefMeeting): PeekContent {
+    const sections: PeekContent["sections"] = [];
+    if (m.decided?.length) sections.push({ label: "Decided", lines: m.decided.map((d) => ({ label: d, state: "" })) });
+    if (m.todo?.length) sections.push({ label: "To do", lines: m.todo.map((t) => ({ label: t, state: "" })) });
+    if (!sections.length && m.summary) sections.push({ label: "Summary", text: m.summary });
+    const rest = m.decisions - (m.decided?.length ?? 0) + m.actions - (m.todo?.length ?? 0);
+    return {
+      title: m.title,
+      status: rest > 0 ? `${rest} more in Meetings` : undefined,
+      sections,
+      actions: [],
+    };
+  }
 </script>
 
 <div class="w" data-testid="brief-meetings">
@@ -23,7 +38,7 @@
       class="row"
       role="group"
       aria-label={m.title}
-      use:peek={{ state: brief, content: () => ({ title: m.title, status: `${m.decisions} decisions · ${m.actions} action items${m.risks ? ` · ${m.risks} risks` : ""}`, sections: m.summary ? [{ label: "Summary", text: m.summary }] : [] }) }}
+      use:peek={{ state: brief, content: () => meetingPeek(m) }}
     >
       <span class="bul" style="background:var(--b-ice)"></span>
       <div>{m.title} {#if m.with}<em>{m.with}</em>{/if}</div>

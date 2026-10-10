@@ -2,6 +2,7 @@
   /** What you shipped yesterday. Holographic foil = an achievement; the edge follows your pointer. */
   import BriefOrigin from "./BriefOrigin.svelte";
   import { peek, useBrief } from "./brief-context.svelte.js";
+  import { shippedDigest } from "./brief-distill.js";
   import { countUp } from "./count-up.js";
 
   import type { BriefInput, BriefShipped } from "./brief-types.js";
@@ -70,7 +71,10 @@
         role="group"
         aria-label={`${s.title} · ${s.status}`}
         onpointermove={track}
-        use:peek={{ state: brief, content: () => ({ sample: s.sample, title: `${s.title} · ${s.status}`, status: "Run complete", sections: [{ label: "What landed", lines: s.lines }] }) }}
+        use:peek={{ state: brief, content: () => {
+          const d = shippedDigest(s.lines);
+          return { sample: s.sample, title: `${s.title} · ${s.status}`, status: d.mix, sections: [{ label: "Worth knowing", lines: d.highlights }] };
+        } }}
       >
         <BriefOrigin origin={s.origin} />
         <div class="v">{s.title} · {s.status}</div>

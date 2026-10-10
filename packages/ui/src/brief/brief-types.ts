@@ -53,6 +53,10 @@ export interface BriefMeeting {
   risks: number;
   questions: number;
   summary?: string;
+  /** Up to three decisions made in the meeting, for the peek. */
+  decided?: string[];
+  /** Up to two action items from the meeting, for the peek. */
+  todo?: string[];
 }
 
 export type BriefDecisionAction = "cut" | "go" | "decide" | "reply" | "prep";

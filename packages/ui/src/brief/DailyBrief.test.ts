@@ -34,7 +34,7 @@ describe("DailyBrief", () => {
       "incident",
       "waiting",
       "meetings",
-      "fleet",
+      "risk",
       "team",
       "shipped",
     ]);
