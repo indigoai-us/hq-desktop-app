@@ -2259,15 +2259,23 @@ export interface LocalBotsApi {
    * Optional for older hosts.
    */
   configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
-  /**
-   * Readiness check before a bot is saved (`hq bot probe`): one tiny real
-   * turn with exactly the runtime, model and thinking level the bot will
-   * use. Answers `{ ok, class, detail, runtime, model, modelFallback? }`, or
-   * `{ supported: false }` from an hq CLI that predates the command.
-   * Optional for older hosts and the web build.
-   */
-  probe?(input: LocalBotProbeInput): AdapterPromise<Json>;
   promote?(name: string, companyUid: string): AdapterPromise<Json>;
+  /**
+   * Set the model a bot asks its runtime for (`hq bot set-model <name>
+   * <model|default>`), from its next message. Used by the runtime repair
+   * card's "Use a supported model". Optional for older hosts.
+   */
+  setModel?(name: string, model: string): AdapterPromise<Json>;
+  /**
+   * Run one test turn with a runtime (and model) exactly as a bot would
+   * (`hq bot probe --runtime <r> [--model <m>] [--effort <e>] [--timeout
+   * <s>]`): `{ ok, class, detail, runtime, model, modelFallback? }`. A failing
+   * check is a value with `ok: false`, not an error. An hq CLI that predates
+   * the command answers `{ supported: false }`. The repair card passes the
+   * runtime and model; the New bot flow adds the bot's thinking level and a
+   * shorter timeout. Optional for older hosts.
+   */
+  probe?(runtime: SessionProviderId, model?: string | null, options?: LocalBotProbeOptions): AdapterPromise<Json>;
   /**
    * The local bots this ACCOUNT owns, each flagged `here` or not
    * (`hq bot list --remote`). The one source of truth for "the person owns
@@ -2313,11 +2321,11 @@ export interface ContextImportApi {
 }
 
 /** Input to `LocalBotsApi.configure`. */
-export interface LocalBotProbeInput {
-  runtime: "claude" | "codex" | "grok";
-  /** The model the bot will be created with; blank or null = the tool's default. */
-  model?: string | null;
+export interface LocalBotProbeOptions {
+  /** Thinking level the check runs at; null = the runtime's default. */
   effort?: string | null;
+  /** Give up after this many seconds (the CLI's own default is 120). */
+  timeoutSecs?: number | null;
 }
 
 export interface LocalBotSettingsInput {

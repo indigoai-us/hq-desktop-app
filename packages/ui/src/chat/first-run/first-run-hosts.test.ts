@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { ok } from "@hq/platform";
+import { ok, type AdapterResult, type Json } from "@hq/platform";
 
-import { CONNECT_ABORTED, CREATE_UNAVAILABLE, createFirstRunAppsHost, createFirstRunTeamHost } from "./first-run-hosts.js";
+import { CONNECT_ABORTED, CREATE_UNAVAILABLE, FIND_COMPANY_TIMEOUT_MS, createFirstRunAppsHost, createFirstRunTeamHost } from "./first-run-hosts.js";
 import type { FirstRunApp } from "./app-step.js";
 
 const ACME = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
@@ -50,6 +50,126 @@ describe("team host", () => {
     expect((await host.create("Pickle Works")).ok).toBe(true);
     expect(claimInvite).not.toHaveBeenCalled();
     expect(createCompany).not.toHaveBeenCalled();
+  });
+});
+
+describe("team host: a create or join that ran long", () => {
+  type CreateAnswer = { ok: true; companyUid: string | null } | { ok: false; reason: string };
+  function pendingCreate() {
+    const answers: Array<(a: CreateAnswer) => void> = [];
+    const createCompany = vi.fn(() => new Promise<CreateAnswer>((r) => answers.push(r)));
+    return { createCompany, answers };
+  }
+  const PICKLE = { companyUid: "cmp_pickle", slug: "pickle-works", name: "Pickle Works" };
+
+  it("a Retry while the first create still runs waits on that create instead of starting a second", async () => {
+    const { createCompany, answers } = pendingCreate();
+    const findCompany = vi.fn(async () => null);
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    const first = host.create("Pickle Works");
+    const retry = host.create("Pickle  Works");
+    expect(retry).toBe(first);
+    await Promise.resolve();
+    expect(createCompany).toHaveBeenCalledTimes(1);
+    answers[0]!({ ok: true, companyUid: "cmp_pickle" });
+    expect(await retry).toEqual({ ok: true, choice: { kind: "company", how: "created", company: PICKLE } });
+    expect(findCompany).not.toHaveBeenCalled();
+  });
+
+  it("after a create that answered late with success, a Retry keeps that company and creates nothing", async () => {
+    const { createCompany, answers } = pendingCreate();
+    const host = createFirstRunTeamHost({ createCompany, findCompany: vi.fn(async () => null), dry: false });
+    const first = host.create("Pickle Works");
+    await Promise.resolve();
+    answers[0]!({ ok: true, companyUid: "cmp_pickle" });
+    await first;
+    expect(await host.create("Pickle Works")).toEqual({ ok: true, choice: { kind: "company", how: "created", company: PICKLE } });
+    expect(createCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("after a failed create, a Retry re-reads the roster and settles on the company when it now exists", async () => {
+    const createCompany = vi.fn(async (): Promise<CreateAnswer> => ({ ok: false, reason: "That did not work." }));
+    const findCompany = vi.fn(async (slug: string) => (slug === "pickle-works" ? PICKLE : null));
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    expect((await host.create("Pickle Works")).ok).toBe(false);
+    // The first create does not ask the roster.
+    expect(findCompany).not.toHaveBeenCalled();
+    expect(await host.create("Pickle Works")).toEqual({ ok: true, choice: { kind: "company", how: "existing", company: PICKLE } });
+    expect(findCompany).toHaveBeenCalledWith("pickle-works");
+    expect(createCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("after a failed create, a Retry creates again when the roster has no such company", async () => {
+    const createCompany = vi
+      .fn<() => Promise<CreateAnswer>>()
+      .mockResolvedValueOnce({ ok: false, reason: "That did not work." })
+      .mockResolvedValueOnce({ ok: true, companyUid: "cmp_pickle" });
+    const findCompany = vi.fn(async () => null);
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    await host.create("Pickle Works");
+    expect(await host.create("Pickle Works")).toEqual({ ok: true, choice: { kind: "company", how: "created", company: PICKLE } });
+    expect(findCompany).toHaveBeenCalledTimes(1);
+    expect(createCompany).toHaveBeenCalledTimes(2);
+  });
+
+  it("after a create that threw, a Retry still checks the roster first", async () => {
+    const createCompany = vi.fn<() => Promise<CreateAnswer>>().mockRejectedValueOnce(new Error("network"));
+    const findCompany = vi.fn(async () => PICKLE);
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    await expect(host.create("Pickle Works")).rejects.toThrow("network");
+    expect((await host.create("Pickle Works")).ok).toBe(true);
+    expect(createCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("a roster read that never answers holds Retry for at most 10 seconds, then it creates as before", async () => {
+    vi.useFakeTimers();
+    try {
+      expect(FIND_COMPANY_TIMEOUT_MS).toBe(10_000);
+      const createCompany = vi
+        .fn<() => Promise<CreateAnswer>>()
+        .mockResolvedValueOnce({ ok: false, reason: "That did not work." })
+        .mockResolvedValueOnce({ ok: true, companyUid: "cmp_pickle" });
+      const findCompany = vi.fn(() => new Promise<null>(() => undefined));
+      const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+      await host.create("Pickle Works");
+      let answer: unknown = null;
+      void host.create("Pickle Works").then((r) => (answer = r));
+      await vi.advanceTimersByTimeAsync(FIND_COMPANY_TIMEOUT_MS - 1);
+      expect(findCompany).toHaveBeenCalledTimes(1);
+      expect(createCompany).toHaveBeenCalledTimes(1);
+      expect(answer).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(createCompany).toHaveBeenCalledTimes(2);
+      expect(answer).toEqual({ ok: true, choice: { kind: "company", how: "created", company: PICKLE } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a roster read that fails falls back to creating", async () => {
+    const createCompany = vi
+      .fn<() => Promise<CreateAnswer>>()
+      .mockResolvedValueOnce({ ok: false, reason: "That did not work." })
+      .mockResolvedValueOnce({ ok: true, companyUid: "cmp_pickle" });
+    const findCompany = vi.fn(async () => {
+      throw new Error("roster down");
+    });
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    await host.create("Pickle Works");
+    expect((await host.create("Pickle Works")).ok).toBe(true);
+    expect(createCompany).toHaveBeenCalledTimes(2);
+  });
+
+  it("a Retry while a join still runs waits on that join", async () => {
+    let answer!: (v: AdapterResult<Json>) => void;
+    const claimInvite = vi.fn(() => new Promise<AdapterResult<Json>>((r) => (answer = r)));
+    const host = createFirstRunTeamHost({ claimInvite, dry: false });
+    const first = host.join(ACME);
+    expect(host.join(ACME)).toBe(first);
+    await Promise.resolve();
+    answer(ok({ ok: true, claimedSlugs: ["acme"] }));
+    expect((await first).ok).toBe(true);
+    expect(claimInvite).toHaveBeenCalledTimes(1);
   });
 });
 

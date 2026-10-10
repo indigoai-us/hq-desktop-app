@@ -192,9 +192,14 @@ describe("first-run step list", () => {
     // No coding tool signed in: the flow cannot reach the import, so the way out stays.
     expect(firstRunOffersChat("tools", { claude: false, codex: false }, shown)).toBe(true);
     expect(firstRunOffersChat("tools", null, shown)).toBe(true);
-    for (const id of ["context", "notes", "projects", "done"] as const) {
+    for (const id of ["notes", "projects", "done"] as const) {
       expect(firstRunOffersChat(id, { claude: true }, shown)).toBe(true);
     }
+    // On the import step the scene's buttons are the way on; the header comes
+    // back only when the scene could not load.
+    expect(firstRunOffersChat("context", { claude: true }, shown)).toBe(false);
+    expect(firstRunOffersChat("context", { claude: true }, shown, { importLoadFailed: false })).toBe(false);
+    expect(firstRunOffersChat("context", { claude: true }, shown, { importLoadFailed: true })).toBe(true);
     const noImport = firstRunStepsFor({ ...ALL, canImport: false });
     for (const id of ["name", "team", "tools"] as const) {
       expect(firstRunOffersChat(id, { claude: true }, noImport)).toBe(true);
@@ -229,7 +234,12 @@ describe("assistant name", () => {
     expect(assistantNameIssue("Pickles")).toBeNull();
     expect(assistantNameIssue("Dr. O'Neil-Smith")).toBeNull();
     expect(assistantNameIssue("  ")).toBe("Give your assistant a name.");
-    expect(assistantNameIssue("R2D2")).toBe("Use letters, spaces, apostrophes, periods and hyphens.");
+    expect(assistantNameIssue("R2D2")).toBeNull();
+    expect(assistantNameIssue("StefanTest123")).toBeNull();
+    expect(assistantNameIssue("Scout 2")).toBeNull();
+    expect(assistantNameIssue("123abc")).toBe("Use letters, numbers, spaces, apostrophes, periods and hyphens.");
+    expect(assistantNameIssue("Robo<script>")).toBe("Use letters, numbers, spaces, apostrophes, periods and hyphens.");
+    expect(assistantNameIssue("!!!")).toBe("Use letters, numbers, spaces, apostrophes, periods and hyphens.");
     expect(assistantNameIssue("-dash")).not.toBeNull();
     expect(assistantNameIssue("a".repeat(ASSISTANT_NAME_MAX))).toBeNull();
     expect(assistantNameIssue("a".repeat(ASSISTANT_NAME_MAX + 1))).toBe("Keep the name under 35 characters.");

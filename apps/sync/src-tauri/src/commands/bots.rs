@@ -112,6 +112,8 @@ fn validate_kickoff(kickoff: &str) -> Result<String, String> {
 /// Display name handed to `hq bot create --display-name`: the human name
 /// people see. Same bound as the CLI (Slack's 35-character display-name
 /// limit) and the same character set, so a bad name fails here, not mid-create.
+/// Numbers need hq-cli with indigoai-us/hq-cli#1789; an older CLI's refusal is
+/// mapped to plain words in `local_bots_create`.
 const DISPLAY_NAME_MAX_CHARS: usize = 35;
 
 fn validate_display_name(display_name: &str) -> Result<String, String> {
@@ -125,12 +127,33 @@ fn validate_display_name(display_name: &str) -> Result<String, String> {
     if collapsed.chars().count() > DISPLAY_NAME_MAX_CHARS {
         return Err(format!("Keep the display name under {DISPLAY_NAME_MAX_CHARS} characters."));
     }
+    // A letter first, then letters, numbers, spaces, apostrophes, periods and
+    // hyphens ("R2D2", "StefanTest123").
     let mut chars = collapsed.chars();
-    let first_ok = chars.next().map(char::is_alphabetic).unwrap_or(false);
-    if !first_ok || !collapsed.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | '.' | '\'' | '-')) {
-        return Err("Display names use letters, spaces, apostrophes, periods and hyphens.".to_string());
+    // Letter-number characters (Roman numerals, runic Nl) count as alphabetic
+    // in Rust but not as letters for the CLI or the first-run check.
+    let first_ok = chars.next().map(|c| c.is_alphabetic() && !c.is_numeric()).unwrap_or(false);
+    if !first_ok
+        || !collapsed
+            .chars()
+            .all(|c| c.is_alphabetic() || c.is_numeric() || matches!(c, ' ' | '.' | '\'' | '-'))
+    {
+        return Err("Display names use letters, numbers, spaces, apostrophes, periods and hyphens.".to_string());
     }
     Ok(collapsed)
+}
+
+/// What the person reads when the installed hq CLI predates numbers in
+/// display names and refused the name. Plain words with a next step, never
+/// the CLI's own flag text.
+const DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ: &str =
+    "Names with numbers need a newer version of HQ. Pick a name without numbers, or try again after HQ updates.";
+
+/// An hq CLI from before numbers were allowed refuses such a display name
+/// with its old character-set sentence. The bot is not created, so nothing
+/// needs undoing; the name is never dropped silently.
+fn is_old_display_name_charset_refusal(message: &str) -> bool {
+    message.contains("--display-name can use letters, spaces, apostrophes, periods and hyphens")
 }
 
 /// An hq CLI from before `--display-name` refuses the flag outright.
@@ -236,9 +259,9 @@ fn validate_runtime(runtime: &str) -> Result<&'static str, String> {
     }
 }
 
-/// Run `hq bot <args…> --json` and parse its stdout as JSON. A non-zero exit
-/// surfaces the CLI's own (already user-facing) message.
-async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
+/// Spawn `hq bot <args…> --json` (argv only, never a shell) with the child
+/// PATH and the configured HQ root, and hand back its exit status and output.
+async fn spawn_hq_bot(args: &[&str], timeout: Duration) -> Result<(std::process::ExitStatus, String, String), String> {
     let hq_root = resolve_hq_path()?;
     let hq = paths::resolve_bin("hq");
     let mut argv: Vec<&str> = vec!["bot"];
@@ -253,6 +276,8 @@ async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
             .env("PATH", paths::child_path())
             .env("HQ_NO_UPDATE_CHECK", "1")
             .env("HQ_ROOT", &hq_root)
+            // A child still running at the timeout is killed with the future.
+            .kill_on_drop(true)
             .output(),
     )
     .await
@@ -261,8 +286,15 @@ async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        let fallback = format!("hq bot {} exited with status {}", args.join(" "), output.status.code().unwrap_or(-1));
+    Ok((output.status, stdout, stderr))
+}
+
+/// Run `hq bot <args…> --json` and parse its stdout as JSON. A non-zero exit
+/// surfaces the CLI's own (already user-facing) message.
+async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
+    let (status, stdout, stderr) = spawn_hq_bot(args, timeout).await?;
+    if !status.success() {
+        let fallback = format!("hq bot {} exited with status {}", args.join(" "), status.code().unwrap_or(-1));
         let message = failure_message(&stdout, &stderr, &fallback);
         log(LOG_TAG, &format!("hq bot {} failed: {}", args.join(" "), message.replace('\n', " | ")));
         return Err(strip_ansi(&message));
@@ -381,6 +413,10 @@ pub async fn local_bots_create(
                 retry.drain(i..(i + 2).min(retry.len()));
             }
             run_hq_bot(&retry, Duration::from_secs(150)).await
+        }
+        Err(message) if display_name.is_some() && is_old_display_name_charset_refusal(&message) => {
+            log(LOG_TAG, &format!("hq bot create refused a display name with numbers: {}", message.replace('\n', " | ")));
+            Err(DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.to_string())
         }
         other => other,
     }
@@ -506,13 +542,34 @@ pub async fn local_bots_restore(all: Option<bool>) -> Result<Value, String> {
     run_hq_bot(&argv, Duration::from_secs(600)).await
 }
 
-// ── readiness probe before a local bot is created ───────────────────────────
+/// Change the model and thinking level a bot uses (from its next message).
+#[tauri::command]
+pub async fn local_bots_configure(name: String, model: Option<String>, effort: Option<String>) -> Result<Value, String> {
+    let name = validate_name(&name)?;
+    let args = configure_args(&name, model.as_deref(), effort.as_deref())?;
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_hq_bot(&argv, Duration::from_secs(30)).await
+}
 
-/// How long the readiness probe may take: one tiny real model turn. The CLI
-/// gets this as `--timeout` and reports a timeout as `transient`; the spawn
-/// gets a little more so the CLI can answer first.
-const PROBE_TIMEOUT_SECS: u64 = 45;
-const PROBE_SPAWN_GRACE_SECS: u64 = 15;
+// ── runtime repair (a local bot's DM card) ───────────────────────────────────
+//
+// A local bot that cannot answer because of its coding tool posts a repair
+// card in its DM. Two of the card's buttons need the CLI: "Use a supported
+// model" (`hq bot set-model`) and the check every button ends with
+// (`hq bot probe`). Both argv shapes are built by pure functions so the exact
+// flags stay unit-tested, and every value is checked before anything spawns.
+
+/// A model for `hq bot set-model`: `default`, or a model id in the one closed
+/// shape every `hq bot` model flag takes (`validate_model`: `opus[1m]`,
+/// `gpt-5.5`).
+fn validate_set_model(model: &str) -> Result<String, String> {
+    validate_model(model).map_err(|_| "That model name is not valid.".to_string())
+}
+
+/// argv for `hq bot set-model <name> <model|default>`.
+fn set_model_args(name: &str, model: &str) -> Result<Vec<String>, String> {
+    Ok(vec!["set-model".to_string(), validate_name(name)?, validate_set_model(model)?])
+}
 
 /// Thinking level handed to `hq bot probe --effort`. Closed set: the levels
 /// any runtime accepts (the CLI checks the per-runtime list itself).
@@ -531,13 +588,19 @@ fn validate_effort(effort: &str) -> Result<&'static str, String> {
     }
 }
 
-/// argv for `hq bot probe` (without `--json`): the runtime, model and
-/// thinking level the bot will be created with. Pure so the mapping and the
-/// validation are unit-testable; nothing here is ever shell-parsed.
-fn probe_args(runtime: &str, model: Option<&str>, effort: Option<&str>, timeout_secs: u64) -> Result<Vec<String>, String> {
-    let runtime = validate_runtime(runtime)?;
-    let mut args = vec!["probe".to_string(), "--runtime".to_string(), runtime.to_string()];
-    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
+/// The CLI gives up on a probe after this many seconds unless told otherwise.
+const PROBE_CLI_DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// How much longer than the CLI's own limit the spawn may run before it is killed.
+const PROBE_SPAWN_GRACE_SECS: u64 = 30;
+
+/// argv for `hq bot probe --runtime <runtime> [--model <model>] [--effort
+/// <level>] [--timeout <seconds>]`. An empty model or `default` checks the
+/// runtime's own default; no effort means the runtime's default; no timeout
+/// means the CLI's own (120 s). Pure so the exact flags stay unit-tested, and
+/// every value is checked before anything spawns.
+fn probe_args(runtime: &str, model: Option<&str>, effort: Option<&str>, timeout_secs: Option<u64>) -> Result<Vec<String>, String> {
+    let mut args = vec!["probe".to_string(), "--runtime".to_string(), validate_runtime(runtime)?.to_string()];
+    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty() && *m != "default") {
         args.push("--model".to_string());
         args.push(validate_model(model)?);
     }
@@ -545,8 +608,10 @@ fn probe_args(runtime: &str, model: Option<&str>, effort: Option<&str>, timeout_
         args.push("--effort".to_string());
         args.push(validate_effort(effort)?.to_string());
     }
-    args.push("--timeout".to_string());
-    args.push(timeout_secs.clamp(5, 120).to_string());
+    if let Some(secs) = timeout_secs {
+        args.push("--timeout".to_string());
+        args.push(secs.clamp(5, PROBE_CLI_DEFAULT_TIMEOUT_SECS).to_string());
+    }
     Ok(args)
 }
 
@@ -558,12 +623,14 @@ fn is_unknown_probe_command(text: &str) -> bool {
 
 /// What the UI gets from a finished `hq bot probe --json`.
 ///
-/// The probe exits 1 when the runtime could not answer, and still prints its
-/// one JSON document, so the exit status alone means nothing here. The
-/// document goes to the UI without `diagnostic` (the runtime's raw error,
-/// logs only). A CLI without the command answers `{ "supported": false }` so
-/// the flow can fall back to the sign-in status read.
-fn interpret_probe_output(stdout: &str, stderr: &str) -> Result<Value, String> {
+/// The probe exits 1 when the runtime could not answer and still prints its
+/// one `{ ok, class, detail, … }` document, so a failing check is a result,
+/// not a failure of the command. The document goes to the UI without
+/// `diagnostic` (the runtime's raw error), which is logged instead. A CLI
+/// without the command answers `{ "supported": false }` so callers can fall
+/// back to the sign-in status read. Anything else is an error with the CLI's
+/// own message.
+fn interpret_probe_output(stdout: &str, stderr: &str, fallback: &str) -> Result<Value, String> {
     if let Some(start) = stdout.find('{') {
         if let Ok(Value::Object(mut doc)) = serde_json::from_str::<Value>(stdout[start..].trim()) {
             if matches!(doc.get("ok"), Some(Value::Bool(_))) {
@@ -576,80 +643,134 @@ fn interpret_probe_output(stdout: &str, stderr: &str) -> Result<Value, String> {
         }
     }
     if is_unknown_probe_command(stderr) || is_unknown_probe_command(stdout) {
+        log(LOG_TAG, "hq CLI has no `bot probe`; callers fall back to the sign-in status read");
         return Ok(serde_json::json!({ "supported": false }));
     }
-    Err("The readiness check gave no answer.".to_string())
+    let message = failure_message(stdout, stderr, fallback);
+    log(LOG_TAG, &format!("hq bot probe failed: {}", message.replace('\n', " | ")));
+    Err(strip_ansi(&message))
 }
 
-/// `hq bot probe --runtime <r> [--model m] [--effort e] --timeout <s> --json`:
-/// one minimal real turn with exactly the runtime, model and thinking level a
-/// new bot will use, run before the bot is saved. Answers the probe document
-/// `{ ok, class, detail, runtime, model, modelFallback?, durationMs }`, or
-/// `{ supported: false }` from an hq CLI that predates the command.
+/// `hq bot set-model <name> <model|default> --json`: the model the bot asks
+/// its runtime for, from its next message.
 #[tauri::command]
-pub async fn local_bots_probe(runtime: String, model: Option<String>, effort: Option<String>) -> Result<Value, String> {
-    let args = probe_args(&runtime, model.as_deref(), effort.as_deref(), PROBE_TIMEOUT_SECS)?;
-    let hq_root = resolve_hq_path()?;
-    let hq = paths::resolve_bin("hq");
-    let mut argv: Vec<&str> = vec!["bot"];
-    argv.extend(args.iter().map(String::as_str));
-    argv.push("--json");
-    log(LOG_TAG, &format!("hq {}", argv.join(" ")));
-    let mut command = paths::tokio_spawn_command(&hq, &argv);
-    command
-        .current_dir(&hq_root)
-        .env("PATH", paths::child_path())
-        .env("HQ_NO_UPDATE_CHECK", "1")
-        .env("HQ_ROOT", &hq_root)
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(
-        Duration::from_secs(PROBE_TIMEOUT_SECS + PROBE_SPAWN_GRACE_SECS),
-        command.output(),
-    )
-    .await
-    .map_err(|_| {
-        log(LOG_TAG, "hq bot probe did not finish in time");
-        "The readiness check took too long.".to_string()
-    })?
-    .map_err(|e| {
-        log(LOG_TAG, &format!("hq bot probe could not start: {e}"));
-        "The readiness check could not start.".to_string()
-    })?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let result = interpret_probe_output(&stdout, &stderr);
-    match &result {
-        Ok(doc) if doc.get("supported") == Some(&Value::Bool(false)) => {
-            log(LOG_TAG, "hq CLI has no `bot probe`; the New bot flow falls back to the sign-in status read");
+pub async fn local_bots_set_model(name: String, model: String) -> Result<Value, String> {
+    let args = set_model_args(&name, &model)?;
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_hq_bot(&argv, Duration::from_secs(30)).await
+}
+
+/// `hq bot probe --runtime <r> [--model <m>] [--effort <e>] [--timeout <s>]
+/// --json`: one real minimal turn with exactly the runtime, model and
+/// thinking level a bot uses. Used by a local bot's repair card (runtime and
+/// model) and by the New bot flow before a bot is saved (plus the bot's
+/// thinking level and a shorter timeout). Answers `{ ok, class, detail,
+/// runtime, model, modelFallback?, durationMs }`; a runtime that cannot answer
+/// is `Ok({ ok: false, … })`, an hq CLI without the command is
+/// `Ok({ supported: false })`, and only a CLI that could not run or printed
+/// no answer is an error.
+#[tauri::command]
+pub async fn local_bots_probe(
+    runtime: String,
+    model: Option<String>,
+    effort: Option<String>,
+    timeout_secs: Option<u64>,
+) -> Result<Value, String> {
+    let args = probe_args(&runtime, model.as_deref(), effort.as_deref(), timeout_secs)?;
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let cli_limit = timeout_secs.map(|s| s.clamp(5, PROBE_CLI_DEFAULT_TIMEOUT_SECS)).unwrap_or(PROBE_CLI_DEFAULT_TIMEOUT_SECS);
+    let (status, stdout, stderr) = spawn_hq_bot(&argv, Duration::from_secs(cli_limit + PROBE_SPAWN_GRACE_SECS)).await?;
+    let fallback = format!("hq bot probe exited with status {}", status.code().unwrap_or(-1));
+    let result = interpret_probe_output(&stdout, &stderr, &fallback);
+    if let Ok(doc) = &result {
+        if doc.get("supported") != Some(&Value::Bool(false)) {
+            log(
+                LOG_TAG,
+                &format!(
+                    "hq bot probe {}: ok={} class={}",
+                    runtime.trim(),
+                    doc.get("ok").and_then(Value::as_bool).unwrap_or(false),
+                    doc.get("class").and_then(Value::as_str).unwrap_or("none")
+                ),
+            );
         }
-        Ok(doc) => log(
-            LOG_TAG,
-            &format!(
-                "hq bot probe {}: ok={} class={}",
-                runtime.trim(),
-                doc.get("ok").and_then(Value::as_bool).unwrap_or(false),
-                doc.get("class").and_then(Value::as_str).unwrap_or("none")
-            ),
-        ),
-        Err(_) => log(
-            LOG_TAG,
-            &format!(
-                "hq bot probe unreadable (status {}): {}",
-                output.status.code().unwrap_or(-1),
-                strip_ansi(&stderr).replace('\n', " | ")
-            ),
-        ),
     }
     result
 }
 
-/// Change the model and thinking level a bot uses (from its next message).
-#[tauri::command]
-pub async fn local_bots_configure(name: String, model: Option<String>, effort: Option<String>) -> Result<Value, String> {
-    let name = validate_name(&name)?;
-    let args = configure_args(&name, model.as_deref(), effort.as_deref())?;
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    run_hq_bot(&argv, Duration::from_secs(30)).await
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+
+    #[test]
+    fn set_model_argv_is_exactly_the_cli_shape() {
+        assert_eq!(set_model_args("scout", "gpt-5.5").unwrap(), vec!["set-model", "scout", "gpt-5.5"]);
+        assert_eq!(set_model_args("scout", " default ").unwrap(), vec!["set-model", "scout", "default"]);
+        assert_eq!(set_model_args("scout", "opus[1m]").unwrap(), vec!["set-model", "scout", "opus[1m]"]);
+    }
+
+    #[test]
+    fn set_model_rejects_anything_shell_or_flag_shaped_before_spawning() {
+        assert!(set_model_args("scout", "").is_err());
+        assert!(set_model_args("scout", "-rf").is_err());
+        assert!(set_model_args("scout", "--json").is_err());
+        assert!(set_model_args("scout", "gpt 5").is_err());
+        assert!(set_model_args("scout", "gpt;rm -rf /").is_err());
+        assert!(set_model_args("scout", "$(whoami)").is_err());
+        assert!(set_model_args("scout", "a`b`").is_err());
+        assert!(set_model_args("scout", &"m".repeat(101)).is_err());
+        assert!(set_model_args("Scout!", "gpt-5.5").is_err());
+        assert!(set_model_args("--all", "gpt-5.5").is_err());
+    }
+
+    #[test]
+    fn probe_argv_carries_the_runtime_and_an_optional_model() {
+        assert_eq!(probe_args("codex", None, None, None).unwrap(), vec!["probe", "--runtime", "codex"]);
+        assert_eq!(probe_args("claude", Some(""), None, None).unwrap(), vec!["probe", "--runtime", "claude"]);
+        assert_eq!(probe_args("claude", Some("default"), None, None).unwrap(), vec!["probe", "--runtime", "claude"]);
+        assert_eq!(
+            probe_args("codex", Some("gpt-5.5"), None, None).unwrap(),
+            vec!["probe", "--runtime", "codex", "--model", "gpt-5.5"]
+        );
+    }
+
+    #[test]
+    fn probe_rejects_unknown_runtimes_and_bad_models() {
+        assert!(probe_args("bash", None, None, None).is_err());
+        assert!(probe_args("claude; ls", None, None, None).is_err());
+        assert!(probe_args("codex", Some("-x"), None, None).is_err());
+        assert!(probe_args("codex", Some("a b"), None, None).is_err());
+    }
+
+    #[test]
+    fn set_model_and_probe_share_one_model_validator() {
+        for model in ["gpt-5.5", "opus[1m]", "openai/gpt-5.5", &"m".repeat(100)] {
+            assert!(validate_set_model(model).is_ok(), "{model}");
+            assert!(probe_args("codex", Some(model), None, None).is_ok(), "{model}");
+        }
+        for model in ["-x", "--json", "gpt 5", "[1m]", &"m".repeat(101)] {
+            assert!(validate_set_model(model).is_err(), "{model}");
+            assert!(probe_args("codex", Some(model), None, None).is_err(), "{model}");
+        }
+        // set-model needs a model; the probe reads an empty one as the runtime's default.
+        assert!(validate_set_model("").is_err());
+        assert_eq!(probe_args("codex", Some(""), None, None).unwrap(), vec!["probe", "--runtime", "codex"]);
+    }
+
+    #[test]
+    fn a_failing_probe_is_a_result_not_an_error() {
+        let failed = interpret_probe_output("{\"ok\":false,\"class\":\"signed-out\",\"detail\":\"x\"}", "", "fb").unwrap();
+        assert_eq!(failed["ok"], Value::Bool(false));
+        assert_eq!(failed["class"], Value::String("signed-out".into()));
+        let passed = interpret_probe_output("note\n{\"ok\":true,\"detail\":\"fine\"}", "", "fb").unwrap();
+        assert_eq!(passed["ok"], Value::Bool(true));
+        // Not a probe answer: no document, or no boolean ok. The CLI's own
+        // sentence, or the fallback, is the error.
+        assert_eq!(interpret_probe_output("", "", "hq bot probe exited with status 2").unwrap_err(), "hq bot probe exited with status 2");
+        assert_eq!(interpret_probe_output("", "Could not start", "fb").unwrap_err(), "Could not start");
+        assert!(interpret_probe_output("{\"ok\":\"yes\"}", "", "fb").is_err());
+        assert!(interpret_probe_output("{\"reason\":\"x\"}", "", "fb").is_err());
+    }
 }
 
 #[cfg(test)]
@@ -672,66 +793,66 @@ mod tests {
     #[test]
     fn probe_args_pass_the_bots_runtime_model_and_effort_as_a_list() {
         assert_eq!(
-            probe_args("codex", None, None, 45).unwrap(),
+            probe_args("codex", None, None, Some(45)).unwrap(),
             vec!["probe", "--runtime", "codex", "--timeout", "45"]
         );
         assert_eq!(
-            probe_args(" claude ", Some("claude-sonnet-5"), Some("high"), 45).unwrap(),
+            probe_args(" claude ", Some("claude-sonnet-5"), Some("high"), Some(45)).unwrap(),
             vec!["probe", "--runtime", "claude", "--model", "claude-sonnet-5", "--effort", "high", "--timeout", "45"]
         );
         // The CLI's own model shapes pass: a bracketed context window, a slash.
         assert_eq!(
-            probe_args("claude", Some("opus[1m]"), None, 45).unwrap(),
+            probe_args("claude", Some("opus[1m]"), None, Some(45)).unwrap(),
             vec!["probe", "--runtime", "claude", "--model", "opus[1m]", "--timeout", "45"]
         );
-        assert_eq!(probe_args("codex", Some("openai/gpt-5.5"), None, 45).unwrap()[4], "openai/gpt-5.5");
-        assert_eq!(probe_args("codex", Some(&"a".repeat(100)), None, 45).unwrap()[4], "a".repeat(100));
+        assert_eq!(probe_args("codex", Some("openai/gpt-5.5"), None, Some(45)).unwrap()[4], "openai/gpt-5.5");
+        assert_eq!(probe_args("codex", Some(&"a".repeat(100)), None, Some(45)).unwrap()[4], "a".repeat(100));
         // Blank model and effort mean the runtime's own defaults.
         assert_eq!(
-            probe_args("grok", Some("  "), Some(""), 45).unwrap(),
+            probe_args("grok", Some("  "), Some(""), Some(45)).unwrap(),
             vec!["probe", "--runtime", "grok", "--timeout", "45"]
         );
         // The timeout stays in a sane band.
-        assert_eq!(probe_args("codex", None, None, 0).unwrap().last().unwrap(), "5");
-        assert_eq!(probe_args("codex", None, None, 9999).unwrap().last().unwrap(), "120");
+        assert_eq!(probe_args("codex", None, None, Some(0)).unwrap().last().unwrap(), "5");
+        assert_eq!(probe_args("codex", None, None, Some(9999)).unwrap().last().unwrap(), "120");
     }
 
     #[test]
     fn probe_args_reject_anything_flag_or_shell_like() {
-        assert!(probe_args("bash", None, None, 45).is_err());
-        assert!(probe_args("codex; rm -rf /", None, None, 45).is_err());
-        assert!(probe_args("", None, None, 45).is_err());
-        assert!(probe_args("codex", Some("--dangerously-skip"), None, 45).is_err());
-        assert!(probe_args("codex", Some("gpt 5; rm -rf /"), None, 45).is_err());
-        assert!(probe_args("codex", Some("$(whoami)"), None, 45).is_err());
-        assert!(probe_args("codex", Some("a`b`"), None, 45).is_err());
-        assert!(probe_args("codex", Some("[1m]"), None, 45).is_err());
-        assert!(probe_args("codex", Some(&"a".repeat(101)), None, 45).is_err());
-        assert!(probe_args("codex", None, Some("--yolo"), 45).is_err());
-        assert!(probe_args("codex", None, Some("ultra"), 45).is_err());
+        assert!(probe_args("bash", None, None, Some(45)).is_err());
+        assert!(probe_args("codex; rm -rf /", None, None, Some(45)).is_err());
+        assert!(probe_args("", None, None, Some(45)).is_err());
+        assert!(probe_args("codex", Some("--dangerously-skip"), None, Some(45)).is_err());
+        assert!(probe_args("codex", Some("gpt 5; rm -rf /"), None, Some(45)).is_err());
+        assert!(probe_args("codex", Some("$(whoami)"), None, Some(45)).is_err());
+        assert!(probe_args("codex", Some("a`b`"), None, Some(45)).is_err());
+        assert!(probe_args("codex", Some("[1m]"), None, Some(45)).is_err());
+        assert!(probe_args("codex", Some(&"a".repeat(101)), None, Some(45)).is_err());
+        assert!(probe_args("codex", None, Some("--yolo"), Some(45)).is_err());
+        assert!(probe_args("codex", None, Some("ultra"), Some(45)).is_err());
     }
 
     #[test]
     fn probe_output_passes_the_document_through_without_the_raw_error() {
         let failed = r#"{"ok":false,"class":"cli-outdated","detail":"Codex on this computer is out of date for this model.","runtime":"codex","model":null,"diagnostic":"The 'gpt-6-astra' model requires a newer version of Codex.","durationMs":1830}"#;
-        let doc = interpret_probe_output(failed, "").unwrap();
+        let doc = interpret_probe_output(failed, "", "fb").unwrap();
         assert_eq!(doc["ok"], Value::Bool(false));
         assert_eq!(doc["class"], "cli-outdated");
         assert!(doc.get("diagnostic").is_none(), "the raw runtime error never reaches the UI");
 
         let fallback = r#"{"ok":true,"class":null,"detail":"Codex works.","runtime":"codex","model":null,"modelFallback":{"from":"gpt-6-astra","to":"gpt-5.5"},"durationMs":900}"#;
-        let doc = interpret_probe_output(&format!("note\n{fallback}"), "").unwrap();
+        let doc = interpret_probe_output(&format!("note\n{fallback}"), "", "fb").unwrap();
         assert_eq!(doc["ok"], Value::Bool(true));
         assert_eq!(doc["modelFallback"]["to"], "gpt-5.5");
     }
 
     #[test]
     fn probe_output_from_a_cli_without_the_command_says_unsupported() {
-        let doc = interpret_probe_output("", "error: unknown command 'probe'\n(Did you mean promote?)").unwrap();
+        let doc = interpret_probe_output("", "error: unknown command 'probe'\n(Did you mean promote?)", "fb").unwrap();
         assert_eq!(doc, serde_json::json!({ "supported": false }));
         // Anything else unreadable is an error the UI shows as "try again".
-        assert!(interpret_probe_output("", "Segmentation fault").is_err());
-        assert!(interpret_probe_output(r#"{"bots":[]}"#, "").is_err());
+        assert!(interpret_probe_output("", "Segmentation fault", "fb").is_err());
+        assert!(interpret_probe_output(r#"{"bots":[]}"#, "", "fb").is_err());
     }
 
     #[test]
@@ -777,6 +898,45 @@ mod tests {
         assert_eq!(validate_display_name("Zoë O'Brien-Lee").unwrap(), "Zoë O'Brien-Lee");
         assert!(is_unknown_display_name_flag("error: unknown option '--display-name'"));
         assert!(!is_unknown_display_name_flag("error: unknown option '--kickoff'"));
+    }
+
+    #[test]
+    fn display_names_allow_numbers_after_a_letter() {
+        assert_eq!(validate_display_name("StefanTest123").unwrap(), "StefanTest123");
+        assert_eq!(validate_display_name("R2D2").unwrap(), "R2D2");
+        assert_eq!(validate_display_name("  Scout   2 ").unwrap(), "Scout 2");
+        assert_eq!(
+            create_args("setup", "claude", None, None, None, None, None, None, None, None, Some("StefanTest123")).unwrap(),
+            vec!["create", "setup", "--runtime", "claude", "--display-name", "StefanTest123"]
+        );
+        let refused = "Display names use letters, numbers, spaces, apostrophes, periods and hyphens.";
+        assert_eq!(validate_display_name("123abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("Robo<script>").unwrap_err(), refused);
+        assert_eq!(validate_display_name("   ").unwrap_err(), "The display name is empty.");
+        assert!(validate_display_name(&"x".repeat(36)).is_err());
+        assert!(validate_display_name(&"x".repeat(35)).is_ok());
+        // A letter-number (Roman numeral U+2167, runic U+16EE) cannot lead,
+        // the same as the CLI's \p{L} first and the first-run check; it may follow.
+        assert_eq!(validate_display_name("\u{2167}abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("\u{16EE}abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("Henry \u{2167}").unwrap(), "Henry \u{2167}");
+    }
+
+    #[test]
+    fn an_older_cli_refusing_numbers_reads_as_plain_words() {
+        let old_json = r#"{"ok":false,"message":"--display-name can use letters, spaces, apostrophes, periods and hyphens."}"#;
+        let old_stderr = "error: --display-name can use letters, spaces, apostrophes, periods and hyphens.";
+        assert!(is_old_display_name_charset_refusal(old_json));
+        assert!(is_old_display_name_charset_refusal(old_stderr));
+        // The current CLI's sentence (numbers allowed) and other failures are not this case.
+        assert!(!is_old_display_name_charset_refusal(
+            "--display-name can use letters, numbers, spaces, apostrophes, periods and hyphens."
+        ));
+        assert!(!is_old_display_name_charset_refusal("error: unknown option '--display-name'"));
+        // What the person reads has no flag, no command and a next step.
+        assert!(!DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.contains("--"));
+        assert!(!DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.contains("hq "));
+        assert!(DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.contains("Pick a name without numbers"));
     }
 
     #[test]

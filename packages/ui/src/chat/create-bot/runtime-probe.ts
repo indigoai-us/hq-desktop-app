@@ -63,6 +63,9 @@ export interface RuntimeProbeInput {
 /** Bots start at this thinking level, so the check runs at it too. */
 export const PROBE_EFFORT = DEFAULT_LOCAL_BOT_EFFORT;
 
+/** The check is one tiny turn; a tool that has not answered by then is reported as not answering. */
+export const PROBE_TIMEOUT_SECS = 45;
+
 /** One cache key per runtime and model, so a new model is checked on its own. */
 export function probeKey(runtime: string, model: string | null | undefined): string {
   return `${runtime}|${(model ?? "").trim()}`;

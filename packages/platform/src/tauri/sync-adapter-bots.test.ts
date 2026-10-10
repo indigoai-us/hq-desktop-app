@@ -238,14 +238,44 @@ describe('local bot promotion adapters', () => {
   });
 });
 
-describe('sync adapter local bots probe', () => {
-  it('hands the runtime, model and thinking level to local_bots_probe', async () => {
-    const { adapter, calls } = adapterWithRecorder();
-    await adapter.bots!.probe!({ runtime: 'codex', model: 'gpt-5.5', effort: 'medium' });
-    await adapter.bots!.probe!({ runtime: 'claude' });
+describe('runtime repair adapters', () => {
+  it.each(['sync', 'tauri'])('%s passes set-model and probe arguments through as named fields', async (kind) => {
+    const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+    const invoke = async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args });
+      return cmd === 'local_bots_probe' ? { ok: false, class: 'signed-out', detail: 'x' } : { ok: true };
+    };
+    const adapter = kind === 'sync'
+      ? createSyncPlatformAdapter({ invoke, fetch: globalThis.fetch })
+      : new TauriPlatformAdapter({ invoke });
+    await adapter.bots!.setModel!('juniper', 'default');
+    const probe = await adapter.bots!.probe!('codex', 'gpt-5.5');
+    await adapter.bots!.probe!('claude');
     expect(calls).toEqual([
-      { cmd: 'local_bots_probe', args: { runtime: 'codex', model: 'gpt-5.5', effort: 'medium' } },
-      { cmd: 'local_bots_probe', args: { runtime: 'claude', model: null, effort: null } },
+      { cmd: 'local_bots_set_model', args: { name: 'juniper', model: 'default' } },
+      { cmd: 'local_bots_probe', args: { runtime: 'codex', model: 'gpt-5.5', effort: null, timeoutSecs: null } },
+      { cmd: 'local_bots_probe', args: { runtime: 'claude', model: null, effort: null, timeoutSecs: null } },
     ]);
+    // A failing check is a value, not an error.
+    expect(probe).toEqual({ ok: true, value: { ok: false, class: 'signed-out', detail: 'x' } });
+  });
+});
+
+describe('New bot readiness check through the probe adapter', () => {
+  it.each(['sync', 'tauri'])('%s passes the thinking level and timeout as named fields', async (kind) => {
+    const calls: { cmd: string; args?: Record<string, unknown> }[] = [];
+    const invoke = async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args });
+      return { supported: false };
+    };
+    const adapter = kind === 'sync'
+      ? createSyncPlatformAdapter({ invoke, fetch: globalThis.fetch })
+      : new TauriPlatformAdapter({ invoke });
+    const result = await adapter.bots!.probe!('codex', null, { effort: 'medium', timeoutSecs: 45 });
+    expect(calls).toEqual([
+      { cmd: 'local_bots_probe', args: { runtime: 'codex', model: null, effort: 'medium', timeoutSecs: 45 } },
+    ]);
+    // An hq CLI without the command is a value too, so callers can fall back.
+    expect(result).toEqual({ ok: true, value: { supported: false } });
   });
 });
