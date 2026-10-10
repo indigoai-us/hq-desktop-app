@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run no longer lets you skip past Bring in your context from an earlier screen. Before that screen, Next is the only way forward: Finish with defaults and Continue in chat are gone from the name, team and coding tools screens. Continue in chat stays on the coding tools screen while no coding tool is signed in, since setup cannot go on from there. From Bring in your context onward, Finish with defaults still goes straight to Done, and a scan that fails or finds nothing can still move on with Next.
+
 ## [0.11.2] — 2026-10-10
 
 - HQ keeps a channel or bot visible when it can confirm that the company or bot still exists but you cannot open its details. Retired and missing companies and bots still disappear as before.
