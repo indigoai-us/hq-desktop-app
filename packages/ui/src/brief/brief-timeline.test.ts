@@ -42,6 +42,19 @@ describe("distillTimeline", () => {
     expect(b.titles).toEqual(["s15", "s10", "s5"]);
   });
 
+  it("drops probe sessions and returns kept sessions oldest first, one per dot", () => {
+    const t = distillTimeline(
+      [
+        { at: at(1), title: "Reply only OK. Do not use tools.", id: "p" },
+        { at: at(2), title: "Daily brief design", id: "b" },
+        { at: at(5), title: "Storage settings", id: "a" },
+      ],
+      NOW,
+    );
+    expect(t.items.map((s) => s.id)).toEqual(["a", "b"]);
+    expect(t.background).toBe(1);
+  });
+
   it("does not treat ordinary titles as background", () => {
     expect(isBackgroundSession("Fix checkpoint button copy")).toBe(false);
   });

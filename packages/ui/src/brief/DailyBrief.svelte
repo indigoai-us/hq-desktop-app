@@ -101,7 +101,7 @@
         return t > end - 24 * 3600_000 && t <= end;
       })
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-      .map((s) => ({ at: s.startedAt, title: s.title }));
+      .map((s) => ({ at: s.startedAt, title: s.title, id: s.id }));
   });
 
   // Hover detail for the header counts: what each number is made of, five lines at most.

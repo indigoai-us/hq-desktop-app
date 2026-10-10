@@ -7,7 +7,7 @@
    */
   import { onMount } from "svelte";
   import { DAWN_CELL, DAWN_PITCH, dawnNoise } from "../chat/create-bot/NewBotDawn.svelte";
-  import { useBrief } from "./brief-context.svelte.js";
+  import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import { distillTimeline } from "./brief-timeline.js";
 
   interface Props {
@@ -26,7 +26,20 @@
   let { total, cleared, userName, sub, quietLine, big = false, timeline = [], now = new Date().toISOString() }: Props = $props();
   const end = $derived(Date.parse(now));
   const tl = $derived(distillTimeline(timeline, now));
-  const peak = $derived(Math.max(1, ...tl.buckets.map((b) => b.count)));
+  const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  // One dot per session; hover opens the session with a resume prompt.
+  function sessionPeek(s: { at: string; title: string; id?: string }, i: number): PeekContent {
+    const day = new Date(s.at).toLocaleDateString([], { month: "short", day: "numeric" }).toUpperCase();
+    return {
+      title: s.title,
+      status: `Session · ${day} · ${hhmm(s.at)} · ${i + 1} of ${tl.items.length}`,
+      sections: [],
+      prompt: {
+        id: `session:${s.id ?? s.at}`,
+        text: `Pick up where my session "${s.title}" (started ${hhmm(s.at)}${s.id ? `, id ${s.id}` : ""}) left off. Read its last state, tell me in two lines where it stopped, then continue.`,
+      },
+    };
+  }
   // Hour ticks every 6h across the window, labelled in local time.
   const ticks = $derived(
     [24, 18, 12, 6, 0].map((back) => {
@@ -218,27 +231,23 @@
           ? ` · ${tl.background} background hidden`
           : ""}
       </div>
-      {#if tl.latest}<div class="latest">Latest: {tl.latest.title}</div>{/if}
-      <svg viewBox="0 0 360 44" aria-hidden="true">
-        <line class="ln" x1="8" y1="30" x2="352" y2="30" stroke="rgba(255,190,160,.25)" stroke-width="1" />
-        {#each tl.buckets as b, i (b.start)}
-          {#if b.count}
-            {@const w = 344 / tl.buckets.length}
-            {@const h = 4 + (b.count / peak) * 24}
-            <rect
-              class="sd"
-              x={tx(b.start) + 1}
-              y={30 - h}
-              width={w - 2}
-              height={h}
-              rx="1.5"
-              fill={i === tl.buckets.length - 1 || b.titles.includes(tl.latest?.title ?? "") ? "#ff809f" : "#ffb580"}
-              style="animation-delay:{0.8 + i * 0.03}s"
-            ><title>{new Date(b.start).getHours()}:00 · {b.count} session{b.count === 1 ? "" : "s"}{"\n"}{b.titles.join("\n")}</title></rect>
-          {/if}
+      <div class="dots">
+        <span class="rule"></span>
+        {#each tl.items as it, i (it.id ?? `${it.at}-${i}`)}
+          {@const lift = i > 0 && tx(Date.parse(it.at)) - tx(Date.parse(tl.items[i - 1]!.at)) < 7 ? 1 : 0}
+          <button
+            type="button"
+            class="dot"
+            class:last={i === tl.items.length - 1}
+            style="left:{((tx(Date.parse(it.at)) - 8) / 344) * 100}%;--lift:{lift * -9}px;animation-delay:{0.8 + i * 0.08}s"
+            aria-label="{hhmm(it.at)} {it.title}"
+            use:peek={{ state: brief, content: () => sessionPeek(it, i) }}
+          ></button>
         {/each}
+      </div>
+      <svg viewBox="0 0 360 14" aria-hidden="true">
         {#each ticks as t (t.label)}
-          <text x={t.x} y="42" fill="rgba(255,255,255,.3)" font-size="8.5" text-anchor={t.label === "now" ? "end" : "middle"}>{t.label}</text>
+          <text x={t.x} y="11" fill="rgba(255,255,255,.3)" font-size="8.5" text-anchor={t.label === "now" ? "end" : "middle"}>{t.label}</text>
         {/each}
       </svg>
     </div>
@@ -283,6 +292,43 @@
   .tl {
     margin-top: auto;
     margin-bottom: 12px;
+  }
+  .dots {
+    position: relative;
+    height: 22px;
+    margin: 10px 8px 0;
+  }
+  .dots .rule {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 1px;
+    background: rgba(255, 190, 160, 0.35);
+  }
+  .dot {
+    position: absolute;
+    top: 50%;
+    width: 9px;
+    height: 9px;
+    margin: -4.5px 0 0 -4.5px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: #ffb580;
+    translate: 0 var(--lift, 0);
+    cursor: pointer;
+    opacity: 0;
+    animation: pop 0.4s cubic-bezier(0.3, 1.6, 0.5, 1) forwards;
+    transition: box-shadow 0.15s;
+  }
+  .dot.last {
+    background: #ff809f;
+  }
+  .dot:hover,
+  .dot:focus-visible {
+    box-shadow: 0 0 0 4px rgba(255, 181, 128, 0.25);
+    outline: none;
   }
   .tl svg {
     display: block;

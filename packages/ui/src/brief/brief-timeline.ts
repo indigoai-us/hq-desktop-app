@@ -7,6 +7,7 @@
 export interface TimelineSession {
   at: string;
   title: string;
+  id?: string;
 }
 
 export interface TimelineBucket {
@@ -25,12 +26,22 @@ export interface Timeline {
   background: number;
   /** Newest kept session, for the one visible label. */
   latest: TimelineSession | null;
+  /** Kept sessions, oldest first: one dot each. */
+  items: TimelineSession[];
 }
 
 const HOUR = 3600_000;
 
 /** Sessions HQ starts on its own: checkpoint siblings, auto-checkpoints, resume relaunches. */
-const BACKGROUND = [/checkpoint sibling/i, /background maintenance/i, /^auto[- ]?checkpoint/i, /^\s*auto:/i];
+const BACKGROUND = [
+  /checkpoint sibling/i,
+  /background maintenance/i,
+  /^auto[- ]?checkpoint/i,
+  /^\s*auto:/i,
+  // Probe and health-check sessions ("Reply only OK. Do not use tools.").
+  /^reply (only|with) ok\b/i,
+  /\bdo not use tools\b/i,
+];
 
 export function isBackgroundSession(title: string): boolean {
   return BACKGROUND.some((re) => re.test(title));
@@ -42,6 +53,7 @@ export function distillTimeline(sessions: readonly TimelineSession[], nowIso: st
   const buckets: TimelineBucket[] = Array.from({ length: hours }, (_, i) => ({ start: start + i * HOUR, count: 0, titles: [] }));
   let background = 0;
   let latest: TimelineSession | null = null;
+  const items: TimelineSession[] = [];
   const kept = [...sessions].sort((a, b) => b.at.localeCompare(a.at));
   for (const s of kept) {
     const t = Date.parse(s.at);
@@ -51,9 +63,10 @@ export function distillTimeline(sessions: readonly TimelineSession[], nowIso: st
       continue;
     }
     latest ??= s;
+    items.push(s);
     const b = buckets[Math.min(hours - 1, Math.floor((t - start) / HOUR))]!;
     b.count += 1;
     if (b.titles.length < 3) b.titles.push(s.title);
   }
-  return { buckets, work: buckets.reduce((n, b) => n + b.count, 0), background, latest };
+  return { buckets, work: buckets.reduce((n, b) => n + b.count, 0), background, latest, items: items.reverse() };
 }
