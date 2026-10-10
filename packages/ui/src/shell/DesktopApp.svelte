@@ -809,6 +809,7 @@
   } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import { PROBE_TIMEOUT_SECS } from "../chat/create-bot/runtime-probe.js";
   import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
@@ -13820,6 +13821,9 @@
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
+          probeBotRuntime={adapter.bots?.probe
+            ? (input) => adapter.bots!.probe!(input.runtime, input.model, { effort: input.effort, timeoutSecs: PROBE_TIMEOUT_SECS })
+            : null}
           {localBots}
           {botDisplayNames}
           {ownedLocalBotUids}

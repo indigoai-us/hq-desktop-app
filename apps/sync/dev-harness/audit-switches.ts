@@ -42,6 +42,12 @@
  *       person and with no audience, so the chat can be checked for leaked handoff text.
  *   ?conflicts=N                                 N parked conflict copies (1-50), to see the
  *       grouped "Conflict copy parked" card over the shell
+ *   ?probe=ok|fallback|signed-out|cli-outdated|model-unsupported|transient|not-installed|unknown|unsupported
+ *       the readiness check a local bot gets before it is saved (`hq bot probe`), as the
+ *       New bot flow's coding tool step sees it. Each class fails every check; a check on
+ *       GPT-5.5 passes, so "Use GPT-5.5" can be followed through. fallback: passes on GPT-5.5
+ *       after the tool was too old for its default. unsupported: an hq CLI without the
+ *       check. The answer comes after ?loadingMs (default 1500), to see "Checking Codex...".
  *
  * Combine freely with ?persona=, ?theme= and ?route=.
  */
@@ -94,6 +100,41 @@ export type NewBotSwitch = 'priced' | 'included';
 export function newBotSwitch(search?: string | null): NewBotSwitch | null {
   const value = params(search).get('newbot');
   return value === 'priced' || value === 'included' ? value : null;
+}
+
+export const PROBE_SWITCHES = [
+  'ok',
+  'fallback',
+  'signed-out',
+  'cli-outdated',
+  'model-unsupported',
+  'transient',
+  'not-installed',
+  'unknown',
+  'unsupported',
+] as const;
+export type ProbeSwitch = (typeof PROBE_SWITCHES)[number];
+
+export function probeSwitch(search?: string | null): ProbeSwitch | null {
+  const value = params(search).get('probe') as ProbeSwitch | null;
+  return value && PROBE_SWITCHES.includes(value) ? value : null;
+}
+
+/** What `local_bots_probe` answers under `?probe=`, for the runtime and model asked. */
+export function probeAnswer(kind: ProbeSwitch, args: Record<string, unknown> | undefined): unknown {
+  const runtime = typeof args?.runtime === 'string' ? args.runtime : 'codex';
+  const model = typeof args?.model === 'string' && args.model ? args.model : null;
+  const base = { runtime, model, durationMs: 1200 };
+  if (kind === 'unsupported') return { supported: false };
+  if (kind === 'ok') return { ok: true, class: null, detail: 'It answered.', ...base };
+  if (kind === 'fallback') {
+    return { ok: true, class: null, detail: 'It answered on an older model.', ...base, modelFallback: { from: 'gpt-6-astra', to: 'gpt-5.5' } };
+  }
+  // A supported model passes, so "Use GPT-5.5" can be followed through.
+  if (model === 'gpt-5.5' || model === 'claude-sonnet-5' || model === 'grok-4.6') {
+    return { ok: true, class: null, detail: 'It answered.', ...base };
+  }
+  return { ok: false, class: kind, detail: 'It did not answer.', ...base };
 }
 
 /** The plan check New bot makes for a company, as the server answers it. */
@@ -409,6 +450,12 @@ export function switchedHandler(
         ),
       };
     }
+  }
+  const probe = probeSwitch(search);
+  if (probe && cmd === 'local_bots_probe') {
+    const ms = Number(params(search).get('loadingMs')) || 1500;
+    const answer = probeAnswer(probe, args);
+    return { value: new Promise((resolve) => setTimeout(() => resolve(answer), ms)) };
   }
   const newBot = newBotSwitch(search);
   if (newBot && cmd === 'hq_pro_fetch') {
