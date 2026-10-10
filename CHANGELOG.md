@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run no longer lets you skip past Bring in your context from an earlier screen. Before that screen, Next is the only way forward: Finish with defaults and Continue in chat are gone from the name, team and coding tools screens. Continue in chat stays on the coding tools screen while no coding tool is signed in, since setup cannot go on from there. From Bring in your context onward, Finish with defaults still goes straight to Done, and a scan that fails or finds nothing can still move on with Next. If joining or starting a company on the Your team screen gets no answer for 30 seconds, the screen now says it did not work and offers Retry, and you can pick another option and go on, instead of waiting forever.
 - The conflict copy card in the top right of the main window now has a close (X) button. It hides the card without opening Review and stays closed for that set of copies, including after the window reloads; the card comes back when a new conflict copy is parked. HQ also sends one macOS notification for each new set of parked copies, even when the main window is closed. It follows your notification settings, so it stays quiet when OS notifications are off or while you are looking at HQ. Clicking it opens the main window with the Review list open.
 
 ## [0.11.2] — 2026-10-10

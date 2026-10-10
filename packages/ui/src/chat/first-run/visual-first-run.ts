@@ -114,11 +114,25 @@ export function firstRunNextLabel(id: FirstRunStepId, steps: readonly FirstRunSt
 }
 
 /**
- * "Finish with defaults" sits beside "Next" on every step whose next step is
- * not the last one. Next to the last step both buttons would do the same
- * thing, so the step shows only Next.
+ * True on the steps that come before "Bring in your context" in this flow.
+ * The import is the payoff of first run (owner, 2026-10-10): no control on
+ * these steps may jump past it. False everywhere when the host has no
+ * import step.
+ */
+export function firstRunBeforeImport(id: FirstRunStepId, steps: readonly FirstRunStep[] = FIRST_RUN_STEPS): boolean {
+  const context = indexOfStep("context", steps);
+  const at = indexOfStep(id, steps);
+  return context >= 0 && at >= 0 && at < context;
+}
+
+/**
+ * "Finish with defaults" sits beside "Next" on every step from the import
+ * on whose next step is not the last one. Before the import only Next moves
+ * forward, so nobody finishes past it. Next to the last step both buttons
+ * would do the same thing, so the step shows only Next.
  */
 export function firstRunOffersFinish(id: FirstRunStepId, steps: readonly FirstRunStep[] = FIRST_RUN_STEPS): boolean {
+  if (firstRunBeforeImport(id, steps)) return false;
   const next = nextFirstRunStep(id, steps);
   return next !== null && nextFirstRunStep(next, steps) !== null;
 }
@@ -129,15 +143,36 @@ export function anyToolReady(ready: Record<string, boolean> | null | undefined):
 }
 
 /**
- * Where "Finish with defaults" lands: Done, unless a required step is still
- * open. The coding tools step is required only while no tool is ready.
+ * Where "Finish with defaults" pressed on `from` lands: Done, unless a
+ * required step is still open. The coding tools step is required only while
+ * no tool is ready, and from a step before "Bring in your context" the
+ * import comes first, so a finish never lands past it.
  */
 export function firstRunFinishTarget(
   ready: Record<string, boolean> | null | undefined,
   steps: readonly FirstRunStep[] = FIRST_RUN_STEPS,
+  from: FirstRunStepId = steps[0]?.id ?? "name",
 ): FirstRunStepId {
   if (!anyToolReady(ready) && indexOfStep("tools", steps) >= 0) return "tools";
+  if (firstRunBeforeImport(from, steps)) return "context";
   return steps[steps.length - 1]?.id ?? "done";
+}
+
+/**
+ * Whether a step shows "Continue in chat" (the header's way out, and the
+ * same link beside a failed team join or a failed create). Leaving for chat
+ * ends the takeover, so before the import it would skip the import. It shows
+ * from the import step on. Before the import it shows only where the person
+ * cannot go forward: the coding tools step while no tool is signed in, which
+ * the import cannot be reached past anyway.
+ */
+export function firstRunOffersChat(
+  id: FirstRunStepId,
+  ready: Record<string, boolean> | null | undefined,
+  steps: readonly FirstRunStep[] = FIRST_RUN_STEPS,
+): boolean {
+  if (!firstRunBeforeImport(id, steps)) return true;
+  return id === "tools" && !anyToolReady(ready);
 }
 
 /** Whether a step lets the person move on. */
@@ -189,7 +224,7 @@ export function firstRunDoneTitle(name: string): FirstRunTitle {
 }
 
 export const FIRST_RUN_COPY = {
-  /** The header's way out, on every screen. */
+  /** The header's way out, from the import step on (see firstRunOffersChat). */
   continueInChat: "Continue in chat",
   finish: "Finish with defaults",
   /** Shown on the name step once the assistant is being created. */
