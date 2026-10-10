@@ -89,6 +89,14 @@ impl DesktopSessionScope {
     pub(crate) fn active_company_slug(&self) -> Option<String> {
         self.active_company.lock().ok()?.clone()
     }
+
+    /// Forget the active company. Called on sign-out so the next account
+    /// never reads from, or imports connectors into, this one's company.
+    pub(crate) fn clear(&self) {
+        if let Ok(mut active) = self.active_company.lock() {
+            *active = None;
+        }
+    }
 }
 
 #[tauri::command]
@@ -1788,6 +1796,18 @@ pub async fn list_hq_dir(
         });
     }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod session_scope_tests {
+    #[test]
+    fn clearing_the_session_scope_forgets_the_active_company() {
+        let scope = super::DesktopSessionScope::new();
+        *scope.active_company.lock().unwrap() = Some("acme".to_string());
+        assert_eq!(scope.active_company_slug().as_deref(), Some("acme"));
+        scope.clear();
+        assert_eq!(scope.active_company_slug(), None);
+    }
 }
 
 #[cfg(test)]

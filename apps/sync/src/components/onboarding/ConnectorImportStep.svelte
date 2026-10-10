@@ -9,6 +9,13 @@
   } from '../../lib/onboarding-setup';
 
   interface Props {
+    /**
+     * The company the person picked, joined or created earlier in this flow
+     * (its slug, or its `cmp_` uid when no slug is known). Integrations are
+     * company-scoped, so with no company (a Personal setup) the step does
+     * nothing: no detection, no import, no screen.
+     */
+    company: string | null;
     oncomplete: () => void;
     /**
      * Called once there is something to show (connectors were found). Until
@@ -38,7 +45,7 @@
     errorCategory: ErrorCategory;
   }
 
-  let { oncomplete, onoffer, onTelemetry }: Props = $props();
+  let { company, oncomplete, onoffer, onTelemetry }: Props = $props();
   let connectorCount = $state(0);
   let detectedSourceSet = $state<ConnectorImportSourceSet>('unknown');
   let status = $state<'detecting' | 'offer' | 'importing' | 'success' | 'failure'>(
@@ -53,6 +60,12 @@
   }
 
   onMount(() => {
+    if (!company) {
+      // Personal setup: there is no company to import into. Leave quietly;
+      // the wizard does not offer this step without a company either.
+      complete();
+      return;
+    }
     onTelemetry?.({ action: 'entered' });
     void (async () => {
       try {
@@ -95,7 +108,7 @@
       detectedSourceSet,
     });
     try {
-      const result = await invoke<ImportResult>('import_claude_desktop_connectors');
+      const result = await invoke<ImportResult>('import_claude_desktop_connectors', { company });
       status = result.ok ? 'success' : 'failure';
       onTelemetry?.({
         action: result.ok ? 'completed' : 'failed',
@@ -164,15 +177,30 @@
 {:else if status === 'failure'}
   <h2 class="h" id="onboarding-title-connector-import">Couldn’t import</h2>
   <p class="body" data-testid="connector-import-failure">
-    Couldn't import — you can run <code>hq integrations import</code> later.
+    We couldn't bring in your Claude Desktop connectors. Try again, or skip for now
+    and connect your apps in HQ later.
   </p>
   <div class="btns">
     <button
       class="btn btn-primary"
       type="button"
-      data-testid="connector-import-continue"
-      onclick={() => complete()}
-    ><RailIcon name="arrow-right" />Continue</button>
+      data-testid="connector-import-retry"
+      onclick={() => void importConnectors()}
+    ><RailIcon name="refresh" />Try again</button>
+    <button
+      class="btn btn-secondary"
+      type="button"
+      data-testid="connector-import-skip"
+      onclick={() => {
+        onTelemetry?.({
+          action: 'skipped',
+          detectedToolCount: connectorCount,
+          detectedSourceSet,
+          outcome: 'skipped_after_failure',
+        });
+        complete();
+      }}
+    ><RailIcon name="arrow-right" />Skip for now</button>
   </div>
 {/if}
 
@@ -181,7 +209,6 @@
      the flow's button geometry. */
   .h { margin: 0; color: var(--c-text); font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-size: 34px; font-weight: 300; font-variation-settings: 'wght' 300, 'SOFT' 0, 'WONK' 1; line-height: 1.04; letter-spacing: -0.04em; }
   .body { margin: 14px 0 0; color: var(--c-muted); font-size: 15px; line-height: 22px; }
-  .body code { font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace; font-size: 0.92em; }
   .btns { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 28px; }
   .btn { font-family: inherit; font-size: 14px; font-weight: 400; line-height: 20px; padding: 9px 18px; border: none; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
   .btn-primary { background: var(--c-btn-bg); color: var(--c-btn-fg); }
