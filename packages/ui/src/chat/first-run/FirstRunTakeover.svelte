@@ -62,6 +62,7 @@
     firstRunDoneTitle,
     firstRunFinishTarget,
     firstRunNextLabel,
+    firstRunOffersChat,
     firstRunOffersFinish,
     firstRunStepNumber,
     firstRunStepsFor,
@@ -435,6 +436,45 @@
       importClock = createSceneClock();
     });
   });
+  /**
+   * The scene's code could not load: the step would show only its loading
+   * frame, so the header's Continue in chat comes back as the way out.
+   */
+  let importDoorFailed = $state(false);
+  /** How often a failed load of the scene is tried again while its step is open. */
+  const IMPORT_DOOR_RETRY_MS = 5000;
+  /** Bumped when the scene loads after a failed load, so the step mounts it. */
+  let importDoorKey = $state(0);
+  $effect(() => {
+    if (step !== "context") return;
+    if (firstRunImportDoor.peek()) {
+      importDoorFailed = false;
+      return;
+    }
+    // A failed load is tried again every few seconds while the step is open;
+    // once the scene is there, Continue in chat goes away again.
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const attempt = (): void => {
+      firstRunImportDoor.load().then(
+        () => {
+          if (!live || !importDoorFailed) return;
+          importDoorFailed = false;
+          importDoorKey += 1;
+        },
+        () => {
+          if (!live) return;
+          importDoorFailed = true;
+          timer = setTimeout(attempt, IMPORT_DOOR_RETRY_MS);
+        },
+      );
+    };
+    attempt();
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  });
   onMount(() => {
     // Warm the scene's chunk while the person is on the earlier steps.
     if (untrack(() => importHost)) firstRunImportDoor.preload();
@@ -442,6 +482,7 @@
   onDestroy(() => {
     appsAbort.abort();
     importRunner.dispose();
+    teamRunner.dispose();
     importClock?.dispose();
   });
 
@@ -546,7 +587,7 @@
       name = normalizeAssistantName(next);
       onconfirmname(name, draft.runtime);
     }
-    goTo(finish ? firstRunFinishTarget(runtimeReady, shownSteps) : nextFirstRunStep("name", shownSteps));
+    goTo(finish ? firstRunFinishTarget(runtimeReady, shownSteps, "name") : nextFirstRunStep("name", shownSteps));
   }
 
   function patchDraft(patch: Partial<CreateBotDraft>): void {
@@ -640,6 +681,13 @@
       shownSteps.filter((s) => s.id === "context" || s.id === "notes" || s.id === "projects").length,
   );
 
+  /**
+   * "Continue in chat" ends the takeover, so it is held back on the steps
+   * before the import (firstRunOffersChat): Next is the only way forward
+   * there, and the import is never skipped without being seen.
+   */
+  const offersChat = $derived(firstRunOffersChat(step, runtimeReady, shownSteps, { importLoadFailed: importDoorFailed }));
+
   const talkLabel = $derived(
     leaving === "talk"
       ? FIRST_RUN_COPY.opening
@@ -661,14 +709,14 @@
   <div class="new-bot-takeover-shade" aria-hidden="true"></div>
   <header class="new-bot-takeover-header">
     <span class="new-bot-takeover-wordmark">HQ</span>
-    <button
+    {#if offersChat}<button
       type="button"
       class="new-bot-takeover-cancel"
       data-testid="first-run-continue-in-chat"
       disabled={leaving !== null}
       aria-busy={leaving === "chat" ? "true" : undefined}
       onclick={() => void leave("chat")}
-    >{leaving === "chat" ? FIRST_RUN_COPY.opening : FIRST_RUN_COPY.continueInChat}</button>
+    >{leaving === "chat" ? FIRST_RUN_COPY.opening : FIRST_RUN_COPY.continueInChat}</button>{/if}
   </header>
   {#if step === "context"}
     <!-- Bring in your context: a full-window scene instead of the card. -->
@@ -682,6 +730,7 @@
     >
       <div class="first-run-import-step" data-testid="first-run-step" data-step={step} role="group">
         {#if importClock}
+          {#key importDoorKey}
           <LazyDoor
             door={firstRunImportDoor}
             props={{
@@ -703,7 +752,7 @@
               onretry: () => importRunner.retry(),
               onrecheck: () => importRunner.recheck(),
               onnext: () => goTo(nextFirstRunStep("context", shownSteps)),
-              onfinish: () => goTo(firstRunFinishTarget(runtimeReady, shownSteps)),
+              onfinish: () => goTo(firstRunFinishTarget(runtimeReady, shownSteps, "context")),
               reducedMotion,
               onannounce: (text: string) => (importAnnouncement = text),
             }}
@@ -712,6 +761,7 @@
               <div class="first-run-import-loading" data-testid="first-run-import-loading" aria-hidden="true"></div>
             {/snippet}
           </LazyDoor>
+          {/key}
         {/if}
       </div>
     </div>
@@ -869,8 +919,8 @@
               <p class="new-bot-price first-run-status" data-testid="first-run-team-status" data-state="failed">
                 {teamAction.reason}
                 <button type="button" class="new-bot-inline-link" data-testid="first-run-team-retry" onclick={() => teamRunner.retry()}>{FIRST_RUN_COPY.retry}</button>
-                <span aria-hidden="true">·</span>
-                <button type="button" class="new-bot-inline-link" data-testid="first-run-team-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
+                {#if offersChat}<span aria-hidden="true">·</span>
+                <button type="button" class="new-bot-inline-link" data-testid="first-run-team-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>{/if}
               </p>
             {:else if appKind && appConnect[appKind].state === "failed"}
               {@const failed = appConnect[appKind] as { reason: string; retry: boolean }}
@@ -887,8 +937,8 @@
               <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="failed">
                 {creation.reason}
                 <button type="button" class="new-bot-inline-link" data-testid="first-run-retry" onclick={onretry}>{FIRST_RUN_COPY.retry}</button>
-                <span aria-hidden="true">·</span>
-                <button type="button" class="new-bot-inline-link" data-testid="first-run-failed-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
+                {#if offersChat}<span aria-hidden="true">·</span>
+                <button type="button" class="new-bot-inline-link" data-testid="first-run-failed-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>{/if}
               </p>
             {:else if creation.state === "creating" && !isLast}
               <!-- On Done the held button already says it. -->
@@ -927,7 +977,7 @@
                     class="new-bot-create-submit"
                     data-testid="first-run-finish"
                     disabled={!canLeave || (step === "team" && teamAction.state === "running")}
-                    onclick={() => goTo(firstRunFinishTarget(runtimeReady, shownSteps))}
+                    onclick={() => goTo(firstRunFinishTarget(runtimeReady, shownSteps, step))}
                   >{FIRST_RUN_COPY.finish}</button>
                 {/if}
               </div>

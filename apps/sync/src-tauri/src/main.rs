@@ -935,6 +935,8 @@ fn main() {
             commands::bots::local_bots_stop,
             commands::bots::local_bots_remove,
             commands::bots::local_bots_configure,
+            commands::bots::local_bots_set_model,
+            commands::bots::local_bots_probe,
             commands::bots::local_bots_promote,
             commands::bots::local_bots_workers,
             commands::bots::local_bots_list_remote,
@@ -1322,9 +1324,9 @@ fn main() {
             // hq-cli can attach the installed hq-sync version to feedback
             // submissions — the CLI has no other way to learn the running
             // menubar-app version. Best-effort; never aborts launch.
-            // Not from a scratch build (scratch_build.rs): it would name the
-            // test bundle as the installed app.
-            if !scratch_build::active() {
+            // Only from the shipped bundle (scratch_build.rs): a scratch or
+            // side-by-side bundle would name itself as the installed app.
+            if scratch_build::production_bundle() {
                 commands::config::record_sync_version(app_version::current());
             }
 

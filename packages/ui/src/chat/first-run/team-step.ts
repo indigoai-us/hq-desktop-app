@@ -91,6 +91,26 @@ export function teamOptionsFrom(workspaces: readonly Workspace[] | null | undefi
 }
 
 /**
+ * The person's company with this slug in the roster, for a Retry after a
+ * create that failed or timed out (it may have made the company after all).
+ * Only a cloud company the person is an active member of counts: a local
+ * folder with the same name is not a company they started.
+ */
+export function activeCloudCompanyBySlug(
+  workspaces: readonly Workspace[] | null | undefined,
+  slug: string,
+): FirstRunTeamCompany | null {
+  const row = dedupeWorkspaces([...(workspaces ?? [])]).find(
+    (w) =>
+      w.kind === "company" &&
+      w.slug === slug &&
+      w.membershipStatus === "active" &&
+      (w.cloudUid ?? "").trim() !== "",
+  );
+  return row ? toCompany(row) : null;
+}
+
+/**
  * What "Finish with defaults" and an untouched screen settle on: the one
  * company the person already belongs to, else "Just me". An invite is never
  * accepted by default.
@@ -132,22 +152,35 @@ export function teamSummary(choice: FirstRunTeamChoice | null): string {
   return choice.company.name;
 }
 
+/** Longest company handle the server accepts (hq-pro COMPANY_SLUG_RE). */
+export const COMPANY_SLUG_MAX = 30;
+
 /**
- * The company handle the create card needs, made from the typed name the
- * way the server's rule reads it: lower case letters, digits and single
- * hyphens, starting with a letter, 3 to 40 long. Null when the name has too
- * few letters or digits to make one.
+ * A company handle made from a typed name the way the server's rule reads it
+ * (hq-pro COMPANY_SLUG_RE, `^[a-z][a-z0-9-]{0,29}$`): lower case letters,
+ * digits and single hyphens, starting with a letter, at most 30 long. Empty
+ * when the name has no letter to start one. Shared by the first-run team step
+ * and the New company sheet, which both send it to the server.
  */
-export function companySlugFromName(name: string): string | null {
-  const ascii = name
+export function serverCompanySlug(name: string): string {
+  return name
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^[^a-z]+/, "")
-    .slice(0, 40)
+    .slice(0, COMPANY_SLUG_MAX)
     .replace(/-+$/g, "");
-  return ascii.length >= 3 ? ascii : null;
+}
+
+/**
+ * The company handle the first-run create card needs: `serverCompanySlug`,
+ * at least 3 long. Null when the name has too few letters or digits to make
+ * one.
+ */
+export function companySlugFromName(name: string): string | null {
+  const slug = serverCompanySlug(name);
+  return slug.length >= 3 ? slug : null;
 }
 
 /** Why a typed company name cannot be used, or null. */
@@ -182,31 +215,72 @@ export interface TeamActionRunner {
   /** Forget a failure (the person picked another card). */
   clear(): void;
   current(): TeamActionState;
+  /** The takeover went away: stop the timer, and no answer is reported after this. */
+  dispose(): void;
 }
 
 export const TEAM_GENERIC_FAILURE = "That did not work. Try again in a moment.";
 
+/**
+ * How long a join or create may run before the screen calls it failed. The
+ * team step comes before "Bring in your context", where the takeover offers
+ * no Continue in chat, so a call that never answers must not hold the
+ * screen: after this it shows the failure line with Retry, and another card
+ * works again.
+ */
+export const TEAM_ACTION_TIMEOUT_MS = 30_000;
+
+export interface TeamActionRunnerOptions {
+  /** Test seam; defaults to TEAM_ACTION_TIMEOUT_MS. */
+  timeoutMs?: number;
+}
+
 /** `onchange` gets "running" synchronously, so the pending label shows on the same frame as the press. */
-export function createTeamActionRunner(onchange: (state: TeamActionState) => void): TeamActionRunner {
+export function createTeamActionRunner(
+  onchange: (state: TeamActionState) => void,
+  opts: TeamActionRunnerOptions = {},
+): TeamActionRunner {
+  const timeoutMs = opts.timeoutMs ?? TEAM_ACTION_TIMEOUT_MS;
   let state: TeamActionState = { state: "idle" };
   let last: { key: string; label: string; action: () => Promise<TeamActionResult> } | null = null;
+  /** The run whose answer still counts; a timed-out run's late answer is ignored. */
+  let token = 0;
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const set = (next: TeamActionState): void => {
     state = next;
     onchange(next);
   };
   function run(key: string, label: string, action: () => Promise<TeamActionResult>): void {
+    if (disposed) return;
     if (state.state === "running") return;
     if (state.state === "done" && state.key === key) return;
     last = { key, label, action };
+    const mine = ++token;
     set({ state: "running", key, label });
+    timer = setTimeout(() => {
+      timer = null;
+      if (mine !== token) return;
+      token += 1;
+      console.warn("[hq-desktop] first-run team action timed out");
+      set({ state: "failed", key, label, reason: TEAM_GENERIC_FAILURE });
+    }, timeoutMs);
+    const settle = (next: TeamActionState): void => {
+      if (mine !== token) return;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      token += 1;
+      set(next);
+    };
     void Promise.resolve()
       .then(action)
       .then(
         (result) =>
-          set(result.ok ? { state: "done", key, choice: result.choice } : { state: "failed", key, label, reason: result.reason }),
+          settle(result.ok ? { state: "done", key, choice: result.choice } : { state: "failed", key, label, reason: result.reason }),
         (err: unknown) => {
+          if (mine !== token) return;
           console.warn("[hq-desktop] first-run team action threw:", err);
-          set({ state: "failed", key, label, reason: TEAM_GENERIC_FAILURE });
+          settle({ state: "failed", key, label, reason: TEAM_GENERIC_FAILURE });
         },
       );
   }
@@ -223,5 +297,11 @@ export function createTeamActionRunner(onchange: (state: TeamActionState) => voi
       if (state.state === "failed") set({ state: "idle" });
     },
     current: () => state,
+    dispose() {
+      disposed = true;
+      token += 1;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
   };
 }

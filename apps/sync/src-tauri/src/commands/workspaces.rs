@@ -2180,6 +2180,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cloud_roster_ignores_liveness_only_pending_invite_and_keeps_readable_workspace() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entities": [{
+                    "uid": "prs_owner", "slug": "owner", "type": "person",
+                    "status": "active", "createdAt": "2026-10-10T00:00:00Z"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "memberships": [{
+                    "personUid": "prs_owner", "companyUid": "cmp_readable",
+                    "status": "active", "role": "owner",
+                    "membershipKey": "prs_owner#cmp_readable"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/membership/pending-by-email"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "invites": [{
+                    "membershipKey": "email#cmp_unreadable",
+                    "companyUid": "cmp_unreadable", "role": "member"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_readable"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_readable", "slug": "readable", "type": "company",
+                    "name": "Readable", "status": "active",
+                    "createdAt": "2026-10-10T00:00:00Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_unreadable"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": { "deleted": false }
+            })))
+            .mount(&server)
+            .await;
+
+        let vault = VaultClient::new(&server.uri(), "test-token");
+        let (_, memberships, entities, tombstones) =
+            fetch_cloud_roster(&vault, Some(true)).await.unwrap();
+
+        assert!(tombstones.is_empty());
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(memberships[0].company_uid, "cmp_readable");
+        assert_eq!(entities.len(), 1);
+        assert!(entities.contains_key("cmp_readable"));
+        server.verify().await;
+    }
+
+    #[tokio::test]
     async fn cloud_roster_skips_pending_email_for_unverified_caller() {
         use serde_json::json;
         use wiremock::matchers::{method, path};

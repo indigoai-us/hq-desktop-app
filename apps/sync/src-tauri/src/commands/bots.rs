@@ -109,6 +109,8 @@ fn validate_kickoff(kickoff: &str) -> Result<String, String> {
 /// Display name handed to `hq bot create --display-name`: the human name
 /// people see. Same bound as the CLI (Slack's 35-character display-name
 /// limit) and the same character set, so a bad name fails here, not mid-create.
+/// Numbers need hq-cli with indigoai-us/hq-cli#1789; an older CLI's refusal is
+/// mapped to plain words in `local_bots_create`.
 const DISPLAY_NAME_MAX_CHARS: usize = 35;
 
 fn validate_display_name(display_name: &str) -> Result<String, String> {
@@ -122,12 +124,33 @@ fn validate_display_name(display_name: &str) -> Result<String, String> {
     if collapsed.chars().count() > DISPLAY_NAME_MAX_CHARS {
         return Err(format!("Keep the display name under {DISPLAY_NAME_MAX_CHARS} characters."));
     }
+    // A letter first, then letters, numbers, spaces, apostrophes, periods and
+    // hyphens ("R2D2", "StefanTest123").
     let mut chars = collapsed.chars();
-    let first_ok = chars.next().map(char::is_alphabetic).unwrap_or(false);
-    if !first_ok || !collapsed.chars().all(|c| c.is_alphabetic() || matches!(c, ' ' | '.' | '\'' | '-')) {
-        return Err("Display names use letters, spaces, apostrophes, periods and hyphens.".to_string());
+    // Letter-number characters (Roman numerals, runic Nl) count as alphabetic
+    // in Rust but not as letters for the CLI or the first-run check.
+    let first_ok = chars.next().map(|c| c.is_alphabetic() && !c.is_numeric()).unwrap_or(false);
+    if !first_ok
+        || !collapsed
+            .chars()
+            .all(|c| c.is_alphabetic() || c.is_numeric() || matches!(c, ' ' | '.' | '\'' | '-'))
+    {
+        return Err("Display names use letters, numbers, spaces, apostrophes, periods and hyphens.".to_string());
     }
     Ok(collapsed)
+}
+
+/// What the person reads when the installed hq CLI predates numbers in
+/// display names and refused the name. Plain words with a next step, never
+/// the CLI's own flag text.
+const DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ: &str =
+    "Names with numbers need a newer version of HQ. Pick a name without numbers, or try again after HQ updates.";
+
+/// An hq CLI from before numbers were allowed refuses such a display name
+/// with its old character-set sentence. The bot is not created, so nothing
+/// needs undoing; the name is never dropped silently.
+fn is_old_display_name_charset_refusal(message: &str) -> bool {
+    message.contains("--display-name can use letters, spaces, apostrophes, periods and hyphens")
 }
 
 /// An hq CLI from before `--display-name` refuses the flag outright.
@@ -233,9 +256,9 @@ fn validate_runtime(runtime: &str) -> Result<&'static str, String> {
     }
 }
 
-/// Run `hq bot <args…> --json` and parse its stdout as JSON. A non-zero exit
-/// surfaces the CLI's own (already user-facing) message.
-async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
+/// Spawn `hq bot <args…> --json` (argv only, never a shell) with the child
+/// PATH and the configured HQ root, and hand back its exit status and output.
+async fn spawn_hq_bot(args: &[&str], timeout: Duration) -> Result<(std::process::ExitStatus, String, String), String> {
     let hq_root = resolve_hq_path()?;
     let hq = paths::resolve_bin("hq");
     let mut argv: Vec<&str> = vec!["bot"];
@@ -258,8 +281,15 @@ async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        let fallback = format!("hq bot {} exited with status {}", args.join(" "), output.status.code().unwrap_or(-1));
+    Ok((output.status, stdout, stderr))
+}
+
+/// Run `hq bot <args…> --json` and parse its stdout as JSON. A non-zero exit
+/// surfaces the CLI's own (already user-facing) message.
+async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
+    let (status, stdout, stderr) = spawn_hq_bot(args, timeout).await?;
+    if !status.success() {
+        let fallback = format!("hq bot {} exited with status {}", args.join(" "), status.code().unwrap_or(-1));
         let message = failure_message(&stdout, &stderr, &fallback);
         log(LOG_TAG, &format!("hq bot {} failed: {}", args.join(" "), message.replace('\n', " | ")));
         return Err(strip_ansi(&message));
@@ -378,6 +408,10 @@ pub async fn local_bots_create(
                 retry.drain(i..(i + 2).min(retry.len()));
             }
             run_hq_bot(&retry, Duration::from_secs(150)).await
+        }
+        Err(message) if display_name.is_some() && is_old_display_name_charset_refusal(&message) => {
+            log(LOG_TAG, &format!("hq bot create refused a display name with numbers: {}", message.replace('\n', " | ")));
+            Err(DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.to_string())
         }
         other => other,
     }
@@ -512,6 +546,141 @@ pub async fn local_bots_configure(name: String, model: Option<String>, effort: O
     run_hq_bot(&argv, Duration::from_secs(30)).await
 }
 
+// ── runtime repair (a local bot's DM card) ───────────────────────────────────
+//
+// A local bot that cannot answer because of its coding tool posts a repair
+// card in its DM. Two of the card's buttons need the CLI: "Use a supported
+// model" (`hq bot set-model`) and the check every button ends with
+// (`hq bot probe`). Both argv shapes are built by pure functions so the exact
+// flags stay unit-tested, and every value is checked before anything spawns.
+
+/// A model for `hq bot set-model`: `default`, or a model id in the same closed
+/// shape `hq bot set --model` takes (for example `opus[1m]`, `gpt-5.5`).
+fn validate_set_model(model: &str) -> Result<String, String> {
+    let v = model.trim();
+    let ok = !v.is_empty()
+        && v.len() <= 100
+        && v.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false)
+        && v.chars().all(|c| c.is_ascii_alphanumeric() || "._-:/[]".contains(c));
+    if ok {
+        Ok(v.to_string())
+    } else {
+        Err("That model name is not valid.".to_string())
+    }
+}
+
+/// argv for `hq bot set-model <name> <model|default>`.
+fn set_model_args(name: &str, model: &str) -> Result<Vec<String>, String> {
+    Ok(vec!["set-model".to_string(), validate_name(name)?, validate_set_model(model)?])
+}
+
+/// argv for `hq bot probe --runtime <runtime> [--model <model>]`. An empty
+/// model or `default` checks the runtime's own default.
+fn probe_args(runtime: &str, model: Option<&str>) -> Result<Vec<String>, String> {
+    let mut args = vec!["probe".to_string(), "--runtime".to_string(), validate_runtime(runtime)?.to_string()];
+    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty() && *m != "default") {
+        args.push("--model".to_string());
+        args.push(validate_set_model(model)?);
+    }
+    Ok(args)
+}
+
+/// The probe's answer. `hq bot probe --json` exits 1 when the runtime could
+/// not answer and still prints `{ ok, class, detail }` on stdout: that is a
+/// result, not a failure of the command. Anything else is None.
+fn probe_document(stdout: &str) -> Option<Value> {
+    let start = stdout.find('{')?;
+    let parsed = serde_json::from_str::<Value>(stdout[start..].trim()).ok()?;
+    parsed.as_object()?.get("ok")?.as_bool()?;
+    Some(parsed)
+}
+
+/// `hq bot set-model <name> <model|default> --json`: the model the bot asks
+/// its runtime for, from its next message.
+#[tauri::command]
+pub async fn local_bots_set_model(name: String, model: String) -> Result<Value, String> {
+    let args = set_model_args(&name, &model)?;
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_hq_bot(&argv, Duration::from_secs(30)).await
+}
+
+/// `hq bot probe --runtime <r> [--model <m>] --json` → `{ ok, class, detail }`.
+/// A runtime that cannot answer is `Ok({ ok: false, … })`; only a CLI that
+/// could not run or printed no answer is an error.
+#[tauri::command]
+pub async fn local_bots_probe(runtime: String, model: Option<String>) -> Result<Value, String> {
+    let args = probe_args(&runtime, model.as_deref())?;
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    // The CLI gives up on its own after 120 s; wait a little longer than that.
+    let (status, stdout, stderr) = spawn_hq_bot(&argv, Duration::from_secs(150)).await?;
+    if let Some(document) = probe_document(&stdout) {
+        return Ok(document);
+    }
+    let fallback = format!("hq bot probe exited with status {}", status.code().unwrap_or(-1));
+    let message = failure_message(&stdout, &stderr, &fallback);
+    log(LOG_TAG, &format!("hq bot probe failed: {}", message.replace('\n', " | ")));
+    Err(strip_ansi(&message))
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+
+    #[test]
+    fn set_model_argv_is_exactly_the_cli_shape() {
+        assert_eq!(set_model_args("scout", "gpt-5.5").unwrap(), vec!["set-model", "scout", "gpt-5.5"]);
+        assert_eq!(set_model_args("scout", " default ").unwrap(), vec!["set-model", "scout", "default"]);
+        assert_eq!(set_model_args("scout", "opus[1m]").unwrap(), vec!["set-model", "scout", "opus[1m]"]);
+    }
+
+    #[test]
+    fn set_model_rejects_anything_shell_or_flag_shaped_before_spawning() {
+        assert!(set_model_args("scout", "").is_err());
+        assert!(set_model_args("scout", "-rf").is_err());
+        assert!(set_model_args("scout", "--json").is_err());
+        assert!(set_model_args("scout", "gpt 5").is_err());
+        assert!(set_model_args("scout", "gpt;rm -rf /").is_err());
+        assert!(set_model_args("scout", "$(whoami)").is_err());
+        assert!(set_model_args("scout", "a`b`").is_err());
+        assert!(set_model_args("scout", &"m".repeat(101)).is_err());
+        assert!(set_model_args("Scout!", "gpt-5.5").is_err());
+        assert!(set_model_args("--all", "gpt-5.5").is_err());
+    }
+
+    #[test]
+    fn probe_argv_carries_the_runtime_and_an_optional_model() {
+        assert_eq!(probe_args("codex", None).unwrap(), vec!["probe", "--runtime", "codex"]);
+        assert_eq!(probe_args("claude", Some("")).unwrap(), vec!["probe", "--runtime", "claude"]);
+        assert_eq!(probe_args("claude", Some("default")).unwrap(), vec!["probe", "--runtime", "claude"]);
+        assert_eq!(
+            probe_args("codex", Some("gpt-5.5")).unwrap(),
+            vec!["probe", "--runtime", "codex", "--model", "gpt-5.5"]
+        );
+    }
+
+    #[test]
+    fn probe_rejects_unknown_runtimes_and_bad_models() {
+        assert!(probe_args("bash", None).is_err());
+        assert!(probe_args("claude; ls", None).is_err());
+        assert!(probe_args("codex", Some("-x")).is_err());
+        assert!(probe_args("codex", Some("a b")).is_err());
+    }
+
+    #[test]
+    fn a_failing_probe_is_a_result_not_an_error() {
+        let failed = probe_document("{\"ok\":false,\"class\":\"signed-out\",\"detail\":\"x\"}").unwrap();
+        assert_eq!(failed["ok"], Value::Bool(false));
+        assert_eq!(failed["class"], Value::String("signed-out".into()));
+        let passed = probe_document("note\n{\"ok\":true,\"detail\":\"fine\"}").unwrap();
+        assert_eq!(passed["ok"], Value::Bool(true));
+        // Not a probe answer: no document, or no boolean ok.
+        assert!(probe_document("").is_none());
+        assert!(probe_document("Could not start").is_none());
+        assert!(probe_document("{\"ok\":\"yes\"}").is_none());
+        assert!(probe_document("{\"reason\":\"x\"}").is_none());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,6 +741,45 @@ mod tests {
         assert_eq!(validate_display_name("Zoë O'Brien-Lee").unwrap(), "Zoë O'Brien-Lee");
         assert!(is_unknown_display_name_flag("error: unknown option '--display-name'"));
         assert!(!is_unknown_display_name_flag("error: unknown option '--kickoff'"));
+    }
+
+    #[test]
+    fn display_names_allow_numbers_after_a_letter() {
+        assert_eq!(validate_display_name("StefanTest123").unwrap(), "StefanTest123");
+        assert_eq!(validate_display_name("R2D2").unwrap(), "R2D2");
+        assert_eq!(validate_display_name("  Scout   2 ").unwrap(), "Scout 2");
+        assert_eq!(
+            create_args("setup", "claude", None, None, None, None, None, None, None, None, Some("StefanTest123")).unwrap(),
+            vec!["create", "setup", "--runtime", "claude", "--display-name", "StefanTest123"]
+        );
+        let refused = "Display names use letters, numbers, spaces, apostrophes, periods and hyphens.";
+        assert_eq!(validate_display_name("123abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("Robo<script>").unwrap_err(), refused);
+        assert_eq!(validate_display_name("   ").unwrap_err(), "The display name is empty.");
+        assert!(validate_display_name(&"x".repeat(36)).is_err());
+        assert!(validate_display_name(&"x".repeat(35)).is_ok());
+        // A letter-number (Roman numeral U+2167, runic U+16EE) cannot lead,
+        // the same as the CLI's \p{L} first and the first-run check; it may follow.
+        assert_eq!(validate_display_name("\u{2167}abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("\u{16EE}abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("Henry \u{2167}").unwrap(), "Henry \u{2167}");
+    }
+
+    #[test]
+    fn an_older_cli_refusing_numbers_reads_as_plain_words() {
+        let old_json = r#"{"ok":false,"message":"--display-name can use letters, spaces, apostrophes, periods and hyphens."}"#;
+        let old_stderr = "error: --display-name can use letters, spaces, apostrophes, periods and hyphens.";
+        assert!(is_old_display_name_charset_refusal(old_json));
+        assert!(is_old_display_name_charset_refusal(old_stderr));
+        // The current CLI's sentence (numbers allowed) and other failures are not this case.
+        assert!(!is_old_display_name_charset_refusal(
+            "--display-name can use letters, numbers, spaces, apostrophes, periods and hyphens."
+        ));
+        assert!(!is_old_display_name_charset_refusal("error: unknown option '--display-name'"));
+        // What the person reads has no flag, no command and a next step.
+        assert!(!DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.contains("--"));
+        assert!(!DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.contains("hq "));
+        assert!(DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.contains("Pick a name without numbers"));
     }
 
     #[test]

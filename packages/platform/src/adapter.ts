@@ -2261,6 +2261,19 @@ export interface LocalBotsApi {
   configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
   promote?(name: string, companyUid: string): AdapterPromise<Json>;
   /**
+   * Set the model a bot asks its runtime for (`hq bot set-model <name>
+   * <model|default>`), from its next message. Used by the runtime repair
+   * card's "Use a supported model". Optional for older hosts.
+   */
+  setModel?(name: string, model: string): AdapterPromise<Json>;
+  /**
+   * Run one test turn with a runtime (and model) exactly as a bot would
+   * (`hq bot probe --runtime <r> [--model <m>]`): `{ ok, class, detail }`.
+   * A failing check is a value with `ok: false`, not an error. Optional for
+   * older hosts.
+   */
+  probe?(runtime: SessionProviderId, model?: string | null): AdapterPromise<Json>;
+  /**
    * The local bots this ACCOUNT owns, each flagged `here` or not
    * (`hq bot list --remote`). The one source of truth for "the person owns
    * this bot and this computer cannot run it". Optional: older hosts and the

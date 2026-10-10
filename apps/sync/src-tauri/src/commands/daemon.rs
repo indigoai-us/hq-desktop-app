@@ -66,6 +66,7 @@ use hq_desktop_core::sync_outcome::{
     WindowsTermination, WindowsTerminatorAttribution, RUNNER_PHASE_PRE_PROTOCOL,
     SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
 };
+use hq_desktop_core::watch_owner::LauncherState;
 use hq_desktop_core::watcher_fault::{
     UnmatchedStderrShapeRollup, WatcherFaultProvenance, WatcherFaultReadCounters,
     WATCHER_FAULT_UNAVAILABLE,
@@ -1586,7 +1587,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         let mut watch_owner_exit = if signal.is_none()
                             && matches!(code, Some(20 | 21))
                         {
-                            Some(hq_desktop_core::watch_owner::plan_busy_watch_exit_with_unknown_orphan(
+                            Some(
+                                hq_desktop_core::watch_owner::plan_busy_watch_exit_with_launcher(
                                     code,
                                     watch_owner_inspection
                                         .as_ref()
@@ -1597,10 +1599,19 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                     watch_owner_inspection
                                         .as_ref()
                                         .is_some_and(|inspection| inspection.is_child_of_app),
+                                    watch_owner_inspection.as_ref().is_some_and(|inspection| {
+                                        inspection.is_unknown_desktop_orphan
+                                    }),
                                     watch_owner_inspection
                                         .as_ref()
-                                        .is_some_and(|inspection| inspection.is_unknown_desktop_orphan),
-                                ))
+                                        .map_or(LauncherState::Unknown, |inspection| {
+                                            inspection.launcher
+                                        }),
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .is_none_or(|inspection| inspection.lease_is_stale),
+                                ),
+                            )
                         } else {
                             None
                         };
@@ -1868,7 +1879,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                         )
                                     } else {
                                         if plan.defer_to_daemon
-                                            || plan.classification == "live_owner_deferral"
+                                            || hq_desktop_core::watch_owner::plan_defers_to_live_owner(plan)
                                         {
                                             set_lifecycle_state(
                                                 WatchDaemonState::Running,
@@ -7477,6 +7488,11 @@ struct InspectedWatchOwner {
     is_live_runner: bool,
     is_child_of_app: bool,
     is_unknown_desktop_orphan: bool,
+    /// Whether the app that launched the holder is still running. A live
+    /// launcher means a second HQ app owns this watcher; it is never killed.
+    launcher: LauncherState,
+    /// Whether the holder's lease heartbeat is older than WATCH_OWNER_STALE_AFTER.
+    lease_is_stale: bool,
 }
 
 fn watch_owner_status_path(hq_root: &str) -> PathBuf {
@@ -7503,12 +7519,19 @@ fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, Str
     let Some(status) = hq_desktop_core::watch_owner::read_watch_owner_status(&path)? else {
         return Ok(None);
     };
+    let lease_is_stale = hq_desktop_core::watch_owner::lease_heartbeat_is_stale(
+        &status,
+        chrono::Utc::now(),
+        hq_desktop_core::watch_owner::WATCH_OWNER_STALE_AFTER,
+    );
     let Some((first_parent, command)) = process_info(status.pid)? else {
         return Ok(Some(InspectedWatchOwner {
             status,
             is_live_runner: false,
             is_child_of_app: false,
             is_unknown_desktop_orphan: false,
+            launcher: LauncherState::Unknown,
+            lease_is_stale,
         }));
     };
     let is_live_runner = is_sync_runner_command(&command, hq_root);
@@ -7542,11 +7565,23 @@ fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, Str
                 |pid| process_info(pid).ok().flatten(),
             )
         });
+    let launcher = if is_child_of_app {
+        LauncherState::Alive
+    } else {
+        hq_desktop_core::watch_owner::desktop_owner_launcher_state(
+            &status,
+            Some(&(first_parent, command.clone())),
+            std::process::id(),
+            process_info,
+        )
+    };
     Ok(Some(InspectedWatchOwner {
         status,
         is_live_runner,
         is_child_of_app,
         is_unknown_desktop_orphan,
+        launcher,
+        lease_is_stale,
     }))
 }
 
@@ -7570,21 +7605,14 @@ fn live_watch_owner_defers_supervisor(hq_root: &str) -> Result<Option<String>, S
     let Some(owner) = inspect_watch_owner(hq_root)? else {
         return Ok(None);
     };
-    let plan = hq_desktop_core::watch_owner::plan_busy_watch_exit_with_unknown_orphan(
-        Some(20),
-        Some(&owner.status),
+    Ok(hq_desktop_core::watch_owner::supervisor_preflight_deferral(
+        &owner.status,
         owner.is_live_runner,
         owner.is_child_of_app,
         owner.is_unknown_desktop_orphan,
-    );
-    if hq_desktop_core::watch_owner::supervisor_should_defer_for_live_owner(
-        &plan,
-        owner.is_live_runner,
-    ) {
-        Ok(Some(owner.status.owner))
-    } else {
-        Ok(None)
-    }
+        owner.launcher,
+        owner.lease_is_stale,
+    ))
 }
 
 fn terminate_external_watch_runner(
@@ -7600,6 +7628,8 @@ fn terminate_external_watch_runner(
         || current.status.started_at != expected.started_at
         || !current.is_live_runner
         || current.is_child_of_app
+        || current.launcher == LauncherState::Alive
+        || !current.lease_is_stale
     {
         return Ok(false);
     }

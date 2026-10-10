@@ -11,6 +11,7 @@
   import MeetingsShot from './MeetingsShot.svelte';
   import AccessShot from './AccessShot.svelte';
   import ActivityShot from './ActivityShot.svelte';
+  import RepairCardsShot from './RepairCardsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
@@ -19,6 +20,7 @@
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
+  import ClaudeCodePreview from './ClaudeCodePreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
@@ -235,7 +237,10 @@
   }
 </script>
 
-{#if view === 'forward'}
+{#if view === 'claude-code'}
+  <!-- New Bot waking screen at the Claude code paste-back (?claude= variants in ClaudeCodePreview.svelte). -->
+  <ClaudeCodePreview />
+{:else if view === 'forward'}
   <!-- The Forward message dialog with fictional destinations. ~900x760 viewport. -->
   <ForwardPickerPreview />
 {:else if view === 'activity'}
@@ -259,6 +264,9 @@
   <AccessShot />
 {:else if view === 'activity-shot'}
   <ActivityShot />
+{:else if view === 'repair-cards'}
+  <!-- Bot runtime repair cards. &state=signed-out|update|model|transient|signing-in|updating|fixed &live=1 -->
+  <RepairCardsShot />
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />
