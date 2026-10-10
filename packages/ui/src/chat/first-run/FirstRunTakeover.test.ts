@@ -97,12 +97,27 @@ describe("FirstRunTakeover: name your HQ assistant", () => {
     const { handlers } = render();
     await settle();
     const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
-    input.value = "R2D2";
+    input.value = "123abc";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     q<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
     await settle();
     expect(handlers.onconfirmname).not.toHaveBeenCalled();
-    expect(q('[data-testid="new-bot-name-issue"]')?.textContent).toContain("letters");
+    expect(q('[data-testid="new-bot-name-issue"]')?.textContent).toContain(
+      "Use letters, numbers, spaces, apostrophes, periods and hyphens.",
+    );
+  });
+
+  it("a name with numbers, like StefanTest123, is accepted and moves on", async () => {
+    const { handlers } = render();
+    await settle();
+    const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    input.value = "StefanTest123";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    q<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+    await settle();
+    expect(q('[data-testid="new-bot-name-issue"]')).toBeNull();
+    expect(handlers.onconfirmname).toHaveBeenCalledWith("StefanTest123", "claude");
+    expect(q('[data-testid="first-run-step"]')?.getAttribute("data-step")).toBe("tools");
   });
 
   it("Finish with defaults skips to Done when a tool is ready", async () => {

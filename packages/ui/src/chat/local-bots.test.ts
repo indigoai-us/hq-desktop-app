@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import {
@@ -135,6 +137,20 @@ describe("plainBotFailure", () => {
     ]) {
       expect(plainBotFailure(raw, fallback), raw).toBe(fallback);
     }
+  });
+
+  it("shows the host's sentence for an older HQ that refuses numbers in a name", () => {
+    // Read from the host's own constant, so a change to the mapping in
+    // apps/sync bots.rs is checked here too.
+    const source = readFileSync(
+      fileURLToPath(new URL("../../../../apps/sync/src-tauri/src/commands/bots.rs", import.meta.url)),
+      "utf8",
+    );
+    const match = /const DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ: &str =\s*"([^"]+)";/.exec(source);
+    expect(match, "DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ in bots.rs").not.toBeNull();
+    const sentence = match![1]!;
+    expect(isRawBotFailureText(sentence)).toBe(false);
+    expect(plainBotFailure(sentence, "Could not create setup.")).toBe(sentence);
   });
 
   it("passes a written sentence through, and keeps only its first line", () => {

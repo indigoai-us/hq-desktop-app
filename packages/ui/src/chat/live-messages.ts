@@ -3,7 +3,7 @@
  * REST pages are newest-first; callers reverse for oldest → newest display.
  */
 
-import { AGENT_HELLO_REQUEST_LEAD } from "./agent-channel.js";
+import { isAppNoticeBody } from "./agent-channel.js";
 import type { ConversationMessageWire } from "./chat-api.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -434,12 +434,15 @@ function isAgentUid(uid: string): boolean {
  *   quoting them, or was led to) is answering the person: hiding that answer
  *   leaves the person looking at "stopped responding".
  * - A row tagged `audience: "agent"` is one. That is the lane the app sends
- *   on, and the server returns it on every read.
+ *   on. The server stores the tag, but its direct-message thread read does
+ *   not return it yet, so most rows arrive with no tag (next rule).
  * - A row with any other audience is not one. It came from the server, and
  *   the server says it is for the person: a message the person typed
  *   themselves, even one that starts with the app's opening words.
- * - A row with no audience at all is one only when it starts with the app's
- *   opening words AND the person sent it AND it is not a message on its way
+ * - A row with no audience at all is one only when it is one of the app's
+ *   notices (the hello request, a connection notice, or a first-run setup
+ *   note: its lead and its handoff JSON, `isAppNoticeBody`) AND the
+ *   person sent it AND it is not a message on its way
  *   out (`local-send-`). That is a copy of the request from the host's stored
  *   thread, which does not keep the lane. With `selfUid` the sender must be
  *   that person; without it, any sender that is not a bot, which in a
@@ -454,7 +457,7 @@ export function isAppRequestRow(
   const audience = (row.audience ?? "").trim().toLowerCase();
   if (audience === "agent") return true;
   if (audience !== "") return false;
-  if (!(row.body ?? "").startsWith(AGENT_HELLO_REQUEST_LEAD)) return false;
+  if (!isAppNoticeBody(row.body)) return false;
   if ((row.eventId ?? "").startsWith("local-send-")) return false;
   const self = (options.selfUid ?? "").trim();
   return self ? from === self : from !== "";

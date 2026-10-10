@@ -5,6 +5,7 @@ import {
   companyNameIssue,
   companySlugFromName,
   TEAM_ACTION_TIMEOUT_MS,
+  activeCloudCompanyBySlug,
   TEAM_GENERIC_FAILURE,
   createTeamActionRunner,
   defaultTeamChoice,
@@ -77,7 +78,29 @@ describe("company names", () => {
     expect(companySlugFromName("  Café  Olé!! ")).toBe("cafe-ole");
     expect(companySlugFromName("42 Labs")).toBe("labs");
     expect(companySlugFromName("A")).toBeNull();
-    expect(companySlugFromName("x".repeat(80))).toHaveLength(40);
+    expect(companySlugFromName("x".repeat(80))).toHaveLength(30);
+  });
+
+  it("makes handles the server accepts: a letter first, at most 30 long", () => {
+    // hq-pro src/lifecycle/actions/company-slug-availability.ts COMPANY_SLUG_RE.
+    const serverRule = /^[a-z][a-z0-9-]{0,29}$/;
+    for (const name of [
+      "Pickle Works",
+      "StefanTest123",
+      "42 Labs",
+      "The Very Long Company Name of Many Words Incorporated",
+      "Acme 2024 Holdings and Partners Worldwide",
+      "x".repeat(80),
+    ]) {
+      const slug = companySlugFromName(name);
+      expect(slug, name).not.toBeNull();
+      expect(slug!.length, name).toBeLessThanOrEqual(30);
+      expect(serverRule.test(slug!), `${name} -> ${slug}`).toBe(true);
+    }
+    expect(companySlugFromName("StefanTest123")).toBe("stefantest123");
+    // A cut that lands on a hyphen does not leave it trailing.
+    expect(companySlugFromName("abcdefghijklmnopqrstuvwxyzabc def")).toBe("abcdefghijklmnopqrstuvwxyzabc");
+    expect(companyNameIssue("StefanTest123")).toBeNull();
   });
 
   it("says why a name cannot be used", () => {
@@ -178,6 +201,51 @@ describe("one join or create at a time", () => {
     }
   });
 
+  it("after dispose nothing is reported: no timeout, no warning, and a late answer is ignored", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const onchange = vi.fn();
+      let resolve!: (r: TeamActionResult) => void;
+      const runner = createTeamActionRunner(onchange);
+      runner.run("invite:acme", "Joining Acme…", () => new Promise<TeamActionResult>((r) => (resolve = r)));
+      expect(onchange).toHaveBeenCalledTimes(1);
+      runner.dispose();
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS * 2);
+      resolve({ ok: true, choice: { kind: "personal" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onchange).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+      // A press after teardown runs nothing.
+      const action = vi.fn(async (): Promise<TeamActionResult> => ({ ok: true, choice: { kind: "personal" } }));
+      runner.run("create", "Starting X…", action);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(action).not.toHaveBeenCalled();
+      expect(onchange).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("after dispose a late throw is not reported or logged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const onchange = vi.fn();
+      let reject!: (e: unknown) => void;
+      const runner = createTeamActionRunner(onchange);
+      runner.run("create", "Starting X…", () => new Promise<TeamActionResult>((_r, j) => (reject = j)));
+      await Promise.resolve();
+      runner.dispose();
+      reject(new Error("late"));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onchange).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("an answer in time clears the timer", async () => {
     vi.useFakeTimers();
     try {
@@ -190,5 +258,30 @@ describe("one join or create at a time", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("the company a Retry may find in the roster", () => {
+  it("uses an active cloud company with that slug", () => {
+    expect(activeCloudCompanyBySlug([ws("pickle-works", "active")], "pickle-works")).toEqual({
+      companyUid: "cmp_pickle-works",
+      slug: "pickle-works",
+      name: "PICKLE-WORKS",
+    });
+  });
+
+  it("ignores a local-only folder with the same slug", () => {
+    const local = ws("pickle-works", null, { cloudUid: null, state: "local-only", membershipStatus: null });
+    expect(activeCloudCompanyBySlug([local], "pickle-works")).toBeNull();
+    // Even when it claims to be active, no cloud id means no company.
+    expect(activeCloudCompanyBySlug([{ ...local, membershipStatus: "active", cloudUid: "  " }], "pickle-works")).toBeNull();
+  });
+
+  it("ignores a pending invite, a synced row without active membership, another slug and the personal vault", () => {
+    expect(activeCloudCompanyBySlug([ws("pickle-works", "pending")], "pickle-works")).toBeNull();
+    expect(activeCloudCompanyBySlug([ws("pickle-works", null)], "pickle-works")).toBeNull();
+    expect(activeCloudCompanyBySlug([ws("acme", "active")], "pickle-works")).toBeNull();
+    expect(activeCloudCompanyBySlug([ws("personal", "active")], "personal")).toBeNull();
+    expect(activeCloudCompanyBySlug(null, "pickle-works")).toBeNull();
   });
 });

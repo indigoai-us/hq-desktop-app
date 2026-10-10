@@ -80,7 +80,12 @@
     | { outcome: 'created'; companyUid: string; plan: FirstRunPlan; paid: boolean }
     | { outcome: 'joined'; slugs: string[]; companyUid: string | null }
     | { outcome: 'used_existing'; companyUid: string; slug: string | null }
-    | { outcome: 'skipped' };
+    /**
+     * Left without finishing the step. `company` names a company that already
+     * exists when known (made here, then skipped while it provisions): its
+     * `cmp_` uid, or its handle when the server did not name the uid.
+     */
+    | { outcome: 'skipped'; company?: string };
 
   interface Props {
     path: Exclude<FirstRunCompanyPath, { kind: 'skip' }>;
@@ -318,9 +323,11 @@
     }
     if (!result.company.companyUid) {
       // The company exists but the server did not name it; plan choice needs
-      // the uid, so hand over to #setup where the plan card lives.
+      // the uid, so hand over to #setup where the plan card lives. The handle
+      // it was made with still names it for later steps.
       error = null;
-      oncomplete({ outcome: 'skipped' });
+      const handle = slugFieldId ? values[slugFieldId]?.trim() : '';
+      oncomplete(handle ? { outcome: 'skipped', company: handle } : { outcome: 'skipped' });
       return;
     }
     slugWatcher?.cancel();
@@ -434,7 +441,7 @@
   function skipWhileProvisioning(): void {
     if (companyUid && heldInvites.length > 0) queuePendingCompanyInvites(browserStorage(), companyUid, heldInvites);
     heldInvites = [];
-    oncomplete({ outcome: 'skipped' });
+    oncomplete(companyUid ? { outcome: 'skipped', company: companyUid } : { outcome: 'skipped' });
   }
 
   function useExisting(): void {
