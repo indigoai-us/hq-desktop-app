@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - The conflict copy card in the top right of the main window now has a close (X) button. It hides the card without opening Review and stays closed for that set of copies, including after the window reloads; the card comes back when a new conflict copy is parked. HQ also sends one macOS notification for each new set of parked copies, even when the main window is closed. It follows your notification settings, so it stays quiet when OS notifications are off or while you are looking at HQ. Clicking it opens the main window with the Review list open.
+- When a second HQ app (such as a test or preview build) runs on the same HQ folder as the installed app, the two apps no longer stop each other's sync watcher. Before, each app treated the other's watcher as left over from a closed session, stopped it, and started its own, so sync restarted every few minutes. Now an app leaves a watcher alone while the app that started it is still running, and waits instead of starting a second one. A watcher left behind by a closed app is still replaced, but only after it stops checking in for a minute.
 
 ## [0.11.2] — 2026-10-10
 
