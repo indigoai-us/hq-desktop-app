@@ -62,9 +62,7 @@ pub fn conflict_batch_ids(notices: &[serde_json::Value]) -> BTreeSet<String> {
 }
 
 /// Notification copy, matching the in-window toast wording.
-pub fn conflict_notification_copy(
-    notices: &[serde_json::Value],
-) -> Option<ConflictNotification> {
+pub fn conflict_notification_copy(notices: &[serde_json::Value]) -> Option<ConflictNotification> {
     let first_path = notices
         .iter()
         .find_map(|notice| notice.get("relativePath").and_then(|value| value.as_str()))
@@ -79,10 +77,7 @@ pub fn conflict_notification_copy(
         }),
         count => Some(ConflictNotification {
             title: format!("{count} conflict copies parked"),
-            body: format!(
-                "{first_path} and {} more have preserved copies.",
-                count - 1
-            ),
+            body: format!("{first_path} and {} more have preserved copies.", count - 1),
         }),
     }
 }
