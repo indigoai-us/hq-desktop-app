@@ -65,7 +65,8 @@ pub fn init(app: &AppHandle) {
     let _ = APP.set(app.clone());
 }
 
-/// A scratch build (`scratch_build.rs`) never serves hot UI updates.
+/// A scratch build or any non-production bundle (`scratch_build.rs`) never
+/// serves hot UI updates.
 pub(crate) fn scratch_mode_override(scratch: bool) -> Option<UiHotMode> {
     scratch.then_some(UiHotMode::Off)
 }
@@ -74,7 +75,7 @@ pub(crate) fn scratch_mode_override(scratch: bool) -> Option<UiHotMode> {
 /// key survives every typed settings round-trip). `HQ_UI_HOT_UPDATES`
 /// overrides it.
 pub fn mode() -> UiHotMode {
-    if let Some(off) = scratch_mode_override(crate::scratch_build::active()) {
+    if let Some(off) = scratch_mode_override(!crate::scratch_build::production_bundle()) {
         return off;
     }
     if let Ok(v) = std::env::var("HQ_UI_HOT_UPDATES") {
@@ -589,8 +590,7 @@ fn check_interval() -> Duration {
 
 /// Launch check plus the 30-minute schedule, with backoff on failures.
 pub fn setup_checker(app: &AppHandle) {
-    if crate::scratch_build::active() {
-        crate::scratch_build::skip("UI hot update checker");
+    if !crate::scratch_build::launch_side_effect_allowed("UI hot update checker") {
         return;
     }
     let handle = app.clone();
