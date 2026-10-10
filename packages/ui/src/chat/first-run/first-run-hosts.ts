@@ -76,12 +76,41 @@ export interface TeamHostDeps {
    * the first try may have made the company after all.
    */
   findCompany?: ((slug: string) => Promise<FirstRunTeamCompany | null>) | null;
+  /** Test seam; defaults to FIND_COMPANY_TIMEOUT_MS. */
+  findTimeoutMs?: number;
   dry: boolean;
   delayMs?: number;
 }
 
+/**
+ * How long a Retry waits on the roster read before it creates as before. A
+ * read that never answers must not hold Retry.
+ */
+export const FIND_COMPANY_TIMEOUT_MS = 10_000;
+
 export const JOIN_FAILURE = "Couldn't join the company. Try again.";
 export const CREATE_UNAVAILABLE = "Starting a company isn't available here yet. Continue in chat to start one.";
+
+/** The roster read, or null when it fails or has not answered within `ms`. */
+function findWithin(
+  find: (slug: string) => Promise<FirstRunTeamCompany | null>,
+  slug: string,
+  ms: number,
+): Promise<FirstRunTeamCompany | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    find(slug).then(
+      (found) => {
+        clearTimeout(timer);
+        resolve(found);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
 
 export function createFirstRunTeamHost(deps: TeamHostDeps): FirstRunTeamHost {
   const delay = deps.delayMs ?? FIRST_RUN_DRY_DELAY_MS;
@@ -126,7 +155,7 @@ export function createFirstRunTeamHost(deps: TeamHostDeps): FirstRunTeamHost {
     if (before?.ok) return before;
     // The last try failed or never answered: it may have made the company anyway.
     if (before && deps.findCompany) {
-      const found = await deps.findCompany(slug).catch(() => null);
+      const found = await findWithin(deps.findCompany, slug, deps.findTimeoutMs ?? FIND_COMPANY_TIMEOUT_MS);
       if (found) return { ok: true, choice: { kind: "company", how: "existing", company: found } };
     }
     const result = await deps.createCompany(name, slug);

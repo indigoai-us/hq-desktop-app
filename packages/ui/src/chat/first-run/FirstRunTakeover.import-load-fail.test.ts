@@ -8,13 +8,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
+/** While true the scene's chunk fails to load; then it loads for real. */
+const door = vi.hoisted(() => ({ failing: true, loaded: false }));
 vi.mock("../../shell/lazy-doors.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../../shell/lazy-doors.js")>();
   return {
     ...real,
     firstRunImportDoor: {
-      load: () => Promise.reject(new Error("chunk failed")),
-      peek: () => null,
+      load: () =>
+        door.failing
+          ? Promise.reject(new Error("chunk failed"))
+          : real.firstRunImportDoor.load().then((c) => {
+              door.loaded = true;
+              return c;
+            }),
+      peek: () => (door.loaded ? real.firstRunImportDoor.peek() : null),
       preload: () => undefined,
     },
   };
@@ -41,7 +49,7 @@ afterEach(async () => {
 });
 
 describe("the import scene could not load", () => {
-  it("shows Continue in chat on the import step, and it leaves for chat", async () => {
+  it("shows Continue in chat on the import step, it leaves for chat, and it goes away once the scene loads", { timeout: 15000 }, async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       const importHost: ImportScanHost = { run: vi.fn(), cancel: vi.fn() };
@@ -75,6 +83,13 @@ describe("the import scene could not load", () => {
       q<HTMLButtonElement>('[data-testid="first-run-continue-in-chat"]')!.click();
       await settle();
       expect(oncontinueinchat).toHaveBeenCalledTimes(1);
+
+      // The scene loads on a later try: Continue in chat goes away again and the scene shows.
+      door.failing = false;
+      await vi.waitFor(() => expect(q('[data-testid="first-run-import-start"]')).toBeTruthy(), { timeout: 8000, interval: 50 });
+      await settle();
+      expect(q('[data-testid="first-run-continue-in-chat"]')).toBeNull();
+      expect(q('[data-testid="first-run-import-loading"]')).toBeNull();
     } finally {
       error.mockRestore();
     }

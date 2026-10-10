@@ -441,14 +441,38 @@
    * frame, so the header's Continue in chat comes back as the way out.
    */
   let importDoorFailed = $state(false);
+  /** How often a failed load of the scene is tried again while its step is open. */
+  const IMPORT_DOOR_RETRY_MS = 5000;
+  /** Bumped when the scene loads after a failed load, so the step mounts it. */
+  let importDoorKey = $state(0);
   $effect(() => {
-    if (step !== "context" || importDoorFailed || firstRunImportDoor.peek()) return;
+    if (step !== "context") return;
+    if (firstRunImportDoor.peek()) {
+      importDoorFailed = false;
+      return;
+    }
+    // A failed load is tried again every few seconds while the step is open;
+    // once the scene is there, Continue in chat goes away again.
     let live = true;
-    firstRunImportDoor.load().catch(() => {
-      if (live) importDoorFailed = true;
-    });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const attempt = (): void => {
+      firstRunImportDoor.load().then(
+        () => {
+          if (!live || !importDoorFailed) return;
+          importDoorFailed = false;
+          importDoorKey += 1;
+        },
+        () => {
+          if (!live) return;
+          importDoorFailed = true;
+          timer = setTimeout(attempt, IMPORT_DOOR_RETRY_MS);
+        },
+      );
+    };
+    attempt();
     return () => {
       live = false;
+      if (timer) clearTimeout(timer);
     };
   });
   onMount(() => {
@@ -706,6 +730,7 @@
     >
       <div class="first-run-import-step" data-testid="first-run-step" data-step={step} role="group">
         {#if importClock}
+          {#key importDoorKey}
           <LazyDoor
             door={firstRunImportDoor}
             props={{
@@ -736,6 +761,7 @@
               <div class="first-run-import-loading" data-testid="first-run-import-loading" aria-hidden="true"></div>
             {/snippet}
           </LazyDoor>
+          {/key}
         {/if}
       </div>
     </div>

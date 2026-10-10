@@ -91,6 +91,26 @@ export function teamOptionsFrom(workspaces: readonly Workspace[] | null | undefi
 }
 
 /**
+ * The person's company with this slug in the roster, for a Retry after a
+ * create that failed or timed out (it may have made the company after all).
+ * Only a cloud company the person is an active member of counts: a local
+ * folder with the same name is not a company they started.
+ */
+export function activeCloudCompanyBySlug(
+  workspaces: readonly Workspace[] | null | undefined,
+  slug: string,
+): FirstRunTeamCompany | null {
+  const row = dedupeWorkspaces([...(workspaces ?? [])]).find(
+    (w) =>
+      w.kind === "company" &&
+      w.slug === slug &&
+      w.membershipStatus === "active" &&
+      (w.cloudUid ?? "").trim() !== "",
+  );
+  return row ? toCompany(row) : null;
+}
+
+/**
  * What "Finish with defaults" and an untouched screen settle on: the one
  * company the person already belongs to, else "Just me". An invite is never
  * accepted by default.

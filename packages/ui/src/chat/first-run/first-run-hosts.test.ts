@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ok, type AdapterResult, type Json } from "@hq/platform";
 
-import { CONNECT_ABORTED, CREATE_UNAVAILABLE, createFirstRunAppsHost, createFirstRunTeamHost } from "./first-run-hosts.js";
+import { CONNECT_ABORTED, CREATE_UNAVAILABLE, FIND_COMPANY_TIMEOUT_MS, createFirstRunAppsHost, createFirstRunTeamHost } from "./first-run-hosts.js";
 import type { FirstRunApp } from "./app-step.js";
 
 const ACME = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
@@ -119,6 +119,45 @@ describe("team host: a create or join that ran long", () => {
     await expect(host.create("Pickle Works")).rejects.toThrow("network");
     expect((await host.create("Pickle Works")).ok).toBe(true);
     expect(createCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("a roster read that never answers holds Retry for at most 10 seconds, then it creates as before", async () => {
+    vi.useFakeTimers();
+    try {
+      expect(FIND_COMPANY_TIMEOUT_MS).toBe(10_000);
+      const createCompany = vi
+        .fn<() => Promise<CreateAnswer>>()
+        .mockResolvedValueOnce({ ok: false, reason: "That did not work." })
+        .mockResolvedValueOnce({ ok: true, companyUid: "cmp_pickle" });
+      const findCompany = vi.fn(() => new Promise<null>(() => undefined));
+      const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+      await host.create("Pickle Works");
+      let answer: unknown = null;
+      void host.create("Pickle Works").then((r) => (answer = r));
+      await vi.advanceTimersByTimeAsync(FIND_COMPANY_TIMEOUT_MS - 1);
+      expect(findCompany).toHaveBeenCalledTimes(1);
+      expect(createCompany).toHaveBeenCalledTimes(1);
+      expect(answer).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(createCompany).toHaveBeenCalledTimes(2);
+      expect(answer).toEqual({ ok: true, choice: { kind: "company", how: "created", company: PICKLE } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a roster read that fails falls back to creating", async () => {
+    const createCompany = vi
+      .fn<() => Promise<CreateAnswer>>()
+      .mockResolvedValueOnce({ ok: false, reason: "That did not work." })
+      .mockResolvedValueOnce({ ok: true, companyUid: "cmp_pickle" });
+    const findCompany = vi.fn(async () => {
+      throw new Error("roster down");
+    });
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    await host.create("Pickle Works");
+    expect((await host.create("Pickle Works")).ok).toBe(true);
+    expect(createCompany).toHaveBeenCalledTimes(2);
   });
 
   it("a Retry while a join still runs waits on that join", async () => {
