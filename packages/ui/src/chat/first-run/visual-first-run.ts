@@ -166,9 +166,12 @@ export function firstRunFinishTarget(
  * after the import step. On the import step itself the scene's own buttons
  * are the way on (Bring it in, or the quiet Skip for now), so it shows only
  * when the scene could not load (`importLoadFailed`) and would otherwise
- * leave the person with no way out. Before the import it shows only where
- * the person cannot go forward: the coding tools step while no tool is
- * signed in, which the import cannot be reached past anyway.
+ * leave the person with no way out.
+ *
+ * Never on the coding tools step, in any state and on any host (owner,
+ * 2026-10-10): the assistant runs on a signed-in coding tool, so that screen
+ * helps the person sign in (FirstRunToolsSignIn) instead of offering a way
+ * around it. `ready` stays in the signature for the callers.
  */
 export function firstRunOffersChat(
   id: FirstRunStepId,
@@ -176,9 +179,10 @@ export function firstRunOffersChat(
   steps: readonly FirstRunStep[] = FIRST_RUN_STEPS,
   opts: { importLoadFailed?: boolean } = {},
 ): boolean {
+  void ready;
+  if (id === "tools") return false;
   if (id === "context" && indexOfStep("context", steps) >= 0) return opts.importLoadFailed === true;
-  if (!firstRunBeforeImport(id, steps)) return true;
-  return id === "tools" && !anyToolReady(ready);
+  return !firstRunBeforeImport(id, steps);
 }
 
 /** Whether a step lets the person move on. */

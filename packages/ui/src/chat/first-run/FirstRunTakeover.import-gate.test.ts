@@ -3,9 +3,10 @@
 /**
  * Owner finding (2026-10-10): "Finish with defaults" on an early step skipped
  * "Bring in your context" entirely. On every step before the import the only
- * way forward is Next: no Finish with defaults and no Continue in chat (other
- * than on the coding tools step while no tool is signed in, where the flow
- * cannot go forward at all). From the import on, Finish with defaults still
+ * way forward is Next: no Finish with defaults and no Continue in chat. On
+ * the coding tools step with no tool signed in the screen helps the person
+ * sign in instead (owner, 2026-10-10; FirstRunTakeover.tools-signin tests).
+ * From the import on, Finish with defaults still
  * lands on Done, and a failed or empty scan can still move on.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -186,14 +187,14 @@ describe("no way past Bring in your context before it has run", () => {
     expect(step()).toBe("context");
   });
 
-  it("the coding tools step with no tool signed in keeps Continue in chat, the only way out, and no Finish", async () => {
+  it("the coding tools step with no tool signed in has no Continue in chat and no Finish: it offers Sign in", async () => {
     const { handlers } = render({ initialStep: "tools", runtimeReady: { claude: false, codex: false, grok: false }, creation: { state: "idle" } });
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
     expect(q('[data-testid="first-run-finish"]')).toBeNull();
-    click('[data-testid="first-run-continue-in-chat"]');
-    await settle();
-    expect(handlers.oncontinueinchat).toHaveBeenCalledTimes(1);
+    expect(q('[data-testid="first-run-continue-in-chat"]')).toBeNull();
+    expect(q('[data-testid="first-run-tools-signin"]')).toBeTruthy();
+    expect(handlers.oncontinueinchat).not.toHaveBeenCalled();
   });
 
   it("the import step makes Bring it in the one primary button, with Skip for now as a quiet link under it, and no Finish or Continue in chat", async () => {

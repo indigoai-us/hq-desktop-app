@@ -738,7 +738,20 @@
 /// advancement, and redacts spaced filenames from push telemetry. Runner bug
 /// fixes, not a new desktop-visible capability, so no `*_MIN_HQ_CLOUD` floor;
 /// it stays on the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays 6.18.0.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.52";
+///
+/// `~6.18.52` -> `~6.18.60`: floors the runner at the watch-owner parent
+/// lease and the `.git` sidecar snapshot fix (hq-cloud#920), plus the sync
+/// conflict re-park fixes (hq-cloud#914, #916: a conflict backup that fails
+/// now fails closed, and held divergences are preserved and audited instead
+/// of being re-parked). It also carries the 6.18.53-6.18.59 runner fixes
+/// (journal etag fencing, incomplete packed journal rows rejected, watcher
+/// push starvation and batching, bounded watcher push with refused-receipt
+/// retry, conflict-copy parked notifications, macOS reindex pacing). Runner
+/// bug fixes, not a new desktop-visible capability, so no `*_MIN_HQ_CLOUD`
+/// floor; it stays on the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays
+/// 6.18.0. Raising the lower bound moves npm's cache key so installed copies
+/// refresh their cached runner.
+pub const HQ_CLOUD_VERSION: &str = "~6.18.60";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -866,7 +879,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.52");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.60");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
