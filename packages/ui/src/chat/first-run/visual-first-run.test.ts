@@ -229,7 +229,12 @@ describe("assistant name", () => {
     expect(assistantNameIssue("Pickles")).toBeNull();
     expect(assistantNameIssue("Dr. O'Neil-Smith")).toBeNull();
     expect(assistantNameIssue("  ")).toBe("Give your assistant a name.");
-    expect(assistantNameIssue("R2D2")).toBe("Use letters, spaces, apostrophes, periods and hyphens.");
+    expect(assistantNameIssue("R2D2")).toBeNull();
+    expect(assistantNameIssue("StefanTest123")).toBeNull();
+    expect(assistantNameIssue("Scout 2")).toBeNull();
+    expect(assistantNameIssue("123abc")).toBe("Use letters, numbers, spaces, apostrophes, periods and hyphens.");
+    expect(assistantNameIssue("Robo<script>")).toBe("Use letters, numbers, spaces, apostrophes, periods and hyphens.");
+    expect(assistantNameIssue("!!!")).toBe("Use letters, numbers, spaces, apostrophes, periods and hyphens.");
     expect(assistantNameIssue("-dash")).not.toBeNull();
     expect(assistantNameIssue("a".repeat(ASSISTANT_NAME_MAX))).toBeNull();
     expect(assistantNameIssue("a".repeat(ASSISTANT_NAME_MAX + 1))).toBe("Keep the name under 35 characters.");

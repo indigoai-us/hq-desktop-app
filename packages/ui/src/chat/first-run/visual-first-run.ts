@@ -259,14 +259,14 @@ export function normalizeAssistantName(name: string): string {
 
 /**
  * Why a name cannot be the assistant's display name, or null. The same rule
- * as the host's `validate_display_name` (apps/sync bots.rs): letters first,
- * then letters, spaces, apostrophes, periods and hyphens, at most 35.
+ * as the host's `validate_display_name` (apps/sync bots.rs): a letter first,
+ * then letters, numbers, spaces, apostrophes, periods and hyphens, at most 35.
  */
 export function assistantNameIssue(name: string): string | null {
   const collapsed = normalizeAssistantName(name);
   if (!collapsed) return "Give your assistant a name.";
   if ([...collapsed].length > ASSISTANT_NAME_MAX) return `Keep the name under ${ASSISTANT_NAME_MAX} characters.`;
-  if (!/^\p{L}[\p{L} .'-]*$/u.test(collapsed)) return "Use letters, spaces, apostrophes, periods and hyphens.";
+  if (!/^\p{L}[\p{L}\p{N} .'-]*$/u.test(collapsed)) return "Use letters, numbers, spaces, apostrophes, periods and hyphens.";
   return null;
 }
 
@@ -460,8 +460,8 @@ function settledSentence(handoff: Pick<FirstRunHandoff, "team" | "apps">): strin
 
 /**
  * The assistant's name in prose only when it passes the display-name rule
- * (letters, spaces, apostrophes, periods, hyphens); anything else is named
- * by its place in the JSON.
+ * (a letter, then letters, numbers, spaces, apostrophes, periods, hyphens);
+ * anything else is named by its place in the JSON.
  */
 function proseName(name: string, before: string, after: string, otherwise: string): string {
   return name && !assistantNameIssue(name) ? `${before}${name}${after}` : otherwise;
