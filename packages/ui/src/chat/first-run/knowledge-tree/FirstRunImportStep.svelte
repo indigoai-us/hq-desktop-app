@@ -635,14 +635,9 @@
 
   <div class="fr-actions" data-fr-actions>
     {#if asking}
-      <div class="new-bot-foot-actions">
-        <button
-          type="button"
-          class="new-bot-create-next"
-          data-testid="first-run-import-skip"
-          disabled={pressed !== null}
-          onclick={() => press("skip", onskip)}
-        >Skip for now</button>
+      <!-- Importing is the main path (owner, 2026-10-10): one full-width
+           primary button, and declining is a quiet text link under it. -->
+      <div class="new-bot-foot-actions single">
         <button
           type="button"
           class="new-bot-create-submit"
@@ -652,6 +647,15 @@
           onclick={() => press("start", onstart)}
         >{pressed === "start" ? "Starting…" : "Bring it in"}</button>
       </div>
+      <p class="fr-skip-row">
+        <button
+          type="button"
+          class="fr-link fr-skip"
+          data-testid="first-run-import-skip"
+          disabled={pressed !== null}
+          onclick={() => press("skip", onskip)}
+        >Skip for now</button>
+      </p>
     {:else}
       <div class="new-bot-foot-actions" class:single={!offersFinish}>
         <button

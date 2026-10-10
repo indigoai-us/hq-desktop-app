@@ -436,6 +436,21 @@
       importClock = createSceneClock();
     });
   });
+  /**
+   * The scene's code could not load: the step would show only its loading
+   * frame, so the header's Continue in chat comes back as the way out.
+   */
+  let importDoorFailed = $state(false);
+  $effect(() => {
+    if (step !== "context" || importDoorFailed || firstRunImportDoor.peek()) return;
+    let live = true;
+    firstRunImportDoor.load().catch(() => {
+      if (live) importDoorFailed = true;
+    });
+    return () => {
+      live = false;
+    };
+  });
   onMount(() => {
     // Warm the scene's chunk while the person is on the earlier steps.
     if (untrack(() => importHost)) firstRunImportDoor.preload();
@@ -443,6 +458,7 @@
   onDestroy(() => {
     appsAbort.abort();
     importRunner.dispose();
+    teamRunner.dispose();
     importClock?.dispose();
   });
 
@@ -646,7 +662,7 @@
    * before the import (firstRunOffersChat): Next is the only way forward
    * there, and the import is never skipped without being seen.
    */
-  const offersChat = $derived(firstRunOffersChat(step, runtimeReady, shownSteps));
+  const offersChat = $derived(firstRunOffersChat(step, runtimeReady, shownSteps, { importLoadFailed: importDoorFailed }));
 
   const talkLabel = $derived(
     leaving === "talk"

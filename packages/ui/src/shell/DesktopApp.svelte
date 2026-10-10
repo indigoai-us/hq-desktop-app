@@ -3543,6 +3543,11 @@
             createCompanyRequested = true;
             void onrefreshroster?.();
           },
+          findCompany: async (slug) => {
+            await onrefreshroster?.();
+            await svelteTick();
+            return teamOptionsFrom(companies ?? []).companies.find((c) => c.slug === slug) ?? null;
+          },
         })
       : null,
   );

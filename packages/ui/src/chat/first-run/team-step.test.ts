@@ -178,6 +178,51 @@ describe("one join or create at a time", () => {
     }
   });
 
+  it("after dispose nothing is reported: no timeout, no warning, and a late answer is ignored", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const onchange = vi.fn();
+      let resolve!: (r: TeamActionResult) => void;
+      const runner = createTeamActionRunner(onchange);
+      runner.run("invite:acme", "Joining Acme…", () => new Promise<TeamActionResult>((r) => (resolve = r)));
+      expect(onchange).toHaveBeenCalledTimes(1);
+      runner.dispose();
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS * 2);
+      resolve({ ok: true, choice: { kind: "personal" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onchange).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+      // A press after teardown runs nothing.
+      const action = vi.fn(async (): Promise<TeamActionResult> => ({ ok: true, choice: { kind: "personal" } }));
+      runner.run("create", "Starting X…", action);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(action).not.toHaveBeenCalled();
+      expect(onchange).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("after dispose a late throw is not reported or logged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const onchange = vi.fn();
+      let reject!: (e: unknown) => void;
+      const runner = createTeamActionRunner(onchange);
+      runner.run("create", "Starting X…", () => new Promise<TeamActionResult>((_r, j) => (reject = j)));
+      await Promise.resolve();
+      runner.dispose();
+      reject(new Error("late"));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onchange).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("an answer in time clears the timer", async () => {
     vi.useFakeTimers();
     try {

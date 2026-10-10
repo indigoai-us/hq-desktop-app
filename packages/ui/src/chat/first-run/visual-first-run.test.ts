@@ -192,9 +192,14 @@ describe("first-run step list", () => {
     // No coding tool signed in: the flow cannot reach the import, so the way out stays.
     expect(firstRunOffersChat("tools", { claude: false, codex: false }, shown)).toBe(true);
     expect(firstRunOffersChat("tools", null, shown)).toBe(true);
-    for (const id of ["context", "notes", "projects", "done"] as const) {
+    for (const id of ["notes", "projects", "done"] as const) {
       expect(firstRunOffersChat(id, { claude: true }, shown)).toBe(true);
     }
+    // On the import step the scene's buttons are the way on; the header comes
+    // back only when the scene could not load.
+    expect(firstRunOffersChat("context", { claude: true }, shown)).toBe(false);
+    expect(firstRunOffersChat("context", { claude: true }, shown, { importLoadFailed: false })).toBe(false);
+    expect(firstRunOffersChat("context", { claude: true }, shown, { importLoadFailed: true })).toBe(true);
     const noImport = firstRunStepsFor({ ...ALL, canImport: false });
     for (const id of ["name", "team", "tools"] as const) {
       expect(firstRunOffersChat(id, { claude: true }, noImport)).toBe(true);
