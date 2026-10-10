@@ -1088,6 +1088,7 @@
       entryError={createError}
       signInApi={botSignIn}
       onsignedin={() => loadPreflight()}
+      probeBotRuntime={adapter?.bots?.probe ? (input) => adapter!.bots!.probe!(input) : null}
     />
   </NewBotSunriseShell>
 {/if}

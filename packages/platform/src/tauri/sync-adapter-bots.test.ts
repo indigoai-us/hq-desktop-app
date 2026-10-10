@@ -237,3 +237,15 @@ describe('local bot promotion adapters', () => {
     expect(result).toEqual({ ok: true, value: { promotion: { agentUid: 'agt_TEST', phase: 'local-stopped' } } });
   });
 });
+
+describe('sync adapter local bots probe', () => {
+  it('hands the runtime, model and thinking level to local_bots_probe', async () => {
+    const { adapter, calls } = adapterWithRecorder();
+    await adapter.bots!.probe!({ runtime: 'codex', model: 'gpt-5.5', effort: 'medium' });
+    await adapter.bots!.probe!({ runtime: 'claude' });
+    expect(calls).toEqual([
+      { cmd: 'local_bots_probe', args: { runtime: 'codex', model: 'gpt-5.5', effort: 'medium' } },
+      { cmd: 'local_bots_probe', args: { runtime: 'claude', model: null, effort: null } },
+    ]);
+  });
+});

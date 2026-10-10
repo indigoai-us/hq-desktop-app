@@ -13739,6 +13739,7 @@
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
+          probeBotRuntime={adapter.bots?.probe ? (input) => adapter.bots!.probe!(input) : null}
           {localBots}
           {botDisplayNames}
           {ownedLocalBotUids}

@@ -901,6 +901,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     stop: (name) => this.call("local_bots_stop", { name }),
     remove: (name) => this.call("local_bots_remove", { name }),
     configure: (name, settings) => this.call("local_bots_configure", localBotSettingsArgs(name, settings)),
+    probe: (input) =>
+      this.call("local_bots_probe", { runtime: input.runtime, model: input.model ?? null, effort: input.effort ?? null }),
     promote: (name, companyUid) => this.call("local_bots_promote", { name, companyUid }),
   };
 

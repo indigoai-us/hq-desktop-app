@@ -503,6 +503,143 @@ pub async fn local_bots_restore(all: Option<bool>) -> Result<Value, String> {
     run_hq_bot(&argv, Duration::from_secs(600)).await
 }
 
+// ── readiness probe before a local bot is created ───────────────────────────
+
+/// How long the readiness probe may take: one tiny real model turn. The CLI
+/// gets this as `--timeout` and reports a timeout as `transient`; the spawn
+/// gets a little more so the CLI can answer first.
+const PROBE_TIMEOUT_SECS: u64 = 45;
+const PROBE_SPAWN_GRACE_SECS: u64 = 15;
+
+/// Thinking level handed to `hq bot probe --effort`. Closed set: the levels
+/// any runtime accepts (the CLI checks the per-runtime list itself).
+fn validate_effort(effort: &str) -> Result<&'static str, String> {
+    match effort.trim() {
+        "minimal" => Ok("minimal"),
+        "low" => Ok("low"),
+        "medium" => Ok("medium"),
+        "high" => Ok("high"),
+        "xhigh" => Ok("xhigh"),
+        "max" => Ok("max"),
+        other => Err(format!(
+            "Unknown thinking level \"{}\".",
+            other.chars().take(20).collect::<String>()
+        )),
+    }
+}
+
+/// argv for `hq bot probe` (without `--json`): the runtime, model and
+/// thinking level the bot will be created with. Pure so the mapping and the
+/// validation are unit-testable; nothing here is ever shell-parsed.
+fn probe_args(runtime: &str, model: Option<&str>, effort: Option<&str>, timeout_secs: u64) -> Result<Vec<String>, String> {
+    let runtime = validate_runtime(runtime)?;
+    let mut args = vec!["probe".to_string(), "--runtime".to_string(), runtime.to_string()];
+    if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        args.push("--model".to_string());
+        args.push(validate_model(model)?);
+    }
+    if let Some(effort) = effort.map(str::trim).filter(|e| !e.is_empty()) {
+        args.push("--effort".to_string());
+        args.push(validate_effort(effort)?.to_string());
+    }
+    args.push("--timeout".to_string());
+    args.push(timeout_secs.clamp(5, 120).to_string());
+    Ok(args)
+}
+
+/// An hq CLI from before `hq bot probe` answers "error: unknown command 'probe'".
+fn is_unknown_probe_command(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("unknown command") && lower.contains("probe")
+}
+
+/// What the UI gets from a finished `hq bot probe --json`.
+///
+/// The probe exits 1 when the runtime could not answer, and still prints its
+/// one JSON document, so the exit status alone means nothing here. The
+/// document goes to the UI without `diagnostic` (the runtime's raw error,
+/// logs only). A CLI without the command answers `{ "supported": false }` so
+/// the flow can fall back to the sign-in status read.
+fn interpret_probe_output(stdout: &str, stderr: &str) -> Result<Value, String> {
+    if let Some(start) = stdout.find('{') {
+        if let Ok(Value::Object(mut doc)) = serde_json::from_str::<Value>(stdout[start..].trim()) {
+            if matches!(doc.get("ok"), Some(Value::Bool(_))) {
+                if let Some(diagnostic) = doc.remove("diagnostic") {
+                    let text = diagnostic.as_str().unwrap_or_default().replace('\n', " | ");
+                    log(LOG_TAG, &format!("hq bot probe diagnostic: {}", strip_ansi(&text)));
+                }
+                return Ok(Value::Object(doc));
+            }
+        }
+    }
+    if is_unknown_probe_command(stderr) || is_unknown_probe_command(stdout) {
+        return Ok(serde_json::json!({ "supported": false }));
+    }
+    Err("The readiness check gave no answer.".to_string())
+}
+
+/// `hq bot probe --runtime <r> [--model m] [--effort e] --timeout <s> --json`:
+/// one minimal real turn with exactly the runtime, model and thinking level a
+/// new bot will use, run before the bot is saved. Answers the probe document
+/// `{ ok, class, detail, runtime, model, modelFallback?, durationMs }`, or
+/// `{ supported: false }` from an hq CLI that predates the command.
+#[tauri::command]
+pub async fn local_bots_probe(runtime: String, model: Option<String>, effort: Option<String>) -> Result<Value, String> {
+    let args = probe_args(&runtime, model.as_deref(), effort.as_deref(), PROBE_TIMEOUT_SECS)?;
+    let hq_root = resolve_hq_path()?;
+    let hq = paths::resolve_bin("hq");
+    let mut argv: Vec<&str> = vec!["bot"];
+    argv.extend(args.iter().map(String::as_str));
+    argv.push("--json");
+    log(LOG_TAG, &format!("hq {}", argv.join(" ")));
+    let mut command = paths::tokio_spawn_command(&hq, &argv);
+    command
+        .current_dir(&hq_root)
+        .env("PATH", paths::child_path())
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .env("HQ_ROOT", &hq_root)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(
+        Duration::from_secs(PROBE_TIMEOUT_SECS + PROBE_SPAWN_GRACE_SECS),
+        command.output(),
+    )
+    .await
+    .map_err(|_| {
+        log(LOG_TAG, "hq bot probe did not finish in time");
+        "The readiness check took too long.".to_string()
+    })?
+    .map_err(|e| {
+        log(LOG_TAG, &format!("hq bot probe could not start: {e}"));
+        "The readiness check could not start.".to_string()
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let result = interpret_probe_output(&stdout, &stderr);
+    match &result {
+        Ok(doc) if doc.get("supported") == Some(&Value::Bool(false)) => {
+            log(LOG_TAG, "hq CLI has no `bot probe`; the New bot flow falls back to the sign-in status read");
+        }
+        Ok(doc) => log(
+            LOG_TAG,
+            &format!(
+                "hq bot probe {}: ok={} class={}",
+                runtime.trim(),
+                doc.get("ok").and_then(Value::as_bool).unwrap_or(false),
+                doc.get("class").and_then(Value::as_str).unwrap_or("none")
+            ),
+        ),
+        Err(_) => log(
+            LOG_TAG,
+            &format!(
+                "hq bot probe unreadable (status {}): {}",
+                output.status.code().unwrap_or(-1),
+                strip_ansi(&stderr).replace('\n', " | ")
+            ),
+        ),
+    }
+    result
+}
+
 /// Change the model and thinking level a bot uses (from its next message).
 #[tauri::command]
 pub async fn local_bots_configure(name: String, model: Option<String>, effort: Option<String>) -> Result<Value, String> {
@@ -527,6 +664,62 @@ mod tests {
         assert!(configure_args("scout", Some("gpt 5; rm -rf /"), None).is_err());
         assert!(configure_args("scout", Some("-rf"), None).is_err());
         assert!(configure_args("scout", None, None).is_err());
+    }
+
+    #[test]
+    fn probe_args_pass_the_bots_runtime_model_and_effort_as_a_list() {
+        assert_eq!(
+            probe_args("codex", None, None, 45).unwrap(),
+            vec!["probe", "--runtime", "codex", "--timeout", "45"]
+        );
+        assert_eq!(
+            probe_args(" claude ", Some("claude-sonnet-5"), Some("high"), 45).unwrap(),
+            vec!["probe", "--runtime", "claude", "--model", "claude-sonnet-5", "--effort", "high", "--timeout", "45"]
+        );
+        // Blank model and effort mean the runtime's own defaults.
+        assert_eq!(
+            probe_args("grok", Some("  "), Some(""), 45).unwrap(),
+            vec!["probe", "--runtime", "grok", "--timeout", "45"]
+        );
+        // The timeout stays in a sane band.
+        assert_eq!(probe_args("codex", None, None, 0).unwrap().last().unwrap(), "5");
+        assert_eq!(probe_args("codex", None, None, 9999).unwrap().last().unwrap(), "120");
+    }
+
+    #[test]
+    fn probe_args_reject_anything_flag_or_shell_like() {
+        assert!(probe_args("bash", None, None, 45).is_err());
+        assert!(probe_args("codex; rm -rf /", None, None, 45).is_err());
+        assert!(probe_args("", None, None, 45).is_err());
+        assert!(probe_args("codex", Some("--dangerously-skip"), None, 45).is_err());
+        assert!(probe_args("codex", Some("gpt 5; rm -rf /"), None, 45).is_err());
+        assert!(probe_args("codex", Some("$(whoami)"), None, 45).is_err());
+        assert!(probe_args("codex", Some(&"a".repeat(65)), None, 45).is_err());
+        assert!(probe_args("codex", None, Some("--yolo"), 45).is_err());
+        assert!(probe_args("codex", None, Some("ultra"), 45).is_err());
+    }
+
+    #[test]
+    fn probe_output_passes_the_document_through_without_the_raw_error() {
+        let failed = r#"{"ok":false,"class":"cli-outdated","detail":"Codex on this computer is out of date for this model.","runtime":"codex","model":null,"diagnostic":"The 'gpt-6-astra' model requires a newer version of Codex.","durationMs":1830}"#;
+        let doc = interpret_probe_output(failed, "").unwrap();
+        assert_eq!(doc["ok"], Value::Bool(false));
+        assert_eq!(doc["class"], "cli-outdated");
+        assert!(doc.get("diagnostic").is_none(), "the raw runtime error never reaches the UI");
+
+        let fallback = r#"{"ok":true,"class":null,"detail":"Codex works.","runtime":"codex","model":null,"modelFallback":{"from":"gpt-6-astra","to":"gpt-5.5"},"durationMs":900}"#;
+        let doc = interpret_probe_output(&format!("note\n{fallback}"), "").unwrap();
+        assert_eq!(doc["ok"], Value::Bool(true));
+        assert_eq!(doc["modelFallback"]["to"], "gpt-5.5");
+    }
+
+    #[test]
+    fn probe_output_from_a_cli_without_the_command_says_unsupported() {
+        let doc = interpret_probe_output("", "error: unknown command 'probe'\n(Did you mean promote?)").unwrap();
+        assert_eq!(doc, serde_json::json!({ "supported": false }));
+        // Anything else unreadable is an error the UI shows as "try again".
+        assert!(interpret_probe_output("", "Segmentation fault").is_err());
+        assert!(interpret_probe_output(r#"{"bots":[]}"#, "").is_err());
     }
 
     #[test]

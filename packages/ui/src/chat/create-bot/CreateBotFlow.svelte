@@ -43,7 +43,15 @@
   import IdentityMark from "../messaging/IdentityMark.svelte";
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
-  import type { RuntimeStatus } from "./runtime-status.js";
+  import { runtimeStatusOf, type RuntimeStatus } from "./runtime-status.js";
+  import {
+    PROBE_EFFORT,
+    probeKey,
+    readProbeAnswer,
+    supportedModelFor,
+    type RuntimeProbeInput,
+    type RuntimeProbeState,
+  } from "./runtime-probe.js";
   import type { CloudBotDraft } from "../lifecycle-entry-points.js";
   import type { CloudUnavailableCopy, CreateAvailability, CreateErrorFix } from "@hq/agents";
   import type { DirectCloudFlowSeam } from "./direct-cloud-lazy.js";
@@ -62,6 +70,7 @@
     nextStepLabel,
     OPTIONAL_LOCAL_STEPS,
     prevStep,
+    runtimeIsReady,
     scopeLine,
     stepIssue,
     stepsFor,
@@ -163,6 +172,13 @@
     ) => Promise<import("../../install-choice/install-choice.js").InstallOutcome>;
     /** Ask the host to (re-)probe `detect_ai_tools` lazily on wizard open. */
     onrequestaitools?: () => void;
+    /**
+     * The readiness check before a local bot is saved (`hq bot probe`): one
+     * tiny real turn with the runtime, model and thinking level the bot will
+     * use. Without it, or when the hq CLI cannot run it, the sign-in status
+     * read decides, as before.
+     */
+    probeBotRuntime?: ((input: RuntimeProbeInput) => AdapterPromise<unknown>) | null;
     /** Sign-in poll interval; tests shorten it. */
     pollMs?: number;
     /** Company the flow was opened from (Team page Add agent); Cloud starts on it. */
@@ -201,6 +217,7 @@
     onsignin = null,
     onsignedin = null,
     onrecheckruntimes = null,
+    probeBotRuntime = null,
     pollMs = 1500,
     initialCompanyUid = null,
     initialCompanySlug = null,
@@ -327,7 +344,6 @@
   const steps = $derived(stepsFor(draft, stepOpts));
   const stepIndex = $derived(Math.max(0, steps.indexOf(step)));
   const isLast = $derived(nextStep(step, draft, stepOpts) === null);
-  const advanceOk = $derived(!busy && canAdvance(step, draft, ctx, stepOpts));
   const createOk = $derived(!busy && canCreate(draft, ctx, stepOpts));
   const issue = $derived(stepIssue(step, draft, ctx, stepOpts));
   const chosenTemplate = $derived(
@@ -383,6 +399,125 @@
   });
   /** "Next: Who it's for", or "" on the last step. */
   const nextLabel = $derived(nextStepLabel(nextStep(step, draft, stepOpts)));
+
+  // ── Readiness check before a local bot is saved ──────────────────────────
+  /** Each check's outcome, by runtime and model (`probeKey`). */
+  let probes = $state<Record<string, RuntimeProbeState>>({});
+  /** Checks still running, so Create can wait on the one already out. */
+  const probesInFlight = new Map<string, Promise<RuntimeProbeState>>();
+  /** The hq CLI cannot run the check: the status read decides, as before. */
+  let probeUnavailable = $state(false);
+  /** The model each runtime's bot will be created with; absent = the tool's default. */
+  let askedModels = $state<Partial<Record<BotRuntime, string>>>({});
+  /** Models already checked and refused, per runtime, so "Use a supported model" moves on. */
+  let refusedModels = $state<Partial<Record<BotRuntime, (string | null)[]>>>({});
+  /** Create was pressed and waits for the check. */
+  let probeWaiting = $state(false);
+  const probing = $derived(!!probeBotRuntime && !probeUnavailable && canLocal);
+  const askedModel = $derived(askedModels[draft.runtime] ?? null);
+  /** The check for each runtime's current model, for the cards. Null when there is no check. */
+  const probeStates = $derived.by<Partial<Record<BotRuntime, RuntimeProbeState>> | null>(() => {
+    if (!probing) return null;
+    const out: Partial<Record<BotRuntime, RuntimeProbeState>> = {};
+    for (const rt of LOCAL_BOT_RUNTIMES) {
+      const state = probes[probeKey(rt.id, askedModels[rt.id] ?? null)];
+      if (state) out[rt.id] = state;
+    }
+    return out;
+  });
+  const currentProbe = $derived(probing && draft.home === "local" ? (probeStates?.[draft.runtime] ?? null) : null);
+  const supportedModel = $derived(
+    supportedModelFor(draft.runtime, [...(refusedModels[draft.runtime] ?? []), askedModel]),
+  );
+
+  /** A failed check holds Next on the coding tool step, where its fix is. */
+  const advanceOk = $derived(
+    !busy && canAdvance(step, draft, ctx, stepOpts) && !(step === "home" && currentProbe?.state === "failed"),
+  );
+
+  /** The status read says this runtime is signed in, so a real check is worth running. */
+  function statusSaysReady(runtime: BotRuntime): boolean {
+    const status = runtimeStatusOf(botRuntimeStatus, runtime);
+    return status ? status.state === "signedIn" : runtimeIsReady(botRuntimeReady, runtime);
+  }
+
+  function runProbe(runtime: BotRuntime, model: string | null): Promise<RuntimeProbeState> {
+    const probe = probeBotRuntime;
+    if (!probe) return Promise.resolve({ state: "unavailable" });
+    const key = probeKey(runtime, model);
+    const out = probesInFlight.get(key);
+    if (out) return out;
+    probes = { ...probes, [key]: { state: "checking" } };
+    const run = (async (): Promise<RuntimeProbeState> => {
+      let next: RuntimeProbeState;
+      try {
+        const result = await probe({ runtime, model, effort: PROBE_EFFORT });
+        next = result.ok ? readProbeAnswer(result.value, model) : { state: "failed", class: "transient" };
+      } catch {
+        next = { state: "failed", class: "transient" };
+      }
+      if (next.state === "unavailable") {
+        console.info("[hq-desktop] hq CLI has no bot readiness check; using the sign-in status");
+        probeUnavailable = true;
+      }
+      probesInFlight.delete(key);
+      probes = { ...probes, [key]: next };
+      return next;
+    })();
+    probesInFlight.set(key, run);
+    return run;
+  }
+
+  /** Forget a runtime's checks so the next look runs a fresh one. */
+  function forgetProbes(runtime: BotRuntime): void {
+    const prefix = `${runtime}|`;
+    probes = Object.fromEntries(Object.entries(probes).filter(([key]) => !key.startsWith(prefix)));
+  }
+
+  // Check the picked coding tool as soon as its status read says it is signed
+  // in, so the answer is usually in by the time the person presses Create.
+  $effect(() => {
+    if (!probing || phase !== "steps" || draft.home !== "local") return;
+    const runtime = draft.runtime;
+    const model = askedModel;
+    if (!statusSaysReady(runtime)) return;
+    if (untrack(() => probes[probeKey(runtime, model)])) return;
+    void untrack(() => runProbe(runtime, model));
+  });
+
+  function retryProbe(): void {
+    if (busy) return;
+    const runtime = draft.runtime;
+    const model = askedModel;
+    const key = probeKey(runtime, model);
+    probes = Object.fromEntries(Object.entries(probes).filter(([k]) => k !== key));
+    void runProbe(runtime, model);
+  }
+
+  /** "Use a supported model": check the bot again on a model this tool can run. */
+  function useSupportedModel(): void {
+    if (busy || !supportedModel) return;
+    const runtime = draft.runtime;
+    refusedModels = { ...refusedModels, [runtime]: [...(refusedModels[runtime] ?? []), askedModel] };
+    askedModels = { ...askedModels, [runtime]: supportedModel };
+    void runProbe(runtime, supportedModel);
+  }
+
+  /** Update (or install) the tool from HQ, then check again. */
+  async function updateTool(): Promise<boolean> {
+    const runtime = draft.runtime;
+    if (busy || !onassistedinstall || (runtime !== "claude" && runtime !== "codex")) return false;
+    const outcome = await onassistedinstall(runtime).catch(() => null);
+    await onrecheckruntimes?.();
+    forgetProbes(runtime);
+    if (statusSaysReady(runtime)) void runProbe(runtime, askedModels[runtime] ?? null);
+    return !!outcome && (outcome as { kind?: string }).kind !== "failed";
+  }
+
+  async function signedIn(runtime: BotRuntime): Promise<void> {
+    forgetProbes(runtime);
+    await onsignedin?.(runtime);
+  }
 
   onMount(() => {
     const seam = directCloud;
@@ -579,7 +714,7 @@
    * field focused when that is the problem.
    */
   async function submit(): Promise<void> {
-    if (busy || cloudFinishBlocked) return;
+    if (busy || cloudFinishBlocked || probeWaiting) return;
     if (draft.home === "local") {
       const fixed = withFreeHandle(draft, names);
       if (fixed !== draft) draft = fixed;
@@ -623,9 +758,36 @@
       }
       return;
     }
+    // The bot is saved only once a real test turn with its runtime, model and
+    // thinking level answered. A failed check sends the person to the coding
+    // tool step, where the fix is.
+    let model: string | null = null;
+    if (probing) {
+      const runtime = draft.runtime;
+      const asked = askedModel;
+      const key = probeKey(runtime, asked);
+      let result = probes[key] ?? null;
+      if (!result || result.state === "checking") {
+        probeWaiting = true;
+        try {
+          result = await runProbe(runtime, asked);
+        } finally {
+          probeWaiting = false;
+        }
+        // The person picked another tool while the check ran: start over from there.
+        if (draft.runtime !== runtime || draft.home !== "local") return;
+      }
+      if (result.state === "failed" || result.state === "checking") {
+        goTo("home");
+        return;
+      }
+      if (result.state === "ready") model = result.createModel;
+    }
     // The title, avatar and model are asked by the bot itself: the CLI input
-    // carries the kickoff that has it ask (see `toCreateInput`).
-    await oncreate?.(toCreateInput(draft), displayName ? { displayName } : {});
+    // carries the kickoff that has it ask (see `toCreateInput`). A model is
+    // passed only when the check had to pick one this tool can run.
+    const input = toCreateInput(draft);
+    await oncreate?.(model ? { ...input, model } : input, displayName ? { displayName } : {});
   }
 
   /**
@@ -639,7 +801,7 @@
     if (target?.tagName === "BUTTON" || target?.tagName === "TEXTAREA") return;
     event.preventDefault();
     event.stopPropagation();
-    if (busy || cloudFinishBlocked) return;
+    if (busy || cloudFinishBlocked || probeWaiting) return;
     void submit();
   }
 
@@ -651,7 +813,9 @@
    */
   const shownIssue = $derived(draft.home === "local" && step === "home" && canLocal ? null : issue);
   const primaryLabel = $derived(
-    entryBusy === "bot"
+    probeWaiting
+      ? `Checking ${runtimeLabel}...`
+      : entryBusy === "bot"
       ? "Creating… (about half a minute)"
       : busy
         ? "Creating…"
@@ -771,8 +935,14 @@
         onpatch={patch}
         {signInApi}
         onsignin={onsignin ?? undefined}
-        onsignedin={onsignedin ?? undefined}
+        onsignedin={signedIn}
         onrecheck={onrecheckruntimes ?? undefined}
+        probe={currentProbe}
+        {probeStates}
+        probeSupportedModel={supportedModel}
+        onproberetry={retryProbe}
+        onprobemodel={useSupportedModel}
+        onprobeupdate={onassistedinstall && (draft.runtime === "claude" || draft.runtime === "codex") ? updateTool : null}
         {pollMs}
         {aiTools}
         {hqFolderPath}
@@ -825,8 +995,8 @@
         class="new-bot-create-submit"
         data-testid="chat-bot-create"
         data-finish={isLast ? undefined : "defaults"}
-        disabled={busy || cloudFinishBlocked || (isLast ? !createOk : !!issue)}
-        aria-busy={busy ? "true" : undefined}
+        disabled={busy || probeWaiting || cloudFinishBlocked || (isLast ? !createOk : !!issue)}
+        aria-busy={busy || probeWaiting ? "true" : undefined}
         onclick={() => void submit()}
       >{primaryLabel}</button>
     </div>

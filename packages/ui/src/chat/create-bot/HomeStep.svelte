@@ -23,6 +23,15 @@
     runtimeStatusOf,
     type RuntimeStatus,
   } from "./runtime-status.js";
+  import {
+    probeActionLabel,
+    probeCardStatus,
+    probeCheckingText,
+    probeFallbackText,
+    probeFix,
+    type ProbeAction,
+    type RuntimeProbeState,
+  } from "./runtime-probe.js";
   import InstallChoice from "../../install-choice/InstallChoice.svelte";
   import type {
     AiTools,
@@ -107,6 +116,20 @@
      * on the Details step when Local was already picked on the choice screen.
      */
     runtimeOnly?: boolean;
+    /**
+     * The readiness check for the picked tool (a real test turn with the
+     * bot's runtime, model and thinking level). When present it, not the
+     * status read, decides what the card and the line under it say.
+     */
+    probe?: RuntimeProbeState | null;
+    /** Each tool's check, for the card labels. Null when this host cannot check. */
+    probeStates?: Partial<Record<BotRuntime, RuntimeProbeState>> | null;
+    /** The model "Use a supported model" switches to; null when none is left. */
+    probeSupportedModel?: string | null;
+    onproberetry?: (() => void) | null;
+    onprobemodel?: (() => void) | null;
+    /** Update (or install) the tool from HQ, then check again. Null when HQ cannot. */
+    onprobeupdate?: (() => Promise<boolean>) | null;
   }
 
   let {
@@ -132,6 +155,12 @@
     onassistedinstall,
     onrequestaitools,
     runtimeOnly = false,
+    probe = null,
+    probeStates = null,
+    probeSupportedModel = null,
+    onproberetry = null,
+    onprobemodel = null,
+    onprobeupdate = null,
   }: Props = $props();
 
   // Lazy probe: only the wizard's own mount triggers `detect_ai_tools`,
@@ -161,6 +190,57 @@
   const draftStatus = $derived(runtimeStatusOf(runtimeStatus, draft.runtime));
   const draftLabel = $derived(LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime);
   const footer = $derived(runtimeFooter(draftStatus, draftLabel, draft.runtime, Boolean(signInApi || onsignin), hostNoun));
+
+  /**
+   * The check's verdict for the picked tool, once the status read says it is
+   * signed in. A failed check shows its fix here instead of "Signed in".
+   */
+  const probeShown = $derived(
+    probe && probe.state !== "unavailable" && (draftStatus === null || draftStatus.state === "signedIn") ? probe : null,
+  );
+  const probeFixShown = $derived(
+    probeShown?.state === "failed"
+      ? probeFix(probeShown.class, draftLabel, {
+          canSignIn: Boolean(signInApi || onsignin) && runtimeCanSignIn(draftStatus),
+          canUpdate: Boolean(onprobeupdate),
+          supportedModel: probeSupportedModel,
+          noun: hostNoun,
+        })
+      : null,
+  );
+  /** True while HQ updates the tool from the check's fix. */
+  let updating = $state(false);
+
+  async function runProbeAction(action: ProbeAction): Promise<void> {
+    if (disabled) return;
+    if (action === "signin") {
+      await requestSignIn(draft.runtime);
+    } else if (action === "supported-model") {
+      onprobemodel?.();
+    } else if (action === "update" || action === "install") {
+      if (updating || !onprobeupdate) return;
+      updating = true;
+      try {
+        await onprobeupdate();
+      } finally {
+        updating = false;
+      }
+    } else {
+      onproberetry?.();
+    }
+  }
+
+  /** A card's label: the check's verdict when there is one, else the status read. */
+  function cardLabel(id: BotRuntime, status: RuntimeStatus | null, ready: boolean): string {
+    if (probeStates && ready) {
+      const checked = probeStates[id];
+      if (checked && checked.state !== "unavailable") return probeCardStatus(checked) ?? runtimeCardStatus(status, ready);
+      // Signed in is not the same as able to run a bot: until the check
+      // answers, the card does not claim it.
+      return "Not checked yet";
+    }
+    return runtimeCardStatus(status, ready);
+  }
 
   async function recheck(): Promise<void> {
     if (rechecking || !onrecheck) return;
@@ -290,7 +370,9 @@
       <div class="new-bot-options new-bot-options--3" role="radiogroup" aria-label="Coding tool" data-testid="create-bot-runtime-cards">
         {#each LOCAL_BOT_RUNTIMES as rt (rt.id)}
           {@const status = runtimeStatusOf(runtimeStatus, rt.id)}
-          {@const ready = status ? status.state === "signedIn" : runtimeIsReady(runtimeReady, rt.id)}
+          {@const statusReady = status ? status.state === "signedIn" : runtimeIsReady(runtimeReady, rt.id)}
+          {@const checked = probeStates?.[rt.id]}
+          {@const ready = probeStates && statusReady && checked?.state !== "unavailable" ? checked?.state === "ready" : statusReady}
           <button
             type="button"
             class="new-bot-option"
@@ -298,13 +380,14 @@
             aria-checked={draft.runtime === rt.id}
             data-testid={`chat-bot-runtime-${rt.id}`}
             data-ready={ready}
-            data-runtime-state={status?.state ?? (ready ? "signedIn" : "signedOut")}
+            data-runtime-state={status?.state ?? (statusReady ? "signedIn" : "signedOut")}
+            data-probe-state={checked?.state === "failed" ? checked.class : (checked?.state ?? undefined)}
             disabled={disabled}
             onclick={() => pickRuntime(rt.id)}
           >
             <span class="new-bot-option-title">{rt.label}</span>
             <span class="new-bot-option-status" class:ready data-testid={`chat-bot-runtime-${rt.id}-status`}>
-              <span class="new-bot-option-dot" aria-hidden="true"></span>{runtimeCardStatus(status, ready)}
+              <span class="new-bot-option-dot" aria-hidden="true"></span>{cardLabel(rt.id, status, statusReady)}
             </span>
           </button>
         {/each}
@@ -369,6 +452,27 @@
             </ul>
           </details>
         {/if}
+      {:else if probeShown?.state === "checking"}
+        <p class="cb-help" data-testid="chat-bot-runtime-probe" data-probe-state="checking" aria-live="polite">
+          {probeCheckingText(draftLabel)}
+        </p>
+      {:else if probeShown?.state === "failed" && probeFixShown}
+        <p class="cb-help error" data-testid="chat-bot-runtime-probe" data-probe-state={probeShown.class} role="alert">
+          {probeFixShown.text}
+          {#each probeFixShown.actions as action (action)}
+            <button
+              type="button"
+              class="cb-pill-link"
+              data-testid={`chat-bot-runtime-probe-${action}`}
+              disabled={disabled || updating}
+              onclick={() => void runProbeAction(action)}
+            ><RailIcon name={action === "signin" ? "key" : action === "retry" ? "refresh" : "arrow-right"} />{(action === "update" || action === "install") && updating ? `Updating ${draftLabel}...` : probeActionLabel(action, draftLabel, probeSupportedModel, draft.runtime)}</button>
+          {/each}
+        </p>
+      {:else if probeShown?.state === "ready" && probeShown.fellBackFrom && probeShown.createModel}
+        <p class="cb-help" data-testid="chat-bot-runtime-probe" data-probe-state="ready">
+          {probeFallbackText(draftLabel, draft.runtime, probeShown.createModel)}
+        </p>
       {:else if !draftStatus && !runtimeIsReady(runtimeReady, draft.runtime)}
         <p class="cb-help" data-testid="chat-bot-runtime-help" data-runtime-state="signedOut">
           {draftLabel} is not signed in on this {hostNoun}.

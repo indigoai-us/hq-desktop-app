@@ -457,6 +457,8 @@
     existingBotNames?: readonly string[] | null;
     botSignIn?: RuntimeSignInApi | null;
     onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    /** Readiness check before a local bot is saved (`hq bot probe`). See CreateBotFlow. */
+    probeBotRuntime?: ((input: import("./create-bot/runtime-probe.js").RuntimeProbeInput) => AdapterPromise<unknown>) | null;
     /**
      * The user's own local bots. GET /v1/notify/contacts never lists them, so
      * they are merged into the contacts the "+" modal searches and invites
@@ -610,6 +612,7 @@
     existingBotNames = null,
     botSignIn = null,
     onbotsignedin = null,
+    probeBotRuntime = null,
     localBots = null,
     botDisplayNames = null,
     ownedLocalBotUids = null,
@@ -5210,6 +5213,7 @@
       {botCompanies}
       {botSignIn}
       {onbotsignedin}
+      {probeBotRuntime}
       initialKind={createKind}
       initialStep={createStep}
       sunrise={createSunrise}

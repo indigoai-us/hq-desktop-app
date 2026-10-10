@@ -2259,6 +2259,14 @@ export interface LocalBotsApi {
    * Optional for older hosts.
    */
   configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
+  /**
+   * Readiness check before a bot is saved (`hq bot probe`): one tiny real
+   * turn with exactly the runtime, model and thinking level the bot will
+   * use. Answers `{ ok, class, detail, runtime, model, modelFallback? }`, or
+   * `{ supported: false }` from an hq CLI that predates the command.
+   * Optional for older hosts and the web build.
+   */
+  probe?(input: LocalBotProbeInput): AdapterPromise<Json>;
   promote?(name: string, companyUid: string): AdapterPromise<Json>;
   /**
    * The local bots this ACCOUNT owns, each flagged `here` or not
@@ -2305,6 +2313,13 @@ export interface ContextImportApi {
 }
 
 /** Input to `LocalBotsApi.configure`. */
+export interface LocalBotProbeInput {
+  runtime: "claude" | "codex" | "grok";
+  /** The model the bot will be created with; blank or null = the tool's default. */
+  model?: string | null;
+  effort?: string | null;
+}
+
 export interface LocalBotSettingsInput {
   model?: string | null;
   effort?: string | null;

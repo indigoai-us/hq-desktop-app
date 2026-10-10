@@ -1717,6 +1717,8 @@ export function createSyncPlatformAdapter(
       stop: (name) => call('local_bots_stop', { name }),
       remove: (name) => call('local_bots_remove', { name }),
       configure: (name, settings) => call('local_bots_configure', localBotSettingsArgs(name, settings)),
+      probe: (input) =>
+        call('local_bots_probe', { runtime: input.runtime, model: input.model ?? null, effort: input.effort ?? null }),
     promote: (name, companyUid) => call("local_bots_promote", { name, companyUid }),
       // Bots come back after a reinstall: the cloud knows every local bot this
       // account owns, and `here` says which of them this computer can run.
