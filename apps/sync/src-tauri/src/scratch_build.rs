@@ -52,6 +52,93 @@ pub fn skip(what: &str) {
     crate::util::logfile::log("scratch-build", &format!("{what} skipped (HQ_SCRATCH_BUILD)"));
 }
 
+/// Who this process is, for launch-time side effects: whether it was built
+/// with `HQ_SCRATCH_BUILD`, and the bundle identifier it runs as.
+///
+/// Only the shipped HQ bundle (stable, beta and alpha share one identifier)
+/// may run launch-time paths that change the owner's installed tools or
+/// global runtime setup: `hq install|uninstall --global`, the Work Mesh unit,
+/// the updater, the login LaunchAgent and the background auto-installers. A
+/// locally built bundle with any other identifier (scratch, Lane Check,
+/// worktree, HQ New Bot Test, side-by-side Rail builds) shares the owner's
+/// home folder and HQ root, so it skips them. On 2026-10-10 a bundle built as
+/// `ai.indigo.hq-lane-check.conflict-toast` ran
+/// `hq uninstall --global --runtime claude` at startup this way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchIdentity {
+    pub scratch_flag: bool,
+    pub bundle_identifier: Option<String>,
+}
+
+impl LaunchIdentity {
+    /// This process. The bundle identifier is read once and cached.
+    pub fn current() -> Self {
+        Self {
+            scratch_flag: active(),
+            bundle_identifier: running_bundle_identifier().map(str::to_string),
+        }
+    }
+
+    /// The one production predicate: not a scratch build, and the shipped
+    /// bundle identifier (`hq_platform::autostart::is_production_bundle_identifier`).
+    pub fn is_production(&self) -> bool {
+        !self.scratch_flag
+            && hq_platform::autostart::is_production_bundle_identifier(
+                self.bundle_identifier.as_deref(),
+            )
+    }
+
+    /// Whether the launch-time side effect `what` may run. Logs one line when
+    /// it is skipped.
+    pub fn allows(&self, what: &str) -> bool {
+        if self.is_production() {
+            return true;
+        }
+        if self.scratch_flag {
+            skip(what);
+        } else {
+            crate::util::logfile::log(
+                "scratch-build",
+                &format!(
+                    "{what} skipped: non-production bundle {}",
+                    self.bundle_identifier.as_deref().unwrap_or("<unknown>")
+                ),
+            );
+        }
+        false
+    }
+}
+
+/// The bundle identifier this process runs as. macOS reads the enclosing
+/// `.app`'s Info.plist. Windows and Linux builds have no bundle identifier to
+/// read and ship one identity per platform, so they count as the shipped one
+/// (the same rule launch-time autostart has always used on Windows).
+pub fn running_bundle_identifier() -> Option<&'static str> {
+    static ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        {
+            hq_platform::autostart::running_bundle_identifier()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Some(hq_platform::autostart::PRODUCTION_BUNDLE_IDENTIFIER.to_string())
+        }
+    })
+    .as_deref()
+}
+
+/// True only for the shipped HQ bundle without `HQ_SCRATCH_BUILD`.
+pub fn production_bundle() -> bool {
+    LaunchIdentity::current().is_production()
+}
+
+/// Launch-time gate for paths that install, uninstall or reconfigure the
+/// owner's tools. Logs one skip line and returns false outside production.
+pub fn launch_side_effect_allowed(what: &str) -> bool {
+    LaunchIdentity::current().allows(what)
+}
+
 pub const UPDATES_OFF_MESSAGE: &str = "Updates are turned off for this test build";
 pub const INSTALLS_OFF_MESSAGE: &str = "Installs are turned off for this test build";
 
@@ -98,7 +185,10 @@ mod tests {
             assert!(!active(), "a build without HQ_SCRATCH_BUILD is never a scratch build");
             assert!(import_hq_bin().is_none());
             assert!(import_scanner().is_none());
-            assert!(!crate::updater::updater_disabled() || std::env::var("HQ_UPDATER_DISABLED").is_ok());
+            assert_eq!(
+                crate::updater::updater_disabled(),
+                std::env::var("HQ_UPDATER_DISABLED").is_ok() || !production_bundle()
+            );
         }
     }
 
@@ -145,13 +235,63 @@ mod tests {
         assert_eq!(refuse_install_with(false, "install_hq_cli"), Ok(()));
     }
 
+    const SCRATCH_ID: &str = "ai.indigo.hq-lane-check.conflict-toast";
+
+    fn identity(scratch_flag: bool, id: Option<&str>) -> LaunchIdentity {
+        LaunchIdentity { scratch_flag, bundle_identifier: id.map(str::to_string) }
+    }
+
+    #[test]
+    fn only_the_shipped_bundle_without_the_scratch_flag_is_production() {
+        let shipped = hq_platform::autostart::PRODUCTION_BUNDLE_IDENTIFIER;
+        assert!(identity(false, Some(shipped)).is_production());
+        assert!(identity(false, Some(shipped)).allows("test side effect"));
+        assert!(!identity(true, Some(shipped)).is_production());
+        for id in [
+            SCRATCH_ID,
+            "ai.indigo.hq-lane-check",
+            "ai.indigo.hq-sync-menubar-dev",
+            "ai.indigo.hq-new-bot-test",
+            "ai.indigo.hq-rail-newbot",
+        ] {
+            assert!(!identity(false, Some(id)).is_production(), "{id}");
+            assert!(!identity(false, Some(id)).allows("test side effect"), "{id}");
+        }
+        assert!(!identity(false, None).is_production());
+    }
+
+    /// The live answer comes from the same predicate as autostart's gate.
+    #[test]
+    fn the_live_identity_matches_the_autostart_gate() {
+        let live = LaunchIdentity::current();
+        let gate = hq_platform::autostart::launch_ensure_gate(live.bundle_identifier.as_deref(), None);
+        assert_eq!(
+            live.is_production(),
+            !live.scratch_flag && gate == hq_platform::autostart::LaunchEnsureGate::Proceed
+        );
+        assert_eq!(production_bundle(), live.is_production());
+    }
+
+    /// The updater and launch-time autostart use the same predicate: for a
+    /// scratch bundle id both stand down, for the shipped id both run.
+    #[test]
+    fn updater_and_autostart_follow_the_same_bundle_predicate() {
+        use hq_platform::autostart::{launch_ensure_gate, LaunchEnsureGate, PRODUCTION_BUNDLE_IDENTIFIER};
+        for (id, production) in [(Some(PRODUCTION_BUNDLE_IDENTIFIER), true), (Some(SCRATCH_ID), false), (None, false)] {
+            let who = identity(false, id);
+            assert_eq!(who.is_production(), production, "{id:?}");
+            assert_eq!(crate::updater::updater_disabled_with(false, !who.is_production()), !production, "{id:?}");
+            assert_eq!(launch_ensure_gate(id, None) == LaunchEnsureGate::Proceed, production, "{id:?}");
+        }
+    }
+
     /// The compiled-in answer matches the build: on only when built with
     /// `HQ_SCRATCH_BUILD=1 cargo test scratch_build`.
     #[test]
     fn this_build_answers_by_its_switch() {
         assert_eq!(crate::updater::updater_disabled(), crate::updater::updater_disabled_with(
             std::env::var("HQ_UPDATER_DISABLED").map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")).unwrap_or(false),
-            active(),
+            !production_bundle(),
         ));
         assert_eq!(refuse_install("x").is_err(), active());
     }
