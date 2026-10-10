@@ -21,7 +21,7 @@
    * Nothing scrolls inside the card: a step that does not fit is doing too
    * much and is split instead.
    */
-  import { onMount, untrack } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { hostComputerNoun } from "@hq/platform";
   import type {
     AdapterPromise,
@@ -405,6 +405,17 @@
   let probes = $state<Record<string, RuntimeProbeState>>({});
   /** Checks still running, so Create can wait on the one already out. */
   const probesInFlight = new Map<string, Promise<RuntimeProbeState>>();
+  /**
+   * One token per check in flight. A check whose token is gone (the tool was
+   * switched, a fix forgot it, the flow closed) writes nothing when it lands.
+   */
+  const probeTokens = new Map<string, number>();
+  let nextProbeToken = 0;
+  let flowClosed = false;
+  onDestroy(() => {
+    flowClosed = true;
+    probeTokens.clear();
+  });
   /** The hq CLI cannot run the check: the status read decides, as before. */
   let probeUnavailable = $state(false);
   /** The model each runtime's bot will be created with; absent = the tool's default. */
@@ -432,7 +443,9 @@
 
   /** A failed check holds Next on the coding tool step, where its fix is. */
   const advanceOk = $derived(
-    !busy && canAdvance(step, draft, ctx, stepOpts) && !(step === "home" && currentProbe?.state === "failed"),
+    !busy &&
+      canAdvance(step, draft, ctx, stepOpts) &&
+      !(step === "home" && (currentProbe?.state === "failed" || currentProbe?.state === "error")),
   );
 
   /** The status read says this runtime is signed in, so a real check is worth running. */
@@ -448,14 +461,19 @@
     const out = probesInFlight.get(key);
     if (out) return out;
     probes = { ...probes, [key]: { state: "checking" } };
+    const token = ++nextProbeToken;
+    probeTokens.set(key, token);
     const run = (async (): Promise<RuntimeProbeState> => {
       let next: RuntimeProbeState;
       try {
         const result = await probe({ runtime, model, effort: PROBE_EFFORT });
-        next = result.ok ? readProbeAnswer(result.value, model) : { state: "failed", class: "transient" };
+        next = result.ok ? readProbeAnswer(result.value, model) : { state: "error" };
       } catch {
-        next = { state: "failed", class: "transient" };
+        next = { state: "error" };
       }
+      // Stale: the tool was switched, the check was forgotten, or the flow closed.
+      if (flowClosed || probeTokens.get(key) !== token) return { state: "checking" };
+      probeTokens.delete(key);
       if (next.state === "unavailable") {
         console.info("[hq-desktop] hq CLI has no bot readiness check; using the sign-in status");
         probeUnavailable = true;
@@ -471,8 +489,30 @@
   /** Forget a runtime's checks so the next look runs a fresh one. */
   function forgetProbes(runtime: BotRuntime): void {
     const prefix = `${runtime}|`;
+    for (const key of [...probeTokens.keys()]) if (key.startsWith(prefix)) probeTokens.delete(key);
+    for (const key of [...probesInFlight.keys()]) if (key.startsWith(prefix)) probesInFlight.delete(key);
     probes = Object.fromEntries(Object.entries(probes).filter(([key]) => !key.startsWith(prefix)));
   }
+
+  // Switching tools drops the previous tool's check that is still running: its
+  // late answer must not paint over a tool the person has moved away from.
+  let probedRuntime: BotRuntime | null = null;
+  $effect(() => {
+    const runtime = draft.runtime;
+    untrack(() => {
+      const previous = probedRuntime;
+      probedRuntime = runtime;
+      if (!previous || previous === runtime) return;
+      const prefix = `${previous}|`;
+      for (const key of [...probesInFlight.keys()]) {
+        if (!key.startsWith(prefix)) continue;
+        probeTokens.delete(key);
+        probesInFlight.delete(key);
+        const { [key]: _dropped, ...rest } = probes;
+        probes = rest;
+      }
+    });
+  });
 
   // Check the picked coding tool as soon as its status read says it is signed
   // in, so the answer is usually in by the time the person presses Create.
@@ -508,10 +548,12 @@
     const runtime = draft.runtime;
     if (busy || !onassistedinstall || (runtime !== "claude" && runtime !== "codex")) return false;
     const outcome = await onassistedinstall(runtime).catch(() => null);
+    const updated = outcome?.ok === true;
     await onrecheckruntimes?.();
+    if (flowClosed) return updated;
     forgetProbes(runtime);
     if (statusSaysReady(runtime)) void runProbe(runtime, askedModels[runtime] ?? null);
-    return !!outcome && (outcome as { kind?: string }).kind !== "failed";
+    return updated;
   }
 
   async function signedIn(runtime: BotRuntime): Promise<void> {
@@ -766,6 +808,7 @@
       const runtime = draft.runtime;
       const asked = askedModel;
       const key = probeKey(runtime, asked);
+      const stepAtPress = step;
       let result = probes[key] ?? null;
       if (!result || result.state === "checking") {
         probeWaiting = true;
@@ -774,10 +817,11 @@
         } finally {
           probeWaiting = false;
         }
-        // The person picked another tool while the check ran: start over from there.
-        if (draft.runtime !== runtime || draft.home !== "local") return;
+        // The person moved on while the check ran (another tool, Back, the
+        // flow closed): nothing is created from a press that is behind them.
+        if (flowClosed || phase !== "steps" || step !== stepAtPress || draft.runtime !== runtime || draft.home !== "local") return;
       }
-      if (result.state === "failed" || result.state === "checking") {
+      if (result.state === "failed" || result.state === "error" || result.state === "checking") {
         goTo("home");
         return;
       }

@@ -48,6 +48,8 @@ export type RuntimeProbeState =
    */
   | { state: "ready"; createModel: string | null; fellBackFrom?: string }
   | { state: "failed"; class: ProbeClass }
+  /** HQ could not run the check at all (the command failed before the tool answered). */
+  | { state: "error" }
   /** This host or hq CLI cannot run the check: the status read decides, as before. */
   | { state: "unavailable" };
 
@@ -66,11 +68,17 @@ export function probeKey(runtime: string, model: string | null | undefined): str
   return `${runtime}|${(model ?? "").trim()}`;
 }
 
-const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+/**
+ * A model id as the hq CLI accepts it (`hq bot set --model`, `hq bot probe
+ * --model`): a letter or digit, then letters, digits and `. _ : / - [ ]`, at
+ * most 100 characters. The same shape the host's Rust command checks, so a
+ * fallback model the CLI names (for example `opus[1m]`) is never dropped here.
+ */
+export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,99}$/;
 
 /** Read what the host's probe answered into a state. */
 export function readProbeAnswer(raw: unknown, askedModel: string | null): RuntimeProbeState {
-  if (!raw || typeof raw !== "object") return { state: "failed", class: "transient" };
+  if (!raw || typeof raw !== "object") return { state: "error" };
   const rec = raw as Record<string, unknown>;
   if (rec.supported === false) return { state: "unavailable" };
   if (rec.ok === true) {
@@ -83,10 +91,13 @@ export function readProbeAnswer(raw: unknown, askedModel: string | null): Runtim
     return { state: "ready", createModel: askedModel };
   }
   if (rec.ok === false) {
+    // The CLI's generic failure document ({ ok: false, reason, message }) has
+    // no class: the check itself did not run, so it is not the tool's verdict.
+    if (typeof rec.class !== "string") return { state: "error" };
     const cls = PROBE_CLASSES.includes(rec.class as ProbeClass) ? (rec.class as ProbeClass) : "unknown";
     return { state: "failed", class: cls };
   }
-  return { state: "failed", class: "transient" };
+  return { state: "error" };
 }
 
 /**
@@ -118,6 +129,8 @@ export function probeCardStatus(probe: RuntimeProbeState): string | null {
       return "Checking...";
     case "ready":
       return "Ready";
+    case "error":
+      return "Couldn't check";
     case "failed":
       switch (probe.class) {
         case "signed-out":
@@ -212,6 +225,16 @@ export function probeActionLabel(action: ProbeAction, label: string, model: stri
     default:
       return "Try again";
   }
+}
+
+/** The line when HQ could not run the check at all. */
+export function probeErrorText(): string {
+  return "HQ couldn't run the check.";
+}
+
+/** The line when HQ's update of the tool did not finish. */
+export function probeUpdateFailedText(label: string): string {
+  return `Couldn't update ${label}. Try again.`;
 }
 
 /** The line for a passing check that had to fall back to an older model. */

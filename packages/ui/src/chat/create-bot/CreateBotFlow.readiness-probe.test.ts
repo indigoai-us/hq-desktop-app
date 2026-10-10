@@ -147,7 +147,7 @@ describe("New bot: readiness check before a local bot is saved", () => {
   for (const [cls, actions] of FIXES) {
     it(`a ${cls} check shows its fix, never says signed in, and creates nothing`, async () => {
       const { oncreate } = await openCodex(async () => failing(cls), {
-        onassistedinstall: vi.fn(async () => ({ kind: "installed" })),
+        onassistedinstall: vi.fn(async () => ({ ok: true })),
       });
       const buttons = [...host.querySelectorAll<HTMLButtonElement>('[data-testid^="chat-bot-runtime-probe-"]')].map(
         (b) => b.dataset.testid?.replace("chat-bot-runtime-probe-", ""),
@@ -204,7 +204,7 @@ describe("New bot: readiness check before a local bot is saved", () => {
 
   it("Update runs HQ's installer for the tool, then checks again", async () => {
     let calls = 0;
-    const onassistedinstall = vi.fn(async () => ({ kind: "installed" }));
+    const onassistedinstall = vi.fn(async () => ({ ok: true }));
     const onrecheckruntimes = vi.fn(async () => undefined);
     await openCodex(async () => (++calls === 1 ? failing("cli-outdated") : passing()), {
       onassistedinstall,
@@ -216,6 +216,20 @@ describe("New bot: readiness check before a local bot is saved", () => {
     expect(onrecheckruntimes).toHaveBeenCalled();
     expect(calls).toBe(2);
     expect(codexCard()).toBe("Ready");
+  });
+
+  it("an update that did not finish says so in plain words, with no reason text", async () => {
+    const onassistedinstall = vi.fn(async () => ({ ok: false, reason: "npm exited with status 1" }));
+    const { oncreate } = await openCodex(async () => failing("cli-outdated"), { onassistedinstall });
+    click('[data-testid="chat-bot-runtime-probe-update"]');
+    await settle(10);
+    const line = q('[data-testid="chat-bot-runtime-probe-update-failed"]');
+    expect(line?.textContent?.trim()).toBe("Couldn't update Codex. Try again.");
+    expect(host.textContent).not.toContain("npm exited");
+    expect(q('[data-testid="chat-bot-runtime-probe-update"]')).toBeTruthy();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(oncreate).not.toHaveBeenCalled();
   });
 
   it("signed out: Sign in opens the tool's sign-in", async () => {
@@ -244,13 +258,97 @@ describe("New bot: readiness check before a local bot is saved", () => {
     expect(oncreate).toHaveBeenCalledTimes(1);
   });
 
-  it("a check that cannot be reached counts as not answering, and creates nothing", async () => {
+  it("a check HQ could not run says so plainly, offers Try again, and creates nothing", async () => {
     const { oncreate } = await openCodex(async () => ({ ok: false, reason: "error", message: "boom" }));
-    expect(probeLine()?.dataset.probeState).toBe("transient");
+    expect(probeLine()?.dataset.probeState).toBe("error");
+    expect(probeLine()?.textContent).toContain("HQ couldn't run the check.");
     expect(probeLine()?.textContent).not.toContain("boom");
+    expect(codexCard()).toBe("Couldn't check");
+    expect(q('[data-testid="chat-bot-runtime-probe-retry"]')).toBeTruthy();
     click('[data-testid="chat-bot-create"]');
     await settle();
     expect(oncreate).not.toHaveBeenCalled();
+  });
+
+  it("the CLI's generic failure document (no class) is not shown as the tool's verdict", async () => {
+    const { oncreate } = await openCodex(async () => ({
+      ok: true,
+      value: { ok: false, reason: "network", message: "HQ Cloud could not be reached. Try again later." },
+    }));
+    expect(probeLine()?.dataset.probeState).toBe("error");
+    expect(probeLine()?.textContent).toContain("HQ couldn't run the check.");
+    expect(probeLine()?.textContent).not.toContain("HQ Cloud");
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(oncreate).not.toHaveBeenCalled();
+  });
+
+  it("Back while Checking never creates the bot when the check lands", async () => {
+    let answer!: (value: ProbeAnswer) => void;
+    const oncreate = vi.fn(async () => undefined);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    // The flow asks the name itself, so Back from the coding tool step goes to the name screen.
+    component = mount(CreateBotFlow, {
+      target: host,
+      props: {
+        botRuntimeReady: { claude: false, codex: true, grok: false },
+        botRuntimeStatus: { claude: SIGNED_OUT, codex: SIGNED_IN, grok: SIGNED_OUT },
+        botWorkers: [],
+        existingNames: [],
+        initialHome: "local",
+        oncreate,
+        probeBotRuntime: () => new Promise<ProbeAnswer>((resolve) => (answer = resolve)),
+      },
+    });
+    await settle();
+    const name = q<HTMLInputElement>('[data-testid="new-bot-name"]');
+    if (!name) throw new Error("missing name field");
+    name.value = "Saturday";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+    expect(q('[data-testid="create-bot-sunrise-home"]')).toBeTruthy();
+
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-create"]')?.textContent).toBe("Checking Codex...");
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    expect(q('[data-testid="new-bot-name"]')).toBeTruthy();
+    answer(passing());
+    await settle();
+    expect(oncreate).not.toHaveBeenCalled();
+  });
+
+  it("a check still running for a tool the person left is dropped when it lands", async () => {
+    let answerCodex!: (value: ProbeAnswer) => void;
+    const probe = vi.fn(
+      (input: RuntimeProbeInput) =>
+        new Promise<ProbeAnswer>((resolve) => {
+          if (input.runtime === "codex") answerCodex = resolve;
+          else resolve(passing());
+        }),
+    );
+    // Codex is the picked tool (the only one the boolean read calls ready);
+    // Claude Code is signed in too, so switching to it runs its own check.
+    const { oncreate } = await openCodex(probe, {
+      botRuntimeStatus: { claude: SIGNED_IN, codex: SIGNED_IN, grok: SIGNED_OUT },
+    });
+    expect(codexCard()).toBe("Checking...");
+    click('[data-testid="chat-bot-runtime-claude"]');
+    await settle();
+    // Codex's late answer is ignored: the card stays unchecked, not Ready.
+    answerCodex(passing());
+    await settle();
+    expect(codexCard()).toBe("Not checked yet");
+    // Claude's own check passed, so the bot can be created with Claude Code.
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(oncreate).toHaveBeenCalledTimes(1);
+    const [input] = oncreate.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(input.runtime).toBe("claude");
   });
 
   it("an hq CLI without the check falls back to the sign-in status, as before", async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { LOCAL_BOT_SETTINGS } from "../local-bot-settings.js";
 import {
+  MODEL_ID,
   probeActionLabel,
   probeCardStatus,
   probeFix,
@@ -29,6 +30,12 @@ describe("readProbeAnswer", () => {
   it("creates on the fallback model when the tool was too old for its default", () => {
     const answer = { ok: true, class: null, modelFallback: { from: "gpt-6-astra", to: "gpt-5.5" } };
     expect(readProbeAnswer(answer, null)).toEqual({ state: "ready", createModel: "gpt-5.5", fellBackFrom: "gpt-6-astra" });
+    // The CLI's own model shapes are kept, as the host's Rust validator keeps them.
+    expect(readProbeAnswer({ ok: true, modelFallback: { from: "opus", to: "opus[1m]" } }, null)).toEqual({
+      state: "ready",
+      createModel: "opus[1m]",
+      fellBackFrom: "opus",
+    });
     // A fallback model that is not a model id is ignored.
     expect(readProbeAnswer({ ok: true, modelFallback: { from: "x", to: "--yolo" } }, null)).toEqual({
       state: "ready",
@@ -43,10 +50,19 @@ describe("readProbeAnswer", () => {
     expect(readProbeAnswer({ ok: false, class: "weird" }, null)).toEqual({ state: "failed", class: "unknown" });
   });
 
-  it("says unavailable for a CLI without the check, and transient for an unreadable answer", () => {
+  it("says unavailable for a CLI without the check, and error when the check itself did not run", () => {
     expect(readProbeAnswer({ supported: false }, null)).toEqual({ state: "unavailable" });
-    expect(readProbeAnswer(null, null)).toEqual({ state: "failed", class: "transient" });
-    expect(readProbeAnswer({ bots: [] }, null)).toEqual({ state: "failed", class: "transient" });
+    expect(readProbeAnswer(null, null)).toEqual({ state: "error" });
+    expect(readProbeAnswer({ bots: [] }, null)).toEqual({ state: "error" });
+    // The CLI's generic failure document has a reason and no class: not the tool's verdict.
+    expect(readProbeAnswer({ ok: false, reason: "network", message: "HQ Cloud could not be reached." }, null)).toEqual({
+      state: "error",
+    });
+  });
+
+  it("accepts model ids the way the hq CLI and the host do", () => {
+    for (const ok of ["gpt-5.5", "opus[1m]", "openai/gpt-5.5", "claude-opus-5-5", "a".repeat(100)]) expect(MODEL_ID.test(ok)).toBe(true);
+    for (const bad of ["", "-x", "--json", "gpt 5", "gpt;rm", "$(whoami)", "[1m]", "a".repeat(101)]) expect(MODEL_ID.test(bad)).toBe(false);
   });
 });
 
@@ -104,6 +120,7 @@ describe("probeFix", () => {
       expect(probeCardStatus({ state: "failed", class: cls })).not.toMatch(/signed in/i);
     }
     expect(probeCardStatus({ state: "checking" })).toBe("Checking...");
+    expect(probeCardStatus({ state: "error" })).toBe("Couldn't check");
     expect(probeCardStatus({ state: "ready", createModel: null })).toBe("Ready");
   });
 

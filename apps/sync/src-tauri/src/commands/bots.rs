@@ -33,21 +33,24 @@ fn validate_name(name: &str) -> Result<String, String> {
     }
 }
 
-/// Model override handed to `hq bot create --model`. Closed character set so
-/// nothing shell- or flag-like can ride along (argv is never shell-parsed,
-/// but the CLI would otherwise see a nonsense model id).
+/// A model id as the hq CLI accepts it (`hq bot create --model`, `hq bot set
+/// --model`, `hq bot probe --model`): a letter or digit first, then letters,
+/// digits and `. _ : / - [ ]` (for example `opus[1m]`, `gpt-5.5`), at most 100
+/// characters. Closed character set so nothing shell- or flag-like can ride
+/// along (argv is never shell-parsed, but the CLI would otherwise see a
+/// nonsense model id). The UI's `MODEL_ID` (runtime-probe.ts) is the same shape.
 fn validate_model(model: &str) -> Result<String, String> {
     let trimmed = model.trim();
     let ok = !trimmed.is_empty()
-        && trimmed.len() <= 64
+        && trimmed.len() <= 100
+        && trimmed.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false)
         && trimmed
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
-        && !trimmed.starts_with('-');
+            .all(|c| c.is_ascii_alphanumeric() || "._-:/[]".contains(c));
     if ok {
         Ok(trimmed.to_string())
     } else {
-        Err("Model ids use letters, digits, dots, colons, underscores, and hyphens.".to_string())
+        Err("Model ids use letters, digits, dots, colons, slashes, underscores, hyphens and brackets.".to_string())
     }
 }
 
@@ -676,6 +679,13 @@ mod tests {
             probe_args(" claude ", Some("claude-sonnet-5"), Some("high"), 45).unwrap(),
             vec!["probe", "--runtime", "claude", "--model", "claude-sonnet-5", "--effort", "high", "--timeout", "45"]
         );
+        // The CLI's own model shapes pass: a bracketed context window, a slash.
+        assert_eq!(
+            probe_args("claude", Some("opus[1m]"), None, 45).unwrap(),
+            vec!["probe", "--runtime", "claude", "--model", "opus[1m]", "--timeout", "45"]
+        );
+        assert_eq!(probe_args("codex", Some("openai/gpt-5.5"), None, 45).unwrap()[4], "openai/gpt-5.5");
+        assert_eq!(probe_args("codex", Some(&"a".repeat(100)), None, 45).unwrap()[4], "a".repeat(100));
         // Blank model and effort mean the runtime's own defaults.
         assert_eq!(
             probe_args("grok", Some("  "), Some(""), 45).unwrap(),
@@ -694,7 +704,9 @@ mod tests {
         assert!(probe_args("codex", Some("--dangerously-skip"), None, 45).is_err());
         assert!(probe_args("codex", Some("gpt 5; rm -rf /"), None, 45).is_err());
         assert!(probe_args("codex", Some("$(whoami)"), None, 45).is_err());
-        assert!(probe_args("codex", Some(&"a".repeat(65)), None, 45).is_err());
+        assert!(probe_args("codex", Some("a`b`"), None, 45).is_err());
+        assert!(probe_args("codex", Some("[1m]"), None, 45).is_err());
+        assert!(probe_args("codex", Some(&"a".repeat(101)), None, 45).is_err());
         assert!(probe_args("codex", None, Some("--yolo"), 45).is_err());
         assert!(probe_args("codex", None, Some("ultra"), 45).is_err());
     }

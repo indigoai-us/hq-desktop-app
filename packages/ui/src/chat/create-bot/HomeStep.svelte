@@ -27,8 +27,10 @@
     probeActionLabel,
     probeCardStatus,
     probeCheckingText,
+    probeErrorText,
     probeFallbackText,
     probeFix,
+    probeUpdateFailedText,
     type ProbeAction,
     type RuntimeProbeState,
   } from "./runtime-probe.js";
@@ -210,9 +212,12 @@
   );
   /** True while HQ updates the tool from the check's fix. */
   let updating = $state(false);
+  /** HQ's update of the tool did not finish. Cleared by the next action. */
+  let updateFailed = $state(false);
 
   async function runProbeAction(action: ProbeAction): Promise<void> {
     if (disabled) return;
+    updateFailed = false;
     if (action === "signin") {
       await requestSignIn(draft.runtime);
     } else if (action === "supported-model") {
@@ -221,7 +226,7 @@
       if (updating || !onprobeupdate) return;
       updating = true;
       try {
-        await onprobeupdate();
+        updateFailed = !(await onprobeupdate());
       } finally {
         updating = false;
       }
@@ -468,6 +473,14 @@
               onclick={() => void runProbeAction(action)}
             ><RailIcon name={action === "signin" ? "key" : action === "retry" ? "refresh" : "arrow-right"} />{(action === "update" || action === "install") && updating ? `Updating ${draftLabel}...` : probeActionLabel(action, draftLabel, probeSupportedModel, draft.runtime)}</button>
           {/each}
+        </p>
+        {#if updateFailed}
+          <p class="cb-help error" data-testid="chat-bot-runtime-probe-update-failed" role="alert">{probeUpdateFailedText(draftLabel)}</p>
+        {/if}
+      {:else if probeShown?.state === "error"}
+        <p class="cb-help error" data-testid="chat-bot-runtime-probe" data-probe-state="error" role="alert">
+          {probeErrorText()}
+          <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-probe-retry" disabled={disabled} onclick={() => void runProbeAction("retry")}><RailIcon name="refresh" />Try again</button>
         </p>
       {:else if probeShown?.state === "ready" && probeShown.fellBackFrom && probeShown.createModel}
         <p class="cb-help" data-testid="chat-bot-runtime-probe" data-probe-state="ready">
