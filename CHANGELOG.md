@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-10-10
+
 - HQ keeps a channel or bot visible when it can confirm that the company or bot still exists but you cannot open its details. Retired and missing companies and bots still disappear as before.
 - Update now appears on every Updates row that has an update available, including the CLI.
 
