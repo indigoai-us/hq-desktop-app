@@ -163,15 +163,20 @@ export function firstRunFinishTarget(
  * Whether a step shows "Continue in chat" (the header's way out, and the
  * same link beside a failed team join or a failed create). Leaving for chat
  * ends the takeover, so before the import it would skip the import. It shows
- * from the import step on. Before the import it shows only where the person
- * cannot go forward: the coding tools step while no tool is signed in, which
- * the import cannot be reached past anyway.
+ * after the import step. On the import step itself the scene's own buttons
+ * are the way on (Bring it in, or the quiet Skip for now), so it shows only
+ * when the scene could not load (`importLoadFailed`) and would otherwise
+ * leave the person with no way out. Before the import it shows only where
+ * the person cannot go forward: the coding tools step while no tool is
+ * signed in, which the import cannot be reached past anyway.
  */
 export function firstRunOffersChat(
   id: FirstRunStepId,
   ready: Record<string, boolean> | null | undefined,
   steps: readonly FirstRunStep[] = FIRST_RUN_STEPS,
+  opts: { importLoadFailed?: boolean } = {},
 ): boolean {
+  if (id === "context" && indexOfStep("context", steps) >= 0) return opts.importLoadFailed === true;
   if (!firstRunBeforeImport(id, steps)) return true;
   return id === "tools" && !anyToolReady(ready);
 }
@@ -225,7 +230,7 @@ export function firstRunDoneTitle(name: string): FirstRunTitle {
 }
 
 export const FIRST_RUN_COPY = {
-  /** The header's way out, from the import step on (see firstRunOffersChat). */
+  /** The header's way out, after the import step (see firstRunOffersChat). */
   continueInChat: "Continue in chat",
   finish: "Finish with defaults",
   /** Shown on the name step once the assistant is being created. */
