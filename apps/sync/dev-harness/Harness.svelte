@@ -19,6 +19,7 @@
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
+  import ClaudeCodePreview from './ClaudeCodePreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
@@ -235,7 +236,10 @@
   }
 </script>
 
-{#if view === 'forward'}
+{#if view === 'claude-code'}
+  <!-- New Bot waking screen at the Claude code paste-back (?claude= variants in ClaudeCodePreview.svelte). -->
+  <ClaudeCodePreview />
+{:else if view === 'forward'}
   <!-- The Forward message dialog with fictional destinations. ~900x760 viewport. -->
   <ForwardPickerPreview />
 {:else if view === 'activity'}
