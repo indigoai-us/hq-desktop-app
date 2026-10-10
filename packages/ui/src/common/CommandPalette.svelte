@@ -656,11 +656,15 @@
   .command-list {
     flex: 1 1 auto;
     min-height: 0;
+    overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 6px;
     scroll-padding-block: 6px;
-    /* Bar comes from the shell's shared rule (chat/scrollbars.css). */
+    /* Bar comes from the shell's shared rule (chat/scrollbars.css). WebKit
+       sizes the list's overflow before that 4px bar applies and never
+       recomputes it, leaving a 4px sideways scroll; rows always fit the
+       width, so the list clips sideways instead of scrolling. */
     scrollbar-gutter: stable;
   }
 
