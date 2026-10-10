@@ -127,7 +127,9 @@ fn validate_display_name(display_name: &str) -> Result<String, String> {
     // A letter first, then letters, numbers, spaces, apostrophes, periods and
     // hyphens ("R2D2", "StefanTest123").
     let mut chars = collapsed.chars();
-    let first_ok = chars.next().map(char::is_alphabetic).unwrap_or(false);
+    // Letter-number characters (Roman numerals, runic Nl) count as alphabetic
+    // in Rust but not as letters for the CLI or the first-run check.
+    let first_ok = chars.next().map(|c| c.is_alphabetic() && !c.is_numeric()).unwrap_or(false);
     if !first_ok
         || !collapsed
             .chars()
@@ -614,6 +616,11 @@ mod tests {
         assert_eq!(validate_display_name("   ").unwrap_err(), "The display name is empty.");
         assert!(validate_display_name(&"x".repeat(36)).is_err());
         assert!(validate_display_name(&"x".repeat(35)).is_ok());
+        // A letter-number (Roman numeral U+2167, runic U+16EE) cannot lead,
+        // the same as the CLI's \p{L} first and the first-run check; it may follow.
+        assert_eq!(validate_display_name("\u{2167}abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("\u{16EE}abc").unwrap_err(), refused);
+        assert_eq!(validate_display_name("Henry \u{2167}").unwrap(), "Henry \u{2167}");
     }
 
     #[test]
