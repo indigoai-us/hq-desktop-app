@@ -79,6 +79,8 @@ interface Options {
   restore?: () => Promise<unknown>;
   adopt?: (name: string) => Promise<unknown>;
   messages?: Array<Record<string, unknown>>;
+  /** The installed hq-cli version (`getVersions().cli`); absent reads as unknown. */
+  cliVersion?: string;
 }
 
 function adapter(opts: Options = {}) {
@@ -88,6 +90,7 @@ function adapter(opts: Options = {}) {
   const restore = vi.fn(opts.restore ?? (async () => ok({ ok: true, dryRun: false, restored: 0, repaired: 0, skipped: 0, failed: 0, bots: [] })));
   const adopt = vi.fn(opts.adopt ?? (async () => ok({ ok: true })));
   const platform = {
+    ...(opts.cliVersion ? { updates: { getVersions: async () => ok({ cli: opts.cliVersion }) } } : {}),
     kind: "web",
     isAvailable: () => false,
     capabilities: {},
@@ -550,14 +553,16 @@ describe("the progress card's Retry goes through the owner (review fix 4)", () =
 });
 
 describe("round 2 review items", () => {
-  it("an adopted assistant gets the first run's handoff note and no kickoff thinking row (4)", async () => {
+  it("an assistant brought back as it is (hq bot adopt) gets the handoff note when the first run settles on it (4)", async () => {
+    // An older CLI on a computer whose account owns yesterday's assistant: the
+    // listing shows it, the person confirms a name, and the create adopts it.
     let here: LocalBotRow[] = [];
     const { platform, sendDm } = adapter({
       flag: true,
       list: () => here,
       create: async () => {
-        here = [localRow()];
-        return ok({ ok: true, outcome: "adopted", name: "setup", agentUid: ASSISTANT_UID });
+        here = [localRow({ displayName: "Popcorn" })];
+        return { ok: false, reason: "unavailable", message: ALREADY_HERE };
       },
     });
     boot(platform);
@@ -621,5 +626,76 @@ describe("round 2 review items", () => {
     await settle(30);
     expect(q('[data-testid="setup-bot-error"]')).toBeNull();
     expect(screenText()).not.toMatch(/couldn't start/i);
+  });
+});
+
+describe("the hq-cli version gate (5.345.87, hq-cli #1812)", () => {
+  /** hq-cli #1812's `hq bot create setup --display-name X --json`, word for word in shape. */
+  function cliCreateDoc(outcome: "existing" | "adopted" | "created") {
+    return ok({
+      ok: true,
+      outcome,
+      name: "setup",
+      agentUid: ASSISTANT_UID,
+      displayName: "Hazel",
+      role: "assistant",
+      nameSaved: "cloud",
+      running: true,
+    });
+  }
+
+  it("at 5.345.87 an assistant already here is named by create itself, with no profile write from the app", async () => {
+    let here: LocalBotRow[] = [localRow({ displayName: "Popcorn" })];
+    const { platform, create, updateAgentProfile } = adapter({
+      flag: true,
+      cliVersion: "5.345.87",
+      list: () => here,
+      create: async () => {
+        here = [localRow({ displayName: "Hazel", role: "assistant" } as Partial<LocalBotRow>)];
+        return cliCreateDoc("existing");
+      },
+    });
+    boot(platform);
+    await nameAssistant("Hazel");
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "setup", displayName: "Hazel" }));
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    await settle(20);
+    expect(updateAgentProfile).not.toHaveBeenCalledWith(ASSISTANT_UID, expect.objectContaining({ displayName: expect.anything() }));
+    expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Hazel");
+  });
+
+  it("below 5.345.87 the same assistant is named by the app, and create is never called", async () => {
+    const { platform, create, updateAgentProfile } = adapter({
+      flag: true,
+      cliVersion: "5.345.86",
+      list: () => [localRow({ displayName: "Popcorn" })],
+    });
+    boot(platform);
+    await nameAssistant("Hazel");
+    await vi.waitFor(() => expect(updateAgentProfile).toHaveBeenCalledWith(ASSISTANT_UID, { displayName: "Hazel" }));
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("at 5.345.87 a create that adopted the account's assistant runs its kickoff: no handoff note", async () => {
+    let here: LocalBotRow[] = [];
+    const { platform, create, sendDm } = adapter({
+      flag: true,
+      cliVersion: "5.345.87",
+      list: () => here,
+      create: async () => {
+        here = [localRow({ displayName: "Hazel" })];
+        return cliCreateDoc("adopted");
+      },
+    });
+    boot(platform);
+    await nameAssistant("Hazel");
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    await settle(20);
+    const keys = (sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string }]>).map((c) => c[2]?.idempotencyKey);
+    expect(keys).not.toContain(`first-run-handoff:${ASSISTANT_UID}`);
   });
 });

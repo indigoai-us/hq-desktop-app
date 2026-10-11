@@ -2971,8 +2971,8 @@
     }
     // A kickoff turn starts with no message from the person, so nothing else
     // would show "is thinking…" while the bot works on it. A bot that was
-    // already here runs no kickoff.
-    if (input.kickoff?.trim() && outcome !== "existing" && outcome !== "adopted") {
+    // already here runs no kickoff; one the CLI adopted runs this one.
+    if (input.kickoff?.trim() && outcome !== "existing") {
       kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: label };
     }
     // Identity exists (the CLI returned a uid); the launch agent is installing.

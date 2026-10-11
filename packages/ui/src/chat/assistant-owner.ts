@@ -52,12 +52,12 @@ export const ASSISTANT_FALLBACK_NAME = "Your assistant";
 
 /**
  * The first hq-cli release whose `hq bot create setup --display-name X --json`
- * is idempotent and lock-protected: it answers `outcome: "created" |
- * "adopted" | "existing"` and applies the name in every case (contract
- * section 3). Null until that release is out; with null, every installed CLI
- * counts as older and the desktop keeps its own create path.
+ * is idempotent and lock-protected (hq-cli #1812): it answers `outcome:
+ * "created" | "adopted" | "existing"` with `agentUid`, `displayName` and
+ * `role`, and applies the name in every case (contract section 3). Older CLIs
+ * keep the desktop's own create path.
  */
-export const ASSISTANT_CLI_MIN_VERSION: string | null = null;
+export const ASSISTANT_CLI_MIN_VERSION: string | null = "5.345.87";
 
 function parseVersion(raw: unknown): [number, number, number] | null {
   if (typeof raw !== "string") return null;
@@ -397,7 +397,11 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
       const listed = await here();
       if (created.agentUid) {
         const bot: SetupBotRef = listed?.agentUid === created.agentUid ? listed : { agentUid: created.agentUid, handle: SETUP_BOT_NAME };
-        return succeed(bot, label, created.outcome ?? (existing ? "existing" : "created"));
+        // A create that adopted the account's assistant applied this start's
+        // name, intro and kickoff (hq-cli #1812): to every caller it is a
+        // made assistant, whose kickoff runs and needs no handoff note.
+        const outcome = created.outcome === "adopted" ? "created" : (created.outcome ?? (existing ? "existing" : "created"));
+        return succeed(bot, label, outcome);
       }
       // An hq that answered without a uid: find it on the list.
       return listed ? succeed(listed, label, "created") : fail(label, host.copy.couldNotStart(label));

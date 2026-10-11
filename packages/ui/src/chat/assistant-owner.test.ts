@@ -125,8 +125,16 @@ describe("start and error state come from the bot list (finding 4)", () => {
 
 describe("the version gate", () => {
   it("counts every CLI as older until the release is known, and unknown versions as older", () => {
-    expect(ASSISTANT_CLI_MIN_VERSION).toBeNull();
-    expect(cliOwnsAssistantCreate("9.9.9")).toBe(false);
+    expect(ASSISTANT_CLI_MIN_VERSION).toBe("5.345.87");
+    // The release with hq-cli #1812 takes the new create path; anything below keeps the old one.
+    expect(cliOwnsAssistantCreate("5.345.87")).toBe(true);
+    expect(cliOwnsAssistantCreate("v5.345.87")).toBe(true);
+    expect(cliOwnsAssistantCreate("5.345.88")).toBe(true);
+    expect(cliOwnsAssistantCreate("5.346.0")).toBe(true);
+    expect(cliOwnsAssistantCreate("5.345.86")).toBe(false);
+    expect(cliOwnsAssistantCreate("5.344.99")).toBe(false);
+    expect(cliOwnsAssistantCreate(null)).toBe(false);
+    expect(cliOwnsAssistantCreate("9.9.9", null)).toBe(false);
     expect(cliOwnsAssistantCreate("5.346.0", "5.346.0")).toBe(true);
     expect(cliOwnsAssistantCreate("5.347.1", "5.346.0")).toBe(true);
     expect(cliOwnsAssistantCreate("5.345.85", "5.346.0")).toBe(false);
@@ -215,6 +223,16 @@ describe("the owner", () => {
     rows = [];
     await owner.start({ nameIfNew: "Pickles" });
     expect(h.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("a newer CLI's create that adopted the account's assistant counts as made: its kickoff ran", async () => {
+    const { h, setRows } = host({ cliOwnsCreate: vi.fn(async () => true) });
+    h.create.mockImplementation(async () => {
+      setRows([row()]);
+      return { ok: true, agentUid: UID, outcome: "adopted" };
+    });
+    const owner = createAssistantOwner(h);
+    expect(await owner.start({ name: "Hazel" })).toMatchObject({ ok: true, outcome: "created" });
   });
 
   it("an older CLI names an assistant that is already here through the app; a newer one through create", async () => {
