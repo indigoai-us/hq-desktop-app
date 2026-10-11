@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- HQ now opens `hq-desktop://pack/{slug}` links from a pack's web page. The app shows the pack's name and asks you to confirm, installs the pack together with its setup bot, shows the install progress, and then opens the bot's conversation in Messages. If you are signed out, the sheet says to sign in first and the pack is still added once you are in. Links that carry anything besides the pack name are refused.
+- HQ's managed toolchain now installs Claude Code next to the HQ command line tool, on first run and on the same update schedule, so bots on a new computer can run without installing anything by hand.
 - The Storage page now loads for people with very large HQ cloud history. Reading every old file version can take a couple of minutes the first time, so the page waits up to five minutes for it (previews of a delete wait up to ten) instead of stopping at two minutes with an error.
 - Company telemetry now counts days in your own time zone, the same way your personal usage already does.
 - HQ uses less CPU: the Atlas map draws at most a fixed number of dots, and the app stops refreshing in the background while its window is hidden.
