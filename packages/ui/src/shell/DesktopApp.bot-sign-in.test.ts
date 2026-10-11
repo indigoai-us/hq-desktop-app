@@ -205,6 +205,26 @@ describe("DesktopApp local bot sign-in", () => {
     noGrayBanner();
   });
 
+  it("turns the card above the composer fixed when a sign-in finishes on another screen", async () => {
+    rows = [bot({ runtimeSignIn: PAUSED })];
+    await openBotDm();
+    const card = await vi.waitFor(() => {
+      const el = host.querySelector<HTMLElement>('[data-testid="bot-sign-in-card"] [data-testid="runtime-repair-card"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    await settle(20);
+    expect(card.dataset.phase).toBe("offered");
+    probeOk = true;
+    announceRuntimeSignedIn("claude");
+    await vi.waitFor(() => expect(card.dataset.phase).toBe("fixed"));
+    expect(card.textContent).toContain("You’re all set");
+    expect(loginStart).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(start).toHaveBeenCalledWith("setup"));
+    expect(cards()).toHaveLength(1);
+    noGrayBanner();
+  });
+
   it("shows only the bot's own card when the conversation has one", async () => {
     rows = [bot({ runtimeSignIn: PAUSED })];
     dm = [repairReply()];

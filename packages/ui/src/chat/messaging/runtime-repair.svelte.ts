@@ -114,6 +114,8 @@ export class RuntimeRepairController {
   readonly #cards = new Map<string, RepairPayload>();
   /** Tools with a sign-in check running now. */
   readonly #rechecking = new Set<RepairRuntime>();
+  /** Tools whose reported sign-in arrived while a check was running: checked again after it. */
+  readonly #forcedPending = new Set<RepairRuntime>();
   /** When each tool's last unforced sign-in check started. */
   readonly #lastRecheck = new Map<RepairRuntime, number>();
 
@@ -180,7 +182,12 @@ export class RuntimeRepairController {
     }
     await Promise.all(
       [...byRuntime].map(async ([runtime, payload]) => {
-        if (this.#rechecking.has(runtime)) return;
+        if (this.#rechecking.has(runtime)) {
+          // A check started before the sign-in finished may still fail: a
+          // reported sign-in checks again once it is done.
+          if (options.force) this.#forcedPending.add(runtime);
+          return;
+        }
         const now = this.#now();
         if (!options.force && now - (this.#lastRecheck.get(runtime) ?? -Infinity) < SIGN_IN_RECHECK_MIN_MS) return;
         this.#lastRecheck.set(runtime, now);
@@ -197,6 +204,7 @@ export class RuntimeRepairController {
           }
         } finally {
           this.#rechecking.delete(runtime);
+          if (this.#forcedPending.delete(runtime)) await this.recheckSignIn({ runtime, force: true });
         }
       }),
     );

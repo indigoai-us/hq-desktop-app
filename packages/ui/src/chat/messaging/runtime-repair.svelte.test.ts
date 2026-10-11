@@ -239,6 +239,27 @@ describe("RuntimeRepairController sign-in made somewhere else", () => {
     expect(probe).toHaveBeenCalledTimes(3);
   });
 
+  it("a sign-in reported while a check runs checks again after it", async () => {
+    let signedIn = false;
+    let release: () => void = () => {};
+    const probe = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise((resolve) => (release = () => resolve({ ok: false, class: "signed-out" }))))
+      .mockImplementation(async () => (signedIn ? { ok: true } : { ok: false, class: "signed-out" }));
+    const c = new RuntimeRepairController(deps({ probe }));
+    c.track("evt_1", payload());
+    const first = c.recheckSignIn();
+    // The sign-in finishes while the first check (started before it) runs.
+    signedIn = true;
+    const reported = c.recheckSignIn({ runtime: "claude", force: true });
+    await reported;
+    expect(probe).toHaveBeenCalledTimes(1);
+    release();
+    await first;
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(c.stateFor("evt_1")).toEqual({ phase: "fixed", action: "signIn" });
+  });
+
   it("checks the model the bot is set to", async () => {
     const d = deps({ botModel: () => "opus" });
     const c = new RuntimeRepairController(d);

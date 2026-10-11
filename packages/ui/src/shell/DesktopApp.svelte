@@ -4159,7 +4159,12 @@
     if (!card) return;
     untrack(() => {
       runtimeRepairController.track(card.eventId, card.payload);
-      if (signInCardShown?.eventId !== card.eventId) signInCardShown = card;
+      if (signInCardShown?.eventId === card.eventId) return;
+      signInCardShown = card;
+      // Like the bot's own card: a sign-in made before the chat was opened
+      // (the tool's own login outside the app) shows at once. Spaced by the
+      // controller.
+      void runtimeRepairController.recheckSignIn({ runtime: card.payload.runtime });
     });
   });
   /**
