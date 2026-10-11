@@ -34,7 +34,7 @@ const styleOf = (file: string) => {
 };
 
 const liftoff: ResolvedBadge = { def: BADGE_BY_ID.liftoff, tier: 2, earnedAt: "2026-10-06" };
-const founding: ResolvedBadge = { def: BADGE_BY_ID.founding, tier: "L", earnedAt: "2026-03-02" };
+const founding: ResolvedBadge = { def: BADGE_BY_ID.founding, tier: 3, earnedAt: "2026-03-02" };
 
 const mounted: Array<ReturnType<typeof mount>> = [];
 let host: HTMLElement;
@@ -80,8 +80,8 @@ afterEach(() => {
 
 describe("card words", () => {
   it("numbers the card in the set, names the tier, and says it all to a screen reader", () => {
-    expect(cardNumber("founding")).toBe("No. 001 / 016");
-    expect(cardNumber("liftoff")).toBe("No. 004 / 016");
+    expect(cardNumber("founding")).toBe("No. 001 / 015");
+    expect(cardNumber("liftoff")).toBe("No. 004 / 015");
     expect(cardNumber("nope")).toBe("");
     expect(cardTierLabel(2)).toBe("Tier II · Silver");
     expect(cardTierLabel("L")).toBe("Legendary");
@@ -111,7 +111,7 @@ describe("BadgeCard", () => {
     expect(card.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe(cardAccessibleLabel(liftoff));
     const face = card.querySelector(".face")!;
     expect(face.getAttribute("aria-hidden")).toBe("true");
-    expect(face.textContent).toContain("No. 004 / 016");
+    expect(face.textContent).toContain("No. 004 / 015");
     expect(face.textContent).toContain("Liftoff");
     expect(face.textContent).toContain("Deploys that went live.");
     expect(face.textContent).toContain("Tier II · Silver");

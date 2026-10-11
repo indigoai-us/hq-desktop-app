@@ -475,6 +475,7 @@
           kind: openMember.kind === "agent" ? "bot" : "person",
           name: openMember.displayName,
           email: openMember.email ?? null,
+          personUid: openMember.kind === "agent" ? null : openMember.id,
           role: roleLine(openMember),
           company: slug,
           live: live(openMember),

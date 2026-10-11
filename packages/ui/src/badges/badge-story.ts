@@ -53,30 +53,30 @@ const STORIES: Readonly<Record<string, StoryDef>> = {
     why: () => "This badge can't be earned anymore. It belongs to the people whose early use and feedback shaped HQ.",
   },
   founder: {
-    did: [(v) => `${v.Subject} created a company in HQ and gave the team one place to work together.`],
+    did: [(v) => `${v.Subject} started a company in HQ, and a teammate joined to work there together.`],
     why: (v) => `Every company in HQ starts with one person setting it up. This one started with ${v.subject}.`,
   },
   bughunter: {
     did: [
-      (v) => `${v.Subject} sent ${v.their} first report to help improve HQ.`,
-      (v) => `${v.Subject} sent 5 reports that helped improve HQ.`,
-      (v) => `${v.Subject} sent 20 reports that helped improve HQ.`,
+      (v) => `${v.Subject} sent 3 reports that helped improve HQ.`,
+      (v) => `${v.Subject} sent 10 reports that helped improve HQ.`,
+      (v) => `${v.Subject} sent 25 reports that helped improve HQ.`,
     ],
     why: () => "Every report shows the team something to fix or make better. HQ is sharper for each one.",
   },
   liftoff: {
     did: [
-      (v) => `${v.Subject} put ${v.their} first deploy live.`,
-      (v) => `${v.Subject} put 10 deploys live.`,
+      (v) => `${v.Subject} put 5 deploys live.`,
       (v) => `${v.Subject} put 50 deploys live.`,
+      (v) => `${v.Subject} put 250 deploys live.`,
     ],
     why: () => "A deploy that goes live is work people can use, not work waiting on a branch.",
   },
   poweruser: {
     did: [
       (v) => `${v.Subject} ran skills 100 times.`,
-      (v) => `${v.Subject} ran skills 1,000 times.`,
-      (v) => `${v.Subject} ran skills 10,000 times.`,
+      (v) => `${v.Subject} ran skills 500 times.`,
+      (v) => `${v.Subject} ran skills 2,500 times.`,
     ],
     why: () => "Skills turn repeat work into one step. Running them this often makes HQ part of the daily routine.",
   },
@@ -90,33 +90,33 @@ const STORIES: Readonly<Record<string, StoryDef>> = {
   },
   maker: {
     did: [
-      (v) => `${v.Subject} wrote ${v.their} own skill, policy or knowledge.`,
-      (v) => `${v.Subject} wrote two of the three kinds: skills, policies and knowledge.`,
-      (v) => `${v.Subject} wrote all three kinds: a skill, a policy and knowledge.`,
+      (v) => `${v.Subject} wrote 5 skills.`,
+      (v) => `${v.Subject} wrote 50 skills.`,
+      (v) => `${v.Subject} wrote 250 skills.`,
     ],
     why: () => "Something written once now helps the whole team, every time it runs.",
   },
   teambuilder: {
     did: [
-      (v) => `${v.Subject} invited a teammate who joined.`,
-      (v) => `5 teammates joined HQ from ${v.possessive} invites.`,
-      (v) => `20 teammates joined HQ from ${v.possessive} invites.`,
+      (v) => `3 teammates joined HQ from ${v.possessive} invites.`,
+      (v) => `10 teammates joined HQ from ${v.possessive} invites.`,
+      (v) => `25 teammates joined HQ from ${v.possessive} invites.`,
     ],
     why: () => "A team works better in one place. Every invite brings someone in.",
   },
   fleet: {
     did: [
-      (v) => `${v.Subject} created ${v.their} first agent and put it to work.`,
-      (v) => `${v.Possessive} agents completed 100 runs.`,
-      (v) => `${v.Possessive} agents completed 1,000 runs.`,
+      (v) => `${v.Subject} created ${v.their} first agent.`,
+      (v) => `${v.Subject} created 5 agents.`,
+      (v) => `${v.Subject} created 15 agents.`,
     ],
     why: () => "Agents take on work in the background, so people can spend their time on what needs them.",
   },
   connector: {
     did: [
-      (v) => `${v.Subject} connected ${v.their} first app to HQ.`,
       (v) => `${v.Subject} connected 3 apps to HQ.`,
       (v) => `${v.Subject} connected 6 apps to HQ.`,
+      (v) => `${v.Subject} connected 10 apps to HQ.`,
     ],
     why: () => "Each connected app brings its context into HQ, so less gets copied around by hand.",
   },
@@ -159,10 +159,6 @@ const STORIES: Readonly<Record<string, StoryDef>> = {
       (v) => `${v.Subject} used HQ 100 days in a row.`,
     ],
     why: () => "A streak like this means HQ is part of the routine, day after day.",
-  },
-  signedup: {
-    did: [(v) => `${v.Subject} signed up for an HQ workshop.`],
-    why: () => "Workshops are the quickest way to get the most out of HQ, alongside other people learning it too.",
   },
 };
 

@@ -38,12 +38,12 @@ describe('badge harness switches', () => {
 });
 
 // Avatar tier marks (owner review 2026-10-09): the harness cast spans every
-// tier, so the preview shows more than Legendary.
+// tier. Founding Member is a plain Gold badge (adopted criteria 2026-10-10).
 describe('sample badges span the tiers', () => {
   it('gives the regular cast a top badge at each level, and someone none', () => {
-    // 4 Legendary, 3 Gold, 2 Silver, 1 Bronze, 0 none.
+    // 3 Gold, 2 Silver, 1 Bronze, 0 none.
     const top = (name: string) => Math.max(0, ...sampleBadges({ kind: 'person', name }).map(badgeLevel));
-    expect(top('Ada Lovelace')).toBe(4);
+    expect(top('Ada Lovelace')).toBe(3);
     expect(top('Corey Epstein')).toBe(3);
     expect(top('Maya Chen')).toBe(2);
     expect(top('Jacob Moore')).toBe(1);

@@ -60,8 +60,7 @@ describe("badge collection", () => {
   it("puts a locked badge in the tier its first level gives", () => {
     expect(firstTier(BADGE_BY_ID.liftoff)).toBe(1);
     expect(firstTier(BADGE_BY_ID.founder)).toBe(3);
-    expect(firstTier(BADGE_BY_ID.founding)).toBe("L");
-    expect(firstTier(BADGE_BY_ID.signedup)).toBe(1);
+    expect(firstTier(BADGE_BY_ID.founding)).toBe(3);
   });
 
   it("says progress plainly", () => {
@@ -77,13 +76,12 @@ describe("badge collection", () => {
   it("groups every badge by tier, highest first, earned before locked", () => {
     const groups = badgeCollection(EARNED, PROGRESS);
     expect(groups.map((g) => [g.label, g.earned, g.tiles.length])).toEqual([
-      ["Legendary", 1, 1],
-      ["Gold", 1, 2],
+      ["Gold", 2, 3],
       ["Silver", 1, 1],
-      ["Bronze", 1, 12],
+      ["Bronze", 1, 11],
     ]);
-    expect(groups.flatMap((g) => g.tiles).length).toBe(16);
-    const bronze = groups[3].tiles;
+    expect(groups.flatMap((g) => g.tiles).length).toBe(15);
+    const bronze = groups[2].tiles;
     expect(bronze[0]).toMatchObject({ def: { id: "connector" }, earned: { tier: 1 } });
     expect(bronze.slice(1).every((t) => t.earned === null)).toBe(true);
     expect(bronze.find((t) => t.def.id === "toolbox")?.progress).toBe("3 of 5 skills");
@@ -99,12 +97,11 @@ describe("BadgesPane", () => {
     const opened: string[] = [];
     mounted.push(mount(BadgesPane, { target: host, props: { badges: EARNED, progress: PROGRESS, owner: "Maya Chen", onselect: (b) => opened.push(b.def.id) } }));
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 16 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 15 earned");
     expect([...host.querySelectorAll('[data-testid="badges-group"] .k')].map((k) => k.textContent?.replace(/\s+/g, " ").trim())).toEqual([
-      "Legendary 1/1",
-      "Gold 1/2",
+      "Gold 2/3",
       "Silver 1/1",
-      "Bronze 1/12",
+      "Bronze 1/11",
     ]);
     const toolbox = host.querySelector('[data-testid="badges-tile"][data-badge-id="toolbox"]')!;
     expect(toolbox.getAttribute("data-state")).toBe("locked");
@@ -149,11 +146,11 @@ describe("BadgesPane", () => {
     // Thumbnails are the static card: no foil, no tilt.
     expect([...host.querySelectorAll('[data-testid="badges-card"] [data-testid="badge-card"]')].map((c) => c.getAttribute("data-render"))).toEqual(["static", "static", "static", "static"]);
     const founding = host.querySelector('[data-testid="badges-card"][data-badge-id="founding"]') as HTMLButtonElement;
-    expect(founding.getAttribute("aria-label")).toBe("Open the Founding Member card, Legendary");
+    expect(founding.getAttribute("aria-label")).toBe("Open the Founding Member card, Gold");
     founding.click();
     await settle();
     const modal = document.querySelector('[data-testid="badge-card-modal"]')!;
-    expect(modal.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain("Founding Member card, Legendary");
+    expect(modal.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain("Founding Member card, Gold");
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await settle();
     expect(document.querySelector('[data-testid="badge-card-modal"]')).toBeNull();
@@ -228,7 +225,7 @@ describe("See all on a profile", () => {
     await settle();
     click('[data-testid="profile-badges-all"]');
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 16 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 15 earned");
   });
 
   it("shows nothing in production, where there is no source", async () => {

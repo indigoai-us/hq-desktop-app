@@ -23,6 +23,7 @@
  */
 
 import type { Capabilities, Capability } from "./capabilities.js";
+import type { BadgesPayload } from "./badges.js";
 import type {
   EvidenceOptions,
   ServiceEvidence,
@@ -476,6 +477,13 @@ export interface IdentityApi {
     agentUid: string,
     input: SelectAgentAvatarInput,
   ): AdapterPromise<SelectAgentAvatarResult>;
+  /**
+   * GET /v1/badges/{uid} — a teammate's accomplishment badges (`uid` is a
+   * `prs_*` person uid or `me`), parsed by `parseBadgesPayload`. A failure
+   * (including the 404 for agents, non-teammates and a route that is not
+   * deployed yet) is the caller's cue to show no badges.
+   */
+  getBadges?(uid: string): AdapterPromise<BadgesPayload>;
 }
 
 export interface MessageSearchOptions {

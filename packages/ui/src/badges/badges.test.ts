@@ -7,9 +7,9 @@ import { badgeTheme, inkForLight } from "./badge-theme.js";
 afterEach(() => setBadgeSource(null));
 
 describe("badge catalog", () => {
-  it("has 16 badges with unique ids and art for both sizes", () => {
-    expect(BADGES).toHaveLength(16);
-    expect(new Set(BADGES.map((b) => b.id)).size).toBe(16);
+  it("has 15 badges with unique ids and art for both sizes", () => {
+    expect(BADGES).toHaveLength(15);
+    expect(new Set(BADGES.map((b) => b.id)).size).toBe(15);
     for (const b of BADGES) {
       expect(SMALL_ICONS[b.icon]?.art.length).toBeGreaterThan(0);
       expect(MICRO_ICONS[b.icon]?.art.length).toBeGreaterThan(0);
@@ -53,13 +53,16 @@ describe("badge levels", async () => {
   const { badgeLevels } = await import("./badge-levels.js");
   it("marks the reached level and carries the unit to bare numbers", () => {
     const rows = badgeLevels(BADGE_BY_ID.liftoff, 2);
-    expect(rows.map((r) => r.label)).toEqual(["1 deploy", "10 deploys", "50 deploys"]);
+    expect(rows.map((r) => r.label)).toEqual(["5 deploys", "50 deploys", "250 deploys"]);
     expect(rows.map((r) => [r.reached, r.current])).toEqual([[true, false], [true, true], [false, false]]);
   });
   it("gives single-level and limited badges one row", () => {
-    expect(badgeLevels(BADGE_BY_ID.founding, "L")).toEqual([
-      { tier: "Legendary", label: "Limited, never earnable again", reached: true, current: true },
+    expect(badgeLevels(BADGE_BY_ID.founding, BADGE_BY_ID.founding.tier)).toEqual([
+      { tier: "Gold", label: "Limited, never earnable again", reached: true, current: true },
     ]);
+  });
+  it("uses the singular for a first level of one", () => {
+    expect(badgeLevels(BADGE_BY_ID.fleet, 1).map((r) => r.label)).toEqual(["1 agent", "5 agents", "15 agents"]);
   });
 });
 

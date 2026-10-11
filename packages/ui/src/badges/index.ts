@@ -17,6 +17,7 @@ export {
   type BadgeProgress,
   type BadgeProgressSource,
 } from "./badge-source.js";
+export { installBadgeLoader, BADGE_REFRESH_MS } from "./badge-loader.svelte.js";
 export { topBadge, topBadgeFor, highestTier, tierMarkPx, TIER_MARK_MIN_AVATAR } from "./badge-tier.js";
 export { default as TierMark } from "./TierMark.svelte";
 export { default as BadgeMark } from "./BadgeMark.svelte";

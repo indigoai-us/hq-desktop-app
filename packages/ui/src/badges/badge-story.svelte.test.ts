@@ -51,21 +51,22 @@ describe("the story", () => {
   it("speaks to you on your own card and about the person on theirs", () => {
     expect(storyVoice(null)).toEqual({ Subject: "You", subject: "you", possessive: "your", their: "your", Possessive: "Your" });
     expect(storyVoice("Maya Chen")).toMatchObject({ Subject: "Maya", possessive: "Maya's", their: "their" });
-    // Never "Maya put Maya's first deploy live."
-    expect(badgeStory(liftoff(1), "Ada Lovelace")?.did).toBe("Ada put their first deploy live.");
-    expect(badgeStory(liftoff(1), null, "first")?.did).toBe("I put my first deploy live.");
+    // Never "Ada created Ada's first agent."
+    const fleet: ResolvedBadge = { def: BADGE_BY_ID.fleet, tier: 1, earnedAt: "2026-10-06" };
+    expect(badgeStory(fleet, "Ada Lovelace")?.did).toBe("Ada created their first agent.");
+    expect(badgeStory(fleet, null, "first")?.did).toBe("I created my first agent.");
     expect(storyVoice("James")).toMatchObject({ possessive: "James'" });
-    expect(badgeStory(liftoff(2))?.did).toBe("You put 10 deploys live.");
-    expect(badgeStory(liftoff(2), "Maya Chen")?.did).toBe("Maya put 10 deploys live.");
+    expect(badgeStory(liftoff(2))?.did).toBe("You put 50 deploys live.");
+    expect(badgeStory(liftoff(2), "Maya Chen")?.did).toBe("Maya put 50 deploys live.");
   });
 
   it("tells the level reached, why it matters, and when", () => {
-    expect(badgeStory(liftoff(1))?.did).toBe("You put your first deploy live.");
-    expect(badgeStory(liftoff(3))?.did).toBe("You put 50 deploys live.");
+    expect(badgeStory(liftoff(1))?.did).toBe("You put 5 deploys live.");
+    expect(badgeStory(liftoff(3))?.did).toBe("You put 250 deploys live.");
     const story = badgeStory(liftoff(2))!;
     expect(story.why).toMatch(/\.$/);
     expect(story.earned).toBe("Earned Oct 6, 2026");
-    const founding = badgeStory({ def: BADGE_BY_ID.founding, tier: "L", earnedAt: "2026-03-02" }, "Maya Chen")!;
+    const founding = badgeStory({ def: BADGE_BY_ID.founding, tier: 3, earnedAt: "2026-03-02" }, "Maya Chen")!;
     expect(founding.did).toBe("Maya joined HQ before the public launch, while it was still being built.");
   });
 
@@ -95,7 +96,7 @@ describe("flipping the card", () => {
     const back = modal().querySelector(".bc-back")!;
     expect(flipState()).toBe("false");
     expect(back.getAttribute("aria-hidden")).toBe("true");
-    expect(back.querySelector('[data-testid="badge-card-story"]')?.textContent).toBe("Maya put 10 deploys live.");
+    expect(back.querySelector('[data-testid="badge-card-story"]')?.textContent).toBe("Maya put 50 deploys live.");
 
     flipper().click();
     flushSync();
@@ -119,7 +120,7 @@ describe("flipping the card", () => {
     button.click();
     flushSync();
     expect(flipState()).toBe("true");
-    expect(modal().querySelector('[data-testid="badge-card-story"]')?.textContent).toBe("You put your first deploy live.");
+    expect(modal().querySelector('[data-testid="badge-card-story"]')?.textContent).toBe("You put 5 deploys live.");
   });
 
   it("waits for the reveal to settle, then shows the story on the back", () => {

@@ -12,7 +12,8 @@ import '../src/styles/popover.css';
 // tree's ASCII grid, the first-run kickers and the badge marks are drawn in it.
 import '@fontsource-variable/geist-mono/wght.css';
 
-// No badges API yet: the harness shows sample badges on profile panes.
+// Sample badges on profile panes. Installed before the shell mounts, so the
+// production loader (hq-pro GET /v1/badges) stays out of the harness.
 setBadgeSource(sampleBadges);
 setBadgeProgressSource(sampleProgress);
 
