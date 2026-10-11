@@ -17,7 +17,8 @@
   }
 
   export interface RuntimeSignInApi {
-    loginStart(runtime: BotRuntime): Promise<RuntimeSignInState>;
+    /** `force` logs a stored login out first, so a dead one is replaced. */
+    loginStart(runtime: BotRuntime, opts?: { force?: boolean }): Promise<RuntimeSignInState>;
     loginStatus(runtime: BotRuntime): Promise<RuntimeSignInState>;
     loginCancel?(runtime: BotRuntime): Promise<RuntimeSignInState>;
   }

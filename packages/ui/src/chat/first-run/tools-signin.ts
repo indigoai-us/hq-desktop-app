@@ -21,6 +21,9 @@
 import type { AiTools } from "../../install-choice/install-choice.js";
 import type { RuntimeSignInApi, RuntimeSignInState } from "../create-bot/RuntimeSignIn.svelte";
 import type { RuntimeStatus } from "../create-bot/runtime-status.js";
+import type { BotRuntime } from "../create-bot/create-bot-model.js";
+import type { AdapterPromise } from "@hq/platform";
+import { readProbeAnswer, type RuntimeProbeState } from "../create-bot/runtime-probe.js";
 
 /** The coding tools the first run helps sign in to. */
 export type SignInTool = "claude" | "codex";
@@ -59,8 +62,14 @@ export function toolRowKind(
   status: RuntimeStatus | null,
   ready: Record<string, boolean> | null | undefined,
   tools: AiTools | null | undefined,
+  check?: ToolSignInCheck,
 ): ToolRowKind {
-  if (ready?.[tool] === true || status?.state === "signedIn") return "signedIn";
+  if (ready?.[tool] === true || status?.state === "signedIn") {
+    // A stored login is only "Signed in" once the real check agreed (or
+    // could not tell). A login the check found dead offers Sign in again.
+    if (check === undefined || check === "passed" || check === "unverified") return "signedIn";
+    return check === "signedOut" ? "signIn" : "checking";
+  }
   switch (status?.state) {
     case "signedOut":
       return "signIn";
@@ -202,6 +211,8 @@ export interface ToolSignInRunnerOptions {
   onconnected: (tool: SignInTool) => void | Promise<void>;
   /** The sign-in ended without one: read readiness again anyway. */
   onfailed?: (tool: SignInTool) => void | Promise<void>;
+  /** The tool's stored login is dead: the sign-in replaces it (`force`). */
+  force?: (tool: SignInTool) => boolean;
   pollMs?: number;
   openTimeoutMs?: number;
 }
@@ -289,7 +300,7 @@ export function createToolSignInRunner(options: ToolSignInRunnerOptions): ToolSi
       set({ tool, phase: "opening" });
       openTimer = setTimeout(() => fail(tool, token, true), openTimeoutMs);
       void Promise.resolve()
-        .then(() => options.api.loginStart(tool))
+        .then(() => (options.force?.(tool) ? options.api.loginStart(tool, { force: true }) : options.api.loginStart(tool)))
         .then(
           (result) => result,
           (error: unknown): RuntimeSignInState => {
@@ -319,13 +330,229 @@ export function toolRowKinds(
   statuses: Readonly<Record<string, RuntimeStatus>> | null | undefined,
   ready: Record<string, boolean> | null | undefined,
   tools: AiTools | null | undefined,
+  checks?: ToolSignInChecks | null,
 ): Record<SignInTool, ToolRowKind> {
   const statusOf = (tool: SignInTool): RuntimeStatus | null => {
     const status = statuses?.[tool];
     return status && typeof status.state === "string" ? status : null;
   };
   return {
-    claude: toolRowKind("claude", statusOf("claude"), ready, tools),
-    codex: toolRowKind("codex", statusOf("codex"), ready, tools),
+    claude: toolRowKind("claude", statusOf("claude"), ready, tools, checkOf(checks, "claude")),
+    codex: toolRowKind("codex", statusOf("codex"), ready, tools, checkOf(checks, "codex")),
+  };
+}
+
+/**
+ * Without checks (a host that runs none) a tool is as its status says. With
+ * them, a stored login with no answer yet is still being checked.
+ */
+function checkOf(checks: ToolSignInChecks | null | undefined, tool: SignInTool): ToolSignInCheck | undefined {
+  if (!checks) return undefined;
+  return checks[tool] ?? "checking";
+}
+
+// ── the real sign-in check ─────────────────────────────────────────────────
+//
+// `agent_session_preflight` asks each tool whether a login is stored
+// (`claude auth status`, `codex login status`). It never asks the server, so
+// a login whose refresh token is dead still reads as signed in. The owner hit
+// exactly that: the row said Signed in, the assistant was created saying so,
+// and its first turn failed with an expired session. So before a tool counts
+// as signed in on the first run, the host runs `hq bot probe` (one tiny real
+// turn, the same check the New bot flow runs before it saves a bot).
+
+/**
+ * What the real check said about a tool whose login is stored.
+ *
+ *   checking    the check is running: the row reads "Checking…".
+ *   passed      a real turn worked: signed in.
+ *   signedOut   the stored login is dead: Sign in, which replaces it.
+ *   unverified  the check could not tell (timed out, transient, older CLI):
+ *               the stored login is taken at its word, as before.
+ */
+export type ToolSignInCheck = "checking" | "passed" | "signedOut" | "unverified";
+export type ToolSignInChecks = Partial<Record<SignInTool, ToolSignInCheck>>;
+
+/** The CLI's own limit for the check (`hq bot probe --timeout`). */
+export const TOOL_SIGNIN_CHECK_TIMEOUT_SECS = 15;
+/** How long the screen waits for the check before it takes the stored login at its word. */
+export const TOOL_SIGNIN_CHECK_DEADLINE_MS = 20_000;
+
+/** A probe's answer as a check. Only a signed-out verdict blocks. */
+export function signInCheckOf(answer: RuntimeProbeState): ToolSignInCheck {
+  if (answer.state === "ready") return "passed";
+  if (answer.state === "failed" && answer.class === "signed-out") return "signedOut";
+  return "unverified";
+}
+
+/**
+ * The readiness the first run acts on: a tool whose login is stored counts
+ * only once its check passed or could not tell. Other runtimes pass through.
+ */
+export function checkedReadiness(
+  ready: Record<string, boolean> | null | undefined,
+  checks: ToolSignInChecks | null | undefined,
+): Record<string, boolean> | null {
+  if (!ready) return null;
+  if (!checks) return ready;
+  const out = { ...ready };
+  for (const tool of SIGN_IN_TOOLS) {
+    const check = checks[tool];
+    if (out[tool] === true && check !== "passed" && check !== "unverified") out[tool] = false;
+  }
+  return out;
+}
+
+/**
+ * The checks as the ready view's tool cards read them (HomeStep's
+ * `probeStates`, the New bot flow's own states): passed is Ready, a dead
+ * login is "Sign in first" with its Sign in, a running check is Checking. A
+ * check that could not tell, or a runtime not checked, falls back to the
+ * status read ("unavailable").
+ */
+export function signInProbeStates(checks: ToolSignInChecks): Record<BotRuntime, RuntimeProbeState> {
+  const of = (tool: SignInTool): RuntimeProbeState => {
+    switch (checks[tool]) {
+      case "passed":
+        return { state: "ready", createModel: null };
+      case "signedOut":
+        return { state: "failed", class: "signed-out" };
+      case "checking":
+        return { state: "checking" };
+      default:
+        return { state: "unavailable" };
+    }
+  };
+  return { claude: of("claude"), codex: of("codex"), grok: { state: "unavailable" } };
+}
+
+/** A sign-in API whose Sign in replaces the stored login (`force`) for a tool whose login is dead. */
+export function forcingSignInApi(api: RuntimeSignInApi, dead: (tool: SignInTool) => boolean): RuntimeSignInApi {
+  return {
+    loginStart: (runtime, opts) =>
+      (runtime === "claude" || runtime === "codex") && dead(runtime)
+        ? api.loginStart(runtime, { ...opts, force: true })
+        : opts
+          ? api.loginStart(runtime, opts)
+          : api.loginStart(runtime),
+    loginStatus: (runtime) => api.loginStatus(runtime),
+    ...(api.loginCancel ? { loginCancel: (runtime: BotRuntime) => api.loginCancel!(runtime) } : {}),
+  };
+}
+
+export interface SignInCheckerOptions {
+  /** The host's `hq bot probe` for a tool; null when the host has none. */
+  probe: ((tool: SignInTool) => AdapterPromise<unknown>) | null;
+  onchange: (checks: ToolSignInChecks) => void;
+  deadlineMs?: number;
+}
+
+export interface SignInChecker {
+  /** Readiness was read: check each tool whose login is stored, once. */
+  sync(ready: Record<string, boolean> | null | undefined): void;
+  /**
+   * A sign-in on the screen finished: the tool's own login just ran against
+   * its server (or replaced a dead login), so it counts without another turn.
+   */
+  signedIn(tool: SignInTool): void;
+  /** Whether Sign in must replace a stored login (log out, then in). */
+  needsForce(tool: SignInTool): boolean;
+  /**
+   * The person asked to check again (Check again, Try again, back in the
+   * window): a signed-out verdict is dropped, so the next readiness read
+   * checks the stored login afresh (it may have been replaced in a terminal).
+   */
+  recheck(): void;
+  current(): ToolSignInChecks;
+  dispose(): void;
+}
+
+/** One check per tool at a time; a check that never answers ends at the deadline. */
+export function createSignInChecker(options: SignInCheckerOptions): SignInChecker {
+  const deadlineMs = options.deadlineMs ?? TOOL_SIGNIN_CHECK_DEADLINE_MS;
+  let checks: ToolSignInChecks = {};
+  const generation: Record<SignInTool, number> = { claude: 0, codex: 0 };
+  let disposed = false;
+
+  function set(tool: SignInTool, check: ToolSignInCheck | undefined): void {
+    const next = { ...checks };
+    if (check === undefined) delete next[tool];
+    else next[tool] = check;
+    checks = next;
+    options.onchange(checks);
+  }
+
+  async function run(tool: SignInTool, token: number): Promise<void> {
+    const probe = options.probe;
+    let check: ToolSignInCheck;
+    if (!probe) {
+      check = "unverified";
+    } else {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), deadlineMs);
+      });
+      try {
+        const result = await Promise.race([Promise.resolve().then(() => probe(tool)), deadline]);
+        if (result === "timeout") {
+          console.warn(`[first-run] sign-in check for ${tool} did not answer in time; using the stored login`);
+          check = "unverified";
+        } else if (!result.ok) {
+          console.warn(`[first-run] sign-in check for ${tool} could not run; using the stored login`, result.message);
+          check = "unverified";
+        } else {
+          const answer = readProbeAnswer(result.value, null);
+          check = signInCheckOf(answer);
+          if (check === "unverified") {
+            console.warn(`[first-run] sign-in check for ${tool} was not conclusive; using the stored login`, answer);
+          }
+        }
+      } catch (error) {
+        console.warn(`[first-run] sign-in check for ${tool} failed; using the stored login`, error);
+        check = "unverified";
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (disposed || generation[tool] !== token) return;
+    set(tool, check);
+  }
+
+  function start(tool: SignInTool): void {
+    generation[tool] += 1;
+    const token = generation[tool];
+    set(tool, "checking");
+    void run(tool, token);
+  }
+
+  return {
+    sync(ready) {
+      if (disposed || !ready) return;
+      for (const tool of SIGN_IN_TOOLS) {
+        const check = checks[tool];
+        if (ready[tool] === true) {
+          if (check === undefined) start(tool);
+        } else if (check !== undefined && check !== "checking") {
+          // No login stored now: the next one stored is checked afresh.
+          set(tool, undefined);
+        }
+      }
+    },
+    signedIn(tool) {
+      if (disposed) return;
+      generation[tool] += 1;
+      set(tool, "passed");
+    },
+    needsForce: (tool) => checks[tool] === "signedOut",
+    recheck() {
+      if (disposed) return;
+      for (const tool of SIGN_IN_TOOLS) {
+        if (checks[tool] === "signedOut") set(tool, undefined);
+      }
+    },
+    current: () => checks,
+    dispose() {
+      disposed = true;
+    },
   };
 }

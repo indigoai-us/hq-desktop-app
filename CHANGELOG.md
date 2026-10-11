@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run: Your coding tools no longer says "Signed in" for an old Claude Code or Codex login that has stopped working. Before a tool counts, HQ runs one short test reply with it and shows "Checking..." while it runs. If the saved login no longer works, the tool shows Sign in, and signing in replaces the old login. Your assistant is created only after that, and its first message says the tool is signed in only when the test passed. If the test cannot finish (for example it takes too long), setup goes on as before.
 - The marketplace and your installed packs now show the iMessage pack as "iMessage" instead of "Imessage".
 - On a new computer with no coding tool yet, the welcome tour now waits until Claude Code or Codex is installed and signed in, instead of opening on top of the Install Claude card.
 - A brand-new account no longer sees "conflict copies parked" after its first sync. When HQ uploads your files before background sync has started, it now records each file's cloud version, so the next sync knows the cloud copy is the one it just uploaded.

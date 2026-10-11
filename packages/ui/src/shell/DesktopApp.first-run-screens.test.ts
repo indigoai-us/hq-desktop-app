@@ -93,6 +93,8 @@ function adapter({
       stop: async () => ok({}),
       remove: async () => ok({}),
       workers: async () => ok({ workers: [] }),
+      // The real sign-in check (`hq bot probe`) passes: the stored login works.
+      probe: async () => ok({ ok: true, class: null }),
     },
   } as unknown as PlatformAdapter;
   return { platform, hasFeature, updateAgentProfile, sendDm };

@@ -320,6 +320,27 @@ describe("handoff kickoff", () => {
     expect(intro.length).toBeLessThan(500);
     expect(intro).not.toContain("\n");
   });
+
+  // The owner's assistant said "You've named me and signed in Claude Code"
+  // on a dead stored login, and its first turn failed to sign in.
+  it("the hello and the kickoff do not claim signed in when the real check did not pass", () => {
+    const intro = firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: false }, { noun: "Mac" });
+    expect(intro).not.toContain("signed in");
+    expect(intro).toContain("You've named me and picked Claude Code");
+    expect(intro.length).toBeLessThan(500);
+    const kickoff = firstRunKickoff({ ...handoff, signInChecked: false }, { noun: "Mac" });
+    expect(kickoff).not.toContain("Claude Code is signed in");
+    expect(kickoff).not.toContain("sign-in is finished");
+    expect(kickoff).toContain("HQ could not confirm its sign-in");
+    expect(kickoff).not.toContain(String.fromCharCode(0x2014));
+    const longest = firstRunKickoff(
+      { name: "A".repeat(ASSISTANT_NAME_MAX), runtime: "grok", toolsReady: ["claude", "codex", "grok"], signInChecked: false },
+      { noun: "computer" },
+    );
+    expect(longest.length).toBeLessThan(2000);
+    // A passing check keeps today's words.
+    expect(firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: true })).toContain("signed in Claude Code");
+  });
 });
 
 describe("import handoff (Bring in your context)", () => {
