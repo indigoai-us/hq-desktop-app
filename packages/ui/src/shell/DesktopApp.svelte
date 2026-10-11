@@ -9898,8 +9898,10 @@
     });
     if (!ready || adapter.kind === "web") return;
     // The visual first run comes first; the tour waits for it (and for the
-    // flag's answer, so it never starts under a takeover about to open).
+    // flag's answer, and for the bot listings the takeover waits on, so it
+    // never starts under a takeover about to open).
     if (visualFirstRunOpen || firstRunRouteNow === "pending") return;
+    if (firstRunRouteNow === "visual" && !firstRunListingsRead) return;
     tourAutoTimer = window.setTimeout(() => {
       if (!tourStartedThisSession) startGuidedTour();
     }, TOUR_AUTO_START_DELAY_MS);
