@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run: Your coding tools no longer says "Signed in" for an old Claude Code or Codex login that has stopped working. Before a tool counts, HQ runs one short test reply with it and shows "Checking..." while it runs. If the saved login no longer works, the tool shows Sign in, and signing in replaces the old login. Your assistant is created only after that, and its first message says the tool is signed in only when the test passed. If the test cannot finish (for example it takes too long), setup goes on as before.
 - The Storage page now loads for people with very large HQ cloud history. Reading every old file version can take a couple of minutes the first time, so the page waits up to five minutes for it (previews of a delete wait up to ten) instead of stopping at two minutes with an error.
 - Company telemetry now counts days in your own time zone, the same way your personal usage already does.
 - HQ uses less CPU: the Atlas map draws at most a fixed number of dots, and the app stops refreshing in the background while its window is hidden.

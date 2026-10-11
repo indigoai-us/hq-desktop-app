@@ -306,6 +306,13 @@
     type FirstRunCreation,
     type FirstRunImportHandoff,
   } from "../chat/first-run/visual-first-run.js";
+  import {
+    checkedReadiness,
+    createSignInChecker,
+    TOOL_SIGNIN_CHECK_TIMEOUT_SECS,
+    type SignInTool,
+    type ToolSignInChecks,
+  } from "../chat/first-run/tools-signin.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
@@ -812,7 +819,7 @@
   } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
-  import { PROBE_TIMEOUT_SECS } from "../chat/create-bot/runtime-probe.js";
+  import { PROBE_EFFORT, PROBE_TIMEOUT_SECS } from "../chat/create-bot/runtime-probe.js";
   import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
@@ -3380,15 +3387,47 @@
     firstRunRuntime = runtime;
     firstRunPendingName = name;
     firstRunConfirmedName = name;
-    if (firstSignedInRuntime(localBotRuntimeReady)) firstRunStarter.start(name);
+    if (firstSignedInRuntime(firstRunRuntimeReady)) firstRunStarter.start(name);
   }
   // A tool signed in after the name was confirmed: start then.
   $effect(() => {
     const name = firstRunPendingName;
     if (!visualFirstRunOpen || !name || firstRunCreation.state !== "idle") return;
-    if (!firstSignedInRuntime(localBotRuntimeReady)) return;
+    if (!firstSignedInRuntime(firstRunRuntimeReady)) return;
     untrack(() => firstRunStarter.start(name));
   });
+  /**
+   * The real sign-in check on the first run. `agent_session_preflight` only
+   * reports that a login is stored; a stored login whose refresh token is
+   * dead still reads as signed in there. So a tool counts on the first run
+   * (its row, Next, the pick, the assistant's start and its hello) only once
+   * `hq bot probe` ran one real turn on it. A dead login keeps the row on
+   * Sign in, which then replaces it. A check that cannot tell does not block.
+   */
+  let firstRunSignInChecks = $state<ToolSignInChecks>({});
+  const firstRunSignInChecker = createSignInChecker({
+    probe:
+      adapter.bots?.probe && !firstRunDev.dry
+        ? (tool) =>
+            adapter.bots!.probe!(tool, null, { effort: PROBE_EFFORT, timeoutSecs: TOOL_SIGNIN_CHECK_TIMEOUT_SECS })
+        : null,
+    onchange: (checks) => {
+      firstRunSignInChecks = checks;
+    },
+  });
+  onDestroy(() => firstRunSignInChecker.dispose());
+  /** The readiness the first run acts on: stored logins that passed the check. */
+  const firstRunRuntimeReady = $derived(checkedReadiness(localBotRuntimeReady, firstRunSignInChecks));
+  $effect(() => {
+    if (!visualFirstRunOpen) return;
+    const ready = localBotRuntimeReady;
+    untrack(() => firstRunSignInChecker.sync(ready));
+  });
+  /** A sign-in on the coding tools screen finished: it counts, then read readiness again. */
+  async function onFirstRunToolSignedIn(runtime: LocalBotRow["runtime"]): Promise<void> {
+    if (runtime === "claude" || runtime === "codex") firstRunSignInChecker.signedIn(runtime satisfies SignInTool);
+    await onBotRuntimeSignedIn();
+  }
   /**
    * "Bring in your context" (slice 4). The scan runs inside the takeover; the
    * host supplies the command (`adapter.contextImport`) and the event bus.
@@ -3466,7 +3505,7 @@
    */
   function sendFirstRunHandoffNotice(bot: SetupBotRef, displayName: string): void {
     if (firstRunDev.dry) return;
-    const ready = localBotRuntimeReady;
+    const ready = firstRunRuntimeReady;
     const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
     const runtime =
       localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
@@ -3506,7 +3545,10 @@
     // Asked again (the readiness on screen can be a sign-in out of date), but
     // the old reading stays on screen while it runs.
     await loadLocalBotRuntimeReady(true);
-    const ready = localBotRuntimeReady;
+    // Only stored logins that passed the real sign-in check count here too.
+    firstRunSignInChecker.sync(localBotRuntimeReady);
+    const checks = firstRunSignInChecker.current();
+    const ready = checkedReadiness(localBotRuntimeReady, checks);
     const picked = firstRunRuntime;
     const runtime = picked && ready?.[picked] === true ? picked : firstSignedInRuntime(ready);
     if (!runtime) return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
@@ -3516,7 +3558,12 @@
     const imported = firstRunImport;
     const { team, apps } = firstRunSettled;
     // What does not fit the kickoff goes later as a note (firstRunKickoffCarry).
-    const carry = firstRunKickoffCarry({ name: displayName, runtime, toolsReady, imported, team, apps }, { noun });
+    // The hello and the kickoff say "signed in" only when a real turn worked.
+    const signInChecked = checks[runtime as SignInTool] === "passed";
+    const carry = firstRunKickoffCarry(
+      { name: displayName, runtime, toolsReady, signInChecked, imported, team, apps },
+      { noun },
+    );
     if (imported && carry.importWhole) firstRunImportDelivered = true;
     // The kickoff carries what was settled when it went out; a part settled
     // later (the create waited for a coding tool) goes at close.
@@ -3527,7 +3574,7 @@
         displayName,
         worker: SETUP_BOT_WORKER,
         runtime,
-        intro: firstRunIntro({ name: displayName, runtime }, { noun }),
+        intro: firstRunIntro({ name: displayName, runtime, signInChecked }, { noun }),
         kickoff: carry.kickoff,
       },
       // The progress card and the DM row carry the person's name for it.
@@ -3808,7 +3855,12 @@
       return { state, message: rec.message };
     };
     return {
-      loginStart: async (runtime) => toState(await sessions.loginStart!(runtime as SessionProviderId)),
+      loginStart: async (runtime, opts) =>
+        toState(
+          await (opts?.force
+            ? sessions.loginStart!(runtime as SessionProviderId, { force: true })
+            : sessions.loginStart!(runtime as SessionProviderId)),
+        ),
       loginStatus: async (runtime) => toState(await sessions.loginStatus!(runtime as SessionProviderId)),
       loginCancel: sessions.loginCancel
         ? async (runtime) => toState(await sessions.loginCancel!(runtime as SessionProviderId))
@@ -15444,8 +15496,9 @@
       initialName={firstRunSuggestedName}
       runtimeReady={localBotRuntimeReady}
       runtimeStatus={localBotRuntimeStatus}
+      signInChecks={firstRunSignInChecks}
       signInApi={botSignIn}
-      onsignedin={onBotRuntimeSignedIn}
+      onsignedin={onFirstRunToolSignedIn}
       onrecheck={recheckLocalBotRuntimes}
       {aiTools}
       hqFolderPath={hqFolderPath ?? ""}

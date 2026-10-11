@@ -16,6 +16,7 @@ import { NO_AI_TOOLS, type AiTools } from "../../settings/setup-launch.js";
 import type { RuntimeSignInApi, RuntimeSignInState } from "../create-bot/RuntimeSignIn.svelte";
 import type { RuntimeStatus } from "../create-bot/runtime-status.js";
 import type { FirstRunCreation } from "./visual-first-run.js";
+import type { ToolSignInChecks } from "./tools-signin.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -46,6 +47,8 @@ interface Setup {
   afterRecheck?: { ready: Record<string, boolean>; status: Record<string, RuntimeStatus> };
   /** What the host's readiness read answers after a sign-in. */
   afterSignIn?: { ready: Record<string, boolean>; status: Record<string, RuntimeStatus> };
+  /** The host's real sign-in check per tool; undefined leaves the prop out. */
+  checks?: ToolSignInChecks | null;
 }
 
 function render(setup: Setup = {}) {
@@ -54,6 +57,7 @@ function render(setup: Setup = {}) {
     runtimeStatus: setup.status === undefined ? { claude: OUT, codex: OUT } : setup.status,
     aiTools: setup.aiTools === undefined ? NO_AI_TOOLS : setup.aiTools,
     creation: setup.creation ?? ({ state: "idle" } as FirstRunCreation),
+    checks: setup.checks === undefined ? null : setup.checks,
   });
   const handlers = {
     onconfirmname: vi.fn(),
@@ -93,6 +97,9 @@ function render(setup: Setup = {}) {
       },
       get creation() {
         return props.creation;
+      },
+      get signInChecks() {
+        return props.checks;
       },
       signInApi: setup.api === undefined ? null : setup.api,
       pollMs: 10,
@@ -348,6 +355,64 @@ describe("Your coding tools: never stuck without something to press", () => {
     expect(handlers.onrecheck).toHaveBeenCalledTimes(1);
     expect(q<HTMLButtonElement>('[data-testid="first-run-tool-claude-recheck"]')?.disabled).toBe(true);
     finish();
+    await settle();
+    expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);
+  });
+});
+
+// The owner's test Mac had a Claude Code login stored whose refresh token was
+// dead. The row said Signed in from the stored login alone. The host's real
+// check (`hq bot probe`) now decides.
+describe("Your coding tools: a stored login counts only once the real check agrees", () => {
+  const STORED = { claude: true, codex: false, grok: false };
+  const STORED_STATUS = { claude: IN, codex: OUT };
+
+  it("while the check runs: the row reads Checking, and Next stays held", async () => {
+    render({ ready: STORED, status: STORED_STATUS, checks: { claude: "checking" } });
+    await settle();
+    expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("checking");
+    expect(q('[data-testid="first-run-tool-claude-note"]')?.textContent).toContain("Checking");
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
+    expect(document.body.textContent).not.toContain("Signed in.");
+  });
+
+  it("a stored but dead login shows Sign in, and Sign in runs a forced login that replaces it", async () => {
+    const api = signInApi({ state: "waiting" }, [{ state: "connected" }]);
+    const { props, handlers } = render({
+      ready: STORED,
+      status: STORED_STATUS,
+      checks: { claude: "signedOut" },
+      api,
+      afterSignIn: { ready: STORED, status: STORED_STATUS },
+    });
+    // The host marks the fresh login passed when it hears of it.
+    handlers.onsignedin.mockImplementation(async () => {
+      props.checks = { claude: "passed" };
+    });
+    await settle();
+    expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("signIn");
+    expect(q('[data-testid="first-run-tool-claude-signin"]')?.textContent).toBe("Sign in with your Claude account");
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
+    q<HTMLButtonElement>('[data-testid="first-run-tool-claude-signin"]')!.click();
+    await settle();
+    expect(api.loginStart).toHaveBeenCalledWith("claude", { force: true });
+    await vi.waitFor(() => expect(handlers.onsignedin).toHaveBeenCalledWith("claude"));
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);
+    expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
+  });
+
+  it("a valid login shows Signed in once the check passed", async () => {
+    render({ ready: STORED, status: STORED_STATUS, checks: { claude: "passed" } });
+    await settle();
+    expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);
+    expect(q('[data-testid="chat-bot-runtime-claude"]')?.getAttribute("data-ready")).toBe("true");
+  });
+
+  it("a check that could not tell does not block: the stored login counts", async () => {
+    render({ ready: STORED, status: STORED_STATUS, checks: { claude: "unverified" } });
     await settle();
     expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
     expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);

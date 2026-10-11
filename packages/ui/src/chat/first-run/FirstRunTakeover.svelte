@@ -87,7 +87,14 @@
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   import FirstRunAppStep from "./FirstRunAppStep.svelte";
   import FirstRunToolsSignIn from "./FirstRunToolsSignIn.svelte";
-  import { preferredSignInTool, toolRowKinds, toolsSignInLead, type SignInTool } from "./tools-signin.js";
+  import {
+    checkedReadiness,
+    preferredSignInTool,
+    toolRowKinds,
+    toolsSignInLead,
+    type SignInTool,
+    type ToolSignInChecks,
+  } from "./tools-signin.js";
   import {
     TEAM_COPY,
     companyNameIssue,
@@ -130,6 +137,12 @@
     initialStep?: FirstRunStepId;
     runtimeReady: Record<string, boolean> | null;
     runtimeStatus?: Record<string, RuntimeStatus> | null;
+    /**
+     * The real sign-in check per tool (`hq bot probe`), run by the host. A tool
+     * counts as signed in only once its check passed or could not tell. Null
+     * when the host runs none: the status read decides, as before.
+     */
+    signInChecks?: ToolSignInChecks | null;
     signInApi?: RuntimeSignInApi | null;
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     onrecheck?: (() => void | Promise<void>) | null;
@@ -179,8 +192,9 @@
     initialName,
     steps = FIRST_RUN_STEPS,
     initialStep = "name",
-    runtimeReady,
+    runtimeReady: storedReady,
     runtimeStatus = null,
+    signInChecks = null,
     signInApi = null,
     onsignedin = null,
     onrecheck = null,
@@ -206,6 +220,13 @@
     appsHost = null,
     onsettled = null,
   }: Props = $props();
+
+  /**
+   * Readiness as the flow acts on it: a stored login counts only once the
+   * host's real check passed (or could not tell). Next, the pick and the
+   * assistant's start all follow this, never the stored login alone.
+   */
+  const runtimeReady = $derived(checkedReadiness(storedReady, signInChecks));
 
   // ── Your team ──────────────────────────────────────────────────────────
   const canTeam = $derived(!!teamOptions && !!teamHost);
@@ -417,7 +438,7 @@
 
   // ── Your coding tools ──────────────────────────────────────────────────
   /** What each tool's Sign in row offers (Claude Code and Codex). */
-  const toolKinds = $derived(toolRowKinds(runtimeStatus, runtimeReady, aiTools));
+  const toolKinds = $derived(toolRowKinds(runtimeStatus, storedReady, aiTools, signInChecks));
   /** The tool the screen leads with: the one whose desktop app is here. */
   const preferredTool = $derived<SignInTool>(preferredSignInTool(toolKinds, aiTools));
   /** The person picked a tool (a card, or a Sign in): the pick is theirs now. */
@@ -914,6 +935,7 @@
                 checkingStaleMs={toolCheckingStaleMs}
                 {hqFolderPath}
                 onpick={pickTool}
+                forceSignIn={(tool) => signInChecks?.[tool] === "signedOut"}
                 onsignedin={async (tool) => {
                   await (onsignedin ? onsignedin(tool) : onrecheck?.());
                 }}
