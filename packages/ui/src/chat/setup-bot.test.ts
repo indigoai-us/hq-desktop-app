@@ -11,17 +11,16 @@ import {
   findSetupBot,
   findSetupBotContact,
   firstSignedInRuntime,
-  singleFlightStart,
+  isAssistantRecord,
+  isAssistantSlug,
   setupBotActionLabel,
   SETUP_BOT_COPY,
   SETUP_BOT_INTRO,
   SETUP_BOT_KICKOFF,
   setupFinaleDue,
   SETUP_BOT_KICKOFF_PREFIX,
-  SETUP_BOT_MODE,
   SETUP_BOT_NAME,
   SETUP_BOT_WORKER,
-  type SetupBotStart,
 } from "./setup-bot";
 
 function bot(name: string, agentUid = `agt_${name}`): LocalBotRow {
@@ -42,8 +41,14 @@ function bot(name: string, agentUid = `agt_${name}`): LocalBotRow {
 }
 
 describe("findSetupBot", () => {
-  it("finds the setup bot by name, whatever the casing or padding", () => {
-    expect(findSetupBot([bot("scout"), bot(" Setup ", "agt_setup")])).toEqual({ agentUid: "agt_setup", name: " Setup " });
+  it("finds the setup bot by its handle, whatever the casing or padding, and carries no name", () => {
+    expect(findSetupBot([bot("scout"), bot(" Setup ", "agt_setup")])).toEqual({ agentUid: "agt_setup", handle: "Setup" });
+  });
+
+  it("finds it by the role marker an hq-cli reports, never by display name", () => {
+    const marked = { ...bot("hazel-handle", "agt_marked"), role: "assistant", displayName: "Hazel" };
+    expect(findSetupBot([bot("scout"), marked])).toEqual({ agentUid: "agt_marked", handle: "hazel-handle" });
+    expect(findSetupBot([{ ...bot("scout"), displayName: "setup" }])).toBeNull();
   });
 
   it("is null when this Mac has no setup bot", () => {
@@ -144,8 +149,6 @@ describe("copy", () => {
   it("creates `setup` from the core `setup` worker, with the bot path on", () => {
     expect(SETUP_BOT_NAME).toBe("setup");
     expect(SETUP_BOT_WORKER).toBe("setup");
-    // The scripted run stays behind this flag for one build.
-    expect(SETUP_BOT_MODE).toBe(true);
   });
 });
 
@@ -160,14 +163,21 @@ describe("findSetupBotContact", () => {
 
   it("finds a setup bot that exists only in the cloud", () => {
     const roster = { contacts: [contact("prs_mate", "Sam"), contact("agt_cloud_setup", "setup")] };
-    expect(findSetupBotContact(roster)).toEqual({ agentUid: "agt_cloud_setup", name: "setup" });
+    expect(findSetupBotContact(roster)).toEqual({ agentUid: "agt_cloud_setup", handle: "setup" });
   });
 
   it("reads a bare array as well as a { contacts } payload", () => {
     expect(findSetupBotContact([contact("agt_cloud_setup", "  Setup  ")])).toEqual({
       agentUid: "agt_cloud_setup",
-      name: "Setup",
+      handle: "setup",
     });
+  });
+
+  it("finds a named assistant by the cloud's agentRole marker, not by its name", () => {
+    const named = { personUid: "agt_hazel", displayName: "Hazel", agentRole: "assistant", role: "member" };
+    expect(findSetupBotContact([contact("agt_scout", "Scout"), named])).toEqual({ agentUid: "agt_hazel", handle: "setup" });
+    // `role` on a contact is the membership role: it never marks the assistant.
+    expect(findSetupBotContact([{ personUid: "agt_x", displayName: "X", role: "assistant" }])).toBeNull();
   });
 
   it("only ever matches an agent uid — a person called setup is not a bot", () => {
@@ -186,58 +196,16 @@ describe("findSetupBotContact", () => {
   });
 });
 
-/**
- * Two `hq bot create setup` calls 1.3 s apart is what the owner's VM log
- * caught: #welcome's automatic first-open start and a Run Setup click (or
- * Home's setup card) each reached the host's start, and each surface only
- * disables its own button.
- */
-describe("singleFlightStart", () => {
-  it("runs the start once for callers that arrive while it is still running", async () => {
-    let calls = 0;
-    let release!: (value: SetupBotStart) => void;
-    const gated = singleFlightStart(() => {
-      calls += 1;
-      return new Promise<SetupBotStart>((resolve) => {
-        release = resolve;
-      });
-    });
-
-    const first = gated();
-    const second = gated();
-    const third = gated();
-    expect(calls).toBe(1);
-
-    release({ ok: true, existing: false });
-    // Everyone gets the one start's own answer.
-    expect(await first).toEqual({ ok: true, existing: false });
-    expect(await second).toEqual({ ok: true, existing: false });
-    expect(await third).toEqual({ ok: true, existing: false });
-    expect(calls).toBe(1);
-  });
-
-  it("opens again once the start settles, so Retry still works", async () => {
-    let calls = 0;
-    const gated = singleFlightStart(async () => {
-      calls += 1;
-      return { ok: false as const, reason: "nope" };
-    });
-
-    expect(await gated()).toEqual({ ok: false, reason: "nope" });
-    expect(await gated()).toEqual({ ok: false, reason: "nope" });
-    expect(calls).toBe(2);
-  });
-
-  it("opens again after a start that throws, and lets the throw through", async () => {
-    let calls = 0;
-    const gated = singleFlightStart(async () => {
-      calls += 1;
-      throw new Error("boom");
-    });
-
-    await expect(gated()).rejects.toThrow("boom");
-    await expect(gated()).rejects.toThrow("boom");
-    expect(calls).toBe(2);
+describe("isAssistantRecord / isAssistantSlug", () => {
+  it("knows the assistant by role or handle, and its handle and slug are never names", () => {
+    expect(isAssistantRecord({ name: "setup" })).toBe(true);
+    expect(isAssistantRecord({ name: "x", role: "assistant" })).toBe(true);
+    expect(isAssistantRecord({ name: "x", agentRole: "Assistant" })).toBe(true);
+    expect(isAssistantRecord({ name: "scout" })).toBe(false);
+    expect(isAssistantSlug("setup")).toBe(true);
+    expect(isAssistantSlug("setup-rg13gzm4")).toBe(true);
+    expect(isAssistantSlug("Hazel")).toBe(false);
+    expect(isAssistantSlug("setup helper")).toBe(false);
   });
 });
 

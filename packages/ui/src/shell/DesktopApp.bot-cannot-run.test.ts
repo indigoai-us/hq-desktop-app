@@ -184,7 +184,7 @@ describe("an adopted bot with no runtime on this Mac", () => {
     );
 
     // The automatic first-open start adopts it and opens the DM.
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("Your assistant"));
     const notice = await vi.waitFor(() => {
       const el = q('[data-testid="bot-not-runnable-notice"]');
       expect(el).toBeTruthy();

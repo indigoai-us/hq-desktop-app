@@ -193,7 +193,7 @@ describe("DesktopApp first-run guided tour", () => {
     claudeLoggedIn = true;
     q("setup-run")!.click();
     await settle();
-    await vi.waitFor(() => expect(q("channel-name")?.textContent).toContain("setup"), {
+    await vi.waitFor(() => expect(q("channel-name")?.textContent).toContain("Your assistant"), {
       timeout: 2000,
       interval: 20,
     });
