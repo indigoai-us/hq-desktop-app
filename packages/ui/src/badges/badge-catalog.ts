@@ -50,7 +50,7 @@ export const BADGES: readonly BadgeDef[] = [
   { id: "og", name: "OG", icon: "crown", family: "honors", crit: "On the team that built HQ from day one", levels: "Single level", tier: "L" },
   { id: "captain", name: "Captain", icon: "wheel", family: "honors", crit: "Leads HQ", levels: "Single level", tier: "L" },
   { id: "patientzero", name: "Patient Zero", icon: "pulse", family: "honors", crit: "The first person to run HQ", levels: "Single level", tier: "L" },
-  { id: "corebuilder", name: "Core Builder", icon: "code", family: "honors", crit: "Pull requests merged into HQ core", levels: "1 · 10 · 100 · 500 PRs", tier: 1 },
+  { id: "corebuilder", name: "Core Builder", icon: "code", family: "honors", crit: "Pull requests merged into HQ core", levels: "1 · 10 · 100 · 200 PRs", tier: 1 },
 ];
 
 export const BADGE_BY_ID: Readonly<Record<string, BadgeDef>> = Object.fromEntries(BADGES.map((b) => [b.id, b]));

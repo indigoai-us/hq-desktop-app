@@ -70,7 +70,7 @@ describe("badge levels", async () => {
       ["Bronze", "1 PR"],
       ["Silver", "10 PRs"],
       ["Gold", "100 PRs"],
-      ["Legendary", "500 PRs"],
+      ["Legendary", "200 PRs"],
     ]);
     expect(rows.map((r) => [r.reached, r.current])).toEqual([[true, false], [true, false], [true, false], [true, true]]);
     expect(badgeLevels(BADGE_BY_ID.corebuilder, 3).map((r) => [r.reached, r.current])).toEqual([[true, false], [true, false], [true, true], [false, false]]);

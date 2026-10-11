@@ -65,7 +65,7 @@ describe("the story", () => {
       "You got your first pull request merged into HQ core.",
       "You got 10 pull requests merged into HQ core.",
       "You got 100 pull requests merged into HQ core.",
-      "You got 500 pull requests merged into HQ core.",
+      "You got 200 pull requests merged into HQ core.",
     ]);
     expect(badgeStory(core(1), "Maya Chen")?.did).toBe("Maya got their first pull request merged into HQ core.");
     // A three-level badge at Legendary still reads its Gold line.

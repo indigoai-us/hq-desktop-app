@@ -15,7 +15,7 @@ const LEVEL_TIERS: readonly BadgeTier[] = [1, 2, 3, "L"];
 /**
  * The levels of a badge, from its "1 · 10 · 50 deploys" description, with the
  * one reached marked. A bare number takes the unit of the last level. A badge
- * with a fourth level ("1 · 10 · 100 · 500 PRs") has Legendary as its top.
+ * with a fourth level ("1 · 10 · 100 · 200 PRs") has Legendary as its top.
  * Single-level and limited badges have one row at the badge's own tier.
  */
 export function badgeLevels(def: BadgeDef, tier: BadgeTier): BadgeLevel[] {

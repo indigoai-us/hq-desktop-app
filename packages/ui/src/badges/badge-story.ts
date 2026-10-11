@@ -185,7 +185,7 @@ const STORIES: Readonly<Record<string, StoryDef>> = {
       (v) => `${v.Subject} got ${v.their} first pull request merged into HQ core.`,
       (v) => `${v.Subject} got 10 pull requests merged into HQ core.`,
       (v) => `${v.Subject} got 100 pull requests merged into HQ core.`,
-      (v) => `${v.Subject} got 500 pull requests merged into HQ core.`,
+      (v) => `${v.Subject} got 200 pull requests merged into HQ core.`,
     ],
     why: () => "HQ core ships to everyone who uses HQ, so each merged change reaches every team.",
   },
