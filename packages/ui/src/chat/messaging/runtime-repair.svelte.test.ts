@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RuntimeRepairController, TRY_AGAIN_TEXT, type RuntimeRepairDeps } from "./runtime-repair.svelte.js";
+import {
+  RUNTIME_SIGNED_IN_EVENT,
+  RuntimeRepairController,
+  SIGN_IN_RECHECK_MIN_MS,
+  SIGN_IN_RESTART_WINDOW_MS,
+  TRY_AGAIN_TEXT,
+  announceRuntimeSignedIn,
+  signedInRuntimeOf,
+  type RuntimeRepairDeps,
+} from "./runtime-repair.svelte.js";
 import type { RepairPayload } from "./runtime-repair-model.js";
 
 const RAW = 'Error: spawn codex ENOENT {"code":401,"detail":"HTTP 500 Internal Server Error"}';
@@ -173,5 +182,147 @@ describe("RuntimeRepairController", () => {
     const c = new RuntimeRepairController(deps({ onfixed }));
     await c.run("evt_1", payload(), "signIn");
     expect(onfixed).toHaveBeenCalledWith(payload(), "signIn");
+  });
+});
+
+describe("RuntimeRepairController sign-in made somewhere else", () => {
+  it("turns every waiting signed-out card of the tool fixed after a passing check, and tells the host once", async () => {
+    const onsignedin = vi.fn();
+    const d = deps({ onsignedin, now: () => 1_000 });
+    const c = new RuntimeRepairController(d);
+    c.track("evt_1", payload());
+    c.track("evt_2", payload({ botName: "pickles" }));
+    c.track("evt_codex", payload({ runtime: "codex" }));
+    c.track("evt_old", payload({ class: "cli-outdated", action: "update" }));
+    await c.recheckSignIn({ runtime: "claude", force: true });
+    expect(d.calls).toEqual(["probe:claude:"]);
+    expect(c.stateFor("evt_1")).toEqual({ phase: "fixed", action: "signIn" });
+    expect(c.stateFor("evt_2")).toEqual({ phase: "fixed", action: "signIn" });
+    expect(c.stateFor("evt_codex").phase).toBe("offered");
+    expect(c.stateFor("evt_old").phase).toBe("offered");
+    expect(c.signedInAt.claude).toBe(1_000);
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+    expect(onsignedin).toHaveBeenCalledWith("claude");
+  });
+
+  it("leaves the cards signed out when the check still fails", async () => {
+    const onsignedin = vi.fn();
+    const d = deps({ onsignedin, probe: vi.fn(async () => ({ ok: false, class: "signed-out" })) });
+    const c = new RuntimeRepairController(d);
+    c.track("evt_1", payload());
+    await c.recheckSignIn({ force: true });
+    expect(c.stateFor("evt_1")).toEqual({ phase: "offered" });
+    expect(c.signedInAt.claude).toBeUndefined();
+    expect(onsignedin).not.toHaveBeenCalled();
+  });
+
+  it("runs no check when no signed-out card is waiting", async () => {
+    const d = deps();
+    const c = new RuntimeRepairController(d);
+    c.track("evt_1", payload({ class: "transient", action: "tryAgain" }));
+    await c.recheckSignIn({ force: true });
+    expect(d.probe).not.toHaveBeenCalled();
+  });
+
+  it("spaces unforced checks of one tool; a reported sign-in always checks", async () => {
+    let clock = 0;
+    const probe = vi.fn(async () => ({ ok: false, class: "signed-out" }));
+    const c = new RuntimeRepairController(deps({ probe, now: () => clock }));
+    c.track("evt_1", payload());
+    await c.recheckSignIn();
+    clock += SIGN_IN_RECHECK_MIN_MS - 1;
+    await c.recheckSignIn();
+    expect(probe).toHaveBeenCalledTimes(1);
+    await c.recheckSignIn({ force: true });
+    expect(probe).toHaveBeenCalledTimes(2);
+    clock += SIGN_IN_RECHECK_MIN_MS;
+    await c.recheckSignIn();
+    expect(probe).toHaveBeenCalledTimes(3);
+  });
+
+  it("a sign-in reported while a check runs checks again after it", async () => {
+    let signedIn = false;
+    let release: () => void = () => {};
+    const probe = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise((resolve) => (release = () => resolve({ ok: false, class: "signed-out" }))))
+      .mockImplementation(async () => (signedIn ? { ok: true } : { ok: false, class: "signed-out" }));
+    const c = new RuntimeRepairController(deps({ probe }));
+    c.track("evt_1", payload());
+    const first = c.recheckSignIn();
+    // The sign-in finishes while the first check (started before it) runs.
+    signedIn = true;
+    const reported = c.recheckSignIn({ runtime: "claude", force: true });
+    await reported;
+    expect(probe).toHaveBeenCalledTimes(1);
+    release();
+    await first;
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(c.stateFor("evt_1")).toEqual({ phase: "fixed", action: "signIn" });
+  });
+
+  it("bounds the restart loop: a new signed-out card right after a restart stays signed out, and the bots restart once per window", async () => {
+    let clock = 0;
+    const onsignedin = vi.fn();
+    const probe = vi.fn(async () => ({ ok: true }));
+    const c = new RuntimeRepairController(deps({ probe, onsignedin, now: () => clock }));
+    c.track("evt_1", payload());
+    await c.recheckSignIn({ runtime: "claude", force: true });
+    expect(c.stateFor("evt_1").phase).toBe("fixed");
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+
+    // The check passed, yet the restarted bot fails to sign in and says so again.
+    clock += SIGN_IN_RECHECK_MIN_MS + 1;
+    c.track("evt_2", payload());
+    await c.recheckSignIn();
+    await c.recheckSignIn({ runtime: "claude", unspaced: true });
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(c.stateFor("evt_2")).toEqual({ phase: "offered" });
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+
+    // A sign-in the person reports still turns it fixed, without another restart.
+    await c.recheckSignIn({ runtime: "claude", force: true });
+    expect(c.stateFor("evt_2").phase).toBe("fixed");
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+
+    // Once the window is over, a new card is checked and the bots restarted again.
+    clock += SIGN_IN_RESTART_WINDOW_MS;
+    c.track("evt_3", payload());
+    await c.recheckSignIn();
+    expect(c.stateFor("evt_3").phase).toBe("fixed");
+    expect(onsignedin).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks the model the bot is set to", async () => {
+    const d = deps({ botModel: () => "opus" });
+    const c = new RuntimeRepairController(d);
+    c.track("evt_1", payload());
+    await c.recheckSignIn({ force: true });
+    expect(d.calls).toEqual(["probe:claude:opus"]);
+  });
+
+  it("a card's own Sign in also turns the tool's other signed-out cards fixed", async () => {
+    const d = deps();
+    const c = new RuntimeRepairController(d);
+    c.track("evt_1", payload());
+    c.track("evt_2", payload());
+    await c.run("evt_1", payload(), "signIn");
+    expect(c.stateFor("evt_1")).toEqual({ phase: "fixed", action: "signIn" });
+    expect(c.stateFor("evt_2")).toEqual({ phase: "fixed", action: "signIn" });
+  });
+
+  it("announces a finished sign-in on the window with the tool it names", () => {
+    const heard: Array<string | null> = [];
+    const listener = (event: Event) => heard.push(signedInRuntimeOf(event));
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    try {
+      target.addEventListener(RUNTIME_SIGNED_IN_EVENT, listener);
+      announceRuntimeSignedIn("codex");
+      announceRuntimeSignedIn("not-a-tool");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(heard).toEqual(["codex", null]);
   });
 });

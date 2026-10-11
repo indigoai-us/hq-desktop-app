@@ -557,7 +557,6 @@
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
-  import BotSignInBanner from "../chat/BotSignInBanner.svelte";
   import BotRestoreBanner from "../chat/BotRestoreBanner.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
@@ -805,11 +804,22 @@
   } from "../chat/bot-auto-restore.js";
   import {
     botNeedsSignIn,
+    expiredRuntimeOf,
     restartBotsNeedingSignIn,
     runtimesNeedingSignIn,
     signInAgain,
   } from "../chat/runtime-sign-in-again.js";
-  import { RuntimeRepairController } from "../chat/messaging/runtime-repair.svelte.js";
+  import {
+    RUNTIME_SIGNED_IN_EVENT,
+    RuntimeRepairController,
+    signedInRuntimeOf,
+  } from "../chat/messaging/runtime-repair.svelte.js";
+  import {
+    repairCardView,
+    repairPayloadForMessage,
+    type RepairPayload,
+  } from "../chat/messaging/runtime-repair-model.js";
+  import RuntimeRepairCard from "../chat/messaging/RuntimeRepairCard.svelte";
   import type {
     BotRestoreResult,
     LocalBotCreateInput,
@@ -3872,7 +3882,10 @@
         : undefined,
     };
   });
-  async function onBotRuntimeSignedIn(): Promise<void> {
+  async function onBotRuntimeSignedIn(runtime?: string): Promise<void> {
+    // A repair card still saying this tool is signed out checks again and
+    // turns fixed in place.
+    if (runtime) recheckRepairSignIn(runtime);
     // Read again with the old reading on screen: clearing it first left the
     // first run's rows on "Checking…" if the read then failed.
     await recheckLocalBotRuntimes();
@@ -3931,6 +3944,56 @@
       return result.value;
     },
     onfixed: () => refreshLocalBots(),
+    // A sign-in made somewhere else turned cards fixed: restart the bots
+    // paused on that tool so the one that asked picks the message up now.
+    onsignedin: (runtime) => restartBotsAfterSignIn(runtime),
+  });
+  /** A sign-in for `runtime` finished somewhere: check it and turn its signed-out cards fixed. */
+  function recheckRepairSignIn(runtime: string): void {
+    if (runtime !== "claude" && runtime !== "codex" && runtime !== "grok") return;
+    void runtimeRepairController.recheckSignIn({ runtime, force: true });
+  }
+  // Any other screen that finished a sign-in (Settings) says so on the window.
+  // The window coming back (from the browser sign-in, or from a terminal
+  // where the person ran the tool's own login) checks too, spaced by the
+  // controller, and only while a signed-out card is waiting.
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const onSignedIn = (event: Event): void => {
+      const runtime = signedInRuntimeOf(event);
+      if (runtime) recheckRepairSignIn(runtime);
+    };
+    const onBack = (): void => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void runtimeRepairController.recheckSignIn();
+    };
+    window.addEventListener(RUNTIME_SIGNED_IN_EVENT, onSignedIn);
+    window.addEventListener("focus", onBack);
+    document.addEventListener("visibilitychange", onBack);
+    return () => {
+      window.removeEventListener(RUNTIME_SIGNED_IN_EVENT, onSignedIn);
+      window.removeEventListener("focus", onBack);
+      document.removeEventListener("visibilitychange", onBack);
+    };
+  });
+  // A bot's own report that its sign-in works again (its paused retry ran a
+  // turn) is a sign-in that finished, wherever it was made. A restart clears
+  // the report too, so this check keeps the controller's restart window.
+  let botsPausedOnSignIn = new Map<string, LocalBotRow["runtime"]>();
+  $effect(() => {
+    const next = new Map<string, LocalBotRow["runtime"]>();
+    for (const bot of localBots) if (botNeedsSignIn(bot)) next.set(bot.agentUid, expiredRuntimeOf(bot));
+    const before = botsPausedOnSignIn;
+    botsPausedOnSignIn = next;
+    for (const [uid, runtime] of before) {
+      if (!next.has(uid) && localBots.some((bot) => bot.agentUid === uid)) {
+        untrack(() => {
+          if (runtime === "claude" || runtime === "codex" || runtime === "grok") {
+            void runtimeRepairController.recheckSignIn({ runtime, unspaced: true });
+          }
+        });
+      }
+    }
   });
   /** The repair host for the open DM: only a local bot's DM draws repair cards. */
   const selectedRuntimeRepair = $derived.by(() => {
@@ -4094,8 +4157,83 @@
   );
   const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
   /**
+   * The open bot is paused on a sign-in, but its conversation has no
+   * signed-out repair card to fix it from: the bot said so in another
+   * conversation (a scheduled run, a room), its notice reached the server
+   * without the card, or it was posted before the loaded messages. The same
+   * repair card is drawn above the composer instead, so the sign-in always
+   * has its one place. It stays, as "You're all set", after it worked.
+   */
+  let signInCardShown = $state<{ botUid: string; eventId: string; payload: RepairPayload } | null>(null);
+  /** The card drawn last, kept while it works and once it worked, until the conversation changes. */
+  function keptSignInCard(botUid: string) {
+    const shown = signInCardShown;
+    if (!shown || shown.botUid !== botUid) return null;
+    return runtimeRepairController.stateFor(shown.eventId).phase === "offered" ? null : shown;
+  }
+  const selectedSignInCard = $derived.by(() => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || row.kind !== "dm" || !selectedRuntimeRepair) return null;
+    // Wait for the conversation, so the card never shows for a moment and
+    // then gives way to the bot's own card.
+    if (liveTimelineId !== row.id || timelineHydrating) return null;
+    const own = liveTimeline.filter(
+      (msg) => (msg.fromPersonUid ?? "").trim() === bot.agentUid && repairPayloadForMessage(msg)?.class === "signed-out",
+    );
+    const paused = pausedSignInCard(bot, own);
+    if (paused) return paused;
+    // Once the conversation has a signed-out card of its own, that card is the one place.
+    return own.length === 0 ? keptSignInCard(bot.agentUid) : null;
+  });
+  /** The card for a bot paused on a sign-in whose conversation has no waiting signed-out card. */
+  function pausedSignInCard(bot: LocalBotRow, own: readonly ConversationMessageWire[]) {
+    if (!botNeedsSignIn(bot)) return null;
+    const runtime = expiredRuntimeOf(bot);
+    if (runtime !== "claude" && runtime !== "codex" && runtime !== "grok") return null;
+    const since = bot.runtimeSignIn?.since ?? "";
+    // Signed in here since the bot paused: its own status catches up on its
+    // next try or restart, and no card asks again meanwhile.
+    const signedInAt = runtimeRepairController.signedInAt[runtime];
+    const sinceMs = Date.parse(since);
+    if (signedInAt !== undefined && (!Number.isFinite(sinceMs) || signedInAt >= sinceMs)) return null;
+    const waiting = own.some(
+      (msg) =>
+        repairPayloadForMessage(msg)?.runtime === runtime &&
+        runtimeRepairController.stateFor(msg.eventId).phase !== "fixed",
+    );
+    if (waiting) return null;
+    const payload: RepairPayload = { v: 1, kind: "runtime-repair", class: "signed-out", runtime, action: "signIn", botName: bot.name };
+    return { botUid: bot.agentUid, eventId: `local-sign-in:${bot.agentUid}:${since}`, payload };
+  }
+  // A different conversation puts a finished card away.
+  let signInCardRowId: string | null = null;
+  $effect(() => {
+    const rowId = selectedRow?.id ?? null;
+    if (rowId === signInCardRowId) return;
+    signInCardRowId = rowId;
+    untrack(() => {
+      if (signInCardShown && runtimeRepairController.stateFor(signInCardShown.eventId).phase === "fixed") {
+        signInCardShown = null;
+      }
+    });
+  });
+  $effect(() => {
+    const card = selectedSignInCard;
+    if (!card) return;
+    untrack(() => {
+      runtimeRepairController.track(card.eventId, card.payload);
+      if (signInCardShown?.eventId === card.eventId) return;
+      signInCardShown = card;
+      // Like the bot's own card: a sign-in made before the chat was opened
+      // (the tool's own login outside the app) shows at once. Spaced by the
+      // controller.
+      void runtimeRepairController.recheckSignIn({ runtime: card.payload.runtime });
+    });
+  });
+  /**
    * The open bot runs on a coding tool that is not installed or not signed in
-   * here (an expired sign-in has its own banner above). The DM says so in one
+   * here (an expired sign-in has its own repair card). The DM says so in one
    * line and offers the same guided install the setup channel uses, instead
    * of letting each message come back as a failure.
    */
@@ -4130,6 +4268,10 @@
   }
   /** Restart the bots paused on a tool after it was signed in again elsewhere. */
   async function afterRuntimeSignedIn(runtime: string): Promise<void> {
+    recheckRepairSignIn(runtime);
+    await restartBotsAfterSignIn(runtime);
+  }
+  async function restartBotsAfterSignIn(runtime: string): Promise<void> {
     await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], adapter.bots ?? null, {
       // Same gate as every other start: a bot whose start already failed
       // definitively is not re-issued here either, and one that does start
@@ -14895,17 +15037,21 @@
                       {/if}
                     </div>
                   {/if}
-                  {#if selectedLocalBot && selectedLocalBotNeedsSignIn && adapter.sessions?.loginStart}
-                    <BotSignInBanner
-                      bot={selectedLocalBot}
-                      sessions={adapter.sessions}
-                      bots={adapter.bots ?? null}
-                      gate={{
-                        canStart: (bot) => canStartBot(botStartGate, bot.name),
-                        onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
-                      }}
-                      ondone={refreshLocalBots}
-                    />
+                  {#if selectedSignInCard && selectedRuntimeRepair}
+                    <!-- The bot is paused on a sign-in and its conversation
+                         has no repair card for it: the same card, here. -->
+                    {@const signInCard = selectedSignInCard}
+                    <div class="bot-sign-in-card" data-testid="bot-sign-in-card">
+                      <RuntimeRepairCard
+                        view={repairCardView(
+                          signInCard.payload,
+                          runtimeRepairController.stateFor(signInCard.eventId),
+                          selectedRuntimeRepair.botName,
+                          runtimeRepairController.updatePathFor(signInCard.payload.runtime),
+                        )}
+                        onaction={(action) => runtimeRepairController.run(signInCard.eventId, signInCard.payload, action)}
+                      />
+                    </div>
                   {/if}
                   {#if selectedLocalBot && selectedLocalBotNeedsCodingTool}
                     <div class="local-bot-notice" data-testid="bot-needs-coding-tool" role="status">
@@ -16353,6 +16499,9 @@
   }
   .bot-needs-coding-tool-guide {
     margin: 4px 16px 8px;
+  }
+  .bot-sign-in-card {
+    margin: 12px 16px 4px;
   }
   .local-bot-notice {
     display: flex;

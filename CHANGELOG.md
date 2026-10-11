@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- A bot's chat now shows one place to sign in to its coding tool. The gray "needs you to sign in again" banner is gone; the "Claude Code is signed out" card is the only sign-in, and when the bot's chat has no such card, the same card shows above the message box. The card now turns to "You're all set. Send me anything." after a sign-in from anywhere: its own Sign in button, the coding tools screen, Settings, New Bot, or signing in outside HQ and coming back to the app. If HQ's check still finds the tool signed out, the card stays as it is.
+- If a bot still can't sign in right after HQ's check passed and restarted it, its chat shows the "signed out" card again instead of restarting the bot over and over. HQ restarts the bot for this at most once every two minutes.
 - First run: Your coding tools no longer says "Signed in" for an old Claude Code or Codex login that has stopped working. Before a tool counts, HQ runs one short test reply with it and shows "Checking..." while it runs. If the saved login no longer works, the tool shows Sign in, and signing in replaces the old login. Your assistant is created only after that, and its first message says the tool is signed in only when the test passed. If the test cannot finish (for example it takes too long), setup goes on as before.
 - The marketplace and your installed packs now show the iMessage pack as "iMessage" instead of "Imessage".
 - On a new computer with no coding tool yet, the welcome tour now waits until Claude Code or Codex is installed and signed in, instead of opening on top of the Install Claude card.
