@@ -411,6 +411,36 @@ describe("Your coding tools: a stored login counts only once the real check agre
     expect(q('[data-testid="chat-bot-runtime-claude"]')?.getAttribute("data-ready")).toBe("true");
   });
 
+  it("both logins stored, one passes and one is dead: the dead one's card offers Sign in (forced), and Next stays on", async () => {
+    const api = signInApi({ state: "waiting" }, [{ state: "waiting" }]);
+    render({
+      ready: { claude: true, codex: true, grok: false },
+      status: { claude: IN, codex: IN },
+      checks: { claude: "passed", codex: "signedOut" },
+      api,
+    });
+    await settle();
+    // The ready view, with the passing tool enough for Next.
+    expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);
+    expect(q('[data-testid="chat-bot-runtime-claude"]')?.getAttribute("data-ready")).toBe("true");
+    const codex = q('[data-testid="chat-bot-runtime-codex"]')!;
+    expect(codex.getAttribute("data-ready")).toBe("false");
+    expect(codex.getAttribute("data-probe-state")).toBe("signed-out");
+    expect(q('[data-testid="chat-bot-runtime-codex-status"]')?.textContent).not.toContain("Signed in");
+    expect(q('[data-testid="chat-bot-runtime-codex-status"]')?.textContent).toContain("Sign in first");
+
+    (codex as HTMLButtonElement).click();
+    await settle();
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);
+    const signIn = q<HTMLButtonElement>('[data-testid="chat-bot-runtime-probe-signin"]');
+    expect(signIn).toBeTruthy();
+    signIn!.click();
+    await settle();
+    expect(api.loginStart).toHaveBeenCalledWith("codex", { force: true });
+    expect(api.loginStart).not.toHaveBeenCalledWith("claude", expect.anything());
+  });
+
   it("a check that could not tell does not block: the stored login counts", async () => {
     render({ ready: STORED, status: STORED_STATUS, checks: { claude: "unverified" } });
     await settle();

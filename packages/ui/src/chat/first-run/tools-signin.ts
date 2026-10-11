@@ -21,6 +21,7 @@
 import type { AiTools } from "../../install-choice/install-choice.js";
 import type { RuntimeSignInApi, RuntimeSignInState } from "../create-bot/RuntimeSignIn.svelte";
 import type { RuntimeStatus } from "../create-bot/runtime-status.js";
+import type { BotRuntime } from "../create-bot/create-bot-model.js";
 import type { AdapterPromise } from "@hq/platform";
 import { readProbeAnswer, type RuntimeProbeState } from "../create-bot/runtime-probe.js";
 
@@ -400,6 +401,43 @@ export function checkedReadiness(
     if (out[tool] === true && check !== "passed" && check !== "unverified") out[tool] = false;
   }
   return out;
+}
+
+/**
+ * The checks as the ready view's tool cards read them (HomeStep's
+ * `probeStates`, the New bot flow's own states): passed is Ready, a dead
+ * login is "Sign in first" with its Sign in, a running check is Checking. A
+ * check that could not tell, or a runtime not checked, falls back to the
+ * status read ("unavailable").
+ */
+export function signInProbeStates(checks: ToolSignInChecks): Record<BotRuntime, RuntimeProbeState> {
+  const of = (tool: SignInTool): RuntimeProbeState => {
+    switch (checks[tool]) {
+      case "passed":
+        return { state: "ready", createModel: null };
+      case "signedOut":
+        return { state: "failed", class: "signed-out" };
+      case "checking":
+        return { state: "checking" };
+      default:
+        return { state: "unavailable" };
+    }
+  };
+  return { claude: of("claude"), codex: of("codex"), grok: { state: "unavailable" } };
+}
+
+/** A sign-in API whose Sign in replaces the stored login (`force`) for a tool whose login is dead. */
+export function forcingSignInApi(api: RuntimeSignInApi, dead: (tool: SignInTool) => boolean): RuntimeSignInApi {
+  return {
+    loginStart: (runtime, opts) =>
+      (runtime === "claude" || runtime === "codex") && dead(runtime)
+        ? api.loginStart(runtime, { ...opts, force: true })
+        : opts
+          ? api.loginStart(runtime, opts)
+          : api.loginStart(runtime),
+    loginStatus: (runtime) => api.loginStatus(runtime),
+    ...(api.loginCancel ? { loginCancel: (runtime: BotRuntime) => api.loginCancel!(runtime) } : {}),
+  };
 }
 
 export interface SignInCheckerOptions {

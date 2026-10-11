@@ -89,6 +89,8 @@
   import FirstRunToolsSignIn from "./FirstRunToolsSignIn.svelte";
   import {
     checkedReadiness,
+    forcingSignInApi,
+    signInProbeStates,
     preferredSignInTool,
     toolRowKinds,
     toolsSignInLead,
@@ -227,6 +229,15 @@
    * assistant's start all follow this, never the stored login alone.
    */
   const runtimeReady = $derived(checkedReadiness(storedReady, signInChecks));
+  /**
+   * The ready view (one tool passed) shows every tool's check on its card:
+   * a tool whose stored login is dead reads "Sign in first", and its Sign in
+   * replaces the login. Next stays on: the passing tool is enough.
+   */
+  const homeProbeStates = $derived(signInChecks ? signInProbeStates(signInChecks) : null);
+  const homeSignInApi = $derived(
+    signInApi && signInChecks ? forcingSignInApi(signInApi, (tool) => signInChecks?.[tool] === "signedOut") : signInApi,
+  );
 
   // ── Your team ──────────────────────────────────────────────────────────
   const canTeam = $derived(!!teamOptions && !!teamHost);
@@ -957,7 +968,9 @@
                 {runtimeStatus}
                 companies={[]}
                 onpatch={patchDraft}
-                {signInApi}
+                signInApi={homeSignInApi}
+                probeStates={homeProbeStates}
+                probe={homeProbeStates?.[draft.runtime] ?? null}
                 onsignedin={onsignedin ?? undefined}
                 onrecheck={onrecheck ?? undefined}
                 {pollMs}
