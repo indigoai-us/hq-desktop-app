@@ -304,6 +304,7 @@
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+    FIRST_RUN_LISTINGS_WAIT_MS,
     markVisualFirstRunFinished,
     type FirstRunCreation,
     type FirstRunImportHandoff,
@@ -3460,11 +3461,6 @@
    * nothing.
    */
   const firstRunDev = FIRST_RUN_DEV_SWITCHES;
-  /**
-   * The longest the first run waits for the bot listings before it opens
-   * anyway (the account listing is itself bounded by this).
-   */
-  const FIRST_RUN_LISTINGS_WAIT_MS = REMOTE_BOTS_CALL_TIMEOUT_MS;
   let visualFirstRunFlag = $state<boolean | null>(firstRunDev.force ? true : null);
   let visualFirstRunFinished = $state(firstRunDev.force ? false : hasFinishedVisualFirstRun());
   function settleVisualFirstRunFlag(value: boolean): void {

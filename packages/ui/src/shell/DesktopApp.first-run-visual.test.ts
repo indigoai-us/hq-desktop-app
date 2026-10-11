@@ -22,13 +22,13 @@ import { SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup
 import {
   VISUAL_FIRST_RUN_DONE_KEY,
   VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+  FIRST_RUN_LISTINGS_WAIT_MS,
   firstRunHandoffNotice,
   firstRunImportNotice,
   firstRunIntro,
   firstRunKickoff,
 } from "../chat/first-run/visual-first-run.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
-import { REMOTE_BOTS_CALL_TIMEOUT_MS } from "../chat/bot-restore.js";
 
 const SETUP_BOT_UID = "agt_setup";
 
@@ -749,7 +749,7 @@ describe("visual first run: the name step on an account that already has an assi
     expect(q('[data-testid="first-run-takeover"]')?.textContent ?? "").not.toMatch(/500|Internal Server Error/);
   });
 
-  it("a listing that never answers holds the step for at most the listing's own bound", async () => {
+  it("an account listing that never answers holds the step for at most the first run's wait, then a free name", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const listRemote = vi.fn(() => new Promise(() => undefined));
@@ -757,7 +757,27 @@ describe("visual first run: the name step on an account that already has an assi
       await boot(platform);
       await settle(20);
       expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-      await vi.advanceTimersByTimeAsync(REMOTE_BOTS_CALL_TIMEOUT_MS + 100);
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS - 1000);
+      await settle(10);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(1100);
+      await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+      expect(SETUP_BOT_NAMES).toContain(nameField());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("this computer's bot list never answering also holds the step for at most the first run's wait", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const listRemote = vi.fn(async () => ok({ bots: [] }));
+      const { platform } = adapter({ flag: true, listRemote });
+      (platform.bots as unknown as Record<string, unknown>).list = vi.fn(() => new Promise(() => undefined));
+      await boot(platform);
+      await settle(20);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS + 100);
       await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
       expect(SETUP_BOT_NAMES).toContain(nameField());
     } finally {
