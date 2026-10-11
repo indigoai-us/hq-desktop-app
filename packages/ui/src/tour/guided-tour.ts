@@ -233,11 +233,40 @@ export interface TourAutoStartInput {
   welcomeOnScreen: boolean;
   /** The tour already started once in this window. */
   startedThisSession: boolean;
+  /**
+   * #welcome is asking the person to do something before setup can run (no
+   * coding tool signed in, so it shows Install Claude), or the host has not
+   * said yet whether it will. See `tourSetupBlocked`.
+   */
+  setupBlocked: boolean;
+}
+
+export interface TourSetupInput {
+  /** The host runs a setup bot from #welcome. Without one nothing blocks. */
+  hasSetupBot: boolean;
+  /** Signed-in coding tools by runtime; null until the host has answered. */
+  runtimeReady: Record<string, boolean> | null;
+  /** Starting the setup bot failed and #welcome shows why. */
+  setupError: string | null;
+}
+
+/**
+ * The tour's first step points at the setup bot. While #welcome still needs
+ * a coding tool (its Install Claude card) or shows a setup error, that card
+ * is the next thing to do, and a tour card over it gives two competing
+ * instructions. So the tour waits until a tool is known to be signed in.
+ */
+export function tourSetupBlocked(input: TourSetupInput): boolean {
+  if (!input.hasSetupBot) return false;
+  if (input.setupError) return true;
+  if (input.runtimeReady == null) return true;
+  return !Object.values(input.runtimeReady).some((ready) => ready === true);
 }
 
 /**
  * Start by itself only on a fresh install (guided setup still owed), once,
- * after the shell is up and the setup conversation is what the person sees.
+ * after the shell is up, the setup conversation is what the person sees, and
+ * that conversation is not waiting on the person (see `tourSetupBlocked`).
  */
 export function shouldAutoStartTour(input: TourAutoStartInput): boolean {
   return (
@@ -245,7 +274,8 @@ export function shouldAutoStartTour(input: TourAutoStartInput): boolean {
     !input.tourSeen &&
     input.shellReady &&
     input.welcomeOnScreen &&
-    !input.startedThisSession
+    !input.startedThisSession &&
+    !input.setupBlocked
   );
 }
 
