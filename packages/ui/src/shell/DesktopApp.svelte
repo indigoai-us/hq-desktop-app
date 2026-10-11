@@ -3346,7 +3346,7 @@
       // The hello and the handoff say "signed in" only when a real turn worked.
       // A runtime the first run does not check (not Claude Code or Codex) keeps today's words.
       const signInChecked = !(runtime in checks) || checks[runtime as SignInTool] === "passed";
-      firstRunCreateFacts = { runtime, toolsReady, signInChecked };
+      firstRunCreateFactsPending = { runtime, toolsReady, signInChecked };
       input = {
         name: SETUP_BOT_NAME,
         displayName,
@@ -3374,7 +3374,13 @@
       // The takeover selects on Done ("Talk to <Name>"); #welcome opens it now.
       { select: !visualFirstRunOpen, cliNamed: assistantCliOwns },
     );
-    if (created.ok) return { ok: true, agentUid: created.agentUid, outcome: created.outcome ?? null };
+    if (created.ok) {
+      // The facts belong to the assistant this create made, and to no other.
+      if (fromFirstRun && firstRunCreateFactsPending) {
+        firstRunCreateFacts = { agentUid: created.agentUid, ...firstRunCreateFactsPending };
+      }
+      return { ok: true, agentUid: created.agentUid, outcome: created.outcome ?? null };
+    }
     // The generic fallback names the reserved handle; the person knows the
     // assistant by the name they gave it.
     const generic = `Could not create ${SETUP_BOT_NAME}.`;
@@ -3663,8 +3669,10 @@
   /** The name the handoff gives the assistant (the one the person confirmed). */
   let firstRunHandoffName: string | null = null;
   /** The runtime, tools and sign-in check the first-run create used, when it created one. */
-  let firstRunCreateFacts: { runtime: LocalBotRow["runtime"]; toolsReady: LocalBotRow["runtime"][]; signInChecked: boolean } | null =
-    null;
+  type FirstRunCreateFacts = { runtime: LocalBotRow["runtime"]; toolsReady: LocalBotRow["runtime"][]; signInChecked: boolean };
+  /** What the create in flight used; kept only once it made an assistant. */
+  let firstRunCreateFactsPending: FirstRunCreateFacts | null = null;
+  let firstRunCreateFacts: (FirstRunCreateFacts & { agentUid: string }) | null = null;
   /**
    * Whether a create for the assistant now is the visual first run's: the
    * takeover is open, or the person confirmed a name there and then left for
@@ -3676,7 +3684,7 @@
   }
   /** Everything the takeover settled, for the assistant's handoff note. */
   function firstRunHandoffFor(bot: SetupBotRef, name: string): FirstRunHandoff {
-    const facts = firstRunCreateFacts;
+    const facts = firstRunCreateFacts?.agentUid === bot.agentUid ? firstRunCreateFacts : null;
     const checks = firstRunSignInChecker.current();
     const ready = checkedReadiness(localBotRuntimeReady, checks);
     const toolsReady = facts?.toolsReady ?? SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
@@ -3686,8 +3694,12 @@
     const { team, apps } = firstRunSettled;
     return { name, runtime, toolsReady, signInChecked, imported: firstRunImport, team, apps };
   }
-  /** The assistant has the handoff note. */
-  let firstRunHandoffDelivered = false;
+  /**
+   * The assistant that has the handoff note. By uid: an assistant made again
+   * later in this session (removed, then created from #welcome) runs no
+   * kickoff either, so it gets the note too.
+   */
+  let firstRunHandoffDeliveredTo: string | null = null;
   /** A note send is in flight (one at a time). */
   let firstRunHandoffSending = false;
   /** The next try of a failed note, cleared when the shell goes away. */
@@ -3718,7 +3730,7 @@
     if (firstRunDev.dry || !firstRunLeft) return;
     const bot = firstRunCreatedBot;
     const name = firstRunHandoffName;
-    if (!bot || !name || firstRunHandoffDelivered || firstRunHandoffSending) return;
+    if (!bot || !name || firstRunHandoffDeliveredTo === bot.agentUid || firstRunHandoffSending) return;
     const key = `first-run-handoff:${bot.agentUid}`;
     const first = !connectionNoticeFailures.has(key);
     const body = firstRunHandoffNotice(firstRunHandoffFor(bot, name), { noun: hostComputerNoun() });
@@ -3726,12 +3738,20 @@
     void sendBotNotice(bot.agentUid, body, key, key, first).then((sent) => {
       firstRunHandoffSending = false;
       if (sent) {
-        firstRunHandoffDelivered = true;
+        firstRunHandoffDeliveredTo = bot.agentUid;
+        // Adopted another assistant while this one went out: that one's turn.
+        if (firstRunCreatedBot && firstRunCreatedBot.agentUid !== bot.agentUid) deliverFirstRunHandoff();
         return;
       }
       // null: refused for good, or out of tries. Otherwise wait for the ledger.
       const nextAt = connectionNoticeFailures.get(key)?.nextAt ?? null;
-      if (nextAt === null || firstRunHandoffRetryTimer !== null || firstRunHandoffStopped) return;
+      if (nextAt === null) {
+        // Nothing else starts it: it answers once the person writes, from
+        // the start of setup (the worker's "Your very first message").
+        console.warn("[hq-desktop] the setup assistant did not get the first-run handoff; it starts when the person writes");
+        return;
+      }
+      if (firstRunHandoffRetryTimer !== null || firstRunHandoffStopped) return;
       firstRunHandoffRetryTimer = setTimeout(() => {
         firstRunHandoffRetryTimer = null;
         deliverFirstRunHandoff();

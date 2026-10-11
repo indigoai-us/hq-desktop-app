@@ -858,7 +858,8 @@ describe("visual first run: Bring in your context", () => {
     expect(scanCancel).not.toHaveBeenCalled();
   });
 
-  it("a send the server refuses (403) is not tried again", async () => {
+  it("a send the server refuses (403) is not tried again, and says so in the log", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { sendDm } = await finishAScan(async () => ({ ok: false, reason: "forbidden", code: "http-403" }));
     await talk();
     expect(sendDm).toHaveBeenCalledTimes(1);
@@ -866,6 +867,8 @@ describe("visual first run: Bring in your context", () => {
     await settle();
     expect(sendDm).toHaveBeenCalledTimes(1);
     expectHandoffNotes(sendDm);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("did not get the first-run handoff"));
+    warn.mockRestore();
   });
 
   it("a pending try is called off when the shell goes away", async () => {
