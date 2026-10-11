@@ -734,6 +734,7 @@
     localBotNeedsOfflineNotice,
     localBotOfflineNotice,
     localBotPresence,
+    thinkingAgentName,
     type LocalBotEntryResult,
     locallyHostedBots,
     plainBotFailure,
@@ -5686,7 +5687,7 @@
       thinkingByRow = startThinkingIn(
         thinkingByRow,
         row.id,
-        { agentUid: uid, agentName: row.title?.trim() || pending.name },
+        { agentUid: uid, agentName: thinkingAgentName(row.title, uid, localBots, pending.name) },
         decision.startedAt,
         { afterMs: decision.afterMs },
       );
@@ -5838,7 +5839,7 @@
     kickoffPendingByUid = rest;
     if (decision.state === "start") {
       answeredWhileBusy = forgetAnswered(answeredWhileBusy, uid);
-      thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: row.title?.trim() || name }, Date.now(), {
+      thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: thinkingAgentName(row.title, uid, localBots, name) }, Date.now(), {
         afterMs: decision.afterMs,
       });
     }
@@ -7432,7 +7433,7 @@
       thinkingByRow = startThinkingIn(
         thinkingByRow,
         row.id,
-        { agentUid, agentName: row.title?.trim() || "bot" },
+        { agentUid, agentName: thinkingAgentName(row.title, agentUid, localBots, "bot") },
         Date.now(),
         { afterMs: botPinFor(row.id, agentUid) },
       );
@@ -11988,7 +11989,7 @@
             row.id,
             {
               agentUid: row.personUid,
-              agentName: row.title?.trim() || "Bot",
+              agentName: thinkingAgentName(row.title, row.personUid ?? "", localBots, "Bot"),
             },
             Date.now(),
             // A new ask: the row is for this message, and the 90 s silence

@@ -8,6 +8,7 @@
  * supervisor's.
  */
 
+import { isUnknownPeerLabel } from "./peer-names.js";
 import type { LocalBotRow } from "@hq/platform";
 import { botRowDisplayName, type BotDisplayNames } from "./bot-display-names.js";
 import type { ConversationRow } from "./sidebar-model.js";
@@ -343,4 +344,30 @@ export function localBotsForCompany<T extends Pick<LocalBotRow, "companies" | "p
   workspaces: ReadonlyArray<{ slug: string; cloudUid: string | null }> | null | undefined,
 ): T[] {
   return (bots ?? []).filter((bot) => localBotInCompany(bot, companyUid, workspaces));
+}
+
+/** Local bots as peer-directory rows: the agent uid with the bot's display name (or handle). */
+export function localBotPeers(
+  bots: readonly LocalBotRow[] | null | undefined,
+): Array<{ personUid: string; displayName: string }> {
+  return (bots ?? [])
+    .map((b) => ({ personUid: b.agentUid.trim(), displayName: (b.displayName ?? "").trim() || b.name.trim() }))
+    .filter((b) => b.personUid && b.displayName);
+}
+
+/**
+ * The name a thinking row shows for an agent: the conversation title when it
+ * names someone, else the local bot's name, else the fallback. A bot made a
+ * moment ago is titled "Unknown bot" until HQ's rosters list it.
+ */
+export function thinkingAgentName(
+  title: string | null | undefined,
+  agentUid: string,
+  bots: readonly LocalBotRow[] | null | undefined,
+  fallback: string,
+): string {
+  const t = (title ?? "").trim();
+  if (t && !isUnknownPeerLabel(t) && !/^(?:prs|agt|agent)_/i.test(t)) return t;
+  const local = localBotPeers(bots).find((b) => b.personUid === agentUid.trim());
+  return local?.displayName || t || fallback;
 }

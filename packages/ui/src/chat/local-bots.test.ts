@@ -17,6 +17,8 @@ import {
   localBotForRow,
   localBotNeedsOfflineNotice,
   LOCAL_BOT_STARTUP_GRACE_MS,
+  localBotPeers,
+  thinkingAgentName,
   localBotOfflineNotice,
   localBotPresence,
 } from "./local-bots.js";
@@ -293,5 +295,28 @@ describe("plainBotFailure host command text (AUDIT-3)", () => {
     expect(plainBotFailure("harness: simulated failure for local_bots_create", fallback)).toBe(fallback);
     expect(plainBotFailure("local_bots_create failed: spawn hq ENOENT", fallback)).toBe(fallback);
     expect(isRawBotFailureText("Claude Code is not signed in on this Mac.")).toBe(false);
+  });
+});
+
+describe("local bot names before HQ's rosters list the bot", () => {
+  const guide = bot({ agentUid: "agt_guide", name: "agency-guide", displayName: "Agency Guide" });
+
+  it("thinking rows use the local bot's name instead of Unknown bot", () => {
+    expect(thinkingAgentName("Unknown bot", "agt_guide", [guide], "Bot")).toBe("Agency Guide");
+    expect(thinkingAgentName("", "agt_guide", [guide], "Bot")).toBe("Agency Guide");
+    expect(thinkingAgentName("agt_guide", "agt_guide", [guide], "Bot")).toBe("Agency Guide");
+  });
+
+  it("keeps a real title, and falls back when nothing names the bot", () => {
+    expect(thinkingAgentName("Scout", "agt_guide", [guide], "Bot")).toBe("Scout");
+    expect(thinkingAgentName("Unknown bot", "agt_other", [guide], "Bot")).toBe("Unknown bot");
+    expect(thinkingAgentName(null, "agt_other", [], "Bot")).toBe("Bot");
+  });
+
+  it("gives the sidebar a name for each local bot, by display name then handle", () => {
+    expect(localBotPeers([guide, bot({ agentUid: "agt_x", name: "scout", displayName: undefined })])).toEqual([
+      { personUid: "agt_guide", displayName: "Agency Guide" },
+      { personUid: "agt_x", displayName: "scout" },
+    ]);
   });
 });
