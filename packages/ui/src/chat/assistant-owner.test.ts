@@ -66,7 +66,7 @@ function host(over: Partial<AssistantOwnerHost> & { list?: () => LocalBotRow[] }
       alreadyElsewhere: "elsewhere",
       couldNotStart: (name: string | null) => (name ? `Couldn't start ${name}. Try again in a moment.` : "generic"),
     },
-    inAccount: undefined as (() => boolean) | undefined,
+    cloudAssistant: undefined as (() => { ref: { agentUid: string; handle: string }; adoptable: boolean } | null) | undefined,
   };
   const h = { ...base, ...over } as typeof base;
   return { h, setRows: (next: LocalBotRow[]) => (rows = next) };
@@ -193,12 +193,28 @@ describe("the owner", () => {
     expect(owner.busy()).toBe(false);
   });
 
-  it("remembers what it made, for a list that lags behind the create", async () => {
-    const { h } = host({ list: () => [] });
+  it("trusts only the bot list between operations: a bot that left the list is not assumed here", async () => {
+    let rows: LocalBotRow[] = [];
+    const { h } = host({ list: () => rows });
+    h.create.mockImplementation(async () => {
+      rows = [row()];
+      return { ok: true, agentUid: UID, outcome: null };
+    });
     const owner = createAssistantOwner(h);
     expect(await owner.start({ name: "Hazel" })).toMatchObject({ ok: true, outcome: "created" });
-    expect(await owner.start({ nameIfNew: "Pickles" })).toMatchObject({ ok: true, outcome: "existing" });
-    expect(h.create).toHaveBeenCalledTimes(1);
+    // The bot was removed (or the list says it is gone): recovery adopts it
+    // again instead of answering from memory.
+    rows = [];
+    h.adopt.mockImplementation(async () => {
+      rows = [row()];
+      return { ok: true as const };
+    });
+    expect(await owner.recover()).toMatchObject({ ok: true, outcome: "adopted" });
+    expect(h.adopt).toHaveBeenCalledTimes(1);
+    // A start after the list lost it again creates; it does not answer "existing" from memory.
+    rows = [];
+    await owner.start({ nameIfNew: "Pickles" });
+    expect(h.create).toHaveBeenCalledTimes(2);
   });
 
   it("an older CLI names an assistant that is already here through the app; a newer one through create", async () => {
@@ -228,7 +244,7 @@ describe("the owner", () => {
   });
 
   it("brings back the account's assistant as it is when nobody chose a name", async () => {
-    const { h } = host({ inAccount: () => true });
+    const { h } = host({ cloudAssistant: () => ({ ref: { agentUid: UID, handle: "setup" }, adoptable: true }) });
     const owner = createAssistantOwner(h);
     const result = await owner.start({ nameIfNew: "Pickles" });
     expect(result).toMatchObject({ ok: true, outcome: "adopted" });
@@ -273,6 +289,37 @@ describe("the owner", () => {
     const owner = createAssistantOwner(h);
     expect(await owner.start({ name: "Hazel" })).toEqual({ ok: false, reason: "Couldn't start Hazel. Try again in a moment." });
     warn.mockRestore();
+  });
+
+  it("never takes an assistant that is running on another computer: it is opened, not adopted or created", async () => {
+    const { h } = host({ cloudAssistant: () => ({ ref: { agentUid: UID, handle: "setup" }, adoptable: false }) });
+    const owner = createAssistantOwner(h);
+    expect(await owner.start({ nameIfNew: "Pickles" })).toEqual({
+      ok: true,
+      bot: { agentUid: UID, handle: "setup" },
+      outcome: "existing",
+    });
+    expect(h.adopt).not.toHaveBeenCalled();
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.rename).not.toHaveBeenCalled();
+  });
+
+  it("says it is busy from the moment an operation is queued until the last one ends", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const busy: boolean[] = [];
+    const { h } = host({ onbusy: (b: boolean) => busy.push(b) } as never);
+    h.create.mockImplementation(async () => {
+      await gate;
+      return { ok: true, agentUid: UID, outcome: null };
+    });
+    const owner = createAssistantOwner(h);
+    const a = owner.start({ name: "Hazel" });
+    const b = owner.recover();
+    expect(busy).toEqual([true]);
+    release();
+    await Promise.all([a, b]);
+    expect(busy).toEqual([true, false]);
   });
 
   it("an assistant only the cloud roster shows is opened but not remembered as being here", async () => {

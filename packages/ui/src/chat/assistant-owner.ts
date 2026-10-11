@@ -117,7 +117,7 @@ export interface AssistantNameSources {
 export function assistantName(sources: AssistantNameSources = {}): string {
   const order = sources.listIsCloudName
     ? [sources.confirmed, sources.listed, sources.cloud, sources.cached]
-    : [sources.confirmed, sources.cloud, sources.cached, sources.listed];
+    : [sources.confirmed, sources.cached, sources.cloud, sources.listed];
   for (const candidate of order) {
     const name = usableName(candidate);
     if (name) return name;
@@ -224,8 +224,12 @@ export interface AssistantOwnerHost {
   create(name: string, runtime: LocalBotRow["runtime"]): Promise<AssistantCreateResult>;
   /** `hq bot adopt setup`, when the host has it. */
   adopt?(handle: string): Promise<{ ok: true } | { ok: false; raw: string }>;
-  /** True when the account's own listing shows an assistant that is not on this computer. */
-  inAccount?(): boolean;
+  /**
+   * The assistant on the account's own listing when it is not on this
+   * computer. `adoptable` is false when it is running on another computer
+   * (bringing it here would take it off that one) or cannot run here.
+   */
+  cloudAssistant?(): { ref: SetupBotRef; adoptable: boolean } | null;
   /** Older hq-cli only: put the person's name on an assistant that was already there. */
   rename(bot: SetupBotRef, name: string): Promise<void>;
   /** The account's assistant in the cloud roster, when it is not here (older hq-cli only). */
@@ -238,6 +242,8 @@ export interface AssistantOwnerHost {
     couldNotStart(name: string | null): string;
   };
   onchange?(attempt: AssistantAttempt): void;
+  /** True while an operation runs or waits in the queue. */
+  onbusy?(busy: boolean): void;
 }
 
 /** A start request. */
@@ -288,8 +294,6 @@ export interface AssistantOwner {
 
 export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
   let attempt: AssistantAttempt = { state: "idle" };
-  /** The assistant the last successful operation found, for a list that lags behind it. */
-  let known: SetupBotRef | null = null;
   let queue: Promise<unknown> = Promise.resolve();
   let pending = 0;
 
@@ -300,6 +304,7 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
 
   function exclusive<T>(op: () => Promise<T>): Promise<T> {
     pending += 1;
+    if (pending === 1) host.onbusy?.(true);
     const run = queue.then(op, op);
     queue = run.then(
       () => undefined,
@@ -307,21 +312,19 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
     );
     return run.finally(() => {
       pending -= 1;
+      if (pending === 0) host.onbusy?.(false);
     });
   }
 
+  /**
+   * The assistant as this computer's bot list shows it right now. Nothing is
+   * remembered between operations: a later operation trusts only the list.
+   */
   async function here(): Promise<SetupBotRef | null> {
-    const found = findAssistant(await host.refreshLocal());
-    if (found) known = found;
-    return found ?? known;
+    return findAssistant(await host.refreshLocal());
   }
 
-  /**
-   * `onComputer`: false for an assistant only the cloud roster showed. It is
-   * opened, but it is not remembered as being here.
-   */
-  function succeed(bot: SetupBotRef, name: string | null, outcome: AssistantOutcome, onComputer = true): AssistantStartResult {
-    if (onComputer) known = bot;
+  function succeed(bot: SetupBotRef, name: string | null, outcome: AssistantOutcome): AssistantStartResult {
     set({ state: "done", name, bot });
     return { ok: true, bot, outcome };
   }
@@ -332,9 +335,9 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
   }
 
   /** Already here: an older hq-cli cannot rename it, so the app does. */
-  async function keep(bot: SetupBotRef, name: string | null, cliOwns: boolean, onComputer = true): Promise<AssistantStartResult> {
+  async function keep(bot: SetupBotRef, name: string | null, cliOwns: boolean): Promise<AssistantStartResult> {
     if (name && !cliOwns) await host.rename(bot, name);
-    return succeed(bot, name, "existing", onComputer);
+    return succeed(bot, name, "existing");
   }
 
   async function adoptHere(name: string | null): Promise<AssistantStartResult> {
@@ -355,13 +358,16 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
     // Here, and either no new name or a CLI that cannot apply one in create.
     if (existing && (!chosen || !cliOwns)) return keep(existing, chosen, cliOwns);
     if (!existing && !chosen) {
-      // Not here, nobody chose a name, and the account already has one: open
-      // the one the cloud roster shows (its conversation offers to start it
-      // here), or bring back the one the account's listing shows, as it is,
-      // rather than make one under a picked name.
+      // Not here, nobody chose a name, and the account already has one: bring
+      // back the one the account's listing shows, as it is, rather than make
+      // one under a picked name. One running on another computer is opened,
+      // never taken (its conversation says what starting it here costs), and
+      // so is one only the cloud roster shows.
+      const listed = host.cloudAssistant?.() ?? null;
+      if (listed?.adoptable) return adoptHere(label);
+      if (listed) return keep(listed.ref, null, cliOwns);
       const cloud = (await host.findCloud?.()) ?? null;
-      if (cloud) return keep(cloud, null, cliOwns, false);
-      if (host.inAccount?.()) return adoptHere(label);
+      if (cloud) return keep(cloud, null, cliOwns);
     }
     const runtime = await host.runtime();
     if (!runtime) {
@@ -385,7 +391,7 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
       const found = await here();
       if (found) return keep(found, chosen, false);
       const cloud = (await host.findCloud?.()) ?? null;
-      if (cloud) return keep(cloud, chosen, false, false);
+      if (cloud) return keep(cloud, chosen, false);
       return fail(label, host.copy.alreadyElsewhere);
     }
     // Whatever the create said, an assistant in the list is here.
@@ -408,7 +414,6 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
       } catch (err) {
         // A sentence, never a stack: the surfaces render this.
         console.warn("[hq-desktop] assistant start threw:", err);
-        if (known) return succeed(known, name, "existing");
         return fail(name, host.copy.couldNotStart(name));
       }
     });

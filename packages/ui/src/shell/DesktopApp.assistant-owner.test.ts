@@ -22,6 +22,8 @@ import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { takePendingChannelOpen, takePendingDmRequests } from "../chat/open-target.js";
+import { AUTO_RESTORE_RETRY_MS } from "../chat/bot-auto-restore.js";
+import { BOT_LIVE_ELSEWHERE_NOTICE } from "../chat/bot-restore.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
@@ -461,5 +463,88 @@ describe("Couldn't start never shows while the assistant is here (finding 4)", (
     await vi.waitFor(() => expect(q('[data-testid="setup-bot-error"]')).toBeNull());
     expect(screenText()).not.toMatch(/couldn't start|could not reach/i);
     expect(create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the owner never takes an assistant running on another computer (review fix 1)", () => {
+  it("#welcome's automatic start, flag off, empty roster: opens it with the honest notice, adopts and creates nothing", async () => {
+    const { platform, create, adopt } = adapter({
+      flag: false,
+      list: () => [],
+      contacts: [],
+      remote: () => [remoteRow({ online: true, lastHeartbeatAt: new Date().toISOString() })],
+    });
+    boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Your assistant"));
+    await vi.waitFor(() =>
+      expect(q('[data-testid="bot-not-runnable-notice"]')?.textContent).toContain(BOT_LIVE_ELSEWHERE_NOTICE),
+    );
+    await settle(30);
+    expect(adopt).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("recovering the assistant after setup ran here (review fix 2)", () => {
+  it("tries again after the back-off, within the budget, and only then offers the Restore prompt", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    const { platform, adopt } = adapter({
+      list: () => [],
+      remote: () => [remoteRow()],
+      adopt: async () => ({ ok: false, reason: "error", message: "HQ API /v1/agents/x/credentials → 500" }),
+    });
+    boot(platform);
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledTimes(1));
+    await settle(20);
+    // Waiting out its back-off: the app is still handling it, so no prompt.
+    expect(q('[data-testid="bot-restore-banner"]')).toBeNull();
+    await vi.advanceTimersByTimeAsync(AUTO_RESTORE_RETRY_MS + 1_000);
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(AUTO_RESTORE_RETRY_MS + 1_000);
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledTimes(3));
+    // Out of budget: the person's own way back is offered, and nothing more is tried.
+    await vi.waitFor(() => expect(q('[data-testid="bot-restore-banner"]')).toBeTruthy());
+    await vi.advanceTimersByTimeAsync(AUTO_RESTORE_RETRY_MS * 3);
+    await settle(20);
+    expect(adopt).toHaveBeenCalledTimes(3);
+    expect(adopt.mock.calls.every((call) => call[0] === "setup")).toBe(true);
+  });
+});
+
+describe("the progress card's Retry goes through the owner (review fix 4)", () => {
+  it("a Retry whose create finds the assistant already here ends quietly, with no failure and no handle", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let here: LocalBotRow[] = [];
+    let creates = 0;
+    const { platform, create } = adapter({
+      flag: false,
+      list: () => here,
+      create: async () => {
+        creates += 1;
+        if (creates === 1) return ok({ ok: true, name: "setup", agentUid: ASSISTANT_UID });
+        // The second time, another writer already brought it here.
+        here = [...here, localRow({ state: "running", online: true })];
+        return { ok: false, reason: "unavailable", message: ALREADY_HERE };
+      },
+    });
+    boot(platform);
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
+    // It never comes online: the card gives up and offers Retry (at the next
+    // listing after its time is up; another bot turning up is that listing).
+    await vi.advanceTimersByTimeAsync(181_000);
+    here = [localRow({ name: "scout", agentUid: "agt_scout", displayName: "Scout" })];
+    await vi.advanceTimersByTimeAsync(40_000);
+    const retry = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="bot-progress-retry"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    retry.click();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    await settle(30);
+    expect(screenText()).not.toMatch(/could not create|couldn't start/i);
+    expectNoSlug("the assistant's conversation after Retry");
   });
 });

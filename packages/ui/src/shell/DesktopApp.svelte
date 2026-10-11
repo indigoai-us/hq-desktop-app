@@ -3066,6 +3066,8 @@
    * Automatic restore never takes the assistant.
    */
   let assistantAttempt = $state<AssistantAttempt>({ state: "idle" });
+  /** An operation on the assistant is running or waiting its turn. */
+  let assistantQueued = $state(false);
   /** True once the installed hq-cli is known to create and adopt the assistant itself. */
   let assistantCliOwns = $state(false);
   /**
@@ -3119,7 +3121,21 @@
           return { ok: false, raw: result.message ?? "" };
         }
       : undefined,
-    inAccount: () => Boolean(remoteAssistantRow),
+    cloudAssistant: () => {
+      const row = remoteAssistantRow;
+      if (!row || row.here || botRunsHere(localBotRecords, row.agentUid)) return null;
+      const uid = row.agentUid.trim();
+      // Adoptable only when the account's listing says it is not running on
+      // another computer and could run here (`assistantToRecover`).
+      return {
+        ref: { agentUid: uid, handle: row.name.trim() || SETUP_BOT_NAME },
+        // ...and only where the app may bring bots back by itself at all.
+        adoptable: autoRestoreReady && assistantMissingHere?.agentUid.trim() === uid,
+      };
+    },
+    onbusy: (busy) => {
+      assistantQueued = busy;
+    },
     rename: renameAssistantHere,
     findCloud: findCloudAssistant,
     copy: {
@@ -3153,7 +3169,7 @@
     const uid = assistantUid ?? "";
     const local = uid ? localBotRecords.find((row) => row.agentUid.trim() === uid) : undefined;
     return assistantName({
-      confirmed: firstRunConfirmedName,
+      confirmed: firstRunDev.dry ? null : firstRunConfirmedName,
       listed: local?.displayName ?? null,
       cloud: remoteAssistantRow?.displayName ?? null,
       cached: uid ? (botDisplayNames[uid] ?? null) : null,
@@ -3179,7 +3195,7 @@
       ? {
           existing: Boolean(existingSetupBot),
           ready: setupBotRuntimeReady,
-          starting: assistantNow.state === "starting",
+          starting: assistantNow.state === "starting" || (assistantQueued && !existingSetupBot),
           // Worked out from the bot list: never set while the assistant is here.
           error: assistantNow.state === "failed" ? assistantNow.reason : null,
           // Known and empty: #welcome shows the install guide before the bot runs.
@@ -3244,7 +3260,8 @@
     }
     // A name the person confirmed in the visual first run (then left it for
     // chat) is kept; otherwise a friendly free one, for a new assistant only.
-    const confirmed = firstRunConfirmedName;
+    // A dry walk's name created nothing and names nothing.
+    const confirmed = firstRunDev.dry ? null : firstRunConfirmedName;
     // Without a chosen name, the account's own listing decides whether an
     // assistant already exists to bring back as it is, so ask it now rather
     // than give a returning person's assistant a picked name.
@@ -3903,6 +3920,14 @@
       return;
     }
     clearBotProgress(uid);
+    // The assistant is only ever made through its owner.
+    if (isAssistantRecord({ name: entry.input.name })) {
+      const result = await assistantOwner.start({ name: entry.extras.displayName?.trim() || null });
+      if (!result.ok) {
+        botProgressByUid = { ...botProgressByUid, [uid]: { ...entry, retrying: false, state: "failed", reason: result.reason } };
+      }
+      return;
+    }
     const created = await createBotEntry(entry.input, entry.extras);
     if (!created.ok) {
       botProgressByUid = { ...botProgressByUid, [uid]: { ...entry, retrying: false, state: "failed", reason: created.reason } };
@@ -4358,7 +4383,16 @@
     await restartBotsAfterSignIn(runtime);
   }
   async function restartBotsAfterSignIn(runtime: string): Promise<void> {
-    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], adapter.bots ?? null, {
+    const api = adapter.bots;
+    // The assistant's stop and start wait for anything its owner is doing.
+    const bots = api
+      ? {
+          ...api,
+          stop: (name: string) => (isAssistantRecord({ name }) ? assistantOwner.exclusive(() => api.stop(name)) : api.stop(name)),
+          start: (name: string) => (isAssistantRecord({ name }) ? assistantOwner.exclusive(() => api.start(name)) : api.start(name)),
+        }
+      : null;
+    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], bots, {
       // Same gate as every other start: a bot whose start already failed
       // definitively is not re-issued here either, and one that does start
       // drops its "cannot run here" notice.
@@ -4518,7 +4552,10 @@
       (autoRestoreReady &&
         autoRestorableBots.length > 0 &&
         !autoRestoreExhausted(autoRestoreAttempts, autoRestorableBots)) ||
-      (assistantRecoverDue && assistantRecoverAttempts < AUTO_RESTORE_MAX_ATTEMPTS),
+      // The owner brings the assistant back: only while a recovery runs, is
+      // waiting for its back-off, or is about to make its first try.
+      assistantRecoverScheduled ||
+      (assistantRecoverDue && assistantRecoverAttempts === 0),
   );
   /** The open DM's bot is one being brought back right now. */
   const selectedBotAutoRestoring = $derived.by(() =>
@@ -4540,6 +4577,15 @@
   let assistantRecovering = $state(false);
   let assistantRecoverAttempts = $state(0);
   let assistantRecoverLastAt = 0;
+  /** A retry after a failed recovery is waiting for its back-off. */
+  let assistantRecoverScheduled = $state(false);
+  /** Bumped when that back-off ends, so the effect below asks again. */
+  let assistantRecoverTick = $state(0);
+  let assistantRecoverTimer: ReturnType<typeof setTimeout> | null = null;
+  onDestroy(() => {
+    if (assistantRecoverTimer !== null) clearTimeout(assistantRecoverTimer);
+    assistantRecoverTimer = null;
+  });
   /** The owner may bring the assistant back by itself now. */
   const assistantRecoverDue = $derived.by(
     () =>
@@ -4551,6 +4597,11 @@
   );
   $effect(() => {
     if (!assistantRecoverDue) return;
+    // A newer listing, the end of a back-off, or the owner going idle is a
+    // newer chance to try again (within the budget).
+    void remoteBotListing;
+    void assistantRecoverTick;
+    void assistantQueued;
     untrack(() => void recoverAssistant(false));
   });
   /** Ask the owner to bring the assistant back. `now`: a person wrote to it. */
@@ -4564,11 +4615,22 @@
     try {
       const result = await assistantOwner.recover();
       if (result.ok) assistantRecoverAttempts = 0;
+      else scheduleAssistantRecover();
       await refreshRemoteBots(true);
       return result.ok;
     } finally {
       assistantRecovering = false;
     }
+  }
+  /** After a failed recovery: try again once the back-off has passed, while budget is left. */
+  function scheduleAssistantRecover(): void {
+    if (assistantRecoverTimer !== null || assistantRecoverAttempts >= AUTO_RESTORE_MAX_ATTEMPTS) return;
+    assistantRecoverScheduled = true;
+    assistantRecoverTimer = setTimeout(() => {
+      assistantRecoverTimer = null;
+      assistantRecoverScheduled = false;
+      assistantRecoverTick += 1;
+    }, AUTO_RESTORE_RETRY_MS);
   }
   $effect(() => {
     const candidates = autoRestorableBots;
@@ -4721,8 +4783,8 @@
     void runAutoRestore([bot]);
     return true;
   }
-  const showBotRestorePrompt = $derived(
-    Boolean(adapter.bots?.restore) &&
+  const showBotRestorePrompt = $derived.by(
+    () => Boolean(adapter.bots?.restore) &&
       !botRestoreUnavailable &&
       !botRestoreDismissed &&
       !botRestoreResult &&
@@ -4818,8 +4880,14 @@
     const rail = resolveConversationRow(selected, rows);
     if (!rail || rail.id !== selected.id) return;
     const currentTitle = untrack(() => selected.title);
-    if (rail.title === currentTitle) return;
     const isAssistantRow = Boolean(assistantUid) && (selected.personUid ?? "").trim() === assistantUid;
+    if (isAssistantRow) {
+      // The assistant's row always carries its one name.
+      const name = assistantLabel;
+      if (currentTitle !== name) selectedRow = { ...rail, title: name };
+      return;
+    }
+    if (rail.title === currentTitle) return;
     if (
       !isAssistantRow &&
       !isRawParticipantUid(currentTitle) &&
