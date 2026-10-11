@@ -5,7 +5,10 @@ import type { RuntimeSignInApi } from "../create-bot/RuntimeSignIn.svelte";
 import type { RuntimeStatus } from "../create-bot/runtime-status.js";
 import { FIRST_RUN_BANNED_DASHES } from "./visual-first-run.js";
 import {
+  TOOL_SIGNIN_CHECK_DEADLINE_MS,
   TOOL_SIGNIN_COPY,
+  checkedReadiness,
+  createSignInChecker,
   createToolSignInRunner,
   orderedSignInTools,
   preferredSignInTool,
@@ -16,6 +19,7 @@ import {
   toolSignInLabel,
   toolsSignInLead,
   type ToolRowKind,
+  type ToolSignInChecks,
   type ToolSignInState,
 } from "./tools-signin.js";
 
@@ -223,5 +227,172 @@ describe("createToolSignInRunner", () => {
     expect(host.loginCancel).toHaveBeenCalledWith("claude");
     await vi.advanceTimersByTimeAsync(1000);
     expect(host.loginStatus).not.toHaveBeenCalled();
+  });
+});
+
+// A stored login is not a working one: `claude auth status` reports a login
+// whose refresh token is dead as signed in. The owner's first run said
+// "Signed in", created the assistant saying so, and its first turn failed with
+// an expired session. These pin the real check that now stands in between.
+describe("the real sign-in check", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const STORED = { claude: true, codex: false, grok: false };
+  const ok = (value: unknown) => ({ ok: true as const, value });
+
+  function checker(probe: ((tool: "claude" | "codex") => Promise<unknown>) | null) {
+    const seen: ToolSignInChecks[] = [];
+    const c = createSignInChecker({
+      probe: probe as never,
+      onchange: (checks) => seen.push(checks),
+    });
+    return { c, seen };
+  }
+
+  it("a stored but dead login: the row offers Sign in, it does not count, and Sign in replaces it", async () => {
+    const probe = vi.fn(async () => ok({ ok: false, class: "signed-out", detail: "OAuth session expired" }));
+    const { c } = checker(probe);
+    c.sync(STORED);
+    // While the check runs the row reads Checking and nothing counts yet.
+    expect(c.current()).toEqual({ claude: "checking" });
+    expect(toolRowKinds({ claude: IN, codex: OUT }, STORED, null, c.current()).claude).toBe("checking");
+    expect(checkedReadiness(STORED, c.current())?.claude).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith("claude");
+    expect(c.current()).toEqual({ claude: "signedOut" });
+    expect(toolRowKinds({ claude: IN, codex: OUT }, STORED, null, c.current()).claude).toBe("signIn");
+    expect(checkedReadiness(STORED, c.current())?.claude).toBe(false);
+    expect(c.needsForce("claude")).toBe(true);
+    // Readiness read again with the same stored login: no second check.
+    c.sync(STORED);
+    expect(probe).toHaveBeenCalledTimes(1);
+    // The sign-in that replaced it counts.
+    c.signedIn("claude");
+    expect(c.current()).toEqual({ claude: "passed" });
+    expect(c.needsForce("claude")).toBe(false);
+    expect(checkedReadiness(STORED, c.current())?.claude).toBe(true);
+  });
+
+  it("Sign in on a dead login runs a forced login (log out, then in)", async () => {
+    const host: RuntimeSignInApi = {
+      loginStart: vi.fn(async () => ({ state: "connected" as const })),
+      loginStatus: vi.fn(async () => ({ state: "connected" as const })),
+    };
+    const onconnected = vi.fn();
+    const runner = createToolSignInRunner({
+      api: host,
+      onchange: () => {},
+      onconnected,
+      force: (tool) => tool === "claude",
+    });
+    runner.start("claude");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.loginStart).toHaveBeenCalledWith("claude", { force: true });
+    expect(onconnected).toHaveBeenCalledWith("claude");
+    // A tool whose login is not dead signs in as before.
+    runner.start("codex");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.loginStart).toHaveBeenLastCalledWith("codex");
+  });
+
+  it("a valid login shows Signed in once the check passed", async () => {
+    const probe = vi.fn(async (_tool: "claude" | "codex") => ok({ ok: true, class: null }));
+    const { c } = checker(probe);
+    c.sync({ claude: true, codex: true, grok: false });
+    await vi.advanceTimersByTimeAsync(0);
+    // Codex goes through the same check.
+    expect(probe.mock.calls.map(([tool]) => tool)).toEqual(["claude", "codex"]);
+    expect(c.current()).toEqual({ claude: "passed", codex: "passed" });
+    const kinds = toolRowKinds({ claude: IN, codex: IN }, { claude: true, codex: true }, null, c.current());
+    expect(kinds).toEqual({ claude: "signedIn", codex: "signedIn" });
+    expect(checkedReadiness({ claude: true, codex: true, grok: false }, c.current())).toEqual({
+      claude: true,
+      codex: true,
+      grok: false,
+    });
+  });
+
+  it("a check that never answers does not block: at the deadline the stored login counts, and it is logged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const probe = vi.fn(() => new Promise<never>(() => {}));
+    const { c } = checker(probe);
+    c.sync(STORED);
+    await vi.advanceTimersByTimeAsync(TOOL_SIGNIN_CHECK_DEADLINE_MS - 1);
+    expect(c.current()).toEqual({ claude: "checking" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(c.current()).toEqual({ claude: "unverified" });
+    expect(toolRowKinds({ claude: IN, codex: OUT }, STORED, null, c.current()).claude).toBe("signedIn");
+    expect(checkedReadiness(STORED, c.current())?.claude).toBe(true);
+    expect(c.needsForce("claude")).toBe(false);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a transient failure", async () => ok({ ok: false, class: "transient" })],
+    ["an unknown failure", async () => ok({ ok: false, class: "unknown" })],
+    ["a check that could not run", async () => ({ ok: false as const, message: "hq not found" })],
+    ["a check that threw", async () => Promise.reject(new Error("boom"))],
+    ["an hq CLI without the check", async () => ok({ supported: false })],
+  ])("%s does not block: the stored login counts as before", async (_label, answer) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { c } = checker(vi.fn(answer));
+    c.sync(STORED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.current()).toEqual({ claude: "unverified" });
+    expect(checkedReadiness(STORED, c.current())?.claude).toBe(true);
+  });
+
+  it("a host without the check takes the stored login at its word", async () => {
+    const { c } = checker(null);
+    c.sync(STORED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.current()).toEqual({ claude: "unverified" });
+  });
+
+  it("a login that is gone forgets the old verdict, so the next stored one is checked afresh", async () => {
+    const answers = [ok({ ok: false, class: "signed-out" }), ok({ ok: true })];
+    const probe = vi.fn(async () => answers.shift());
+    const { c } = checker(probe);
+    c.sync(STORED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.current()).toEqual({ claude: "signedOut" });
+    c.sync({ claude: false, codex: false, grok: false });
+    expect(c.current()).toEqual({});
+    c.sync(STORED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(c.current()).toEqual({ claude: "passed" });
+  });
+
+  it("checking again after a sign-in elsewhere (a terminal) drops a signed-out verdict and checks afresh", async () => {
+    const answers = [ok({ ok: false, class: "signed-out" }), ok({ ok: true })];
+    const probe = vi.fn(async () => answers.shift());
+    const { c } = checker(probe);
+    c.sync(STORED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.current()).toEqual({ claude: "signedOut" });
+    // Still stored, so a plain read again does not check twice.
+    c.sync(STORED);
+    expect(probe).toHaveBeenCalledTimes(1);
+    c.recheck();
+    expect(c.current()).toEqual({});
+    c.sync(STORED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(c.current()).toEqual({ claude: "passed" });
+    expect(toolRowKinds({ claude: IN, codex: OUT }, STORED, null, c.current()).claude).toBe("signedIn");
+    // A passed verdict is kept on a recheck: no extra turn.
+    c.recheck();
+    expect(c.current()).toEqual({ claude: "passed" });
+  });
+
+  it("without checks (a host that runs none) nothing changes", () => {
+    expect(checkedReadiness(STORED, null)).toBe(STORED);
+    expect(toolRowKinds({ claude: IN, codex: OUT }, STORED, null, null).claude).toBe("signedIn");
   });
 });

@@ -319,6 +319,12 @@ export interface FirstRunHandoff {
   runtime: FirstRunRuntime;
   /** Every coding tool signed in when the assistant was created. */
   toolsReady: readonly FirstRunRuntime[];
+  /**
+   * False when the real sign-in check (`hq bot probe`) did not pass for
+   * `runtime` (it could not tell): the hello and the kickoff then do not say
+   * the tool is signed in. Missing means it passed.
+   */
+  signInChecked?: boolean;
   /** The context scan, when it finished before this was written. */
   imported?: FirstRunImportHandoff | null;
   /** "Your team", once settled. */
@@ -542,7 +548,9 @@ function buildKickoff(handoff: FirstRunHandoff, opts: { noun?: string }): string
     `${FIRST_RUN_HANDOFF_MARKER} ${firstRunHandoffNote(handoff)}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     `${proseName(name, "I chose your name, ", ", so keep it. ", "I chose your name (\"name\" in the handoff), so keep it. ")}` +
-    `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. ` +
+    (handoff.signInChecked === false
+      ? `I picked ${tool} on this ${noun} and you run on it, so do not ask me to pick a coding tool. HQ could not confirm its sign-in, so if a turn fails to sign in, say so in one line. `
+      : `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. `) +
     importSentence(handoff.imported) +
     settledSentence(handoff) +
     "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
@@ -674,11 +682,17 @@ export function firstRunSettledNotice(
  * The bot's hello (`hq bot create --intro`, under 500 characters, one line)
  * when it was named in the takeover: it already knows its name and tool.
  */
-export function firstRunIntro(handoff: Pick<FirstRunHandoff, "name" | "runtime">, opts: { noun?: string } = {}): string {
+export function firstRunIntro(
+  handoff: Pick<FirstRunHandoff, "name" | "runtime" | "signInChecked">,
+  opts: { noun?: string } = {},
+): string {
   const noun = opts.noun?.trim() || "computer";
   const name = normalizeAssistantName(handoff.name) || "your HQ assistant";
+  const tool = runtimeLabel(handoff.runtime);
+  // Only a passing real check may say "signed in": a stored login can be dead.
+  const settled = handoff.signInChecked === false ? `picked ${tool}` : `signed in ${tool}`;
   return (
-    `Hi, I'm ${name}, your HQ assistant. You've named me and signed in ${runtimeLabel(handoff.runtime)}, so I won't ask about those again. ` +
+    `Hi, I'm ${name}, your HQ assistant. You've named me and ${settled}, so I won't ask about those again. ` +
     `I'm checking your ${noun} now, which can take a minute, and I'll post my next question here as soon as I'm done.`
   );
 }

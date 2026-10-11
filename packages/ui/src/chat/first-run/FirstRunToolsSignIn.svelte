@@ -47,6 +47,8 @@
     onsignedin: (tool: SignInTool) => void | Promise<void>;
     /** Read readiness (and the desktop apps) again. */
     onrecheck: () => void | Promise<void>;
+    /** The tool's stored login failed the real check: Sign in replaces it. */
+    forceSignIn?: ((tool: SignInTool) => boolean) | null;
     onopenassistant?: (assistant: AssistantId, url: string) => Promise<InstallOutcome>;
     onassistedinstall?: (tool: CodingTool) => Promise<InstallOutcome>;
     onannounce?: (text: string) => void;
@@ -64,6 +66,7 @@
     onpick,
     onsignedin,
     onrecheck,
+    forceSignIn = null,
     onopenassistant,
     onassistedinstall,
     onannounce,
@@ -84,6 +87,7 @@
           },
           onconnected: (tool) => onsignedin(tool),
           onfailed: () => onrecheck(),
+          force: (tool) => forceSignIn?.(tool) === true,
         })
       : null,
   );
