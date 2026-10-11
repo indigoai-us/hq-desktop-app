@@ -545,6 +545,7 @@
     nextTourState,
     readTourSeenLocally,
     shouldAutoStartTour,
+    tourSetupBlocked,
     skipTourState,
     startTourState,
     tourSteps,
@@ -9408,7 +9409,8 @@
   }
 
   // Auto-start: fresh install, not seen (host flag or local fallback), shell
-  // up, the setup conversation on screen; then a short settle delay.
+  // up, the setup conversation on screen and not asking for a coding tool
+  // first (its Install Claude card); then a short settle delay.
   $effect(() => {
     const ready = shouldAutoStartTour({
       welcomeSetupOwed: tourHostStatus ? tourHostStatus.owed : null,
@@ -9416,6 +9418,11 @@
       shellReady: tourShellReady,
       welcomeOnScreen: tourWelcomeOnScreen,
       startedThisSession: tourStartedThisSession,
+      setupBlocked: tourSetupBlocked({
+        hasSetupBot: setupBotLauncher !== null,
+        runtimeReady: localBotRuntimeReady,
+        setupError: setupBotStartError,
+      }),
     });
     if (!ready || adapter.kind === "web") return;
     // The visual first run comes first; the tour waits for it (and for the
