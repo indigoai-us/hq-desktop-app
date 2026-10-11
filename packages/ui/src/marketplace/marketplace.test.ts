@@ -339,6 +339,12 @@ describe("listingDisplayName — friendly card/detail title", () => {
     expect(
       listingDisplayName(listing({ slug: "crm", name: "hq-pack-crm" })),
     ).toBe("CRM");
+    // Brand casing — must read "iMessage", not the prettifier's "Imessage".
+    expect(
+      listingDisplayName(
+        listing({ slug: "imessage", name: "hq-pack-imessage" }),
+      ),
+    ).toBe("iMessage");
   });
 
   it("falls back to a prettified package name for an unknown slug", () => {

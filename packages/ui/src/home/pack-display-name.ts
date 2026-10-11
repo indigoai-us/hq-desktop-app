@@ -19,6 +19,8 @@ export const PACK_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   "magicpath-agent-skills": "MagicPath",
   // Acronym — the generic prettifier would title-case this to "Crm".
   crm: "CRM",
+  // Brand casing: the generic prettifier would produce "Imessage".
+  imessage: "iMessage",
 };
 
 /** Words we keep lowercased when title-casing a derived name (unless leading). */
