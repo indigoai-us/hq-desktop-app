@@ -203,7 +203,7 @@ describe("FirstRunTakeover: done", () => {
     let finish!: () => void;
     const { handlers } = render({
       initialStep: "done",
-      creation: { state: "ready", name: "Pickles", bot: { agentUid: "agt_1", name: "setup" } },
+      creation: { state: "ready", name: "Pickles", bot: { agentUid: "agt_1", handle: "setup" } },
       ontalk: () => new Promise<void>((resolve) => (finish = resolve)),
     });
     await settle();

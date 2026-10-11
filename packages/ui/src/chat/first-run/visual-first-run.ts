@@ -777,64 +777,14 @@ export function firstRunRoute(input: FirstRunRouteInput): FirstRunRoute {
 
 // ── creating the assistant ─────────────────────────────────────────────────
 
-export type FirstRunAssistantResult = { ok: true; bot: SetupBotRef } | { ok: false; reason: string };
-
-/** Where creating the assistant stands, as the takeover shows it. */
+/**
+ * Where creating the assistant stands, as the takeover shows it. The host
+ * works it out from the assistant's owner and the bot list
+ * (chat/assistant-owner.ts); nothing here stores it.
+ */
 export type FirstRunCreation =
   | { state: "idle" }
   | { state: "creating"; name: string }
   | { state: "ready"; name: string; bot: SetupBotRef }
   | { state: "failed"; name: string; reason: string };
 
-export interface FirstRunAssistantStarter {
-  /**
-   * Start creating the assistant under this name. A call while one is in
-   * flight, or after one succeeded, does nothing: a double click or a second
-   * Enter never creates a second bot. After a failure it runs again (Retry).
-   */
-  start(name: string): void;
-  /** Run again with the last name, after a failure. */
-  retry(): void;
-  current(): FirstRunCreation;
-}
-
-/**
- * The single-flight creator behind the takeover. `run` creates (or adopts)
- * the setup bot; `onchange` gets every state, starting with "creating"
- * synchronously so the pending state shows on the same frame as the click.
- */
-export function createFirstRunAssistantStarter(
-  run: (name: string) => Promise<FirstRunAssistantResult>,
-  onchange: (state: FirstRunCreation) => void,
-): FirstRunAssistantStarter {
-  let state: FirstRunCreation = { state: "idle" };
-  let lastName = "";
-  const set = (next: FirstRunCreation): void => {
-    state = next;
-    onchange(next);
-  };
-  function start(name: string): void {
-    if (state.state === "creating" || state.state === "ready") return;
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    lastName = trimmed;
-    set({ state: "creating", name: trimmed });
-    void Promise.resolve()
-      .then(() => run(trimmed))
-      .then(
-        (result) =>
-          set(result.ok ? { state: "ready", name: trimmed, bot: result.bot } : { state: "failed", name: trimmed, reason: result.reason }),
-        (err: unknown) => {
-          console.warn("[hq-desktop] first-run assistant create threw:", err);
-          set({ state: "failed", name: trimmed, reason: "Could not start your assistant. Please try again." });
-        },
-      );
-  }
-  return {
-    start,
-    retry() {
-      if (state.state === "failed" && lastName) start(lastName);
-    },
-    current: () => state,
-  };
-}

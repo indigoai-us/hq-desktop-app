@@ -293,7 +293,7 @@ describe("visual first run, flag on", () => {
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     // (The rail labels the setup bot's DM the same way today's flow does.)
     await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
-    expect(q('[data-testid="channel-name"]')?.textContent).toMatch(/Biscuit|setup/);
+    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit");
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     // The legacy automatic start never ran alongside it.

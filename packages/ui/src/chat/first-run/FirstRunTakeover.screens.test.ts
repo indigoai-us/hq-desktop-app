@@ -92,7 +92,7 @@ function render(props: Render = {}) {
     props: {
       initialName: "Pickles",
       initialStep: props.initialStep ?? "team",
-      creation: { state: "ready", name: "Pickles", bot: { agentUid: "agt_1", name: "Pickles" } },
+      creation: { state: "ready", name: "Pickles", bot: { agentUid: "agt_1", handle: "setup" } },
       runtimeReady: { claude: true, codex: false, grok: false },
       teamOptions: props.teamOptions === undefined ? { invites: [ACME], companies: [HARBOR] } : props.teamOptions,
       teamHost,

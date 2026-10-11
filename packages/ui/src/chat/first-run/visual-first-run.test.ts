@@ -5,7 +5,6 @@ import {
   FIRST_RUN_STEPS,
   VISUAL_FIRST_RUN_DONE_KEY,
   assistantNameIssue,
-  createFirstRunAssistantStarter,
   firstRunCanLeave,
   firstRunFinishTarget,
   firstRunHandoffNote,
@@ -37,7 +36,6 @@ import {
   normalizeAssistantName,
   nextFirstRunStep,
   prevFirstRunStep,
-  type FirstRunAssistantResult,
   type FirstRunCreation,
   type FirstRunStep,
 } from "./visual-first-run.js";
@@ -468,63 +466,6 @@ describe("first-run routing", () => {
     expect(firstRunRoute({ ...base, welcomeSetupRun: true })).toBe("legacy");
     expect(firstRunRoute({ ...base, welcomeSetupOwed: false })).toBe("legacy");
     expect(firstRunRoute({ ...base, hasBots: false })).toBe("legacy");
-  });
-});
-
-describe("one assistant create at a time", () => {
-  function deferred(): { promise: Promise<FirstRunAssistantResult>; resolve: (r: FirstRunAssistantResult) => void } {
-    let resolve!: (r: FirstRunAssistantResult) => void;
-    const promise = new Promise<FirstRunAssistantResult>((r) => (resolve = r));
-    return { promise, resolve };
-  }
-
-  it("shows creating at once and ignores repeat starts while it runs and after it succeeds", async () => {
-    const pending = deferred();
-    const run = vi.fn(() => pending.promise);
-    const states: FirstRunCreation[] = [];
-    const starter = createFirstRunAssistantStarter(run, (s) => states.push(s));
-
-    starter.start("Pickles");
-    // Pending state is synchronous with the press.
-    expect(starter.current()).toEqual({ state: "creating", name: "Pickles" });
-    starter.start("Pickles");
-    starter.start("Other");
-    await Promise.resolve();
-    expect(run).toHaveBeenCalledTimes(1);
-
-    pending.resolve({ ok: true, bot: { agentUid: "agt_1", name: "setup" } });
-    await vi.waitFor(() => expect(starter.current().state).toBe("ready"));
-    starter.start("Pickles");
-    starter.retry();
-    await Promise.resolve();
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(states.map((s) => s.state)).toEqual(["creating", "ready"]);
-  });
-
-  it("a failure says why, and Retry runs again with the same name", async () => {
-    const run = vi
-      .fn<(name: string) => Promise<FirstRunAssistantResult>>()
-      .mockResolvedValueOnce({ ok: false, reason: "Could not create setup." })
-      .mockResolvedValueOnce({ ok: true, bot: { agentUid: "agt_1", name: "setup" } });
-    const starter = createFirstRunAssistantStarter(run, () => {});
-    starter.start("Pickles");
-    await vi.waitFor(() =>
-      expect(starter.current()).toEqual({ state: "failed", name: "Pickles", reason: "Could not create setup." }),
-    );
-    starter.retry();
-    expect(starter.current().state).toBe("creating");
-    await vi.waitFor(() => expect(starter.current().state).toBe("ready"));
-    expect(run).toHaveBeenNthCalledWith(2, "Pickles");
-  });
-
-  it("a create that throws is a failure with a written sentence", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const starter = createFirstRunAssistantStarter(() => Promise.reject(new Error("boom")), () => {});
-    starter.start("Pickles");
-    await vi.waitFor(() => expect(starter.current().state).toBe("failed"));
-    const current = starter.current();
-    expect(current.state === "failed" ? current.reason : "").toBe("Could not start your assistant. Please try again.");
-    warn.mockRestore();
   });
 });
 

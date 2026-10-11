@@ -210,7 +210,7 @@ describe("the setup bot this account already owns is adopted, never re-created",
     );
 
     // The automatic first-open start runs; it must adopt, not create.
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("Your assistant"));
     expect(create).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     await settle(20);
@@ -249,7 +249,7 @@ describe("the setup bot this account already owns is adopted, never re-created",
       }),
     );
 
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("Your assistant"));
     const button = await vi.waitFor(() => {
       const el = q<HTMLButtonElement>('[data-testid="bot-start-here"]');
       expect(el).toBeTruthy();
@@ -287,7 +287,7 @@ describe("the setup bot this account already owns is adopted, never re-created",
       }),
     );
 
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("Your assistant"));
     const notice = await vi.waitFor(() => {
       const el = q('[data-testid="bot-not-runnable-notice"]');
       expect(el).toBeTruthy();
@@ -332,7 +332,7 @@ describe("the setup bot this account already owns is adopted, never re-created",
       }),
     );
 
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("Your assistant"));
     await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
     expect(q('[data-testid="bot-restore-unavailable"]')?.textContent?.trim()).toBe(
       BOT_RESTORE_NEEDS_NEWER_CLOUD,
@@ -354,7 +354,7 @@ describe("the setup bot this account already owns is adopted, never re-created",
 
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     // Adopted: the bot's DM is open and setup counts as run.
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("Your assistant"));
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     // And nothing was reported as a failure.
     expect(q('[data-testid="setup-bot-error"]')).toBeNull();
@@ -387,10 +387,10 @@ describe("the setup bot this account already owns is adopted, never re-created",
   });
 
   /**
-   * The host's start is gated by `singleFlightStart` (unit-tested in
-   * setup-bot.test.ts: a caller arriving mid-start gets the running start's
-   * own result). This is the shell half of that guarantee — while a start is
-   * running, #welcome cannot begin a second one.
+   * The assistant's owner runs one operation at a time and re-reads the list
+   * first (unit-tested in assistant-owner.test.ts). This is the shell half of
+   * that guarantee: while a start is running, #welcome cannot begin a second
+   * one.
    */
   it("while the bot is being made, #welcome cannot start a second one", async () => {
     let release!: () => void;
@@ -417,7 +417,8 @@ describe("the setup bot this account already owns is adopted, never re-created",
     expect(create).toHaveBeenCalledOnce();
 
     release();
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    const made = (create.mock.calls as unknown as Array<[{ displayName: string }]>)[0]![0].displayName;
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain(made));
     expect(create).toHaveBeenCalledOnce();
   });
 });

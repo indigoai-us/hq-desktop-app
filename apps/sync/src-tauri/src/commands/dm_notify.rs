@@ -3748,7 +3748,7 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
             );
         }
         for dm in banner_worthy.iter().filter(|_| native_allowed) {
-            let title = dm.from_display_name.clone();
+            let title = hq_desktop_core::banner::dm_sender_name(&dm.from_display_name);
             let message = dm.body.clone();
             let from_person_uid = dm.from_person_uid.clone();
             let event_id = dm.event_id.clone();
@@ -3799,7 +3799,7 @@ async fn do_poll(app: &AppHandle, auth: &NotificationAuthSnapshot) {
     {
         use tauri_plugin_notification::NotificationExt;
         for dm in &banner_worthy {
-            let title = dm.from_display_name.clone();
+            let title = hq_desktop_core::banner::dm_sender_name(&dm.from_display_name);
             let message = dm.body.clone();
             let dispatched = with_current_notification_mutation(app, auth, || async {
                 app.notification()
