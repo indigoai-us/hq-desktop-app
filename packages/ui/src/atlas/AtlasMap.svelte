@@ -16,6 +16,7 @@
   import { atlasHoverContent, type AtlasHoverContent } from "./atlas-hover.js";
   import {
     ATLAS_LABEL_PX,
+    atlasCapDots,
     atlasRelatedIds,
     atlasDistrictLabel,
     atlasDistrictShapes,
@@ -151,6 +152,8 @@
   // keep their home cx/cy and move with a CSS transform; everything drawn in
   // screen space (labels, chips, cards, edges) uses these positions.
   const shown = $derived(atlasFocusPlaced(placed, focus));
+  // Cap drawn dots so very large companies stay responsive; keep the ones in use.
+  const drawnDots = $derived(atlasCapDots(placed, [selected, hovered, ...live]));
   const byId = $derived(new Map(shown.map((p) => [p.id, p])));
   const related = $derived(atlasRelatedIds(selected ?? hovered, edges));
   const shownEdges = $derived(atlasVisibleEdges(edges, selected, hovered));
@@ -522,7 +525,7 @@
           <line class="trail" data-testid="atlas-trail" x1={a.x} y1={a.y} x2={b.x} y2={b.y} vector-effect="non-scaling-stroke" />
         {/if}
       {/each}
-      {#each placed as node (node.id)}
+      {#each drawnDots as node (node.id)}
         <g
           class="node"
           class:dim={dimmed(node.id)}

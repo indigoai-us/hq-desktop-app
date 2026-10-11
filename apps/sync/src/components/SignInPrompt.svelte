@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { startVisibleInterval } from '@hq/ui/visible-interval';
   import RailIcon from '@hq/ui/rail-icon';
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
@@ -232,10 +233,10 @@
     };
 
     void recheck();
-    const interval = window.setInterval(() => void recheck(), AUTH_RECHECK_INTERVAL_MS);
+    const stopRecheck = startVisibleInterval(() => void recheck(), AUTH_RECHECK_INTERVAL_MS);
     return () => {
       disposed = true;
-      window.clearInterval(interval);
+      stopRecheck();
       const state = activeState;
       ++signInRun;
       resetManualSignInState();

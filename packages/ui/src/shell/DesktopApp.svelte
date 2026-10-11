@@ -975,6 +975,7 @@
   import "../chat/messaging/messaging-tokens.css";
   import "../home/tokens.css";
   import Caret from "../common/Caret.svelte";
+  import { startVisibleInterval } from "../common/visible-interval.js";
 
   interface Props {
     /** Platform seam — forwarded to the title-bar Core popover. */
@@ -1557,11 +1558,10 @@
     }
   }
 
-  // Query on mount; re-query every 30 s.
+  // Query on mount; re-query every 30 s while the window is visible.
   $effect(() => {
     void queryUpdateGate();
-    const id = setInterval(() => void queryUpdateGate(), 30_000);
-    return () => clearInterval(id);
+    return startVisibleInterval(() => void queryUpdateGate(), 30_000);
   });
 
   async function handleUpdateInstall(): Promise<void> {
@@ -5826,12 +5826,9 @@
     if (!adapter.bots) return;
     const bot = selectedLocalBot;
     if (!bot || selectedRow?.kind !== "dm") return;
-    const handle = window.setInterval(() => {
+    return startVisibleInterval(() => {
       void refreshLocalBots();
     }, LOCAL_BOT_BUSY_POLL_MS);
-    return () => {
-      clearInterval(handle);
-    };
   });
 
   // A local bot that is busy (the CLI's in-flight marker) shows its row in its
