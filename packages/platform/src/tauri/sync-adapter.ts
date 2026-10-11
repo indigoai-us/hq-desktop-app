@@ -37,6 +37,7 @@ import {
   vaultPutIntegrityFields,
   withHttpStatus,
   withoutSecret,
+  localIanaZone,
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
@@ -1310,8 +1311,8 @@ export function createSyncPlatformAdapter(
         ),
       listOwners: (companyUid, agentUid) =>
         hqProJson('GET', AGENT_PATHS.owners(companyUid, agentUid)),
-      getCompanyTelemetry: (companyUid, from, to) =>
-        hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+      getCompanyTelemetry: (companyUid, from, to, tz) =>
+        hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to, tz ?? localIanaZone())),
       getMyTelemetry: (from, to, tz) =>
         hqProJson('GET', AGENT_PATHS.myTelemetry(from, to, tz)),
       listLocalSessions: (range, page) =>
@@ -1370,8 +1371,15 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', '/membership/role', { companyUid, membershipKey, newRole }),
       revokeMembership: (companyUid, membershipKey) =>
         hqProJson('POST', '/membership/revoke', { companyUid, membershipKey }),
-      getTeamTelemetry: (slug, range) =>
-        call('get_company_team_telemetry', range ? { slug, from: range.from, to: range.to } : { slug }),
+      getTeamTelemetry: (slug, range) => {
+        // hq-pro cuts days in `tz` when it can; this Mac's zone is the default.
+        const tz = range?.tz ?? localIanaZone();
+        return call('get_company_team_telemetry', {
+          slug,
+          ...(range ? { from: range.from, to: range.to } : {}),
+          ...(tz ? { tz } : {}),
+        });
+      },
       claimPendingInvite: (slug) =>
         call('claim_pending_company_invite', { slug, route: 'company_page' }),
       connectToCloud: (slug) =>
