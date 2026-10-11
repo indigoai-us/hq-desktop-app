@@ -25,6 +25,18 @@ pub const UPDATE_HQ_ERROR: &str = "update-hq";
 /// Error code the UI maps to a plain "took too long, try again" message when
 /// `hq storage` does not finish in time.
 pub const TIMEOUT_ERROR: &str = "storage-timeout";
+/// `hq storage` refused because the `hq-storage` flag is off for this person
+/// (CLI JSON `{"code":"feature_disabled"}`). Allowlist gate, owner hold
+/// 2026-10-11: the UI hides Settings > Storage on this code.
+pub const FEATURE_DISABLED_ERROR: &str = "storage-feature-disabled";
+
+/// True when stdout is the CLI's structured `feature_disabled` refusal.
+pub fn is_feature_disabled(stdout: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .ok()
+        .and_then(|v| v.get("code").and_then(|c| c.as_str()).map(|c| c == "feature_disabled"))
+        .unwrap_or(false)
+}
 
 /// Reads (status, dry runs) should be quick; cap them so the pane never spins
 /// forever on a stuck CLI.
@@ -408,6 +420,12 @@ pub(crate) async fn run_hq(args: Vec<OsString>) -> Result<String, String> {
         UPDATE_HQ_ERROR.to_string()
     })?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    // Checked before any parse, whatever the exit status: a refusal must
+    // never be read as an empty status or a partial prune.
+    if is_feature_disabled(&stdout) {
+        log("storage", "hq storage refused: feature_disabled");
+        return Err(FEATURE_DISABLED_ERROR.to_string());
+    }
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         log(
@@ -584,6 +602,18 @@ mod tests {
         let local = r.local.unwrap();
         assert!(!local.available);
         assert_eq!(local.reason.as_deref(), Some("update HQ"));
+    }
+
+    #[test]
+    fn detects_the_cli_feature_disabled_refusal() {
+        let refusal = r#"{"ok":false,"code":"feature_disabled","message":"Storage tools aren't available on your account yet."}"#;
+        assert!(is_feature_disabled(refusal));
+        assert!(is_feature_disabled(&format!("  {refusal}\n")));
+        assert!(!is_feature_disabled(STATUS));
+        assert!(!is_feature_disabled(r#"{"code":"other"}"#));
+        assert!(!is_feature_disabled("Storage tools aren't available on your account yet."));
+        assert!(!is_feature_disabled(""));
+        assert_eq!(FEATURE_DISABLED_ERROR, "storage-feature-disabled");
     }
 
     #[test]

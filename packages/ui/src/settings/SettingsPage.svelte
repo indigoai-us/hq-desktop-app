@@ -38,6 +38,7 @@
   import { updateStore } from "./update-store.svelte.js";
   import { autoUpdateRow } from "../account/account-pages.js";
   import StorageSettingsPane from "./StorageSettingsPane.svelte";
+  import { resolveStorageFeature } from "./storage-feature.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -124,6 +125,25 @@
     SETTINGS_SECTIONS.find((section) => section.id === activeTab) ?? null,
   );
   void _activeSection;
+
+  // hq-storage allowlist gate (owner hold 2026-10-11, Indigo-only): Storage
+  // stays out of the index until the registry says true for one of the
+  // person's companies. Any failure keeps it hidden.
+  let storageFeatureOn = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    let live = true;
+    storageFeatureOn = false;
+    void resolveStorageFeature(identity).then((on) => {
+      if (live) storageFeatureOn = on;
+    });
+    return () => {
+      live = false;
+    };
+  });
+  const visibleSettingsSections = $derived(
+    SETTINGS_SECTIONS.filter((section) => section.id !== "storage" || storageFeatureOn),
+  );
 
   // Evaluated once: the host OS cannot change while the window is open.
   const isMacOS = isMac();
@@ -1806,7 +1826,7 @@
         aria-label="Settings sections"
         data-testid="settings-index"
       >
-        {#each SETTINGS_SECTIONS as section (section.id)}
+        {#each visibleSettingsSections as section (section.id)}
           <button
             type="button"
             class="settings-index-row"
@@ -2735,11 +2755,15 @@
         <section
           id="storage"
           class="settings-section"
-          hidden={activeTab !== "storage"}
+          hidden={activeTab !== "storage" || !storageFeatureOn}
         >
           <h2>Storage</h2>
-          {#if activeTab === "storage"}
-            <StorageSettingsPane {adapter} showHeading={false} />
+          {#if activeTab === "storage" && storageFeatureOn}
+            <StorageSettingsPane
+              {adapter}
+              showHeading={false}
+              onfeaturedisabled={() => (storageFeatureOn = false)}
+            />
           {/if}
         </section>
 

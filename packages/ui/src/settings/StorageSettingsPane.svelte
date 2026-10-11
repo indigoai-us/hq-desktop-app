@@ -68,14 +68,19 @@
   } from "./storage-model.js";
 
   import type { StorageHoldingRef } from "@hq/platform";
+  import { isStorageFeatureDisabled } from "./storage-feature.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
     /** Off where the host page already titles the section. */
     showHeading?: boolean;
+    /** The CLI refused with `feature_disabled`: the host hides Storage. */
+    onfeaturedisabled?: () => void;
   }
 
-  let { adapter = null, showHeading = true }: Props = $props();
+  let { adapter = null, showHeading = true, onfeaturedisabled }: Props = $props();
+  /** Set when `hq storage` says the hq-storage flag is off for this person. */
+  let featureDisabled = $state(false);
 
   /** "this Mac" / "this PC" / "this computer". */
   let hostNoun = $state(hostComputerNoun());
@@ -233,6 +238,12 @@
       localCutoff = null;
       cloudCutoffs = {};
     } else {
+      if (isStorageFeatureDisabled(res.message)) {
+        // Allowlist gate, fail closed: render nothing and let the host hide the entry.
+        featureDisabled = true;
+        onfeaturedisabled?.();
+        return;
+      }
       console.error("storage status failed:", res.message);
       loadError = res.message ?? "error";
     }
@@ -367,7 +378,9 @@
 </script>
 
 <div class="storage-pane" data-testid="settings-storage-pane">
-  {#if !api}
+  {#if featureDisabled}
+    <!-- hq-storage is off for this person: nothing to show. -->
+  {:else if !api}
     <UnavailableNote
       label="Storage"
       message="Backup storage is managed from the HQ desktop app."

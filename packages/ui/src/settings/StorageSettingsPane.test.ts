@@ -319,13 +319,122 @@ describe("Settings › Storage pane", () => {
   });
 });
 
+/** Adapter whose identity answers the hq-storage flag per company. */
+function gatedAdapter(
+  storage: Partial<StorageMock> | null,
+  opts: {
+    rows?: Record<string, unknown>[] | "fail";
+    flag?: (flag: string, companyUid: string) => Promise<boolean>;
+  } = {},
+): PlatformAdapter {
+  const rows = opts.rows ?? [
+    { slug: "indigo", cloudUid: "cmp_indigo01", membershipStatus: "active", role: "owner" },
+  ];
+  return {
+    isAvailable: () => false,
+    storage: storage ?? undefined,
+    identity: {
+      listWorkspaces: async () =>
+        rows === "fail" ? { ok: false, code: "cloud-unreachable", message: "x" } : { ok: true, value: rows },
+      hasCompanyFeature:
+        opts.flag ?? (async (flag: string, uid: string) => flag === "hq-storage" && uid === "cmp_indigo01"),
+    },
+  } as unknown as PlatformAdapter;
+}
+
+async function mountShell(a: PlatformAdapter): Promise<void> {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  component = mount(ShellSettings, { target: host, props: { adapter: a } });
+  await settle();
+}
+
+describe("Settings › Storage hq-storage gate (Indigo-only, fails closed)", () => {
+  const pending = { status: () => new Promise<never>(() => {}) };
+
+  it("is hidden when the flag is off for every company", async () => {
+    await mountShell(gatedAdapter(pending, { flag: async () => false }));
+    expect(q("settings-nav-storage")).toBeNull();
+  });
+
+  it("is hidden when the flag read rejects", async () => {
+    await mountShell(
+      gatedAdapter(pending, {
+        flag: async () => {
+          throw new Error("registry down");
+        },
+      }),
+    );
+    expect(q("settings-nav-storage")).toBeNull();
+  });
+
+  it("is hidden when memberships cannot be read", async () => {
+    await mountShell(gatedAdapter(pending, { rows: "fail" }));
+    expect(q("settings-nav-storage")).toBeNull();
+  });
+
+  it("ignores pending invites and local-only workspaces", async () => {
+    const flag = vi.fn(async () => true);
+    await mountShell(
+      gatedAdapter(pending, {
+        rows: [
+          { slug: "indigo", cloudUid: "cmp_indigo01", membershipStatus: "pending" },
+          { slug: "local", cloudUid: null, membershipStatus: null },
+        ],
+        flag,
+      }),
+    );
+    expect(flag).not.toHaveBeenCalled();
+    expect(q("settings-nav-storage")).toBeNull();
+  });
+
+  it("is shown when the flag is on for one of the person's companies", async () => {
+    const flag = vi.fn(async (_flag: string, uid: string) => uid === "cmp_indigo01");
+    await mountShell(
+      gatedAdapter(pending, {
+        rows: [
+          { slug: "acme", cloudUid: "cmp_acme0001", membershipStatus: "active" },
+          { slug: "indigo", cloudUid: "cmp_indigo01", membershipStatus: "active" },
+        ],
+        flag,
+      }),
+    );
+    expect(flag).toHaveBeenCalledWith("hq-storage", "cmp_indigo01");
+    expect(flag).toHaveBeenCalledWith("hq-storage", "cmp_acme0001");
+    expect(q("settings-nav-storage")).not.toBeNull();
+  });
+
+  it("hides the entry and the page when the CLI refuses with feature_disabled", async () => {
+    await mountShell(
+      gatedAdapter({
+        status: async () => ({ ok: false, code: "error", message: "storage-feature-disabled" }) as never,
+      }),
+    );
+    const nav = q("settings-nav-storage") as HTMLButtonElement | null;
+    expect(nav).not.toBeNull();
+    nav!.click();
+    await settle();
+    expect(q("settings-storage-error")).toBeNull();
+    expect(q("settings-storage-pane")).toBeNull();
+    expect(q("settings-nav-storage")).toBeNull();
+  });
+
+  it("the pane renders nothing on a feature_disabled refusal", async () => {
+    await render({
+      status: async () => ({ ok: false, code: "error", message: "storage-feature-disabled" }) as never,
+    });
+    expect(q("settings-storage-error")).toBeNull();
+    expect(q("settings-storage-pane")?.textContent?.trim()).toBe("");
+  });
+});
+
 describe("Settings › Storage in the settings list", () => {
-  it("is a nav item when the host has the storage group", async () => {
+  it("is a nav item when the host has the storage group and the flag is on", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(ShellSettings, {
       target: host,
-      props: { adapter: adapter({ status: () => new Promise(() => {}) }) },
+      props: { adapter: gatedAdapter({ status: () => new Promise(() => {}) }) },
     });
     await settle();
     const nav = q("settings-nav-storage") as HTMLButtonElement | null;
@@ -338,7 +447,7 @@ describe("Settings › Storage in the settings list", () => {
   it("is hidden when the host cannot manage storage", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
-    component = mount(ShellSettings, { target: host, props: { adapter: adapter(null) } });
+    component = mount(ShellSettings, { target: host, props: { adapter: gatedAdapter(null) } });
     await settle();
     expect(q("settings-nav-storage")).toBeNull();
   });
