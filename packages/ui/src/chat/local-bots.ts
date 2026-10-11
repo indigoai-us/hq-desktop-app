@@ -197,10 +197,40 @@ export function localBotPresence(
  * treated as fine in that case: flashing "is starting up" over a bot that is
  * answering messages reads as broken, and the next listing settles it.
  */
-export function localBotNeedsOfflineNotice(bot: LocalBotRow | null | undefined): boolean {
+export function localBotNeedsOfflineNotice(
+  bot: LocalBotRow | null | undefined,
+  opts: { startingSinceMs?: number | null; nowMs?: number } = {},
+): boolean {
   if (!bot || bot.online === true) return false;
   if (bot.online === null && bot.processAlive && bot.state !== "failed" && !bot.promotionHold) return false;
+  if (localBotInStartupGrace(bot, opts.startingSinceMs ?? null, opts.nowMs ?? Date.now())) return false;
   return true;
+}
+
+/**
+ * How long a starting bot may go without its first check-in before the
+ * conversation says anything. A bot the app or `hq packages install
+ * --start-bot` just started reaches HQ Cloud a few seconds after its launchd
+ * agent loads; until then HQ reports it offline. Telling the person a bot they
+ * just added is offline reads as broken, so a starting bot gets this long.
+ */
+export const LOCAL_BOT_STARTUP_GRACE_MS = 45_000;
+
+/**
+ * A bot is starting when its process is up or its launchd agent is loaded, it
+ * has not failed, and it is not held for promotion. `startingSinceMs` is when
+ * the app first saw it in that not-yet-online state; within the grace period
+ * no notice shows. A bot that never checks in still gets the notice after it.
+ */
+export function localBotInStartupGrace(
+  bot: LocalBotRow,
+  startingSinceMs: number | null,
+  nowMs: number,
+): boolean {
+  if (startingSinceMs === null) return false;
+  if (bot.state === "failed" || bot.promotionHold) return false;
+  if (!bot.processAlive && !bot.daemonLoaded) return false;
+  return nowMs - startingSinceMs < LOCAL_BOT_STARTUP_GRACE_MS;
 }
 
 /**

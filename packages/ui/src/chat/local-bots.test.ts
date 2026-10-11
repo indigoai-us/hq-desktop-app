@@ -16,6 +16,7 @@ import {
   localBotsAsContacts,
   localBotForRow,
   localBotNeedsOfflineNotice,
+  LOCAL_BOT_STARTUP_GRACE_MS,
   localBotOfflineNotice,
   localBotPresence,
 } from "./local-bots.js";
@@ -228,6 +229,27 @@ describe("localBotNeedsOfflineNotice", () => {
 
   it("nothing to show without a bot", () => {
     expect(localBotNeedsOfflineNotice(null)).toBe(false);
+  });
+
+  it("says nothing while a just-started bot has not checked in yet", () => {
+    // The owner, adding a pack: "for a second there was a little box that said
+    // the agency guide was offline right as it started up. That can't happen."
+    const t0 = 1_000_000;
+    const starting = bot({ online: false, processAlive: false, daemonLoaded: true, lastHeartbeatAt: null, state: "starting" });
+    expect(localBotNeedsOfflineNotice(starting, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(false);
+    const alive = bot({ online: false, processAlive: true, lastHeartbeatAt: null, state: "running" });
+    expect(localBotNeedsOfflineNotice(alive, { startingSinceMs: t0, nowMs: t0 + LOCAL_BOT_STARTUP_GRACE_MS - 1 })).toBe(false);
+  });
+
+  it("shows once a starting bot is past the grace period, or when it is not starting at all", () => {
+    const t0 = 1_000_000;
+    const alive = bot({ online: false, processAlive: true, state: "running" });
+    expect(localBotNeedsOfflineNotice(alive, { startingSinceMs: t0, nowMs: t0 + LOCAL_BOT_STARTUP_GRACE_MS })).toBe(true);
+    const stopped = bot({ online: false, processAlive: false, daemonLoaded: false });
+    expect(localBotNeedsOfflineNotice(stopped, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(true);
+    const failed = bot({ online: false, processAlive: true, state: "failed" });
+    expect(localBotNeedsOfflineNotice(failed, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(true);
+    expect(localBotNeedsOfflineNotice(alive)).toBe(true);
   });
 });
 

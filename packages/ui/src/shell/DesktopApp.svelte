@@ -727,6 +727,7 @@
     busyLocalBotUids,
     isAlreadyExistsFailure,
     LOCAL_BOT_BUSY_POLL_MS,
+    LOCAL_BOT_STARTUP_GRACE_MS,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
     localBotInCompany,
@@ -4013,7 +4014,40 @@
     if (key) tenantStorage.setItem(key, "1");
     setupFinaleDismissedAt = Date.now();
   }
-  const selectedLocalBotOffline = $derived(localBotNeedsOfflineNotice(selectedLocalBot));
+  /**
+   * When the app first saw each local bot not yet online, by agent uid; dropped
+   * once HQ reports it online. A bot that was just started (a pack install, a
+   * restart) reaches HQ Cloud a few seconds later, and the offline notice waits
+   * out LOCAL_BOT_STARTUP_GRACE_MS from this moment instead of flashing.
+   */
+  let localBotStartingSince = $state<Record<string, number>>({});
+  let localBotGraceClock = $state(Date.now());
+  $effect(() => {
+    const bots = localBots;
+    untrack(() => {
+      const now = Date.now();
+      const next: Record<string, number> = {};
+      for (const b of bots) {
+        if (b.online === true) continue;
+        next[b.agentUid] = localBotStartingSince[b.agentUid] ?? now;
+      }
+      localBotStartingSince = next;
+    });
+  });
+  $effect(() => {
+    const since = selectedLocalBot ? localBotStartingSince[selectedLocalBot.agentUid] : undefined;
+    if (since === undefined) return;
+    const wait = since + LOCAL_BOT_STARTUP_GRACE_MS - Date.now();
+    if (wait <= 0) return;
+    const timer = setTimeout(() => { localBotGraceClock = Date.now(); }, wait + 50);
+    return () => clearTimeout(timer);
+  });
+  const selectedLocalBotOffline = $derived(
+    localBotNeedsOfflineNotice(selectedLocalBot, {
+      startingSinceMs: selectedLocalBot ? (localBotStartingSince[selectedLocalBot.agentUid] ?? null) : null,
+      nowMs: Math.max(localBotGraceClock, Date.now()),
+    }),
+  );
   /**
    * The open bot's coding tool needs a new sign-in (`hq bot list` reports it):
    * the bot has paused, so the conversation says so above the composer and
