@@ -102,6 +102,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   closeAgentDetail: "none",
   openAgentFromHeader: "none",
   openProfileForAuthor: "none",
+  // The You hover card: back to the open conversation (push) for your
+  // profile panel, or Profile settings when no conversation is open.
+  openSelfProfile: "push",
   applyCardFocus: "none",
   navigateToEntryTarget: "push",
   applyCardActionFailure: "none",

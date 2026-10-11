@@ -2,6 +2,8 @@
   import RailIcon from "../../common/button/RailIcon.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
+  import ProfileBadges from "../../badges/ProfileBadges.svelte";
+  import type { EarnedBadge, ResolvedBadge } from "../../badges/badge-catalog.js";
   /**
    * 340 px bot profile. Follows the Messages profile pane rhythm
    * (MemberProfilePanel): 12px 14px header with a hairline, 13px text,
@@ -42,6 +44,12 @@
     paused?: boolean;
     busy?: boolean;
     actionError?: string | null;
+    /** Earned accomplishment badges; none hides the section. */
+    badges?: readonly EarnedBadge[];
+    /** Opens a badge's detail view. */
+    onbadge?: (badge: ResolvedBadge) => void;
+    /** Opens the Badges page. */
+    onbadges?: () => void;
     onclose?: () => void;
     onmessage?: () => void;
     onsession?: () => void;
@@ -65,6 +73,9 @@
     paused = false,
     busy = false,
     actionError = null,
+    badges = [],
+    onbadge,
+    onbadges,
     onclose,
     onmessage,
     onsession,
@@ -169,6 +180,7 @@
           {/if}
         </div>
       </section>
+      <ProfileBadges {badges} onselect={onbadge} onseeall={onbadges} />
       <section class="g">
         <div class="k">Runtime {#if snapshot.runtimeVersion}<span class="count">{snapshot.runtimeVersion}</span>{/if} <button type="button" class="link" data-testid="bot-profile-edit-runtime" onclick={() => onedit?.("runtime")}><RailIcon name="pencil" />Edit</button></div>
         <div class="kv">

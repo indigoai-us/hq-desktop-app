@@ -1,10 +1,21 @@
 <script lang="ts">
   import RailIcon from "../../common/button/RailIcon.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
+  import IdentityMark from "../../chat/messaging/IdentityMark.svelte";
+  import ProfileBadges from "../../badges/ProfileBadges.svelte";
+  import type { EarnedBadge, ResolvedBadge } from "../../badges/badge-catalog.js";
   import { PROFILE_PANE_WIDTH, profilePhase, type UserProfileSnapshot } from "./profile-pane-model.js";
 
   interface Props {
     snapshot: UserProfileSnapshot | null;
+    /** The person's uid (`prs_*`), for the tier mark on their picture. */
+    personUid?: string | null;
+    /** Earned accomplishment badges; none hides the section. */
+    badges?: readonly EarnedBadge[];
+    /** Opens a badge's detail view. */
+    onbadge?: (badge: ResolvedBadge) => void;
+    /** Opens the Badges page. */
+    onbadges?: () => void;
     onclose?: () => void;
     onmessage?: () => void;
     onatlas?: () => void;
@@ -12,9 +23,8 @@
     onmanage?: () => void;
   }
 
-  let { snapshot, onclose, onmessage, onatlas, onmanage }: Props = $props();
+  let { snapshot, personUid = null, badges = [], onbadge, onbadges, onclose, onmessage, onatlas, onmanage }: Props = $props();
   const phase = $derived(profilePhase(snapshot?.name));
-  const initials = $derived((snapshot?.name ?? "?").slice(0, 2).toUpperCase());
 </script>
 
 <aside
@@ -36,7 +46,8 @@
   {:else}
     <div class="body">
       <div class="idn">
-        <span class="av" aria-hidden="true">{initials}{#if snapshot.live}<i class="ld"></i>{/if}</span>
+        <!-- The same mark as the timeline, so a person looks the same everywhere. -->
+        <span class="av" aria-hidden="true"><IdentityMark kind="person" label={snapshot.name} {personUid} size="large" />{#if snapshot.live}<i class="ld"></i>{/if}</span>
         <div>
           <div class="nm">{snapshot.name}</div>
           {#if snapshot.email}<div class="em">{snapshot.email}</div>{/if}
@@ -56,6 +67,7 @@
         {#if snapshot.localTime}<span class="k">Local time</span><span>{snapshot.localTime}</span>{/if}
         <span class="k">Last seen</span><span>{snapshot.lastSeen}</span>
       </div>
+      <ProfileBadges {badges} onselect={onbadge} onseeall={onbadges} />
       {#if snapshot.bots.length}
         <div class="k">Bots they own</div>
         {#each snapshot.bots as bot (bot.name)}
@@ -99,13 +111,10 @@
   .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--v4-text-1); }
   .body { overflow: auto; padding: 24px 20px; min-height: 0; }
   .idn { display: flex; gap: 12px; align-items: center; }
-  .av {
-    width: 48px; height: 48px; border-radius: 50%; position: relative; flex: none;
-    display: grid; place-items: center; font-weight: 500;
-    background: var(--v4-control-bg); color: var(--v4-text-1);
-  }
+  .av { position: relative; flex: none; display: block; line-height: 0; }
   .ld {
-    position: absolute; right: 0; bottom: 0; width: 11px; height: 11px; border-radius: 50%;
+    /* Top right: the bottom right holds the tier mark (badges/TierMark). */
+    position: absolute; right: 0; top: 0; width: 11px; height: 11px; border-radius: 50%;
     background: var(--v4-ok); border: 2px solid var(--v4-ground, var(--side-bg));
   }
   .nm { font-size: 20px; line-height: 1.25; font-weight: 500; }
