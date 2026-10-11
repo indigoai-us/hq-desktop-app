@@ -387,6 +387,26 @@ describe("visual first run, flag on", () => {
     );
   });
 
+  it("a dead login replaced in a terminal: back in the window, HQ checks again and creates the assistant", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const answers = [ok({ ok: false, class: "signed-out" })];
+    const probe = vi.fn(async () => answers.shift() ?? ok({ ok: true, class: null }));
+    const { platform } = adapter({ create, flag: true, probe });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Popcorn");
+    pressEnter();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("signIn"));
+    expect(create).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ intro: firstRunIntro({ name: "Popcorn", runtime: "claude" }) }),
+    );
+  });
+
   it.each([
     ["fails for another reason", async () => ok({ ok: false, class: "transient" })],
     ["could not run", async () => failure("unavailable", "probe exited with status 1")],

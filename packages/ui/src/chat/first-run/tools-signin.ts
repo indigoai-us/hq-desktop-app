@@ -419,6 +419,12 @@ export interface SignInChecker {
   signedIn(tool: SignInTool): void;
   /** Whether Sign in must replace a stored login (log out, then in). */
   needsForce(tool: SignInTool): boolean;
+  /**
+   * The person asked to check again (Check again, Try again, back in the
+   * window): a signed-out verdict is dropped, so the next readiness read
+   * checks the stored login afresh (it may have been replaced in a terminal).
+   */
+  recheck(): void;
   current(): ToolSignInChecks;
   dispose(): void;
 }
@@ -500,6 +506,12 @@ export function createSignInChecker(options: SignInCheckerOptions): SignInChecke
       set(tool, "passed");
     },
     needsForce: (tool) => checks[tool] === "signedOut",
+    recheck() {
+      if (disposed) return;
+      for (const tool of SIGN_IN_TOOLS) {
+        if (checks[tool] === "signedOut") set(tool, undefined);
+      }
+    },
     current: () => checks,
     dispose() {
       disposed = true;

@@ -2860,6 +2860,9 @@
    * ready, and Next would blink enabled on a runtime that cannot host a bot.
    */
   async function recheckLocalBotRuntimes(): Promise<void> {
+    // A login the first run's check found dead may have been replaced since
+    // (a terminal sign-in): check the stored login again on this read.
+    firstRunSignInChecker.recheck();
     await loadLocalBotRuntimeReady(true);
   }
   async function loadLocalBotWorkers(): Promise<void> {
@@ -3559,7 +3562,8 @@
     const { team, apps } = firstRunSettled;
     // What does not fit the kickoff goes later as a note (firstRunKickoffCarry).
     // The hello and the kickoff say "signed in" only when a real turn worked.
-    const signInChecked = checks[runtime as SignInTool] === "passed";
+    // A runtime the first run does not check (not Claude Code or Codex) keeps today's words.
+    const signInChecked = !(runtime in checks) || checks[runtime as SignInTool] === "passed";
     const carry = firstRunKickoffCarry(
       { name: displayName, runtime, toolsReady, signInChecked, imported, team, apps },
       { noun },

@@ -369,6 +369,28 @@ describe("the real sign-in check", () => {
     expect(c.current()).toEqual({ claude: "passed" });
   });
 
+  it("checking again after a sign-in elsewhere (a terminal) drops a signed-out verdict and checks afresh", async () => {
+    const answers = [ok({ ok: false, class: "signed-out" }), ok({ ok: true })];
+    const probe = vi.fn(async () => answers.shift());
+    const { c } = checker(probe);
+    c.sync(STORED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.current()).toEqual({ claude: "signedOut" });
+    // Still stored, so a plain read again does not check twice.
+    c.sync(STORED);
+    expect(probe).toHaveBeenCalledTimes(1);
+    c.recheck();
+    expect(c.current()).toEqual({});
+    c.sync(STORED);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(c.current()).toEqual({ claude: "passed" });
+    expect(toolRowKinds({ claude: IN, codex: OUT }, STORED, null, c.current()).claude).toBe("signedIn");
+    // A passed verdict is kept on a recheck: no extra turn.
+    c.recheck();
+    expect(c.current()).toEqual({ claude: "passed" });
+  });
+
   it("without checks (a host that runs none) nothing changes", () => {
     expect(checkedReadiness(STORED, null)).toBe(STORED);
     expect(toolRowKinds({ claude: IN, codex: OUT }, STORED, null, null).claude).toBe("signedIn");
