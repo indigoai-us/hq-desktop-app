@@ -25,13 +25,27 @@ const BOTS: EarnedBadge[] = [
   { id: 'shipit', tier: 1, earnedAt: '2026-09-22' },
 ];
 
+/**
+ * The honors badges (OG, Captain, Patient Zero, Core Builder) go to named
+ * people, not to a random mix: here, only Corey Epstein has them, so the
+ * Legendary tier and Core Builder's fourth level can be seen in the harness.
+ */
+const HONORS: Readonly<Record<string, EarnedBadge[]>> = {
+  'corey epstein': [
+    { id: 'og', tier: 'L', earnedAt: '2026-10-11' },
+    { id: 'captain', tier: 'L', earnedAt: '2026-10-11' },
+    { id: 'patientzero', tier: 'L', earnedAt: '2026-10-11' },
+    { id: 'corebuilder', tier: 'L', earnedAt: '2026-10-11' },
+  ],
+};
+
 function hash(s: string): number {
   let h = 2166136261;
   for (const ch of s) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
   return h >>> 0;
 }
 
-/** A badge's level as a number: Bronze 1 to Gold 3 (Founding Member and Founder are Gold). */
+/** A badge's level as a number: Bronze 1 to Gold 3, Legendary 4 (Founding Member and Founder are Gold). */
 export function badgeLevel(b: EarnedBadge): number {
   if (b.id === 'founding' || b.id === 'founder') return 3;
   return b.tier === 'L' ? 4 : (b.tier ?? 1);
@@ -64,7 +78,7 @@ export const sampleBadges: BadgeSource = ({ kind, name }) => {
   // Always the badge at their top level, then a mix of the rest by name.
   const lead = allowed.find((b) => badgeLevel(b) === top) ?? allowed[0]!;
   const rest = allowed.filter((b) => b !== lead && ((h >> PEOPLE.indexOf(b)) & 1) === 1);
-  return [lead, ...rest];
+  return [...(HONORS[key] ?? []), lead, ...rest];
 };
 
 /**
@@ -84,6 +98,7 @@ const PROGRESS: BadgeProgress[] = [
   { id: 'closer', current: 7, target: 10, unit: 'stories' },
   { id: 'onfire', current: 4, target: 7, unit: 'days' },
   { id: 'bughunter', current: 1, target: 3, unit: 'reports' },
+  { id: 'corebuilder', current: 0, target: 1, unit: 'PRs' },
 ];
 
 export const sampleProgress: BadgeProgressSource = () => PROGRESS;

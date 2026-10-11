@@ -83,6 +83,24 @@ describe("reading the payload", () => {
     ]);
   });
 
+  it("takes Legendary for a badge with a fourth level, and still drops it for three-level badges", () => {
+    const rows = (tier: 1 | 2 | 3 | "L") => ({ ...PAYLOAD, badges: [
+      { id: "corebuilder", tier, earnedAt: "2026-10-10T10:00:00.000Z" },
+      { id: "liftoff", tier, earnedAt: "2026-10-09T10:00:00.000Z" },
+    ] });
+    expect(earnedFromPayload(rows("L"))).toEqual([{ id: "corebuilder", tier: "L", earnedAt: "2026-10-10T10:00:00.000Z" }]);
+    expect(earnedFromPayload(rows(2)).map((b) => [b.id, b.tier])).toEqual([["corebuilder", 2], ["liftoff", 2]]);
+  });
+
+  it("draws the single-level honors badges at Legendary whatever the server sends", () => {
+    const payload = { ...PAYLOAD, badges: [
+      { id: "og", tier: 1 as const, earnedAt: "2026-10-10T10:00:00.000Z" },
+      { id: "captain", tier: "L" as const, earnedAt: "2026-10-10T10:00:00.000Z" },
+      { id: "patientzero", tier: 3 as const, earnedAt: "2026-10-10T10:00:00.000Z" },
+    ] };
+    expect(earnedFromPayload(payload).map((b) => b.tier)).toEqual(["L", "L", "L"]);
+  });
+
   it("keeps progress toward known badges not yet earned", () => {
     expect(progressFromPayload(PAYLOAD, earnedFromPayload(PAYLOAD))).toEqual([
       { id: "fleet", current: 0, target: 1, unit: "agents" },

@@ -48,6 +48,30 @@ describe("the story", () => {
     expect([...STORY_IDS].sort()).toEqual(BADGES.map((b) => b.id).sort());
   });
 
+  it("tells the honors stories in every voice", () => {
+    const honor = (id: string): ResolvedBadge => ({ def: BADGE_BY_ID[id], tier: "L", earnedAt: "2026-10-11" });
+    expect(badgeStory(honor("og"))?.did).toBe("You were on the team that built HQ from day one.");
+    expect(badgeStory(honor("og"), "Corey Epstein")?.did).toBe("Corey was on the team that built HQ from day one.");
+    expect(badgeStory(honor("og"), null, "first")?.did).toBe("I was on the team that built HQ from day one.");
+    expect(badgeStory(honor("captain"))?.did).toBe("You lead HQ.");
+    expect(badgeStory(honor("captain"), "Corey Epstein")?.did).toBe("Corey leads HQ.");
+    expect(badgeStory(honor("captain"), null, "first")?.did).toBe("I lead HQ.");
+    expect(badgeStory(honor("patientzero"), "Corey Epstein")?.did).toBe("Corey was the first person ever to run HQ, before it had a name.");
+  });
+
+  it("tells Core Builder's four levels with the same numbers", () => {
+    const core = (tier: BadgeTier): ResolvedBadge => ({ def: BADGE_BY_ID.corebuilder, tier, earnedAt: "2026-10-11" });
+    expect(([1, 2, 3, "L"] as BadgeTier[]).map((t) => badgeStory(core(t))?.did)).toEqual([
+      "You got your first pull request merged into HQ core.",
+      "You got 10 pull requests merged into HQ core.",
+      "You got 100 pull requests merged into HQ core.",
+      "You got 500 pull requests merged into HQ core.",
+    ]);
+    expect(badgeStory(core(1), "Maya Chen")?.did).toBe("Maya got their first pull request merged into HQ core.");
+    // A three-level badge at Legendary still reads its Gold line.
+    expect(badgeStory(liftoff("L"))?.did).toBe("You put 250 deploys live.");
+  });
+
   it("speaks to you on your own card and about the person on theirs", () => {
     expect(storyVoice(null)).toEqual({ Subject: "You", subject: "you", possessive: "your", their: "your", Possessive: "Your" });
     expect(storyVoice("Maya Chen")).toMatchObject({ Subject: "Maya", possessive: "Maya's", their: "their" });
