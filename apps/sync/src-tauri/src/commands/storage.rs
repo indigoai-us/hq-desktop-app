@@ -38,9 +38,15 @@ pub fn is_feature_disabled(stdout: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Reads (status, dry runs) should be quick; cap them so the pane never spins
-/// forever on a stuck CLI.
-const READ_TIMEOUT: Duration = Duration::from_secs(120);
+/// `hq storage status`. A cold status lists every cloud file version of each
+/// company (about 2 minutes for 2.4M versions; the CLI then keeps the figures
+/// for 15 minutes), so the cap leaves room for that while still ending a
+/// stuck CLI.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Dry runs never use cached figures (a prune preview lists every cloud version
+/// live and adds the local estimate), so they get a longer cap than status.
+const READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Real prune, offload and fetch move data and can take a while, but still
 /// get a ceiling.
@@ -48,9 +54,10 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// How long `run_hq` waits for the given `hq` argv before giving up.
 pub fn timeout_for(args: &[OsString]) -> Duration {
-    let is_read = args.iter().any(|a| a == "--dry-run")
-        || args.get(1).is_some_and(|a| a == "status");
-    if is_read {
+    if args.get(1).is_some_and(|a| a == "status") {
+        return STATUS_TIMEOUT;
+    }
+    if args.iter().any(|a| a == "--dry-run") {
         READ_TIMEOUT
     } else {
         WRITE_TIMEOUT
@@ -859,7 +866,7 @@ mod tests {
 
     #[test]
     fn timeout_is_short_for_reads_and_bounded_for_writes() {
-        assert_eq!(timeout_for(&status_args()), READ_TIMEOUT);
+        assert_eq!(timeout_for(&status_args()), STATUS_TIMEOUT);
         assert_eq!(timeout_for(&offload_args(true)), READ_TIMEOUT);
         assert_eq!(timeout_for(&offload_args(false)), WRITE_TIMEOUT);
         let req = PruneRequest {
@@ -868,7 +875,10 @@ mod tests {
         };
         assert_eq!(timeout_for(&prune_args(&req, true).unwrap()), READ_TIMEOUT);
         assert_eq!(timeout_for(&prune_args(&req, false).unwrap()), WRITE_TIMEOUT);
+        assert!(STATUS_TIMEOUT < READ_TIMEOUT);
         assert!(READ_TIMEOUT < WRITE_TIMEOUT);
+        // A cold status on a large vault takes about 2 minutes.
+        assert!(STATUS_TIMEOUT >= Duration::from_secs(4 * 60));
     }
 
     #[tokio::test]
