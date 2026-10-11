@@ -2972,7 +2972,7 @@
     // A kickoff turn starts with no message from the person, so nothing else
     // would show "is thinking…" while the bot works on it. A bot that was
     // already here runs no kickoff.
-    if (input.kickoff?.trim() && outcome !== "existing") {
+    if (input.kickoff?.trim() && outcome !== "existing" && outcome !== "adopted") {
       kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: label };
     }
     // Identity exists (the CLI returned a uid); the launch agent is installing.
@@ -3567,8 +3567,10 @@
   function adoptFirstRunAssistant(bot: SetupBotRef, outcome: "created" | "adopted" | "existing", name: string): void {
     if (firstRunCreatedBot?.agentUid === bot.agentUid) return;
     firstRunCreatedBot = bot;
+    // An assistant adopted or already here did not run this first run's
+    // kickoff: it gets what the takeover settled as a note.
     if (outcome === "created") firstRunCreatedUids.add(bot.agentUid);
-    else if (outcome === "existing") sendFirstRunHandoffNotice(bot, name);
+    else sendFirstRunHandoffNotice(bot, name);
     // A scan that finished while the create ran: its kickoff missed it.
     deliverFirstRunImport();
     // The takeover closed while the create ran: the later screens' note.
@@ -4806,13 +4808,41 @@
     botRestoreDismissed = true;
     rememberBotRestoreDismissed(botMachineMemory);
   }
+  /**
+   * "Restore all" without the assistant: `hq bot restore` takes no names, so
+   * the other bots come back one at a time through `hq bot adopt`, and the
+   * answer reads like a restore.
+   */
+  async function restoreEachExceptAssistant(): Promise<
+    { ok: true; value: BotRestoreResult } | { ok: false; message?: string }
+  > {
+    const adoptOne = adapter.bots?.adopt;
+    if (!adoptOne) return { ok: false };
+    const rows: BotRestoreResult["bots"] = [];
+    for (const bot of botsMissingHere.filter((row) => !isAssistantRecord(row))) {
+      const result = await adoptOne(bot.name);
+      if (!result.ok && result.message) console.warn("[hq-desktop] bot adopt failed:", result.message);
+      rows.push({ name: bot.name, agentUid: bot.agentUid, action: result.ok ? "restored" : "failed", detail: "" });
+    }
+    const restored = rows.filter((row) => row.action === "restored").length;
+    return {
+      ok: true,
+      value: { ok: true, dryRun: false, restored, repaired: 0, skipped: 0, failed: rows.length - restored, bots: rows },
+    };
+  }
   async function restoreMyBots(): Promise<void> {
     const restore = adapter.bots?.restore;
     if (!restore || botRestoreBusy) return;
     botRestoreBusy = true;
     botRestoreError = null;
-    // It can bring the assistant back too: never alongside its owner.
-    const result = await assistantOwner.exclusive(() => restore({ all: true }));
+    // It can bring the assistant back too: never alongside its owner. On a
+    // computer that has not run setup the assistant is the first run's (or
+    // #welcome's) to bring, so the others come back one by one without it.
+    const assistantMissing = botsMissingHere.some((bot) => isAssistantRecord(bot));
+    const result =
+      assistantMissing && !(welcomeSetupRun || visualFirstRunFinished)
+        ? await restoreEachExceptAssistant()
+        : await assistantOwner.exclusive(() => restore({ all: true }), { touchesAssistant: assistantMissing });
     botRestoreBusy = false;
     if (!result.ok || !result.value) {
       const raw = (result.ok ? "" : result.message) ?? "";

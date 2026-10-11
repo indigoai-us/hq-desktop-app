@@ -311,7 +311,7 @@ export const ASSISTANT_ROLE = "assistant";
 export function isAssistantSlug(text: string | null | undefined): boolean {
   const value = (text ?? "").trim().toLowerCase();
   if (!value) return false;
-  return value === SETUP_BOT_NAME || /^setup-[a-z0-9]{6,12}$/.test(value);
+  return value === SETUP_BOT_NAME || /^setup-[a-z0-9]{8}$/.test(value);
 }
 
 /**

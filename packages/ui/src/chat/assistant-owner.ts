@@ -173,7 +173,13 @@ export type AssistantAttempt =
   | { state: "idle" }
   | { state: "running"; name: string | null }
   | { state: "done"; name: string | null; bot: SetupBotRef }
-  | { state: "failed"; name: string | null; reason: string };
+  | { state: "failed"; name: string | null; reason: string }
+  /**
+   * A recovery the app tried by itself (nobody asked) did not bring it back.
+   * Nobody is told "couldn't start" for it: the conversation's own notice and
+   * the Restore prompt are the honest surfaces.
+   */
+  | { state: "recover-failed" };
 
 /** Where the assistant stands, worked out from the bot list and the last attempt. */
 export type AssistantStatus =
@@ -195,6 +201,7 @@ export function assistantStatus(
   if (attempt.state === "running") return { state: "starting", name: attempt.name };
   if (attempt.state === "done") return { state: "ready", bot: attempt.bot };
   if (attempt.state === "failed") return { state: "failed", name: attempt.name, reason: attempt.reason };
+  // A background recovery that failed, or nothing tried yet.
   return { state: "absent" };
 }
 
@@ -242,7 +249,7 @@ export interface AssistantOwnerHost {
     couldNotStart(name: string | null): string;
   };
   onchange?(attempt: AssistantAttempt): void;
-  /** True while an operation runs or waits in the queue. */
+  /** True while an operation that may bring the assistant here runs or waits in the queue. */
   onbusy?(busy: boolean): void;
 }
 
@@ -285,7 +292,7 @@ export interface AssistantOwner {
    * Run another write on the assistant (a process start, a person-driven
    * adopt or restore) in the same queue, so it never overlaps a create.
    */
-  exclusive<T>(op: () => Promise<T>): Promise<T>;
+  exclusive<T>(op: () => Promise<T>, options?: { touchesAssistant?: boolean }): Promise<T>;
   /** The last attempt. */
   attempt(): AssistantAttempt;
   /** True while an operation runs or waits. */
@@ -296,15 +303,21 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
   let attempt: AssistantAttempt = { state: "idle" };
   let queue: Promise<unknown> = Promise.resolve();
   let pending = 0;
+  /** Queued or running operations that may create, adopt or start the assistant. */
+  let assistantOps = 0;
 
   const set = (next: AssistantAttempt): void => {
     attempt = next;
     host.onchange?.(next);
   };
 
-  function exclusive<T>(op: () => Promise<T>): Promise<T> {
+  function exclusive<T>(op: () => Promise<T>, options: { touchesAssistant?: boolean } = {}): Promise<T> {
+    const touches = options.touchesAssistant !== false;
     pending += 1;
-    if (pending === 1) host.onbusy?.(true);
+    if (touches) {
+      assistantOps += 1;
+      if (assistantOps === 1) host.onbusy?.(true);
+    }
     const run = queue.then(op, op);
     queue = run.then(
       () => undefined,
@@ -312,7 +325,10 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
     );
     return run.finally(() => {
       pending -= 1;
-      if (pending === 0) host.onbusy?.(false);
+      if (touches) {
+        assistantOps -= 1;
+        if (assistantOps === 0) host.onbusy?.(false);
+      }
     });
   }
 
@@ -364,7 +380,8 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
       // never taken (its conversation says what starting it here costs), and
       // so is one only the cloud roster shows.
       const listed = host.cloudAssistant?.() ?? null;
-      if (listed?.adoptable) return adoptHere(label);
+      // Brought back as it is: a failure never names it with a picked name.
+      if (listed?.adoptable) return adoptHere(null);
       if (listed) return keep(listed.ref, null, cliOwns);
       const cloud = (await host.findCloud?.()) ?? null;
       if (cloud) return keep(cloud, null, cliOwns);
@@ -404,7 +421,9 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
     set({ state: "running", name: null });
     const existing = await here();
     if (existing) return succeed(existing, null, "existing");
-    return adoptHere(null);
+    const result = await adoptHere(null);
+    if (!result.ok) set({ state: "recover-failed" });
+    return result;
   }
 
   function guarded(run: () => Promise<AssistantStartResult>, name: string | null): Promise<AssistantStartResult> {

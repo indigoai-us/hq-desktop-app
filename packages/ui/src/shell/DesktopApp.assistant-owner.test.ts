@@ -548,3 +548,78 @@ describe("the progress card's Retry goes through the owner (review fix 4)", () =
     expectNoSlug("the assistant's conversation after Retry");
   });
 });
+
+describe("round 2 review items", () => {
+  it("an adopted assistant gets the first run's handoff note and no kickoff thinking row (4)", async () => {
+    let here: LocalBotRow[] = [];
+    const { platform, sendDm } = adapter({
+      flag: true,
+      list: () => here,
+      create: async () => {
+        here = [localRow()];
+        return ok({ ok: true, outcome: "adopted", name: "setup", agentUid: ASSISTANT_UID });
+      },
+    });
+    boot(platform);
+    await nameAssistant("Hazel");
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalled());
+    const [to, , opts] = (sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string }]>)[0]!;
+    expect(to).toBe(ASSISTANT_UID);
+    expect(opts.idempotencyKey).toBe(`first-run-handoff:${ASSISTANT_UID}`);
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));
+    await settle(30);
+    expect(q('[data-testid="agent-thinking-row"]')).toBeNull();
+  });
+
+  it("Restore all leaves out the assistant before setup has run here (3)", async () => {
+    // No coding tool yet, so nothing comes back by itself and the prompt shows.
+    const { platform, restore, adopt } = adapter({
+      flag: false,
+      list: () => [],
+      remote: () => [remoteRow(), remoteRow({ name: "scout", agentUid: "agt_scout" })],
+    });
+    (platform as unknown as { sessions: { preflight: () => Promise<unknown> } }).sessions.preflight = async () =>
+      ok({
+        claudeAvailable: true,
+        claudeLoggedIn: false,
+        codexAvailable: false,
+        codexLoggedIn: false,
+        grokAvailable: false,
+        grokLoggedIn: false,
+      });
+    boot(platform);
+    const button = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="bot-restore-all"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    button.click();
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledWith("scout"));
+    await settle(20);
+    expect(restore, "the bulk restore would take the assistant").not.toHaveBeenCalled();
+    expect(adopt.mock.calls.map((call) => call[0])).toEqual(["scout"]);
+  });
+
+  it("a background recovery that fails shows no start error on #welcome (2)", async () => {
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    const { platform, adopt } = adapter({
+      list: () => [],
+      remote: () => [remoteRow()],
+      adopt: async () => ({ ok: false, reason: "error", message: "boom" }),
+    });
+    boot(platform);
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledTimes(1));
+    const welcome = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>(`[data-conversation-id="${SETUP_ROW_ID}"]`);
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    welcome.click();
+    await settle(30);
+    expect(q('[data-testid="setup-bot-error"]')).toBeNull();
+    expect(screenText()).not.toMatch(/couldn't start/i);
+  });
+});

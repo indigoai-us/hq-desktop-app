@@ -54,7 +54,7 @@ function host(over: Partial<AssistantOwnerHost> & { list?: () => LocalBotRow[] }
       rows = [row()];
       return { ok: true, agentUid: UID, outcome: null };
     }),
-    adopt: vi.fn(async () => {
+    adopt: vi.fn(async (): Promise<{ ok: true } | { ok: false; raw: string }> => {
       rows = [row()];
       return { ok: true as const };
     }),
@@ -351,5 +351,48 @@ describe("the owner", () => {
     release();
     await Promise.all([start, write]);
     expect(order).toEqual(["create finished", "adopt"]);
+  });
+});
+
+describe("round 2 review items", () => {
+  it("a failed adopt of the account's assistant never names it with a picked name (1)", async () => {
+    const { h } = host({ cloudAssistant: () => ({ ref: { agentUid: UID, handle: "setup" }, adoptable: true }) });
+    h.adopt.mockImplementation(async () => ({ ok: false as const, raw: "boom" }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const owner = createAssistantOwner(h);
+    const result = await owner.start({ nameIfNew: "Pickles" });
+    expect(result).toEqual({ ok: false, reason: "generic" });
+    expect(JSON.stringify(owner.attempt())).not.toContain("Pickles");
+    warn.mockRestore();
+  });
+
+  it("a background recovery that fails is not a start failure anyone is shown (2)", async () => {
+    const { h } = host();
+    h.adopt.mockImplementation(async () => ({ ok: false as const, raw: "boom" }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const owner = createAssistantOwner(h);
+    expect((await owner.recover()).ok).toBe(false);
+    expect(owner.attempt()).toEqual({ state: "recover-failed" });
+    expect(assistantStatus(owner.attempt(), null)).toEqual({ state: "absent" });
+    warn.mockRestore();
+  });
+
+  it("matches the cloud slug only as setup- plus exactly eight characters (5)", () => {
+    expect(personFacingAgentName("setup-ab12cd34")).toBe("Your assistant");
+    expect(personFacingAgentName("Setup-Helper")).toBe("Setup-Helper");
+    expect(personFacingAgentName("setup-abc123")).toBe("setup-abc123");
+    expect(assistantName({ cached: "Setup-Helper" })).toBe("Setup-Helper");
+    const rows = [{ personUid: "agt_helper", displayName: "Setup-Helper" }];
+    expect(withAssistantNames(rows, null, "personUid", "displayName")[0]!.displayName).toBe("Setup-Helper");
+  });
+
+  it("is busy only while an operation that may bring the assistant here is queued (6)", async () => {
+    const busy: boolean[] = [];
+    const { h } = host({ onbusy: (b: boolean) => busy.push(b) } as never);
+    const owner = createAssistantOwner(h);
+    await owner.exclusive(async () => "restore other bots", { touchesAssistant: false });
+    expect(busy).toEqual([]);
+    await owner.exclusive(async () => "start the assistant");
+    expect(busy).toEqual([true, false]);
   });
 });

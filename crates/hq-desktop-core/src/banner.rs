@@ -124,7 +124,7 @@ fn is_assistant_slug(name: &str) -> bool {
         return true;
     }
     match value.strip_prefix("setup-") {
-        Some(rest) => (6..=12).contains(&rest.len()) && rest.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+        Some(rest) => rest.len() == 8 && rest.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
         None => false,
     }
 }
@@ -151,6 +151,8 @@ mod tests {
         assert_eq!(dm_sender_name("Hazel"), "Hazel");
         assert_eq!(dm_sender_name("setup helper"), "setup helper");
         assert_eq!(dm_sender_name("setup-"), "setup-");
+        assert_eq!(dm_sender_name("Setup-Helper"), "Setup-Helper");
+        assert_eq!(dm_sender_name("setup-abc123"), "setup-abc123");
         assert_eq!(initials(&dm_sender_name("setup")), "YA");
     }
 
