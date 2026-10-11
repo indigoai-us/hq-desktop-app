@@ -3920,7 +3920,8 @@
     };
   });
   // A bot's own report that its sign-in works again (its paused retry ran a
-  // turn) is a sign-in that finished, wherever it was made.
+  // turn) is a sign-in that finished, wherever it was made. A restart clears
+  // the report too, so this check keeps the controller's restart window.
   let botsPausedOnSignIn = new Map<string, LocalBotRow["runtime"]>();
   $effect(() => {
     const next = new Map<string, LocalBotRow["runtime"]>();
@@ -3928,7 +3929,13 @@
     const before = botsPausedOnSignIn;
     botsPausedOnSignIn = next;
     for (const [uid, runtime] of before) {
-      if (!next.has(uid) && localBots.some((bot) => bot.agentUid === uid)) untrack(() => recheckRepairSignIn(runtime));
+      if (!next.has(uid) && localBots.some((bot) => bot.agentUid === uid)) {
+        untrack(() => {
+          if (runtime === "claude" || runtime === "codex" || runtime === "grok") {
+            void runtimeRepairController.recheckSignIn({ runtime, unspaced: true });
+          }
+        });
+      }
     }
   });
   /** The repair host for the open DM: only a local bot's DM draws repair cards. */

@@ -484,20 +484,23 @@
   /**
    * Tell the controller which repair cards this conversation draws, so a
    * sign-in finished anywhere else can turn a signed-out card fixed in place.
-   * A new signed-out card asks for a check at once (spaced by the controller),
-   * which catches a sign-in made before the conversation was opened.
+   * A signed-out card this view has not drawn before asks for a check at
+   * once (spaced by the controller), which catches a sign-in made before the
+   * conversation was opened. A refreshed page of the same messages does not.
    */
+  const repairCardsSeen = new Set<string>();
   $effect(() => {
     const host = runtimeRepair;
     if (!host) return;
-    let signedOut = false;
+    let newSignedOut = false;
     for (const msg of messages) {
       const repair = repairFor(msg);
       if (!repair) continue;
       host.controller.track(msg.eventId, repair);
-      if (repair.class === "signed-out") signedOut = true;
+      if (repair.class === "signed-out" && !repairCardsSeen.has(msg.eventId)) newSignedOut = true;
+      repairCardsSeen.add(msg.eventId);
     }
-    if (signedOut) void untrack(() => host.controller.recheckSignIn());
+    if (newSignedOut) void untrack(() => host.controller.recheckSignIn());
   });
 
   /** The person's failed message a repair card's Try again sends again, by its event id. */

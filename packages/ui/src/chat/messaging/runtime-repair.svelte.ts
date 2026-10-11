@@ -66,6 +66,16 @@ export interface RuntimeRepairDeps {
  */
 export const SIGN_IN_RECHECK_MIN_MS = 20_000;
 
+/**
+ * After a check turned a tool's cards fixed and the host restarted the bots
+ * paused on it, how long a new signed-out card from the bot is taken at its
+ * word. The check can pass while the bot's own run of the tool still fails
+ * to sign in; without this, each new card would be checked, turn fixed and
+ * restart the bot again, over and over. Inside the window a new card stays
+ * signed out (no automatic check), and the bots are restarted at most once.
+ */
+export const SIGN_IN_RESTART_WINDOW_MS = 120_000;
+
 /** Window event a screen sends when a coding tool's sign-in finished there (`detail.runtime`). */
 export const RUNTIME_SIGNED_IN_EVENT = "hq:runtime-signed-in";
 
@@ -118,6 +128,8 @@ export class RuntimeRepairController {
   readonly #forcedPending = new Set<RepairRuntime>();
   /** When each tool's last unforced sign-in check started. */
   readonly #lastRecheck = new Map<RepairRuntime, number>();
+  /** When a check last turned cards fixed and the host restarted the tool's bots. */
+  readonly #lastRestart = new Map<RepairRuntime, number>();
 
   constructor(deps: RuntimeRepairDeps) {
     this.#deps = deps;
@@ -173,9 +185,12 @@ export class RuntimeRepairController {
    * outside the app. Check each tool that still has a signed-out card (one
    * real check per tool) and turn its cards fixed in place when it passes.
    * A failing check leaves them as they are. `force` skips the spacing
-   * between checks; a host that heard of a finished sign-in passes it.
+   * between checks and the restart window; a host that heard of a finished
+   * sign-in passes it. `unspaced` skips only the spacing: the bot's own status
+   * saying its sign-in works again, which a restart also does, so it does not
+   * reopen the restart window.
    */
-  async recheckSignIn(options: { runtime?: RepairRuntime; force?: boolean } = {}): Promise<void> {
+  async recheckSignIn(options: { runtime?: RepairRuntime; force?: boolean; unspaced?: boolean } = {}): Promise<void> {
     const byRuntime = new Map<RepairRuntime, RepairPayload>();
     for (const [, payload] of this.#signedOutCards(options.runtime)) {
       if (!byRuntime.has(payload.runtime)) byRuntime.set(payload.runtime, payload);
@@ -189,7 +204,13 @@ export class RuntimeRepairController {
           return;
         }
         const now = this.#now();
-        if (!options.force && now - (this.#lastRecheck.get(runtime) ?? -Infinity) < SIGN_IN_RECHECK_MIN_MS) return;
+        const spaced = !options.force && !options.unspaced;
+        if (spaced && now - (this.#lastRecheck.get(runtime) ?? -Infinity) < SIGN_IN_RECHECK_MIN_MS) return;
+        // The bot failed to sign in again right after a check passed and it
+        // was restarted: its new card stays signed out until a sign-in is
+        // reported or the window is over.
+        const inRestartWindow = now - (this.#lastRestart.get(runtime) ?? -Infinity) < SIGN_IN_RESTART_WINDOW_MS;
+        if (!options.force && inRestartWindow) return;
         this.#lastRecheck.set(runtime, now);
         this.#rechecking.add(runtime);
         try {
@@ -197,6 +218,8 @@ export class RuntimeRepairController {
           const probe = await this.#probe(runtime, model);
           if (!probe.ok) return;
           if (!this.#confirmSignedIn(runtime)) return;
+          if (inRestartWindow) return;
+          this.#lastRestart.set(runtime, now);
           try {
             await this.#deps.onsignedin?.(runtime);
           } catch (error) {

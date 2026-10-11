@@ -4,6 +4,7 @@ import {
   RUNTIME_SIGNED_IN_EVENT,
   RuntimeRepairController,
   SIGN_IN_RECHECK_MIN_MS,
+  SIGN_IN_RESTART_WINDOW_MS,
   TRY_AGAIN_TEXT,
   announceRuntimeSignedIn,
   signedInRuntimeOf,
@@ -258,6 +259,38 @@ describe("RuntimeRepairController sign-in made somewhere else", () => {
     await first;
     expect(probe).toHaveBeenCalledTimes(2);
     expect(c.stateFor("evt_1")).toEqual({ phase: "fixed", action: "signIn" });
+  });
+
+  it("bounds the restart loop: a new signed-out card right after a restart stays signed out, and the bots restart once per window", async () => {
+    let clock = 0;
+    const onsignedin = vi.fn();
+    const probe = vi.fn(async () => ({ ok: true }));
+    const c = new RuntimeRepairController(deps({ probe, onsignedin, now: () => clock }));
+    c.track("evt_1", payload());
+    await c.recheckSignIn({ runtime: "claude", force: true });
+    expect(c.stateFor("evt_1").phase).toBe("fixed");
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+
+    // The check passed, yet the restarted bot fails to sign in and says so again.
+    clock += SIGN_IN_RECHECK_MIN_MS + 1;
+    c.track("evt_2", payload());
+    await c.recheckSignIn();
+    await c.recheckSignIn({ runtime: "claude", unspaced: true });
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(c.stateFor("evt_2")).toEqual({ phase: "offered" });
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+
+    // A sign-in the person reports still turns it fixed, without another restart.
+    await c.recheckSignIn({ runtime: "claude", force: true });
+    expect(c.stateFor("evt_2").phase).toBe("fixed");
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+
+    // Once the window is over, a new card is checked and the bots restarted again.
+    clock += SIGN_IN_RESTART_WINDOW_MS;
+    c.track("evt_3", payload());
+    await c.recheckSignIn();
+    expect(c.stateFor("evt_3").phase).toBe("fixed");
+    expect(onsignedin).toHaveBeenCalledTimes(2);
   });
 
   it("checks the model the bot is set to", async () => {

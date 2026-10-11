@@ -10,7 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
+import { ok, setJitterRandomForTests, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -19,6 +19,7 @@ import { requestConversation, takePendingConversation } from "../chat/pending-co
 import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import { announceRuntimeSignedIn } from "../chat/messaging/runtime-repair.svelte.js";
+import { LOCAL_BOTS_POLL_MS } from "../chat/local-bots.js";
 
 const BOT_UID = "agt_LOCAL000000000000000000001";
 
@@ -110,6 +111,8 @@ afterEach(async () => {
   window.localStorage?.clear?.();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
+  setJitterRandomForTests();
 });
 
 async function openBotDm(): Promise<void> {
@@ -301,6 +304,69 @@ describe("DesktopApp local bot sign-in", () => {
     await vi.waitFor(() => expect(card.dataset.phase).toBe("fixed"));
     expect(card.textContent).toContain("You’re all set");
     expect(loginStart).not.toHaveBeenCalled();
+  });
+
+  it("turns the card fixed when the bot's own status says its sign-in works again", async () => {
+    // Background polls are jittered; pin the draw so one period is exact.
+    setJitterRandomForTests(() => 0.5);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    rows = [bot({ runtimeSignIn: PAUSED })];
+    dm = [repairReply()];
+    await openBotDm();
+    const card = await vi.waitFor(() => {
+      const el = host.querySelector<HTMLElement>('[data-event-id="evt_repair"] [data-testid="runtime-repair-card"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    await vi.waitFor(() => expect(probe).toHaveBeenCalled());
+    await settle(20);
+    expect(card.dataset.phase).toBe("offered");
+
+    // Signed in somewhere HQ did not hear about; the bot's paused retry ran a
+    // turn and its status no longer says expired. No focus, no announcement.
+    probeOk = true;
+    rows = [bot()];
+    await vi.advanceTimersByTimeAsync(LOCAL_BOTS_POLL_MS + 1_000);
+    await vi.waitFor(() => expect(card.dataset.phase).toBe("fixed"));
+    expect(card.textContent).toContain("You’re all set");
+    expect(loginStart).not.toHaveBeenCalled();
+  });
+
+  it("a new expiry after a confirmed sign-in shows a fresh signed-out card, and the bot is not restarted again", async () => {
+    rows = [bot({ runtimeSignIn: PAUSED })];
+    // The restarted bot still cannot sign in: it pauses again, later.
+    start = vi.fn(async () => {
+      rows = [bot({ runtimeSignIn: { ...PAUSED, since: new Date(Date.now() + 1_000).toISOString() } })];
+      return ok({});
+    });
+    await openBotDm();
+    const slot = () => host.querySelector<HTMLElement>('[data-testid="bot-sign-in-card"] [data-testid="runtime-repair-card"]');
+    await vi.waitFor(() => expect(slot()).not.toBeNull());
+    await settle(20);
+    expect(slot()!.dataset.phase).toBe("offered");
+
+    probeOk = true;
+    announceRuntimeSignedIn("claude");
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    // The new pause is a new card on its problem, never the old "You're all set".
+    await vi.waitFor(() => {
+      expect(slot()).not.toBeNull();
+      expect(slot()!.dataset.phase).toBe("offered");
+    });
+    expect(slot()!.textContent).toContain("Claude Code is signed out");
+    expect(slot()!.textContent).not.toContain("You’re all set");
+    expect(cards()).toHaveLength(1);
+
+    // Coming back to the window inside the restart window checks nothing and
+    // restarts nothing: the card stays signed out for the person to act on.
+    const probes = probe.mock.calls.length;
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 30_000);
+    window.dispatchEvent(new Event("focus"));
+    await settle(20);
+    expect(probe.mock.calls.length).toBe(probes);
+    expect(slot()!.dataset.phase).toBe("offered");
+    expect(start).toHaveBeenCalledTimes(1);
+    noGrayBanner();
   });
 
   it("stays out of the way when the bot's sign-in is fine", async () => {

@@ -266,4 +266,42 @@ describe("ChannelConversation runtime repair cards", () => {
     expect(card()!.dataset.phase).toBe("fixed");
     expect(card()!.textContent).toContain("You’re all set");
   });
+
+  it("a new signed-out card right after a passing check and restart stays signed out instead of restarting the bot again", async () => {
+    const { invoke, calls } = fakeInvoke({ local_bots_probe: { ok: true } });
+    const onsignedin = vi.fn();
+    const controller = new RuntimeRepairController({
+      signIn: async () => false,
+      update: async () => false,
+      setModel: async () => false,
+      probe: (runtime, model) => invoke("local_bots_probe", { runtime, model: model ?? null }),
+      onsignedin,
+    });
+    render(thread({ v: 1, blocks: [block("signed-out", "signIn")] }), controller);
+    await settle();
+    expect(card()!.dataset.phase).toBe("fixed");
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+    const probes = calls.filter((c) => c.cmd === "local_bots_probe").length;
+    await unmount(component!);
+    component = null;
+    host.remove();
+
+    // The restarted bot still cannot sign in and posts a new signed-out card.
+    const again: ConversationMessageWire = {
+      eventId: "evt_repair_2",
+      fromPersonUid: BOT,
+      fromDisplayName: "Pickles",
+      body: "Claude Code is signed out on this Mac.",
+      createdAt: "2026-10-10T09:42:05.000Z",
+      direction: "in",
+      richContent: { v: 1, blocks: [block("signed-out", "signIn")] },
+    };
+    render([...thread({ v: 1, blocks: [block("signed-out", "signIn")] }), again], controller);
+    await settle();
+    const second = host.querySelector<HTMLElement>('[data-event-id="evt_repair_2"] [data-testid="runtime-repair-card"]')!;
+    expect(second.dataset.phase).toBe("offered");
+    expect(second.textContent).toContain("Claude Code is signed out");
+    expect(calls.filter((c) => c.cmd === "local_bots_probe").length).toBe(probes);
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+  });
 });
