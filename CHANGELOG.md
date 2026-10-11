@@ -12,6 +12,8 @@ The release moves it under the version it ships in.
 - HQ's managed toolchain now installs Claude Code next to the HQ command line tool, on first run and on the same update schedule, so bots on a new computer can run without installing anything by hand.
 - A bot that was just started (a pack install, a restart) no longer shows the "offline" notice in its conversation while it checks in with HQ for the first time. The notice waits 45 seconds for a starting bot and still appears for a bot that is stopped, failed, or never checks in.
 - A bot made on this computer is called by its name in Messages and in its "is thinking" row right away. Before, a new bot (such as a pack's setup bot) read "Unknown bot" until HQ's contact list caught up.
+- Every bot on this computer shows the tap-to-answer buttons it writes under its questions, not only HQ's setup bot.
+- A bot's "Working on it" note no longer ends its thinking row; the row stays until the real reply.
 - The Storage page now loads for people with very large HQ cloud history. Reading every old file version can take a couple of minutes the first time, so the page waits up to five minutes for it (previews of a delete wait up to ten) instead of stopping at two minutes with an error.
 - Company telemetry now counts days in your own time zone, the same way your personal usage already does.
 - HQ uses less CPU: the Atlas map draws at most a fixed number of dots, and the app stops refreshing in the background while its window is hidden.

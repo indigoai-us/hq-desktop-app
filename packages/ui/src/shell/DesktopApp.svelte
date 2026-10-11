@@ -3925,6 +3925,9 @@
       if (setupToolOffer) return null;
       return bot.agentUid;
     }
+    // Any other bot on this computer (a pack's setup bot, say) draws the
+    // suggestions it writes too: its questions come with tap-to-answer buttons.
+    if (bot) return bot.agentUid;
     return dmCloudBotUid;
   });
   /** "Shown" is recorded once per bot, however often the card re-renders. */
@@ -6071,6 +6074,7 @@
     messages: ReadonlyArray<{
       fromPersonUid?: string | null;
       createdAt?: string | null;
+      body?: string | null;
     }>,
     rowId: string,
   ): void {

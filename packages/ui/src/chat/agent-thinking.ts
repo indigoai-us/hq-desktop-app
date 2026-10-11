@@ -1172,15 +1172,34 @@ export type AnsweredWhileBusy = Readonly<Record<string, true>>;
  * not restart the row from the same (stale) turn. Returns NEW objects when
  * anything changed, the same ones otherwise.
  */
+/**
+ * The fixed note a local bot posts when a turn runs long (hq-cli
+ * `WORKING_NOTICE_TEXT`, src/lib/bot/progress.ts). It says the bot is still
+ * working, so it must keep the thinking row, not end it as a reply would.
+ */
+export const BOT_WORKING_NOTICE_TEXT = "Working on it — I'll reply here when it's done.";
+
+/** True for a bot's "still working" note, which is not a reply. */
+export function isBotWorkingNotice(body: string | null | undefined): boolean {
+  return (body ?? "").trim() === BOT_WORKING_NOTICE_TEXT;
+}
+
+type ThinkingMessage = { fromPersonUid?: string | null; createdAt?: string | null; body?: string | null };
+
+function withoutWorkingNotices<T extends ThinkingMessage>(messages: ReadonlyArray<T>): ReadonlyArray<T> {
+  return messages.some((m) => isBotWorkingNotice(m.body)) ? messages.filter((m) => !isBotWorkingNotice(m.body)) : messages;
+}
+
 export function clearRowOnReply(
   map: ThinkingByRow,
   answered: AnsweredWhileBusy,
   rowId: string,
-  messages: ReadonlyArray<{ fromPersonUid?: string | null; createdAt?: string | null }>,
+  allMessages: ReadonlyArray<ThinkingMessage>,
   busy: readonly string[],
 ): { map: ThinkingByRow; answered: AnsweredWhileBusy } {
   const before = map[rowId];
   if (!before || before.length === 0) return { map, answered };
+  const messages = withoutWorkingNotices(allMessages);
   const nextMap = clearRowFromMessages(map, rowId, messages);
   const after = new Set((nextMap[rowId] ?? []).map((e) => e.agentUid));
   let nextAnswered: Record<string, true> | null = null;
@@ -1228,8 +1247,9 @@ export function forgetAnswered(
  */
 export function visibleThinking(
   entries: ThinkingEntry[],
-  messages: ReadonlyArray<{ fromPersonUid?: string | null; createdAt?: string | null }>,
+  allMessages: ReadonlyArray<ThinkingMessage>,
 ): ThinkingEntry[] {
+  const messages = withoutWorkingNotices(allMessages);
   if (entries.length === 0 || messages.length === 0) return entries;
   const shown = entries.filter((entry) => {
     if (entry.afterMs === undefined) return true;
