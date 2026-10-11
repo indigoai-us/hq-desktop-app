@@ -53,6 +53,21 @@
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
+  import PackInstallSheet from '../lib/PackInstallSheet.svelte';
+  import {
+    appendInstallLine,
+    beginInstall,
+    createPackInstallState,
+    failInstall,
+    finishInstall,
+    isPackInstallProgress,
+    isValidPackSlug,
+    localBotAgentUid,
+    PACK_OPEN_INSTALL_EVENT,
+    withDisplayName,
+    withSignedIn,
+    type PackInstallSheetState,
+  } from '../lib/pack-install';
   import ConflictParkedNotice from '../components/ConflictParkedNotice.svelte';
   import { isConflictReviewRoute, mergeConflictNotices, removeConflictNotice, type ConflictParkedNotice as ConflictParkedNoticeRow } from '../lib/conflictNotices';
   import { lifecycleForAuthStatus } from './lib/auth-lifecycle';
@@ -740,6 +755,113 @@
     delaysMs: rosterRetryDelaysMs,
   });
 
+  // ── hq-desktop://pack/{slug} confirmation sheet (US-005) ──────────────────
+  //
+  // The native deep-link handler validates the slug, stashes it and emits
+  // `pack:open-install`. Signed out, the sheet says "sign in first" and the
+  // stash is left alone (`peek_pending_pack_target`); once the session is
+  // ready the target is taken (`take_pending_pack_target`) and the sheet asks
+  // to confirm. Add runs the managed CLI's `hq packages install {slug}
+  // --start-bot` and then opens the DM with the bot the install named.
+  let packInstall = $state<PackInstallSheetState | null>(null);
+  let packInstallRun = 0;
+
+  function readPackSlug(target: unknown): string | null {
+    const slug =
+      target && typeof target === 'object' ? (target as { slug?: unknown }).slug : undefined;
+    return isValidPackSlug(slug) ? slug : null;
+  }
+
+  function showPackSheet(slug: string): void {
+    if (packInstall?.slug === slug && packInstall.phase === 'installing') return;
+    const signedIn = lifecycle === 'ready';
+    packInstall = createPackInstallState(slug, signedIn);
+    if (signedIn) void takePendingPackTarget();
+    if (signedIn) void loadPackDisplayName(slug);
+  }
+
+  async function takePendingPackTarget(): Promise<void> {
+    try {
+      await invokeFn('take_pending_pack_target');
+    } catch {
+      // An older native build without the stash still shows the sheet.
+    }
+  }
+
+  async function loadPackDisplayName(slug: string): Promise<void> {
+    try {
+      const name = await invokeFn('pack_deep_link_catalog_name', { slug });
+      if (packInstall?.slug === slug) packInstall = withDisplayName(packInstall, name);
+    } catch (error) {
+      console.warn('[pack-deep-link] catalog name unavailable; showing the slug', error);
+    }
+  }
+
+  function closePackSheet(): void {
+    packInstall = null;
+  }
+
+  async function addPackFromSheet(): Promise<void> {
+    const current = packInstall;
+    if (!current || (current.phase !== 'confirm' && current.phase !== 'failed')) return;
+    const run = ++packInstallRun;
+    const slug = current.slug;
+    packInstall = beginInstall(current);
+    try {
+      const result = (await invokeFn('install_pack_from_deep_link', { slug })) as
+        | { botName?: string | null }
+        | null;
+      if (run !== packInstallRun || packInstall?.slug !== slug) return;
+      const botName = typeof result?.botName === 'string' ? result.botName : null;
+      const agentUid = await findPackBotAgentUid(botName);
+      if (run !== packInstallRun || packInstall?.slug !== slug) return;
+      if (agentUid) {
+        packInstall = null;
+        focusPackBotDm(agentUid);
+        return;
+      }
+      packInstall = finishInstall(packInstall, botName);
+    } catch (error) {
+      if (run !== packInstallRun || packInstall?.slug !== slug) return;
+      packInstall = failInstall(packInstall, error);
+    }
+  }
+
+  async function findPackBotAgentUid(botName: string | null): Promise<string | null> {
+    if (!botName) return null;
+    try {
+      return localBotAgentUid(await invokeFn('local_bots_list'), botName);
+    } catch (error) {
+      console.warn('[pack-deep-link] could not list local bots', error);
+      return null;
+    }
+  }
+
+  /** Messages, on the DM with the bot the pack install started. */
+  function focusPackBotDm(agentUid: string): void {
+    navigation.navigate({ kind: 'dm', personUid: agentUid });
+  }
+
+  function openMessagesAfterPackInstall(): void {
+    packInstall = null;
+    navigation.navigate({ kind: 'messages' });
+  }
+
+  // A sheet that waited for sign-in becomes the confirmation once the session
+  // is ready, and takes the native stash at that point.
+  $effect(() => {
+    const ready = lifecycle === 'ready';
+    const current = untrack(() => packInstall);
+    if (!current) return;
+    const next = withSignedIn(current, ready);
+    if (next === current) return;
+    packInstall = next;
+    if (ready && next.phase === 'confirm') {
+      void takePendingPackTarget();
+      void loadPackDisplayName(next.slug);
+    }
+  });
+
   async function hydrateSession(expectedGeneration = authGeneration): Promise<void> {
     const request = ++hydration;
     rosterRefresher.cancel();
@@ -1022,6 +1144,10 @@
             checkout,
           });
         }
+        // A pack target is peeked, not taken: signed out it must survive the
+        // sign-in (contract section 5). showPackSheet takes it once ready.
+        const pendingPack = readPackSlug(await invokeFn('peek_pending_pack_target'));
+        if (!cancelled && pendingPack) showPackSheet(pendingPack);
         const meetingId = await invokeFn('meetings_take_pending_focus');
         const pendingFocusIsCurrent =
           latestLiveNavigation === null ||
@@ -1054,6 +1180,18 @@
         companyUid,
         checkout: event.payload?.checkout ?? 'done',
       });
+    }).catch(() => () => {});
+
+    const unlistenPackPromise = listen<{ slug?: string }>(PACK_OPEN_INSTALL_EVENT, (event) => {
+      const slug = readPackSlug(event.payload);
+      if (slug) showPackSheet(slug);
+    }).catch(() => () => {});
+
+    const unlistenPackProgressPromise = listen<unknown>('packages:progress', (event) => {
+      const current = packInstall;
+      if (!current || current.phase !== 'installing') return;
+      if (!isPackInstallProgress(event.payload, current.slug)) return;
+      packInstall = appendInstallLine(current, event.payload.line);
     }).catch(() => () => {});
 
     const unlistenPromise = listen<string>('desktop:navigate', (event) => {
@@ -1267,6 +1405,8 @@
       detachNavigation?.();
       detachNavigation = null;
       void unlistenSetupPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenPackPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenPackProgressPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
@@ -1376,6 +1516,14 @@
   <!-- OWNER-003: the app's one toast layer (update, copied). Paused uploads
        go to the notifications panel instead (#1255). -->
   <ToastStack />
+  {#if packInstall}
+    <PackInstallSheet
+      state={packInstall}
+      onadd={() => void addPackFromSheet()}
+      oncancel={closePackSheet}
+      onopenmessages={openMessagesAfterPackInstall}
+    />
+  {/if}
   {#if lifecycle === 'loading'}
     <section class="lifecycle-state" data-testid="hq-work-loading" role="status">
       <div class="hq-work-boot" data-testid="hq-work-boot" aria-busy="true" aria-live="polite">

@@ -20,6 +20,10 @@
 //!   * `install_package`        — stream `hq install <source>` progress
 //!   * `update_package`         — stream `hq packs update <name>`
 //!   * `uninstall_package`      — `hq packs uninstall <name> --yes --json`
+//!   * `pack_deep_link_catalog_name` — display name for an `hq-desktop://pack/{slug}`
+//!     confirmation sheet (catalog, then registry; `None` falls back to the slug)
+//!   * `install_pack_from_deep_link` — stream `hq packages install <slug> --start-bot`
+//!     and report the bot the CLI started (`bot: <name>` line)
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,6 +35,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
+use crate::deep_link::is_valid_pack_slug;
 use crate::util::hq_resolver;
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -412,8 +417,15 @@ pub fn packages_window_ready() -> Option<Value> {
 
 /// Stream a long-running `hq` mutation, relaying its output to the window as
 /// `packages:progress` lines and a terminal `packages:complete` /
-/// `packages:error`. Used by install / update.
-async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> Result<(), String> {
+/// `packages:error`. Used by install / update. Returns the stdout lines so a
+/// caller can read a structured result out of them (the deep-link install
+/// reads the `bot: <name>` line).
+async fn stream_hq(
+    app: &AppHandle,
+    op: &str,
+    name: &str,
+    args: Vec<String>,
+) -> Result<Vec<String>, String> {
     let invocation = resolve_packages_hq();
     let _npx_guard = invocation.npx_serial_guard().await;
     let folder = resolve_hq_folder();
@@ -447,10 +459,12 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
 
     // Relay both streams as progress lines. `hq install` prints human progress
     // to stdout/stderr; we surface every line so the window shows live status.
-    if let Some(out) = child.stdout.take() {
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let stdout_task = child.stdout.take().map(|out| {
         let app = app.clone();
         let op = op.to_string();
         let name = name.to_string();
+        let captured = captured.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(out).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -458,9 +472,13 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
                     "packages:progress",
                     serde_json::json!({ "op": op, "name": name, "line": line }),
                 );
+                let mut captured = captured.lock().unwrap_or_else(|p| p.into_inner());
+                if captured.len() < CAPTURED_STDOUT_LINE_CAP {
+                    captured.push(line);
+                }
             }
-        });
-    }
+        })
+    });
     if let Some(err) = child.stderr.take() {
         let app = app.clone();
         let op = op.to_string();
@@ -480,13 +498,17 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
         .wait()
         .await
         .map_err(|e| format!("await `hq {}`: {e}", args.join(" ")))?;
+    if let Some(task) = stdout_task {
+        let _ = task.await;
+    }
 
     if status.success() {
         let _ = app.emit(
             "packages:complete",
             serde_json::json!({ "op": op, "name": name }),
         );
-        Ok(())
+        let lines = std::mem::take(&mut *captured.lock().unwrap_or_else(|p| p.into_inner()));
+        Ok(lines)
     } else {
         let msg = format!(
             "`hq {}` exited {}",
@@ -500,6 +522,11 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
         Err(msg)
     }
 }
+
+/// Upper bound on stdout lines kept for the caller of [`stream_hq`]. The
+/// window already received every line as a progress event; this copy exists
+/// only to read a structured result (one `bot:` line) out of the output.
+const CAPTURED_STDOUT_LINE_CAP: usize = 2000;
 
 /// Construct exact native CLI arguments for an install intent. Kept separate
 /// from process spawning so registry routing has a direct regression test.
@@ -570,6 +597,177 @@ pub async fn uninstall_package(name: String) -> Result<Value, String> {
     let value = run_hq_json(&["packs", "uninstall", &name, "--yes", "--json"]).await?;
     spawn_refresh_packages_cache();
     Ok(value)
+}
+
+// ── hq-desktop://pack/{slug} (US-005) ─────────────────────────────────────────
+
+/// Op name the deep-link install streams under, so the confirmation sheet can
+/// pick its own `packages:progress` lines out of the shared event.
+const PACK_DEEP_LINK_OP: &str = "pack-deep-link";
+
+/// `hq packages install` prints this line when `--start-bot` started a bot
+/// (contract section 7). The value is a bot handle, `^[a-z0-9-]{2,32}$`.
+const INSTALL_BOT_LINE_PREFIX: &str = "bot:";
+
+/// Request timeout for the registry name lookup. It only decorates a sheet, so
+/// a slow registry falls back to the slug quickly.
+const REGISTRY_NAME_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Bot handle named by the install output, if any. Reads the LAST `bot:` line
+/// so a restarted bot (contract: "existing bot with that name: restart it")
+/// still resolves, and refuses anything that is not a plain bot handle.
+pub(crate) fn bot_name_from_install_output<S: AsRef<str>>(lines: &[S]) -> Option<String> {
+    lines
+        .iter()
+        .rev()
+        .map(|line| line.as_ref().trim())
+        .filter_map(|line| line.strip_prefix(INSTALL_BOT_LINE_PREFIX))
+        .map(str::trim)
+        .find(|name| is_valid_bot_handle(name))
+        .map(str::to_string)
+}
+
+fn is_valid_bot_handle(value: &str) -> bool {
+    (2..=32).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn string_field<'a>(entry: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .filter_map(|key| entry.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+}
+
+/// Whether a catalog row names `slug`: by `slug`/`name`, or by a `source`
+/// whose last path segment is the slug (`github:org/repo#packages/<slug>`).
+fn catalog_entry_matches_slug(entry: &Value, slug: &str) -> bool {
+    if string_field(entry, &["slug", "name"]).is_some_and(|value| value == slug) {
+        return true;
+    }
+    string_field(entry, &["source"]).is_some_and(|source| {
+        source
+            .rsplit(|c| c == '/' || c == '#' || c == ':')
+            .next()
+            .is_some_and(|tail| tail == slug)
+    })
+}
+
+/// Display name for `slug` from an `hq packages list --json` view, if the
+/// catalog carries one. Searches the installed, available and registry rows;
+/// a row that only has a `name` equal to the slug is not a display name.
+pub(crate) fn catalog_display_name(view: &Value, slug: &str) -> Option<String> {
+    const ROW_SETS: [&str; 4] = ["installed", "available", "registry", "packages"];
+    ROW_SETS
+        .iter()
+        .filter_map(|key| view.get(*key).and_then(Value::as_array))
+        .flatten()
+        .filter(|entry| catalog_entry_matches_slug(entry, slug))
+        .filter_map(|entry| string_field(entry, &["displayName", "display_name", "title"]))
+        .map(str::to_string)
+        .next()
+}
+
+/// First `url:` under `sources:` in `packages/sources.yaml` — the registry the
+/// CLI itself installs from (hq-cli `getRegistryUrl`). A scanner rather than a
+/// YAML parse: the file is two lines deep and this must never fail loudly.
+pub(crate) fn registry_url_from_sources_yaml(contents: &str) -> Option<String> {
+    contents
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("- url:").or_else(|| line.strip_prefix("url:")))
+        .map(|value| value.trim().trim_matches(|c| c == '"' || c == '\''))
+        .find(|value| value.starts_with("https://") || value.starts_with("http://"))
+        .map(|value| value.trim_end_matches('/').to_string())
+}
+
+/// `package.name` from a registry `GET /packages/{slug}` body.
+pub(crate) fn registry_package_name(body: &Value) -> Option<String> {
+    body.get("package")
+        .and_then(|package| string_field(package, &["displayName", "display_name", "name"]))
+        .map(str::to_string)
+}
+
+async fn registry_display_name(folder: &Path, slug: &str) -> Option<String> {
+    let sources = fs::read_to_string(folder.join("packages").join("sources.yaml")).ok()?;
+    let base = registry_url_from_sources_yaml(&sources)?;
+    let url = format!("{base}/packages/{slug}");
+    let client = reqwest::Client::builder()
+        .default_headers(crate::util::client_info::client_headers())
+        .timeout(REGISTRY_NAME_TIMEOUT)
+        .build()
+        .ok()?;
+    let response = client.get(&url).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: Value = response.json().await.ok()?;
+    registry_package_name(&body)
+}
+
+/// Display name for the `hq-desktop://pack/{slug}` confirmation sheet: the
+/// local catalog first (`hq packages list --json`), then the registry the CLI
+/// installs from. `Ok(None)` means "show the slug"; nothing here is fatal.
+#[tauri::command]
+pub async fn pack_deep_link_catalog_name(slug: String) -> Result<Option<String>, String> {
+    if !is_valid_pack_slug(&slug) {
+        return Err("Not a valid pack slug.".to_string());
+    }
+    match run_hq_json(&["packages", "list", "--json"]).await {
+        Ok(view) => {
+            if let Some(name) = catalog_display_name(&view, &slug) {
+                return Ok(Some(name));
+            }
+        }
+        Err(error) => log("pack-deep-link", &format!("catalog list unavailable: {error}")),
+    }
+    let folder = resolve_hq_folder();
+    Ok(registry_display_name(&folder, &slug).await)
+}
+
+/// Result of a deep-link pack install: the bot the CLI started, when it did.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackDeepLinkInstallResult {
+    pub slug: String,
+    pub bot_name: Option<String>,
+}
+
+/// Exact argv for the deep-link install (contract section 5).
+fn pack_deep_link_install_args(slug: &str) -> Vec<String> {
+    vec![
+        "packages".into(),
+        "install".into(),
+        slug.into(),
+        "--start-bot".into(),
+    ]
+}
+
+/// Run `hq packages install {slug} --start-bot` for a confirmed
+/// `hq-desktop://pack/{slug}` target, streaming progress as
+/// `packages:progress` (op `pack-deep-link`), and report the bot named in the
+/// install output. Only called after the person pressed Add in the sheet.
+#[tauri::command]
+pub async fn install_pack_from_deep_link(
+    app: AppHandle,
+    slug: String,
+) -> Result<PackDeepLinkInstallResult, String> {
+    if !is_valid_pack_slug(&slug) {
+        return Err("Not a valid pack slug.".to_string());
+    }
+    let lines = stream_hq(&app, PACK_DEEP_LINK_OP, &slug, pack_deep_link_install_args(&slug)).await?;
+    spawn_refresh_packages_cache();
+    let bot_name = bot_name_from_install_output(&lines);
+    log(
+        "pack-deep-link",
+        &format!(
+            "installed {slug}; bot={}",
+            bot_name.as_deref().unwrap_or("<none>")
+        ),
+    );
+    Ok(PackDeepLinkInstallResult { slug, bot_name })
 }
 
 /// Background loop: first check 20s after launch, then every 6h. Unlike the
@@ -677,6 +875,87 @@ mod tests {
             pack_update_summary(&serde_json::json!({ "installed": [] })).count,
             0
         );
+    }
+
+    #[test]
+    fn deep_link_install_argv_is_exactly_the_contract_shape() {
+        assert_eq!(
+            pack_deep_link_install_args("agency-kit"),
+            vec!["packages", "install", "agency-kit", "--start-bot"],
+        );
+    }
+
+    #[test]
+    fn bot_name_is_read_from_the_last_valid_bot_line() {
+        let lines = [
+            "Installing hq-pack-agency-kit 0.3.0",
+            "  bot: not a handle!",
+            "bot: agency-guide",
+            "done",
+        ];
+        assert_eq!(
+            bot_name_from_install_output(&lines).as_deref(),
+            Some("agency-guide")
+        );
+        assert_eq!(
+            bot_name_from_install_output(&["bot:agency-guide  "]).as_deref(),
+            Some("agency-guide")
+        );
+        assert!(bot_name_from_install_output(&["installed", "Bot: Agency"]).is_none());
+        assert!(bot_name_from_install_output(&["bot: ../x"]).is_none());
+        assert!(bot_name_from_install_output::<&str>(&[]).is_none());
+    }
+
+    #[test]
+    fn catalog_display_name_matches_slug_name_or_source_tail() {
+        let view = serde_json::json!({
+            "installed": [
+                { "name": "hq-pack-client-service", "displayName": "Client Service" }
+            ],
+            "available": [
+                {
+                    "source": "github:indigoai-us/hq-packages#packages/hq-pack-agency-kit",
+                    "display_name": "Agency Kit"
+                },
+                { "source": "github:indigoai-us/hq-packages#packages/hq-pack-gstack" }
+            ],
+            "registry": [ { "slug": "hq-pack-design", "title": "Design" } ]
+        });
+        assert_eq!(
+            catalog_display_name(&view, "hq-pack-agency-kit").as_deref(),
+            Some("Agency Kit")
+        );
+        assert_eq!(
+            catalog_display_name(&view, "hq-pack-client-service").as_deref(),
+            Some("Client Service")
+        );
+        assert_eq!(
+            catalog_display_name(&view, "hq-pack-design").as_deref(),
+            Some("Design")
+        );
+        // A row with no display name is not a name: the sheet shows the slug.
+        assert!(catalog_display_name(&view, "hq-pack-gstack").is_none());
+        assert!(catalog_display_name(&view, "unknown").is_none());
+        assert!(catalog_display_name(&serde_json::json!(null), "x").is_none());
+    }
+
+    #[test]
+    fn registry_url_comes_from_the_first_source() {
+        let yaml = "sources:\n  - name: hq\n    url: https://registry.example.com/v1/\n  - url: https://other.example.com\n";
+        assert_eq!(
+            registry_url_from_sources_yaml(yaml).as_deref(),
+            Some("https://registry.example.com/v1")
+        );
+        assert!(registry_url_from_sources_yaml("sources: []").is_none());
+        assert!(registry_url_from_sources_yaml("url: ftp://nope").is_none());
+        assert_eq!(
+            registry_package_name(&serde_json::json!({
+                "package": { "slug": "agency-kit", "name": "Agency Kit" }
+            }))
+            .as_deref(),
+            Some("Agency Kit")
+        );
+        assert!(registry_package_name(&serde_json::json!({ "package": {} })).is_none());
     }
 
     #[test]
