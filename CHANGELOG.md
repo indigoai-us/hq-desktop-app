@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- A bot's chat now shows one place to sign in to its coding tool. The gray "needs you to sign in again" banner is gone; the "Claude Code is signed out" card is the only sign-in, and when the bot's chat has no such card, the same card shows above the message box. The card now turns to "You're all set. Send me anything." after a sign-in from anywhere: its own Sign in button, the coding tools screen, Settings, New Bot, or signing in outside HQ and coming back to the app. If HQ's check still finds the tool signed out, the card stays as it is.
 - The Storage page now loads for people with very large HQ cloud history. Reading every old file version can take a couple of minutes the first time, so the page waits up to five minutes for it (previews of a delete wait up to ten) instead of stopping at two minutes with an error.
 - Company telemetry now counts days in your own time zone, the same way your personal usage already does.
 - HQ uses less CPU: the Atlas map draws at most a fixed number of dots, and the app stops refreshing in the background while its window is hidden.

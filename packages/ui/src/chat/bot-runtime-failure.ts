@@ -115,8 +115,8 @@ export function withPlainBotFailureReplies<
 /**
  * The coding tool a local bot runs on is not signed in here (or not
  * installed), and the host has said so. Unknown readiness (null) is not
- * "missing". A bot whose sign-in merely expired has its own banner
- * (`BotSignInBanner`), so the caller checks that first.
+ * "missing". A bot whose sign-in merely expired has its own repair card
+ * (the signed-out runtime repair card), so the caller checks that first.
  */
 export function localBotNeedsCodingTool(
   bot: Pick<LocalBotRow, "runtime"> | null | undefined,
