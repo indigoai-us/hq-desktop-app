@@ -41,7 +41,13 @@
     type InvokeFn,
     type PlanLimitRefusal,
   } from '../../lib/first-run-company';
-  import { PLAN_CARDS, PLAN_PICKER_COPY, type PlanRowState } from '../../lib/plan-cards';
+  import {
+    PLAN_CARDS,
+    PLAN_PICKER_COPY,
+    loadStarterAllowances,
+    planCardsFor,
+    type PlanRowState,
+  } from '../../lib/plan-cards';
   import PlanUpgradeAction from '../PlanUpgradeAction.svelte';
   import { flushPendingCompanyInvites, queuePendingCompanyInvites } from '../../lib/pending-company-invites';
   import type { ProvisioningState } from '../../lib/onboarding-company-route';
@@ -564,6 +570,20 @@
     if (path.kind === 'create' && phase === 'loading' && !form) void loadForm();
   });
 
+  /**
+   * Plan cards. Starter's ceilings come from hq-pro's GET /v1/pricing once the
+   * picker opens; until then (or if the read fails) the built-in fallback.
+   */
+  let planCards = $state(PLAN_CARDS);
+  let pricingRequested = false;
+  $effect(() => {
+    if (phase !== 'plan' || pricingRequested) return;
+    pricingRequested = true;
+    void loadStarterAllowances(invoke).then((starter) => {
+      if (starter) planCards = planCardsFor(starter);
+    });
+  });
+
   let resumeStarted = false;
   $effect(() => {
     if (path.kind === 'resume' && path.state === 'pending' && !resumeStarted) {
@@ -821,7 +841,7 @@
     {#if note}<p class="note inline-note" role="status">{note}</p>{/if}
     {#if error}<p class="note inline-note warning" role="alert" data-testid="onboarding-company-error">{error}</p>{/if}
     <div class="plan-cards" data-testid="onboarding-plan-options">
-      {#each PLAN_CARDS as card (card.plan)}
+      {#each planCards as card (card.plan)}
         <section
           class="plan-card"
           class:featured={card.featured}
