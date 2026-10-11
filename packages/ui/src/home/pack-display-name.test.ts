@@ -61,6 +61,7 @@ describe("packDisplayName precedence", () => {
     );
     expect(packDisplayName({ name: "gstack" })).toBe("gStack");
     expect(PACK_DISPLAY_NAMES.crm).toBe("CRM");
+    expect(packDisplayName({ name: "hq-pack-imessage" })).toBe("iMessage");
   });
 
   it("derives a title-cased name when the slug is not curated", () => {

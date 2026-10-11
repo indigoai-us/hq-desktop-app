@@ -61,7 +61,7 @@ describe("the import scene could not load", () => {
         props: {
           initialName: "Pickles",
           initialStep: "tools",
-          creation: { state: "ready", name: "Pickles", bot: { agentUid: "agt_1", name: "Pickles" } },
+          creation: { state: "ready", name: "Pickles", bot: { agentUid: "agt_1", handle: "setup" } },
           runtimeReady: { claude: true, codex: false, grok: false },
           importHost,
           reducedMotion: true,

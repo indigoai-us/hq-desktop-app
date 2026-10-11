@@ -4505,6 +4505,8 @@ describe('company onboarding step', () => {
     membershipFailsAfterSignOut?: boolean;
     /** The create-company action answers without naming the new company's uid. */
     createWithoutUid?: boolean;
+    /** Answer for GET /v1/pricing; unset answers 503 (the picker keeps its fallback). */
+    pricing?: { status: number; body: unknown };
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
     onboardingFlags.companyNamePrefillEnabled = options.companyNamePrefillEnabled ?? false;
@@ -4608,6 +4610,10 @@ describe('company onboarding step', () => {
         case 'run_company_tab_action':
           return { state: 'done' };
         case 'hq_pro_fetch': {
+          if (args?.url === '/v1/pricing') {
+            const answer = options.pricing ?? { status: 503, body: { error: 'PRICING_UNAVAILABLE' } };
+            return { status: answer.status, body: JSON.stringify(answer.body) };
+          }
           if (args?.url === '/membership/me') {
             membershipReads += 1;
             if (options.membershipDelayMs) {
@@ -5295,6 +5301,45 @@ describe('company onboarding step', () => {
     expect(tauri.open).toHaveBeenCalledWith('https://hqforwork.com/call#book');
     // Booking a call leaves the person on the plan screen.
     expect(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')).not.toBeNull();
+  });
+
+  it('shows Starter limits from GET /v1/pricing, and the fallback when it cannot be read', async () => {
+    const limitsRow = () =>
+      host.querySelectorAll('[data-testid="onboarding-plan-card-starter"] .plan-row')[3]?.textContent ?? '';
+
+    // hq-pro's statement is the source: whatever it says, the card says.
+    await reachCompanyScenario({
+      pricing: {
+        status: 200,
+        body: {
+          plans: [
+            {
+              id: 'free',
+              included: { users: 5, secrets: 12, deployments: 500, storageBytes: 10737418240, integrations: 4 },
+            },
+          ],
+        },
+      },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => limitsRow().includes('4 integrations'));
+    expect(limitsRow()).toContain('12 secrets · 10 GB · 4 integrations, no MCP or Atlas');
+    expect(tauri.invoke).toHaveBeenCalledWith('hq_pro_fetch', { url: '/v1/pricing', method: 'GET', body: null });
+  });
+
+  it('falls back to the current Starter limits (3 integrations) when pricing is unavailable', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
+    await settle();
+    const limits = host.querySelectorAll('[data-testid="onboarding-plan-card-starter"] .plan-row')[3]?.textContent;
+    expect(limits).toContain('10 secrets · 10 GB · 3 integrations, no MCP or Atlas');
   });
 
   it('shows "Choose a plan" when no plan was picked on the website', async () => {

@@ -10,6 +10,7 @@
 
 import { isUnknownPeerLabel } from "./peer-names.js";
 import type { LocalBotRow } from "@hq/platform";
+import { withAssistantNames } from "./assistant-owner.js";
 import { botRowDisplayName, type BotDisplayNames } from "./bot-display-names.js";
 import type { ConversationRow } from "./sidebar-model.js";
 
@@ -42,9 +43,24 @@ export function localBotRuntimeLabel(id: string): string {
 
 /**
  * Contacts plus the user's own local bots (as DM contacts), skipping any bot
- * the server roster already listed. Bots carry no company.
+ * the server roster already listed. Bots carry no company. The assistant's
+ * row reads its one name (`assistant`), never its handle or slug.
  */
 export function localBotsAsContacts<T extends { personUid: string }>(
+  contacts: readonly T[],
+  bots: readonly LocalBotRow[] | null | undefined,
+  displayNames?: BotDisplayNames | null,
+  assistant?: { agentUid: string; name: string } | null,
+): Array<T | { personUid: string; displayName: string; companyUid: null }> {
+  return withAssistantNames(
+    mergeLocalBots(contacts, bots, displayNames) as Array<Record<string, unknown>>,
+    assistant,
+    "personUid",
+    "displayName",
+  ) as Array<T | { personUid: string; displayName: string; companyUid: null }>;
+}
+
+function mergeLocalBots<T extends { personUid: string }>(
   contacts: readonly T[],
   bots: readonly LocalBotRow[] | null | undefined,
   displayNames?: BotDisplayNames | null,
@@ -63,7 +79,17 @@ export function localBotsAsContacts<T extends { personUid: string }>(
 
 /** Result of the sidebar "New bot" entry point (see CreateModal). */
 export type LocalBotEntryResult =
-  | { ok: true; agentUid: string; name: string }
+  | {
+      ok: true;
+      agentUid: string;
+      name: string;
+      /**
+       * What a new enough hq-cli did for `hq bot create setup` (contract
+       * section 3): made it, adopted the account's one, or found it here.
+       * Absent on older CLI versions.
+       */
+      outcome?: "created" | "adopted" | "existing";
+    }
   | {
       ok: false;
       /** Plain sentence, safe to render (see `plainBotFailure`). */
@@ -100,6 +126,9 @@ const RAW_FAILURE_SHAPES: readonly RegExp[] = [
   /\{[\s\S]*"\w+"\s*:/,
   /(?:^|\s)\/(?:Users|home|private|tmp|var|opt)\//,
   /\bhq\s+bot\b/,
+  // A CLI flag the installed hq does not know ("unknown option '--x'").
+  /\bunknown option\b/i,
+  /(?:^|\s)--[a-z][a-z-]+/,
 ];
 
 /** True when `raw` is machine text that must not be shown to a person. */

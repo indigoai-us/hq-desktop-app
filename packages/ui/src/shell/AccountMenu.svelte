@@ -3,11 +3,13 @@
    * Account menu (console-rail US-010). 300 px popover on the You avatar.
    * Paints from the cached identity. Companies are reached from the rail
    * tiles and the More companies popover, so this menu lists none. Sign out
-   * confirms through confirm-sign-out.ts before the host ends the session.
+   * uses the in-app confirm. window.confirm is a silent no-op in WKWebView.
    */
   import { focusReturn } from "./focus-return.js";
-  import { confirmSignOut } from "../settings/confirm-sign-out.js";
+  import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import type { AccountPageId } from "./account-menu.js";
+  import TierMark from "../badges/TierMark.svelte";
+  import type { ResolvedBadge } from "../badges/badge-catalog.js";
 
   interface Props {
     name: string;
@@ -15,6 +17,8 @@
     initials?: string;
     live?: boolean;
     work?: string;
+    /** The badge behind your tier mark on the picture (badges/TierMark). */
+    topBadge?: ResolvedBadge | null;
     anchorLeft?: number;
     anchorBottom?: number;
     onclose?: () => void;
@@ -28,12 +32,15 @@
     initials = "",
     live = false,
     work = "",
+    topBadge = null,
     anchorLeft = 64,
     anchorBottom = 16,
     onclose,
     onpage,
     onsignout,
   }: Props = $props();
+
+  let signOutConfirmOpen = $state(false);
 
   function mark(): string {
     if (initials.trim()) return initials.trim().slice(0, 2).toUpperCase();
@@ -48,7 +55,11 @@
   }
 
   function signOut(): void {
-    if (!confirmSignOut()) return;
+    signOutConfirmOpen = true;
+  }
+
+  function acceptSignOut(): void {
+    signOutConfirmOpen = false;
     onsignout?.();
   }
 
@@ -84,6 +95,7 @@
     <span class="avatar" aria-hidden="true">
       {mark()}
       {#if live}<span class="live" data-testid="account-menu-live"></span>{/if}
+      {#if topBadge}<TierMark tier={topBadge.tier} avatar={32} badge={topBadge} />{/if}
     </span>
     <span class="copy">
       <span class="name">{name}</span>
@@ -103,6 +115,16 @@
     </button>
   </div>
 </div>
+
+<ConfirmDialog
+  open={signOutConfirmOpen}
+  title="Sign out"
+  message="Sign out of HQ Work on this machine?"
+  confirmLabel="Sign out"
+  danger
+  oncancel={() => (signOutConfirmOpen = false)}
+  onconfirm={acceptSignOut}
+/>
 
 <style>
   .scrim {
@@ -148,6 +170,7 @@
   }
 
   .avatar {
+    --tier-cutout: var(--overlay-bg);
     position: relative;
     width: 32px;
     height: 32px;
@@ -160,10 +183,11 @@
     color: var(--v4-text-1);
   }
 
+  /* Top right: the bottom right holds the tier mark (badges/TierMark). */
   .live {
     position: absolute;
     right: -1px;
-    bottom: -1px;
+    top: -1px;
     width: 8px;
     height: 8px;
     border-radius: 50%;
@@ -244,7 +268,7 @@
     color: var(--v4-text-1);
     font: 400 13px/1.2 var(--font-ui);
     text-align: left;
-    cursor: default;
+    cursor: pointer;
   }
 
   .row:hover,
@@ -267,6 +291,6 @@
   }
 
   .signout {
-    color: var(--v4-text-3);
+    color: var(--v4-text-1);
   }
 </style>

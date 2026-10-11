@@ -319,6 +319,12 @@ export interface FirstRunHandoff {
   runtime: FirstRunRuntime;
   /** Every coding tool signed in when the assistant was created. */
   toolsReady: readonly FirstRunRuntime[];
+  /**
+   * False when the real sign-in check (`hq bot probe`) did not pass for
+   * `runtime` (it could not tell): the hello and the kickoff then do not say
+   * the tool is signed in. Missing means it passed.
+   */
+  signInChecked?: boolean;
   /** The context scan, when it finished before this was written. */
   imported?: FirstRunImportHandoff | null;
   /** "Your team", once settled. */
@@ -542,7 +548,9 @@ function buildKickoff(handoff: FirstRunHandoff, opts: { noun?: string }): string
     `${FIRST_RUN_HANDOFF_MARKER} ${firstRunHandoffNote(handoff)}. ` +
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     `${proseName(name, "I chose your name, ", ", so keep it. ", "I chose your name (\"name\" in the handoff), so keep it. ")}` +
-    `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. ` +
+    (handoff.signInChecked === false
+      ? `I picked ${tool} on this ${noun} and you run on it, so do not ask me to pick a coding tool. HQ could not confirm its sign-in, so if a turn fails to sign in, say so in one line. `
+      : `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. `) +
     importSentence(handoff.imported) +
     settledSentence(handoff) +
     "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
@@ -674,11 +682,17 @@ export function firstRunSettledNotice(
  * The bot's hello (`hq bot create --intro`, under 500 characters, one line)
  * when it was named in the takeover: it already knows its name and tool.
  */
-export function firstRunIntro(handoff: Pick<FirstRunHandoff, "name" | "runtime">, opts: { noun?: string } = {}): string {
+export function firstRunIntro(
+  handoff: Pick<FirstRunHandoff, "name" | "runtime" | "signInChecked">,
+  opts: { noun?: string } = {},
+): string {
   const noun = opts.noun?.trim() || "computer";
   const name = normalizeAssistantName(handoff.name) || "your HQ assistant";
+  const tool = runtimeLabel(handoff.runtime);
+  // Only a passing real check may say "signed in": a stored login can be dead.
+  const settled = handoff.signInChecked === false ? `picked ${tool}` : `signed in ${tool}`;
   return (
-    `Hi, I'm ${name}, your HQ assistant. You've named me and signed in ${runtimeLabel(handoff.runtime)}, so I won't ask about those again. ` +
+    `Hi, I'm ${name}, your HQ assistant. You've named me and ${settled}, so I won't ask about those again. ` +
     `I'm checking your ${noun} now, which can take a minute, and I'll post my next question here as soon as I'm done.`
   );
 }
@@ -763,64 +777,14 @@ export function firstRunRoute(input: FirstRunRouteInput): FirstRunRoute {
 
 // ── creating the assistant ─────────────────────────────────────────────────
 
-export type FirstRunAssistantResult = { ok: true; bot: SetupBotRef } | { ok: false; reason: string };
-
-/** Where creating the assistant stands, as the takeover shows it. */
+/**
+ * Where creating the assistant stands, as the takeover shows it. The host
+ * works it out from the assistant's owner and the bot list
+ * (chat/assistant-owner.ts); nothing here stores it.
+ */
 export type FirstRunCreation =
   | { state: "idle" }
   | { state: "creating"; name: string }
   | { state: "ready"; name: string; bot: SetupBotRef }
   | { state: "failed"; name: string; reason: string };
 
-export interface FirstRunAssistantStarter {
-  /**
-   * Start creating the assistant under this name. A call while one is in
-   * flight, or after one succeeded, does nothing: a double click or a second
-   * Enter never creates a second bot. After a failure it runs again (Retry).
-   */
-  start(name: string): void;
-  /** Run again with the last name, after a failure. */
-  retry(): void;
-  current(): FirstRunCreation;
-}
-
-/**
- * The single-flight creator behind the takeover. `run` creates (or adopts)
- * the setup bot; `onchange` gets every state, starting with "creating"
- * synchronously so the pending state shows on the same frame as the click.
- */
-export function createFirstRunAssistantStarter(
-  run: (name: string) => Promise<FirstRunAssistantResult>,
-  onchange: (state: FirstRunCreation) => void,
-): FirstRunAssistantStarter {
-  let state: FirstRunCreation = { state: "idle" };
-  let lastName = "";
-  const set = (next: FirstRunCreation): void => {
-    state = next;
-    onchange(next);
-  };
-  function start(name: string): void {
-    if (state.state === "creating" || state.state === "ready") return;
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    lastName = trimmed;
-    set({ state: "creating", name: trimmed });
-    void Promise.resolve()
-      .then(() => run(trimmed))
-      .then(
-        (result) =>
-          set(result.ok ? { state: "ready", name: trimmed, bot: result.bot } : { state: "failed", name: trimmed, reason: result.reason }),
-        (err: unknown) => {
-          console.warn("[hq-desktop] first-run assistant create threw:", err);
-          set({ state: "failed", name: trimmed, reason: "Could not start your assistant. Please try again." });
-        },
-      );
-  }
-  return {
-    start,
-    retry() {
-      if (state.state === "failed" && lastName) start(lastName);
-    },
-    current: () => state,
-  };
-}

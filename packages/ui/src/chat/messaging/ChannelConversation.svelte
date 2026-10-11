@@ -481,6 +481,28 @@
     return repairPayloadForMessage(msg);
   }
 
+  /**
+   * Tell the controller which repair cards this conversation draws, so a
+   * sign-in finished anywhere else can turn a signed-out card fixed in place.
+   * A signed-out card this view has not drawn before asks for a check at
+   * once (spaced by the controller), which catches a sign-in made before the
+   * conversation was opened. A refreshed page of the same messages does not.
+   */
+  const repairCardsSeen = new Set<string>();
+  $effect(() => {
+    const host = runtimeRepair;
+    if (!host) return;
+    let newSignedOut = false;
+    for (const msg of messages) {
+      const repair = repairFor(msg);
+      if (!repair) continue;
+      host.controller.track(msg.eventId, repair);
+      if (repair.class === "signed-out" && !repairCardsSeen.has(msg.eventId)) newSignedOut = true;
+      repairCardsSeen.add(msg.eventId);
+    }
+    if (newSignedOut) void untrack(() => host.controller.recheckSignIn());
+  });
+
   /** The person's failed message a repair card's Try again sends again, by its event id. */
   function retryTextFor(payload: RepairPayload): string | null {
     if (!payload.retryOf) return null;
@@ -2135,6 +2157,7 @@
                   label={messageAuthor(msg)}
                   avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                   agentUid={msg.fromPersonUid}
+                  personUid={isAgent(msg) ? null : msg.fromPersonUid}
                   size="regular"
                 />
               </span>
@@ -2285,6 +2308,7 @@
                       kind="person"
                       label={messageAuthor(msg)}
                       avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
+                      personUid={msg.fromPersonUid}
                       size="regular"
                       online={actorOnline(msg.fromPersonUid)}
                     />

@@ -42,16 +42,6 @@ export function runtimesNeedingSignIn(bots: readonly LocalBotRow[]): BotRuntimeI
   return out;
 }
 
-/** Plain copy for a paused bot's conversation. */
-export function signInAgainCopy(bot: LocalBotRow): { lead: string; action: string; waiting: string } {
-  const tool = localBotRuntimeLabel(expiredRuntimeOf(bot));
-  return {
-    lead: `${tool} needs you to sign in again before ${bot.name} can keep working.`,
-    action: `Sign in to ${tool}`,
-    waiting: `Finish signing in in your browser — ${bot.name} will pick up where it left off.`,
-  };
-}
-
 type Outcome<T> = { ok: true; value: T } | { ok: false; message?: string };
 interface LoginState {
   state?: string;

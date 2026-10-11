@@ -112,9 +112,49 @@ pub fn initials(name: &str) -> String {
     }
 }
 
+/// What the assistant is called when its cloud record still carries only its
+/// handle. The same words as the app's name lookup (assistant-owner.ts).
+pub const ASSISTANT_FALLBACK_NAME: &str = "Your assistant";
+
+/// The assistant's handle (`setup`) or cloud slug (`setup-<owner8>`), which
+/// is never a name a person should read.
+fn is_assistant_slug(name: &str) -> bool {
+    let value = name.trim().to_lowercase();
+    if value == "setup" {
+        return true;
+    }
+    match value.strip_prefix("setup-") {
+        Some(rest) => rest.len() == 8 && rest.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// The sender name a DM notification shows. An assistant created before it
+/// had a name still reaches the inbox as `setup`; it reads "Your assistant".
+pub fn dm_sender_name(from_display_name: &str) -> String {
+    if is_assistant_slug(from_display_name) {
+        ASSISTANT_FALLBACK_NAME.to_string()
+    } else {
+        from_display_name.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dm_from_the_assistant_never_shows_its_handle() {
+        assert_eq!(dm_sender_name("setup"), "Your assistant");
+        assert_eq!(dm_sender_name(" Setup "), "Your assistant");
+        assert_eq!(dm_sender_name("setup-rg13gzm4"), "Your assistant");
+        assert_eq!(dm_sender_name("Hazel"), "Hazel");
+        assert_eq!(dm_sender_name("setup helper"), "setup helper");
+        assert_eq!(dm_sender_name("setup-"), "setup-");
+        assert_eq!(dm_sender_name("Setup-Helper"), "Setup-Helper");
+        assert_eq!(dm_sender_name("setup-abc123"), "setup-abc123");
+        assert_eq!(initials(&dm_sender_name("setup")), "YA");
+    }
 
     /// macOS is the platform whose default flipped: an install that never
     /// recorded a choice must route to SYSTEM notifications.

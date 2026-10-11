@@ -136,9 +136,11 @@ describe("ChannelConversation runtime repair cards", () => {
   });
 
   it("Sign in runs the tool's sign-in and the check, then the same row turns fixed with no new message", async () => {
+    // The check made when the card is first drawn still finds the tool signed out.
+    let signedIn = false;
     const { invoke, calls } = fakeInvoke({
-      agent_provider_login_start: { state: "connected" },
-      local_bots_probe: { ok: true, detail: "fine" },
+      agent_provider_login_start: () => ((signedIn = true), { state: "connected" }),
+      local_bots_probe: () => (signedIn ? { ok: true, detail: "fine" } : { ok: false, class: "signed-out" }),
     });
     const messages = thread({ v: 1, blocks: [block("signed-out", "signIn")] });
     const onsend = render(messages, controllerOver(invoke));
@@ -150,8 +152,8 @@ describe("ChannelConversation runtime repair cards", () => {
     expect(repairRow?.getAttribute("data-event-id")).toBe("evt_repair");
     primary().click();
     await settle();
-    expect(calls.map((c) => c.cmd)).toEqual(["agent_provider_login_start", "local_bots_probe"]);
-    expect(calls[0]!.args).toEqual({ tool: "claude", force: true });
+    expect(calls.map((c) => c.cmd)).toEqual(["local_bots_probe", "agent_provider_login_start", "local_bots_probe"]);
+    expect(calls[1]!.args).toEqual({ tool: "claude", force: true });
     expect(card()).toBe(before);
     expect(card()!.dataset.phase).toBe("fixed");
     expect(card()!.textContent).toContain("You’re all set");
@@ -218,5 +220,88 @@ describe("ChannelConversation runtime repair cards", () => {
     expect(warn).toHaveBeenCalled();
     // The button is back for another try.
     expect(primary().disabled).toBe(false);
+  });
+
+  it("a sign-in finished somewhere else turns the signed-out card fixed in place", async () => {
+    let signedIn = false;
+    const { invoke, calls } = fakeInvoke({
+      local_bots_probe: () => (signedIn ? { ok: true } : { ok: false, class: "signed-out" }),
+    });
+    const controller = controllerOver(invoke);
+    const onsend = render(thread({ v: 1, blocks: [block("signed-out", "signIn")] }), controller);
+    await settle();
+    const before = card();
+    expect(before!.dataset.phase).toBe("offered");
+    expect(card()!.textContent).toContain("Claude Code is signed out");
+
+    // Signed in on another screen (or with the tool's own login), not this card.
+    signedIn = true;
+    await controller.recheckSignIn({ runtime: "claude", force: true });
+    await settle();
+    expect(card()).toBe(before);
+    expect(card()!.dataset.phase).toBe("fixed");
+    expect(card()!.textContent).toContain("You’re all set");
+    expect(card()!.textContent).toContain("Send me anything.");
+    expect(calls.some((c) => c.cmd === "agent_provider_login_start")).toBe(false);
+    expect(host.querySelectorAll("[data-event-id]").length).toBe(2);
+    expect(onsend).not.toHaveBeenCalled();
+  });
+
+  it("stays signed out when the check after another sign-in still fails", async () => {
+    const { invoke } = fakeInvoke({ local_bots_probe: { ok: false, class: "signed-out" } });
+    const controller = controllerOver(invoke);
+    render(thread({ v: 1, blocks: [block("signed-out", "signIn")] }), controller);
+    await settle();
+    await controller.recheckSignIn({ runtime: "claude", force: true });
+    await settle();
+    expect(card()!.dataset.phase).toBe("offered");
+    expect(card()!.textContent).toContain("Claude Code is signed out");
+    expect(primary().textContent?.trim()).toBe("Sign in");
+  });
+
+  it("a card opened after the tool was signed in elsewhere shows it fixed", async () => {
+    const { invoke } = fakeInvoke({ local_bots_probe: { ok: true } });
+    render(thread({ v: 1, blocks: [block("signed-out", "signIn")] }), controllerOver(invoke));
+    await settle();
+    expect(card()!.dataset.phase).toBe("fixed");
+    expect(card()!.textContent).toContain("You’re all set");
+  });
+
+  it("a new signed-out card right after a passing check and restart stays signed out instead of restarting the bot again", async () => {
+    const { invoke, calls } = fakeInvoke({ local_bots_probe: { ok: true } });
+    const onsignedin = vi.fn();
+    const controller = new RuntimeRepairController({
+      signIn: async () => false,
+      update: async () => false,
+      setModel: async () => false,
+      probe: (runtime, model) => invoke("local_bots_probe", { runtime, model: model ?? null }),
+      onsignedin,
+    });
+    render(thread({ v: 1, blocks: [block("signed-out", "signIn")] }), controller);
+    await settle();
+    expect(card()!.dataset.phase).toBe("fixed");
+    expect(onsignedin).toHaveBeenCalledTimes(1);
+    const probes = calls.filter((c) => c.cmd === "local_bots_probe").length;
+    await unmount(component!);
+    component = null;
+    host.remove();
+
+    // The restarted bot still cannot sign in and posts a new signed-out card.
+    const again: ConversationMessageWire = {
+      eventId: "evt_repair_2",
+      fromPersonUid: BOT,
+      fromDisplayName: "Pickles",
+      body: "Claude Code is signed out on this Mac.",
+      createdAt: "2026-10-10T09:42:05.000Z",
+      direction: "in",
+      richContent: { v: 1, blocks: [block("signed-out", "signIn")] },
+    };
+    render([...thread({ v: 1, blocks: [block("signed-out", "signIn")] }), again], controller);
+    await settle();
+    const second = host.querySelector<HTMLElement>('[data-event-id="evt_repair_2"] [data-testid="runtime-repair-card"]')!;
+    expect(second.dataset.phase).toBe("offered");
+    expect(second.textContent).toContain("Claude Code is signed out");
+    expect(calls.filter((c) => c.cmd === "local_bots_probe").length).toBe(probes);
+    expect(onsignedin).toHaveBeenCalledTimes(1);
   });
 });

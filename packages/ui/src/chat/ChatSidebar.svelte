@@ -77,6 +77,7 @@
   } from "@hq/platform";
   import type { BotDisplayNames } from "./bot-display-names.js";
   import { localBotForRow, localBotPeers, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
+  import { withAssistantNames } from "./assistant-owner.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import { botHandle, newBotOtherWayLabel, type BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
@@ -468,6 +469,12 @@
     /** agentUid → display name for local bots that have one. */
     botDisplayNames?: BotDisplayNames | null;
     /**
+     * The assistant's uid and the one name it goes by (assistant-owner.ts
+     * `assistantName`). Its contact and conversation rows show this name,
+     * never a handle or slug.
+     */
+    assistantName?: { agentUid: string; name: string } | null;
+    /**
      * The user's own local bots that this computer cannot run right now — a
      * wiped config, a reinstall, a second Mac. They are not on `localBots`,
      * and drawing them as `Cloud` is what the owner's VM showed happening to
@@ -615,6 +622,7 @@
     probeBotRuntime = null,
     localBots = null,
     botDisplayNames = null,
+    assistantName = null,
     ownedLocalBotUids = null,
     onrows,
     onretired = null,
@@ -1106,7 +1114,10 @@
   let botRemovals = $state<BotRemoval[]>(loadAccountBotRemovals(accountStorage, legacyRemovalStorage));
   /** Bots the server confirmed removed. Their conversation stays off the list. */
   let removedBotUids = $state<string[]>(loadAccountRemovedBots(accountStorage, legacyRemovalStorage));
-  const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
+  // The assistant's row reads its name, never its handle or slug.
+  const contactsWithUnreads = $derived(
+    withAssistantNames(applyPairUnreads(contacts, pairUnreads), assistantName, "personUid", "displayName"),
+  );
 
   /**
    * Names for DM peers the contacts roster does not cover: people read from
@@ -1449,7 +1460,7 @@
   // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
     withoutRetiredRows(
-      normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames), {
+      normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames, assistantName), {
         pinnedIds: pinsWithSetup,
         dmDots,
         includeContactsWithoutConversation: true,
@@ -5141,7 +5152,7 @@
         props={{
           api,
           rows: [...directoryRows, ...browseRows],
-          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames, assistantName),
           companies: scopeCompanies,
           activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
           scopeLabel,
@@ -5166,7 +5177,7 @@
         props={{
           api,
           rows: [...directoryRows, ...browseRows],
-          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames, assistantName),
           companies: createScopeCompanies,
           activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
           onclose: closeCreate,
@@ -5182,7 +5193,7 @@
       botCompanyUid={createBotCompanyUid}
       botCompanySlug={createBotCompanySlug}
       rows={[...directoryRows, ...browseRows]}
-      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
+      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames, assistantName)}
       {scopeCompanies}
       createCompanies={createScopeCompanies}
       activeScope={scope}

@@ -45,6 +45,11 @@ interface AdapterOptions {
   claudeLoggedIn?: boolean;
   /** Answer `agent_session_preflight` this way instead. */
   preflightImpl?: () => Promise<unknown>;
+  /** `hq bot probe` (the real sign-in check); null leaves the host without it. Passes by default. */
+  probe?: ((runtime: string) => Promise<unknown>) | null;
+  /** The tool's browser sign-in (`agent_provider_login_start` / status). */
+  loginStart?: (runtime: string, opts?: { force?: boolean }) => Promise<unknown>;
+  loginStatus?: (runtime: string) => Promise<unknown>;
 }
 
 function adapter({
@@ -55,6 +60,9 @@ function adapter({
   hasFeatureImpl,
   setupStatusImpl,
   preflightImpl,
+  probe = async () => ok({ ok: true, class: null }),
+  loginStart,
+  loginStatus,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
     hasFeatureImpl ?? (async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false)),
@@ -91,6 +99,8 @@ function adapter({
           grokAvailable: false,
           grokLoggedIn: false,
         })),
+      ...(loginStart ? { loginStart } : {}),
+      ...(loginStatus ? { loginStatus } : {}),
     },
     bots: {
       list: async () => ok({ bots }),
@@ -99,6 +109,7 @@ function adapter({
       stop: async () => ok({}),
       remove: async () => ok({}),
       workers: async () => ok({ workers: [] }),
+      ...(probe ? { probe } : {}),
     },
   } as unknown as PlatformAdapter;
   return { platform, hasFeature, updateAgentProfile, sendDm };
@@ -282,7 +293,7 @@ describe("visual first run, flag on", () => {
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     // (The rail labels the setup bot's DM the same way today's flow does.)
     await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
-    expect(q('[data-testid="channel-name"]')?.textContent).toMatch(/Biscuit|setup/);
+    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit");
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     // The legacy automatic start never ran alongside it.
@@ -341,6 +352,78 @@ describe("visual first run, flag on", () => {
     expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
     expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("waiting");
     expect(create).not.toHaveBeenCalled();
+  });
+
+  // The owner's test Mac kept a Claude Code login whose refresh token was
+  // dead. `auth status` still said signed in, so the assistant was created
+  // saying "signed in Claude Code" and its first turn failed to sign in.
+  it("a stored but dead login: nothing is created, the row offers Sign in, and Sign in replaces the login", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const probe = vi.fn(async () => ok({ ok: false, class: "signed-out", detail: "OAuth session expired" }));
+    const loginStart = vi.fn(async () => ok({ state: "waiting" }));
+    const loginStatus = vi.fn(async () => ok({ state: "connected" }));
+    const { platform } = adapter({ create, flag: true, probe, loginStart, loginStatus });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Popcorn");
+    pressEnter();
+    await settle();
+    await vi.waitFor(() =>
+      expect(probe).toHaveBeenCalledWith("claude", null, expect.objectContaining({ timeoutSecs: 15 })),
+    );
+    await settle();
+    expect(step()).toBe("tools");
+    expect(create).not.toHaveBeenCalled();
+    expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("signIn");
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
+
+    q<HTMLButtonElement>('[data-testid="first-run-tool-claude-signin"]')!.click();
+    await vi.waitFor(() => expect(loginStart).toHaveBeenCalledWith("claude", { force: true }));
+    // The fresh login counts: the assistant is created, once, and may say so.
+    // (The sign-in's status is polled every 1.5 s.)
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ runtime: "claude", intro: firstRunIntro({ name: "Popcorn", runtime: "claude" }) }),
+    );
+  });
+
+  it("a dead login replaced in a terminal: back in the window, HQ checks again and creates the assistant", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const answers = [ok({ ok: false, class: "signed-out" })];
+    const probe = vi.fn(async () => answers.shift() ?? ok({ ok: true, class: null }));
+    const { platform } = adapter({ create, flag: true, probe });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Popcorn");
+    pressEnter();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("signIn"));
+    expect(create).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ intro: firstRunIntro({ name: "Popcorn", runtime: "claude" }) }),
+    );
+  });
+
+  it.each([
+    ["fails for another reason", async () => ok({ ok: false, class: "transient" })],
+    ["could not run", async () => failure("unavailable", "probe exited with status 1")],
+  ])("a sign-in check that %s does not block, and the hello does not claim signed in", async (_label, answer) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform } = adapter({ create, flag: true, probe: vi.fn(answer) });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Popcorn");
+    pressEnter();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const input = (create.mock.calls[0] as unknown[])[0] as { intro: string; kickoff: string };
+    expect(input.intro).toBe(firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: false }));
+    expect(input.intro).not.toContain("signed in");
+    expect(input.kickoff).not.toContain("Claude Code is signed in");
+    warn.mockRestore();
   });
 
   it("a readiness check that fails does not strand the tools step: each row offers Try again, which recovers", async () => {
@@ -415,7 +498,10 @@ describe("visual first run, leaving for chat while the assistant is being create
 
   it("#welcome holds its start while the first-run create runs, and never makes a second setup bot", async () => {
     const pending = deferredCreate();
-    const { platform } = adapter({ create: pending.create as never, flag: true });
+    // `hq bot list` shows the setup bot once its create has landed: the list
+    // is what every later start reads.
+    const listed: unknown[] = [];
+    const { platform } = adapter({ create: pending.create as never, flag: true, bots: listed });
     await boot(platform);
     await confirmAndLeave();
     await vi.waitFor(() => expect(pending.create).toHaveBeenCalledTimes(1));
@@ -428,6 +514,20 @@ describe("visual first run, leaving for chat while the assistant is being create
     run.click();
     await settle();
 
+    listed.push({
+      name: "setup",
+      agentUid: SETUP_BOT_UID,
+      ownerUid: "prs_test",
+      runtime: "claude",
+      state: "running",
+      pid: 1,
+      processAlive: true,
+      online: true,
+      lastHeartbeatAt: new Date().toISOString(),
+      daemonInstalled: true,
+      daemonLoaded: true,
+      dir: "/tmp/.hq/bots/setup",
+    });
     pending.resolve(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     await settle();
     // Once it lands the button opens that bot; it still never creates again.

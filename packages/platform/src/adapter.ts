@@ -23,6 +23,7 @@
  */
 
 import type { Capabilities, Capability } from "./capabilities.js";
+import type { BadgesPayload } from "./badges.js";
 import type {
   EvidenceOptions,
   ServiceEvidence,
@@ -476,6 +477,13 @@ export interface IdentityApi {
     agentUid: string,
     input: SelectAgentAvatarInput,
   ): AdapterPromise<SelectAgentAvatarResult>;
+  /**
+   * GET /v1/badges/{uid} — a teammate's accomplishment badges (`uid` is a
+   * `prs_*` person uid or `me`), parsed by `parseBadgesPayload`. A failure
+   * (including the 404 for agents, non-teammates and a route that is not
+   * deployed yet) is the caller's cue to show no badges.
+   */
+  getBadges?(uid: string): AdapterPromise<BadgesPayload>;
 }
 
 export interface MessageSearchOptions {
@@ -2088,6 +2096,11 @@ export interface LocalBotRow {
    * copy (`chat/bot-display-names.ts`); readers fall back to `name`.
    */
   displayName?: string;
+  /**
+   * `assistant` for the person's assistant (the setup bot), from an hq-cli
+   * that reports the cloud role marker. Absent on older CLI versions.
+   */
+  role?: string;
   agentUid: string;
   ownerUid: string;
   runtime: "claude" | "codex" | "grok";
@@ -2148,6 +2161,10 @@ export interface LocalBotRow {
 export interface RemoteBotRow {
   /** Local folder name (what `adopt`/`start` take). */
   name: string;
+  /** The cloud name, from an hq-cli that reports it. Absent on older CLI versions. */
+  displayName?: string;
+  /** `assistant` for the person's assistant (the setup bot). Absent on older CLI versions. */
+  role?: string;
   agentUid: string;
   /** `personal` | `company`, as the cloud record has it. */
   kind: string;
@@ -2178,6 +2195,10 @@ export interface RemoteBotRow {
 /** One bot's outcome in `hq bot restore --json`. */
 export interface BotRestoreRow {
   name: string;
+  /** The cloud name, from an hq-cli that reports it. Absent on older CLI versions. */
+  displayName?: string;
+  /** `assistant` for the person's assistant (the setup bot). Absent on older CLI versions. */
+  role?: string;
   agentUid: string;
   /** `restored` = brought back here; `repaired` = new credentials for one already here. */
   action:

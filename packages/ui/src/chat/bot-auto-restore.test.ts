@@ -15,6 +15,7 @@ import {
   autoRestoreFailedLine,
   autoRestoreHeldBack,
   autoRestoreStateKey,
+  assistantToRecover,
   countAutoRestoreAttempt,
   joinBotNames,
   noteAutoRestoreAttempt,
@@ -37,8 +38,8 @@ function beat(ago: number): string {
 
 function remote(over: Partial<RemoteBotRow> = {}): RemoteBotRow {
   return {
-    name: "setup",
-    agentUid: "agt_setup",
+    name: "scout",
+    agentUid: "agt_scout",
     kind: "personal",
     online: false,
     lastHeartbeatAt: null,
@@ -48,7 +49,7 @@ function remote(over: Partial<RemoteBotRow> = {}): RemoteBotRow {
 }
 
 function local(over: Partial<LocalBotRow> = {}): LocalBotRow {
-  return { name: "setup", agentUid: "agt_setup", processAlive: true, online: true, ...over } as LocalBotRow;
+  return { name: "scout", agentUid: "agt_scout", processAlive: true, online: true, ...over } as LocalBotRow;
 }
 
 describe("autoRestoreCandidates", () => {
@@ -57,7 +58,7 @@ describe("autoRestoreCandidates", () => {
       remote(),
       remote({ name: "test-bot", agentUid: "agt_test" }),
     ]);
-    expect(autoRestoreCandidates(listing, []).map((b) => b.name)).toEqual(["setup", "test-bot"]);
+    expect(autoRestoreCandidates(listing, []).map((b) => b.name)).toEqual(["scout", "test-bot"]);
   });
 
   it("never offers a company bot — it can only ever run in HQ Cloud", () => {
@@ -66,7 +67,7 @@ describe("autoRestoreCandidates", () => {
       remote({ name: "ops", agentUid: "agt_ops", runnable: false, reason: "company-bot" }),
       remote(),
     ]);
-    expect(autoRestoreCandidates(listing, []).map((b) => b.name)).toEqual(["setup"]);
+    expect(autoRestoreCandidates(listing, []).map((b) => b.name)).toEqual(["scout"]);
   });
 
   it("skips a bot that is already running on this computer", () => {
@@ -91,14 +92,14 @@ describe("a bot that is RUNNING on another computer is never taken by itself", (
       remote({ name: "test-bot", agentUid: "agt_test" }),
     ]);
     expect(autoRestoreCandidates(listing, [], NOW).map((b) => b.name)).toEqual(["test-bot"]);
-    expect(autoRestoreHeldBack(listing, [], NOW).map((b) => b.name)).toEqual(["setup"]);
+    expect(autoRestoreHeldBack(listing, [], NOW).map((b) => b.name)).toEqual(["scout"]);
   });
 
   it("skips a bot whose heartbeat is still fresh, even with online false", () => {
     // `online` lags both ways; the listing's own timestamp is the other half.
     const listing = remoteBotListingOk([remote({ online: false, lastHeartbeatAt: beat(60_000) })]);
     expect(autoRestoreCandidates(listing, [], NOW)).toEqual([]);
-    expect(autoRestoreHeldBack(listing, [], NOW).map((b) => b.name)).toEqual(["setup"]);
+    expect(autoRestoreHeldBack(listing, [], NOW).map((b) => b.name)).toEqual(["scout"]);
   });
 
   it("still brings back the wiped Mac's bots: offline, and the heartbeat is old", () => {
@@ -107,7 +108,7 @@ describe("a bot that is RUNNING on another computer is never taken by itself", (
       remote({ name: "test-bot", agentUid: "agt_test", online: false, lastHeartbeatAt: null }),
     ]);
     expect(autoRestoreCandidates(listing, [], NOW).map((b) => b.name)).toEqual([
-      "setup",
+      "scout",
       "test-bot",
     ]);
     expect(autoRestoreHeldBack(listing, [], NOW)).toEqual([]);
@@ -142,14 +143,14 @@ describe("what is restored is what is charged", () => {
     expect(autoRestoreDue(last, [setup], NOW + AUTO_RESTORE_RETRY_MS - 1)).toEqual([]);
     // …and after it, it is due again.
     expect(autoRestoreDue(last, [setup], NOW + AUTO_RESTORE_RETRY_MS).map((b) => b.name)).toEqual([
-      "setup",
+      "scout",
     ]);
     last = noteAutoRestoreAttempt(last, [test], NOW);
     expect(autoRestoreDue(last, [setup, test], NOW)).toEqual([]);
   });
 
   it("lets a bot never tried go at once", () => {
-    expect(autoRestoreDue({}, [setup], NOW).map((b) => b.name)).toEqual(["setup"]);
+    expect(autoRestoreDue({}, [setup], NOW).map((b) => b.name)).toEqual(["scout"]);
   });
 });
 
@@ -197,18 +198,18 @@ describe("the per-bot budget", () => {
 
 describe("what the person reads", () => {
   it("names the bots that came back, in plain words", () => {
-    expect(autoRestoreDoneLine(["setup", "test-bot"])).toBe("setup and test-bot are back online.");
-    expect(autoRestoreDoneLine(["setup"])).toBe("setup is back online.");
+    expect(autoRestoreDoneLine(["scout", "test-bot"])).toBe("scout and test-bot are back online.");
+    expect(autoRestoreDoneLine(["scout"])).toBe("scout is back online.");
     expect(autoRestoreDoneLine(["a", "b", "c"])).toBe("a, b and c are back online.");
     expect(autoRestoreDoneLine([])).toBe("");
   });
 
   it("names the ones that could not, with the reason sentence the app already has", () => {
-    expect(autoRestoreFailedLine(["setup"], "Restoring bots needs a newer HQ Cloud.")).toBe(
-      "setup couldn't be brought back to this computer. Restoring bots needs a newer HQ Cloud.",
+    expect(autoRestoreFailedLine(["scout"], "Restoring bots needs a newer HQ Cloud.")).toBe(
+      "scout couldn't be brought back to this computer. Restoring bots needs a newer HQ Cloud.",
     );
-    expect(autoRestoreFailedLine(["setup"], null)).toBe(
-      "setup couldn't be brought back to this computer.",
+    expect(autoRestoreFailedLine(["scout"], null)).toBe(
+      "scout couldn't be brought back to this computer.",
     );
   });
 
@@ -216,8 +217,8 @@ describe("what the person reads", () => {
     for (const line of [
       AUTO_RESTORE_RUNNING,
       AUTO_RESTORE_STARTING_THIS_BOT,
-      autoRestoreDoneLine(["setup"]),
-      autoRestoreFailedLine(["setup"], null),
+      autoRestoreDoneLine(["scout"]),
+      autoRestoreFailedLine(["scout"], null),
     ]) {
       expect(line).not.toMatch(/hq bot|HQ API|\/v1\/|\b\d{3}\b/);
       expect(line).not.toMatch(/\bagent\b/i);
@@ -240,7 +241,35 @@ describe("what the person reads", () => {
   });
 
   it("joins names without inventing punctuation for one of them", () => {
-    expect(joinBotNames([" setup ", "", "test-bot"])).toBe("setup and test-bot");
+    expect(joinBotNames([" scout ", "", "test-bot"])).toBe("scout and test-bot");
     expect(joinBotNames([])).toBe("");
+  });
+});
+
+/**
+ * The assistant (the setup bot) has one owner, assistant-owner.ts. On the
+ * v0.11.4 release check an automatic restore adopted it a second before the
+ * first run's create, and "Couldn't start Hazel" stayed next to a running bot.
+ */
+describe("automatic restore never takes the assistant", () => {
+  const assistant = remote({ name: "setup", agentUid: "agt_assistant" });
+  const other = remote({ name: "test-bot", agentUid: "agt_test" });
+
+  it("leaves the assistant out by its handle or by its role, and still brings back every other bot", () => {
+    const listing = remoteBotListingOk([assistant, other]);
+    expect(autoRestoreCandidates(listing, []).map((b) => b.agentUid)).toEqual(["agt_test"]);
+    const marked = remoteBotListingOk([remote({ name: "hazel", agentUid: "agt_hazel", role: "assistant" }), other]);
+    expect(autoRestoreCandidates(marked, []).map((b) => b.agentUid)).toEqual(["agt_test"]);
+  });
+
+  it("hands the assistant to its owner instead, only when it is not here and not running elsewhere", () => {
+    expect(assistantToRecover(remoteBotListingOk([assistant, other]), [], NOW)?.agentUid).toBe("agt_assistant");
+    expect(assistantToRecover(remoteBotListingOk([other]), [], NOW)).toBeNull();
+    expect(
+      assistantToRecover(remoteBotListingOk([assistant]), [local({ name: "setup", agentUid: "agt_assistant" })], NOW),
+    ).toBeNull();
+    const live = remote({ name: "setup", agentUid: "agt_assistant", online: true, lastHeartbeatAt: beat(1_000) });
+    expect(assistantToRecover(remoteBotListingOk([live]), [], NOW)).toBeNull();
+    expect(assistantToRecover(NO_REMOTE_BOT_LISTING, [], NOW)).toBeNull();
   });
 });

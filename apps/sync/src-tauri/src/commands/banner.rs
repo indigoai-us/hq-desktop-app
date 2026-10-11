@@ -48,7 +48,7 @@ use std::{
     time::Duration,
 };
 
-use hq_desktop_core::banner::initials;
+use hq_desktop_core::banner::{dm_sender_name, initials};
 pub use hq_desktop_core::banner::{custom_banner_enabled, BannerPayload};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindowBuilder};
@@ -342,11 +342,12 @@ pub async fn show_dm_banner(
         .as_deref()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
+    let sender = dm_sender_name(&event.from_display_name);
     let payload = BannerPayload {
         kind: "dm".to_string(),
-        title: event.from_display_name.clone(),
+        title: sender.clone(),
         body: event.body.clone(),
-        icon_text: Some(initials(&event.from_display_name)),
+        icon_text: Some(initials(&sender)),
         action_label: has_prompt.then(|| "Copy prompt".to_string()),
         action_id: has_prompt.then(|| "copy".to_string()),
         click_action_id: "open".to_string(),

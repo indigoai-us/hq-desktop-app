@@ -17,6 +17,7 @@ import {
   tourCanGoBack,
   tourPrimaryLabel,
   tourProgressLabel,
+  tourSetupBlocked,
   tourSteps,
   unionTourRects,
   writeTourSeenLocally,
@@ -166,6 +167,7 @@ describe("shouldAutoStartTour", () => {
     shellReady: true,
     welcomeOnScreen: true,
     startedThisSession: false,
+    setupBlocked: false,
   };
 
   it("starts on a fresh install once the setup conversation is on screen", () => {
@@ -182,6 +184,29 @@ describe("shouldAutoStartTour", () => {
   it("waits for the shell and the welcome conversation", () => {
     expect(shouldAutoStartTour({ ...ready, shellReady: false })).toBe(false);
     expect(shouldAutoStartTour({ ...ready, welcomeOnScreen: false })).toBe(false);
+  });
+
+  it("waits while #welcome asks for a coding tool", () => {
+    expect(shouldAutoStartTour({ ...ready, setupBlocked: true })).toBe(false);
+  });
+});
+
+describe("tourSetupBlocked", () => {
+  const signedIn = { claude: true, codex: false, grok: false };
+  const none = { claude: false, codex: false, grok: false };
+
+  it("blocks while no coding tool is signed in, so the tour never covers Install Claude", () => {
+    expect(tourSetupBlocked({ hasSetupBot: true, runtimeReady: none, setupError: null })).toBe(true);
+  });
+
+  it("blocks until the host has answered, and while a setup error is on screen", () => {
+    expect(tourSetupBlocked({ hasSetupBot: true, runtimeReady: null, setupError: null })).toBe(true);
+    expect(tourSetupBlocked({ hasSetupBot: true, runtimeReady: signedIn, setupError: "failed" })).toBe(true);
+  });
+
+  it("clears once a tool is signed in, and never blocks a host without a setup bot", () => {
+    expect(tourSetupBlocked({ hasSetupBot: true, runtimeReady: signedIn, setupError: null })).toBe(false);
+    expect(tourSetupBlocked({ hasSetupBot: false, runtimeReady: none, setupError: "x" })).toBe(false);
   });
 });
 

@@ -82,7 +82,7 @@ function render(opts: Opts = {}) {
     props: {
       initialName: "Pickles",
       initialStep: opts.initialStep ?? "name",
-      creation: opts.creation ?? { state: "ready", name: "Pickles", bot: { agentUid: "agt_1", name: "Pickles" } },
+      creation: opts.creation ?? { state: "ready", name: "Pickles", bot: { agentUid: "agt_1", handle: "setup" } },
       runtimeReady: opts.runtimeReady ?? { claude: true, codex: false, grok: false },
       teamOptions: { invites: [ACME], companies: [HARBOR] },
       teamHost,
