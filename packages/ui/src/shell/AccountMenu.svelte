@@ -3,10 +3,10 @@
    * Account menu (console-rail US-010). 300 px popover on the You avatar.
    * Paints from the cached identity. Companies are reached from the rail
    * tiles and the More companies popover, so this menu lists none. Sign out
-   * confirms through confirm-sign-out.ts before the host ends the session.
+   * uses the in-app confirm. window.confirm is a silent no-op in WKWebView.
    */
   import { focusReturn } from "./focus-return.js";
-  import { confirmSignOut } from "../settings/confirm-sign-out.js";
+  import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import type { AccountPageId } from "./account-menu.js";
   import TierMark from "../badges/TierMark.svelte";
   import type { ResolvedBadge } from "../badges/badge-catalog.js";
@@ -40,6 +40,8 @@
     onsignout,
   }: Props = $props();
 
+  let signOutConfirmOpen = $state(false);
+
   function mark(): string {
     if (initials.trim()) return initials.trim().slice(0, 2).toUpperCase();
     const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -53,7 +55,11 @@
   }
 
   function signOut(): void {
-    if (!confirmSignOut()) return;
+    signOutConfirmOpen = true;
+  }
+
+  function acceptSignOut(): void {
+    signOutConfirmOpen = false;
     onsignout?.();
   }
 
@@ -109,6 +115,16 @@
     </button>
   </div>
 </div>
+
+<ConfirmDialog
+  open={signOutConfirmOpen}
+  title="Sign out"
+  message="Sign out of HQ Work on this machine?"
+  confirmLabel="Sign out"
+  danger
+  oncancel={() => (signOutConfirmOpen = false)}
+  onconfirm={acceptSignOut}
+/>
 
 <style>
   .scrim {
@@ -252,7 +268,7 @@
     color: var(--v4-text-1);
     font: 400 13px/1.2 var(--font-ui);
     text-align: left;
-    cursor: default;
+    cursor: pointer;
   }
 
   .row:hover,
@@ -275,6 +291,6 @@
   }
 
   .signout {
-    color: var(--v4-text-3);
+    color: var(--v4-text-1);
   }
 </style>
