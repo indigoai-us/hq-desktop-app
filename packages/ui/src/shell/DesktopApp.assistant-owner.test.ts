@@ -300,6 +300,8 @@ describe("first-run create racing automatic restore", () => {
     // A brand-new assistant is never "back online" (finding 5).
     expect(screenText()).not.toMatch(/hazel is back online/i);
     expectNoSlug("takeover");
+    // The restore prompt never offers the assistant the first run is making.
+    expect(q('[data-testid="bot-restore-banner"]')).toBeNull();
 
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));

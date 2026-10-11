@@ -3245,6 +3245,10 @@
     // A name the person confirmed in the visual first run (then left it for
     // chat) is kept; otherwise a friendly free one, for a new assistant only.
     const confirmed = firstRunConfirmedName;
+    // Without a chosen name, the account's own listing decides whether an
+    // assistant already exists to bring back as it is, so ask it now rather
+    // than give a returning person's assistant a picked name.
+    if (!confirmed && !existingSetupBot) await refreshRemoteBots(true);
     const result = await assistantOwner.start(
       confirmed ? { name: confirmed } : { nameIfNew: existingSetupBot ? null : await pickAssistantName() },
     );
@@ -4726,7 +4730,15 @@
       // bots back by itself, a prompt asking for the click it no longer needs
       // is the confusion this whole change removes.
       !autoRestoreHandling &&
-      botsMissingHere.length > 0,
+      restorePromptBots.length > 0,
+  );
+  /**
+   * The bots the prompt offers. On a computer that has not run setup the
+   * assistant is the first run's (or #welcome's) to bring, under the name the
+   * person chooses, so the prompt does not offer it.
+   */
+  const restorePromptBots = $derived.by(() =>
+    botsMissingHere.filter((bot) => !isAssistantRecord(bot) || welcomeSetupRun || visualFirstRunFinished),
   );
   function dismissBotRestorePrompt(): void {
     botRestoreDismissed = true;
@@ -13926,7 +13938,7 @@
          landed. Dismissal is remembered per machine; Settings › Bots offers
          it again. -->
     <BotRestoreBanner
-      count={botsMissingHere.length}
+      count={restorePromptBots.length}
       liveElsewhere={botsLiveElsewhere.length}
       busy={botRestoreBusy}
       result={botRestoreResult}
