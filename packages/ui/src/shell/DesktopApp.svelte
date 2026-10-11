@@ -88,6 +88,10 @@
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
+  import { badgesFor } from "../badges/badge-source.js";
+  import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
+  import { topBadge } from "../badges/badge-tier.js";
+  import type { ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
   import {
     atlasLiveActors,
@@ -8696,7 +8700,16 @@
       : (openProfileMember?.avatarUrl ?? null),
   );
 
+  /** Where the profile panel opens; the rail's badge hover card opens it on badges. */
+  type ProfileStart = { view: "profile" | "badges"; badgeId?: string | null };
+  let profileStart = $state<{ view: "profile" | "badges"; badgeId: string | null; key: number }>({
+    view: "profile",
+    badgeId: null,
+    key: 0,
+  });
+
   function openMemberProfile(row: StatusPersonRow): void {
+    profileStart = { view: "profile", badgeId: null, key: profileStart.key + 1 };
     // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
     openArtifactView = null;
@@ -13045,6 +13058,53 @@
     }
   }
 
+  /**
+   * Badges come from hq-pro (GET /v1/badges/{uid}) through the platform
+   * adapter. Installed while the script runs, before any view reads a badge,
+   * and only when no source is installed yet (the design harness has samples).
+   */
+  onDestroy(installBadgeLoader(untrack(() => adapter.identity)));
+
+  /** Your earned badges, for the hover card on the rail's You button. */
+  const youBadges = $derived(
+    badgesFor({ kind: "person", name: resolvedAccountLabel ?? "", email: self?.email ?? null, uid: self?.uid ?? null }),
+  );
+  /** The badge behind your tier mark, on your picture in the account menu. */
+  const youTopBadge = $derived(topBadge(youBadges));
+
+  /**
+   * Your own profile panel, from the You hover card: on the Badges page
+   * ("See all") or on one badge. The panel sits beside a conversation; with
+   * none open, your profile settings stand in for it.
+   */
+  async function openSelfProfile(start: ProfileStart): Promise<void> {
+    const uid = self?.uid?.trim();
+    const row = selectedRow;
+    accountMenuOpen = false;
+    if (!uid || !row) {
+      openAccountPage("profile");
+      return;
+    }
+    // From another page, back to the open conversation the panel sits beside.
+    if (view !== "conversation") {
+      await navigate(destinationFromConversation(row, { ...currentConversationNested(), replyRootEventId: null }));
+    }
+    openMemberProfile(
+      {
+        personUid: uid,
+        // The account name, so the panel shows the same badges as the card.
+        displayName: resolvedAccountLabel ?? "You",
+        email: self?.email?.trim() || null,
+        avatarUrl: selfAvatarUrl,
+        description: selfDescription,
+        role: null,
+        statusIcon: "idle",
+        online: youPresence.live,
+      },
+    );
+    profileStart = { view: start.view, badgeId: start.badgeId ?? null, key: profileStart.key };
+  }
+
   function toggleAccountMenu(): void {
     if (accountMenuOpen) {
       accountMenuOpen = false;
@@ -13945,6 +14005,9 @@
       youExpanded={accountMenuOpen}
       youLive={youPresence.live}
       youWork={youPresence.work}
+      {youBadges}
+      onyoubadges={() => void openSelfProfile({ view: "badges" })}
+      onyoubadge={(badge: ResolvedBadge) => void openSelfProfile({ view: "profile", badgeId: badge.def.id })}
     />
     {#if accountMenuOpen}
       <AccountMenu
@@ -13953,6 +14016,7 @@
         initials={resolvedAccountInitials ?? ""}
         live={youPresence.live}
         work={youPresence.work}
+        topBadge={youTopBadge}
         anchorLeft={accountMenuAnchor.left}
         anchorBottom={accountMenuAnchor.bottom}
         onclose={() => (accountMenuOpen = false)}
@@ -15753,6 +15817,10 @@
                     props={{
                       kind: "person",
                       name: openProfileMember.displayName,
+                      personUid: openProfileMember.personUid,
+                      view: profileStart.view,
+                      badgeId: profileStart.badgeId,
+                      openKey: profileStart.key,
                       email: openProfileMember.email,
                       role: openProfileMember.role,
                       company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,

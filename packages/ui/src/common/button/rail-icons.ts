@@ -45,7 +45,13 @@ export type LineIconName =
   | "door"
   | "sliders"
   | "cloud"
-  | "laptop";
+  | "laptop"
+  // Badge views (badges/): back, card, flip, and the share menu's two kinds.
+  | "caret-left"
+  | "cards"
+  | "arrows-clockwise"
+  | "image"
+  | "video-camera";
 
 export type BrandIconName = "claude-code" | "codex" | "grok";
 
@@ -90,6 +96,11 @@ export const LINE_ICONS: Record<LineIconName, string> = {
   sliders: "M2.5 5h11M2.5 11h11M6 3.5v3M10 9.5v3",
   cloud: "M4.75 12.5h6.5a2.75 2.75 0 0 0 .3-5.48 3.75 3.75 0 0 0-7.2-.52A3 3 0 0 0 4.75 12.5Z",
   laptop: "M3.5 4h9v6.5h-9zM1.5 12.5h13",
+  "caret-left": "M10 3.5 5.5 8l4.5 4.5",
+  cards: "M5.5 5.5h7v8h-7zM3.5 11V3.5h7",
+  "arrows-clockwise": "M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5",
+  image: "M2.5 3.5h11v9h-11zM2.5 10.5l3-3 3 3 2-2 3 3M10.5 6.5h.01",
+  "video-camera": "M2 4.5h8.5v7H2zM10.5 7l3.5-2v6l-3.5-2",
 };
 
 /**

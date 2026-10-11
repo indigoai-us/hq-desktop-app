@@ -2157,6 +2157,7 @@
                   label={messageAuthor(msg)}
                   avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                   agentUid={msg.fromPersonUid}
+                  personUid={isAgent(msg) ? null : msg.fromPersonUid}
                   size="regular"
                 />
               </span>
@@ -2307,6 +2308,7 @@
                       kind="person"
                       label={messageAuthor(msg)}
                       avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
+                      personUid={msg.fromPersonUid}
                       size="regular"
                       online={actorOnline(msg.fromPersonUid)}
                     />
