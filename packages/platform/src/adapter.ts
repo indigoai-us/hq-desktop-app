@@ -2313,6 +2313,241 @@ export interface ImportScanEndView {
  * host validates each line and emits it as `IMPORT_SCAN_EVENT` with the
  * scan's id; nothing leaves the computer. One scan at a time.
  */
+/** Settings > Storage (`hq storage status --json`). Desktop-only. */
+export interface StorageLocalTranche {
+  id: string;
+  label: string;
+  from?: string | null;
+  to?: string | null;
+  commit_count: number;
+  est_bytes: number;
+}
+
+export interface StorageCloudTranche {
+  id: string;
+  label: string;
+  count: number;
+  bytes: number;
+}
+
+export interface StorageCloudCompany {
+  company: string;
+  available: boolean;
+  error?: string | null;
+  current_bytes: number;
+  noncurrent_bytes: number;
+  noncurrent_count: number;
+  delete_markers: number;
+  tranches: StorageCloudTranche[];
+  /** Owner or admin: may delete old versions. Absent on older CLIs. */
+  can_delete?: boolean | null;
+}
+
+export interface StorageStatus {
+  local: {
+    available: boolean;
+    reason?: string | null;
+    root?: string | null;
+    git_dir_bytes: number;
+    working_tree_bytes: number;
+    commit_count: number;
+    oldest_commit_at?: string | null;
+    newest_commit_at?: string | null;
+    tranches: StorageLocalTranche[];
+    /** Tool bookmarks (e.g. refs/cmux/last-turn/*) that prune clears. */
+    extra_refs?: number;
+    /** Branches, tags or a stash that still reach old history. */
+    holding_refs?: StorageHoldingRef[];
+    holding_refs_count?: number;
+    /** Bytes an undo backup still holds, freed at `reclaim_after`. */
+    pending_reclaim_bytes?: number | null;
+    reclaim_after?: string | null;
+  };
+  cloud: StorageCloudCompany[];
+  /** Big files that can move to HQ cloud. Absent on CLIs without offload. */
+  offload?: StorageOffloadStatus | null;
+  /** Cloud history could not be read at all (e.g. signed out). */
+  cloud_error?: string | null;
+  generated_at?: string | null;
+  reclaim?: StorageReclaim | null;
+}
+
+/** A branch, tag or stash that keeps old backup history alive. */
+export interface StorageHoldingRef {
+  name: string;
+  commit_date?: string | null;
+}
+
+/** Top-level `reclaim`: expired undo backups the CLI dropped first. */
+export interface StorageReclaim {
+  available: boolean;
+  dropped?: number | null;
+  freed_bytes?: number | null;
+  reason?: string | null;
+}
+
+export interface StorageCountBytes {
+  count: number;
+  bytes: number;
+}
+
+/** `hq storage status --json` → `offload`. */
+export interface StorageOffloadStatus {
+  /** Old copies of big files in local backup history. */
+  history_candidates: StorageCountBytes;
+  /** Big files in the HQ folder not opened or changed for a while. */
+  current_candidates: StorageCountBytes;
+  /** `.hqcloud` placeholders already on this computer. */
+  placeholders: StorageCountBytes;
+  /** `false` when big files can't move at all (old HQ, old HQ sync). */
+  available?: boolean | null;
+  reason?: string | null;
+  /**
+   * `true` only once the CLI can move current files. Absent means it can't,
+   * so `current_candidates` is not offered.
+   */
+  current_available?: boolean | null;
+  /** Why current files can't move yet. Never shown raw. */
+  current_reason?: string | null;
+  /**
+   * Old big files a linked worktree still uses. They can't be freed, so they
+   * are not in `history_candidates`. `worktrees` are paths; show folder names only.
+   */
+  history_held?: (StorageCountBytes & { worktrees?: string[] | null }) | null;
+}
+
+/** `hq storage offload --json` (with `--dry-run`: what would move). */
+export interface StorageOffloadResult {
+  history: {
+    uploaded: number;
+    bytes: number;
+    freed_bytes: number;
+    /** Old copies that would move (dry run) or were eligible. */
+    candidates?: number | null;
+    candidate_bytes?: number | null;
+    /** `false` with a `reason` when history copies could not move. */
+    available?: boolean | null;
+    reason?: string | null;
+    /** Undo backup the rewrite kept (normally none: offload frees at once). */
+    backup_ref?: string | null;
+    /** When `pending_reclaim_bytes` are freed (dry run: an estimate). */
+    reclaim_after?: string | null;
+    pending_reclaim_bytes?: number | null;
+    /** Old versions a linked worktree still uses: left in place, never counted as freed. */
+    held_by_worktrees?: StorageCountBytes | null;
+    /** Worktree paths that still use old history. Show folder names only. */
+    worktree_holders?: string[] | null;
+    /** Set when the run stops before changing anything, e.g. nothing_to_free. */
+    refused?: string | null;
+    /** The CLI's plain sentence for `refused`. */
+    message?: string | null;
+  };
+  current: {
+    offloaded: Array<{ path: string; bytes: number }>;
+    freed_bytes: number;
+    /** `false` with a `reason` while current files can't move yet. */
+    available?: boolean | null;
+    reason?: string | null;
+  };
+  /** Per-file failures; the UI only counts them. */
+  errors: unknown[];
+  dry_run?: boolean;
+  reclaim?: StorageReclaim | null;
+}
+
+/** Native event while HQ opens a `.hqcloud` placeholder. */
+export const CLOUD_FILE_EVENT = "cloud-file://fetch";
+
+export interface CloudFileEventPayload {
+  /** Original file name, e.g. `promo.mp4`. */
+  name: string;
+  /** Full placeholder path; keys the toast. */
+  path?: string | null;
+  phase: "fetching" | "opened" | "error";
+  /**
+   * `offline` | `no-access` | `orphaned` | `not-member` | `update-hq` |
+   * `open-failed` | `failed`.
+   */
+  error?: string | null;
+}
+
+export interface StoragePruneRequest {
+  /** YYYY-MM-DD; local snapshots older than this are removed. */
+  localBefore?: string | null;
+  /** YYYY-MM-DD; old cloud file versions older than this are removed. */
+  cloudBefore?: string | null;
+  company?: string | null;
+}
+
+/**
+ * `hq storage prune --json`. `local` is the hq-core script's output with
+ * `available` added: a dry run reports `would_remove_commits`/`est_bytes`, a
+ * real run `removed_commits` and git dir size `before`/`after`.
+ * `retained_refs` counts other refs that can keep old history alive.
+ */
+export interface StorageLocalPruneResult {
+  available: boolean;
+  reason?: string | null;
+  would_remove_commits: number;
+  est_bytes: number;
+  removed_commits: number;
+  total_commits_before: number;
+  flattened_merges: number;
+  retained_refs: number;
+  /** Dry run: tool bookmarks prune would clear. */
+  refs_to_remove?: number;
+  /** Real run: tool bookmarks prune cleared. */
+  refs_removed?: number;
+  refs_to_remove_sample?: string[];
+  before?: { git_dir_bytes: number } | null;
+  after?: { git_dir_bytes: number } | null;
+  /** `nothing_to_free`: branches, tags or a stash still reach the history. */
+  refused?: string | null;
+  holding_refs?: StorageHoldingRef[];
+  holding_refs_count?: number;
+  /** Real run: bytes freed right away. */
+  freed_bytes?: number | null;
+  /** The 24 h undo backup, and when the bytes it holds are freed. */
+  backup_ref?: string | null;
+  reclaim_after?: string | null;
+  pending_reclaim_bytes?: number | null;
+}
+
+export interface StorageCloudPruneResult {
+  company: string;
+  deleted_count: number;
+  deleted_bytes: number;
+  errors: string[];
+}
+
+export interface StoragePruneResult {
+  local?: StorageLocalPruneResult | null;
+  cloud: StorageCloudPruneResult[];
+  dry_run: boolean;
+  reclaim?: StorageReclaim | null;
+}
+
+/**
+ * Desktop-only. A failure whose message is `update-hq` means the hq CLI is
+ * missing or predates `hq storage`.
+ */
+export interface StorageApi {
+  status(): AdapterPromise<StorageStatus>;
+  previewPrune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
+  prune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
+  /** `hq storage offload --dry-run --json`. */
+  previewOffload(): AdapterPromise<StorageOffloadResult>;
+  /** `hq storage offload --yes --json`: upload, verify, free space. */
+  offload(): AdapterPromise<StorageOffloadResult>;
+  /** Download a `.hqcloud` placeholder's original and open it. */
+  openCloudFile(path: string): AdapterPromise<string>;
+  /**
+   * The UI is listening for `CLOUD_FILE_EVENT`: returns events that fired
+   * before (e.g. a cold start from a Finder double-click).
+   */
+  cloudFileUiReady(): AdapterPromise<CloudFileEventPayload[]>;
+}
+
 export interface ContextImportApi {
   /** Run a scan under this id. Resolves when it ends, however it ends. */
   scanStart(scanId: string): AdapterPromise<ImportScanEndView>;
@@ -2608,6 +2843,8 @@ export interface PlatformAdapter {
   readonly bots?: LocalBotsApi;
   /** Optional: only the desktop host can read this computer's context. */
   readonly contextImport?: ContextImportApi;
+  /** Optional: only the desktop host can read and prune local HQ backups. */
+  readonly storage?: StorageApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
   /** Native calling (US-014). Unsupported hosts implement it as refusals. */

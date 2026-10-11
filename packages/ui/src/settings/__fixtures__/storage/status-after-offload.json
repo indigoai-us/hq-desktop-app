@@ -1,0 +1,70 @@
+{
+  "local": {
+    "available": true,
+    "root": "/tmp/e2e-fx3",
+    "git_dir_bytes": 268775424,
+    "working_tree_bytes": 254859252,
+    "commit_count": 303,
+    "oldest_commit_at": "2025-04-11T13:46:21Z",
+    "newest_commit_at": "2026-10-09T17:55:57Z",
+    "tranches": [
+      {
+        "id": "7d",
+        "label": "Last 7 days",
+        "from": "2026-10-02T18:14:28Z",
+        "to": "2026-10-09T18:14:28Z",
+        "commit_count": 4,
+        "est_bytes": 54
+      },
+      {
+        "id": "30d",
+        "label": "7–30 days",
+        "from": "2026-09-09T18:14:28Z",
+        "to": "2026-10-02T18:14:28Z",
+        "commit_count": 13,
+        "est_bytes": 1391
+      },
+      {
+        "id": "90d",
+        "label": "30–90 days",
+        "from": "2026-07-11T18:14:28Z",
+        "to": "2026-09-09T18:14:28Z",
+        "commit_count": 33,
+        "est_bytes": 2214
+      },
+      {
+        "id": "365d",
+        "label": "90 days–1 year",
+        "from": "2025-10-09T18:14:28Z",
+        "to": "2026-07-11T18:14:28Z",
+        "commit_count": 153,
+        "est_bytes": 7571
+      },
+      {
+        "id": "older",
+        "label": "Older than 1 year",
+        "from": "2025-04-11T13:46:21Z",
+        "to": "2025-10-09T18:14:28Z",
+        "commit_count": 100,
+        "est_bytes": 4736
+      }
+    ],
+    "extra_refs": 3
+  },
+  "cloud": [],
+  "offload": {
+    "history_candidates": {
+      "count": 0,
+      "bytes": 0
+    },
+    "current_candidates": {
+      "count": 0,
+      "bytes": 0
+    },
+    "placeholders": {
+      "count": 0,
+      "bytes": 0
+    }
+  },
+  "generated_at": "2026-10-09T18:14:29.218Z"
+}

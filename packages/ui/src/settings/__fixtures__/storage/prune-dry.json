@@ -1,0 +1,8 @@
+{
+  "local": {
+    "available": false,
+    "reason": "hq-storage.sh report --json [--root <hq>] [--no-cache]\n  hq-storage.sh prune --before <YYYY-MM-DD> [--dry-run] [--yes] [--root <hq>]\n  hq-storage.sh large --json [--min-bytes N] [--root <hq>]\n  hq-storage.sh strip-large --manifest <file.json> [--dry-run] [--yes] [--root <hq>]"
+  },
+  "cloud": [],
+  "dry_run": true
+}

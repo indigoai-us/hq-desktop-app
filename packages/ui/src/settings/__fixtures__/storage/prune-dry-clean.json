@@ -1,0 +1,17 @@
+{
+  "local": {
+    "available": true,
+    "would_remove_commits": 144,
+    "est_bytes": 125938296,
+    "flattened_merges": 1,
+    "retained_refs": 3,
+    "holding_refs": [],
+    "holding_refs_count": 0,
+    "refs_to_remove": 1,
+    "refs_to_remove_sample": [
+      "refs/cmux/last-turn/a"
+    ]
+  },
+  "cloud": [],
+  "dry_run": true
+}

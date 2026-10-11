@@ -37,6 +37,8 @@
     startJitteredPoll,
     type PlatformAdapter,
     type UpdateGateStatus,
+    CLOUD_FILE_EVENT,
+    type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
@@ -148,6 +150,7 @@
     atlasShortcutTarget,
   } from "./advertised-shortcuts.js";
   import { dismissToastByKey, pushToast } from "./toast-stack.svelte.js";
+  import { cloudFileToast, cloudFileToastKey } from "../settings/storage-model.js";
   import { updateToastCopy } from "./update-toast.js";
   import {
     isSyncToastDismissed,
@@ -1843,6 +1846,57 @@
     });
   });
   $effect(() => () => dismissToastByKey(SYNC_TOAST_KEY));
+
+  // Double-clicking a `.hqcloud` placeholder: the native side downloads the
+  // original and opens it (cloud_file.rs); this shows each step as a toast.
+  // Steps that happened before this window listened (a cold start from
+  // Finder) are held natively and handed over by `cloudFileUiReady`.
+  function showCloudFileStep(raw: unknown): void {
+    const payload = (raw ?? {}) as Partial<CloudFileEventPayload>;
+    if (typeof payload.name !== "string" || !payload.phase) return;
+    const ev = payload as CloudFileEventPayload;
+    const copy = cloudFileToast(ev);
+    pushToast({
+      key: cloudFileToastKey(ev),
+      kind: copy.sticky ? "sticky" : "quiet",
+      tone: copy.tone,
+      testId: "cloud-file-toast",
+      title: copy.title,
+      detail: copy.detail,
+      progress: copy.progress,
+    });
+  }
+
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    const storage = adapter?.storage;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void host
+      .listen(CLOUD_FILE_EVENT, (event) => showCloudFileStep(event?.payload))
+      .then(
+        async (un) => {
+          if (disposed) {
+            un();
+            return;
+          }
+          unlisten = un;
+          const held = await storage?.cloudFileUiReady?.();
+          if (disposed || !held) return;
+          if (held.ok) {
+            for (const ev of Array.isArray(held.value) ? held.value : []) showCloudFileStep(ev);
+          } else {
+            console.error("cloud file: held events failed:", held.message);
+          }
+        },
+        (err) => console.error("cloud file: event subscribe failed:", err),
+      );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
 
   /**
    * Per-file conflict rows for the Core popover. Separate from the reducer

@@ -1,0 +1,17 @@
+{
+  "history": {
+    "uploaded": 6,
+    "bytes": 378535936,
+    "freed_bytes": 0,
+    "candidates": 6,
+    "candidate_bytes": 378535936
+  },
+  "current": {
+    "offloaded": [],
+    "freed_bytes": 0
+  },
+  "errors": [
+    "history rewrite: update HQ"
+  ],
+  "dry_run": false
+}

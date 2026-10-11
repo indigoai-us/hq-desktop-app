@@ -880,6 +880,16 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
   };
 
+  readonly storage: NonNullable<PlatformAdapter["storage"]> = {
+    status: () => this.call("get_storage_status"),
+    previewPrune: (request) => this.call("preview_storage_prune", { request }),
+    prune: (request) => this.call("run_storage_prune", { request }),
+    previewOffload: () => this.call("preview_storage_offload"),
+    offload: () => this.call("run_storage_offload"),
+    openCloudFile: (path) => this.call("open_cloud_file", { path }),
+    cloudFileUiReady: () => this.call("cloud_file_ui_ready"),
+  };
+
   readonly bots: NonNullable<PlatformAdapter["bots"]> = {
     list: () => this.call("local_bots_list"),
     create: (input) =>

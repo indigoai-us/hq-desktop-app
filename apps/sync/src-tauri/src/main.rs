@@ -483,6 +483,15 @@ fn main() {
         // menubar process. Here the callback surfaces the existing instance and
         // the second process exits instead of becoming a ghost duplicate.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // Windows/Linux: double-clicking a `.hqcloud` placeholder while HQ
+            // runs lands here. Fetch the original and open it; no window steal.
+            let cloud_files = commands::cloud_file::placeholders_from_argv(&argv);
+            if !cloud_files.is_empty() {
+                for file in cloud_files {
+                    commands::cloud_file::spawn_fetch_and_open(app, file);
+                }
+                return;
+            }
             // US-104: if the OS delivered a hqwork:// URL to THIS process,
             // route it internally. Do not steal the popover for a deep link.
             if let Some(url) = commands::hq_work::hqwork_url_from_argv(&argv) {
@@ -913,6 +922,13 @@ fn main() {
             commands::drift_detail::open_drift_detail,
             commands::drift_detail::drift_window_ready,
             commands::feedback::submit_bug_report,
+            commands::storage::get_storage_status,
+            commands::storage::preview_storage_prune,
+            commands::storage::run_storage_prune,
+            commands::storage::preview_storage_offload,
+            commands::storage::run_storage_offload,
+            commands::cloud_file::open_cloud_file,
+            commands::cloud_file::cloud_file_ui_ready,
             commands::bots::local_bots_list,
             commands::bots::local_bots_create,
             commands::bots::local_bots_start,
@@ -1175,6 +1191,14 @@ fn main() {
             commands::compat::open_developer_settings,
         ])
         .setup(|app| {
+            // Windows/Linux cold start from a `.hqcloud` double-click. macOS
+            // delivers it as `RunEvent::Opened` below instead.
+            #[cfg(not(target_os = "macos"))]
+            for file in commands::cloud_file::placeholders_from_argv(
+                &std::env::args().collect::<Vec<_>>(),
+            ) {
+                commands::cloud_file::spawn_fetch_and_open(app.handle(), file);
+            }
             // Unattended dependency-install mode for the VM install matrix.
             // Engaged only by HQ_HEADLESS_INSTALL_DEPS=<out.json>; runs the
             // real `install_deps` orchestrator, writes a JSON result, exits.
@@ -1789,6 +1813,17 @@ fn main() {
             // `has_visible_windows` is deliberately ignored: a hidden-but-live
             // notification banner still counts as a visible window, so
             // honouring the flag would make the Dock icon inert.
+            // Finder double-click on a `.hqcloud` placeholder (cold or warm
+            // start): fetch the original from HQ cloud and open it.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                for url in urls {
+                    if let Some(file) = commands::cloud_file::placeholder_from_url(url) {
+                        commands::cloud_file::spawn_fetch_and_open(_app_handle, file);
+                    }
+                }
+            }
+
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 // Same reason as the focus handler above: no eager force-probe.

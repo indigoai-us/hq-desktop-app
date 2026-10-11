@@ -107,6 +107,12 @@ export const PERSONAL_TRANSCRIPTS_FLAG =
 /** Admin-owned rollout gate for the person's self-service HQ Anywhere setting. */
 export const HQ_ANYWHERE_RUNTIME_FLAG = "hq-anywhere-runtime";
 /**
+ * Settings > Storage and `hq storage` (shared with hq-cli). Allowlist gate:
+ * owner hold 2026-10-11, Indigo-only, default off, fails closed. Read per
+ * company with `hasCompanyFeature`; see packages/ui/src/settings/storage-feature.ts.
+ */
+export const HQ_STORAGE_FLAG = "hq-storage";
+/**
  * Visual first-run setup (owner plan, 2026-10-08): with it on, a first run
  * opens the New bot step-through takeover (name the HQ assistant, coding
  * tools, done) instead of auto-starting the setup bot's chat. Default off:

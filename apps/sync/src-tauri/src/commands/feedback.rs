@@ -15,7 +15,7 @@ use crate::util::paths;
 
 static FEEDBACK_SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn resolve_hq_folder() -> PathBuf {
+pub(crate) fn resolve_hq_folder() -> PathBuf {
     let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
         .ok()
         .filter(|p| p.exists())

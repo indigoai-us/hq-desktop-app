@@ -18,6 +18,8 @@
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import PageHeader from "../shell/PageHeader.svelte";
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
+  import StorageSettingsPane from "./StorageSettingsPane.svelte";
+  import { resolveStorageFeature } from "./storage-feature.js";
   import AgentsSettingsPane from "./AgentsSettingsPane.svelte";
   import BotsSettingsPane from "./BotsSettingsPane.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
@@ -53,7 +55,8 @@
     | "notifications"
     | "sync"
     | "meetings"
-    | "updates";
+    | "updates"
+    | "storage";
 
   const ALL_SECTIONS: ReadonlyArray<{ id: ShellSettingsSection | "sep"; label: string }> =
     [
@@ -69,6 +72,7 @@
       { id: "sync", label: "Sync" },
       { id: "meetings", label: "Meetings" },
       { id: "updates", label: "Updates" },
+      { id: "storage", label: "Storage" },
       { id: "agents", label: "AI tools" },
       { id: "bots", label: "Bots" },
     ];
@@ -436,6 +440,22 @@
     }
   }
 
+  // hq-storage allowlist gate (owner hold 2026-10-11, Indigo-only). Hidden
+  // until the registry says true for one of the person's companies; any
+  // failure keeps it hidden.
+  let storageFeatureOn = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    let live = true;
+    storageFeatureOn = false;
+    void resolveStorageFeature(identity).then((on) => {
+      if (live) storageFeatureOn = on;
+    });
+    return () => {
+      live = false;
+    };
+  });
+
   const sections = $derived(
     ALL_SECTIONS.filter((section) => {
       if (section.id === "sync")
@@ -443,6 +463,8 @@
       if (section.id === "updates") {
         return adapter?.isAvailable("canSelfUpdate") ?? false;
       }
+      // Storage shells to the local hq CLI; desktop host only.
+      if (section.id === "storage") return Boolean(adapter?.storage) && storageFeatureOn;
       if (section.id === "agents")
         return Boolean(adapter?.sessions?.preflight);
       // Bots: the Cloud group reads adapter.agents (every host); the Local
@@ -456,7 +478,7 @@
 <section class="shell-settings" data-testid="settings-two-column">
   <PageHeader
     title="Settings"
-    subtitle="yours — moved here from the Core menu"
+    subtitle="Your account and app preferences"
     subtitleTestId="settings-subtitle"
     backTestId="settings-back"
     onback={() => onback?.()}
@@ -714,6 +736,10 @@
         <BillingSettingsPane {openExternal} />
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
+      {:else if active === "storage"}
+        {#if storageFeatureOn}
+          <StorageSettingsPane {adapter} onfeaturedisabled={() => (storageFeatureOn = false)} />
+        {/if}
       {:else if active === "bots"}
         <BotsSettingsPane {adapter} {companies} {onnewbot} />
       {:else}
