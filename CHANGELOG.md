@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On a new computer with no coding tool yet, the welcome tour now waits until Claude Code or Codex is installed and signed in, instead of opening on top of the Install Claude card.
 - A brand-new account no longer sees "conflict copies parked" after its first sync. When HQ uploads your files before background sync has started, it now records each file's cloud version, so the next sync knows the cloud copy is the one it just uploaded.
 - The Storage page now loads for people with very large HQ cloud history. Reading every old file version can take a couple of minutes the first time, so the page waits up to five minutes for it (previews of a delete wait up to ten) instead of stopping at two minutes with an error.
 - Company telemetry now counts days in your own time zone, the same way your personal usage already does.
