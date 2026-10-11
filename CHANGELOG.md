@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Company telemetry now counts days in your own time zone, the same way your personal usage already does.
 - HQ uses less CPU: the Atlas map draws at most a fixed number of dots, and the app stops refreshing in the background while its window is hidden.
 
 - Storage has a new Big files section at the top. It shows old copies of big files (over 50 MB) in your backup history, their total size, and how many files are already in your HQ cloud. "Move to cloud and free ~X" checks which copies would move, explains that they will be stored in your HQ cloud and you can still get any of them back, and asks you to confirm before anything moves. If something goes wrong partway, the result says plainly that no space was freed yet and your files are still on your computer. Big files you haven't opened in a while are not moved yet; that row appears once HQ can move them safely. When moving is not available on your computer, the section says to update HQ instead of showing zero. Moved files leave a small .hqcloud file behind. Double-clicking one opens HQ, which downloads the original and opens it in its usual app, even when HQ was not running; if you're offline or don't have access, HQ says so in plain words. Wording says "this Mac", "this PC" or "this computer" to match your computer. Deleting a company's cloud history is offered only when HQ knows you are an owner or admin.
