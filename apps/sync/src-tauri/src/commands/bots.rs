@@ -156,9 +156,17 @@ fn is_old_display_name_charset_refusal(message: &str) -> bool {
     message.contains("--display-name can use letters, spaces, apostrophes, periods and hyphens")
 }
 
-/// An hq CLI from before `--display-name` refuses the flag outright.
-fn is_unknown_display_name_flag(message: &str) -> bool {
-    message.contains("unknown option") && message.contains("--display-name")
+/// What a failed `hq bot create` hands back to the app. An hq CLI from before
+/// numbers in display names gets the app's own sentence; anything else is
+/// passed on as it is (the app logs it and shows its own words). There is no
+/// retry without `--display-name` for a CLI too old for the flag: a bot
+/// created without the person's name would show its handle as its name.
+fn create_failure(display_name_given: bool, message: String) -> String {
+    if display_name_given && is_old_display_name_charset_refusal(&message) {
+        log(LOG_TAG, &format!("hq bot create refused a display name with numbers: {}", message.replace('\n', " | ")));
+        return DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.to_string();
+    }
+    message
 }
 
 /// Memory location for `hq bot create --memory`: HQ-synced or this Mac only.
@@ -403,23 +411,9 @@ pub async fn local_bots_create(
         display_name.as_deref(),
     )?;
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    match run_hq_bot(&argv, Duration::from_secs(150)).await {
-        // An older hq refuses the flag before creating anything: create the
-        // bot without it (the app still labels it locally).
-        Err(message) if display_name.is_some() && is_unknown_display_name_flag(&message) => {
-            let flag = argv.iter().position(|a| *a == "--display-name");
-            let mut retry = argv.clone();
-            if let Some(i) = flag {
-                retry.drain(i..(i + 2).min(retry.len()));
-            }
-            run_hq_bot(&retry, Duration::from_secs(150)).await
-        }
-        Err(message) if display_name.is_some() && is_old_display_name_charset_refusal(&message) => {
-            log(LOG_TAG, &format!("hq bot create refused a display name with numbers: {}", message.replace('\n', " | ")));
-            Err(DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ.to_string())
-        }
-        other => other,
-    }
+    run_hq_bot(&argv, Duration::from_secs(150))
+        .await
+        .map_err(|message| create_failure(display_name.is_some(), message))
 }
 
 /// `hq bot workers --json` → `{ workers: [{ id, path, company?, description?,
@@ -896,8 +890,17 @@ mod tests {
         assert!(create_args("setup", "claude", None, None, None, None, None, None, None, None, Some(&"x".repeat(36))).is_err());
         assert!(create_args("setup", "claude", None, None, None, None, None, None, None, None, Some("Pick\nles")).is_err());
         assert_eq!(validate_display_name("Zoë O'Brien-Lee").unwrap(), "Zoë O'Brien-Lee");
-        assert!(is_unknown_display_name_flag("error: unknown option '--display-name'"));
-        assert!(!is_unknown_display_name_flag("error: unknown option '--kickoff'"));
+    }
+
+    #[test]
+    fn a_cli_too_old_for_display_names_is_not_retried_without_the_name() {
+        // The refusal goes back as it is: the app shows its own sentence, and
+        // nothing creates a bot whose name would be its handle.
+        let refusal = "error: unknown option '--display-name'".to_string();
+        assert_eq!(create_failure(true, refusal.clone()), refusal);
+        let old_charset = "error: --display-name can use letters, spaces, apostrophes, periods and hyphens.".to_string();
+        assert_eq!(create_failure(true, old_charset.clone()), DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ);
+        assert_eq!(create_failure(false, old_charset.clone()), old_charset);
     }
 
     #[test]

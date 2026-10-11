@@ -293,7 +293,7 @@ describe("visual first run, flag on", () => {
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     // (The rail labels the setup bot's DM the same way today's flow does.)
     await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
-    expect(q('[data-testid="channel-name"]')?.textContent).toMatch(/Biscuit|setup/);
+    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit");
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     // The legacy automatic start never ran alongside it.
@@ -498,7 +498,10 @@ describe("visual first run, leaving for chat while the assistant is being create
 
   it("#welcome holds its start while the first-run create runs, and never makes a second setup bot", async () => {
     const pending = deferredCreate();
-    const { platform } = adapter({ create: pending.create as never, flag: true });
+    // `hq bot list` shows the setup bot once its create has landed: the list
+    // is what every later start reads.
+    const listed: unknown[] = [];
+    const { platform } = adapter({ create: pending.create as never, flag: true, bots: listed });
     await boot(platform);
     await confirmAndLeave();
     await vi.waitFor(() => expect(pending.create).toHaveBeenCalledTimes(1));
@@ -511,6 +514,20 @@ describe("visual first run, leaving for chat while the assistant is being create
     run.click();
     await settle();
 
+    listed.push({
+      name: "setup",
+      agentUid: SETUP_BOT_UID,
+      ownerUid: "prs_test",
+      runtime: "claude",
+      state: "running",
+      pid: 1,
+      processAlive: true,
+      online: true,
+      lastHeartbeatAt: new Date().toISOString(),
+      daemonInstalled: true,
+      daemonLoaded: true,
+      dir: "/tmp/.hq/bots/setup",
+    });
     pending.resolve(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     await settle();
     // Once it lands the button opens that bot; it still never creates again.

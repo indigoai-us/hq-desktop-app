@@ -40,17 +40,18 @@ import {
   LOCAL_BOT_TRACE_KEY,
 } from "../chat/bot-runnability.js";
 import type { ChatSidebarApi } from "../chat/chat-api";
+import { takePendingChannelOpen, takePendingDmRequests } from "../chat/open-target.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 
-const SETUP_UID = "agt_setup";
+const SCOUT_UID = "agt_scout";
 const TEST_UID = "agt_test_bot";
 /** A company bot: its identity lives in HQ Cloud and can never run on a Mac. */
 const COMPANY_UID = "agt_izzy";
 
 function remoteBot(over: Partial<RemoteBotRow> = {}): RemoteBotRow {
   return {
-    name: "setup",
-    agentUid: SETUP_UID,
+    name: "scout",
+    agentUid: SCOUT_UID,
     kind: "personal",
     online: false,
     lastHeartbeatAt: null,
@@ -62,8 +63,8 @@ function remoteBot(over: Partial<RemoteBotRow> = {}): RemoteBotRow {
 
 function localBot(over: Partial<LocalBotRow> = {}): LocalBotRow {
   return {
-    name: "setup",
-    agentUid: SETUP_UID,
+    name: "scout",
+    agentUid: SCOUT_UID,
     ownerUid: "prs_me",
     runtime: "claude",
     state: "running",
@@ -73,7 +74,7 @@ function localBot(over: Partial<LocalBotRow> = {}): LocalBotRow {
     lastHeartbeatAt: new Date().toISOString(),
     daemonInstalled: true,
     daemonLoaded: true,
-    dir: "/tmp/.hq/bots/setup",
+    dir: "/tmp/.hq/bots/scout",
     ...over,
   } as LocalBotRow;
 }
@@ -153,6 +154,10 @@ let component: ReturnType<typeof mount> | null = null;
 
 beforeEach(() => {
   window.localStorage.clear();
+  // A channel open an earlier test asked for (and that test's shell did not
+  // live to take) must not open in this one.
+  takePendingChannelOpen();
+  takePendingDmRequests();
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
 });
 
@@ -279,14 +284,14 @@ describe("a fresh install brings the bots back by itself", () => {
     gate.resolve(
       ok(
         restoreResult([
-          { name: "setup", agentUid: SETUP_UID, action: "restored" },
+          { name: "scout", agentUid: SCOUT_UID, action: "restored" },
           { name: "test-bot", agentUid: TEST_UID, action: "restored" },
         ]),
       ) as never,
     );
     await vi.waitFor(() =>
       expect(q('[data-testid="bot-auto-restore-status"]')?.textContent?.trim()).toBe(
-        autoRestoreDoneLine(["setup", "test-bot"]),
+        autoRestoreDoneLine(["scout", "test-bot"]),
       ),
     );
     await settle(20);
@@ -390,7 +395,7 @@ describe("a fresh install brings the bots back by itself", () => {
     await new Promise((r) => setTimeout(r, 20));
     await settle(20);
     expect(restore, "one restore, not two").toHaveBeenCalledTimes(1);
-    gate.resolve(ok(restoreResult([{ name: "setup", agentUid: SETUP_UID, action: "restored" }])) as never);
+    gate.resolve(ok(restoreResult([{ name: "scout", agentUid: SCOUT_UID, action: "restored" }])) as never);
     await settle(20);
   });
 });
@@ -416,9 +421,9 @@ describe("when a bot cannot be brought back", () => {
             list: async () => ok({ bots: [] }),
             listRemote: async () => ok({ bots: [remoteBot()] }),
           },
-          contacts: [{ personUid: SETUP_UID, displayName: "setup", companyUid: null }],
+          contacts: [{ personUid: SCOUT_UID, displayName: "scout", companyUid: null }],
         }),
-        dmRow(SETUP_UID, "setup"),
+        dmRow(SCOUT_UID, "scout"),
       );
       await until("the first automatic try", () => restore.mock.calls.length >= 1);
 
@@ -500,7 +505,7 @@ describe("a bot that is running on another computer is never taken by itself", (
         list: async () => ok({ bots: [] }),
         listRemote: async () => ok({ bots: [remoteBot(over)] }),
       },
-      contacts: [{ personUid: SETUP_UID, displayName: "setup", companyUid: null }],
+      contacts: [{ personUid: SCOUT_UID, displayName: "scout", companyUid: null }],
     });
   }
 
@@ -513,7 +518,7 @@ describe("a bot that is running on another computer is never taken by itself", (
 
   it("leaves a bot the listing says is online there, and says what starting it here costs", async () => {
     const calls = spies();
-    mountApp(liveElsewhereAdapter({ online: true }, calls), dmRow(SETUP_UID, "setup"));
+    mountApp(liveElsewhereAdapter({ online: true }, calls), dmRow(SCOUT_UID, "scout"));
 
     await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
     await settle(30);
@@ -545,7 +550,7 @@ describe("a bot that is running on another computer is never taken by itself", (
         { online: false, lastHeartbeatAt: new Date(Date.now() - 60_000).toISOString() },
         calls,
       ),
-      dmRow(SETUP_UID, "setup"),
+      dmRow(SCOUT_UID, "scout"),
     );
 
     await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
@@ -577,7 +582,7 @@ describe("a bot that is running on another computer is never taken by itself", (
     // Writing to a bot is what brings it back, EXCEPT when bringing it back
     // would stop it answering on the computer it is answering on.
     const calls = spies();
-    mountApp(liveElsewhereAdapter({ online: true }, calls), dmRow(SETUP_UID, "setup"));
+    mountApp(liveElsewhereAdapter({ online: true }, calls), dmRow(SCOUT_UID, "scout"));
     await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
 
     await sendPlainMessage();
@@ -616,9 +621,9 @@ describe("what is restored is what is charged", () => {
           listRemote: async () =>
             ok({ bots: [remoteBot(), remoteBot({ name: "test-bot", agentUid: TEST_UID })] }),
         },
-        contacts: [{ personUid: SETUP_UID, displayName: "setup", companyUid: null }],
+        contacts: [{ personUid: SCOUT_UID, displayName: "scout", companyUid: null }],
       }),
-      dmRow(SETUP_UID, "setup"),
+      dmRow(SCOUT_UID, "scout"),
     );
 
     // Both bots are missing, so the first automatic try is the one bulk call —
@@ -630,7 +635,7 @@ describe("what is restored is what is charged", () => {
     // The person writes to ONE of them. That bot comes back by name; the other
     // is neither restored nor charged.
     await sendPlainMessage();
-    expect(adopt.mock.calls, "only the bot that was written to").toEqual([["setup"]]);
+    expect(adopt.mock.calls, "only the bot that was written to").toEqual([["scout"]]);
     expect(restore, "no second bulk restore behind its back").toHaveBeenCalledTimes(1);
 
     // And the tick after it does not go again: both bots are inside their own
@@ -665,9 +670,9 @@ describe("the dead-DM moment", () => {
           list: async () => ok({ bots: here ? [localBot()] : [] }),
           listRemote: async () => ok({ bots: [remoteBot({ here })] }),
         },
-        contacts: [{ personUid: SETUP_UID, displayName: "setup", companyUid: null }],
+        contacts: [{ personUid: SCOUT_UID, displayName: "scout", companyUid: null }],
       }),
-      dmRow(SETUP_UID, "setup"),
+      dmRow(SCOUT_UID, "scout"),
     );
     await vi.waitFor(() => expect(restore).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeTruthy());
@@ -688,7 +693,7 @@ describe("the dead-DM moment", () => {
     // is not lost meanwhile: `hq dm` puts it in the bot's own durable inbox,
     // which the bot reads when it starts.
     here = true;
-    gate.resolve(ok(restoreResult([{ name: "setup", agentUid: SETUP_UID, action: "restored" }])) as never);
+    gate.resolve(ok(restoreResult([{ name: "scout", agentUid: SCOUT_UID, action: "restored" }])) as never);
     await vi.waitFor(() => expect(q('[data-testid="bot-not-runnable-notice"]')).toBeNull());
     expect(q('[data-testid="bot-message-unanswered"]')).toBeNull();
     expect(q('[data-testid="bot-message-starting"]')).toBeNull();
@@ -705,12 +710,12 @@ describe("where the notice lives", () => {
         // No runtime here, so the notice is the honest surface and stays put.
         runtimeReady: false,
         bots: { list: async () => ok({ bots: [] }), listRemote: async () => ok({ bots: [remoteBot()] }) },
-        contacts: [{ personUid: SETUP_UID, displayName: "setup", companyUid: null }],
+        contacts: [{ personUid: SCOUT_UID, displayName: "scout", companyUid: null }],
         messages: [
           { eventId: "evt_old", body: "yesterday's message", fromPersonUid: "prs_me", fromDisplayName: "Corey", createdAt: older },
         ],
       }),
-      dmRow(SETUP_UID, "setup"),
+      dmRow(SCOUT_UID, "scout"),
     );
 
     const notice = await vi.waitFor(() => {

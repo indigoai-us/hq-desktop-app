@@ -21,16 +21,6 @@ import type { LocalBotRow } from "@hq/platform";
 import { isAgentUid } from "./agent-thinking.js";
 import { SETUP_BOOTSTRAP_COMMAND, SETUP_CORE_MARKER, SETUP_REPAIR_COMMAND, SETUP_SKILL_PATH } from "./setup-channel.js";
 
-/**
- * FALLBACK FLAG (one build only). `true` = Run Setup creates the setup bot.
- * Flip to `false` to put the old scripted `/setup` session back in charge
- * everywhere, without unpicking the wiring. The failure path below also drops
- * back to the scripted run on its own, so a person is never stuck; this flag
- * exists so the whole step can be reverted from one line if the bot path
- * misbehaves on the private build.
- */
-export const SETUP_BOT_MODE = true;
-
 /** Reserved bot name; hq-cli reserves it for `--worker setup`. */
 export const SETUP_BOT_NAME = "setup";
 /** Core worker template the bot is created from (`core/workers/public/setup`). */
@@ -264,10 +254,15 @@ export const SETUP_BOT_NO_RUNTIME = setupBotNoRuntime();
 /** Runtimes the setup bot may run under, in the order it prefers them. */
 export const SETUP_BOT_RUNTIME_ORDER: ReadonlyArray<LocalBotRow["runtime"]> = ["claude", "codex", "grok"];
 
-/** Minimal reference to the setup bot: enough to open its DM. */
+/**
+ * Minimal reference to the setup bot (the assistant): enough to open its DM.
+ * It carries the handle, never a name: what a person reads comes from
+ * `assistantName` (assistant-owner.ts).
+ */
 export interface SetupBotRef {
   agentUid: string;
-  name: string;
+  /** The bot's handle on this computer (`setup`). Never shown to a person. */
+  handle: string;
 }
 
 /** What starting the setup bot did (or why it could not). */
@@ -306,10 +301,43 @@ export interface SetupBotLauncher {
   startingBody?: string | null;
 }
 
-/** The setup bot among this Mac's local bots, if it exists. */
-export function findSetupBot(bots: readonly LocalBotRow[] | null | undefined): SetupBotRef | null {
-  const bot = (bots ?? []).find((candidate) => candidate.name.trim().toLowerCase() === SETUP_BOT_NAME);
-  return bot && bot.agentUid.trim() ? { agentUid: bot.agentUid.trim(), name: bot.name } : null;
+/** The cloud's role marker for the assistant (hq-pro contract section 2). */
+export const ASSISTANT_ROLE = "assistant";
+
+/**
+ * A handle or slug, never a name: the reserved handle `setup`, or the cloud
+ * slug `setup-<owner8>`.
+ */
+export function isAssistantSlug(text: string | null | undefined): boolean {
+  const value = (text ?? "").trim().toLowerCase();
+  if (!value) return false;
+  return value === SETUP_BOT_NAME || /^setup-[a-z0-9]{8}$/.test(value);
+}
+
+/**
+ * Is this bot row (local list, account listing, restore row or contact) the
+ * assistant? By the role marker where the CLI or the cloud sends one, else by
+ * the reserved handle or slug. Never by display name.
+ */
+export function isAssistantRecord(
+  row: { name?: string | null; role?: unknown; agentRole?: unknown; slug?: unknown } | null | undefined,
+): boolean {
+  if (!row) return false;
+  // HQ Cloud sends `agentRole` (contacts already use `role` for the
+  // membership role); hq-cli may print it as `role`.
+  if (typeof row.agentRole === "string" && row.agentRole.trim().toLowerCase() === ASSISTANT_ROLE) return true;
+  if (typeof row.role === "string" && row.role.trim().toLowerCase() === ASSISTANT_ROLE) return true;
+  if (typeof row.slug === "string" && isAssistantSlug(row.slug)) return true;
+  return (row.name ?? "").trim().toLowerCase() === SETUP_BOT_NAME;
+}
+
+/** The setup bot (the assistant) among this computer's bots, if it is here. */
+export function findSetupBot(
+  bots: readonly (LocalBotRow & { role?: unknown })[] | null | undefined,
+): SetupBotRef | null {
+  const bot = (bots ?? []).find((candidate) => isAssistantRecord(candidate));
+  const uid = bot?.agentUid.trim() ?? "";
+  return bot && uid ? { agentUid: uid, handle: bot.name.trim() } : null;
 }
 
 /** Tolerant reader for a contacts payload: `[…]` or `{ contacts: […] }`. */
@@ -334,24 +362,23 @@ function trimmedField(row: Record<string, unknown>, ...keys: string[]): string {
  * The account's setup bot as the CLOUD sees it, read off the DM roster
  * (`GET /v1/notify/contacts`).
  *
- * `hq bot list` only knows THIS Mac. Wipe the local state and keep the same
- * HQ account — a reinstall, or setting HQ up on a second Mac — and the local
- * list is empty while the account still owns the agent entity, so a create
- * comes back 409 "already exists". The roster is the one cloud-side view of a
- * person's own bots the desktop already has; the hq CLI exposes no "list my
- * remote bots" and no adopt call today.
+ * `hq bot list` only knows THIS computer. After a reinstall, or on a second
+ * computer, the local list is empty while the account still owns the agent.
  *
- * Matching is deliberately strict — an `agt_` uid whose display name is
- * exactly the reserved `setup` name. Personal bots join no company, so a
- * teammate's own setup bot is not on this roster and cannot be adopted here.
+ * Matched by the `agentRole: "assistant"` marker a new enough HQ Cloud sends
+ * (only on the caller's own assistant), and
+ * for an older one by the reserved `setup` name an assistant created before
+ * names existed still carries. Never by any other display name. Personal
+ * bots join no company, so a teammate's own setup bot is not on this roster.
  */
 export function findSetupBotContact(value: unknown): SetupBotRef | null {
   for (const row of contactRows(value)) {
     const uid = trimmedField(row, "personUid", "uid", "agentUid");
     if (!uid || !isAgentUid(uid)) continue;
+    const role = trimmedField(row, "agentRole").toLowerCase();
     const name = trimmedField(row, "displayName", "name");
-    if (name.toLowerCase() !== SETUP_BOT_NAME) continue;
-    return { agentUid: uid, name };
+    if (role !== ASSISTANT_ROLE && name.toLowerCase() !== SETUP_BOT_NAME) continue;
+    return { agentUid: uid, handle: SETUP_BOT_NAME };
   }
   return null;
 }
@@ -376,33 +403,6 @@ export function firstSignedInRuntime(
  */
 export function setupNeedsCodingTool(ready: Record<string, boolean> | null | undefined): boolean {
   return ready != null && firstSignedInRuntime(ready) === null;
-}
-
-/**
- * One start at a time.
- *
- * #welcome's automatic first-open start, its Run Setup button and Home's setup
- * card all call the same `SetupBotLauncher.start()`, and each surface only
- * disables its own button — so two of them can each issue their own
- * `hq bot create setup`. The owner's VM log caught exactly that: two creates
- * 1.3 s apart, the second answered 409 by the cloud.
- *
- * Wrapping the host's start in this gate makes a second caller await the
- * first's result and receive it, instead of starting a second run. The gate
- * opens again as soon as the run settles, so Retry still works.
- */
-export function singleFlightStart(
-  start: () => Promise<SetupBotStart>,
-): () => Promise<SetupBotStart> {
-  let inFlight: Promise<SetupBotStart> | null = null;
-  return () => {
-    if (inFlight) return inFlight;
-    const run = start().finally(() => {
-      if (inFlight === run) inFlight = null;
-    });
-    inFlight = run;
-    return run;
-  };
 }
 
 /** Label for the one primary action on #welcome / the Home setup card. */
