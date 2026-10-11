@@ -17,7 +17,8 @@ import {
   HUMAN_HISTORY_VIEW,
   TIMELINE_ROOT_PAGE_SIZE,
 } from "./live-messages.js";
-import { firstRunHandoffNotice, firstRunImportNotice, firstRunSettledNotice } from "./first-run/visual-first-run.js";
+import { firstRunHandoffNotice } from "./first-run/visual-first-run.js";
+import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "./agent-channel.js";
 
 describe("normalizeConversationMessages", () => {
   it("reads a { messages } page and a bare array", () => {
@@ -744,13 +745,28 @@ describe("audience on conversation rows", () => {
  * The app sends it on the bot-only lane, but the server's thread read does
  * not return the lane, so the row arrived untagged and was shown.
  */
+/**
+ * A note as builds before the one-handoff change wrote it, after the kickoff:
+ * they stay in people's threads, so they must stay hidden.
+ */
+function olderBuildNote(json: Record<string, unknown>): string {
+  return (
+    `${FIRST_RUN_NOTE_LEAD} I just finished more of the app's visual setup. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${JSON.stringify({ from: "desktop-visual-first-run", v: 1, ...json })}. ` +
+    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
+    "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\"."
+  );
+}
+
 describe("the visual first run's notes to the setup assistant", () => {
   const BOT = "agt_setup";
   const ME = "prs_me";
   const at = (n: number): string => `2026-10-10T13:5${n}:00.000Z`;
-  const settled = firstRunSettledNotice({ imported: null, team: { kind: "personal" }, apps: null })!;
+  // Notes older builds sent after the kickoff, still in people's threads.
+  const settled = olderBuildNote({ done: ["company"], team: { kind: "personal" } });
+  const imported = olderBuildNote({ done: ["import"], import: { projects: 3, repos: 1 } });
+  // The one note this build sends.
   const handoff = firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], imported: null, team: null, apps: null });
-  const imported = firstRunImportNotice({ summary: { projects: 3, repos: 1 }, report: null });
   /** Newest first, untagged, as the server's direct-message read returns them. */
   const page = {
     messages: [
@@ -818,12 +834,15 @@ describe("the visual first run's notes to the setup assistant", () => {
     expect(messagesForDisplay({ messages: [row] }, { inlineReplies: true, selfUid: ME }).map((r) => r.eventId)).toEqual(["q2"]);
   });
 
-  it("still hides every note the three first-run builders write", () => {
-    const withTeamAndApps = firstRunSettledNotice({
+  it("hides the note this build writes, whatever it carries, and the notes older builds wrote", () => {
+    const withTeamAndApps = firstRunHandoffNotice({
+      name: "Biscuit",
+      runtime: "claude",
+      toolsReady: ["claude"],
       imported: { summary: { projects: 2 }, report: "workspace/imports/s1/report.json" },
       team: { kind: "company", how: "joined", name: "Acme", slug: "acme" },
       apps: { notes: { name: "Granola", domain: "granola.ai" }, projects: null },
-    })!;
+    });
     for (const body of [settled, withTeamAndApps, handoff, imported]) {
       expect(isAppRequestRow({ eventId: "n", fromPersonUid: ME, body }, { selfUid: ME })).toBe(true);
     }

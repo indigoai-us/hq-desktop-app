@@ -10,7 +10,7 @@ import {
   buildAgentSlackConnectedNotice,
   buildAgentToolConnectedNotice,
 } from "../agent-channel.js";
-import { firstRunSettledNotice } from "../first-run/visual-first-run.js";
+import { firstRunHandoffNotice } from "../first-run/visual-first-run.js";
 import type { MessageSearchHit } from "../sidebar-model.js";
 import { isHiddenRequestHit, withoutHiddenRequestHits } from "./hidden-request-hits.js";
 
@@ -90,7 +90,7 @@ describe("withoutHiddenRequestHits", () => {
 });
 
 describe("the visual first run's notes to the setup assistant", () => {
-  const settled = firstRunSettledNotice({ imported: null, team: { kind: "personal" }, apps: null })!;
+  const settled = firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], team: { kind: "personal" } });
 
   it("are left out of search like the app's other requests to a bot", () => {
     expect(isHiddenRequestHit(hit({ body: settled, counterpartyUid: "agt_setup" }))).toBe(true);

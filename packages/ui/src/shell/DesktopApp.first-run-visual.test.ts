@@ -6,8 +6,10 @@
  * setup chat's intro and kickoff. Flag on, the New bot step-through takeover
  * opens instead: the name the person confirms creates the setup bot once (in
  * the background), the coding tools step is required only without a signed-in
- * tool, and Done opens the assistant's chat with a kickoff that hands off the
- * settled steps. Done or "Continue in chat" means it never opens again.
+ * tool. The create runs no kickoff: the assistant runs no turn while the
+ * takeover is open, and Done (or "Continue in chat") sends it one bot-only
+ * note with everything the takeover settled. Done or "Continue in chat"
+ * means it never opens again.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -23,9 +25,7 @@ import {
   VISUAL_FIRST_RUN_DONE_KEY,
   VISUAL_FIRST_RUN_FLAG_GRACE_MS,
   firstRunHandoffNotice,
-  firstRunImportNotice,
   firstRunIntro,
-  firstRunKickoff,
 } from "../chat/first-run/visual-first-run.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
 
@@ -251,7 +251,7 @@ describe("visual first run, flag off", () => {
 describe("visual first run, flag on", () => {
   it("opens the takeover instead of the setup chat, and creates the assistant once, under the confirmed name", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform } = adapter({ create, flag: true });
+    const { platform, sendDm } = adapter({ create, flag: true });
     await boot(platform);
 
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
@@ -275,7 +275,6 @@ describe("visual first run, flag on", () => {
       worker: "setup",
       runtime: "claude",
       intro: firstRunIntro({ name: "Biscuit", runtime: "claude" }),
-      kickoff: firstRunKickoff({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"] }),
     });
     // The person is on the coding tools step while that runs.
     expect(step()).toBe("tools");
@@ -287,8 +286,14 @@ describe("visual first run, flag on", () => {
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Biscuit");
 
+    expect(sendDm).not.toHaveBeenCalled();
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle();
+    // The assistant gets everything the takeover settled, in one note, now.
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    expect((sendDm.mock.calls[0] as unknown as [string, string])[1]).toBe(
+      firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true }, { noun: "computer" }),
+    );
     // The assistant's chat is open, the takeover is gone for good.
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     // (The rail labels the setup bot's DM the same way today's flow does.)
@@ -413,16 +418,24 @@ describe("visual first run, flag on", () => {
   ])("a sign-in check that %s does not block, and the hello does not claim signed in", async (_label, answer) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform } = adapter({ create, flag: true, probe: vi.fn(answer) });
+    const { platform, sendDm } = adapter({ create, flag: true, probe: vi.fn(answer) });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     typeName("Popcorn");
     pressEnter();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    const input = (create.mock.calls[0] as unknown[])[0] as { intro: string; kickoff: string };
+    const input = (create.mock.calls[0] as unknown[])[0] as { intro: string; kickoff?: string };
     expect(input.intro).toBe(firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: false }));
     expect(input.intro).not.toContain("signed in");
-    expect(input.kickoff).not.toContain("Claude Code is signed in");
+    expect(input.kickoff).toBeUndefined();
+    // The note at close carries the same caution.
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const body = (sendDm.mock.calls[0] as unknown as [string, string])[1];
+    expect(body).not.toContain("Claude Code is signed in");
+    expect(body).toContain("HQ could not confirm its sign-in");
     warn.mockRestore();
   });
 
@@ -572,22 +585,59 @@ describe("visual first run, leaving for chat while the assistant is being create
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
     expect(create.mock.calls[1]![0]).toEqual(expect.objectContaining({ displayName: "Biscuit", worker: "setup" }));
   });
+
+  // The takeover settled the name (and here the coding tool) before the
+  // person left for chat; #welcome's create used to run today's kickoff,
+  // which carries none of it, so the assistant asked again.
+  it("a create from #welcome after the takeover runs no kickoff and the assistant gets the takeover's note", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, message: "Claude Code is not signed in." })
+      .mockResolvedValue(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform, sendDm } = adapter({ create: create as never, flag: true });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Biscuit");
+    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("failed"),
+    );
+    q<HTMLButtonElement>('[data-testid="first-run-failed-chat"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
+    expect(sendDm).not.toHaveBeenCalled();
+
+    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    expect(create.mock.calls[1]![0]).not.toHaveProperty("kickoff");
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
+    expect(body).toBe(
+      firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true }, { noun: "computer" }),
+    );
+  });
 });
 
 describe("visual first run, names with stray whitespace", () => {
-  it("sends the collapsed name the host checks, to the create, the hello and the kickoff", async () => {
+  it("sends the collapsed name the host checks, to the create, the hello and the handoff note", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform } = adapter({ create, flag: true });
+    const { platform, sendDm } = adapter({ create, flag: true });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     typeName(" Mr\tBiscuit  Pants ");
     q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    const input = (create.mock.calls as unknown as Array<[{ displayName: string; intro: string; kickoff: string }]>)[0]![0];
+    const input = (create.mock.calls as unknown as Array<[{ displayName: string; intro: string; kickoff?: string }]>)[0]![0];
     expect(input.displayName).toBe("Mr Biscuit Pants");
     expect(input.intro).toContain("Hi, I'm Mr Biscuit Pants,");
-    expect(input.kickoff).toContain('"name":"Mr Biscuit Pants"');
-    expect(input.kickoff).not.toMatch(/\t|  /);
+    expect(input.kickoff).toBeUndefined();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const body = (sendDm.mock.calls[0] as unknown as [string, string])[1];
+    expect(body).toContain('"name":"Mr Biscuit Pants"');
+    expect(body).not.toMatch(/\t|  /);
   });
 });
 
@@ -639,7 +689,7 @@ describe("visual first run never reappears", () => {
 });
 
 describe("visual first run with a setup bot that already exists", () => {
-  it("adopts it under the confirmed name and sends it the handoff as a bot-only message", async () => {
+  it("adopts it under the confirmed name and sends it the handoff as a bot-only message, only once the takeover closes", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const existing = {
       name: "setup",
@@ -665,6 +715,10 @@ describe("visual first run with a setup bot that already exists", () => {
 
     expect(create).not.toHaveBeenCalled();
     expect(updateAgentProfile).toHaveBeenCalledWith(SETUP_BOT_UID, { displayName: "Biscuit" });
+    // Nothing while the takeover is open: a note now would be answered now.
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
     expect(to).toBe(SETUP_BOT_UID);
@@ -679,9 +733,9 @@ describe("visual first run: Bring in your context", () => {
   const IMPORTED = { summary: { companies: 0, projects: 0, sessions: 12 }, report: "workspace/reports/import.json" };
 
   /**
-   * Boot with the flag on, name the assistant, run the scan to its end, and
-   * hand over a finished import. Timers are fake from the scan on, so the
-   * notice ledger's waits can be stepped through.
+   * Boot with the flag on, name the assistant, and run the scan to its end.
+   * Timers are fake from the scan on, so the notice ledger's waits can be
+   * stepped through.
    */
   async function finishAScan(firstSend: () => Promise<unknown>) {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
@@ -745,18 +799,33 @@ describe("visual first run: Bring in your context", () => {
     ];
     for (const line of lines) handlers.forEach((h) => h({ payload: { scanId, event: { v: 1, ...line } } }));
     finishScan(ok({ status: "done", lines: 3, dropped: 0 }));
-    // The host's short tail wait, then the notice.
+    // The host's short tail wait: the import is recorded, and nothing is sent.
     await vi.advanceTimersByTimeAsync(1000);
     await settle();
     return { sendDm, scanCancel };
   }
 
-  function expectImportNotices(sendDm: ReturnType<typeof vi.fn>) {
+  /** Leave the takeover through Done ("Talk to Biscuit"). */
+  async function talk(): Promise<void> {
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await settle();
+    expect(step()).toBe("done");
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await settle();
+  }
+
+  function expectHandoffNotes(sendDm: ReturnType<typeof vi.fn>) {
     for (const call of sendDm.mock.calls) {
       const [to, body, extras] = call as unknown as [string, string, Record<string, unknown>];
       expect(to).toBe(SETUP_BOT_UID);
-      expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-import:${SETUP_BOT_UID}` });
-      expect(body).toBe(firstRunImportNotice(IMPORTED));
+      expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
+      expect(body).toBe(
+        firstRunHandoffNotice(
+          { name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true, imported: IMPORTED },
+          { noun: "computer" },
+        ),
+      );
     }
   }
 
@@ -764,8 +833,14 @@ describe("visual first run: Bring in your context", () => {
     vi.useRealTimers();
   });
 
-  it("hands the finished import to the assistant once, as a bot-only note, trying a failed send again after the ledger's wait", async () => {
+  it("keeps a finished import for the one note at close, and tries a failed send again after the ledger's wait", async () => {
     const { sendDm, scanCancel } = await finishAScan(async () => failure("network", "offline"));
+    // The scan finished while the takeover is open: nothing goes to the assistant.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await settle();
+    expect(sendDm).not.toHaveBeenCalled();
+
+    await talk();
     expect(sendDm).toHaveBeenCalledTimes(1);
     // Not before the notice ledger allows it (30 s after a failure that may pass).
     await vi.advanceTimersByTimeAsync(20_000);
@@ -774,28 +849,28 @@ describe("visual first run: Bring in your context", () => {
     await vi.advanceTimersByTimeAsync(11_000);
     await settle();
     expect(sendDm).toHaveBeenCalledTimes(2);
-    expectImportNotices(sendDm);
+    expectHandoffNotes(sendDm);
 
-    // Delivered: nothing more goes, however long it waits, and Next: Done sends nothing.
+    // Delivered: nothing more goes, however long it waits.
     await vi.advanceTimersByTimeAsync(10 * 60_000);
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
     await settle();
-    expect(step()).toBe("done");
     expect(sendDm).toHaveBeenCalledTimes(2);
     expect(scanCancel).not.toHaveBeenCalled();
   });
 
   it("a send the server refuses (403) is not tried again", async () => {
     const { sendDm } = await finishAScan(async () => ({ ok: false, reason: "forbidden", code: "http-403" }));
+    await talk();
     expect(sendDm).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     await settle();
     expect(sendDm).toHaveBeenCalledTimes(1);
-    expectImportNotices(sendDm);
+    expectHandoffNotes(sendDm);
   });
 
   it("a pending try is called off when the shell goes away", async () => {
     const { sendDm } = await finishAScan(async () => failure("network", "offline"));
+    await talk();
     expect(sendDm).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBeGreaterThan(0);
     await unmount(component!);
