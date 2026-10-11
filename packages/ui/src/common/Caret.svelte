@@ -10,18 +10,22 @@
    * margin would only have papered over it at one font size. Six controls had
    * independently inherited the same defect.
    *
-   * The fix is geometry instead of typography: the ink is centred inside the
-   * `0 0 10 10` viewBox — it spans y 3.75→6.25, so its centre is exactly 5.
-   * That 0.25-unit detail matters. An earlier attempt drew the arms at y 4 and
-   * the apex at 6.5, whose centre is 5.25, and it still read a hair low; a
-   * later attempt overcorrected upward for the label's optical centre and read
-   * high. Measured against the real 12px pill in a browser, the caret's ink
-   * centre wants to land on the label's ink centre, and plain box-centring
-   * does exactly that (residual < 0.1px). Keep the ink symmetric about 5.
+   * The fix is geometry instead of typography, and the caret is now the
+   * Phosphor Regular CaretDown from the shared icon registry (`chevron-down`),
+   * so it matches every other icon in the app. Phosphor draws that caret's ink
+   * across y 88→184 of its 256 box, so its ink centre is 136, not the box
+   * centre 128. The viewBox is shifted down by 8 (`0 8 256 256`) so the ink
+   * sits exactly on the box centre again: measured against the real 12px pill
+   * in a browser, the caret's ink centre wants to land on the label's ink
+   * centre, and plain box-centring does exactly that. Keep the ink symmetric
+   * about the viewBox centre. The rotation for a closed disclosure turns about
+   * the same centre, so the right-pointing caret stays centred too.
    *
    * `display: block` takes the SVG off the text baseline; inline SVGs sit on
    * it by default, which would reintroduce the original low hang.
    */
+  import { LINE_ICONS } from "./button/rail-icons.js";
+
   interface Props {
     /**
      * Disclosure state. `false` rotates the caret to point right, for
@@ -45,19 +49,14 @@
 <svg
   class="caret"
   class:closed={!open}
-  viewBox="0 0 10 10"
-  fill="none"
+  viewBox="0 8 256 256"
   aria-hidden="true"
   data-testid="caret"
+  data-rail-icon="chevron-down"
   style="color: {tone}; --caret-size: {size};"
 >
-  <path
-    d="M2.5 3.75 5 6.25 7.5 3.75"
-    stroke="currentColor"
-    stroke-width="1.3"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+  <!-- Phosphor Regular CaretDown, verbatim from the registry. -->
+  <path d={LINE_ICONS["chevron-down"]} fill="currentColor" />
 </svg>
 
 <style>

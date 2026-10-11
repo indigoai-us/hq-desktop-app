@@ -2,6 +2,8 @@
   import RailIcon from "../../common/button/RailIcon.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
+  import ProfileBadges from "../../badges/ProfileBadges.svelte";
+  import type { EarnedBadge, ResolvedBadge } from "../../badges/badge-catalog.js";
   /**
    * 340 px bot profile. Follows the Messages profile pane rhythm
    * (MemberProfilePanel): 12px 14px header with a hairline, 13px text,
@@ -42,6 +44,12 @@
     paused?: boolean;
     busy?: boolean;
     actionError?: string | null;
+    /** Earned accomplishment badges; none hides the section. */
+    badges?: readonly EarnedBadge[];
+    /** Opens a badge's detail view. */
+    onbadge?: (badge: ResolvedBadge) => void;
+    /** Opens the Badges page. */
+    onbadges?: () => void;
     onclose?: () => void;
     onmessage?: () => void;
     onsession?: () => void;
@@ -65,6 +73,9 @@
     paused = false,
     busy = false,
     actionError = null,
+    badges = [],
+    onbadge,
+    onbadges,
     onclose,
     onmessage,
     onsession,
@@ -113,7 +124,7 @@
     {:else}
       <span class="pp-title">Profile</span>
     {/if}
-    <button type="button" class="icon" data-testid="bot-profile-close" aria-label="Close profile" onclick={() => onclose?.()}>×</button>
+    <button type="button" class="icon" data-testid="bot-profile-close" aria-label="Close profile" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
   </header>
   {#if tab === "jobs" && jobsPanel}
     <div class="body" data-testid="bot-pane-jobs-body">{@render jobsPanel()}</div>
@@ -169,6 +180,7 @@
           {/if}
         </div>
       </section>
+      <ProfileBadges {badges} onselect={onbadge} onseeall={onbadges} />
       <section class="g">
         <div class="k">Runtime {#if snapshot.runtimeVersion}<span class="count">{snapshot.runtimeVersion}</span>{/if} <button type="button" class="link" data-testid="bot-profile-edit-runtime" onclick={() => onedit?.("runtime")}><RailIcon name="pencil" />Edit</button></div>
         <div class="kv">
@@ -325,19 +337,20 @@
     color: var(--v4-primary-fg, var(--v4-bg));
     font-weight: 500;
   }
-  .btn.primary:hover { background: var(--v4-primary-bg, var(--t1)); filter: brightness(1.08); }
+  .btn.primary:hover { background: var(--v4-primary-bg, var(--t1)); opacity: 0.85; }
   .g { border-top: 1px solid var(--v4-rowline, var(--line)); padding-top: 12px; }
+  /* Section labels: the mono caps label style. */
   .k {
-    color: var(--v4-text-2);
-    font-weight: 500;
-    display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+    font: 500 10px/1.4 var(--font-mono, "Geist Mono", monospace); letter-spacing: 0.1em; text-transform: uppercase; color: var(--v4-text-3);
+    display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
   }
   .count { color: var(--v4-text-3); font-weight: 400; font-variant-numeric: tabular-nums; }
   .link {
     margin-left: auto; padding: 0; border: 0; background: none;
-    color: var(--v4-text-3); font: inherit; font-weight: 400; cursor: pointer;
+    color: var(--v4-text-2); font: inherit; cursor: pointer;
   }
-  .link:hover { color: var(--v4-text-1); }
+  /* Text buttons dim on hover; no underline. */
+  .link:hover { color: var(--v4-text-3); }
   .now { color: var(--v4-text-1); }
   .st { display: flex; gap: 6px; align-items: center; color: var(--v4-text-2); margin-bottom: 2px; }
   .st.live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--v4-ok); }

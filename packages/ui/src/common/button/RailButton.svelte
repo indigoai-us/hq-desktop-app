@@ -69,7 +69,7 @@
   }
   .rail-btn:hover:not(:disabled) { background: var(--hover); }
   .rail-btn.primary { background: var(--t1, var(--v4-primary-bg)); color: var(--panel-bg, var(--v4-primary-fg)); border-color: transparent; }
-  .rail-btn.primary:hover:not(:disabled) { background: var(--t1, var(--v4-primary-bg)); opacity: 0.9; }
+  .rail-btn.primary:hover:not(:disabled) { background: var(--t1, var(--v4-primary-bg)); opacity: 0.85; }
   .rail-btn.ghost { background: transparent; border-color: transparent; color: var(--t2, var(--v4-text-2)); }
   .rail-btn.ghost:hover:not(:disabled) { color: var(--t1); }
   .rail-btn.danger { color: var(--red, var(--v4-error)); }

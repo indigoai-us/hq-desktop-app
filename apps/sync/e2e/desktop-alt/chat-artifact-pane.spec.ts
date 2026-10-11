@@ -17,6 +17,7 @@ import { readRepoFile } from './harness';
 const ui = (rel: string) => readRepoFile(join('../../packages/ui', rel));
 
 const card = ui('src/chat/messaging/ArtifactCard.svelte');
+const docCard = ui('src/chat/messaging/doc-card.css');
 const panel = ui('src/chat/messaging/ArtifactPanel.svelte');
 const model = ui('src/chat/messaging/artifact-model.ts');
 const prose = ui('src/chat/messaging/artifact-prose.css');
@@ -34,16 +35,20 @@ describe('artifact card replaces the dead-end clamp', () => {
     expect(preview).not.toContain('…');
   });
 
-  it('collapses to a handle: mesh tile, title, one-line summary, size — no preview body', () => {
+  it('collapses to a handle: icon well, title, one-line summary, size — no preview body', () => {
     expect(model).toContain('export function artifactSummary');
-    expect(card).toContain('artifact-tile-mesh');
-    expect(card).toMatch(/\.artifact-tile-mesh\s*\{[\s\S]*?radial-gradient\(/);
+    // One card language with file attachments (doc-card.css); the animated
+    // gradient mesh tile is gone.
+    expect(card).toContain('import "./doc-card.css"');
+    expect(card).toContain('class="doc-card-icon"');
+    expect(card).not.toContain('artifact-tile-mesh');
+    expect(card).not.toContain('radial-gradient(');
     expect(card).toContain("data-testid=\"artifact-card-preview\"");
     // The card never hard-cuts with an ellipsis of its own; the summary is
     // one line clipped by CSS and the full text lives in the pane.
     expect(card).not.toContain('artifact-card-fade');
-    expect(card).toMatch(/\.artifact-card-summary\s*\{[\s\S]*?white-space:\s*nowrap/);
-    expect(card).toMatch(/\.artifact-card-summary\s*\{[\s\S]*?text-overflow:\s*ellipsis/);
+    expect(docCard).toMatch(/\.doc-card-summary\s*\{[\s\S]*?white-space:\s*nowrap/);
+    expect(docCard).toMatch(/\.doc-card-summary\s*\{[\s\S]*?text-overflow:\s*ellipsis/);
   });
 
   it('renders title, kind label and size hint in the card header', () => {
@@ -63,12 +68,14 @@ describe('artifact card replaces the dead-end clamp', () => {
     expect(card).toContain("data-testid=\"artifact-card-open\"");
   });
 
-  it('keeps desktop-alt chrome: 13px card, hairline border, UI face (no mono prose)', () => {
-    expect(card).toMatch(/\.artifact-card\s*\{[\s\S]*?border:\s*1px solid var\(--line/);
-    expect(card).toMatch(/\.artifact-card\s*\{[\s\S]*?font-size:\s*13px/);
-    expect(card).toMatch(/\.artifact-card-open\s*\{[\s\S]*?color:\s*var\(--vio-ink/);
-    expect(card).not.toMatch(/\.artifact-card-summary\s*\{[^}]*font-mono/);
-    expect(card).not.toMatch(/\.artifact-card-title\s*\{[^}]*font-mono/);
+  it('keeps desktop-alt chrome: 13px title, no outline (raised fill), UI face (no mono prose)', () => {
+    expect(docCard).toMatch(/\.doc-card\s*\{[\s\S]*?border:\s*1px solid transparent/);
+    expect(docCard).toMatch(/\.doc-card\s*\{[\s\S]*?background-color:\s*var\(--raised\)/);
+    expect(docCard).toMatch(/\.doc-card-title\s*\{[\s\S]*?font:\s*500 13px/);
+    expect(docCard).toMatch(/\.doc-card-btn\.is-primary\s*\{[\s\S]*?color:\s*var\(--ice-ink/);
+    expect(card).toMatch(/class="doc-card-btn is-primary"[\s\S]*?data-testid="artifact-card-open"/);
+    expect(docCard).not.toMatch(/\.doc-card-summary\s*\{[^}]*font-mono/);
+    expect(docCard).not.toMatch(/\.doc-card-title\s*\{[^}]*font-mono/);
   });
 });
 

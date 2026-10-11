@@ -395,7 +395,7 @@
         >
           <span class="vx-avatar" class:personal={vault.kind === "personal"}>{vaultInitial(vault)}</span>
           <span class="vx-vault-name">{vault.label}</span>
-          <svg viewBox="0 0 16 16" class="vx-caret" aria-hidden="true"><path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          <span class="vx-caret" aria-hidden="true"><RailIcon name="chevron-down" size={14} /></span>
         </button>
         {/if}
         {#if vaultMenuOpen}
@@ -418,7 +418,7 @@
         {/if}
       </div>
       <button type="button" class="vx-search" onclick={() => (switcherOpen = true)} data-testid="vault-search">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="m10.2 10.2 3.3 3.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
+        <RailIcon name="search" size={14} />
         <span>Find a file</span>
         <kbd>{formatShortcut("Mod+O")}</kbd>
       </button>
@@ -448,7 +448,7 @@
               {noteTitle(t)}
             </button>
             <button type="button" class="vx-tab-close" aria-label={`Close ${noteTitle(t)}`} onclick={() => closeTab(i)}>
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 4.5 7 7m0-7-7 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
+              <RailIcon name="x" size={12} />
             </button>
           </div>
         {/each}
@@ -483,7 +483,7 @@
           aria-pressed={rightOpen}
           onclick={() => (rightOpen = !rightOpen)}
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.75" width="12" height="10.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" /><path d="M10 3v10" stroke="currentColor" stroke-width="1.2" /></svg>
+          <RailIcon name="sidebar-simple" size={16} />
         </button>
       </div>
     {/if}
@@ -685,6 +685,9 @@
     white-space: nowrap;
   }
   .vx-caret {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 14px;
     height: 14px;
     margin-left: auto;
@@ -767,10 +770,6 @@
   .vx-search:hover {
     color: var(--v4-text-2);
   }
-  .vx-search svg {
-    width: 14px;
-    height: 14px;
-  }
   .vx-search kbd {
     margin-left: auto;
     font: inherit;
@@ -814,6 +813,11 @@
     border-bottom: 1px solid var(--v4-hairline);
     overflow-x: auto;
     scrollbar-width: none;
+  }
+  /* WebKit before scrollbar-width support would otherwise draw the shell's
+     shared 4px bar here; the tab strip hides its bar on purpose. */
+  .vx-tabs::-webkit-scrollbar {
+    display: none;
   }
   .vx-tab {
     display: flex;
@@ -867,10 +871,6 @@
   .vx-tab-close:hover {
     background: var(--v4-control-faint);
     opacity: 1;
-  }
-  .vx-tab-close svg {
-    width: 12px;
-    height: 12px;
   }
   .vx-bar {
     display: flex;
@@ -961,10 +961,6 @@
   }
   .vx-icon:hover {
     background: var(--v4-control-faint);
-  }
-  .vx-icon svg {
-    width: 16px;
-    height: 16px;
   }
   .vx-body {
     display: flex;

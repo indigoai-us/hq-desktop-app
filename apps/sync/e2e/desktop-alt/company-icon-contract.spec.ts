@@ -39,14 +39,16 @@ describe('company icon — component contract', () => {
     expect(component).toMatch(/brokenSrc\s*=\s*safeSrc/);
   });
 
-  it('draws the building as inline SVG with the house stroke dialect', () => {
-    // 16-unit viewBox + currentColor + round joins, matching the icon set. No
-    // icon dependency is introduced.
-    expect(component).toContain('viewBox="0 0 16 16"');
-    expect(component).toContain('stroke="currentColor"');
-    expect(component).toContain('stroke-width="1.5"');
-    // The same office mark the Settings "companies" nav icon uses.
-    expect(component).toContain('M2.5 13.5V6.5L8 3l5.5 3.5v7H2.5Z');
+  it('draws the building as the Phosphor Regular "buildings" rail icon', () => {
+    // Every app icon is Phosphor Regular, rendered through the local RailIcon
+    // registry (no icon dependency is introduced). The glyph is the same
+    // "buildings" mark the Settings "companies" nav icon uses.
+    expect(component).toContain('import RailIcon from "../common/button/RailIcon.svelte"');
+    expect(component).toMatch(/<RailIcon name="buildings"/);
+    expect(ui('src/settings/SettingsNavIcon.svelte')).toContain('companies: "buildings"');
+    // No hand-drawn stroke svg left behind.
+    expect(component).not.toContain('<svg');
+    expect(component).not.toContain('stroke-width');
   });
 
   it('rounds the icon at 4px', () => {
@@ -171,7 +173,9 @@ describe('company icon — surfaces', () => {
   it('sizes the mark 16px in the rail and larger in headers/switcher/cmd-K', () => {
     expect(sidebar).toContain('size={16}');
     expect(sidebar).toContain('size={24}');
-    expect(shell).toContain('size={22}');
+    // The channel header's mark is sized to the `#` beside other channels'
+    // names and centred on the line (owner design fix, PR #1508).
+    expect(shell).toContain('<CompanyIcon iconUrl={selectedCompanyIcon} size={17} />');
     expect(ui('src/common/CommandPalette.svelte')).toContain('size={20}');
   });
 });

@@ -599,8 +599,8 @@
     margin: 0 -6px;
     padding: 0 6px;
     overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--t1) 18%, transparent) transparent;
+    /* The shared 4px bar (chat/scrollbars.css): no scrollbar-width or
+       -color, which would draw the wider standard bar over it. */
   }
   .dropdown .rp-list {
     position: absolute;
@@ -678,10 +678,11 @@
     background: transparent;
     color: var(--t1, var(--v4-text-1));
     font: inherit;
-    text-decoration: underline;
-    text-underline-offset: 3px;
+    text-decoration: none;
     cursor: pointer;
   }
+  /* Text buttons dim on hover; no underline. */
+  .rp-link:hover:not(:disabled) { opacity: 0.7; }
   .rp-link:disabled { opacity: 0.6; cursor: default; }
 
   .rp-foot {

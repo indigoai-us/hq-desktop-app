@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mount, unmount } from "svelte";
 
 import Caret from "./Caret.svelte";
+import { LINE_ICONS } from "./button/rail-icons.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -31,29 +32,37 @@ function mountCaret(props: Record<string, unknown> = {}) {
 }
 
 describe("Caret geometry", () => {
-  it("is SVG geometry centred in its viewBox, not a text glyph", () => {
+  it("is the Phosphor CaretDown, ink centred in its viewBox, not a text glyph", () => {
     const caret = mountCaret();
     expect(caret).toBeTruthy();
     expect(caret.tagName.toLowerCase()).toBe("svg");
-    expect(caret.getAttribute("viewBox")).toBe("0 0 10 10");
-    // Ink spans x 2.5-7.5, y 3.75-6.25 — centred on 5, the box centre.
-    // Verified in a browser against the real pill: a box-centred caret lands
-    // on the label's ink centre (residual < 0.1px). An ink centre of 5.25
-    // reads low; correcting further for "optical centre" reads high.
+    expect(caret.getAttribute("data-rail-icon")).toBe("chevron-down");
+    // Verbatim Phosphor Regular path from the shared registry.
     expect(caret.querySelector("path")?.getAttribute("d")).toBe(
-      "M2.5 3.75 5 6.25 7.5 3.75",
+      LINE_ICONS["chevron-down"],
     );
-    const [top, bottom] = [3.75, 6.25];
-    expect((top + bottom) / 2).toBe(5);
+    // Phosphor's caret ink spans x 40-216, y 88-184 (centre 128, 136). The
+    // viewBox is shifted down by 8 so the ink centre lands on the box centre.
+    // Verified in a browser against the real pill: a box-centred caret lands
+    // on the label's ink centre; an ink centre below the box centre reads low.
+    expect(caret.getAttribute("viewBox")).toBe("0 8 256 256");
+    const [minX, minY, w, h] = caret
+      .getAttribute("viewBox")!
+      .split(" ")
+      .map(Number) as [number, number, number, number];
+    const [inkTop, inkBottom, inkLeft, inkRight] = [88, 184, 40, 216];
+    expect(minY + h / 2).toBe((inkTop + inkBottom) / 2);
+    expect(minX + w / 2).toBe((inkLeft + inkRight) / 2);
     // No text content: a glyph would reintroduce the original defect.
     expect(caret.textContent?.trim()).toBe("");
   });
 
-  it("strokes with currentColor so dark and light need no override", () => {
+  it("fills with currentColor so dark and light need no override", () => {
     const caret = mountCaret({ tone: "var(--t3)" });
-    expect(caret.querySelector("path")?.getAttribute("stroke")).toBe(
+    expect(caret.querySelector("path")?.getAttribute("fill")).toBe(
       "currentColor",
     );
+    expect(caret.querySelector("path")?.getAttribute("stroke")).toBeNull();
     expect(caret.getAttribute("style")).toContain("var(--t3)");
   });
 

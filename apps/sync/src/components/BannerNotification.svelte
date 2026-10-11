@@ -7,6 +7,7 @@
   // (open DM/share detail, copy prompt, install update). Auto-dismisses; hover
   // pauses.
   import '../styles/popover.css';
+  import RailIcon from '@hq/ui/rail-icon';
   import { tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
@@ -195,7 +196,7 @@
         aria-label="Dismiss"
         disabled={actionPending}
         onclick={() => void dismiss()}
-      >×</button>
+      ><RailIcon name="x" size={10} /></button>
       {#if payload.actionLabel}
         <div class="actions">
           <button

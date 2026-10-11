@@ -182,7 +182,8 @@ describe("RichMessageContent renders each block type from fixture data", () => {
     await tick();
     const callout = el.querySelector('[data-testid="rich-callout"]');
     expect(callout?.classList.contains("tone-warning")).toBe(true);
-    expect(callout?.querySelector(".rich-callout-icon svg")).not.toBeNull();
+    // The tone's default icon, drawn by RichLabelIcon (base branch, agent icons).
+    expect(callout?.querySelector('.rich-callout-icon svg[data-icon="alert"]')).not.toBeNull();
     expect(el.querySelector(".rich-callout-title")?.textContent).toBe("Heads up");
     // Body is routed through the CSP-safe markdown renderer: no <script> node,
     // and the javascript: href is rejected (never a live navigable anchor).

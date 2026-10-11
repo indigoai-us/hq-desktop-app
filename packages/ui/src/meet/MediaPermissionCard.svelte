@@ -119,17 +119,9 @@
       {/if}
       <span class="badge" data-device={device}>
         {#if device === "camera"}
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
-            <path
-              d="M4 6.5h9.2c1 0 1.8.8 1.8 1.8v7.4c0 1-.8 1.8-1.8 1.8H4c-1 0-1.8-.8-1.8-1.8V8.3c0-1 .8-1.8 1.8-1.8Zm13.4 4.1 3.3-2.3c.5-.4 1.1 0 1.1.6v6.2c0 .6-.6 1-1.1.6l-3.3-2.3v-2.8Z"
-            />
-          </svg>
+          <RailIcon name="video-camera" size={13} />
         {:else}
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
-            <path
-              d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3Zm-6 8.2a1 1 0 0 1 2 0 4 4 0 0 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.9V20a1 1 0 1 1-2 0v-2.9a6 6 0 0 1-5-5.9Z"
-            />
-          </svg>
+          <RailIcon name="microphone" size={13} />
         {/if}
       </span>
     </div>

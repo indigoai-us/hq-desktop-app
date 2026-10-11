@@ -163,7 +163,7 @@
   >
     <header class="roster-header">
       <h2>Members{#if members.length > 0} ({members.length}){/if}</h2>
-      <button class="roster-close" type="button" onclick={onclose} aria-label="Close">×</button>
+      <button class="roster-close" type="button" onclick={onclose} aria-label="Close"><RailIcon name="x" /></button>
     </header>
 
     {#if isOwner}
@@ -291,13 +291,15 @@
   }
 
   .roster-close {
+    display: grid;
+    place-items: center;
     border: none;
     background: transparent;
     color: var(--pop-muted);
     font-size: var(--text-lg);
     line-height: 1;
     cursor: pointer;
-    padding: 0 0.25rem;
+    padding: 0.25rem;
     border-radius: 6px;
   }
 
@@ -364,8 +366,21 @@
     flex-direction: column;
     gap: 0.125rem;
     overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--pop-muted) transparent;
+  }
+
+  /* One 4px bar (see packages/ui chat/scrollbars.css). No scrollbar-width/-color:
+     the standard properties beat ::-webkit-scrollbar and draw ~11px. */
+  .member-list::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .member-list::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .member-list::-webkit-scrollbar-thumb {
+    background: var(--pop-hover);
+    border-radius: 2px;
   }
 
   .member-row {
@@ -492,7 +507,7 @@
   }
 
   .btn-primary:hover:not(:disabled) {
-    filter: brightness(0.94);
+    opacity: 0.85;
   }
 
   .btn-primary:disabled {

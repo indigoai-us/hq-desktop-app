@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * SetupBotFinale — the finish card under the setup bot's last message, once
    * the bot marks setup finished (a `setupDone` hq-block). Offers the next
@@ -62,7 +63,7 @@
       data-testid="setup-bot-finale-dismiss"
       aria-label={SETUP_BOT_FINALE_COPY.dismiss}
       title={SETUP_BOT_FINALE_COPY.dismiss}
-      onclick={() => ondismiss()}>×</button>
+      onclick={() => ondismiss()}><RailIcon name="x" size={14} /></button>
   </div>
 
   {#if hasTools}
@@ -141,6 +142,8 @@
   }
   .dismiss {
     flex: none;
+    display: grid;
+    place-items: center;
     width: 24px;
     height: 24px;
     margin: -4px -4px 0 0;

@@ -392,7 +392,7 @@
   <div class="scrim" data-testid={`sheet-${sheet}`}>
     <div class="sheet" role="dialog" aria-modal="true" aria-label={sheet} use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
       {#if sheet === "new-file"}
-        <header class="sheet-h">New file<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = null)}>✕</button></header>
+        <header class="sheet-h">New file<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = null)}><RailIcon name="x" size={13} /></button></header>
         <div class="sheet-b">
           <label class="sheet-r"><span>Name</span><input bind:value={newName} placeholder="welcome-v2.md" data-testid="new-file-name" /></label>
           <div class="sheet-r">
@@ -419,7 +419,7 @@
           <button type="button" class="primary" data-testid="new-file-create" disabled={creating} aria-busy={creating || undefined} onclick={() => void createFile()}><RailIcon name="plus" />{creating ? "Creating…" : "Create"}</button>
         </footer>
       {:else if sheet === "folder-picker"}
-        <header class="sheet-h">Choose folder<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = folderTarget)}>✕</button></header>
+        <header class="sheet-h">Choose folder<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = folderTarget)}><RailIcon name="x" size={13} /></button></header>
         <div class="sheet-b">
           <input placeholder="Filter folders" bind:value={folderQuery} data-testid="folder-filter" />
           <ul class="folder-list">
@@ -436,7 +436,7 @@
           {/if}
         </div>
       {:else if sheet === "upload"}
-        <header class="sheet-h">Upload<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = null)}>✕</button></header>
+        <header class="sheet-h">Upload<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = null)}><RailIcon name="x" size={13} /></button></header>
         <div class="sheet-b">
           <div class="drop">
             <p>Drop files here or choose them.</p>
@@ -448,7 +448,7 @@
               <li class="picked">
                 <span>{file.name}</span>
                 <span>{formatBytes(file.size)}</span>
-                <button type="button" aria-label={`Remove ${file.name}`} onclick={() => removePicked(index)}>✕</button>
+                <button type="button" aria-label={`Remove ${file.name}`} onclick={() => removePicked(index)}><RailIcon name="x" size={13} /></button>
               </li>
             {/each}
           </ul>
@@ -468,7 +468,7 @@
           <button type="button" class="primary" data-testid="upload-start" disabled={picked.length === 0} onclick={() => void startUpload()}><RailIcon name="upload" />Upload</button>
         </footer>
       {:else}
-        <header class="sheet-h">Uploading<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = null)}>✕</button></header>
+        <header class="sheet-h">Uploading<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = null)}><RailIcon name="x" size={13} /></button></header>
         <div class="sheet-b">
           <ul>
             {#each uploads as row (row.name + (row.dest ?? ""))}
@@ -589,6 +589,7 @@
   .sheet-f { border-bottom: 0; border-top: 1px solid var(--v4-hairline); font-weight: 400; }
   .sheet-f span { flex: 1; color: var(--v4-text-3); font-size: 13px; }
   .icon-x { margin-left: auto; }
+  .icon-x, .picked button { display: inline-flex; align-items: center; justify-content: center; }
   .sheet-b { overflow: auto; padding: 8px 16px 12px; display: grid; gap: 10px; }
   .sheet-r { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; align-items: start; }
   .sheet input {

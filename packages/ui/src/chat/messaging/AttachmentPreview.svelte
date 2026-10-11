@@ -1,9 +1,13 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
-   * Typed attachment preview + download. Shared by the message strip tray
-   * and the right-side attachments browser.
+   * Typed attachment preview + download — the body of the attachment
+   * lightbox (AttachmentTray). One 46px bar names the file and holds every
+   * control (Download included, for every kind); the stage below it shows the
+   * image, PDF, text or sheet, or for a file that is not rendered inline,
+   * says what it is and offers Download.
    */
-  import { onDestroy } from "svelte";
+  import { onDestroy, type Snippet } from "svelte";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { fileTypeLabel } from "./chat-attachments";
   import { renderMessageBodyMarkdown } from "../../common/messageMarkdown.js";
@@ -23,9 +27,15 @@
     /** Releases a host-created object URL after this preview no longer uses it. */
     onreleaseurl?: (url: string) => void;
     compact?: boolean;
+    /**
+     * Extra controls for the end of the bar. The bar IS the lightbox chrome —
+     * a host that needs a close button puts it here rather than stacking a
+     * second header of its own above this one (which named the file twice).
+     */
+    trailing?: Snippet;
   }
 
-  let { item, resolveUrl, onreleaseurl, thumbnailUrl = null, compact = false }: Props = $props();
+  let { item, resolveUrl, onreleaseurl, thumbnailUrl = null, compact = false, trailing }: Props = $props();
 
   const kind = $derived(
     attachmentPreviewKind({
@@ -83,6 +93,8 @@
     } else if (previewUrl && !src && !previewDead) {
       src = previewUrl;
     }
+    // An image or a PDF renders straight from a URL the record already
+    // carries; the text kinds below need the bytes, so they always resolve.
     if (
       !previewDead &&
       (preview === "image" || preview === "pdf") &&
@@ -168,17 +180,16 @@
   data-testid="attachment-preview"
   data-kind={kind}
 >
+  <!-- One bar: name, size, then the controls. Download used to float over
+       the artwork in the corner of the stage. -->
   <div class="att-preview-toolbar">
     <span class="att-preview-name">{item.name}</span>
     {#if item.sizeLabel}
       <span class="att-preview-meta">{item.sizeLabel}</span>
     {/if}
-  </div>
-
-  <div class="att-preview-stage">
     <button
       type="button"
-      class="att-download"
+      class="att-preview-ic push-right"
       data-testid="attachment-download"
       aria-label={downloading ? "Saving" : `Download ${item.name}`}
       disabled={!src || downloading}
@@ -187,13 +198,12 @@
         void download();
       }}
     >
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-        <path
-          fill="currentColor"
-          d="M8 1.5a.75.75 0 0 1 .75.75v6.19l1.72-1.72a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 1.06-1.06l1.72 1.72V2.25A.75.75 0 0 1 8 1.5Zm-4.5 10a.75.75 0 0 0-1.5 0V13A1.5 1.5 0 0 0 3.5 14.5h9A1.5 1.5 0 0 0 14 13v-1.5a.75.75 0 0 0-1.5 0V13h-9v-1.5Z"
-        />
-      </svg>
+      <RailIcon name="download" size={14} />
     </button>
+    {@render trailing?.()}
+  </div>
+
+  <div class="att-preview-stage">
     {#if kind === "image" && (src || (!error && !thumbnailFailed && thumbnailUrl))}
       <img
         class="att-preview-image"
@@ -212,6 +222,9 @@
         }}
       />
     {:else if kind === "pdf" && src}
+      <!-- A PDF reads in place, like an image: a document card in the
+           timeline opens this lightbox (owner decision 2026-10-08), and the
+           bar above keeps Download for anyone who wants the file. -->
       <iframe
         class="att-preview-pdf"
         title={item.name}
@@ -243,15 +256,27 @@
         </table>
       </div>
     {:else}
+      <!-- Anything not rendered inline (or still loading) states what it is
+           and offers the one useful thing for it. -->
       <div class="att-preview-file">
         <span class="att-preview-icon"
           >{fileTypeLabel(item.name, item.contentType)}</span
         >
-        <p>{item.name}</p>
+        <p class="att-preview-file-name">{item.name}</p>
         {#if loading}
           <p class="att-preview-status">Loading…</p>
         {:else if error}
           <p class="att-preview-status error">{error}</p>
+        {:else}
+          <button
+            type="button"
+            class="att-preview-open"
+            data-testid="attachment-file-download"
+            disabled={!src || downloading}
+            onclick={() => void download()}
+          >
+            {downloading ? "Saving…" : "Download"}
+          </button>
         {/if}
       </div>
     {/if}
@@ -259,75 +284,117 @@
 </div>
 
 <style>
+  /* The preview only ever renders inside the attachment lightbox, which sits
+     on a dark scrim in BOTH themes. Its ink is therefore fixed light rather
+     than themed: `--t1`/`--t2`/`--t3` are near-black in light mode, which
+     left the filename, size, status and toolbar icons invisible against the
+     dark surface. The theme tokens are re-pointed here too so globally
+     styled descendants (rendered markdown) inherit light ink. */
   .att-preview {
+    --lb-ink: #fff;
+    --lb-ink-mid: rgba(255, 255, 255, 0.72);
+    --lb-ink-dim: rgba(255, 255, 255, 0.55);
+    --lb-hover: rgba(255, 255, 255, 0.14);
+    --lb-line: rgba(255, 255, 255, 0.12);
+    --lb-surface: rgba(255, 255, 255, 0.06);
+    /* Opaque reading surface for text / sheet previews, so the blurred
+       timeline behind the scrim never shows through the words. */
+    --lb-panel: #161618;
+    --t1: var(--lb-ink);
+    --t2: var(--lb-ink-mid);
+    --t3: var(--lb-ink-dim);
+    color: var(--lb-ink);
     display: flex;
     flex-direction: column;
-    gap: 10px;
     width: 100%;
     min-width: 0;
     min-height: 0;
   }
 
+  /* One 46px bar that names the file and holds every control. */
   .att-preview-toolbar {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    height: 46px;
+    box-sizing: border-box;
+    padding: 0 14px 0 20px;
     min-width: 0;
   }
 
+  /* One definite cell, so the artwork's `max-height: 100%` resolves
+     against the stage rather than against its own content. */
   .att-preview-stage {
     position: relative;
+    flex: 1 1 auto;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     place-items: center;
     min-width: 0;
     min-height: 0;
     width: 100%;
+    box-sizing: border-box;
+    padding: 4px 40px 40px;
   }
 
   .att-preview-name {
     min-width: 0;
     overflow: hidden;
-    color: var(--t1);
-    font: 600 13px/1.3 var(--font-ui);
+    color: var(--lb-ink);
+    font: 500 12px/1.3 var(--font-ui);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .att-preview-meta {
-    color: var(--t3, var(--t2));
-    font: 400 11px/1.2 var(--font-ui);
+    flex-shrink: 0;
+    color: var(--lb-ink-dim);
+    font: 400 10px/1.2 var(--font-mono, ui-monospace, Menlo, monospace);
+    font-variant-numeric: tabular-nums;
   }
 
-  .att-download {
+  .push-right {
+    margin-left: auto;
+  }
+
+  /* `:global` so a host can drop its own button into the `trailing` snippet
+     (the lightbox's close) and have it match without restating this. */
+  .att-preview-toolbar :global(.att-preview-ic) {
     appearance: none;
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    z-index: 2;
+    flex-shrink: 0;
     display: grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    /* Icon-only buttons read the one button standard (button-standard.css). */
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     padding: 0;
     border: 0;
-    border-radius: 8px;
-    background: rgba(12, 12, 14, 0.72);
-    color: #fff;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--lb-ink);
     cursor: pointer;
+    transition: background-color 0.12s ease;
   }
 
-  .att-download:disabled {
+  .att-preview-toolbar :global(.att-preview-ic:disabled) {
     opacity: 0.35;
     cursor: default;
   }
 
-  .att-download:hover:not(:disabled) {
-    background: rgba(12, 12, 14, 0.9);
+  .att-preview-toolbar :global(.att-preview-ic:hover:not(:disabled)) {
+    background: var(--lb-hover);
+  }
+
+  .att-preview-toolbar :global(.att-preview-ic:focus-visible) {
+    outline: 2px solid var(--lb-ink-mid);
+    outline-offset: -2px;
   }
 
   .att-preview-status {
     margin: 0;
-    color: var(--t2);
+    color: var(--lb-ink-mid);
     font: 400 12px/1.4 var(--font-ui);
   }
 
@@ -335,37 +402,40 @@
     color: #f87171;
   }
 
+  /* The artwork is the point, so it takes the stage and lifts off it. */
   .att-preview-image {
     max-width: 100%;
     max-height: 100%;
-    border-radius: 8px;
+    border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
     object-fit: contain;
   }
 
+  /* A reading surface the size of the stage, at the same measure as the
+     text preview, lifted off the scrim like the artwork. White behind it so
+     a page never flashes the scrim through while the viewer paints. */
   .att-preview-pdf {
-    width: 100%;
-    min-height: 280px;
-    height: 52vh;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
+    box-sizing: border-box;
+    width: min(900px, 100%);
+    height: 100%;
+    border: 1px solid var(--lb-line);
     border-radius: 8px;
     background: #fff;
-  }
-
-  .compact .att-preview-pdf {
-    height: 220px;
-    min-height: 180px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
   }
 
   .att-preview-text,
   .att-preview-md {
+    box-sizing: border-box;
+    width: min(900px, 100%);
+    max-height: 100%;
     margin: 0;
-    max-height: 360px;
     overflow: auto;
     padding: 10px 12px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
+    border: 1px solid var(--lb-line);
     border-radius: 8px;
-    background: var(--sel, rgba(255, 255, 255, 0.03));
-    color: var(--t1);
+    background: var(--lb-panel);
+    color: var(--lb-ink);
     font: 400 12px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -377,23 +447,27 @@
   }
 
   .att-preview-sheet-wrap {
-    max-height: 360px;
+    box-sizing: border-box;
+    max-width: 100%;
+    max-height: 100%;
     overflow: auto;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
+    border: 1px solid var(--lb-line);
     border-radius: 8px;
+    background: var(--lb-panel);
   }
 
   .att-preview-sheet {
     border-collapse: collapse;
     min-width: 100%;
+    color: var(--lb-ink);
     font: 400 12px/1.3 var(--font-ui);
   }
 
   .att-preview-sheet th,
   .att-preview-sheet td {
     padding: 5px 8px;
-    border-bottom: 1px solid var(--line2, rgba(255, 255, 255, 0.08));
-    border-right: 1px solid var(--line2, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--lb-line);
+    border-right: 1px solid var(--lb-line);
     text-align: left;
     white-space: nowrap;
   }
@@ -401,7 +475,8 @@
   .att-preview-sheet th {
     position: sticky;
     top: 0;
-    background: var(--bg, #121418);
+    /* Opaque so scrolled rows do not show through; matches the panel. */
+    background: var(--lb-panel);
     font-weight: 600;
   }
 
@@ -410,7 +485,43 @@
     flex-direction: column;
     align-items: center;
     gap: 8px;
-    color: var(--t2);
+    color: var(--lb-ink-mid);
+    text-align: center;
+  }
+
+  .att-preview-file-name {
+    margin: 0;
+    color: var(--lb-ink);
+    font: 500 13px/1.3 var(--font-ui);
+    overflow-wrap: anywhere;
+  }
+
+  .att-preview-open {
+    appearance: none;
+    height: 28px;
+    margin-top: 2px;
+    padding: 0 12px;
+    border: 1px solid var(--lb-line);
+    border-radius: 8px;
+    background: var(--lb-surface);
+    color: var(--lb-ink);
+    font: 500 12px/1 var(--font-ui);
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+  }
+
+  .att-preview-open:hover:not(:disabled) {
+    background: var(--lb-hover);
+  }
+
+  .att-preview-open:focus-visible {
+    outline: 2px solid var(--lb-ink-mid);
+    outline-offset: 2px;
+  }
+
+  .att-preview-open:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
 
   .att-preview-icon {
@@ -419,7 +530,15 @@
     width: 48px;
     height: 48px;
     border-radius: 10px;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--lb-surface);
+    color: var(--lb-ink);
     font: 700 11px/1 var(--font-mono, ui-monospace, Menlo, monospace);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .att-preview-toolbar :global(.att-preview-ic),
+    .att-preview-open {
+      transition: none;
+    }
   }
 </style>

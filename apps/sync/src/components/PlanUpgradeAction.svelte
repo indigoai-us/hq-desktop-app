@@ -33,9 +33,10 @@
     background: transparent;
     font: inherit;
     font-weight: 500;
-    text-decoration: underline;
+    text-decoration: none;
     cursor: pointer;
   }
+  .plan-upgrade-action:hover { opacity: 0.7; }
 
   .plan-upgrade-action:focus-visible {
     outline: 2px solid var(--v4-text-1, currentColor);

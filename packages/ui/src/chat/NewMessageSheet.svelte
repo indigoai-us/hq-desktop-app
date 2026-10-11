@@ -1,5 +1,6 @@
 <script lang="ts">
   import RecipientPicker from "./recipient-picker/RecipientPicker.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { recipientItemsFromDirectory } from "./recipient-picker/candidates.js";
   import {
     inRecipientScope,
@@ -166,7 +167,7 @@
     New message
     <span class="grow"></span>
     <button type="button" class="icon" aria-label="Close" onclick={onclose}>
-      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+      <RailIcon name="x" size={14} />
     </button>
   </header>
   <div class="sb">
@@ -235,7 +236,6 @@
   }
   .icon:hover { background: var(--hover); color: var(--t1, var(--v4-text-1)); }
   .icon:focus-visible { outline: 2px solid var(--t2, var(--v4-text-2)); outline-offset: 1px; }
-  .icon svg { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
   .sb { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 0 16px 14px; }
   .ta {
     box-sizing: border-box;

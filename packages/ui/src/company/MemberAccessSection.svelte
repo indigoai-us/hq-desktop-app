@@ -194,7 +194,8 @@
   .sech { color: var(--t1); font-weight: 500; margin: 16px 0 8px; padding-top: 12px; border-top: 1px solid var(--line); }
   .muted { color: var(--t3); margin: 0; }
   .truth { margin: 0 0 4px; color: var(--t1); }
-  .retry { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+  .retry { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-decoration: none; cursor: pointer; }
+  .retry:hover { opacity: 0.7; }
 
   .why { margin: 0 0 8px; color: var(--t2); }
   .why > summary { width: max-content; color: var(--t3); cursor: pointer; }

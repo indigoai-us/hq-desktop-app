@@ -4,7 +4,8 @@
  *
  * The rest state must stay opacity 0 (the buttons stay in the tab order) and
  * drop the resting shadow. `visibility: hidden` would remove those buttons
- * from the tab order, so a plain-text row could never reach :focus-within.
+ * from the tab order, so a plain-text row could never take keyboard focus
+ * (`:has(:focus-visible)`).
  * happy-dom does not compute scoped styles, so this reads the stylesheet the
  * mounted conversation injects.
  */
@@ -72,7 +73,7 @@ describe("quick-react toolbar keyboard reachability", () => {
     );
     const reveal = desktopRules(css).find(
       ({ selector, body }) =>
-        /\.dm-msg[^,]*:focus-within[^,]*\.dm-quick-react/.test(selector) &&
+        /\.dm-msg[^,]*:has\(:focus-visible\)[^,]*\.dm-quick-react/.test(selector) &&
         /opacity:\s*1/.test(body) &&
         /box-shadow:\s*var\(/.test(body),
     );

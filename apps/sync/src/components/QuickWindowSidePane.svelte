@@ -356,28 +356,22 @@
       title="New message"
       onclick={() => onnewmessage?.()}
     >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M3 12.7 3.5 10l6.9-6.9a1.4 1.4 0 0 1 2 2L5.5 12l-2.5.7Z"></path>
-        <path d="m9.5 4 2.5 2.5"></path>
-      </svg>
+      <RailIcon name="note-pencil" size={15} />
     </button>
   </header>
   <section class="qw-section" aria-label="Message sources">
     <label class="qw-search">
       <span class="sr-only">Find a conversation</span>
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <circle cx="7" cy="7" r="4.25"></circle>
-        <path d="m10.25 10.25 3 3"></path>
-      </svg>
+      <RailIcon name="search" size={13} />
       <input bind:value={query} type="search" placeholder="Find a conversation" />
     </label>
     <nav class="qw-utility" aria-label="Message shortcuts">
       <button type="button" onclick={() => onopenfull?.()}>
-        <span class="qw-utility-glyph" aria-hidden="true">☷</span>
+        <span class="qw-utility-glyph" aria-hidden="true"><RailIcon name="chat-circle-dots" size={13} /></span>
         <span>Threads</span>
       </button>
       <button type="button" onclick={() => onopenactivity?.()}>
-        <span class="qw-utility-glyph" aria-hidden="true">@</span>
+        <span class="qw-utility-glyph" aria-hidden="true"><RailIcon name="at" size={13} /></span>
         <span>Mentions & activity</span>
       </button>
     </nav>
@@ -411,7 +405,7 @@
               />
               <strong>{row.actor}</strong>
               {#if row.kind === 'share'}
-                <span class="row-kind" title="Shared files" aria-hidden="true">↗</span>
+                <span class="row-kind" title="Shared files" aria-hidden="true"><RailIcon name="arrow-up-right" size={11} /></span>
               {/if}
               {#if !isSelected && row.unreadCount > 0}
                 <span class="row-unread-count" data-testid="quick-unread-count">
@@ -526,8 +520,6 @@
     padding: 10px 8px 8px;
     overflow: hidden;
     box-sizing: border-box;
-    scrollbar-width: thin;
-    scrollbar-color: var(--pop-muted) transparent;
     background: var(--compact-glass-rail, transparent);
   }
 
@@ -579,23 +571,22 @@
     color: var(--pop-text);
   }
 
-  .qw-compose svg {
-    width: 15px;
-    height: 15px;
-    fill: none;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 1.4;
+  /* One 4px bar (see packages/ui chat/scrollbars.css). No scrollbar-width/-color:
+     the standard properties beat ::-webkit-scrollbar and draw ~11px. */
+  .qw-side-pane::-webkit-scrollbar,
+  .qw-section::-webkit-scrollbar {
+    width: 4px;
   }
 
-  .qw-side-pane::-webkit-scrollbar {
-    width: 6px;
+  .qw-side-pane::-webkit-scrollbar-track,
+  .qw-section::-webkit-scrollbar-track {
+    background: transparent;
   }
 
-  .qw-side-pane::-webkit-scrollbar-thumb {
+  .qw-side-pane::-webkit-scrollbar-thumb,
+  .qw-section::-webkit-scrollbar-thumb {
     background: var(--pop-hover);
-    border-radius: 3px;
+    border-radius: 2px;
   }
 
   .qw-section {
@@ -605,8 +596,6 @@
     min-height: 0;
     flex: 1;
     overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--pop-muted) transparent;
   }
 
   .qw-utility {
@@ -642,8 +631,8 @@
   .qw-utility-glyph {
     width: 17px;
     color: currentColor;
-    font-size: 13px;
-    text-align: center;
+    display: flex;
+    justify-content: center;
   }
 
   .qw-search {
@@ -662,16 +651,6 @@
   .qw-search:focus-within {
     border-color: color-mix(in srgb, var(--pop-text) 42%, var(--pop-divider));
     color: var(--pop-text);
-  }
-
-  .qw-search svg {
-    width: 13px;
-    height: 13px;
-    flex: 0 0 13px;
-    fill: none;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-width: 1.5;
   }
 
   .qw-search input {
@@ -806,8 +785,8 @@
 
   .row-kind {
     flex: 0 0 auto;
+    display: flex;
     color: var(--pop-muted);
-    font-size: 11px;
   }
 
   .row-unread-count {

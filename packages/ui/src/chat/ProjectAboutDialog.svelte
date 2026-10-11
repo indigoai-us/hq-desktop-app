@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Project-about dialog — opened from the channel-header info control.
    * Shows the PROJECT_VIEW description for the open project channel.
@@ -60,7 +61,7 @@
         aria-label="Close project description"
         onclick={() => onclose?.()}
       >
-        <span aria-hidden="true">×</span>
+        <RailIcon name="x" size={16} />
       </button>
     </header>
     <p class="about-body" data-testid="project-about-body">{body}</p>
@@ -125,6 +126,8 @@
     appearance: none;
     -webkit-appearance: none;
     flex: 0 0 auto;
+    display: inline-grid;
+    place-items: center;
     width: 28px;
     height: 28px;
     border: 1px solid transparent;

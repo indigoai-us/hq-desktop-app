@@ -1,5 +1,6 @@
 <script lang="ts">
   import CompanyLabel from "../company/CompanyLabel.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * ProjectRow — a single project rendered as a movable portfolio / board card.
    *
@@ -156,10 +157,7 @@
       <div class="card-chips">
         {#if goalLabel}
           <span class="chip goal-chip" title={`Goal: ${goalLabel}`}>
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-              <circle cx="8" cy="8" r="2" fill="currentColor" />
-            </svg>
+            <RailIcon name="target" size={11} />
             <span class="chip-text">{goalLabel}</span>
           </span>
         {/if}
@@ -278,15 +276,7 @@
       title={linkBusy ? "Opening…" : "Link goal"}
       onclick={linkGoal}
     >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M6.8 9.2 9.2 6.8M7.4 4.6l.9-.9a2.6 2.6 0 0 1 3.7 3.7l-.9.9M8.6 11.4l-.9.9a2.6 2.6 0 0 1-3.7-3.7l.9-.9"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linecap="round"
-        />
-      </svg>
+      <RailIcon name="link" size={14} />
     </button>
   {/if}
 </article>
@@ -422,10 +412,7 @@
     line-height: 1;
   }
 
-  .chip svg {
-    flex: 0 0 auto;
-    width: 11px;
-    height: 11px;
+  .chip :global(.rail-icon) {
     color: var(--v4-text-3);
   }
 
@@ -624,11 +611,6 @@
       opacity 120ms ease,
       background 120ms ease,
       color 120ms ease;
-  }
-
-  .link-nudge svg {
-    width: 14px;
-    height: 14px;
   }
 
   .project-card:hover .link-nudge,

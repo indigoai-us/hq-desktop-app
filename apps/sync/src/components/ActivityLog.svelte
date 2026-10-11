@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../lib/listener-registry';
+  import RailIcon from '@hq/ui/rail-icon';
 
   interface ActivityEntry {
     company: string;
@@ -88,15 +89,15 @@
     }
   }
 
-  function dirMeta(direction: string): { label: string; cls: string; glyph: string } {
+  function dirMeta(direction: string): { label: string; cls: string; icon: 'arrow-up' | 'x' | 'arrow-down' } {
     switch (direction) {
       case 'up':
-        return { label: 'Uploaded', cls: 'dir-up', glyph: '↑' };
+        return { label: 'Uploaded', cls: 'dir-up', icon: 'arrow-up' };
       case 'deleted':
-        return { label: 'Deleted', cls: 'dir-del', glyph: '✕' };
+        return { label: 'Deleted', cls: 'dir-del', icon: 'x' };
       case 'down':
       default:
-        return { label: 'Downloaded', cls: 'dir-down', glyph: '↓' };
+        return { label: 'Downloaded', cls: 'dir-down', icon: 'arrow-down' };
     }
   }
 
@@ -157,7 +158,7 @@
           {@const meta = dirMeta(item.direction)}
           <div class="detail-row">
             <span class="col-dir {meta.cls}" title={meta.label}>
-              <span class="dir-glyph">{meta.glyph}</span>
+              <span class="dir-glyph"><RailIcon name={meta.icon} size={12} /></span>
               <span class="dir-label">{meta.label}</span>
             </span>
             <span class="col-path detail-path" title={`${item.company}/${item.path}`}>
@@ -254,19 +255,19 @@
     flex: 1;
     overflow-y: auto;
     padding: 0.25rem 0 0.75rem;
-    scrollbar-width: thin;
-    scrollbar-color: var(--pop-muted) transparent;
   }
 
+  /* One 4px bar (see packages/ui chat/scrollbars.css). No scrollbar-width/-color:
+     the standard properties beat ::-webkit-scrollbar and draw ~11px. */
   .detail-list::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
   }
   .detail-list::-webkit-scrollbar-track {
     background: transparent;
   }
   .detail-list::-webkit-scrollbar-thumb {
     background: var(--pop-hover);
-    border-radius: 3px;
+    border-radius: 2px;
   }
   .detail-list:hover::-webkit-scrollbar-thumb {
     background: var(--c-field-bg);
@@ -312,8 +313,7 @@
     font-weight: 600;
   }
   .dir-glyph {
-    font-size: 0.8rem;
-    line-height: 1;
+    display: flex;
   }
   .dir-up {
     color: var(--popover-success, #1f9d4d);

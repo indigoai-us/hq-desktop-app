@@ -227,9 +227,7 @@
           aria-label="Close"
           onclick={onclose}
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M12 4L4 12M4 4l8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          </svg>
+          <RailIcon name="x" />
         </button>
       </div>
     </header>

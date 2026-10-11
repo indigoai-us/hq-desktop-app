@@ -4,6 +4,7 @@
    * chips. Two repo chips at most, then "+N"; the full list is in the title.
    */
   import { repoChips } from "./project-card.js";
+  import RailIcon from "../common/button/RailIcon.svelte";
 
   let {
     repos = [],
@@ -17,16 +18,7 @@
   <span class="repo-chips" data-testid="project-repo-chips">
     {#each chips.shown as repo (repo)}
       <span class="repo-chip" title={`Repo: ${repo}`}>
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M4 2.5h7.5v9H5a1 1 0 0 0-1 1m0-10v10m0 0a1 1 0 0 0 1 1h6.5"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.3"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <RailIcon name="book" size={11} />
         <span class="repo-text">{repo}</span>
       </span>
     {/each}
@@ -35,12 +27,7 @@
     {/if}
     {#if branch}
       <span class="repo-chip branch" title={`Branch: ${branch}`} data-testid="project-branch">
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="5" cy="4" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" />
-          <circle cx="5" cy="12" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" />
-          <circle cx="11" cy="6" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3" />
-          <path d="M5 5.6v4.8M11 7.6c0 2-2.5 2.2-5.4 3.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-        </svg>
+        <RailIcon name="git-branch" size={11} />
         <span class="repo-text">{branch}</span>
       </span>
     {/if}
@@ -71,10 +58,7 @@
     line-height: 1;
   }
 
-  .repo-chip svg {
-    flex: 0 0 auto;
-    width: 11px;
-    height: 11px;
+  .repo-chip :global(.rail-icon) {
     color: var(--v4-text-3);
   }
 

@@ -1,19 +1,30 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { agentAvatarFor } from "./agent-avatars";
   import { paintableAvatarSrc } from "../../avatars/csp-image-src.js";
+  import TierMark from "../../badges/TierMark.svelte";
+  import { TIER_MARK_MIN_AVATAR, topBadgeFor } from "../../badges/badge-tier.js";
+  import type { BadgeTier } from "../../badges/badge-catalog.js";
 
   interface Props {
     kind?: "person" | "group" | "agent" | "channel" | "file";
     label?: string;
     members?: string[];
     privateChannel?: boolean;
-    size?: "small" | "regular";
+    size?: "small" | "regular" | "large";
     online?: boolean;
     /** Real avatar photo — falls back to the monogram when absent or on error. */
     avatarUrl?: string | null;
     /** Agent uid — drives the deterministic generated avatar when the agent
      *  has no assigned photo. Ignored for non-agent kinds. */
     agentUid?: string | null;
+    /** A person's uid (`prs_*`): their tier mark comes from the badges read by it. */
+    personUid?: string | null;
+    /**
+     * The tier mark at the bottom right. Left out, a person's tier comes
+     * from their badges (as on their profile); null shows none.
+     */
+    tier?: BadgeTier | null;
   }
 
   let {
@@ -25,7 +36,21 @@
     online = false,
     avatarUrl = null,
     agentUid = null,
+    personUid = null,
+    tier = undefined,
   }: Props = $props();
+
+  const AVATAR_PX = { small: 22, regular: 32, large: 48 } as const;
+  /**
+   * The badge behind the mark, looked up only when no tier is given and the
+   * picture is big enough to carry the mark (so small avatars read nothing).
+   */
+  const top = $derived(
+    tier === undefined && kind === "person" && AVATAR_PX[size] >= TIER_MARK_MIN_AVATAR && (label.trim() || personUid)
+      ? topBadgeFor({ kind: "person", name: label, uid: personUid })
+      : null,
+  );
+  const shownTier = $derived(tier !== undefined ? tier : (top?.tier ?? null));
 
   // Photo > deterministic generated avatar (agents only) > monogram/glyph.
   // paintableAvatarSrc drops arbitrary http(s); the packaged CSP would
@@ -61,6 +86,7 @@
 <span
   class="identity"
   class:small={size === "small"}
+  class:large={size === "large"}
   data-kind={kind}
   aria-hidden="true"
 >
@@ -69,8 +95,8 @@
       class="avatar-img"
       src={effectiveAvatarUrl}
       alt=""
-      width={size === "small" ? 22 : 32}
-      height={size === "small" ? 22 : 32}
+      width={size === "small" ? 22 : size === "large" ? 48 : 32}
+      height={size === "small" ? 22 : size === "large" ? 48 : 32}
       loading="lazy"
       decoding="async"
       onerror={() => (imageBroken = true)}
@@ -81,46 +107,19 @@
     </span>
   {:else if kind === "channel"}
     {#if privateChannel}
-      <svg class="channel-lock" viewBox="0 0 16 16" fill="none">
-        <rect
-          x="3.5"
-          y="7"
-          width="9"
-          height="6.5"
-          rx="1.5"
-          stroke="currentColor"
-          stroke-width="1.4"
-        />
-        <path
-          d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linecap="round"
-        />
-      </svg>
+      <span class="channel-lock"><RailIcon name="lock-simple" size={size === "small" ? 13 : 14} /></span>
     {:else}
-      <span class="channel-glyph">#</span>
+      <span class="channel-glyph"><RailIcon name="hash" size={size === "small" ? 13 : 15} /></span>
     {/if}
   {:else if kind === "agent"}
-    <span class="agent-glyph">✦</span>
+    <span class="agent-glyph"><RailIcon name="sparkle" size={16} /></span>
   {:else if kind === "file"}
-    <svg viewBox="0 0 16 16" fill="none"
-      ><path
-        d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-        stroke="currentColor"
-        stroke-width="1.35"
-        stroke-linejoin="round"
-      /><path
-        d="M9 1.5V5.5H13"
-        stroke="currentColor"
-        stroke-width="1.35"
-        stroke-linejoin="round"
-      /></svg
-    >
+    <RailIcon name="file" size={15} />
   {:else}
     <span class="monogram">{initials(label)}</span>
   {/if}
   {#if online}<span class="presence"></span>{/if}
+  {#if shownTier && AVATAR_PX[size] >= TIER_MARK_MIN_AVATAR}<TierMark tier={shownTier} avatar={AVATAR_PX[size]} badge={top} />{/if}
 </span>
 
 <style>
@@ -147,6 +146,14 @@
     height: 22px;
     flex-basis: 22px;
     font-size: 8px;
+  }
+  /* Profile header: the same mark scaled up, initials at the regular size's
+     proportion (12px in 32px). */
+  .identity.large {
+    width: 48px;
+    height: 48px;
+    flex-basis: 48px;
+    font-size: 18px;
   }
   .monogram {
     display: grid;
@@ -201,38 +208,28 @@
     font-size: 6px;
   }
   .channel-glyph {
+    display: inline-flex;
     color: currentColor;
-    font-size: 19px;
-    font-weight: 450;
-    line-height: 1;
   }
-  .small .channel-glyph {
-    font-size: 17px;
-  }
-  .agent-glyph {
-    font-size: 16px;
-    font-weight: 400;
-  }
-  .identity > svg:not(.channel-lock) {
-    width: 15px;
-    height: 15px;
-  }
+  .agent-glyph,
   .channel-lock {
-    width: 14px;
-    height: 14px;
+    display: inline-flex;
   }
-  .small .channel-lock {
-    width: 13px;
-    height: 13px;
-  }
+  /* Top right: the bottom right holds the tier mark (badges/TierMark).
+     Small pictures carry no mark, so theirs stays at the bottom right. */
   .presence {
     position: absolute;
     right: -1px;
-    bottom: 0;
+    top: 0;
     width: 6px;
     height: 6px;
     border: 1.5px solid var(--v4-ground, var(--pop-bg));
     border-radius: 50%;
     background: var(--v4-ok, #42d77d);
+  }
+
+  .small .presence {
+    top: auto;
+    bottom: 0;
   }
 </style>

@@ -11,6 +11,7 @@
  */
 
 import { isRecord } from "../common/is-record";
+import type { RailIconName } from "../common/button/rail-icons.js";
 import { dayKey, dayLabel } from "./notification-groups";
 import { bundleFileNotifications } from "./file-bundles";
 import { bundleAgentJoinNotifications } from "./agent-join-bundles";
@@ -33,9 +34,20 @@ export type NotificationDisplayKind =
   | "plan_limit"
   | "generic";
 
-/** Icon key rendered beside each row (view maps to SVG). */
+/** Icon key rendered beside each row (view maps it to a Phosphor icon). */
 export type NotificationTypeIcon =
   "mention" | "agent" | "review" | "file" | "dm" | "flag" | "generic";
+
+/** Phosphor Regular registry icon drawn for each row type icon key. */
+export const NOTIFICATION_TYPE_RAIL_ICON: Record<NotificationTypeIcon, RailIconName> = {
+  mention: "at",
+  agent: "robot",
+  review: "check-circle",
+  file: "file",
+  dm: "chat-circle",
+  flag: "flag",
+  generic: "circle-dot",
+};
 
 export type NotificationStatus = "unread" | "read";
 

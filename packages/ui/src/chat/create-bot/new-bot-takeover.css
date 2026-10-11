@@ -74,7 +74,7 @@
 
 .new-bot-takeover-cancel:hover,
 .new-bot-takeover-local:hover {
-  color: var(--new-bot-ink);
+  opacity: 0.7;
 }
 
 .new-bot-takeover-cancel:focus-visible,
@@ -148,8 +148,6 @@
   display: block;
   margin-top: 22px;
   padding: 0;
-  text-decoration: underline;
-  text-underline-offset: 4px;
 }
 
 .new-bot-create {
@@ -331,10 +329,10 @@
   color: var(--new-bot-muted);
   font: inherit;
   font-size: 13px;
-  text-decoration: underline;
-  text-underline-offset: 4px;
+  text-decoration: none;
   cursor: pointer;
 }
+.new-bot-more:hover { opacity: 0.7; }
 
 .new-bot-advanced {
   display: grid;
@@ -441,8 +439,11 @@
 .new-bot-waking-link,
 .new-bot-waking-close {
   color: var(--new-bot-muted);
-  text-decoration: underline;
-  text-underline-offset: 4px;
+}
+
+.new-bot-waking-link:hover,
+.new-bot-waking-close:hover {
+  opacity: 0.7;
 }
 
 .new-bot-waking-close {
@@ -592,17 +593,22 @@
   margin: 0 -6px;
   padding: 10px 6px;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
   mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
 }
 
+/* The shell's 4px bar (chat/scrollbars.css), re-inked for this always-dark
+   surface. No scrollbar-width/-color: the standard properties beat these. */
 .new-bot-create-scroll::-webkit-scrollbar {
-  width: 6px;
+  width: 4px;
+}
+
+.new-bot-create-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .new-bot-create-scroll::-webkit-scrollbar-thumb {
+  border-radius: 2px;
   background: rgba(255, 255, 255, 0.22);
 }
 
@@ -685,14 +691,11 @@
 }
 
 .new-bot-company-check {
+  display: inline-flex;
   flex: 0 0 auto;
   width: 14px;
   height: 14px;
-  fill: none;
-  stroke: #ffb580;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  color: #ffb580;
 }
 
 .new-bot-company-empty {
@@ -912,10 +915,10 @@
   color: var(--new-bot-ink);
   font: inherit;
   font-size: 13px;
-  text-decoration: underline;
-  text-underline-offset: 4px;
+  text-decoration: none;
   cursor: pointer;
 }
+.new-bot-cancel-retry:hover { opacity: 0.7; }
 
 .new-bot-cancel-retry:focus-visible,
 .new-bot-confirm-remove:focus-visible {
@@ -1464,9 +1467,12 @@
   background: transparent;
   color: var(--new-bot-ink);
   font: inherit;
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  text-decoration: none;
   cursor: pointer;
+}
+
+.new-bot-inline-link:hover {
+  opacity: 0.7;
 }
 
 .new-bot-inline-link:focus-visible {

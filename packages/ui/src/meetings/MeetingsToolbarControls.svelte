@@ -6,6 +6,7 @@
 <script lang="ts">
   import type { Component } from "svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
   import { calendarChipLabel } from "./meeting-link";
   import { loadCalendarPanel, loadPasteLinkBox } from "./meetings-toolbar-lazy";
@@ -74,7 +75,7 @@
     aria-haspopup="dialog"
     onclick={() => toggle("calendar")}
   >
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    <RailIcon name="calendar-blank" size={13} />
     <span>{chip.provider}</span>{#if chip.count}<span class="ct">· {chip.count}</span>{/if}
   </button>
   <button
@@ -87,7 +88,7 @@
     aria-haspopup="dialog"
     onclick={() => toggle("paste")}
   >
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.5 9.5l3-3M7 4.5l1.2-1.2a2.6 2.6 0 013.6 3.6L10.6 8M9 11.5l-1.2 1.2a2.6 2.6 0 01-3.6-3.6L5.4 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    <RailIcon name="link" size={14} />
   </button>
 
   {#if open}

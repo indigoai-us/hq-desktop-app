@@ -102,9 +102,15 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
   it('keeps the ready-step caution open and neutral while retaining its compact warning cue', () => {
     expectOpenSection(welcomeCss, '.hq-welcome .setup-caution', 'onboarding setup caution');
     expect(onboarding).toContain('class="setup-caution-icon"');
-    expect(rule(welcomeCss, '.hq-welcome .setup-caution-icon')).toContain(
-      'stroke: var(--w-muted)',
+    // The cue is the Phosphor Warning icon (filled path in currentColor), so the
+    // neutral tone is carried by `color`, and no legacy stroke styling remains.
+    expect(onboarding).toContain(
+      '<span class="setup-caution-icon" aria-hidden="true"><RailIcon name="warning" size={15} /></span>',
     );
+    expect(rule(welcomeCss, '.hq-welcome .setup-caution-icon')).toContain(
+      'color: var(--w-muted)',
+    );
+    expect(rule(welcomeCss, '.hq-welcome .setup-caution-icon')).not.toMatch(/stroke|fill:\s*none/u);
     expect(rule(welcomeCss, '.hq-welcome .setup-caution-icon')).not.toMatch(
       /(?:#a66b00|v4-warn|amber|yellow)/i,
     );

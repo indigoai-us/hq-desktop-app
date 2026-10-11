@@ -1082,7 +1082,7 @@
       title="Close"
       onclick={onclose}
     >
-      ×
+      <RailIcon name="x" size={14} />
     </button>
   </header>
 
@@ -1096,15 +1096,34 @@
           {@const rootRich = richContentForMessage(root)}
           {@const rootForwarded = parseForwardedFrom(root.forwardedFrom)}
           {@const rootForwardNote = rootForwarded ? forwardNoteText(root.forwardNote) : ""}
-          <span class="reply-avatar" aria-hidden="true">
-            <IdentityMark
+          <!-- The picture opens the author's profile, as the name does. -->
+          {#if onopenprofile && (root.fromPersonUid ?? "").trim()}
+            <button
+              type="button"
+              class="reply-avatar reply-avatar-btn"
+              data-testid="reply-avatar-open"
+              aria-label={`Open ${messageAuthor(root)}'s profile`}
+              onclick={() => openAuthorProfile(root)}
+            ><IdentityMark
               kind={isAgent(root) ? "agent" : "person"}
               label={messageAuthor(root)}
               avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
               agentUid={root.fromPersonUid}
+              personUid={isAgent(root) ? null : root.fromPersonUid}
+              size="regular"
+            /></button>
+          {:else}
+            <span class="reply-avatar" aria-hidden="true">
+              <IdentityMark
+              kind={isAgent(root) ? "agent" : "person"}
+              label={messageAuthor(root)}
+              avatarUrl={authorAvatarUrl(root.fromPersonUid, avatarByUid)}
+              agentUid={root.fromPersonUid}
+              personUid={isAgent(root) ? null : root.fromPersonUid}
               size="regular"
             />
-          </span>
+            </span>
+          {/if}
           <div class="reply-col">
             <div class="reply-meta">
               {#if onopenprofile && (root.fromPersonUid ?? "").trim()}
@@ -1120,20 +1139,86 @@
               {/if}
               <span class="reply-time">{formatTime(root.createdAt)}</span>
             </div>
-            <div class="reply-root-body">
-              {#if rootForwarded}
-                {#if rootForwardNote}
-                  {@render replyBodyText(root, rootForwardNote)}
-                {/if}
-                <ForwardedBlock
-                  forwardedFrom={rootForwarded}
-                  omittedAttachments={parseOmittedAttachments(root.omittedAttachments)}
-                >
+            <!-- The box the hover bar hangs off: the body only, never the
+                 reaction row, so the bar opens 4px under the message it
+                 belongs to, the same as the main timeline. -->
+            <div class="reply-main">
+              <div class="reply-root-body">
+                {#if rootForwarded}
+                  {#if rootForwardNote}
+                    {@render replyBodyText(root, rootForwardNote)}
+                  {/if}
+                  <ForwardedBlock
+                    forwardedFrom={rootForwarded}
+                    omittedAttachments={parseOmittedAttachments(root.omittedAttachments)}
+                  >
+                    {@render replyContent(root, rootRich, true)}
+                  </ForwardedBlock>
+                {:else}
                   {@render replyContent(root, rootRich, true)}
-                </ForwardedBlock>
-              {:else}
-                {@render replyContent(root, rootRich, true)}
-              {/if}
+                {/if}
+              </div>
+              <div
+                class="reply-quick-react reply-quick-react-root"
+                role="group"
+                aria-label="Message actions"
+              >
+                {#each QUICK_REACT_EMOJI as emoji (emoji)}
+                  <button
+                    type="button"
+                    class="reply-quick-react-btn"
+                    onclick={() => toggle(rootId, emoji)}
+                    aria-label={`React with ${emoji}`}
+                  >
+                    {emoji}
+                  </button>
+                {/each}
+                <span class="reply-quick-react-picker-wrap">
+                  <button
+                    type="button"
+                    class="reply-quick-react-btn reply-quick-react-more"
+                    aria-label="Add a reaction"
+                    title="Add a reaction"
+                    aria-haspopup="menu"
+                    aria-expanded={reactPickerFor === rootId}
+                    onclick={() =>
+                      (reactPickerFor = reactPickerFor === rootId ? null : rootId)}
+                  >
+                    <RailIcon name="plus" size={12} />
+                  </button>
+                  {#if reactPickerFor === rootId}
+                    <EmojiPicker
+                      onpick={(emoji) => {
+                        reactPickerFor = null;
+                        toggle(rootId, emoji);
+                      }}
+                      onclose={() => (reactPickerFor = null)}
+                    />
+                  {/if}
+                </span>
+                <button
+                  type="button"
+                  class="reply-quick-react-btn reply-quick-copy"
+                  data-testid="reply-copy-id"
+                  aria-label="Copy message ID"
+                  title="Copy ID"
+                  onclick={() => copyId(rootId)}
+                >
+                  {copiedKey === `id:${rootId}` ? "Copied" : "Copy ID"}
+                </button>
+                {#if linkConversationId && linkCompanyUid}
+                  <button
+                    type="button"
+                    class="reply-quick-react-btn reply-quick-copy"
+                    data-testid="reply-copy-link"
+                    aria-label="Copy message link"
+                    title="Copy link"
+                    onclick={() => copyLink(rootId)}
+                  >
+                    {copiedKey === `link:${rootId}` ? "Copied" : "Copy link"}
+                  </button>
+                {/if}
+              </div>
             </div>
             {#if reactionsFor(rootId).length > 0}
               <ReactionBar
@@ -1145,71 +1230,15 @@
                 compact
               />
             {/if}
-            <div
-              class="reply-quick-react reply-quick-react-root"
-              role="group"
-              aria-label="Message actions"
-            >
-              {#each QUICK_REACT_EMOJI as emoji (emoji)}
-                <button
-                  type="button"
-                  class="reply-quick-react-btn"
-                  onclick={() => toggle(rootId, emoji)}
-                  aria-label={`React with ${emoji}`}
-                >
-                  {emoji}
-                </button>
-              {/each}
-              <span class="reply-quick-react-picker-wrap">
-                <button
-                  type="button"
-                  class="reply-quick-react-btn reply-quick-react-more"
-                  aria-label="Add a reaction"
-                  title="Add a reaction"
-                  aria-haspopup="menu"
-                  aria-expanded={reactPickerFor === rootId}
-                  onclick={() =>
-                    (reactPickerFor = reactPickerFor === rootId ? null : rootId)}
-                >
-                  +
-                </button>
-                {#if reactPickerFor === rootId}
-                  <EmojiPicker
-                    onpick={(emoji) => {
-                      reactPickerFor = null;
-                      toggle(rootId, emoji);
-                    }}
-                    onclose={() => (reactPickerFor = null)}
-                  />
-                {/if}
+            <!-- The count divider separates the root from its replies, so an
+                 empty thread draws none: a lone "0 REPLIES" rule under the
+                 root read as a broken label, not as information. -->
+            {#if replyCount > 0}
+              <span class="reply-root-label" data-testid="reply-count-divider">
+                {replyCount}
+                {replyCount === 1 ? "reply" : "replies"}
               </span>
-              <button
-                type="button"
-                class="reply-quick-react-btn"
-                data-testid="reply-copy-id"
-                aria-label="Copy message ID"
-                title="Copy ID"
-                onclick={() => copyId(rootId)}
-              >
-                {copiedKey === `id:${rootId}` ? "Copied" : "Copy ID"}
-              </button>
-              {#if linkConversationId && linkCompanyUid}
-                <button
-                  type="button"
-                  class="reply-quick-react-btn"
-                  data-testid="reply-copy-link"
-                  aria-label="Copy message link"
-                  title="Copy link"
-                  onclick={() => copyLink(rootId)}
-                >
-                  {copiedKey === `link:${rootId}` ? "Copied" : "Copy link"}
-                </button>
-              {/if}
-            </div>
-            <span class="reply-root-label">
-              {replyCount}
-              {replyCount === 1 ? "reply" : "replies"}
-            </span>
+            {/if}
           </div>
         {:else if loading}
           <p class="reply-status" role="status">Loading replies…</p>
@@ -1221,30 +1250,48 @@
         <p class="reply-status" role="status">Loading replies…</p>
       {:else if loadError && replies.length === 0 && root}
         <p class="reply-status reply-error" role="alert">{loadError}</p>
-      {:else if visibleReplies.length === 0}
-        <p class="reply-status" data-testid="reply-panel-empty" role="status">
-          No replies yet
-        </p>
-      {:else}
-        {#each visibleReplies as msg (msg.eventId)}
+      {:else if visibleReplies.length > 0}
+        <!-- No "No replies yet" line (and no count divider) for an empty
+             thread: the open composer already invites the first reply. -->
+        {#each visibleReplies as msg, index (msg.eventId)}
           {@const replyRich = richContentForMessage(msg)}
           {@const replyForwarded = parseForwardedFrom(msg.forwardedFrom)}
           {@const replyForwardNote = replyForwarded ? forwardNoteText(msg.forwardNote) : ""}
           <div
             class="reply-row"
+            class:reply-row-last={index === visibleReplies.length - 1}
             data-testid="reply-panel-message"
             data-event-id={msg.eventId}
             data-send-status={msg.sendStatus ?? ""}
           >
-            <span class="reply-avatar" aria-hidden="true">
-              <IdentityMark
+            <!-- The picture opens the author's profile, as the name does. -->
+            {#if onopenprofile && (msg.fromPersonUid ?? "").trim()}
+              <button
+                type="button"
+                class="reply-avatar reply-avatar-btn"
+                data-testid="reply-avatar-open"
+                aria-label={`Open ${messageAuthor(msg)}'s profile`}
+                onclick={() => openAuthorProfile(msg)}
+              ><IdentityMark
                 kind={isAgent(msg) ? "agent" : "person"}
                 label={messageAuthor(msg)}
                 avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                 agentUid={msg.fromPersonUid}
+                personUid={isAgent(msg) ? null : msg.fromPersonUid}
+                size="regular"
+              /></button>
+            {:else}
+              <span class="reply-avatar" aria-hidden="true">
+                <IdentityMark
+                kind={isAgent(msg) ? "agent" : "person"}
+                label={messageAuthor(msg)}
+                avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
+                agentUid={msg.fromPersonUid}
+                personUid={isAgent(msg) ? null : msg.fromPersonUid}
                 size="regular"
               />
-            </span>
+              </span>
+            {/if}
             <div class="reply-col">
               <div class="reply-meta">
                 {#if onopenprofile && (msg.fromPersonUid ?? "").trim()}
@@ -1260,19 +1307,85 @@
                 {/if}
                 <span class="reply-time">{formatTime(msg.createdAt)}</span>
               </div>
-              {#if replyForwarded}
-                {#if replyForwardNote}
-                  {@render replyBodyText(msg, replyForwardNote)}
+              <div class="reply-main">
+                {#if replyForwarded}
+                  {#if replyForwardNote}
+                    {@render replyBodyText(msg, replyForwardNote)}
+                  {/if}
+                  <ForwardedBlock
+                    forwardedFrom={replyForwarded}
+                    omittedAttachments={parseOmittedAttachments(msg.omittedAttachments)}
+                  >
+                    {@render replyContent(msg, replyRich, true)}
+                  </ForwardedBlock>
+                {:else}
+                  {@render replyContent(msg, replyRich, false)}
                 {/if}
-                <ForwardedBlock
-                  forwardedFrom={replyForwarded}
-                  omittedAttachments={parseOmittedAttachments(msg.omittedAttachments)}
-                >
-                  {@render replyContent(msg, replyRich, true)}
-                </ForwardedBlock>
-              {:else}
-                {@render replyContent(msg, replyRich, false)}
-              {/if}
+                {#if !msg.eventId.startsWith("local-")}
+                  <div
+                    class="reply-quick-react"
+                    role="group"
+                    aria-label="Message actions"
+                  >
+                    {#each QUICK_REACT_EMOJI as emoji (emoji)}
+                      <button
+                        type="button"
+                        class="reply-quick-react-btn"
+                        onclick={() => toggle(msg.eventId, emoji)}
+                        aria-label={`React with ${emoji}`}
+                      >
+                        {emoji}
+                      </button>
+                    {/each}
+                    <span class="reply-quick-react-picker-wrap">
+                      <button
+                        type="button"
+                        class="reply-quick-react-btn reply-quick-react-more"
+                        aria-label="Add a reaction"
+                        title="Add a reaction"
+                        aria-haspopup="menu"
+                        aria-expanded={reactPickerFor === msg.eventId}
+                        onclick={() =>
+                          (reactPickerFor =
+                            reactPickerFor === msg.eventId ? null : msg.eventId)}
+                      >
+                        <RailIcon name="plus" size={12} />
+                      </button>
+                      {#if reactPickerFor === msg.eventId}
+                        <EmojiPicker
+                          onpick={(emoji) => {
+                            reactPickerFor = null;
+                            toggle(msg.eventId, emoji);
+                          }}
+                          onclose={() => (reactPickerFor = null)}
+                        />
+                      {/if}
+                    </span>
+                    <button
+                      type="button"
+                      class="reply-quick-react-btn reply-quick-copy"
+                      data-testid="reply-copy-id"
+                      aria-label="Copy message ID"
+                      title="Copy ID"
+                      onclick={() => copyId(msg.eventId)}
+                    >
+                      {copiedKey === `id:${msg.eventId}` ? "Copied" : "Copy ID"}
+                    </button>
+                    {#if linkConversationId && linkCompanyUid}
+                      <button
+                        type="button"
+                        class="reply-quick-react-btn reply-quick-copy"
+                        data-testid="reply-copy-link"
+                        aria-label="Copy message link"
+                        title="Copy link"
+                        onclick={() => copyLink(msg.eventId)}
+                      >
+                        {copiedKey === `link:${msg.eventId}` ? "Copied" : "Copy link"}
+                      </button>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
               {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
                 <ReactionBar
                     {selfPersonUid}
@@ -1282,70 +1395,6 @@
                   ontoggle={toggle}
                   compact
                 />
-              {/if}
-              {#if !msg.eventId.startsWith("local-")}
-                <div
-                  class="reply-quick-react"
-                  role="group"
-                  aria-label="Message actions"
-                >
-                  {#each QUICK_REACT_EMOJI as emoji (emoji)}
-                    <button
-                      type="button"
-                      class="reply-quick-react-btn"
-                      onclick={() => toggle(msg.eventId, emoji)}
-                      aria-label={`React with ${emoji}`}
-                    >
-                      {emoji}
-                    </button>
-                  {/each}
-                  <span class="reply-quick-react-picker-wrap">
-                    <button
-                      type="button"
-                      class="reply-quick-react-btn reply-quick-react-more"
-                      aria-label="Add a reaction"
-                      title="Add a reaction"
-                      aria-haspopup="menu"
-                      aria-expanded={reactPickerFor === msg.eventId}
-                      onclick={() =>
-                        (reactPickerFor =
-                          reactPickerFor === msg.eventId ? null : msg.eventId)}
-                    >
-                      +
-                    </button>
-                    {#if reactPickerFor === msg.eventId}
-                      <EmojiPicker
-                        onpick={(emoji) => {
-                          reactPickerFor = null;
-                          toggle(msg.eventId, emoji);
-                        }}
-                        onclose={() => (reactPickerFor = null)}
-                      />
-                    {/if}
-                  </span>
-                  <button
-                    type="button"
-                    class="reply-quick-react-btn"
-                    data-testid="reply-copy-id"
-                    aria-label="Copy message ID"
-                    title="Copy ID"
-                    onclick={() => copyId(msg.eventId)}
-                  >
-                    {copiedKey === `id:${msg.eventId}` ? "Copied" : "Copy ID"}
-                  </button>
-                  {#if linkConversationId && linkCompanyUid}
-                    <button
-                      type="button"
-                      class="reply-quick-react-btn"
-                      data-testid="reply-copy-link"
-                      aria-label="Copy message link"
-                      title="Copy link"
-                      onclick={() => copyLink(msg.eventId)}
-                    >
-                      {copiedKey === `link:${msg.eventId}` ? "Copied" : "Copy link"}
-                    </button>
-                  {/if}
-                </div>
               {/if}
               {#if msg.sendStatus === "sending"}
                 <span class="reply-send-state" role="status">Sending…</span>
@@ -1377,7 +1426,7 @@
 
     <!-- Live rows sit between the list and the composer, so they carry the
          list's horizontal inset themselves: the 18px avatar centres under the
-         36px avatar column of the rows above, and a gap keeps the last row
+         32px avatar column of the rows above, and a gap keeps the last row
          off the composer's border. -->
     <div class="reply-live">
       <AgentThinkingRow entries={agentThinking} />
@@ -1447,21 +1496,7 @@
                 input.value = "";
               }}
             />
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M13.2 8.2 8.05 13.35a3.25 3.25 0 0 1-4.6-4.6l5.9-5.9a2.15 2.15 0 1 1 3.04 3.04L6.5 11.7a1 1 0 1 1-1.42-1.42l5.15-5.15"
-                stroke="currentColor"
-                stroke-width="1.35"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <RailIcon name="paperclip" size={15} />
           </label>
         {/if}
         <button
@@ -1474,17 +1509,7 @@
           title="Send"
           onclick={() => void send(draft)}
         >
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 16 16"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              d="M2.2 7.35 13.4 2.4a.55.55 0 0 1 .72.72L9.18 14.3a.55.55 0 0 1-1.02.05L6.4 9.6 2.15 8.2a.55.55 0 0 1 .05-1.05Z"
-            />
-          </svg>
+          <RailIcon name="paper-plane-tilt" size={13} />
         </button>
       </div>
     </div>
@@ -1505,24 +1530,30 @@
     min-height: 0;
     min-width: 0;
     height: 100%;
-    background: var(--surface-panel, var(--v4-ground, #161618));
-    border-left: 1px solid var(--line, var(--border, rgba(255, 255, 255, 0.12)));
+    /* The rail's own ground (`--side-bg`), so the thread reads as a side
+       surface of the shell rather than a lighter card laid over it. No
+       border: the host's `.reply-column` owns the divider, and a second
+       hairline here stacked into a heavy 2px rule. */
+    background: var(--side-bg, var(--surface-panel, var(--v4-ground, #161618)));
     color: var(--t1);
     font: 400 13px/1.45 var(--font-ui);
   }
 
+  /* No rule under the header: the caption and the close button sit on the
+     panel's ground, and the list starts right under them. */
   .reply-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
-    height: 52px;
-    box-sizing: border-box;
-    padding: 0 10px 0 16px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    gap: 10px;
+    padding: 16px 18px 0;
     flex-shrink: 0;
   }
 
+  /* The title keeps the owner's recorded Messages type (AUDIT-2-06,
+     chat/messages-type-exception.ts: 15px / 700); the PR #772 10px mono
+     caption is not applied on the beta. The restyle keeps everything else:
+     no rule under the header, the 24px close, the panel ground. */
   .reply-title {
     margin: 0;
     font-size: 15px;
@@ -1611,45 +1642,51 @@
     }
   }
 
+  /* 24px icon target, quiet until hovered — the shell's icon-button size. */
   .reply-close {
     display: grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
+    margin-left: auto;
     padding: 0;
     border: 0;
-    border-radius: 8px;
+    border-radius: 6px;
     background: transparent;
-    color: var(--t2);
-    font-family: inherit;
-    font-size: 20px;
-    font-weight: 400;
+    color: var(--t3);
     line-height: 1;
     cursor: pointer;
+    transition:
+      color 0.12s,
+      background 0.12s;
   }
 
   .reply-close:hover,
   .reply-close:focus-visible {
+    color: var(--t1);
     background: var(--hover, color-mix(in srgb, var(--t1) 6%, transparent));
     outline: none;
   }
 
+  /* Same geometry as the replies under it and the main chat's `.dm-msg`:
+     32px avatar on a 12px gutter, and no boxed-off border — the reply-count
+     divider below is the only rule between the root and its replies. */
   .reply-root {
     position: relative;
     flex-shrink: 0;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 12px;
     align-items: start;
-    /* First item of the scrolling list: bleed past the list padding so its
-       divider still spans the panel. */
-    margin: -8px -12px 8px;
-    padding: 12px 16px 16px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    padding: 12px 8px 4px;
   }
 
+  /* Hover, keyboard focus, or the emoji picker open. Not `:focus-within`: a
+     mouse click on a bar button left focus inside the row, which pinned the
+     bar over it after the pointer had moved on. */
   .reply-root:hover .reply-quick-react-root,
-  .reply-root:focus-within .reply-quick-react-root,
+  .reply-root:has(:global(:focus-visible)) .reply-quick-react-root,
+  .reply-quick-react-root:has(:global(:focus-visible)),
   .reply-quick-react-root:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
@@ -1661,12 +1698,6 @@
       opacity: 1;
       pointer-events: auto;
     }
-  }
-
-  /* Root sits at the panel top — anchor its toolbar inside the row, not above. */
-  .reply-quick-react-root {
-    top: 8px;
-    right: 16px;
   }
 
   .reply-root-meta {
@@ -1698,7 +1729,7 @@
   }
 
   button.reply-author-btn:hover {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   button.reply-author-btn:focus-visible {
@@ -1721,7 +1752,7 @@
   }
 
   .reply-md :global(.inline-mention[data-person-uid]:hover) {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   .reply-md :global(a),
@@ -1773,15 +1804,29 @@
     color: inherit;
   }
 
+  /* Hairline / caption / hairline, drawn once. The root used to carry a
+     border-bottom AND this label a border-top, two rules a few pixels apart
+     around one caption. */
   .reply-root-label {
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.12));
-    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0 14px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.08em;
     color: var(--t3);
     text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .reply-root-label::before,
+  .reply-root-label::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
   }
 
   .reply-status {
@@ -1806,17 +1851,20 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 8px 12px;
+    /* 10px list inset + 8px row padding puts every avatar, the root's
+       included, on the header caption's 18px edge. */
+    padding: 0 10px 8px;
     display: flex;
     flex-direction: column;
     gap: 0;
   }
 
+  /* 32px avatar on a 12px gutter, the main chat's `.dm-msg` geometry. */
   .reply-row {
     position: relative;
     display: grid;
-    grid-template-columns: 36px minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 12px;
     align-items: start;
     padding: 5px 8px;
     border-radius: 6px;
@@ -1825,28 +1873,58 @@
   .reply-avatar {
     display: grid;
     place-items: start center;
-    flex: 0 0 36px;
-    width: 36px;
+    flex: 0 0 32px;
+    width: 32px;
     min-height: 1px;
     padding-top: var(--msg-avatar-pad-top, 2px);
+  }
+
+  /* The picture as a button: no chrome, the same box as the plain one. */
+  button.reply-avatar-btn {
+    margin: 0;
+    padding: var(--msg-avatar-pad-top, 2px) 0 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  button.reply-avatar-btn:focus-visible {
+    outline: 2px solid var(--v4-focus, var(--t2));
+    outline-offset: 2px;
+    border-radius: 50%;
   }
 
   .reply-row:hover {
     background: color-mix(in srgb, var(--t1) 4%, transparent);
   }
 
-  /* Hover quick-react toolbar — matches the main-chat .dm-quick-react: an
-     opaque floating bar (quick emojis + picker) that takes no layout space, so
-     rows stay tight and the affordance only appears on hover/focus. */
+  /* The box the hover bar hangs off: the message body only, never the
+     reaction row, so the bar lands on the bottom edge of the content it
+     belongs to. */
+  .reply-main {
+    position: relative;
+    align-self: stretch;
+    min-width: 0;
+  }
+
+  /* Hover quick-react toolbar, placed like the main chat's `.dm-quick-react`:
+     an opaque bar that takes no layout space and opens 4px under the
+     message's right edge. At `top: -12px` it sat over the message above and
+     read as belonging to that one. */
   .reply-quick-react {
     position: absolute;
-    top: -12px;
-    right: 8px;
+    top: 100%;
+    right: 0;
     z-index: 2;
     display: flex;
-    gap: 2px;
+    align-items: center;
+    gap: 1px;
+    margin-top: 4px;
     padding: 2px;
-    border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--panel-border, var(--line));
     border-radius: 8px;
     background-color: var(--v4-ground, #1c1c1f);
     background-image: linear-gradient(var(--panel-bg), var(--panel-bg));
@@ -1856,8 +1934,32 @@
     transition: opacity 0.12s ease;
   }
 
+  /* Bridges the 4px offset so the pointer never crosses dead space on its way
+     from the message to the bar (the bar hides the moment hover drops). */
+  .reply-quick-react::before {
+    content: "";
+    position: absolute;
+    inset: -6px -4px -4px;
+    z-index: -1;
+  }
+
+  /* The last reply has no room under it before the list's scroll edge: a bar
+     hanging below would be clipped and, even at rest, stretch the scroll
+     height. It opens 4px above the body instead. */
+  .reply-row-last .reply-quick-react {
+    top: auto;
+    bottom: 100%;
+    margin: 0 0 4px;
+  }
+
+  .reply-row-last .reply-quick-react::before {
+    inset: -4px -4px -6px;
+  }
+
+  /* Same rule as the root bar above: keyboard focus only, not `:focus-within`. */
   .reply-row:hover .reply-quick-react,
-  .reply-row:focus-within .reply-quick-react,
+  .reply-row:has(:global(:focus-visible)) .reply-quick-react,
+  .reply-quick-react:has(:global(:focus-visible)),
   .reply-quick-react:has([aria-expanded="true"]) {
     opacity: 1;
     pointer-events: auto;
@@ -1880,23 +1982,32 @@
     font-weight: 600;
   }
 
+  /* Transparent 24px targets that fill only under the pointer. A resting
+     fill on every button turned one bar into a row of pressed chips. */
   .reply-quick-react-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 26px;
+    min-width: 24px;
     height: 24px;
-    padding: 0 0.25rem;
+    padding: 0;
     border: 0;
     border-radius: 6px;
-    background: var(--pop-hover);
-    font-size: 12px;
+    background: transparent;
+    color: var(--t1);
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
   }
 
   .reply-quick-react-btn:hover {
-    background: var(--c-field-bg);
+    background: var(--hover);
+    color: var(--t1);
+  }
+
+  .reply-quick-copy {
+    padding: 0 8px;
+    font: 500 11px/1 var(--font-ui);
   }
 
   .reply-col {
@@ -1971,9 +2082,9 @@
      tools bottom-left, solid icon send bottom-right. */
   .reply-live {
     flex: 0 0 auto;
-    /* 12px list padding + 8px row padding, plus (36 - 18) / 2 so the small
+    /* 10px list padding + 8px row padding, plus (32 - 18) / 2 so the small
        avatar centres under the message avatar column. */
-    padding: 0 20px 0 29px;
+    padding: 0 18px 0 25px;
   }
 
   .reply-live:has(:global(.agent-thinking)),
@@ -2034,8 +2145,11 @@
     padding: 0;
     border: none;
     border-radius: 6px;
-    background: #c9d6e4;
-    color: #101014;
+    /* Match the main composer's `.btn-send`: the ice INK fill with the badge
+       foreground on it. The old literals were the dark theme's values, so in
+       light mode the thread button stayed a pale chip with a dark arrow. */
+    background: var(--ice-ink);
+    color: var(--badge-fg);
     cursor: pointer;
     transition:
       opacity 0.15s,

@@ -249,7 +249,11 @@
     height: 100%;
     overflow: auto;
     color: var(--t1);
-    background: var(--v4-bg, var(--desktop-bg, #0c0c0c));
+    /* Same undefined-token trap as the library overlay: `--v4-bg` and
+       `--desktop-bg` do not exist, so this painted #0c0c0c under light-theme
+       text. Paint the shell's own ground (`--v4-ground`, what `.desktop-shell`
+       and `.desktop-main` paint) so the page matches the rest of the shell. */
+    background: var(--v4-ground, #f2f2f2);
   }
   .dm-requests-status,
   .dm-requests-list {

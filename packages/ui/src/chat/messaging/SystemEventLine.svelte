@@ -1,7 +1,8 @@
 <script lang="ts">
   // Muted one-line system event for the channel timeline (US-004).
-  // Icons are inline SVG only — no emoji in chrome. Emoji remain reserved for
-  // user reaction content elsewhere.
+  // Icons are Phosphor Regular (shared RailIcon registry) — no emoji in
+  // chrome. Emoji remain reserved for user reaction content elsewhere.
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import type { SystemEventLineModel } from "./channelMessageModels";
 
   interface Props {
@@ -21,178 +22,20 @@
 >
   <span class="sys-icon" aria-hidden="true">
     {#if model.type === "run_started" || model.type === "run_progress"}
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <circle
-          cx="8"
-          cy="8"
-          r="5.5"
-          stroke="currentColor"
-          stroke-width="1.3"
-        />
-        <path
-          d="M8 5v3.2L10 10"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <RailIcon name="clock" size={14} />
     {:else if model.type === "pr_opened"}
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <circle
-          cx="4.5"
-          cy="4"
-          r="1.75"
-          stroke="currentColor"
-          stroke-width="1.3"
-        />
-        <circle
-          cx="4.5"
-          cy="12"
-          r="1.75"
-          stroke="currentColor"
-          stroke-width="1.3"
-        />
-        <circle
-          cx="11.5"
-          cy="12"
-          r="1.75"
-          stroke="currentColor"
-          stroke-width="1.3"
-        />
-        <path
-          d="M4.5 5.75v4.5M11.5 10.25V7.5A3 3 0 0 0 8.5 4.5H6.25"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linecap="round"
-        />
-      </svg>
+      <RailIcon name="git-pull-request" size={14} />
     {:else if model.type === "deploy"}
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <path
-          d="M3 11.5 8 3l5 8.5H3Z"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linejoin="round"
-        />
-        <path
-          d="M8 7v6"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linecap="round"
-        />
-      </svg>
+      <RailIcon name="rocket-launch" size={14} />
     {:else if model.type === "work_session_blocked"}
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <path
-          d="M8 2.75 14.2 13.4H1.8L8 2.75Z"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linejoin="round"
-        />
-        <path
-          d="M8 6.7v3.1"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linecap="round"
-        />
-        <path
-          d="M8 11.65h.01"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-        />
-      </svg>
+      <RailIcon name="warning" size={14} />
     {:else if model.type === "work_session_finished"}
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <path
-          d="M3 8.5 6.5 12 13 4.5"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <RailIcon name="check" size={14} />
     {:else if model.type === "work_session_task_status"}
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <circle
-          cx="8"
-          cy="8"
-          r="5.5"
-          stroke="currentColor"
-          stroke-width="1.3"
-        />
-        <path
-          d="M8 4.75v3.5l2.25 1.35"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linecap="round"
-        />
-      </svg>
+      <RailIcon name="clock" size={14} />
     {:else}
       <!-- file_added / member_added -->
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <path
-          d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linejoin="round"
-        />
-        <path
-          d="M9 1.5V5.5H13"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linejoin="round"
-        />
-        <path
-          d="M8 8v3.5M6.25 9.75H9.75"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linecap="round"
-        />
-      </svg>
+      <RailIcon name="file-plus" size={14} />
     {/if}
   </span>
   {#if who}

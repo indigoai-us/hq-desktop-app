@@ -513,7 +513,7 @@
               onclick={() => pickDecision(block, blockIndex, option)}
             >
               {#if isChosen}
-                <span class="rich-decision-check" aria-hidden="true">✓</span>
+                <span class="rich-decision-check" aria-hidden="true"><RailIcon name="check" size={10} /></span>
               {/if}
               <span class="rich-decision-btn-label">{option.label}</span>
               {#if option.recommended}
@@ -595,7 +595,8 @@
     flex: 1 1 120px;
     min-width: 110px;
     padding: 9px 11px;
-    border: 1px solid var(--line, var(--pop-border));
+    /* Filled tile, no resting outline (border kept transparent for geometry). */
+    border: 1px solid transparent;
     border-radius: 8px;
     background: var(--raised, var(--pop-hover));
   }
@@ -671,7 +672,8 @@
   .rich-chart {
     margin: 0;
     padding: 10px 12px;
-    border: 1px solid var(--line, var(--pop-border));
+    /* Filled card, no resting outline (border kept transparent for geometry). */
+    border: 1px solid transparent;
     border-radius: 8px;
     background: var(--raised, var(--pop-hover));
   }
@@ -832,7 +834,7 @@
     height: 6px;
     border-radius: 999px;
     background: var(--raised, var(--pop-hover));
-    border: 1px solid var(--line, var(--pop-border));
+    border: 1px solid transparent;
     overflow: hidden;
   }
   .rich-progress-fill {
@@ -1013,13 +1015,10 @@
     align-self: flex-start;
     font-size: 12px;
     color: var(--t3, var(--pop-muted));
-    text-decoration: underline;
-    text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
-    text-underline-offset: 2px;
+    text-decoration: none;
   }
   .rich-connect-browse:hover {
     color: var(--t2, var(--pop-muted));
-    text-decoration-color: currentColor;
   }
   .rich-connect-browse:focus-visible {
     outline: 2px solid var(--vio-ink, #7c5cff);

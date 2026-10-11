@@ -244,7 +244,7 @@
             aria-busy={pendingAction === `${evt.eventId}:claude`}
             aria-label="Open in Claude Code with prompt"
           >
-            <RailIcon name="external" />{pendingAction === `${evt.eventId}:claude` ? 'Opening…' : 'Open in Claude ↗'}
+            <RailIcon name="external" />{pendingAction === `${evt.eventId}:claude` ? 'Opening…' : 'Open in Claude'}
           </button>
           <button
             class="btn btn-console"
@@ -300,17 +300,22 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    scrollbar-width: thin;
-    scrollbar-color: var(--pop-muted) transparent;
     min-height: 0;
   }
 
+  /* One 4px bar (see packages/ui chat/scrollbars.css). No scrollbar-width/-color:
+     the standard properties beat ::-webkit-scrollbar and draw ~11px. */
   .events-list::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
+  }
+
+  .events-list::-webkit-scrollbar-track {
+    background: transparent;
   }
 
   .events-list::-webkit-scrollbar-thumb {
     background: var(--pop-hover);
+    border-radius: 2px;
   }
 
   .event-card {

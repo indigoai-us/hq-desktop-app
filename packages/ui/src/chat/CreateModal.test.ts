@@ -903,14 +903,21 @@ describe("CreateModal member picker", () => {
     // Still alive: the duplicate key threw `each_key_duplicate`, which tore
     // the keyed block down and stopped it rendering anything further.
     await typeEmailAndEnter("other@example.com");
+    const chips = [
+      ...document.querySelectorAll('[data-testid="chat-channel-chip"]'),
+    ];
     expect(
-      [...document.querySelectorAll('[data-testid="chat-channel-chip"]')].map(
-        (node) => node.textContent?.replace(/\s+/g, " ").trim(),
-      ),
+      chips.map((node) => node.textContent?.replace(/\s+/g, " ").trim()),
     ).toEqual([
-      "ZE zed@example.com not on hq ×",
-      "OT other@example.com not on hq ×",
+      "ZE zed@example.com not on hq",
+      "OT other@example.com not on hq",
     ]);
+    // Each chip's remove control is the Phosphor X icon, not a text glyph.
+    for (const chip of chips) {
+      expect(
+        chip.querySelector('.create-chip-x svg[data-rail-icon="x"]'),
+      ).toBeTruthy();
+    }
     expect($('[data-testid="chat-channel-name"]')).toBeTruthy();
   });
 

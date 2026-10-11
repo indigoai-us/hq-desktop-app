@@ -19,7 +19,7 @@
   <span class="s">Messages you send stay on this Mac and go out in order when the connection returns.</span>
   <span class="grow"></span>
   <button type="button" data-testid="offline-resolve" onclick={() => onresolve?.()}><RailIcon name="check" />Resolve</button>
-  <button type="button" data-testid="offline-dismiss" aria-label="Dismiss offline banner" onclick={() => ondismiss?.()}>✕</button>
+  <button type="button" class="x" data-testid="offline-dismiss" aria-label="Dismiss offline banner" onclick={() => ondismiss?.()}><RailIcon name="x" size={14} /></button>
 </div>
 
 <style>
@@ -54,5 +54,9 @@
     background: transparent;
     color: var(--v4-text-1);
     cursor: pointer;
+  }
+  .x {
+    display: inline-grid;
+    place-items: center;
   }
 </style>

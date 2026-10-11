@@ -11,6 +11,7 @@
    */
   import { onMount } from "svelte";
 
+  import Tooltip from "../../common/Tooltip.svelte";
   import { handleLinkActivate } from "../../common/external-links.js";
   import { renderMarkdown } from "../../common/markdown.js";
   import {
@@ -18,6 +19,8 @@
     type ChatArtifact,
   } from "./artifact-model.js";
   import "./artifact-prose.css";
+  // The pane reads at the chat body's size; the token lives here.
+  import "./message-row.css";
 
   interface Props {
     artifact: ChatArtifact;
@@ -105,16 +108,22 @@
       </span>
     </span>
     <span class="artifact-panel-actions">
-      <button
-        type="button"
-        class="artifact-panel-btn"
-        data-testid="artifact-panel-copy"
-        onclick={copy}
-        disabled={copying}
-        aria-label={copied ? "Artifact copied" : "Copy artifact"}
-      ><RailIcon name="copy" />
-        {copied ? "Copied" : "Copy"}
-      </button>
+      <!-- Icon-only, like the close beside it; the tooltip names it. -->
+      <Tooltip label={copied ? "Copied" : "Copy"} delay={250} align="end">
+        {#snippet trigger(tipId: string)}
+          <button
+            type="button"
+            class="artifact-panel-btn"
+            data-testid="artifact-panel-copy"
+            aria-describedby={tipId || undefined}
+            onclick={copy}
+            disabled={copying}
+            aria-label={copied ? "Artifact copied" : "Copy artifact"}
+          >
+            <RailIcon name={copied ? "check" : "copy"} />
+          </button>
+        {/snippet}
+      </Tooltip>
       <button
         type="button"
         class="artifact-panel-btn artifact-panel-close"
@@ -122,14 +131,7 @@
         onclick={onclose}
         aria-label="Close artifact"
       >
-        <svg viewBox="0 0 12 12" width="12" height="12" focusable="false" aria-hidden="true">
-          <path
-            d="M3 3l6 6M9 3l-6 6"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linecap="round"
-          />
-        </svg>
+        <RailIcon name="x" size={12} />
       </button>
     </span>
   </header>
@@ -187,20 +189,24 @@
     }
   }
 
+  /* No rule under the header. The body opens with its own heading, so the
+     divider drew a line between a title and a repeat of it, and the other
+     detail panels do not rule theirs either. */
   .artifact-panel-head {
     display: flex;
     flex: 0 0 auto;
     align-items: flex-start;
     gap: 10px;
-    padding: 14px 14px 12px 18px;
-    border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.07));
+    padding: 14px 14px 4px 18px;
   }
 
+  /* 8px title-to-tag, the detail-panel standard. At 4px the chip crowded
+     the title's descenders. */
   .artifact-panel-titles {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: 4px;
+    gap: 8px;
     min-width: 0;
   }
 
@@ -253,14 +259,15 @@
     gap: 2px;
   }
 
+  /* Icon-only, like every other control in this header. */
   .artifact-panel-btn {
     appearance: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: var(--hq-btn-h);
+    width: var(--hq-btn-h);
     height: var(--hq-btn-h);
-    padding: 0 9px;
+    padding: 0;
     border: 0;
     border-radius: 6px;
     background: transparent;
@@ -288,8 +295,9 @@
     cursor: default;
   }
 
-  .artifact-panel-close {
-    padding: 0;
+  .artifact-panel-btn:focus-visible {
+    outline: 2px solid var(--ice-ink, var(--vio-ink));
+    outline-offset: -2px;
   }
 
   .artifact-panel-body {
@@ -302,11 +310,17 @@
   }
 
   /* Reading measure. Long single-line content wraps; the pane never scrolls
-     horizontally. */
+     horizontally.
+
+     Size and leading are the chat body's own tokens, not a reading size of
+     this pane's. It opens beside the message the artifact came from, and a
+     different size made the same words look bigger on one side of the
+     divider than the other — a different document rather than the rest of
+     that one. */
   .artifact-panel-content {
     max-width: 70ch;
-    font-size: 14px;
-    line-height: 1.6;
+    font-size: var(--msg-body-font-size, 15px);
+    line-height: var(--msg-body-line-height, 1.7);
     color: var(--t1, rgba(255, 255, 255, 0.92));
     word-break: break-word;
   }

@@ -3,6 +3,7 @@
    * Shared Install + Sync card (desktop MeshUpgrade + web first-access).
    * Platform-pure: the host owns `hq mesh daemon install` and feeds progress in.
    */
+  import RailIcon from "../common/button/RailIcon.svelte";
   import {
     MESH_BODY,
     MESH_TITLE,
@@ -37,7 +38,7 @@
           {#if band.status === "active"}
             <span class="st spin" aria-hidden="true"></span>
           {:else if band.status === "done"}
-            <span class="st ok" aria-hidden="true">✓</span>
+            <span class="st ok" aria-hidden="true"><RailIcon name="check" size={12} /></span>
           {:else}
             <span class="st pend" aria-hidden="true"></span>
           {/if}
@@ -116,6 +117,8 @@
   }
 
   .st.ok {
+    display: flex;
+    justify-content: center;
     color: #34c759;
   }
 

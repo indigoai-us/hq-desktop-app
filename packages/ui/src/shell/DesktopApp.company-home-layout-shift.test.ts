@@ -168,7 +168,12 @@ describe("DesktopApp company-home channel: no layout shift on load", () => {
 
     await vi.waitFor(() => expect(memberPill()).toBeTruthy());
     const pillRectBefore = getComputedStyle(memberPill()!);
-    expect(pillRectBefore.padding).toBe("5px 12px");
+    // Fixed height at the app's button height (owner review 2026-10-08) and
+    // the standard inline padding (owner review 2026-10-09); the tokens are
+    // checked in channel-header-control-height.test.ts and
+    // channel-header-bell-style.test.ts, since the test DOM does not resolve
+    // custom properties. Here: the padding never changes once data lands.
+    const paddingBefore = pillRectBefore.padding;
 
     // The shared loader stands in for the real messages until the
     // timeline resolves.
@@ -192,6 +197,6 @@ describe("DesktopApp company-home channel: no layout shift on load", () => {
     // The member pill never disappeared and never re-mounted — same node,
     // same reserved geometry, now showing the real count.
     expect(memberPill()).toBeTruthy();
-    expect(getComputedStyle(memberPill()!).padding).toBe("5px 12px");
+    expect(getComputedStyle(memberPill()!).padding).toBe(paddingBefore);
   }, 15_000);
 });

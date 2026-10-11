@@ -616,7 +616,7 @@
   }
 
   .detail-link:hover {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   .detail-link:disabled {

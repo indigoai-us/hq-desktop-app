@@ -2,6 +2,7 @@
   import Dropdown from "../../common/LazyDropdown.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
   import RailButton from "../../common/button/RailButton.svelte";
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Vault, Integrations, Secrets, Deployments (US-029).
    * First frame is the cache or a loader. Refresh runs after paint.
@@ -1108,7 +1109,7 @@
       <span>{sheetTitle}</span>
       <span class="grow"></span>
       <button class="icon" type="button" aria-label="Close" data-testid="sheet-close" onclick={closeSheet}>
-        <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+        <RailIcon name="x" size={14} />
       </button>
     </header>
     {#if sheet === "deploy-access" && deployCurrent?.appId}
@@ -1201,7 +1202,7 @@
             {#each picked as file, index (file.name + index)}
               <span class="picked"><span class="nm">{file.name}</span><span class="meta">{formatBytes(file.size)}</span>
                 <button class="icon" type="button" aria-label={`Remove ${file.name}`} onclick={() => (picked = picked.filter((_, i) => i !== index))}>
-                  <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+                  <RailIcon name="x" size={14} />
                 </button>
               </span>
             {/each}
@@ -1273,7 +1274,8 @@
   .search { width: 200px; }
   .icon { width: 24px; height: 24px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--t3, var(--v4-text-3)); padding: 0; cursor: pointer; }
   .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); }
-  .link { border: 0; background: transparent; color: var(--t1, var(--v4-text-1)); padding: 0; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; text-align: left; }
+  .link { border: 0; background: transparent; color: var(--t1, var(--v4-text-1)); padding: 0; text-decoration: none; cursor: pointer; text-align: left; }
+  .link:hover { opacity: 0.7; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; flex: 1; }
   .list { min-height: 0; overflow: auto; padding: 6px 8px; display: flex; flex-direction: column; gap: 1px; }
   .row { display: flex; gap: 10px; align-items: center; width: 100%; min-height: 31px; text-align: left; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--t2, var(--v4-text-2)); line-height: 17px; cursor: pointer; }

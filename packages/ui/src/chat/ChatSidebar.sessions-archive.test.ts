@@ -277,7 +277,13 @@ describe("ChatSidebar sessions multi-select + archive", () => {
 
     const restored = rowFor("chn_beta")!;
     expect(restored.className).toContain("unread");
-    expect(restored.textContent).toContain("3");
+    // The count sits beside the row button, inside the same `.chat-li`.
+    expect(
+      restored
+        .closest(".chat-li")
+        ?.querySelector('[data-testid="chat-unread-badge"]')
+        ?.textContent?.trim(),
+    ).toBe("3");
   });
 
   it("the Show archived row toggles archived visibility and normal rows stay", async () => {

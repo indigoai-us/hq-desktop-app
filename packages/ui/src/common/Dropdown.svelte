@@ -18,6 +18,7 @@
    * tokens, sits above panes and under toasts. Replaces native selects.
    */
   import { tick } from "svelte";
+  import RailIcon from "./button/RailIcon.svelte";
   import { markDropdownOpen } from "./dropdown-open.js";
 
   interface Props {
@@ -157,9 +158,7 @@
     <span class="dd-value">
       {#if prefix}<span class="dd-prefix">{prefix} · </span>{/if}{current?.label ?? ""}
     </span>
-    <svg class="dd-chevron" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
+    <span class="dd-chevron" aria-hidden="true"><RailIcon name="chevron-down" size={14} /></span>
   </button>
   {#if open}
     <div
@@ -188,7 +187,7 @@
           onclick={() => choose(i)}
           onkeydown={onListKey}
         >
-          <span class="dd-check" aria-hidden="true">{opt.value === value ? "✓" : ""}</span>
+          <span class="dd-check" aria-hidden="true">{#if opt.value === value}<RailIcon name="check" size={12} />{/if}</span>
           <span class="dd-label">{opt.label}</span>
           {#if opt.detail}<span class="dd-detail">{opt.detail}</span>{/if}
         </div>
@@ -223,7 +222,7 @@
   .dd-button:focus-visible { outline: 2px solid var(--v4-focus, currentColor); outline-offset: 1px; }
   .dd-value { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dd-prefix { color: var(--v4-text-3); }
-  .dd-chevron { width: 14px; height: 14px; flex: none; color: var(--v4-text-3); }
+  .dd-chevron { display: grid; place-items: center; width: 14px; height: 14px; flex: none; color: var(--v4-text-3); }
   .dd-menu {
     position: absolute;
     top: calc(100% + 4px);
@@ -254,7 +253,7 @@
   }
   .dd-option.active { background: var(--overlay-hover); }
   .dd-option[aria-disabled="true"] { opacity: 0.5; cursor: default; }
-  .dd-check { width: 14px; flex: none; text-align: center; color: var(--v4-text-2); }
+  .dd-check { display: grid; place-items: center; align-self: center; width: 14px; height: 14px; flex: none; color: var(--v4-text-2); }
   .dd-label { overflow: hidden; text-overflow: ellipsis; }
   .dd-detail { color: var(--v4-text-3); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 </style>

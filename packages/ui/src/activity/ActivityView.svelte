@@ -2,6 +2,7 @@
   import { PersonName, identityFromTelemetry } from "../common/people/index.js";
   import { compactNumber, exactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company Activity (US-026): the team's activity, one row per person, for
@@ -282,7 +283,7 @@
             <b><PersonName person={identityFromTelemetry(selected)} /></b>
             <span class="plain">{selected.role || (selected.bot ? "Agent" : "Member")}{lastActive(selected) ? ` · ${lastActive(selected)}` : ""}</span>
           </div>
-          <button class="x" aria-label="Close" data-testid="activity-member-close" onclick={() => (selectedId = null)}>×</button>
+          <button class="x" aria-label="Close" data-testid="activity-member-close" onclick={() => (selectedId = null)}><RailIcon name="x" size={14} /></button>
         </div>
         <dl class="tot">
           <div><dt>Sessions</dt><dd>{selected.sessions}</dd></div>
@@ -334,7 +335,7 @@
   .ph { display: flex; align-items: flex-start; gap: 8px; }
   .pane .sech { margin-top: 16px; }
   .pn { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-  .x { background: none; border: 0; color: var(--t2); cursor: pointer; font: inherit; min-width: 28px; min-height: 28px; }
+  .x { display: inline-flex; align-items: center; justify-content: center; background: none; border: 0; color: var(--t2); cursor: pointer; font: inherit; min-width: 28px; min-height: 28px; }
   .tot { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
   .tot dt { color: var(--t2); }
   .tot dd { margin: 0; }

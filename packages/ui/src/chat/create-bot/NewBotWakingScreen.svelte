@@ -402,10 +402,10 @@
                 onclick={() => void copyCode()}
               >
                 {#if codeCopied}
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" /></svg>
+                  <RailIcon name="check" size={14} />
                   <span>Copied</span>
                 {:else}
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M10.5 3.5v-1h-8v8h1" fill="none" stroke="currentColor" stroke-width="1.3" /></svg>
+                  <RailIcon name="copy" size={14} />
                   <span>Copy</span>
                 {/if}
               </button>

@@ -29,8 +29,15 @@ describe("desktop visual hierarchy regressions", () => {
     const selectedRule = titleBar.match(
       /\.v4-icon-btn\[aria-pressed=['"]true['"]\]\s*\{([\s\S]*?)\}/,
     )?.[1];
-    expect(selectedRule).toContain("var(--v4-control-border)");
+    // A soft fill, not a box: no outline ring or inset shadow (owner review 2026-10-08).
+    expect(selectedRule).toMatch(/background:\s*var\(--hover\)/);
     expect(selectedRule).toContain("var(--v4-text-1)");
+    expect(selectedRule).toMatch(/border-color:\s*transparent/);
+    expect(selectedRule).not.toMatch(/box-shadow|outline|border-color:\s*var/);
+    // The host's shared icon-button rule outlines hover/active; the titlebar's
+    // own (scoped, so stronger) hover/active rule clears that border.
+    const hoverRule = titleBar.match(/\.v4-icon-btn:hover,\s*\.v4-icon-btn\.active\s*\{([\s\S]*?)\}/)?.[1];
+    expect(hoverRule).toMatch(/border-color:\s*transparent/);
     expect(selectedRule).not.toMatch(
       /purple|violet|indigo|#[456789a-f][0-9a-f]{5}/i,
     );
@@ -68,18 +75,23 @@ describe("desktop visual hierarchy regressions", () => {
   });
 
   // OWNER-R16 (08f5424a2): detached menus use the neutral Core menu surface.
-  // The PR772 tinted values (252 252 253 / 44 44 54) were replaced on purpose;
-  // the floor alpha keeps menus legible at the most transparent setting.
-  it("keeps detached menus legible on the neutral Core menu surface", () => {
+  // The PR772 tinted values (252 252 253 / 44 44 54) were replaced on purpose.
+  // Owner review 2026-10-08: pop-ups carry no blur (OWNER-006), so their
+  // surface is solid at every window-opacity setting; a translucent pop-up
+  // without blur lets the content behind it read through its text.
+  it("keeps detached menus legible on the neutral Core menu surface, solid at any opacity", () => {
     expect(tokens).toContain(
       "--v4-glass-filter-popover: blur(40px) saturate(124%) contrast(104%);",
     );
-    expect(tokens).toContain(
-      "--v4-popover-strong: rgb(250 250 250 / clamp(0.7, calc(1 - var(--hq-window-transparency-factor, 0) * 0.308), 1));",
-    );
-    expect(tokens).toContain(
-      "--v4-popover-strong: rgb(36 36 36 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0) * 0.277), 1));",
-    );
+    expect(tokens).toContain("--v4-popover-strong: #fafafa;");
+    expect(tokens).toContain("--v4-popover-strong: #242424;");
+    expect(tokens).toContain("--v4-popover: #2a2a2a;");
+    const chatTokens = normalize(readFileSync(new URL("../chat/tokens.css", import.meta.url), "utf8"));
+    for (const source of [tokens, chatTokens]) {
+      const values = [...source.matchAll(/--v4-popover(?:-strong)?:\s*([^;]+);/g)].map((m) => m[1].trim());
+      expect(values.length).toBeGreaterThan(0);
+      for (const value of values) expect(value).toMatch(/^#[0-9a-f]{6}$/i);
+    }
     expect(tokens).not.toContain("rgb(44 44 54");
     expect(tokens).not.toContain("rgb(252 252 253");
   });

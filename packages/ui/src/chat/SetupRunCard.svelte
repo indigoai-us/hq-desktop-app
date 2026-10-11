@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * SetupRunCard — the live setup run inside the #welcome hero.
    *
@@ -262,9 +263,7 @@
       >
         <span class="step-mark" aria-hidden="true">
           {#if status === "done"}
-            <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
-            </svg>
+            <RailIcon name="check" size={11} />
           {:else}
             <span class="step-index">{index + 1}</span>
           {/if}
@@ -364,9 +363,7 @@
             >
               <span class="app-mark" aria-hidden="true">
                 {#if connected || on}
-                  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
-                  </svg>
+                  <RailIcon name="check" size={12} />
                 {/if}
               </span>
               <span class="app-text">

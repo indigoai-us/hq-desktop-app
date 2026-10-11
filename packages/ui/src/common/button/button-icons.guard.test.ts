@@ -108,7 +108,7 @@ describe("labelled console-rail buttons carry an icon", () => {
 describe("RailButton size contract (titlebar pill standard)", () => {
   // Height, padding, gap, radius and type come from button-standard.css and are
   // asserted against the titlebar pill in button-height.guard.test.ts.
-  it("reads the one button standard and keeps a 14px icon at 1.5 stroke, 500 label", () => {
+  it("reads the one button standard and keeps a 14px Phosphor Regular icon, 500 label", () => {
     mounted.push(mount(RailButton, { target: document.body, props: { icon: "download", children: label("Export") } }));
     const button = document.querySelector<HTMLButtonElement>("[data-rail-btn]")!;
     expect(button).not.toBeNull();
@@ -121,7 +121,10 @@ describe("RailButton size contract (titlebar pill standard)", () => {
     expect(css).toMatch(/font-size: var\(--hq-btn-font-size\);/u);
     const svg = button.querySelector("svg[data-rail-icon='download']")!;
     expect(svg.getAttribute("width")).toBe("14");
-    expect(svg.querySelector("path")!.getAttribute("stroke-width")).toBe("1.5");
+    // Owner decision (2026-10-08): every app icon is Phosphor, Regular weight.
+    expect(svg.getAttribute("viewBox")).toBe("0 0 256 256");
+    expect(svg.querySelector("path")!.getAttribute("fill")).toBe("currentColor");
+    expect(svg.querySelector("path")!.getAttribute("stroke")).toBeNull();
     expect(button.textContent?.trim()).toBe("Export");
   });
 
@@ -162,7 +165,8 @@ describe("official brand marks (OWNER-013)", () => {
     expect(BRAND_ICONS["claude-code"].d.startsWith("M18.7657 62.4437L37.1822 52.1167")).toBe(true);
     expect(BRAND_ICONS.codex).toMatchObject({ viewBox: "176 176 364 364", fill: "mono" });
     expect(BRAND_ICONS.codex.d.startsWith("M508.749 317.399C516.777 287.314")).toBe(true);
-    expect(BRAND_ICONS.grok).toMatchObject({ viewBox: "0 0 16 16", fill: "current" });
+    expect(BRAND_ICONS.grok).toMatchObject({ viewBox: "0 0 34 32", fill: "current" });
+    expect(BRAND_ICONS.grok.d.startsWith("M13.374 20.5407L24.4555 12.3506")).toBe(true);
   });
 
   it("renders each mark at 14px with its own viewBox and colour treatment", () => {

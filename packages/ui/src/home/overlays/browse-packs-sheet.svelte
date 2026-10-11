@@ -90,7 +90,7 @@
 <div class="bp-sheet" role="dialog" aria-label="Browse packs" data-testid="browse-packs-sheet" use:dismissable={{ onclose }}>
   <header class="bp-h">
     Browse packs
-    <button type="button" class="icon" aria-label="Close" data-testid="browse-packs-close" onclick={onclose}>✕</button>
+    <button type="button" class="icon" aria-label="Close" data-testid="browse-packs-close" onclick={onclose}><RailIcon name="x" size={14} /></button>
   </header>
   <div class="bp-tb">
     <input class="search" type="search" placeholder="Search packs" aria-label="Search packs" bind:value={query} />
@@ -167,7 +167,7 @@
     height: 52px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 16px;
     border-bottom: 1px solid var(--v4-hairline); font-size: 15px; font-weight: 600;
   }
-  .icon { margin-left: auto; appearance: none; border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
+  .icon { display: inline-flex; align-items: center; justify-content: center; margin-left: auto; appearance: none; border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
   .bp-tb { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--v4-rowline); }
   .search {
     width: 220px; height: 26px; border-radius: 6px; padding: 0 8px; font: inherit; font-size: 12px;
