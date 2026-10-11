@@ -26,6 +26,7 @@ import {
   vaultPutIntegrityFields,
   withHttpStatus,
   withoutSecret,
+  localIanaZone,
   type AdapterFailure,
   type AdapterPromise,
   type AdapterResult,
@@ -1116,8 +1117,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       ),
     listOwners: (companyUid, agentUid) =>
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
-    getCompanyTelemetry: (companyUid, from, to) =>
-      this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
+    getCompanyTelemetry: (companyUid, from, to, tz) =>
+      this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to, tz ?? localIanaZone())),
     getMyTelemetry: (from, to, tz) => this.get(WEB_PATHS.myTelemetry(from, to, tz)),
   };
 

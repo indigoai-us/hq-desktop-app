@@ -369,6 +369,7 @@ pub async fn get_company_team_telemetry(
     slug: String,
     from: Option<String>,
     to: Option<String>,
+    tz: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let slug = normalize_slug(&slug)?;
     let company_uid = resolve_company_uid(&slug).await?;
@@ -383,13 +384,7 @@ pub async fn get_company_team_telemetry(
         d.format("%Y-%m-%d").to_string()
     });
     let to = to.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
-    let url = format!(
-        "{}/v1/telemetry/company?companyUid={}&from={}&to={}",
-        base.trim_end_matches('/'),
-        urlencoding_encode(&company_uid),
-        urlencoding_encode(&from),
-        urlencoding_encode(&to),
-    );
+    let url = company_telemetry_url(&base, &company_uid, &from, &to, tz.as_deref());
     let token = cognito::get_valid_access_token()
         .await
         .map_err(|e| format!("auth: {e}"))?;
@@ -420,6 +415,38 @@ pub async fn get_company_team_telemetry(
         return Err(format!("team telemetry HTTP {status}: {text}"));
     }
     serde_json::from_str(&text).map_err(|e| format!("team telemetry parse: {e}"))
+}
+
+/// `GET /v1/telemetry/company` URL. `tz` is the caller's IANA zone, forwarded
+/// so hq-pro can say which zone it cut the days in (`bucketTz`). A value that
+/// is blank or does not look like a zone name is dropped and the server
+/// default applies.
+fn company_telemetry_url(
+    base: &str,
+    company_uid: &str,
+    from: &str,
+    to: &str,
+    tz: Option<&str>,
+) -> String {
+    let mut url = format!(
+        "{}/v1/telemetry/company?companyUid={}&from={}&to={}",
+        base.trim_end_matches('/'),
+        urlencoding_encode(company_uid),
+        urlencoding_encode(from),
+        urlencoding_encode(to),
+    );
+    let zone = tz.map(str::trim).filter(|z| {
+        !z.is_empty()
+            && z.len() <= 64
+            && z
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'))
+    });
+    if let Some(zone) = zone {
+        url.push_str("&tz=");
+        url.push_str(&urlencoding_encode(zone));
+    }
+    url
 }
 
 /// Background tasks for one agent — backs the task chips in the agent surface.
@@ -1796,6 +1823,36 @@ pub async fn list_hq_dir(
         });
     }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod company_telemetry_url_tests {
+    use super::company_telemetry_url;
+
+    #[test]
+    fn forwards_the_local_zone_as_tz() {
+        assert_eq!(
+            company_telemetry_url(
+                "https://api.test/",
+                "cmp_1",
+                "2026-10-01",
+                "2026-10-07",
+                Some("America/Denver"),
+            ),
+            "https://api.test/v1/telemetry/company?companyUid=cmp_1&from=2026-10-01&to=2026-10-07&tz=America%2FDenver",
+        );
+    }
+
+    #[test]
+    fn omits_tz_when_absent_blank_or_not_a_zone_name() {
+        let bare = "https://api.test/v1/telemetry/company?companyUid=cmp_1&from=a&to=b";
+        assert_eq!(company_telemetry_url("https://api.test", "cmp_1", "a", "b", None), bare);
+        assert_eq!(company_telemetry_url("https://api.test", "cmp_1", "a", "b", Some("  ")), bare);
+        assert_eq!(
+            company_telemetry_url("https://api.test", "cmp_1", "a", "b", Some("UTC&companyUid=cmp_2")),
+            bare,
+        );
+    }
 }
 
 #[cfg(test)]

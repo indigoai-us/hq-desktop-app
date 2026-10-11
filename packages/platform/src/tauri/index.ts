@@ -24,6 +24,7 @@ import {
   validateSendReply,
   withHttpStatus,
   withoutSecret,
+  localIanaZone,
   type AdapterPromise,
   type AdapterResult,
   type AgentProvisionOptionsView,
@@ -641,8 +642,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       ),
     listOwners: (companyUid, agentUid) =>
       this.hqProJson("GET", AGENT_PATHS.owners(companyUid, agentUid)),
-    getCompanyTelemetry: (companyUid, from, to) =>
-      this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+    getCompanyTelemetry: (companyUid, from, to, tz) =>
+      this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to, tz ?? localIanaZone())),
     getMyTelemetry: (from, to, tz) =>
       this.hqProJson("GET", AGENT_PATHS.myTelemetry(from, to, tz)),
   };

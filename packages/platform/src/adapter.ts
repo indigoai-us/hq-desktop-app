@@ -1194,8 +1194,12 @@ export interface CompanyApi {
   setMemberRole?(companyUid: string, membershipKey: string, newRole: string): AdapterPromise<Json>;
   /** OWNER-R9: remove a member or revoke an invite (`POST /membership/revoke`). Server keeps the last owner. */
   revokeMembership?(companyUid: string, membershipKey: string): AdapterPromise<Json>;
-  /** Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to the last 30 days). */
-  getTeamTelemetry(slug: string, range?: { from: string; to: string }): AdapterPromise<Json>;
+  /**
+   * Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to
+   * the last 30 days). `range.tz` is an IANA zone sent to hq-pro as `tz`; the
+   * host sends this machine's zone when it is absent.
+   */
+  getTeamTelemetry(slug: string, range?: { from: string; to: string; tz?: string }): AdapterPromise<Json>;
   claimPendingInvite(slug: string): AdapterPromise<Json>;
   connectToCloud(slug: string): AdapterPromise<Json>;
   getSummary(slug: string): AdapterPromise<Json>;
@@ -1506,11 +1510,25 @@ export const AGENT_PATHS = {
   },
   owners: (companyUid: string, agentUid: string) =>
     `/v1/fleet/${encodeURIComponent(companyUid)}/agents/${encodeURIComponent(agentUid)}/owners`,
-  companyTelemetry: (companyUid: string, from: string, to: string) =>
-    `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+  companyTelemetry: (companyUid: string, from: string, to: string, tz?: string) =>
+    `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`,
   myTelemetry: (from: string, to: string, tz?: string) =>
     `/v1/telemetry/me?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`,
 } as const;
+
+/**
+ * This machine's IANA time zone (e.g. "America/Denver"), or undefined when the
+ * runtime cannot say. Sent to hq-pro telemetry reads as `tz`.
+ */
+export function localIanaZone(): string | undefined {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof zone === "string" && zone.trim() ? zone : undefined;
+  } catch (err) {
+    console.warn("[telemetry] could not read the local time zone:", err);
+    return undefined;
+  }
+}
 
 /** One company's connected apps (hq-pro integrations-admin; any member may read). */
 export const COMPANY_INTEGRATION_PATHS = {
@@ -1642,11 +1660,15 @@ export interface AgentsApi {
   ): AdapterPromise<Json>;
   /** GET /v1/fleet/{companyUid}/agents/{uid}/owners. */
   listOwners(companyUid: string, agentUid: string): AdapterPromise<Json>;
-  /** GET /v1/telemetry/company?companyUid=&from=&to= — owner/admin. */
+  /**
+   * GET /v1/telemetry/company?companyUid=&from=&to=&tz= — owner/admin. `tz` is
+   * an IANA zone; the response's `bucketTz` says which zone the days were cut in.
+   */
   getCompanyTelemetry(
     companyUid: string,
     from: string,
     to: string,
+    tz?: string,
   ): AdapterPromise<Json>;
   /**
    * GET /v1/telemetry/me?from=&to=&tz= — the caller's own cross-company rollups
