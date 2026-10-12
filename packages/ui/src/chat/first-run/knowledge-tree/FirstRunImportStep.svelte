@@ -91,6 +91,11 @@
     reducedMotion?: boolean | null;
     /** What to say in the takeover's one live region (this step has none of its own). */
     onannounce?: ((text: string) => void) | null;
+    /**
+     * One more consent sentence when "Bring it in" also lists the work apps on
+     * this computer (first-run "Your apps"). Null when it does not.
+     */
+    appsConsent?: string | null;
   }
 
   let {
@@ -112,6 +117,7 @@
     onfinish,
     reducedMotion = null,
     onannounce = null,
+    appsConsent = null,
   }: Props = $props();
 
   const shownName = $derived(name.trim() || "your assistant");
@@ -592,7 +598,7 @@
     </div>
 
     {#if asking}
-      <p class="fr-consent" data-fr-consent data-testid="first-run-import-consent">It reads only this Mac, and nothing leaves it.</p>
+      <p class="fr-consent" data-fr-consent data-testid="first-run-import-consent">It reads only this Mac, and nothing leaves it.{#if appsConsent}{" "}<span data-testid="first-run-import-apps-consent">{appsConsent}</span>{/if}</p>
     {:else}
       <div class="fr-rows" data-fr-rows data-testid="first-run-import-rows">
         {#each plan.rows as row, i (row.id)}

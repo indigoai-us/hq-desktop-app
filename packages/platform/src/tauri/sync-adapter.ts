@@ -1346,6 +1346,10 @@ export function createSyncPlatformAdapter(
         hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
       catalogLookup: (companyUid, domains) =>
         hqProPostWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+      discoverDocs: (input) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+      uninstall: (input) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
     },
 
     company: {

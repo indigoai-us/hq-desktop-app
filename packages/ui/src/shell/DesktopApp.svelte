@@ -31,6 +31,7 @@
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
     VISUAL_FIRST_RUN_FLAG,
+    FIRST_RUN_FOUND_APPS_FLAG,
     dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
@@ -314,6 +315,7 @@
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
+  import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
   import {
     createFirstRunAppsHost,
     createFirstRunTeamHost,
@@ -3487,6 +3489,48 @@
       active = false;
     };
   });
+  /**
+   * `desktop.first-run-found-apps-v1`, read only once the visual first run is
+   * on. Until it answers (or when it cannot be read) the takeover keeps Note
+   * taker and Project management.
+   */
+  let foundAppsFlag = $state<boolean>(false);
+  let foundAppsFlagRead = false;
+  /**
+   * The found-apps answer is in (or its wait ran out). The takeover opens only
+   * after this, and the answer never changes afterwards, so the steps cannot
+   * swap while the person is in the flow.
+   */
+  let foundAppsFlagSettled = $state(false);
+  function settleFoundAppsFlag(value: boolean): void {
+    if (foundAppsFlagSettled) return;
+    foundAppsFlag = value;
+    foundAppsFlagSettled = true;
+  }
+  $effect(() => {
+    if (visualFirstRunFlag !== true || foundAppsFlagRead) return;
+    foundAppsFlagRead = true;
+    const identity = adapter.identity;
+    if (!identity || typeof identity.hasFeature !== "function") {
+      untrack(() => settleFoundAppsFlag(false));
+      return;
+    }
+    void Promise.resolve()
+      .then(() => identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG))
+      .then(
+        (result) => settleFoundAppsFlag(result.ok && result.value === true),
+        (err: unknown) => {
+          console.warn("[hq-desktop] first-run found-apps flag lookup failed:", err);
+          settleFoundAppsFlag(false);
+        },
+      );
+  });
+  // A found-apps answer that never comes stops holding the takeover (counts as off).
+  $effect(() => {
+    if (visualFirstRunFlag !== true || foundAppsFlagSettled) return;
+    const timer = window.setTimeout(() => settleFoundAppsFlag(false), FIRST_RUN_LISTINGS_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  });
   // The "setup owed" answer is in and the flag is not: the flag has the grace
   // left, then counts as off.
   $effect(() => {
@@ -3526,7 +3570,7 @@
     return () => window.clearTimeout(timer);
   });
   $effect(() => {
-    if (firstRunRouteNow !== "visual" || !firstRunListingsRead || untrack(() => visualFirstRunOpen)) return;
+    if (firstRunRouteNow !== "visual" || !firstRunListingsRead || !foundAppsFlagSettled || untrack(() => visualFirstRunOpen)) return;
     untrack(() => {
       firstRunSuggestedName = firstRunInitialName();
       visualFirstRunOpen = true;
@@ -3855,6 +3899,31 @@
             : null,
           startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
           install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
+          openUrl: openConnectionUrl,
+        })
+      : null,
+  );
+
+  /**
+   * First-run "Your apps" (flag `desktop.first-run-found-apps-v1`): the names-only
+   * scan, the fixed-list catalog lookup, connects, docs-based setup and Undo,
+   * all over the platform adapter. Null keeps Note taker and Project management.
+   */
+  const firstRunYourAppsHost = $derived(
+    foundAppsFlag && adapter.integrations
+      ? createYourAppsHost({
+          dry: firstRunDev.dry,
+          detectWorkApps: adapter.shell?.detectWorkApps ? () => adapter.shell.detectWorkApps!() : null,
+          catalogLookup: adapter.integrations.catalogLookup
+            ? (uid, domains) => adapter.integrations.catalogLookup!(uid, domains)
+            : null,
+          listConnections: adapter.integrations.listConnections
+            ? (uid) => adapter.integrations.listConnections(uid)
+            : null,
+          startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
+          install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
+          discoverDocs: adapter.integrations.discoverDocs ? (input) => adapter.integrations.discoverDocs!(input) : null,
+          uninstall: adapter.integrations.uninstall ? (input) => adapter.integrations.uninstall!(input) : null,
           openUrl: openConnectionUrl,
         })
       : null,
@@ -9887,9 +9956,9 @@
     if (!ready || adapter.kind === "web") return;
     // The visual first run comes first; the tour waits for it (and for the
     // flag's answer, and for the bot listings the takeover waits on, so it
-    // never starts under a takeover about to open).
+    // never starts under a takeover about to open; the found-apps flag holds it too).
     if (visualFirstRunOpen || firstRunRouteNow === "pending") return;
-    if (firstRunRouteNow === "visual" && !firstRunListingsRead) return;
+    if (firstRunRouteNow === "visual" && (!firstRunListingsRead || !foundAppsFlagSettled)) return;
     tourAutoTimer = window.setTimeout(() => {
       if (!tourStartedThisSession) startGuidedTour();
     }, TOUR_AUTO_START_DELAY_MS);
@@ -16047,6 +16116,8 @@
       teamOptions={firstRunTeamOptions}
       teamHost={firstRunTeamHost}
       appsHost={firstRunAppsHost}
+      yourAppsHost={firstRunYourAppsHost}
+      onopenintegrations={(companyUid) => openConnectionUrl(companyIntegrationsUrl(companySlugForUid(companyUid)))}
       onsettled={recordFirstRunSettled}
       ontalk={talkToFirstRunAssistant}
       oncontinueinchat={continueFirstRunInChat}

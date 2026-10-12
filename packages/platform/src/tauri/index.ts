@@ -670,6 +670,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
     catalogLookup: (companyUid, domains) =>
       this.hqProPostWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+    discoverDocs: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+    uninstall: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
   };
 
   readonly company: PlatformAdapter["company"] = {

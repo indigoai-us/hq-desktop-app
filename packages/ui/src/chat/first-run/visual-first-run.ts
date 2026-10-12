@@ -29,7 +29,7 @@ import { SETUP_BOT_RUNTIME_ORDER, type SetupBotRef } from "../setup-bot.js";
 export type FirstRunRuntime = LocalBotRow["runtime"];
 
 /** Every screen of the flow. */
-export type FirstRunStepId = "name" | "team" | "tools" | "context" | "notes" | "projects" | "done";
+export type FirstRunStepId = "name" | "team" | "tools" | "context" | "notes" | "projects" | "apps" | "done";
 
 export interface FirstRunStep {
   id: FirstRunStepId;
@@ -47,6 +47,16 @@ export const FIRST_RUN_STEPS: readonly FirstRunStep[] = [
   { id: "projects", label: "Project management" },
   { id: "done", label: "Done" },
 ];
+
+/**
+ * The flow with "Your apps" (integration auto-detect MVP, flag
+ * `desktop.first-run-found-apps-v1`): one step listing every app found on
+ * this computer replaces Note taker and Project management, so the first run
+ * has one step fewer. Owner decision dec-20261012015131-z0g0.
+ */
+export const FIRST_RUN_STEPS_YOUR_APPS: readonly FirstRunStep[] = FIRST_RUN_STEPS.flatMap((step) =>
+  step.id === "notes" ? [{ id: "apps" as const, label: "Your apps" }] : step.id === "projects" ? [] : [step],
+);
 
 /** What the host can run, which decides the screens shown. */
 export interface FirstRunHostCaps {
@@ -77,7 +87,7 @@ export function firstRunStepsFor(
   return steps.filter((step) => {
     if (step.id === "context") return host.canImport;
     if (step.id === "team") return host.canTeam === true;
-    if (step.id === "notes" || step.id === "projects") return apps;
+    if (step.id === "notes" || step.id === "projects" || step.id === "apps") return apps;
     return true;
   });
 }
@@ -305,11 +315,19 @@ export interface FirstRunAppHandoff {
   domain: string;
 }
 
-/** The two app screens. A key is present once its screen was passed; null there means skipped. */
+/**
+ * The two app screens. A key is present once its screen was passed; null there
+ * means skipped. "Your apps" fills both (its first note taker and project
+ * tool, or skipped) and lists every other connected app in `others`.
+ */
 export interface FirstRunAppsHandoff {
   notes?: FirstRunAppHandoff | null;
   projects?: FirstRunAppHandoff | null;
+  others?: FirstRunAppHandoff[];
 }
+
+/** At most this many other apps go in the handoff. */
+export const FIRST_RUN_OTHER_APPS_MAX = 12;
 
 /** What the takeover settled, handed to the setup bot so it never asks again. */
 export interface FirstRunHandoff {
@@ -374,11 +392,22 @@ function appJson(app: FirstRunAppHandoff | null | undefined): Record<string, str
   return { name, domain };
 }
 
-/** The apps part of the handoff JSON: each passed screen, its app or "skipped". */
-export function firstRunAppsJson(apps: FirstRunAppsHandoff): Record<string, Record<string, string> | "skipped"> {
-  const out: Record<string, Record<string, string> | "skipped"> = {};
+/**
+ * The apps part of the handoff JSON: each passed screen, its app or
+ * "skipped", and the other apps "Your apps" connected (clean ones only,
+ * capped).
+ */
+export function firstRunAppsJson(
+  apps: FirstRunAppsHandoff,
+): Record<string, Record<string, string> | "skipped" | Record<string, string>[]> {
+  const out: Record<string, Record<string, string> | "skipped" | Record<string, string>[]> = {};
   if ("notes" in apps) out.notes = appJson(apps.notes) ?? "skipped";
   if ("projects" in apps) out.projects = appJson(apps.projects) ?? "skipped";
+  const others = (apps.others ?? [])
+    .map((app) => appJson(app))
+    .filter((app): app is Record<string, string> => app !== null)
+    .slice(0, FIRST_RUN_OTHER_APPS_MAX);
+  if (others.length) out.others = others;
   return out;
 }
 
@@ -468,7 +497,9 @@ function settledSentence(handoff: Pick<FirstRunHandoff, "team" | "apps">): strin
   }
   const apps = handoff.apps ? firstRunAppsJson(handoff.apps) : null;
   if (apps && Object.keys(apps).length) {
-    out += "The note taker and project management choices are in the handoff: do not ask about them again. ";
+    out += "others" in apps
+      ? "The note taker, project management and other app choices are in the handoff: do not ask about them again. "
+      : "The note taker and project management choices are in the handoff: do not ask about them again. ";
   }
   return out;
 }

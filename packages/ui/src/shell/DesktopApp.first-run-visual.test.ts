@@ -13,7 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { failure, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
+import { failure, FIRST_RUN_FOUND_APPS_FLAG, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
@@ -837,6 +837,43 @@ describe("visual first run: the name step on an account that already has an assi
       await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS + 100);
       await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
       expect(SETUP_BOT_NAMES).toContain(nameField());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("visual first run: the found-apps flag is settled before the takeover opens", () => {
+  it("holds the takeover until the found-apps answer, so the steps never swap mid-flow", async () => {
+    let answerFoundApps: (value: unknown) => void = () => undefined;
+    const hasFeatureImpl = vi.fn((name: string) =>
+      name === VISUAL_FIRST_RUN_FLAG
+        ? Promise.resolve(ok(true))
+        : name === FIRST_RUN_FOUND_APPS_FLAG
+          ? new Promise((resolve) => (answerFoundApps = resolve))
+          : Promise.resolve(ok(false)),
+    );
+    const { platform } = adapter({ flag: true, hasFeatureImpl });
+    await boot(platform);
+    await settle(20);
+    expect(hasFeatureImpl).toHaveBeenCalledWith(FIRST_RUN_FOUND_APPS_FLAG);
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    answerFoundApps(ok(false));
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(step()).toBe("name");
+  });
+
+  it("a found-apps answer that never comes holds the takeover for at most the first run's wait (counts as off)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const hasFeatureImpl = (name: string) =>
+        name === VISUAL_FIRST_RUN_FLAG ? Promise.resolve(ok(true)) : name === FIRST_RUN_FOUND_APPS_FLAG ? new Promise(() => undefined) : Promise.resolve(ok(false));
+      const { platform } = adapter({ flag: true, hasFeatureImpl });
+      await boot(platform);
+      await settle(20);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS + 100);
+      await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     } finally {
       vi.useRealTimers();
     }

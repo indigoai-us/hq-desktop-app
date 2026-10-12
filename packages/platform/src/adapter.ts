@@ -1733,6 +1733,9 @@ export const INTEGRATION_PATHS = {
   blueprint: "/v1/integrations/factory/blueprint",
   /** Which of a fixed list of domains are in the catalog (first-run "Your apps"). */
   catalogLookup: "/v1/integrations/factory/catalog/lookup",
+  /** Find and probe a vendor's remote MCP server from its docs page. */
+  discoverDocs: "/v1/integrations/factory/discover-docs",
+  uninstall: "/v1/integrations/factory/uninstall",
 } as const;
 
 /** One row of the integration catalog, as the server sends it. Every field may be missing. */
@@ -1812,6 +1815,13 @@ export interface IntegrationInstallInput {
     | { placement: "header"; header: string };
   provider?: string;
   displayName?: string;
+  /** A docs-discovery receipt (`discoverDocs`); the server installs what it verified. */
+  discoveryReceiptId?: string;
+  /**
+   * Marks an install the desktop first run made with no sign-in, so it can be
+   * undone and shown as automatic (hq-pro `installation.origin`).
+   */
+  origin?: "first-run-auto";
 }
 
 /** Who gets to use a connection. A bot's uid is granted as a person. */
@@ -1870,6 +1880,21 @@ export interface IntegrationsApi {
    * without it leave it out.
    */
   catalogLookup?(companyUid: string, domains: readonly string[]): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/discover-docs with `{ companyUid, docsUrl }`:
+   * hq-pro reads the vendor's docs page, finds its remote MCP server and
+   * probes it (it never builds or hosts one). Owner or admin only, runs
+   * synchronously (up to about 18 s). Answers `{ ok, discoveryReceiptId?,
+   * discovery: { authMode, verification, provider, displayName, mcpUrl } }`,
+   * or a CLI-only `cliDetection`. A 404, 409 or 422 means HQ cannot connect
+   * it yet; the server records the attempt. Optional.
+   */
+  discoverDocs?(input: { companyUid: string; docsUrl: string }): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/uninstall with `{ companyUid, installationId }`:
+   * revoke a factory installation's connection. Owner or admin only. Optional.
+   */
+  uninstall?(input: { companyUid: string; installationId: string }): AdapterPromise<Json>;
   /**
    * POST /v1/integrations/factory/oauth/start with `{ companyUid, domain }`
    * or `{ companyUid, catalogEntryId }` and no `redirectUri`: the server's

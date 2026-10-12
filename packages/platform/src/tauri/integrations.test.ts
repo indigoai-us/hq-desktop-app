@@ -262,3 +262,32 @@ describe("catalog lookup (first-run Your apps)", () => {
     expect(INTEGRATION_PATHS.catalogLookup).toBe("/v1/integrations/factory/catalog/lookup");
   });
 });
+
+describe("docs discovery and uninstall (first-run Your apps)", () => {
+  it("posts only the company and the docs URL, and only the installation id, on both Tauri adapters", async () => {
+    for (const make of [makeTauri, makeSync]) {
+      const { adapter, calls } = make();
+      await adapter.integrations.discoverDocs!({ companyUid: "cmp_acme", docsUrl: "https://docs.example.com/mcp" });
+      await adapter.integrations.uninstall!({ companyUid: "cmp_acme", installationId: "inst_1" });
+      expect(calls).toEqual([
+        { cmd: "hq_pro_fetch", args: { url: INTEGRATION_PATHS.discoverDocs, method: "POST", body: JSON.stringify({ companyUid: "cmp_acme", docsUrl: "https://docs.example.com/mcp" }) } },
+        { cmd: "hq_pro_fetch", args: { url: INTEGRATION_PATHS.uninstall, method: "POST", body: JSON.stringify({ companyUid: "cmp_acme", installationId: "inst_1" }) } },
+      ]);
+    }
+  });
+
+  it("passes the install origin and a discovery receipt through in the body", async () => {
+    const { adapter, calls } = makeSync();
+    await adapter.integrations.install({ companyUid: "cmp_acme", catalogEntryId: "cat_aws", origin: "first-run-auto" });
+    await adapter.integrations.install({ companyUid: "cmp_acme", discoveryReceiptId: "rcpt_1" });
+    expect(calls.map((c) => c.args?.body)).toEqual([
+      JSON.stringify({ companyUid: "cmp_acme", catalogEntryId: "cat_aws", origin: "first-run-auto" }),
+      JSON.stringify({ companyUid: "cmp_acme", discoveryReceiptId: "rcpt_1" }),
+    ]);
+  });
+
+  it("names the hq-pro routes", () => {
+    expect(INTEGRATION_PATHS.discoverDocs).toBe("/v1/integrations/factory/discover-docs");
+    expect(INTEGRATION_PATHS.uninstall).toBe("/v1/integrations/factory/uninstall");
+  });
+});
