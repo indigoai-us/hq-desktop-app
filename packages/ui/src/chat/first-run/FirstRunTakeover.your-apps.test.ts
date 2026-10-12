@@ -137,7 +137,10 @@ describe("Your apps", () => {
     expect(q('[data-testid="first-run-connect-posthog.com"]')).toBeNull();
     expect(q('[data-testid="first-run-app-zoom.us"]')?.getAttribute("data-action")).toBe("setup");
     expect(text('[data-testid="first-run-apps-also"]')).toContain("Docker");
-    expect(text('[data-testid="first-run-apps-status"]')).toBe("2 connected to Acme. You can connect more later from Integrations.");
+    // The company name renders through CompanyLabel (its monogram, then the name).
+    const status = text('[data-testid="first-run-apps-status"]');
+    expect(status.startsWith("2 connected to ")).toBe(true);
+    expect(status.endsWith("Acme. You can connect more later from Integrations.")).toBe(true);
     const all = document.body.textContent ?? "";
     for (const dash of FIRST_RUN_BANNED_DASHES) expect(all).not.toContain(dash);
   });
@@ -163,7 +166,7 @@ describe("Your apps", () => {
   });
 
   it("shows a failed connect on its tile with Try again", async () => {
-    render({ yourApps: yourHost({ connect: vi.fn(async () => ({ ok: false, reason: "Linear did not finish connecting. Try again.", retry: true })) }) });
+    render({ yourApps: yourHost({ connect: vi.fn(async (): Promise<YourAppsResult> => ({ ok: false, reason: "Linear did not finish connecting. Try again.", retry: true })) }) });
     await settle();
     q<HTMLButtonElement>('[data-testid="first-run-connect-linear.app"]')!.click();
     await settle();

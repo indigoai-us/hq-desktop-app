@@ -1337,8 +1337,9 @@
                 <button type="button" class="new-bot-inline-link" data-testid={`first-run-${appKind}-chat`} disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
               </p>
             {:else if step === "apps" && yourAppsShown && creation.state !== "failed"}
+              {@const appsConnected = connectedCount(yourAppsShown)}
               <p class="new-bot-price first-run-status" data-testid="first-run-apps-status">
-                {yourAppsStatus(connectedCount(yourAppsShown), appsCompany?.name ?? "")}
+                {#if appsConnected > 0 && appsCompany}{appsConnected} connected to <CompanyLabel name={appsCompany.name} companyUid={appsCompany.uid} size={14} />. {YOUR_APPS_COPY.statusTail}{:else}{yourAppsStatus(appsConnected, "")}{/if}
               </p>
             {:else if appKind && appConnect[appKind].state === "idle" && creation.state !== "failed"}
               <p class="new-bot-price first-run-status" data-testid={`first-run-${appKind}-hint`}>Don't use one? Skip this with Next.</p>

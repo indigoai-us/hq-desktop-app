@@ -142,6 +142,7 @@ export const YOUR_APPS_COPY = {
   team: "team",
   noSignIn: "no sign-in",
   you: "you",
+  statusTail: "You can connect more later from Integrations.",
 } as const;
 
 /** The line under the title. `foundCount` 0 is the "nothing found" copy. */
@@ -156,7 +157,7 @@ export function yourAppsLead(foundCount: number, assistant: string, hostNoun: st
 export function yourAppsStatus(connected: number, company: string): string {
   const where = company.trim() || "your company";
   if (connected <= 0) return `Nothing connected yet. You can connect apps later from Integrations.`;
-  return `${connected} connected to ${where}. You can connect more later from Integrations.`;
+  return `${connected} connected to ${where}. ${YOUR_APPS_COPY.statusTail}`;
 }
 
 function sameApp(connection: StepConnection, app: FoundApp): boolean {
