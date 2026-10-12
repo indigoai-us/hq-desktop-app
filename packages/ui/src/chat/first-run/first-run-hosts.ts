@@ -212,28 +212,29 @@ export interface AppsHostDeps {
 }
 
 /**
- * The apps each screen also asks the catalog for by name, as the main label
- * of their website (`linear` for linear.app). The unfiltered read is capped at
- * 100 entries across the catalog's recommended, community and listed apps, so
- * a listed app can be cut from it (Linear was). A read by name keeps only
- * matching entries and returns the app wherever it ranks. It uses
- * CATALOG_LIMIT too: the server searches the first `limit` apps of its
- * listing, so a smaller limit can miss it.
+ * The apps each screen also asks the catalog for by their website's domain.
+ * The unfiltered read is capped at 100 entries across the catalog's
+ * recommended, community and listed apps, so a listed app can be cut from it
+ * (Linear and Read.ai were; Otter was near the end). A read by domain keeps
+ * only that app and returns it wherever it ranks. It uses CATALOG_LIMIT too:
+ * the server searches the first `limit` apps of its listing, so a smaller
+ * limit can miss it. tl;dv is not in the catalog yet; its read finds nothing
+ * until it is.
  */
 export const KEY_APPS: Record<FirstRunAppKind, readonly string[]> = {
-  notes: ["fireflies"],
-  projects: ["linear"],
+  notes: ["fireflies.ai", "otter.ai", "read.ai", "tldv.io"],
+  projects: ["linear.app"],
 };
 
 /**
- * The entries a by-name read returned whose website's main label is the name:
- * `linear.app` and `mcp.linear.app` for `linear`, never `linearb.io` or
- * `notlinear.app`.
+ * The entries a by-domain read returned that are that app: its domain or a
+ * subdomain of it (`mcp.linear.app` for linear.app), never a lookalike such as
+ * `notlinear.app`, `linearb.io` or `linear.app.example.com`.
  */
-function namedEntries(json: unknown, name: string): IntegrationCatalogEntry[] {
+function namedEntries(json: unknown, domain: string): IntegrationCatalogEntry[] {
   return catalogEntries(json).filter((entry) => {
-    const labels = (normalizeConnectDomain(entry.domain) ?? "").split(".");
-    return labels.length >= 2 && labels[labels.length - 2] === name;
+    const entryDomain = normalizeConnectDomain(entry.domain);
+    return entryDomain === domain || !!entryDomain?.endsWith(`.${domain}`);
   });
 }
 
@@ -287,15 +288,15 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
     async catalog(companyUid, kind) {
       const search = deps.catalogSearch;
       if (!search) return { ok: false, reason: "Apps can't be listed here. You can skip this.", retry: false };
-      const names = KEY_APPS[kind];
-      // A by-name read that fails leaves the screen with the unfiltered read alone.
-      const [res, ...byName] = await Promise.all([
+      const domains = KEY_APPS[kind];
+      // A by-domain read that fails leaves the screen with the unfiltered read alone.
+      const [res, ...byDomain] = await Promise.all([
         search(companyUid, "", CATALOG_LIMIT),
-        ...names.map((name) =>
+        ...domains.map((domain) =>
           Promise.resolve()
-            .then(() => search(companyUid, name, CATALOG_LIMIT))
+            .then(() => search(companyUid, domain, CATALOG_LIMIT))
             .catch((err: unknown) => {
-              console.warn(`[hq-desktop] first-run catalog read for ${name} threw:`, err);
+              console.warn(`[hq-desktop] first-run catalog read for ${domain} threw:`, err);
               return null;
             }),
         ),
@@ -304,7 +305,7 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
         const verdict = catalogFailureLine(res);
         return { ok: false, reason: verdict.line, retry: verdict.retry };
       }
-      const named = byName.flatMap((read, i) => (read?.ok ? namedEntries(read.value, names[i]!) : []));
+      const named = byDomain.flatMap((read, i) => (read?.ok ? namedEntries(read.value, domains[i]!) : []));
       const apps = appsForKind([...catalogEntries(res.value), ...named], kind);
       const listed = deps.listConnections ? await deps.listConnections(companyUid).catch(() => null) : null;
       return { ok: true, apps, connected: listed?.ok ? connectedDomains(listed.value) : [] };

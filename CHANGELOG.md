@@ -9,7 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - First run on a new computer: if your account already has an assistant, the name step now opens with your assistant's name, so Continue keeps it. Before, it suggested a new random name, and clicking through renamed your assistant. HQ checks your account's bots before the name step opens. A new account, or one whose bots HQ cannot read right now, still gets a friendly suggested name.
-- First run: Fireflies is now offered on the Note taker screen, and Linear on the Project management screen. Fireflies was listed under other apps, and Linear was left out when it was not among the first 100 apps HQ's app list returned. Each screen now also asks the app list for its key app by name.
+- First run: the Note taker screen now offers Fireflies, Otter and Read.ai, and the Project management screen offers Linear. Fireflies, Otter and Read.ai were listed under other apps, and Linear and Read.ai were left out when they were not among the first 100 apps HQ's app list returned. Each screen now also asks the app list for these apps by website. tl;dv is offered too once it is in HQ's app list.
 
 ## [0.11.4] — 2026-10-11
 

@@ -38,13 +38,26 @@ describe("catalog filter (the catalog has no category: filtered here)", () => {
     });
   });
 
-  it("lists Fireflies under Note taker, not under Project management", () => {
+  it("lists Fireflies, Otter, Read.ai and tl;dv under Note taker, not under Project management", () => {
+    // Names and domains as the catalog lists them (Otter and Read.ai are named by their domain).
     const entries = [
       { name: "Fireflies.ai", domain: "fireflies.ai", authClass: "oauth" as const },
+      { name: "otter.ai", domain: "otter.ai", authClass: "oauth" as const },
+      { name: "read.ai", domain: "read.ai", authClass: "oauth" as const },
+      { name: "tl;dv", domain: "tldv.io", authClass: "oauth" as const },
       { name: "Granola", domain: "granola.ai", authClass: "none" as const },
     ];
-    expect(appsForKind(entries, "notes").map((a) => a.domain)).toEqual(["fireflies.ai", "granola.ai"]);
+    expect(appsForKind(entries, "notes").map((a) => a.domain)).toEqual(["fireflies.ai", "granola.ai", "otter.ai", "read.ai", "tldv.io"]);
     expect(appsForKind(entries, "projects")).toEqual([]);
+  });
+
+  it("does not file lookalikes of the new note takers under Note taker", () => {
+    const entries = [
+      { name: "Readwise", domain: "readwise.io" },
+      { name: "Enzo Reader", domain: "enzoreader.com" },
+      { name: "Spotter", domain: "spotter.io" },
+    ];
+    expect(appsForKind(entries, "notes")).toEqual([]);
   });
 
   it("lists trackers for Project management and nothing else", () => {
