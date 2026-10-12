@@ -1203,7 +1203,8 @@
             lead={title.lead}
             em={title.em}
           />
-          <section class="new-bot-step new-bot-step--fit" data-testid={`first-run-${step}`}>
+          <!-- "Your apps" can be longer than the card: only its body scrolls, the head and footer stay put. -->
+          <section class="new-bot-step new-bot-step--fit" class:new-bot-create-scroll={step === "apps"} data-testid={`first-run-${step}`}>
             {#if step === "team"}
               <FirstRunTeamStep
                 options={teamOpts}

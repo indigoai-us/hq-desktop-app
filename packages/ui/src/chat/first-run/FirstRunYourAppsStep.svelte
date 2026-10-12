@@ -53,6 +53,23 @@
   const notInHqShown = $derived(showAllNotInHq || q ? notInHq : notInHq.slice(0, NOT_IN_HQ_SHOWN));
   /** One browser sign-in at a time: other Connect, Set up and Try again presses wait for it. */
   const browserBusy = $derived(signInRunning(view));
+  /** A connect that just failed is scrolled into view, so its reason is seen in a short window. */
+  const failedKey = $derived(
+    [...view.ready, ...view.notInHq].filter((t) => t.run.state === "failed").map((t) => t.domain).join(","),
+  );
+  let lastFailedKey = "";
+  $effect(() => {
+    const key = failedKey;
+    if (!key || key === lastFailedKey) {
+      lastFailedKey = key;
+      return;
+    }
+    const newest = key.split(",").find((d) => !lastFailedKey.split(",").includes(d));
+    lastFailedKey = key;
+    if (!newest) return;
+    const tile = document.querySelector(`[data-testid="first-run-app-${CSS.escape(newest)}"]`);
+    if (tile && typeof (tile as HTMLElement).scrollIntoView === "function") (tile as HTMLElement).scrollIntoView({ block: "nearest" });
+  });
   const alsoNames = $derived(view.alsoFound);
   const alsoShort = $derived(alsoNames.slice(0, 3));
   const alsoRest = $derived(alsoNames.length - alsoShort.length + view.unmatched);
@@ -109,13 +126,14 @@
   </p>
 {/if}
 {#if needsFilter}
-  <label class="new-bot-filter-label" for="first-run-apps-filter">Find an app</label>
   <input
     id="first-run-apps-filter"
-    class="new-bot-create-input"
+    class="new-bot-create-input found-filter"
+    aria-label="Find an app"
     data-testid="first-run-apps-filter"
     value={filter}
     autocomplete="off"
+    placeholder="Find an app"
     oninput={(event) => (filter = (event.currentTarget as HTMLInputElement).value)}
   />
 {/if}
@@ -224,6 +242,11 @@
 {/snippet}
 
 <style>
+  /* One compact line, so the apps themselves stay in view in a short window. */
+  .found-filter {
+    padding-block: 7px;
+    font-size: 13px;
+  }
   .found-group + .found-group,
   .new-bot-create-copy + .found-group {
     margin-top: 14px;
@@ -323,12 +346,17 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* Up to two lines, so a full sentence ("Needs a key. Add it later from
+     Integrations.") is read, not cut off. */
   .first-run-app-note {
+    display: -webkit-box;
     overflow: hidden;
     color: var(--new-bot-muted);
     font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.35;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
   .first-run-app.failed .first-run-app-note {
     color: #fecaca;
