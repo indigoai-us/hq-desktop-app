@@ -33,11 +33,11 @@ afterEach(() => {
 describe("You earned", () => {
   it("offers the card reveal for Gold and Legendary, and keeps that notice until it is used", () => {
     announceBadgeEarned({ id: "poweruser", tier: 3, earnedAt: "2026-10-08" });
-    announceBadgeEarned({ id: "founding", earnedAt: "2026-10-08" });
+    announceBadgeEarned({ id: "og", earnedAt: "2026-10-08" });
     const [gold, legendary] = toastItems();
     expect(gold).toMatchObject({ title: "You earned Power User", detail: "Gold · Skills run.", kind: "sticky", tone: "neutral" });
     expect(gold.actions?.map((a) => a.label)).toEqual(["Reveal card"]);
-    expect(legendary.title).toBe("You earned Founding Member");
+    expect(legendary).toMatchObject({ title: "You earned OG", detail: "Legendary · On the team that built HQ from day one." });
     expect(legendary.actions?.[0]).toMatchObject({ label: "Reveal card", primary: true, testId: "badge-earned-reveal" });
   });
 

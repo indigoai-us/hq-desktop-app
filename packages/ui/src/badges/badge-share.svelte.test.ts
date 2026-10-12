@@ -128,7 +128,8 @@ describe("share files", () => {
 
   it("names the file for the badge, level and size", () => {
     expect(shareFileName(liftoff, "story", "png")).toBe("hq-badge-liftoff-silver-story.png");
-    expect(shareFileName({ ...liftoff, def: BADGE_BY_ID.founding, tier: "L" }, "landscape", "mp4")).toBe("hq-badge-founding-legendary-landscape.mp4");
+    expect(shareFileName({ ...liftoff, def: BADGE_BY_ID.corebuilder, tier: "L" }, "landscape", "mp4")).toBe("hq-badge-corebuilder-legendary-landscape.mp4");
+    expect(shareFileName({ ...liftoff, def: BADGE_BY_ID.founding, tier: 3 }, "square", "png")).toBe("hq-badge-founding-gold-square.png");
   });
 
   it("records MP4 where the window can, WebM otherwise, and says so when neither", () => {

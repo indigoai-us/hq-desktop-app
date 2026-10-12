@@ -44,7 +44,7 @@ const MIX: EarnedBadge[] = [
   { id: "bughunter", tier: 2, earnedAt: "2026-09-28" },
 ];
 
-const FOUNDING = resolveEarned([{ id: "founding", earnedAt: "2026-03-02" }])[0]!;
+const OG = resolveEarned([{ id: "og", earnedAt: "2026-10-11" }])[0]!;
 
 describe("which tier shows", () => {
   it("is the highest level reached, the newest badge when several share it", () => {
@@ -81,7 +81,7 @@ describe("TierMark", () => {
 
   it("shows the badge after a short hover, and hides on leave", () => {
     vi.useFakeTimers();
-    component = mount(TierMark, { target: host, props: { tier: "L", avatar: 32, badge: FOUNDING } });
+    component = mount(TierMark, { target: host, props: { tier: "L", avatar: 32, badge: OG } });
     flushSync();
     const mark = host.querySelector<HTMLElement>("[data-testid='tier-mark']")!;
     mark.dispatchEvent(new PointerEvent("pointerenter"));
@@ -91,10 +91,10 @@ describe("TierMark", () => {
     vi.advanceTimersByTime(100);
     flushSync();
     const card = document.querySelector<HTMLElement>("[data-testid='tier-mark-card']");
-    expect(card?.textContent).toContain("Founding Member");
+    expect(card?.querySelector(".tmc-name")?.textContent).toBe("OG");
     expect(card?.textContent).toContain("Legendary badge · highest earned");
     // The badge's own micro mark, not a plain dot (owner review 2026-10-09).
-    expect(card?.querySelector("canvas[data-badge='founding']")).not.toBeNull();
+    expect(card?.querySelector("canvas[data-badge='og']")).not.toBeNull();
     // Shown at 36px, the height of the two lines beside it.
     expect(readFileSync(join(here, "TierMark.svelte"), "utf8")).toMatch(/\.tmc-mark :global\(canvas\) \{ width: 36px !important; height: 36px !important; \}/);
     // On <body>, so no scrolling list or popover clips it.
@@ -107,7 +107,7 @@ describe("TierMark", () => {
   // A stray space beside the mark became a second grid row in the side-nav
   // picture and lifted its initials (owner review 2026-10-09).
   it("adds no text beside itself to the picture it sits in", () => {
-    component = mount(TierMark, { target: host, props: { tier: "L", avatar: 32, badge: FOUNDING } });
+    component = mount(TierMark, { target: host, props: { tier: "L", avatar: 32, badge: OG } });
     flushSync();
     const text = [...host.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE && n.textContent !== "");
     expect(text).toEqual([]);
