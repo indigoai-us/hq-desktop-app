@@ -1344,6 +1344,8 @@ export function createSyncPlatformAdapter(
         withoutSecret(await hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ''),
       blueprint: (input) =>
         hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
+      catalogLookup: (companyUid, domains) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
     },
 
     company: {

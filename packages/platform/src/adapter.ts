@@ -1731,6 +1731,8 @@ export const INTEGRATION_PATHS = {
   oauthStart: "/v1/integrations/factory/oauth/start",
   install: "/v1/integrations/factory/install",
   blueprint: "/v1/integrations/factory/blueprint",
+  /** Which of a fixed list of domains are in the catalog (first-run "Your apps"). */
+  catalogLookup: "/v1/integrations/factory/catalog/lookup",
 } as const;
 
 /** One row of the integration catalog, as the server sends it. Every field may be missing. */
@@ -1858,6 +1860,16 @@ export interface IntegrationsApi {
    * carries the HTTP status (`status`) and the server's `code`.
    */
   catalogSearch(companyUid: string, query: string, limit?: number): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/catalog/lookup with `{ companyUid, domains }`:
+   * which of a FIXED list of app domains are in the catalog. The first-run
+   * "Your apps" step always sends its whole signature list, so the request
+   * says nothing about what was found on this computer. Owner or admin only.
+   * Answers `{ ok, companyUid, matches: { [domain]: IntegrationCatalogEntry | null } }`
+   * (hq-pro `lookupFactoryCatalog`, integrations-admin.ts). Optional: hosts
+   * without it leave it out.
+   */
+  catalogLookup?(companyUid: string, domains: readonly string[]): AdapterPromise<Json>;
   /**
    * POST /v1/integrations/factory/oauth/start with `{ companyUid, domain }`
    * or `{ companyUid, catalogEntryId }` and no `redirectUri`: the server's

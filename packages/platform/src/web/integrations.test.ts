@@ -289,3 +289,14 @@ describe("WebPlatformAdapter integrations: connecting an app from a card", () =>
     ]);
   });
 });
+
+describe("catalog lookup (first-run Your apps)", () => {
+  it("posts the fixed list to the lookup route", async () => {
+    const { adapter, calls } = makeAdapter(() => ({ status: 200, body: { ok: true, companyUid: "cmp_acme", matches: {} } }));
+    const res = await adapter.integrations.catalogLookup!("cmp_acme", ["linear.app", "zoom.us"]);
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual([
+      { method: "POST", path: "/v1/integrations/factory/catalog/lookup", body: { companyUid: "cmp_acme", domains: ["linear.app", "zoom.us"] } },
+    ]);
+  });
+});

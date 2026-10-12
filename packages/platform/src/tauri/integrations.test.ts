@@ -235,3 +235,30 @@ describe("createDesktopAdapter integrations", () => {
     ]);
   });
 });
+
+describe("catalog lookup (first-run Your apps)", () => {
+  const DOMAINS = ["linear.app", "zoom.us"] as const;
+  const EXPECTED_LOOKUP: Invocation[] = [
+    {
+      cmd: "hq_pro_fetch",
+      args: {
+        url: INTEGRATION_PATHS.catalogLookup,
+        method: "POST",
+        body: JSON.stringify({ companyUid: "cmp_acme", domains: ["linear.app", "zoom.us"] }),
+      },
+    },
+  ];
+
+  it("posts the whole fixed list through hq_pro_fetch on both Tauri adapters", async () => {
+    for (const make of [makeTauri, makeSync]) {
+      const { adapter, calls } = make();
+      const result = await adapter.integrations.catalogLookup!("cmp_acme", DOMAINS);
+      expect(calls).toEqual(EXPECTED_LOOKUP);
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  it("names the hq-pro route", () => {
+    expect(INTEGRATION_PATHS.catalogLookup).toBe("/v1/integrations/factory/catalog/lookup");
+  });
+});
