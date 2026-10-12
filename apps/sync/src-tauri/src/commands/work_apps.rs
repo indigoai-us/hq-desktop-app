@@ -613,6 +613,9 @@ fn read_regular_file(path: &Path, max: u64) -> ReadFile {
     let file = match options.open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return ReadFile::Missing,
+        // Windows refuses to open a directory as a file (access denied):
+        // something that is not a regular file is not the config file.
+        Err(_) if fs::metadata(path).is_ok_and(|meta| !meta.is_file()) => return ReadFile::Missing,
         Err(_) => return ReadFile::Unreadable,
     };
     let Ok(meta) = file.metadata() else {
