@@ -61,8 +61,14 @@ export type SweepRed = string | { workflow: string; since?: string | null; merge
 export interface BriefSweep {
   generated_at?: string;
   company?: string;
-  window?: { from: string; to: string; today?: string; sessions_from?: string; sessions_to?: string };
+  /**
+   * `from`/`to` are the gh search reach (dates); the brief's own 24h PR window
+   * is `prs_from`..`prs_to` (ISO), written by newer sweeps.
+   */
+  window?: { from: string; to: string; today?: string; sessions_from?: string; sessions_to?: string; prs_from?: string; prs_to?: string; hours?: number };
   days?: Record<string, { merged?: number; opened?: number; sessions?: number; other_sessions?: number; meetings?: number }>;
+  /** The writer's numbers: the 24h window, the owner's own PRs. The app shows the same ones. */
+  prs_summary?: { merged?: number; opened?: number; open?: number; review_requested?: number; median_merge_hours?: number | null } | null;
   sessions?: {
     id?: string;
     date: string;
@@ -82,8 +88,9 @@ export interface BriefSweep {
     last_activity?: string | null;
     has_handoff?: boolean;
   }[];
-  meeting_signals?: { meeting: string; start: string; counts: Record<string, number> }[];
-  dms?: { from: string; from_uid?: string; is_agent?: boolean; at: string }[];
+  /** A meeting whose `hq meetings get` failed is written as `{ meeting, error }` with no start or counts. */
+  meeting_signals?: { meeting: string; start?: string | null; counts?: Record<string, number> | null; error?: string }[];
+  dms?: { from: string | null; from_uid?: string; is_agent?: boolean; at: string }[];
   fleet?: {
     total?: number;
     by_status?: Record<string, number>;
@@ -104,6 +111,8 @@ export interface BriefSweep {
     product?: string | null;
     merge_hours?: number | null;
     is_release?: boolean;
+    /** False on rows the owner did not author (reviews asked of them); absent in older sweeps (all theirs). */
+    authored_by_me?: boolean;
     url?: string;
   }[];
   main_health?: Record<string, { workflows: number; red: SweepRed[]; delta?: { newly_red?: string[]; still_red?: string[]; recovered?: string[] } }>;
@@ -135,12 +144,16 @@ const isDay = (iso: string | null | undefined, day: string) => (iso ?? "").slice
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : []);
 const finite = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
-/** Local calendar day of an ISO time, YYYY-MM-DD. */
-function localDay(iso: string): string {
+/** Local calendar day of an ISO time, YYYY-MM-DD; "" when the value is not a time (a missing field never throws). */
+function localDay(iso: string | null | undefined): string {
+  if (typeof iso !== "string" || !iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+
+/** Epoch ms of an ISO time, NaN when absent or unparseable. */
+const ms = (iso: string | null | undefined): number => (typeof iso === "string" && iso ? Date.parse(iso) : NaN);
 
 /** An ISO close time, or null for an open row (newer sweeps write null, older 0001-01-01). */
 const closedAt = (iso: string | null | undefined): string | null => (iso && !iso.startsWith("0001") ? iso : null);
@@ -264,15 +277,31 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
     const product = products.get(repo);
     return { companyUid: opts.companyUid, repo: `${org}/${repo}`, ...(product ? { product } : {}) };
   };
-  // One source for merged and opened everywhere: the sweep's PR window
-  // (window.from onward). The per-day rollup is not used for these counts.
+  // One source for merged and opened everywhere, the same one the writer reads:
+  // the brief's 24h PR window (window.prs_from..prs_to) over the owner's own
+  // PRs, summarised by the sweep in prs_summary. Older sweeps have neither, so
+  // they fall back to window.from (the gh search reach, dates only). The
+  // per-day rollup is never used for these counts.
+  const own = prs.filter((p) => p.authored_by_me !== false);
+  const prsFrom = ms(sweep.window?.prs_from);
+  const prsTo = ms(sweep.window?.prs_to);
+  const hasPrWindow = Number.isFinite(prsFrom) && Number.isFinite(prsTo);
   const from = sweep.window?.from ?? null;
-  const inWindow = (iso: string | null | undefined) => !!iso && !iso.startsWith("0001") && (!from || iso.slice(0, 10) >= from);
-  const windowMerged = prs.filter((p) => p.state === "merged" && inWindow(p.closed)).length;
-  const windowOpened = prs.filter((p) => (p.state === "open" || p.state === "merged") && inWindow(p.created)).length;
+  const inWindow = (iso: string | null | undefined): boolean => {
+    if (!iso || iso.startsWith("0001")) return false;
+    if (hasPrWindow) {
+      const t = Date.parse(iso);
+      return t >= prsFrom && t <= prsTo;
+    }
+    return !from || iso.slice(0, 10) >= from;
+  };
+  const summary = sweep.prs_summary ?? null;
+  const windowMerged = finite(summary?.merged) ?? own.filter((p) => p.state === "merged" && inWindow(p.closed)).length;
+  const windowOpened = finite(summary?.opened) ?? own.filter((p) => (p.state === "open" || p.state === "merged") && inWindow(p.created)).length;
 
-  // Shipped: the day's merged PRs grouped by repo, biggest first.
-  const mergedToday = prs.filter((p) => p.state === "merged" && isDay(closedAt(p.closed), opts.day));
+  // Shipped: the owner's PRs merged inside the same window, grouped by repo, biggest
+  // first. Without a PR window: the ones closed on the brief's day, by local date.
+  const mergedToday = own.filter((p) => p.state === "merged" && (hasPrWindow ? inWindow(closedAt(p.closed)) : localDay(closedAt(p.closed)) === opts.day));
   const byRepoToday = new Map<string, typeof prs>();
   for (const p of mergedToday) byRepoToday.set(p.repo, [...(byRepoToday.get(p.repo) ?? []), p]);
   const shipped: BriefShipped[] = [...byRepoToday.entries()]
@@ -292,35 +321,42 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
       };
     });
 
+  // The window line on the shipped card: with a PR window, the rows opened or closed inside it
+  // (its local days label the line); older sweeps describe the whole search reach.
+  const windowRows = hasPrWindow ? prs.filter((p) => inWindow(p.created) || inWindow(closedAt(p.closed))) : prs;
   const repoTotals = new Map<string, { repo: string; total: number; merged: number }>();
-  for (const p of prs) {
+  for (const p of windowRows) {
     const row = repoTotals.get(p.repo) ?? { repo: p.repo, total: 0, merged: 0 };
     row.total += 1;
-    if (p.state === "merged") row.merged += 1;
+    if (p.state === "merged" && (!hasPrWindow || inWindow(closedAt(p.closed)))) row.merged += 1;
     repoTotals.set(p.repo, row);
   }
   const prWindow = sweep.window
     ? {
-        from: sweep.window.from,
-        to: sweep.window.to,
-        total: prs.length,
-        merged: prs.filter((p) => p.state === "merged").length,
+        from: hasPrWindow ? localDay(sweep.window.prs_from) : sweep.window.from,
+        to: hasPrWindow ? localDay(sweep.window.prs_to) : sweep.window.to,
+        total: windowRows.length,
+        merged: [...repoTotals.values()].reduce((n, r) => n + r.merged, 0),
         byRepo: [...repoTotals.values()].sort((a, b) => b.total - a.total || a.repo.localeCompare(b.repo)),
       }
     : null;
 
+  // A meeting whose read failed has no start and no counts; it is not a meeting on the day.
   const meetingsYesterday: BriefMeeting[] = (sweep.meeting_signals ?? [])
-    .filter((m) => localDay(m.start) === opts.day || isDay(m.start, opts.day))
-    .map((m, i) => ({
-      id: `sweep-meeting-${i}`,
-      title: m.meeting,
-      startTime: m.start,
-      companyUid: opts.companyUid,
-      decisions: m.counts.decision ?? 0,
-      actions: m.counts.action_item ?? 0,
-      risks: m.counts.risk ?? 0,
-      questions: m.counts.question ?? 0,
-    }))
+    .filter((m): m is typeof m & { start: string } => typeof m.start === "string" && !!m.start && (localDay(m.start) === opts.day || isDay(m.start, opts.day)))
+    .map((m, i) => {
+      const counts = m.counts ?? {};
+      return {
+        id: `sweep-meeting-${i}`,
+        title: m.meeting,
+        startTime: m.start,
+        companyUid: opts.companyUid,
+        decisions: finite(counts.decision) ?? 0,
+        actions: finite(counts.action_item) ?? 0,
+        risks: finite(counts.risk) ?? 0,
+        questions: finite(counts.question) ?? 0,
+      };
+    })
     .sort((a, b) => b.decisions + b.actions - (a.decisions + a.actions));
 
   // Main health: every repo for the release train; the red ones are incidents.
@@ -366,7 +402,7 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
   const seen = new Map<string, BriefTeammate>();
   const dmsToday = (sweep.dms ?? []).filter((m) => localDay(m.at) === opts.day || isDay(m.at, opts.day));
   for (const m of dmsToday) {
-    const name = m.from.trim();
+    const name = (typeof m.from === "string" ? m.from : "").trim();
     if (!name || name === "assistant" || name === opts.selfName?.trim() || seen.has(name)) continue;
     const agent = m.is_agent === true || (m.from_uid ?? "").startsWith("agt_");
     const count = dmsToday.filter((x) => x.from === m.from).length;

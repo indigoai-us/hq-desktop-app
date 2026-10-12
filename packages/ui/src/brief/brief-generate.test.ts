@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  BRIEF_ROW_MIN_PX,
   FITS,
   MAX_DENSITY,
   MIN_DENSITY,
   TEMPLATES,
   generateBrief,
+  gridStyle,
   place,
   summarizeSessions,
 } from "./brief-generate.js";
@@ -12,6 +14,20 @@ import { VARIANTS, entryOf } from "./brief-catalogue.js";
 import { catchUpThursday, octoberEleven } from "./brief-catalogue-fixtures.js";
 import { octoberEightBrief } from "./brief-fixture.js";
 import type { BriefInput } from "./brief-types.js";
+
+describe("gridStyle", () => {
+  it("live: the plan's areas with rows that start at the minimum and grow", () => {
+    const style = gridStyle(["a a a b b c", "a a a b b d"], false);
+    expect(style).toBe(`grid-template-rows:repeat(2, minmax(${BRIEF_ROW_MIN_PX}px, auto));grid-template-areas:'a a a b b c' 'a a a b b d'`);
+  });
+
+  it("review: source-order row flow, never dense (a later group's card must not climb above an earlier label), label rows sized to content", () => {
+    const style = gridStyle(["a a a b b c"], true);
+    expect(style).toBe("grid-auto-flow:row;grid-auto-rows:auto;grid-template-rows:none");
+    expect(style).not.toContain("dense");
+    expect(style).not.toContain(`${BRIEF_ROW_MIN_PX}px`);
+  });
+});
 
 const NOW = new Date("2026-10-08T14:40:00.000Z");
 

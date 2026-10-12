@@ -254,10 +254,16 @@ export function leadLabel(lead: BriefLead): string {
 /** Rows start this short and grow to their content, so short cards leave no dead space. */
 export const BRIEF_ROW_MIN_PX = 120;
 
-/** Inline grid style: the plan's areas (or review mode's dense flow), rows sized to content. */
+/**
+ * Inline grid style. Live: the plan's areas, rows sized to content. Review:
+ * plain row flow in source order (never `dense`, which pulls a later group's
+ * card up into a hole above its own label) with rows sized by their content,
+ * so a group label is one short row; the cards keep the row minimum through
+ * their own `min-height` in DailyBrief.
+ */
 export function gridStyle(areas: readonly string[], review: boolean): string {
   const row = `minmax(${BRIEF_ROW_MIN_PX}px, auto)`;
   return review
-    ? `grid-auto-flow:row dense;grid-auto-rows:${row}`
+    ? "grid-auto-flow:row;grid-auto-rows:auto;grid-template-rows:none"
     : `grid-template-rows:repeat(${areas.length}, ${row});grid-template-areas:${areas.map((a) => `'${a}'`).join(" ")}`;
 }

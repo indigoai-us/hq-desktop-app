@@ -14,7 +14,7 @@
   import BriefOrigin from "./BriefOrigin.svelte";
   import { peek, useBrief } from "./brief-context.svelte.js";
   import { countUp } from "./count-up.js";
-  import { affectedOf, incidentEyebrow, incidentShortState, mergesOnTopText, moreIncidentsPeek, redAge, riskPeek, watchTitle } from "./brief-peeks.js";
+  import { LIST_CAP, affectedOf, fixTitle, incidentEyebrow, incidentShortState, mergesOnTopText, moreFixesPeek, moreIncidentsPeek, redAge, riskPeek, watchTitle } from "./brief-peeks.js";
   import type { BriefRisk } from "./brief-types.js";
 
   interface Props {
@@ -41,6 +41,9 @@
   const others = $derived((incidents ?? []).filter((r) => r.id !== risk.id));
   const shownOthers = $derived(others.slice(0, 4));
   const restOthers = $derived(others.slice(shownOthers.length));
+  // Fixes in review: plain titles with the product's logo, five at most, then "+N more".
+  const shownFixes = $derived(risk.links.slice(0, LIST_CAP));
+  const restFixes = $derived(risk.links.slice(shownFixes.length));
   const promptOf = (r: BriefRisk) => prompts?.[r.id] ?? r.prompt;
   const unitOne = $derived(m ? m.unit.replace(/s$/, "") : "unit");
   let probe = $state("");
@@ -77,7 +80,14 @@
   {/if}
   {#if tall}
     {#if risk.links.length}
-      <div class="prs">{#each risk.links as l (l.label)}<span class="chip"><BriefOrigin origin={{ ...l.origin, repo: l.label }} /></span>{/each}</div>
+      <div class="prs" data-testid="brief-incident-fixes">
+        {#each shownFixes as l, i (`${l.label}-${i}`)}
+          <span class="chip fix" data-testid="brief-incident-fix"><BriefOrigin origin={l.origin} product /><span class="fix-t">{fixTitle(l)}</span></span>
+        {/each}
+        {#if restFixes.length}
+          <span class="chip fix more" role="group" aria-label="More fixes" data-testid="brief-incident-fixes-more" use:peek={{ state: brief, content: () => moreFixesPeek(restFixes) }}>+{restFixes.length} more</span>
+        {/if}
+      </div>
       <div class="sub" style="font-size:11.5px;margin-top:6px">{risk.links.length} fix{risk.links.length === 1 ? "" : "es"} in review</div>
     {/if}
     {#if prompt}<div class="start">{#if brief.notes[risk.id]}<span class="launch-note">{brief.notes[risk.id]}</span>{:else}<BriefLaunch id={risk.id} {prompt} compact />{/if}</div>{/if}
@@ -178,6 +188,24 @@
     gap: 6px;
     margin-top: 10px;
     flex-wrap: wrap;
+  }
+  /* A fix chip: the product's logo and name, then the plain title; never a slug or a PR number. */
+  .chip.fix {
+    font-family: var(--b-ui, system-ui);
+    font-size: 11.5px;
+    letter-spacing: 0;
+    max-width: 100%;
+  }
+  .chip.fix .fix-t {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chip.fix.more {
+    font-family: var(--b-mono);
+    font-size: 10.5px;
+    cursor: default;
   }
   .start {
     margin-top: 10px;

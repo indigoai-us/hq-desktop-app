@@ -99,11 +99,15 @@ const LISTY_WHY = /(^|;\s*)(feat|fix|docs?|chore|ci|build|refactor|test|perf|sty
 const RELEASE_LINE = /^(release\b|chore\(release\))/i;
 const RELEASE_TITLE = /\bis out\b|^release\b|\breleased\b/i;
 
-/** The merged count a row carries: its PR lines, else "N merged" in its status, else "N changes shipped" in its title. */
+/**
+ * The merged count a row carries: the larger of its PR lines and "N merged"
+ * in its status (the writer's count may raise a rollup that listed fewer
+ * lines), else "N changes shipped" in its title.
+ */
 export function rowMerged(row: BriefShipped): number {
-  if (row.lines.length) return row.lines.length;
   const status = row.status.match(/(\d+)\s+merged/i);
-  if (status) return Number(status[1]);
+  const counted = Math.max(row.lines.length, status ? Number(status[1]) : 0);
+  if (counted) return counted;
   const title = row.title.match(COUNT_TITLE);
   return title ? Number(title[2]) : 0;
 }

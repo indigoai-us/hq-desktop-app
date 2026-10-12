@@ -37,7 +37,7 @@ import { parseRecordedMeetings, signalBodyText } from "../meetings/recorded-meet
 import { localSessionsFromNative } from "../telemetry/telemetry-local-sessions.js";
 import { eventEnd, eventMeetingUrl, eventStart, type MeetingEvent } from "../meetings/meetings-model.js";
 import { digest } from "./brief-catalogue.js";
-import { isNamedShip } from "./brief-distill.js";
+import { isNamedShip, rowMerged } from "./brief-distill.js";
 import { productName, repoShort } from "./brief-origin.js";
 import { briefSeed } from "./brief-seed.js";
 import { parseSweep, sweepToInput } from "./brief-sweep.js";
@@ -575,7 +575,10 @@ const MAX_HIGHLIGHTS = 5;
  * takes the writer's product name, `why`, highlights and median merge hours.
  * A named ship ("Desktop 0.11.3 is out") stays as its own row so the tile
  * keeps its headline and FIRST badge; a plain product row folds in, passing
- * its `first` to the rollup. Rows with no rollup are appended. Pure.
+ * its `first` to the rollup. A count row ("HQ Pro: 9 changes shipped") that
+ * counts more than the rollup listed raises the rollup's merged count, so the
+ * tile never shows fewer than the writer wrote. Rows with no rollup are
+ * appended. Pure.
  */
 export function mergeShipped(rollups: readonly BriefShipped[], writer: readonly BriefShipped[]): BriefShipped[] {
   const out = rollups.map((r) => ({ ...r }));
@@ -589,6 +592,8 @@ export function mergeShipped(rollups: readonly BriefShipped[], writer: readonly 
       continue;
     }
     if (w.origin.product) hit.origin = { ...hit.origin, product: w.origin.product };
+    const counted = rowMerged(w);
+    if (!isNamedShip(w) && counted > rowMerged(hit)) hit.status = `${counted} merged`;
     if (w.why && !hit.why) hit.why = w.why;
     if (w.highlights?.length) {
       const seen = new Set<string>();

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import DailyBrief from "./DailyBrief.svelte";
 import { octoberEightBrief } from "./brief-fixture.js";
-import { generateBrief } from "./brief-generate.js";
+import { generateBrief, gridStyle } from "./brief-generate.js";
 import { CATALOGUE, entryOf } from "./brief-catalogue.js";
 import { everything, octoberEleven } from "./brief-catalogue-fixtures.js";
 import { decisionPrompt } from "./brief-prompts.js";
@@ -171,7 +171,7 @@ describe("DailyBrief", () => {
     );
   });
 
-  it("the lead chip's peek explains every card and lists what is not shown; the strip caps at five with +N more", async () => {
+  it("the lead chip's peek explains every card and lists what is not shown by card name; the live page has no strip", async () => {
     render({});
     await hover(q('[data-testid="brief-lead"]')!);
     const peek = q('[data-testid="brief-peek"]')!;
@@ -180,13 +180,72 @@ describe("DailyBrief", () => {
     expect(peek.textContent).toContain("Not shown today");
     expect(peek.querySelectorAll('[data-testid="brief-peek-line"]').length).toBeLessThanOrEqual(10);
     expect(peek.textContent).toMatch(/\+\d+ more/);
+    // Dropped kinds read as card names, never camelCase ids.
+    const plan = generateBrief(day());
+    expect(plan.dropped.map((d) => d.kind)).toContain("team");
+    expect(peek.textContent).toContain("Team:");
+    expect(peek.textContent).not.toMatch(/\b(blockedByMe|oneThing|fleetRecovery|releaseTrain|weekArc)\b/);
+    // The live CEO page ends with the grid: the picker's reasoning stays behind the hover.
+    expect(q('[data-testid="brief-dropped"]')).toBeNull();
+  });
+
+  it("Shift+A shows the Not shown strip by card name, capped at five with +N more, with the score parts on hover", async () => {
+    render({});
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    flushSync();
     const strip = q('[data-testid="brief-dropped"]')!;
-    expect(qa('[data-testid="brief-dropped-row"]').length).toBeLessThanOrEqual(5);
-    expect(strip.textContent).toContain("team");
-    expect(strip.textContent).toContain("agenda");
+    const rows = qa('[data-testid="brief-dropped-row"]');
+    expect(rows.length).toBeLessThanOrEqual(5);
+    expect(strip.textContent).toContain("Team");
+    expect(strip.textContent).toContain("Today");
+    expect(strip.textContent).not.toMatch(/\b(blockedByMe|oneThing|fleetRecovery|releaseTrain|weekArc)\b/);
+    expect(strip.textContent).toMatch(/\+\d+ more/);
     // Hovering a dropped kind shows the score parts behind it.
-    const team = qa('[data-testid="brief-dropped-row"]').find((el) => el.textContent?.startsWith("team"))!;
+    const team = rows.find((el) => el.getAttribute("data-kind") === "team")!;
+    expect(team.querySelector("b")!.textContent).toBe("Team");
     expect(team.getAttribute("title")).toMatch(/^value \d+ · priority \d+ · day \d+ · pref -?\d+ · rotation -\d+$/);
+    await hover(qa(".b-dropped .more")[0]!);
+    expect(q('[data-testid="brief-peek"]')!.textContent).toContain("more not shown");
+  });
+
+  it("review mode lays the groups out in source order: no dense packing, and every card follows its own group label", () => {
+    render({});
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    flushSync();
+    const grid = q("main.b-grid")!;
+    expect(grid.getAttribute("style")!.replace(/\s+/g, "")).toContain("grid-auto-flow:row;");
+    expect(grid.getAttribute("style")).not.toContain("dense");
+    expect(gridStyle([], true)).not.toContain("dense");
+    // Walk the tiles: a card's group is the last label seen before it.
+    let label: string | null = null;
+    for (const el of [...grid.children]) {
+      if (el.getAttribute("data-testid") === "brief-review-group") label = el.textContent!.trim();
+      else {
+        const kind = el.getAttribute("data-widget")!;
+        const group = CATALOGUE.find((e) => e.id === kind)!.group;
+        const want = { hero: "Hero", needs: "Needs you", health: "Health", waiting: "Waiting", momentum: "Momentum", people: "People", self: "Your day" }[group];
+        expect(label, kind).toBe(want);
+      }
+    }
+  });
+
+  it("the sunrise sub-line names a sweep-built red main by product, never by its repo slug", () => {
+    const input = day();
+    input.risks = [
+      {
+        id: "ci:hq-core-staging",
+        title: "hq-core-staging main CI red",
+        summary: "Nightly sync failing on main (1 of 6 workflows).",
+        severity: "incident",
+        links: [],
+        origin: { companyUid: "cmp_indigo", repo: "indigoai-us/hq-core-staging" },
+        ci: { repo: "hq-core-staging", workflow: "Nightly sync", job: null, since: null, ageHours: 5, note: null },
+      },
+    ];
+    render({ input });
+    const sub = q('[data-testid="brief-sunrise"] .sub')!.textContent!;
+    expect(sub).toContain("The one fire: HQ core main is red.");
+    expect(sub).not.toContain("hq-core-staging");
   });
 
   it("starts a decision in the chosen engine with its prompt and marks it done locally", async () => {

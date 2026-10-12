@@ -347,6 +347,58 @@ describe("pairs", () => {
     expect(kinds(plan)).not.toContain("agenda");
     expect(plan.dropped.find((d) => d.kind === "agenda")?.why).toBe("Focus time already shows today's calls and gaps");
   });
+
+  it("a candidate that no slot takes is dropped for fit, not with a pair sentence whose rule allows the pair", () => {
+    // Oct 15: template 5 has one W3 slot; oneThing (W, W3) loses it to needs and weekArc. The needs/oneThing
+    // rule always coexists on a catch-up day, so its sentence would be false here.
+    const plan = generateBrief(catchUpThursday());
+    expect(plan.template).toBe("5");
+    expect(plan.dropped.find((d) => d.kind === "oneThing")?.why).toBe("no slot fits it at 5 widgets");
+    for (const d of plan.dropped) expect(d.why).not.toBe("Needs you shows every call; the priorities list orders them");
+  });
+});
+
+describe("variants", () => {
+  /** A midweek Wednesday: 5 calls with priorities, one incident with a priority, 23 merged across 7 products, 2 watch, 2 teammates needing you, a fresh wait, a reminder due in 40 hours. */
+  function midweekWednesday(): BriefInput {
+    const base = octoberEleven();
+    const now = "2026-10-14T13:00:00.000Z";
+    return {
+      ...base,
+      now,
+      today: "2026-10-14",
+      lastBriefAt: hoursAgo(now, 24),
+      shipped: base.shipped.map(({ first: _first, ...s }) => s),
+      risks: base.risks.filter((r) => r.severity === "incident" && r.id === "p2").concat(base.risks.filter((r) => r.severity === "watch").slice(0, 2)),
+      waitingOn: [{ id: "wt1", who: "Jacob", what: "to send the memo", ageHours: 3 }],
+      reminders: [{ id: "rm1", text: "call the bank before Friday", saidAt: hoursAgo(now, 20), where: "HQ Dev Standup", dueAt: hoursAgo(now, -40) }],
+      // One product: Focus time has nothing to say, so the day has exactly six strong cards.
+      recentSessions: base.recentSessions!.map((s) => ({ ...s, startedAt: hoursAgo(now, 3), product: "Desktop app" })),
+    };
+  }
+
+  it("the variant that seats the better-ranked candidates wins: 6B keeps shipped and team over two value-1 fillers", () => {
+    const input = midweekWednesday();
+    const pool = eligible(buildContext(input), []);
+    expect(pool.map((s) => s.kind)).toEqual(["sunrise", "needs", "incident", "shipped", "team", "risk", "waiting", "reminders"]);
+    const plan = generateBrief(input);
+    expect(plan.template).toBe("6B");
+    expect(kinds(plan).sort()).toEqual(["incident", "needs", "risk", "shipped", "sunrise", "team"]);
+    const why = Object.fromEntries(plan.dropped.map((d) => [d.kind, d.why]));
+    expect(why.waiting).toBe("no room at 6 widgets");
+    expect(why.reminders).toBe("no room at 6 widgets");
+    expect(why.shipped).toBeUndefined();
+    expect(why.team).toBeUndefined();
+  });
+
+  it("seats the top of the rank order without a gap when a variant can: nothing above the lowest seated pick is dropped", () => {
+    const ctx = buildContext(midweekWednesday());
+    const pool = eligible(ctx, []);
+    const picked = pick(ctx, pool);
+    const seated = new Set(picked.picks.map((p) => p.kind));
+    const lowest = Math.max(...picked.picks.map((p) => pool.indexOf(p)));
+    for (const s of pool.slice(0, lowest)) expect(seated.has(s.kind), s.kind).toBe(true);
+  });
 });
 
 describe("determinism and lint", () => {

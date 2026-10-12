@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fleetIncidentOf, parseSweep, redRows, sweepToInput, type BriefSweep } from "./brief-sweep.js";
 import { gatherBriefInput, sweepPath, adapterSweepSource, type BriefAdapter, type BriefSweepSource } from "./brief-data.js";
 import { octoberEightBrief } from "./brief-fixture.js";
+import { generateBrief } from "./brief-generate.js";
 import sweepJson from "./fixtures/sweep-2026-10-08.json";
 
 const sweep = sweepJson as unknown as BriefSweep;
@@ -343,5 +344,126 @@ describe("fleetIncidentOf", () => {
       ["C", "setup failed"],
     ]);
     expect(fi.verdict).toBe("plateaued");
+  });
+});
+
+describe("sweepToInput on an Oct 11-shaped sweep: the 24h PR window and prs_summary", () => {
+  const NOW = "2026-10-11T14:54:49Z";
+  const PRODUCTS: [string, string][] = [
+    ["hq-pro", "HQ Pro"],
+    ["hq-desktop-app", "Desktop app"],
+    ["hq-packages", "Skill packs"],
+    ["hq-cli", "HQ command line"],
+    ["hq-core-staging", "HQ core"],
+    ["hq-cloud", "HQ Cloud"],
+    ["hq-finance", "Finance dashboard"],
+  ];
+  let n = 0;
+  const pr = (repo: string, state: "merged" | "open", created: string, closed: string | null, extra: Partial<NonNullable<BriefSweep["prs"]>[number]> = {}) => {
+    n += 1;
+    const product = PRODUCTS.find(([r]) => r === repo)?.[1] ?? null;
+    return { repo, product, number: n, title: `feat(x): change ${n}`, state, created, closed, authored_by_me: true, ...extra };
+  };
+  /** 23 of the owner's merges inside Oct 10 14:54Z..Oct 11 14:54Z (9, 6, 2, 2, 2, 1, 1 by product), 29 merged before it, one reviewer merge inside it, 6 open. */
+  function sweepOct11(): BriefSweep {
+    n = 0;
+    const perProduct = [9, 6, 2, 2, 2, 1, 1];
+    const prs: NonNullable<BriefSweep["prs"]> = [];
+    PRODUCTS.forEach(([repo], i) => {
+      for (let k = 0; k < perProduct[i]!; k += 1) {
+        // Evening-local merges land after 00:00Z on the brief's date; the rest earlier inside the window.
+        const closed = k % 2 ? `2026-10-11T0${k % 10}:30:00Z` : `2026-10-10T2${k % 4}:15:00Z`;
+        prs.push(pr(repo, "merged", "2026-10-10T16:00:00Z", closed, { merge_hours: 2 + k }));
+      }
+    });
+    for (let k = 0; k < 29; k += 1) prs.push(pr(PRODUCTS[k % 7]![0], "merged", "2026-10-09T10:00:00Z", k < 15 ? "2026-10-09T18:00:00Z" : "2026-10-10T12:00:00Z"));
+    prs.push(pr("hq-pro", "merged", "2026-10-10T18:00:00Z", "2026-10-11T02:00:00Z", { authored_by_me: false }));
+    for (let k = 0; k < 6; k += 1) prs.push(pr("hq-desktop-app", "open", "2026-10-11T14:51:32Z", "0001-01-01T00:00:00Z"));
+    return {
+      generated_at: NOW,
+      company: "indigo",
+      window: {
+        from: "2026-10-09",
+        to: "2026-10-10",
+        today: "2026-10-11",
+        sessions_from: "2026-10-10T14:54:49+00:00",
+        sessions_to: "2026-10-11T14:54:49+00:00",
+        hours: 24,
+        prs_from: "2026-10-10T14:54:49+00:00",
+        prs_to: "2026-10-11T14:54:49+00:00",
+      },
+      prs,
+      prs_summary: { merged: 23, opened: 18, open: 6, review_requested: 0 },
+    };
+  }
+  const opts = { day: "2026-10-10", companyUid: "cmp_indigo" };
+
+  it("merged and opened are the writer's prs_summary numbers, never the search reach: 23, not 52", () => {
+    const s = sweepToInput(sweepOct11(), opts);
+    expect([s.merged, s.opened]).toEqual([23, 18]);
+  });
+
+  it("without prs_summary the same 24h window over the owner's own PRs gives the same merged count", () => {
+    const sweep = sweepOct11();
+    delete sweep.prs_summary;
+    const s = sweepToInput(sweep, opts);
+    expect(s.merged).toBe(23);
+    // Opened: the 23 window merges were created inside it, plus the 6 open rows; the reviewer's row is not his.
+    expect(s.opened).toBe(29);
+  });
+
+  it("shipped rollups take the same window, so a merge closed after 00:00Z on the brief's date still counts and the reason sentence agrees", () => {
+    const s = sweepToInput(sweepOct11(), opts);
+    expect(s.shipped.map((x) => [x.title, x.lines.length])).toEqual([
+      ["hq-pro", 9],
+      ["hq-desktop-app", 6],
+      ["hq-cli", 2],
+      ["hq-core-staging", 2],
+      ["hq-packages", 2],
+      ["hq-cloud", 1],
+      ["hq-finance", 1],
+    ]);
+    expect(s.shipped.reduce((t, x) => t + x.lines.length, 0)).toBe(s.merged);
+    expect(s.shipped[0]!.status).toBe("9 merged");
+    expect(s.prWindow).toMatchObject({ from: "2026-10-10", to: "2026-10-11", merged: 24 });
+    const base = octoberEightBrief(new Date(NOW));
+    const plan = generateBrief({ ...base, ...s, now: NOW, decisions: [], risks: [], team: [], meetingsYesterday: [], waitingOn: [], priorities: [] });
+    expect(plan.widgets.find((w) => w.kind === "shipped")!.reason).toBe("Shown because you merged 23 changes across 7 products yesterday.");
+  });
+
+  it("an older sweep without a PR window keeps the search-reach counts", () => {
+    const s = real();
+    expect([s.merged, s.opened]).toEqual([87, 101]);
+  });
+});
+
+describe("sweepToInput never throws on a row the sweep writes without its fields", () => {
+  const base: BriefSweep = { generated_at: "2026-10-11T14:00:00Z", company: "indigo", window: { from: "2026-10-10", to: "2026-10-11", today: "2026-10-11" } };
+
+  it("skips a meeting_signals error row (no start, no counts) and reads missing counts as zero", () => {
+    const s = sweepToInput(
+      {
+        ...base,
+        meeting_signals: [
+          { meeting: "Broken call", error: "timeout" },
+          { meeting: "Standup", start: "2026-10-10T15:00:00Z" },
+          { meeting: "Planning", start: "2026-10-10T17:00:00Z", counts: { decision: 2, action_item: 1 } },
+        ],
+      },
+      { day: "2026-10-10", companyUid: "cmp_indigo" },
+    );
+    expect(s.meetingsYesterday.map((m) => [m.title, m.decisions, m.actions])).toEqual([
+      ["Planning", 2, 1],
+      ["Standup", 0, 0],
+    ]);
+  });
+
+  it("skips a DM row with a null sender", () => {
+    const s = sweepToInput(
+      { ...base, dms: [{ from: null, at: "2026-10-10T15:00:00Z" }, { from: "Geoff Hale", from_uid: "prs_geoff", at: "2026-10-10T16:00:00Z" }] },
+      { day: "2026-10-10", companyUid: "cmp_indigo" },
+    );
+    expect(s.team.map((t) => t.name)).toEqual(["Geoff"]);
+    expect(s.dmCount).toBe(2);
   });
 });

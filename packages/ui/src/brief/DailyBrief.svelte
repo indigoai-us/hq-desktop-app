@@ -52,7 +52,7 @@
   import { generateBrief, gridStyle, leadLabel, type BriefWidget } from "./brief-generate.js";
   import { CATALOGUE, SPAN, buildContext, entryOf, rankDecisions, reasonFor, type Scored, type WidgetGroup } from "./brief-catalogue.js";
   import BriefPriorities from "./BriefPriorities.svelte";
-  import { briefPriorities } from "./brief-peeks.js";
+  import { briefPriorities, watchTitle } from "./brief-peeks.js";
   import type { BriefInput, BriefRisk as BriefRiskRow } from "./brief-types.js";
   import { effortMinutes } from "./brief-hero.js";
   import { distillTimeline, isTimelineSession, sinceLabel } from "./brief-timeline.js";
@@ -114,7 +114,8 @@
     } else if (input.meetingsYesterday.length) {
       parts.push(`Yesterday had ${input.meetingsYesterday.length} meeting${input.meetingsYesterday.length === 1 ? "" : "s"}.`);
     }
-    if (incident) parts.push(`${incident.title} is the one fire.`);
+    // The incident by its plain title ("HQ Cloud main is red"), never the sweep's repo slug.
+    if (incident) parts.push(`The one fire: ${watchTitle(incident)}.`);
     else if (!input.decisions.length) parts.push("Nothing needs you right now.");
     return parts.join(" ") || "A quiet start.";
   });
@@ -168,6 +169,13 @@
     };
   }
 
+  /** A dropped kind by its card name ("Team"), a priority row by its rank; never a camelCase id. */
+  function kindName(kind: string): string {
+    const m = kind.match(/^priority-(\d+)$/);
+    if (m) return `Priority ${m[1]}`;
+    return CATALOGUE.find((e) => e.id === kind)?.name ?? kind;
+  }
+
   /** Why these cards: one line per widget (the peek shows five, then "+N more"), then what is not shown. */
   function whyPeek(): PeekContent {
     return {
@@ -175,7 +183,7 @@
       status: `${plan.template === "1" ? "A quiet day" : `Template ${plan.template}`} · ${plan.dayType}`,
       sections: [
         { label: "On the page", lines: plan.widgets.map((w) => ({ label: `${entryOf(w.kind).name} — ${w.reason}`, state: "" })) },
-        ...(plan.dropped.length ? [{ label: "Not shown today", lines: plan.dropped.map((d) => ({ label: `${d.kind}: ${d.why}`, state: "" })) }] : []),
+        ...(plan.dropped.length ? [{ label: "Not shown today", lines: plan.dropped.map((d) => ({ label: `${kindName(String(d.kind))}: ${d.why}`, state: "" })) }] : []),
       ],
     };
   }
@@ -224,18 +232,20 @@
     const s = plan.scored.find((x) => x.kind === kind);
     return s ? `value ${s.parts.value} · priority ${s.parts.priority} · day ${s.parts.day} · pref ${s.parts.pref} · rotation -${s.parts.rotation}` : undefined;
   };
-  /** The strip under the grid: dropped kinds, plus (in review mode) entries with no evidence at all. */
+  /**
+   * The strip under the grid, review mode only: dropped kinds by card name plus entries with no
+   * evidence at all. The live page keeps the dropped list behind the lead chip's peek.
+   */
   const notShown = $derived.by(() => {
-    const rows = plan.dropped.map((d) => ({ kind: String(d.kind), why: d.why }));
-    if (allCards) {
-      const seen = new Set([...plan.scored.map((s) => String(s.kind)), ...rows.map((r) => r.kind)]);
-      for (const e of CATALOGUE) if (!seen.has(e.id)) rows.push({ kind: e.id, why: "no data" });
-    }
+    if (!allCards) return [];
+    const rows = plan.dropped.map((d) => ({ kind: String(d.kind), name: kindName(String(d.kind)), why: d.why }));
+    const seen = new Set([...plan.scored.map((s) => String(s.kind)), ...rows.map((r) => r.kind)]);
+    for (const e of CATALOGUE) if (!seen.has(e.id)) rows.push({ kind: e.id, name: e.name, why: "no data" });
     return rows;
   });
   const notShownRest = (): PeekContent => ({
     title: `${notShown.length - 5} more not shown`,
-    sections: [{ label: "Not shown today", lines: notShown.slice(5).map((r) => ({ label: `${r.kind}: ${r.why}`, state: "" })) }],
+    sections: [{ label: "Not shown today", lines: notShown.slice(5).map((r) => ({ label: `${r.name}: ${r.why}`, state: "" })) }],
   });
   function onkey(e: KeyboardEvent) {
     if (e.shiftKey && (e.key === "A" || e.key === "a") && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
@@ -407,7 +417,7 @@
     <div class="b-dropped" data-testid="brief-dropped">
       <span class="eyebrow">Not shown today</span>
       {#each notShown.slice(0, 5) as r, i (`${r.kind}-${i}`)}
-        <span class="drop b-glass" data-testid="brief-dropped-row" title={partsOf(r.kind) ?? r.why}><b>{r.kind}</b> {r.why}</span>
+        <span class="drop b-glass" data-testid="brief-dropped-row" data-kind={r.kind} title={partsOf(r.kind) ?? r.why}><b>{r.name}</b> {r.why}</span>
       {/each}
       {#if notShown.length > 5}
         <span class="drop b-glass more" role="group" aria-label="More not shown" use:peek={{ state: briefState, content: notShownRest }}>+{notShown.length - 5} more</span>
@@ -444,11 +454,16 @@
   .review .slot {
     position: relative;
   }
+  /* A label row is its own short row: review mode flows in source order (never dense), so a later
+     group's card cannot climb above an earlier label, and the row minimum lives on the cards. */
   .b-review-group {
     grid-column: 1 / -1;
     align-self: end;
     padding: 10px 2px 0;
     color: var(--b-sun);
+  }
+  .review .slot {
+    min-height: 120px;
   }
   .kind-tag {
     position: absolute;

@@ -14,6 +14,7 @@ import {
   type BriefAdapter,
 } from "./brief-data.js";
 import { parseBriefItems } from "./brief-run-files.js";
+import { rowMerged, shippedTiles } from "./brief-distill.js";
 import { octoberEightBrief } from "./brief-fixture.js";
 import type { BriefDecision, BriefMeeting, BriefRelease, BriefRisk, BriefShipped, BriefTeammate } from "./brief-types.js";
 
@@ -285,6 +286,22 @@ describe("mergeShipped", () => {
   it("without rollups the writer rows stand alone", () => {
     expect(mergeShipped([], [writerShip("s1", "Desktop app", "Desktop app")]).map((s) => s.id)).toEqual(["s1"]);
     expect(mergeShipped(rollups, [])).toEqual(rollups);
+  });
+
+  it("a writer count row raises a rollup that listed fewer merges, and never lowers one", () => {
+    const out = mergeShipped([rollup("hq-pro", 1, "HQ Pro"), rollup("hq-cli", 3, "CLI")], [
+      writerShip("s1", "HQ Pro: 9 changes shipped", "HQ Pro", { why: "Keys stay inside their company." }),
+      writerShip("s2", "CLI: 2 changes shipped", "CLI"),
+    ]);
+    expect(out.map((s) => s.id)).toEqual(["ship:hq-pro", "ship:hq-cli"]);
+    expect(rowMerged(out[0]!)).toBe(9);
+    expect(out[0]).toMatchObject({ status: "9 merged", why: "Keys stay inside their company." });
+    expect(out[0]!.lines).toHaveLength(1);
+    expect(rowMerged(out[1]!)).toBe(3);
+    expect(shippedTiles(out).map((t) => [t.product, t.merged])).toEqual([
+      ["HQ Pro", 9],
+      ["CLI", 3],
+    ]);
   });
 });
 

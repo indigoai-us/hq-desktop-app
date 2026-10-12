@@ -103,7 +103,11 @@ describe("incident wording", () => {
       ["vault-step", "JOB"],
       ["3 changes merged on top", "ON TOP"],
     ]);
-    expect(p.sections.find((s) => s.label === "Fixes in review")!.lines![0]).toMatchObject({ label: "hq-cloud #88", state: "REVIEW" });
+    // A bare reference becomes the product's fix; a PR-ish title loses its slug, number and prefix.
+    expect(p.sections.find((s) => s.label === "Fixes in review")!.lines![0]).toMatchObject({ label: "HQ Cloud fix", state: "HQ CLOUD" });
+    const titled = riskPeek({ ...SYNC, links: [{ label: "hq-cloud #913: fix(sync): retry the nightly vault step", origin: origin("indigoai-us/hq-cloud") }] }, undefined, NOW);
+    expect(titled.sections.find((s) => s.label === "Fixes in review")!.lines![0]!.label).toBe("Retry the nightly vault step");
+    for (const l of titled.sections.flatMap((s) => s.lines ?? [])) expect(l.label).not.toMatch(SLUG);
     expect(p.prompt).toEqual({ id: "p1", text: "Look at the sync." });
     const f = riskPeek(FLEET, undefined, NOW);
     expect(f.origin).toEqual({ companyUid: INDIGO, label: "Fleet" });
@@ -157,6 +161,40 @@ describe("Incident card", () => {
     expect(q("brief-incident")!.textContent).not.toMatch(SLUG);
     expect(q("brief-incident-also")).toBeNull();
     expect(q("brief-incident-dots")).toBeNull();
+  });
+
+  it("tall: fix chips are plain titles with the product, never a slug or PR number, capped at five with a +N more peek", async () => {
+    const links = [
+      { label: "hq-cloud #913: fix(sync): retry the nightly vault step", origin: origin("indigoai-us/hq-cloud") },
+      { label: "hq-cloud #914", origin: origin("indigoai-us/hq-cloud") },
+      { label: "feat(sync): skip empty vaults", origin: origin("indigoai-us/hq-cloud") },
+      { label: "Rotate the sync token", origin: origin("indigoai-us/hq-cloud") },
+      { label: "hq-core-staging #1240: chore(ci): bump the gate timeout", origin: origin("indigoai-us/hq-core-staging") },
+      { label: "hq-cloud #915: fix(sync): log the failing step", origin: origin("indigoai-us/hq-cloud") },
+      { label: "#916", origin: { companyUid: INDIGO, repo: null } },
+    ];
+    render([{ ...SYNC, links }], { rows: 2 });
+    const chips = qa("brief-incident-fix");
+    expect(chips.map((c) => c.querySelector(".fix-t")!.textContent)).toEqual([
+      "Retry the nightly vault step",
+      "HQ Cloud fix",
+      "Skip empty vaults",
+      "Rotate the sync token",
+      "Bump the gate timeout",
+    ]);
+    expect(chips.every((c) => c.querySelector('[data-testid="brief-logo"]'))).toBe(true);
+    expect(q("brief-incident-fixes")!.textContent).not.toMatch(SLUG);
+    expect(q("brief-incident-fixes")!.textContent).not.toMatch(/#\d+/);
+    expect(q("brief-incident-fixes")!.textContent).not.toMatch(/\b(feat|fix|chore)\(/);
+    const more = q("brief-incident-fixes-more")!;
+    expect(more.textContent!.trim()).toBe("+2 more");
+    await hover(more);
+    const peek = q("brief-peek")!;
+    expect(peek.textContent).toContain("2 more fixes in review");
+    expect(peek.querySelectorAll('[data-testid="brief-peek-line"]')).toHaveLength(2);
+    expect(peek.textContent).toContain("Log the failing step");
+    expect(peek.textContent).toContain("A fix");
+    expect(peek.textContent).not.toMatch(SLUG);
   });
 
   it("a measured incident draws one dot per affected unit, never the whole fleet, and keeps the total off the face", () => {

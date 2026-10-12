@@ -275,15 +275,16 @@ describe("golden: catch-up Thursday 2026-10-15, four days away", () => {
     for (const w of plan.widgets) expect(lintReason(w.reason), w.kind).toBeNull();
   });
 
-  it("incident, shipped, resolved and handoffs fold into the Welcome back tiles; oneThing yields to Needs you; What got settled finds no room", () => {
+  it("incident, shipped, resolved and handoffs fold into the Welcome back tiles; oneThing finds no slot (template 5 has one W3); What got settled finds no room", () => {
     const plan = generateBrief(catchUpThursday());
     const why = Object.fromEntries(plan.dropped.map((d) => [d.kind, d.why]));
+    // The needs/oneThing pair always coexists on a catch-up day, so the drop is a fit failure and says so.
     expect(why).toEqual({
       incident: "shown in the Welcome back tiles",
       shipped: "shown in the Welcome back tiles",
       resolved: "shown in the Welcome back tiles",
       handoffs: "shown in the Welcome back tiles",
-      oneThing: "Needs you shows every call; the priorities list orders them",
+      oneThing: "no slot fits it at 5 widgets",
       decided: "no room at 5 widgets",
     });
     // The hero's tiles are exactly the folded items: the incident, the two calls, what recovered, what was handed over.

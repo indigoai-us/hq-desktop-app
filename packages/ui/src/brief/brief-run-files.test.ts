@@ -346,6 +346,28 @@ describe("parseBriefItems: writer additions", () => {
     expect(items.waiting[1]).toEqual({ id: "w2", who: "Cy", what: "to reply" });
   });
 
+  it("a wait names who and what: older field names are read, and the historical {title, why} shape with nobody named is dropped", () => {
+    const parsed = parseBriefItems(
+      JSON.stringify({
+        items: {
+          waiting: [
+            // What every historical run wrote: no `who`, so the card has nobody to show.
+            { id: "w0", company: "indigo", source: "prs", title: "Review of the pricing page", why: "It has sat a day", age_hours: 26, kind: "review" },
+            { id: "w1", from: "Geoff Hale", title: "widget-site #410: fix(pricing): the pricing page review", age_hours: 20, kind: "review" },
+            { id: "w2", name: "Izzy", what: "to finish the memo folder", kind: "handoff" },
+            { id: "w3", person: "Jacob", title: "to send the deck", kind: "dm" },
+          ],
+        },
+      }),
+      "cmp_indigo",
+    )!;
+    expect(parsed.waiting.map((w) => [w.id, w.who, w.what])).toEqual([
+      ["w1", "Geoff Hale", "The pricing page review"],
+      ["w2", "Izzy", "to finish the memo folder"],
+      ["w3", "Jacob", "to send the deck"],
+    ]);
+  });
+
   it("incidents name the product when no repo is known, and the fleet-sourced one is remembered", () => {
     expect(items.incidents[0]!.ci).toMatchObject({ repo: "Widget cloud", ageHours: 48, note: "It has failed for two days" });
     expect(items.fleetIncidentId).toBe("p2");

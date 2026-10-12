@@ -1360,6 +1360,9 @@ export function placeWithHoles(ctx: BriefContext, pool: readonly Scored[]): Pick
 export function pick(ctx: BriefContext, pool: readonly Scored[]): Picked {
   const hero = pool[0];
   if (!hero) throw new Error("pick: the pool has no hero");
+  // Variants compete on rank position (the pool is sorted by rank), never on registry index.
+  const pos = new Map<Scored, number>(pool.map((s, i) => [s, i]));
+  const key = (p: Picked) => p.picks.map((s) => pos.get(s) ?? pool.length).sort((a, b) => a - b);
   for (let n = density(ctx, pool); n >= 1; n -= 1) {
     const variants = (QUIET_TEMPLATES || n >= MIN_DENSITY ? VARIANTS[n] : []) ?? [];
     let best: Picked | null = null;
@@ -1380,8 +1383,10 @@ export function pick(ctx: BriefContext, pool: readonly Scored[]): Picked {
           continue;
         }
         if (!assignSlots(tpl, [...picks, c], ctx)) {
-          // A pair whose row condition failed in every layout explains it better than "no slot".
-          const rule = picks.map((p) => pairRuleFor(p.kind, c.kind)).find((r): r is PairRule => !!r);
+          // When the slots alone would take it, a pair's row condition is what failed, and that
+          // pair's sentence explains it; when no layout fits even with pairs ignored, say so.
+          const fitsSomewhere = assignSlots(tpl, [...picks, c], null) !== null;
+          const rule = fitsSomewhere ? picks.map((p) => pairRuleFor(p.kind, c.kind)).find((r): r is PairRule => !!r) : null;
           skipped.push({ kind: c.kind, why: rule ? rule.skip : `no slot fits it at ${plural(n, "widget")}` });
           continue;
         }
@@ -1389,7 +1394,6 @@ export function pick(ctx: BriefContext, pool: readonly Scored[]): Picked {
       }
       if (picks.length !== n) continue;
       const cand: Picked = { template: name, picks, slots: assignSlots(tpl, picks, ctx)!, skipped };
-      const key = (p: Picked) => p.picks.map((s) => s.idx).sort((a, b) => a - b);
       if (!best || lexBetter(key(cand), key(best))) best = cand;
     }
     if (best) return best;

@@ -259,10 +259,13 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
     });
   }
 
+  // The contract (SKILL.md "waiting"): `who` (first name or agent) and `what` (the thing waited for,
+  // plain). Older names for the same two fields are read too; a row that names nobody is not a wait
+  // the card can show and is dropped (brief_rank --check reports it on the writer's side).
   const waiting: BriefWaiting[] = [];
   for (const [n, w] of itemGroup(items, "waiting", "waiting").entries()) {
-    const who = str(w.who) || str(w.person);
-    const what = str(w.what) || str(w.title);
+    const who = str(w.who) || str(w.person) || str(w.from) || str(w.name);
+    const what = humanTitle(str(w.what) || str(w.title)).text;
     if (!who || !what) continue;
     const prompt = str(w.prompt);
     const ageHours = num(w.age_hours);

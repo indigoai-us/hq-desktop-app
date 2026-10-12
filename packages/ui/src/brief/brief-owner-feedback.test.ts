@@ -220,7 +220,8 @@ describe("incident card (12) and grid rows (13)", () => {
 
   it("rows size to content from a 120px floor; one-row cards align top", () => {
     expect(gridStyle(["a a b b c d"], false)).toContain("minmax(120px, auto)");
-    expect(gridStyle([], true)).toContain("grid-auto-rows:minmax(120px, auto)");
+    // Review mode sizes rows to content (the 120px floor sits on the cards, so a group label is a short row).
+    expect(gridStyle([], true)).toContain("grid-auto-rows:auto");
     render(base());
     expect(target.querySelector<HTMLElement>("main.b-grid")!.getAttribute("style")).not.toContain("196px");
   });
@@ -299,18 +300,30 @@ describe("Today's priorities (18)", () => {
     expect(card.compareDocumentPosition(target.querySelector("main.b-grid")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("older briefs derive priorities from the top three decisions, then the live incident", () => {
+  it("older briefs derive priorities from the top three decisions, then the live incident by product, never by repo slug", () => {
+    const red = (repo: string | null, workflow: string | null) => ({
+      id: `ci:${repo ?? "unknown"}`,
+      title: `${repo ?? "unknown"} main CI red`,
+      summary: "red",
+      severity: "incident" as const,
+      links: [],
+      origin: { companyUid: null, repo: null },
+      ci: { repo: repo ?? "", workflow, job: null, since: null, ageHours: null, note: null },
+    });
     const input = base({
       priorities: undefined,
       decisions: [decision(1), decision(2), decision(3), decision(4)],
-      risks: [{ id: "ci:x", title: "x main CI red", summary: "red", severity: "incident", links: [], origin: { companyUid: null, repo: null }, ci: { repo: "x", workflow: "Gate", job: null, since: null, ageHours: null, note: null } }],
+      risks: [red("hq-core-staging", "Nightly sync")],
     });
     expect(briefPriorities(input).map((p) => [p.text, p.itemId])).toEqual([
       ["Decision number 1", "d1"],
       ["Decision number 2", "d2"],
       ["Decision number 3", "d3"],
-      ["Fix x: Gate", "ci:x"],
+      ["Fix HQ core's red Nightly sync check", "ci:hq-core-staging"],
     ]);
+    expect(briefPriorities(base({ priorities: undefined, decisions: [], risks: [red(null, "Gate")] }))[0]!.text).toBe("Fix the red Gate check");
+    expect(briefPriorities(base({ priorities: undefined, decisions: [], risks: [red("hq-cloud", null)] }))[0]!.text).toBe("Fix HQ Cloud main");
+    for (const p of briefPriorities(input)) expect(p.text).not.toMatch(/hq-core-staging|[\w-]+\/[\w-]+/);
   });
 
   it("a scored priority's peek says the score in words; an unscored one does not", async () => {

@@ -81,6 +81,39 @@ export function watchTitle(r: BriefRisk): string {
   return r.ci ? redMainTitle(r) : humanTitle(r.title).text;
 }
 
+/** A label that is only a reference: "hq-cloud #913", "#913", "org/repo #913". */
+const REF_ONLY = /^(?:[\w.-]+\/)?[\w.-]*\s*#\d+$/;
+
+/**
+ * A fix-in-review link as a person's to-do, never a repo slug, PR number or
+ * commit prefix: "Retry the nightly sync" from "fix(sync): retry the nightly
+ * sync"; a bare reference ("hq-cloud #913") becomes "HQ Cloud fix".
+ */
+export function fixTitle(link: BriefRisk["links"][number]): string {
+  const label = link.label.trim();
+  if (!label || REF_ONLY.test(label)) {
+    const product = productName(link.origin.repo || label.replace(/\s*#\d+$/, "") || null, link.origin.product ?? null);
+    return product ? `${product} fix` : "A fix";
+  }
+  return humanTitle(label).text;
+}
+
+/** The fixes a risk card lists, plain, with the product each one is in; the rest go behind "+N more". */
+export function fixLines(links: readonly BriefRisk["links"][number][]): BriefLine[] {
+  return links.map((l) => {
+    const product = productName(l.origin.repo, l.origin.product ?? null);
+    return { label: fixTitle(l), state: product ? product.toUpperCase() : "REVIEW", tone: "warn" as const };
+  });
+}
+
+/** The peek behind an incident card's "+N more" fixes chip: the fixes the face did not show. */
+export function moreFixesPeek(rest: readonly BriefRisk["links"][number][]): PeekContent {
+  return {
+    title: `${countNoun(rest.length, "more fix", "more fixes")} in review`,
+    sections: [{ label: "Fixes in review", lines: fixLines(rest) }],
+  };
+}
+
 /** How long a main has been red, in hours, from ci.ageHours or ci.since; null when unknown. */
 export function redHoursOf(r: BriefRisk, nowIso: string): number | null {
   if (!r.ci) return null;
@@ -147,7 +180,7 @@ export function riskPeek(risk: BriefRisk, prompt: string | undefined, nowIso = "
   }
   const sections: PeekContent["sections"] = [];
   if (facts.length) sections.push({ label: live ? "Live" : "Facts", lines: facts });
-  if (risk.links.length) sections.push({ label: "Fixes in review", lines: risk.links.map((l) => ({ label: l.label, state: "REVIEW", tone: "warn" as const })) });
+  if (risk.links.length) sections.push({ label: "Fixes in review", lines: fixLines(risk.links) });
   const product = riskProduct(risk) || repoShort(risk.origin.repo);
   return {
     sample: risk.sample,
@@ -294,7 +327,14 @@ export function briefPriorities(input: BriefInput): BriefPriority[] {
   }));
   const incident = input.risks.find((r) => r.severity === "incident");
   if (incident) {
-    out.push({ n: out.length + 1, text: incident.ci?.workflow ? `Fix ${incident.ci.repo}: ${incident.ci.workflow}` : incident.title, because: incident.summary || null, itemId: incident.id });
+    // Never a repo slug: "Fix HQ core's red Nightly sync check" from the product and the workflow.
+    const product = riskProduct(incident);
+    const text = incident.ci?.workflow
+      ? `Fix ${product ? `${product}'s` : "the"} red ${incident.ci.workflow} check`
+      : incident.ci
+        ? `Fix ${redMainTitle(incident).replace(/ is red$/, "")}`
+        : watchTitle(incident);
+    out.push({ n: out.length + 1, text, because: incident.summary || null, itemId: incident.id });
   }
   return out;
 }
