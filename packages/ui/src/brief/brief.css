@@ -1,12 +1,19 @@
+@font-face {
+  font-family: "Brief Fraunces";
+  src: url("../chat/create-bot/assets/new-bot-wallpapers/fraunces-variable-latin.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 300 700;
+  font-display: swap;
+}
 /*
   Daily Brief surface. Everything is scoped under .daily-brief.
 
-  CALM PASS (design, local): the brief follows the desktop app's material.
-  Surfaces are achromatic and flat: one graphite card on a graphite ground,
-  a hairline border, no neumorphic raise or wells, no gloss. Colour is earned
-  by meaning and shown small: decision (violet), incident (red), waiting and
-  risk (amber), shipped (green) tint the card's eyebrow and accent marks, never
-  the card fill. Everything else stays neutral.
+  SUNRISE TERMINAL (design, local; visual-direction-proposal.md): the HQ brand.
+  Black stage, white ink in four tiers, 12% hairlines with a faint top light,
+  flat cards (no raise, no wells, no gloss). One warm accent, the coral-to-peach
+  of hqforwork.com, spent on what matters most today: decisions, the sun, and
+  one Fraunces italic word in the greeting. Incident (red), waiting and risk
+  (amber) and shipped (green) shrink to a 6px dot on the card's eyebrow.
   The few extra colours are the scoped variables below, mapped to the house
   --ok / --warn / --red where those exist. No backdrop-filter anywhere
   (WKWebView renders it square on rounded cards). Max font weight 500.
@@ -32,17 +39,22 @@
   prefers-reduced-motion turns all motion off.
 */
 .daily-brief {
-  --b-bg: #141414;
-  --b-card: #1e1e1e;
-  --b-card-hi: #262626;
-  --b-t1: rgba(255, 255, 255, 0.95);
-  --b-t2: rgba(255, 255, 255, 0.56);
-  --b-t3: rgba(255, 255, 255, 0.32);
-  --b-line: rgba(255, 255, 255, 0.08);
+  /* Black stage; cards are the brand's 4% white fill, solid so cutout rings match. */
+  --b-bg: #000;
+  --b-card: #0a0a0a;
+  --b-card-hi: #151515;
+  --b-t1: rgba(255, 255, 255, 0.92);
+  --b-t2: rgba(255, 255, 255, 0.7);
+  --b-t3: rgba(255, 255, 255, 0.5);
+  --b-line: rgba(255, 255, 255, 0.12);
+  --b-top-light: rgba(255, 255, 255, 0.07);
   --b-ok: var(--ok, #34c759);
   --b-warn: var(--warn, #facc15);
   --b-red: var(--red, #ff453a);
-  --b-violet: #c084fc;
+  /* The one accent: hqforwork.com's coral-to-peach. Decisions wear it. */
+  --b-coral: #ff9966;
+  --b-accent-grad: linear-gradient(90deg, #ff809f, #ffb580);
+  --b-decision: var(--b-coral);
   --b-ice: #c9d6e4;
   --b-sun: #ffb580;
   --b-sun-2: #ff809f;
@@ -50,8 +62,10 @@
   --b-gap: 14px;
   /* One padding and one type scale for every card. */
   --b-pad: 18px 20px;
-  --b-fs-display: 40px; /* hero greeting at large sizes */
-  --b-fs-display-sm: 32px; /* hero greeting at small sizes */
+  --b-fs-display: 48px; /* hero greeting at large sizes */
+  --b-fs-display-sm: 34px; /* hero greeting at small sizes */
+  --b-display-track: -0.05em;
+  --b-serif: "Brief Fraunces", "Fraunces", Georgia, serif;
   --b-fs-num: 44px; /* the one measured number a card leads with */
   --b-fs-title-lg: 20px; /* a card's headline when it leads at a large size */
   --b-fs-title: 15px; /* every other card headline */
@@ -205,6 +219,8 @@
   border-radius: inherit;
   pointer-events: none;
   box-shadow: inset 0 0 0 1px var(--b-line);
+  /* The brand's faint top light: a 1px line, not a shadow. */
+  background: linear-gradient(var(--b-top-light), var(--b-top-light)) top / 100% 1px no-repeat;
 }
 .daily-brief .w h3 {
   margin: 8px 0 0;
@@ -238,9 +254,10 @@
   text-transform: uppercase;
 }
 
-/* earned colour: the card stays neutral; its accent marks the eyebrow */
+/* earned colour: the card stays neutral. Decisions colour their eyebrow coral;
+   status cards (incident, waiting, risk, shipped) get a 6px dot instead. */
 .daily-brief .c-violet {
-  --b-accent: var(--b-violet);
+  --b-accent: var(--b-decision);
 }
 .daily-brief .c-red {
   --b-accent: var(--b-red);
@@ -251,8 +268,36 @@
 .daily-brief .c-green {
   --b-accent: var(--b-ok);
 }
-.daily-brief [class*="c-"] .eyebrow {
-  color: var(--b-accent);
+.daily-brief [class*="c-"] > .eyebrow::before,
+.daily-brief [class*="c-"] > * > .eyebrow:first-child::before {
+  content: "";
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--b-accent);
+}
+.daily-brief .c-violet .eyebrow {
+  color: var(--b-decision);
+}
+.daily-brief .c-violet > .eyebrow::before,
+.daily-brief .c-violet > * > .eyebrow:first-child::before {
+  display: none;
+}
+/* One italic accent word, as on hqforwork.com. */
+.daily-brief .accent-word {
+  font-family: var(--b-serif);
+  font-style: italic;
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  background: var(--b-accent-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  padding-right: 0.06em;
 }
 
 /* origin chips: company logo + repo */
@@ -333,7 +378,7 @@
   color: var(--b-warn);
 }
 .daily-brief .tone-decision {
-  color: var(--b-violet);
+  color: var(--b-decision);
 }
 .daily-brief .tone-red {
   color: var(--b-red);

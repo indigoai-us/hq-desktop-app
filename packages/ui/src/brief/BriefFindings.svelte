@@ -161,7 +161,7 @@
     font-size: 11.5px;
   }
   .tone-decision {
-    color: #c084fc;
+    color: var(--b-decision, #ff9966);
   }
   .tone-ok {
     color: #34c759;

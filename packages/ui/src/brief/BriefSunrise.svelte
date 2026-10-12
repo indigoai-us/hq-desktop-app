@@ -66,6 +66,14 @@
   const line = $derived(
     !total ? quietLine : left > 0 ? `${left} decision${left > 1 ? "s" : ""} before sunrise.` : "Sun's up. Go build.",
   );
+  // The brand's one italic accent: the count while decisions are open, the call to build once clear.
+  const lineParts = $derived(
+    !total
+      ? { pre: quietLine, em: "", post: "" }
+      : left > 0
+        ? { pre: "", em: `${left} decision${left > 1 ? "s" : ""}`, post: " before sunrise." }
+        : { pre: "Sun's up. ", em: "Go build.", post: "" },
+  );
   const progress = $derived(total ? 0.1 + (0.9 * cleared) / total : 1);
   // "~N min" to clear what is left, from the writer's effort sizes; nothing when unknown or done.
   const eta = $derived(etaLabel(timeToClearMin, left, total));
@@ -236,7 +244,7 @@
   <div class="over">
     <div class="eyebrow" style="color:rgba(255,190,160,.7)">Sunrise · {total ? "decisions cleared" : "nothing owed"}</div>
     <div class="greet" class:big>
-      Morning{userName ? `, ${userName}` : ""}.<br /><span>{line}</span>
+      Morning{userName ? `, ${userName}` : ""}.<br /><span class="line" aria-label={line}>{lineParts.pre}{#if lineParts.em}<em class="accent-word">{lineParts.em}</em>{/if}{lineParts.post}</span>
     </div>
     {#if big && leadLine}<div class="first" data-testid="brief-sunrise-first">{leadLine}</div>{/if}
     <div class="sub lede" class:big>{sub}</div>
@@ -298,16 +306,16 @@
   }
   .greet {
     font-size: var(--b-fs-display-sm);
-    font-weight: 500;
-    letter-spacing: -0.03em;
-    line-height: 1.05;
+    font-weight: 400;
+    letter-spacing: var(--b-display-track);
+    line-height: 1;
     margin-top: 12px;
   }
   .greet.big {
     font-size: var(--b-fs-display);
   }
-  .greet span {
-    color: #ffb580;
+  .greet .line {
+    color: var(--b-t2);
   }
   /* Text stays left of the sun (drawn at 68% of the width, radius up to 14%), so it never runs over it. */
   .first {

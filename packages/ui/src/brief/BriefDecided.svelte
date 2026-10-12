@@ -39,7 +39,7 @@
 
 {#if all.length >= DECIDED_MIN}
   <div class="w" data-testid="brief-decided">
-    <div class="eyebrow" style="color:var(--b-violet)">
+    <div class="eyebrow" style="color:var(--b-decision)">
       <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4.5 4.5L19 7" /></svg> What got settled
     </div>
     <h3 data-testid="brief-decided-title">{title}</h3>
@@ -104,7 +104,7 @@
     width: 14px;
     height: 14px;
     margin-top: 1px;
-    stroke: var(--b-violet);
+    stroke: var(--b-decision);
     fill: none;
     stroke-width: 2;
     stroke-linecap: round;

@@ -447,11 +447,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* Violet is earned once: the call that is yours. */
+  /* The accent is earned once: the call that is yours. */
   .node.you {
     flex: 1.3 1 0;
-    border-color: rgba(192, 132, 252, 0.4);
-    background: rgba(192, 132, 252, 0.1);
+    border-color: rgba(255, 153, 102, 0.45);
+    background: rgba(255, 153, 102, 0.08);
   }
   .node.you small {
     color: rgba(255, 255, 255, 0.7);

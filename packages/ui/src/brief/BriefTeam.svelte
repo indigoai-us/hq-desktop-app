@@ -24,7 +24,7 @@
   let { team, rows, cols = 2 }: Props = $props();
   const brief = useBrief();
   const GRAD = ["#a855f7,#6d28d9", "#38bdf8,#1d4ed8", "#34d399,#047857", "#fb923c,#c2410c", "#f472b6,#be185d", "#a3e635,#4d7c0f"];
-  const DOT: Record<string, string> = { ok: "var(--b-ok)", warn: "var(--b-warn)", decision: "var(--b-violet)", red: "var(--b-red)", neutral: "rgba(255,255,255,.32)" };
+  const DOT: Record<string, string> = { ok: "var(--b-ok)", warn: "var(--b-warn)", decision: "var(--b-decision)", red: "var(--b-red)", neutral: "rgba(255,255,255,.32)" };
   const shown = $derived(team.slice(0, teamLimit(rows, cols)));
   const rest = $derived(team.slice(shown.length));
   const foot = $derived(teamFooter(team));
