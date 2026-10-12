@@ -50,7 +50,7 @@ afterEach(async () => {
 function rail(props: Record<string, unknown> = {}) {
   component = mount(AppRail, {
     target: host,
-    props: { items, activeId: null, onselect: () => {}, youBadges: NINE, youWork: "Badge share cards", ...props },
+    props: { items, activeId: null, onselect: () => {}, youBadges: NINE, ...props },
   });
   flushSync();
 }
@@ -73,9 +73,10 @@ describe("You hover card", () => {
     flushSync();
     expect(card()).toBeNull();
     expect(host.querySelector("[data-testid='tooltip-bubble']")?.textContent).toContain("Ada Lovelace");
+    expect(host.querySelector("[data-testid='tooltip-bubble']")?.textContent).not.toContain("Working in");
   });
 
-  it("opens after a short dwell with your name, your work and up to eight badges", () => {
+  it("opens after a short dwell with your name and up to eight badges, without a work line", () => {
     rail();
     you().closest(".you-wrap")!.dispatchEvent(new PointerEvent("pointerenter"));
     vi.advanceTimersByTime(200);
@@ -84,7 +85,8 @@ describe("You hover card", () => {
     vi.advanceTimersByTime(100);
     flushSync();
     expect(card()?.textContent).toContain("Ada Lovelace");
-    expect(host.querySelector("[data-testid='rail-you-card-work']")?.textContent).toBe("Badge share cards");
+    expect(host.querySelector("[data-testid='rail-you-card-work']")).toBeNull();
+    expect(card()?.textContent).not.toContain("Working in");
     expect(card()?.textContent).toContain("Badges 9");
     expect(card()!.querySelectorAll("[data-testid='profile-badge']")).toHaveLength(8);
     // The card replaces the tooltip; no system tooltip either.

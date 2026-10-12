@@ -121,7 +121,8 @@ async function settle(): Promise<void> {
 }
 
 describe("DesktopApp account menu (US-010)", () => {
-  it("names the company open in the main pane, not the first online company (QA-073)", async () => {
+  // Owner, 2026-10-12: no "Working in {company}" line in the menu or the You hover.
+  it("shows no Working in line after switching companies", async () => {
     const hpo: Workspace = { ...company(), slug: "hpo", displayName: "HPO", cloudUid: "co_hpo" };
     await mountShell(undefined, [company(), hpo]);
     const tile = host.querySelector<HTMLButtonElement>('[data-testid="rail-company"][aria-label="HPO"]');
@@ -132,8 +133,8 @@ describe("DesktopApp account menu (US-010)", () => {
     host.querySelector<HTMLButtonElement>('[data-testid="rail-you"]')?.click();
     await settle();
     const menu = host.querySelector('[data-testid="account-menu"]');
-    expect(menu?.textContent).toContain("Working in HPO");
-    expect(menu?.textContent).not.toContain("Working in Indigo");
+    expect(menu?.textContent).not.toContain("Working in");
+    expect(menu?.querySelector('[data-testid="account-menu-live-chip"]')).toBeNull();
   });
 
   // OWNER-R21: the menu has the identity block, one Settings entry and Sign
@@ -148,7 +149,8 @@ describe("DesktopApp account menu (US-010)", () => {
     you?.click();
     await settle();
     const menu = host.querySelector('[data-testid="account-menu"]');
-    expect(menu?.textContent).toContain("Working in Indigo");
+    expect(menu?.querySelector('[data-testid="account-menu-live"]')).not.toBeNull();
+    expect(menu?.textContent).not.toContain("Working in");
     // Companies live on the rail tiles and the More companies popover only.
     expect(menu?.querySelector('[data-testid="account-role"]')).toBeNull();
     expect(menu?.textContent).not.toMatch(/companies/i);

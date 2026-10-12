@@ -13069,12 +13069,7 @@
       .sort((x, y) => (x.role === "Owner") === (y.role === "Owner") ? x.label.localeCompare(y.label) : x.role === "Owner" ? -1 : 1),
   );
   const youPresence = $derived(
-    ownLiveWork(
-      presenceSnapshot(),
-      self?.uid ?? "",
-      Object.fromEntries(railCompanyRoster.map((company) => [company.uid, company.label])),
-      tenantCompanyId,
-    ),
+    ownLiveWork(presenceSnapshot(), self?.uid ?? ""),
   );
 
   // US-007: a company tile opens the company sidepane; Home returns to chat.
@@ -14166,7 +14161,6 @@
       onyou={toggleAccountMenu}
       youExpanded={accountMenuOpen}
       youLive={youPresence.live}
-      youWork={youPresence.work}
       {youBadges}
       onyoubadges={() => void openSelfProfile({ view: "badges" })}
       onyoubadge={(badge: ResolvedBadge) => void openSelfProfile({ view: "profile", badgeId: badge.def.id })}
@@ -14177,7 +14171,6 @@
         email={self?.email ?? ""}
         initials={resolvedAccountInitials ?? ""}
         live={youPresence.live}
-        work={youPresence.work}
         topBadge={youTopBadge}
         anchorLeft={accountMenuAnchor.left}
         anchorBottom={accountMenuAnchor.bottom}

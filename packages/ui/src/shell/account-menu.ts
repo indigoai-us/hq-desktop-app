@@ -164,36 +164,14 @@ export function writeRosterRolesCache(selfUid: string, roles: Record<string, str
 
 export interface OwnLiveWork {
   live: boolean;
-  /** Hover text. Empty when PresenceStore has no online row for this person. */
-  work: string;
 }
 
-/**
- * The signed-in person's live dot and hover line. The dot comes from a
- * PresenceStore snapshot. "Working in" names the company shown in the main
- * pane (`activeCompanyUid`) whenever one is open, so every company change
- * (rail, More companies, Connections link, palette, deep link) updates it.
- * With no company open it falls back to the first company where the person
- * is online.
- */
-export function ownLiveWork(
-  snapshot: PresenceSnapshot,
-  selfUid: string,
-  companyLabels: Readonly<Record<string, string>> = {},
-  activeCompanyUid: string | null = null,
-): OwnLiveWork {
+/** The signed-in person's live dot, from a PresenceStore snapshot. */
+export function ownLiveWork(snapshot: PresenceSnapshot, selfUid: string): OwnLiveWork {
   const uid = selfUid.trim();
-  if (!uid) return { live: false, work: "" };
-  let live = false;
-  let firstOnline: string | null = null;
-  for (const [companyUid, actors] of snapshot) {
-    if (actors.get(uid)?.status !== "online") continue;
-    live = true;
-    firstOnline ??= companyUid;
+  if (!uid) return { live: false };
+  for (const actors of snapshot.values()) {
+    if (actors.get(uid)?.status === "online") return { live: true };
   }
-  if (!live) return { live: false, work: "" };
-  const active = activeCompanyUid?.trim() || null;
-  const companyUid = active ?? firstOnline;
-  const name = (companyUid && companyLabels[companyUid]?.trim()) || "a company";
-  return { live: true, work: `Working in ${name}` };
+  return { live: false };
 }
