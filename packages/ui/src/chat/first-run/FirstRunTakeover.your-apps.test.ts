@@ -387,6 +387,32 @@ describe("Your apps", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it("scrolls a tile into view only when its connect newly fails, and again after a second failure", async () => {
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element, arg?: boolean | ScrollIntoViewOptions) {
+      expect(arg).toEqual({ block: "nearest" });
+      scrolled.push(this.getAttribute("data-testid") ?? "");
+    } as typeof Element.prototype.scrollIntoView;
+    try {
+      render({ yourApps: yourHost({ connect: vi.fn(async (): Promise<YourAppsResult> => ({ ok: false, reason: "Linear did not finish connecting. Try again.", retry: true })) }) });
+      await settle();
+      expect(scrolled).toEqual([]);
+      q<HTMLButtonElement>('[data-testid="first-run-connect-linear.app"]')!.click();
+      await settle();
+      expect(scrolled).toEqual(["first-run-app-linear.app"]);
+      // An unrelated change (Undo of the automatic connection) scrolls nothing.
+      q<HTMLButtonElement>('[data-testid="first-run-undo-api.aws"]')!.click();
+      await settle();
+      expect(scrolled).toEqual(["first-run-app-linear.app"]);
+      q<HTMLButtonElement>('[data-testid="first-run-connect-linear.app"]')!.click();
+      await settle();
+      expect(scrolled).toEqual(["first-run-app-linear.app", "first-run-app-linear.app"]);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it("a failed connect shows its reason as text, announced politely", async () => {
     render({ yourApps: yourHost({ connect: vi.fn(async (): Promise<YourAppsResult> => ({ ok: false, reason: "Linear did not finish connecting. Try again.", retry: true })) }) });
     await settle();

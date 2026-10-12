@@ -10,6 +10,7 @@
    * install. We do not need Corey's OK"). The tile, pill and dot styles are
    * FirstRunAppStep's.
    */
+  import { untrack } from "svelte";
   import ConnectionCardLogo from "../messaging/ConnectionCardLogo.svelte";
   import { appLogo } from "../messaging/integration-cards-model.js";
   import {
@@ -57,18 +58,21 @@
   const failedKey = $derived(
     [...view.ready, ...view.notInHq].filter((t) => t.run.state === "failed").map((t) => t.domain).join(","),
   );
-  let lastFailedKey = "";
+  // Tiles already failed when the step opens are not "new": no scroll on mount.
+  let lastFailedKey = untrack(() => failedKey);
+  /** Tiles by domain, bound in the snippet (no document-wide lookup). */
+  const tileEls: Record<string, HTMLElement | undefined> = {};
   $effect(() => {
     const key = failedKey;
     if (!key || key === lastFailedKey) {
       lastFailedKey = key;
       return;
     }
-    const newest = key.split(",").find((d) => !lastFailedKey.split(",").includes(d));
+    const before = lastFailedKey.split(",");
+    const newest = key.split(",").find((d) => !before.includes(d));
     lastFailedKey = key;
-    if (!newest) return;
-    const tile = document.querySelector(`[data-testid="first-run-app-${CSS.escape(newest)}"]`);
-    if (tile && typeof (tile as HTMLElement).scrollIntoView === "function") (tile as HTMLElement).scrollIntoView({ block: "nearest" });
+    const tile = newest ? tileEls[newest] : undefined;
+    if (tile && typeof tile.scrollIntoView === "function") tile.scrollIntoView({ block: "nearest" });
   });
   const alsoNames = $derived(view.alsoFound);
   const alsoShort = $derived(alsoNames.slice(0, 3));
@@ -126,10 +130,11 @@
   </p>
 {/if}
 {#if needsFilter}
+  <!-- Named for screen readers; the placeholder carries the hint on screen. -->
+  <label class="sr-only" for="first-run-apps-filter">Find an app</label>
   <input
     id="first-run-apps-filter"
     class="new-bot-create-input found-filter"
-    aria-label="Find an app"
     data-testid="first-run-apps-filter"
     value={filter}
     autocomplete="off"
@@ -219,12 +224,12 @@
 {#snippet appTile(tile: AppTile)}
   {@const failed = tile.run.state === "failed"}
   {@const busy = tile.run.state === "connecting" || tile.run.state === "checking-docs"}
-  <li class="first-run-app" class:failed data-testid={`first-run-app-${tile.domain}`} data-action={tile.action} data-state={tile.run.state}>
+  <li class="first-run-app" class:failed bind:this={tileEls[tile.domain]} data-testid={`first-run-app-${tile.domain}`} data-action={tile.action} data-state={tile.run.state}>
     <ConnectionCardLogo logo={appLogo(tile.domain)} size={30} />
     <span class="first-run-app-text">
       <span class="first-run-app-name">{tile.name}</span>
       <!-- The note carries the tile's state (Connecting, Didn't connect and why): read out as it changes. -->
-      <span class="first-run-app-note" aria-live="polite" data-testid={`first-run-app-note-${tile.domain}`}>{tile.note}</span>
+      <span class="first-run-app-note" aria-live="polite" title={tile.note} data-testid={`first-run-app-note-${tile.domain}`}>{tile.note}</span>
     </span>
     {#if hasButton(tile)}
       <button
