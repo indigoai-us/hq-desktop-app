@@ -331,12 +331,13 @@ describe("BriefRunway", () => {
     expect(qa('[data-testid="brief-runway-task"]').map((t) => t.textContent)).toEqual(["Close out the SAFE allotment", "Unassigned", "Unassigned", "Unassigned"]);
   });
 
-  it("the component's CSS has no inner shadow and no backdrop-filter (glass, outer glow only)", () => {
+  it("the component's CSS is flat: no inner shadow, no glow, no backdrop-filter; the protected block keeps a green edge", () => {
     const src = readFileSync(resolve(process.cwd(), "src/brief/BriefRunway.svelte"), "utf8");
     const style = (src.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? "").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(style.length).toBeGreaterThan(100);
     expect(style).not.toMatch(/inset/);
     expect(style).not.toMatch(/backdrop-filter/);
-    expect(style).toMatch(/box-shadow:\s*0 0 0 1px rgba\(52, 199, 89/);
+    expect(style).not.toMatch(/box-shadow:[^;]*\d+px rgba\(52, 199, 89/);
+    expect(style).toMatch(/\.gp\.pro\s*\{[^}]*border-color:\s*rgba\(52, 199, 89/);
   });
 });

@@ -235,14 +235,9 @@
     container-type: inline-size;
     /* Glass: lit from the top, hairline rim, soft drop. No inner shadow and no
        backdrop-filter (WKWebView draws it as a square that ignores the radius). */
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.06), transparent 60%);
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.18);
-    box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.3),
-      0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    box-shadow: none;
     min-width: 0;
   }
   .hd {
@@ -273,9 +268,7 @@
     padding: 2px 6px;
     border-radius: 99px;
     color: #2a1408;
-    background: linear-gradient(110deg, #ffb580, #ffe2c4 40%, #ff809f 60%, #ffb580);
-    background-size: 220% 100%;
-    animation: foil 3.5s ease-in-out infinite;
+    background: var(--b-sun);
   }
   @keyframes foil {
     50% {
@@ -285,6 +278,7 @@
   /* Holographic foil, only on shipped work. */
   .run::before {
     content: "";
+    display: none; /* calm pass: holographic foil off */
     position: absolute;
     inset: -1px;
     border-radius: inherit;
@@ -298,6 +292,7 @@
   }
   .run::after {
     content: "";
+    display: none; /* calm pass: holographic foil off */
     position: absolute;
     inset: 0;
     border-radius: inherit;

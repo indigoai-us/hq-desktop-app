@@ -259,13 +259,12 @@
     padding: 8px 10px;
     border-radius: 12px;
     min-width: 0;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.05));
+    background: rgba(255, 255, 255, 0.07);
     border: 1px solid rgba(255, 255, 255, 0.14);
-    border-top-color: rgba(255, 255, 255, 0.28);
     transition: background 0.2s;
   }
   .rec:hover {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.08));
+    background: rgba(255, 255, 255, 0.07);
   }
   .txt {
     flex: 1;

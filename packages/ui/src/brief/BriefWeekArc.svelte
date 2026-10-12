@@ -206,10 +206,7 @@
     min-height: 3px;
     border-radius: 4px;
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-top-color: rgba(255, 255, 255, 0.24);
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.03)),
-      var(--c);
+    background: var(--c);
   }
   .sessions {
     --c: rgba(201, 214, 228, 0.5);
@@ -284,7 +281,7 @@
     border-radius: 50%;
     background: var(--c);
     border: 2px solid var(--b-card);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.55);
+    box-shadow: none;
     cursor: default;
     transition: transform 0.2s;
     animation: pop 0.3s cubic-bezier(0.3, 1.6, 0.5, 1) both;
@@ -348,7 +345,7 @@
     height: 8px;
     border-radius: 50%;
     background: var(--c, rgba(255, 255, 255, 0.2));
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    box-shadow: none;
   }
   .bt b {
     flex: 1;

@@ -250,15 +250,15 @@
     border-color: rgba(255, 255, 255, 0.3);
     outline: none;
   }
-  /* The one to protect: a soft green glow outside the edge. */
+  /* The one to protect: a green edge. */
   .gp.pro {
     border-color: rgba(52, 199, 89, 0.5);
-    box-shadow: 0 0 0 1px rgba(52, 199, 89, 0.18), 0 0 16px rgba(52, 199, 89, 0.35);
+    box-shadow: none;
   }
   .gp.pro:hover,
   .gp.pro:focus-visible {
     border-color: rgba(52, 199, 89, 0.8);
-    box-shadow: 0 0 0 1px rgba(52, 199, 89, 0.3), 0 0 20px rgba(52, 199, 89, 0.5);
+    box-shadow: none;
   }
   /* Calls: raised glass pills, no colour. */
   .mt {
@@ -266,10 +266,9 @@
     top: 9px;
     bottom: 9px;
     border-radius: 8px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.07));
+    background: rgba(255, 255, 255, 0.07);
     border: 1px solid rgba(255, 255, 255, 0.14);
-    border-top-color: rgba(255, 255, 255, 0.24);
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5);
+    box-shadow: none;
     font-family: var(--b-mono);
     font-size: 9px;
     color: var(--b-t2);
@@ -342,12 +341,9 @@
     border-radius: 12px;
     font-size: 11.5px;
     line-height: 1.3;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.025) 45%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.05), transparent 60%);
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.16);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    box-shadow: none;
     cursor: default;
     transition: border-color 0.2s, background 0.2s;
   }

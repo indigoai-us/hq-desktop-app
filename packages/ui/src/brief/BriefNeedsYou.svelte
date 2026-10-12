@@ -216,19 +216,18 @@
     align-items: center;
     gap: 12px;
     padding: 9px 10px 9px 12px;
-    border-radius: 16px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.06));
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-top-color: rgba(255, 255, 255, 0.2);
-    box-shadow: 0 6px 14px rgba(20, 8, 60, 0.25);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--b-line);
     transition: background 0.25s, opacity 0.5s;
   }
   .it:hover {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.09));
+    background: rgba(255, 255, 255, 0.07);
   }
   /* Iridescent sheen = the decision under your cursor. */
   .it::before {
     content: "";
+    display: none; /* calm pass: iridescent sheen off */
     position: absolute;
     inset: 0;
     pointer-events: none;
@@ -260,8 +259,7 @@
     place-items: center;
     background: rgba(255, 255, 255, 0.13);
     border: 1px solid rgba(255, 255, 255, 0.14);
-    border-top-color: rgba(255, 255, 255, 0.26);
-    box-shadow: 0 3px 8px rgba(20, 8, 60, 0.3);
+    box-shadow: none;
   }
   .ic svg {
     width: 15px;

@@ -136,12 +136,9 @@
     border-radius: 12px;
     font-size: 12px;
     min-width: 0;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.025) 45%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.05), transparent 60%);
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.16);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    box-shadow: none;
     cursor: default;
     transition: border-color 0.2s, background 0.2s, opacity 0.2s;
   }
@@ -159,7 +156,7 @@
   /* The call running now: a soft outer rim, never inset. */
   .run.live {
     border-color: rgba(255, 128, 159, 0.45);
-    box-shadow: 0 0 0 1px rgba(255, 128, 159, 0.14), 0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 0 0 1px rgba(255, 128, 159, 0.14);
   }
   .run.tent {
     border-style: dashed;
@@ -211,7 +208,6 @@
     color: var(--b-t2);
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-top-color: rgba(255, 255, 255, 0.16);
     cursor: default;
   }
   .more:hover,

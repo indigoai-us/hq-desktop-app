@@ -348,14 +348,13 @@
     min-width: 0;
     cursor: default;
     /* Glass: lit from the top, hairline rim. No inner shadow, no backdrop-filter. */
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.025));
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-top-color: rgba(255, 255, 255, 0.16);
     transition: background 0.2s, border-color 0.2s;
   }
   .ag:hover,
   .ag:focus-visible {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.05));
+    background: rgba(255, 255, 255, 0.07);
     border-color: rgba(255, 255, 255, 0.18);
     outline: none;
   }
@@ -365,7 +364,7 @@
     height: 8px;
     border-radius: 50%;
     background: var(--b-red);
-    box-shadow: 0 0 6px rgba(255, 69, 58, 0.55);
+    box-shadow: none;
     transition: transform 0.2s;
   }
   .ag:hover .dot {

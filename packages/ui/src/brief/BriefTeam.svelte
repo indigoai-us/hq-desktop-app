@@ -104,7 +104,7 @@
       {@const line = status(t)}
       {@const m = latest(t)}
       <div class="p" role="group" aria-label={t.name} data-testid="brief-team-row" use:peek={{ state: brief, content: () => content(t) }}>
-        <div class="mono" style="background:linear-gradient(145deg,{GRAD[i % GRAD.length]});--s:{DOT[t.tone]}">{t.name[0]}</div>
+        <div class="mono" style="background:{GRAD[i % GRAD.length].split(',')[1]};--s:{DOT[t.tone]}">{t.name[0]}</div>
         <div class="txt">
           <div class="n">
             <span class="nm">{t.name}</span>
@@ -170,7 +170,7 @@
     font-weight: 500;
     font-size: 14px;
     color: #fff;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 4px 10px rgba(0, 0, 0, 0.4);
+    box-shadow: none;
   }
   .mono::after {
     content: "";
@@ -216,7 +216,6 @@
     color: var(--b-t2);
     background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-top-color: rgba(255, 255, 255, 0.18);
   }
   .cnt {
     text-transform: none;
@@ -281,16 +280,15 @@
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.07);
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-top-color: rgba(255, 255, 255, 0.2);
     transition: background 0.2s, color 0.2s;
   }
   /* Each action takes on its own colour: the teammate's for DM, green for thanks. */
   .act:hover,
   .act:focus-visible {
     color: #fff;
-    background: linear-gradient(145deg, var(--g));
+    background: var(--g);
     border-color: transparent;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    box-shadow: none;
     outline: none;
   }
   .more {
@@ -302,7 +300,6 @@
     color: var(--b-t2);
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-top-color: rgba(255, 255, 255, 0.16);
     cursor: default;
   }
   .more:hover,

@@ -143,21 +143,14 @@
     padding: 9px 11px 10px;
     /* Glass: lit from the top, hairline rim, soft drop. No inner shadow and no
        backdrop-filter (WKWebView draws it as a square that ignores the radius). */
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.06), transparent 60%);
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.18);
-    box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.3),
-      0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    box-shadow: none;
     transition: background 0.3s;
   }
   .tile:hover,
   .tile:focus-within {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.05) 42%, rgba(255, 255, 255, 0.03)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.08), transparent 60%);
+    background: rgba(255, 255, 255, 0.07);
   }
   .tile.lead {
     grid-row: span 2;

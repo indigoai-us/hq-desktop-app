@@ -154,18 +154,14 @@
     padding: 12px 10px 11px;
     /* Glass: lit from the top, hairline rim, soft drop. No inset shadow and no
        backdrop-filter (WKWebView draws it as a square that ignores the radius). */
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.06), transparent 60%);
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.18);
-    box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.3),
-      0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    box-shadow: none;
   }
   /* Holographic foil: only on a true first. Follows the pointer; glints once on load. */
   .med::before {
     content: "";
+    display: none; /* calm pass: holographic foil off */
     position: absolute;
     inset: -1px;
     border-radius: inherit;
@@ -179,6 +175,7 @@
   }
   .med::after {
     content: "";
+    display: none; /* calm pass: holographic foil off */
     position: absolute;
     inset: 0;
     border-radius: inherit;
@@ -208,10 +205,8 @@
     border-radius: 50%;
     display: grid;
     place-items: center;
-    background: linear-gradient(145deg, #2e2e34, #222226);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-top-color: rgba(255, 255, 255, 0.22);
-    box-shadow: 0 6px 14px -6px rgba(0, 0, 0, 0.6);
+    background: var(--b-card-hi);
+    border: 1px solid var(--b-line);
   }
   .disc :global(.blogo) {
     border-radius: 8px;

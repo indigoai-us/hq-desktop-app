@@ -442,7 +442,7 @@
     height: 100%;
     border-radius: inherit;
     background: linear-gradient(90deg, #ffb580, #ff809f);
-    box-shadow: 0 0 14px rgba(255, 150, 140, 0.55);
+    box-shadow: none;
     transition: width 1.1s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .meter b {

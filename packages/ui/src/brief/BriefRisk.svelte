@@ -93,7 +93,6 @@
     border-radius: 11px;
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.07);
-    border-top-color: rgba(255, 255, 255, 0.14);
     transition: background 0.2s;
   }
   .rk:hover,

@@ -1,10 +1,12 @@
 /*
   Daily Brief surface. Everything is scoped under .daily-brief.
 
-  OWNER-APPROVED EXCEPTION to the house tokens: inside the brief, colour is
-  earned by meaning and cards carry soft neumorphic depth on a graphite
-  surface. Only these cards get colour: decision (violet), incident (red),
-  waiting and risk (amber), shipped (green). Everything else stays neutral.
+  CALM PASS (design, local): the brief follows the desktop app's material.
+  Surfaces are achromatic and flat: one graphite card on a graphite ground,
+  a hairline border, no neumorphic raise or wells, no gloss. Colour is earned
+  by meaning and shown small: decision (violet), incident (red), waiting and
+  risk (amber), shipped (green) tint the card's eyebrow and accent marks, never
+  the card fill. Everything else stays neutral.
   The few extra colours are the scoped variables below, mapped to the house
   --ok / --warn / --red where those exist. No backdrop-filter anywhere
   (WKWebView renders it square on rounded cards). Max font weight 500.
@@ -30,13 +32,13 @@
   prefers-reduced-motion turns all motion off.
 */
 .daily-brief {
-  --b-bg: #1b1b1e;
-  --b-card: #222226;
-  --b-card-hi: #26262b;
+  --b-bg: #141414;
+  --b-card: #1e1e1e;
+  --b-card-hi: #262626;
   --b-t1: rgba(255, 255, 255, 0.95);
   --b-t2: rgba(255, 255, 255, 0.56);
   --b-t3: rgba(255, 255, 255, 0.32);
-  --b-line: rgba(255, 255, 255, 0.07);
+  --b-line: rgba(255, 255, 255, 0.08);
   --b-ok: var(--ok, #34c759);
   --b-warn: var(--warn, #facc15);
   --b-red: var(--red, #ff453a);
@@ -44,12 +46,11 @@
   --b-ice: #c9d6e4;
   --b-sun: #ffb580;
   --b-sun-2: #ff809f;
-  --b-r: 22px;
+  --b-r: 12px;
   --b-gap: 14px;
-  --b-raise: -1px -1px 0 rgba(255, 255, 255, 0.035), -12px -12px 28px rgba(255, 255, 255, 0.022),
-    2px 3px 4px rgba(0, 0, 0, 0.35), 16px 22px 44px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.07),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.35);
-  --b-well: inset 4px 4px 10px rgba(0, 0, 0, 0.55), inset -3px -3px 8px rgba(255, 255, 255, 0.035);
+  /* Flat material: a hairline instead of raised/sunken depth. */
+  --b-raise: 0 0 0 1px var(--b-line);
+  --b-well: 0 0 0 1px var(--b-line);
   --b-ui: var(--font-ui, "Geist", -apple-system, system-ui, sans-serif);
   --b-mono: var(--font-mono, "Geist Mono", ui-monospace, monospace);
 
@@ -60,7 +61,7 @@
   box-sizing: border-box;
   /* Content caps at 1360px and centers; the background still fills the window. */
   padding: 22px max(28px, calc((100% - 1360px) / 2)) 28px;
-  background: radial-gradient(1200px 700px at 30% -10%, #232327 0%, var(--b-bg) 60%), var(--b-bg);
+  background: var(--b-bg);
   color: var(--b-t1);
   font-family: var(--b-ui);
   font-size: 13px;
@@ -172,8 +173,7 @@
 .daily-brief .w {
   position: relative;
   border-radius: var(--b-r);
-  background: linear-gradient(155deg, var(--b-card-hi), var(--b-card));
-  box-shadow: var(--b-raise);
+  background: var(--b-card);
   overflow: hidden;
   padding: 18px 20px;
   display: flex;
@@ -185,7 +185,7 @@
 @keyframes b-in {
   from {
     opacity: 0;
-    transform: translateY(14px) scale(0.985);
+    transform: translateY(6px);
   }
 }
 .daily-brief .w::after {
@@ -194,7 +194,7 @@
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px var(--b-line);
 }
 .daily-brief .w h3 {
   margin: 8px 0 0;
@@ -217,50 +217,32 @@
 .daily-brief .foot {
   margin-top: auto;
   padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  border-top: 1px solid var(--b-line);
   display: flex;
   justify-content: space-between;
   gap: 10px;
   font-family: var(--b-mono);
   font-size: 10px;
   letter-spacing: 0.06em;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--b-t3);
   text-transform: uppercase;
 }
-.daily-brief .w:not([class*="c-"]) .foot {
-  border-color: var(--b-line);
-  color: var(--b-t3);
-}
 
-/* earned colour */
+/* earned colour: the card stays neutral; its accent marks the eyebrow */
 .daily-brief .c-violet {
-  background: radial-gradient(120% 90% at 0% 0%, #7c4dd8 0%, #4a2a97 45%, #2a1a5c 100%);
+  --b-accent: var(--b-violet);
 }
 .daily-brief .c-red {
-  background: radial-gradient(130% 100% at 100% 0%, #ff5a4e 0%, #c1271d 42%, #5e0f0b 100%);
+  --b-accent: var(--b-red);
 }
 .daily-brief .c-amber {
-  background: radial-gradient(130% 100% at 0% 0%, #ffb340 0%, #d97706 50%, #6b3302 100%);
+  --b-accent: var(--b-warn);
 }
 .daily-brief .c-green {
-  background: radial-gradient(130% 100% at 0% 0%, #3ddc84 0%, #15803d 50%, #0b3d1f 100%);
-}
-.daily-brief .c-violet::before,
-.daily-brief .c-red::before,
-.daily-brief .c-amber::before,
-.daily-brief .c-green::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 38%);
+  --b-accent: var(--b-ok);
 }
 .daily-brief [class*="c-"] .eyebrow {
-  color: rgba(255, 255, 255, 0.62);
-}
-.daily-brief [class*="c-"] .sub {
-  color: rgba(255, 255, 255, 0.76);
+  color: var(--b-accent);
 }
 
 /* origin chips: company logo + repo */
@@ -287,8 +269,7 @@
   font-family: var(--b-ui);
   font-size: 7.5px;
   font-weight: 500;
-  background: linear-gradient(145deg, #5b5bf7, #3730a3);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 2px 5px rgba(0, 0, 0, 0.35);
+  background: #4f46e5;
 }
 .daily-brief .org b {
   font-weight: 500;
@@ -297,12 +278,6 @@
   text-overflow: ellipsis;
   max-width: 160px;
 }
-.daily-brief [class*="c-"] .org {
-  color: rgba(255, 255, 255, 0.6);
-}
-.daily-brief [class*="c-"] .org b {
-  color: rgba(255, 255, 255, 0.9);
-}
 .daily-brief .chip {
   display: inline-flex;
   align-items: center;
@@ -310,9 +285,9 @@
   font-family: var(--b-mono);
   font-size: 10.5px;
   padding: 4px 8px;
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.25);
-  color: rgba(255, 255, 255, 0.85);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--b-t2);
 }
 
 /* small rows */
@@ -377,8 +352,7 @@
   color: #2a1a5c;
   background: #fff;
   white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), inset 0 -2px 0 rgba(0, 0, 0, 0.08);
-  transition: transform 0.15s, box-shadow 0.2s, background 0.2s;
+  transition: background 0.15s;
 }
 .daily-brief .launch .go svg {
   width: 0;
@@ -392,23 +366,20 @@
   transition: width 0.3s, opacity 0.3s;
 }
 .daily-brief .launch .go:hover {
-  background: #f1eaff;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35), 0 0 0 4px rgba(255, 255, 255, 0.18);
+  background: #e6e6e6;
 }
 .daily-brief .launch .go:hover svg {
   width: 12px;
   opacity: 1;
 }
 .daily-brief .launch .go:active {
-  transform: translateY(1px) scale(0.97);
-  box-shadow: inset 2px 2px 5px rgba(0, 0, 0, 0.25);
+  background: #d4d4d4;
 }
 .daily-brief .launch .eng {
   display: inline-flex;
   padding: 2px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.28);
-  box-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.4);
+  background: rgba(255, 255, 255, 0.06);
 }
 /* Engine marks: the rail's brand marks at 14px. Muted until chosen; the
    chosen one sits on the light chip in full contrast (Claude in its clay). */
@@ -485,11 +456,10 @@
   max-height: min(520px, calc(100vh - 32px));
   overflow: auto;
   padding: 18px 18px 16px;
-  border-radius: 20px;
-  background: linear-gradient(160deg, #2c2c32, #232327);
+  border-radius: 12px;
+  background: var(--b-card-hi);
   color: var(--b-t1);
-  box-shadow: -1px -1px 0 rgba(255, 255, 255, 0.05), 3px 5px 10px rgba(0, 0, 0, 0.45),
-    24px 36px 70px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 22px 55px rgba(0, 0, 0, 0.5);
   animation: b-peek 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @keyframes b-peek {
@@ -543,9 +513,9 @@
   line-height: 1.5;
   color: var(--b-t1);
   padding: 10px 12px;
-  border-radius: 12px;
+  border-radius: 8px;
   box-shadow: var(--b-well);
-  background: rgba(0, 0, 0, 0.18);
+  background: rgba(0, 0, 0, 0.2);
   white-space: pre-wrap;
   max-height: 180px;
   overflow: auto;
@@ -583,20 +553,14 @@
   font-size: 8.5px;
 }
 
-/* Shared recipes the catalogue cards build on. Glass tile: lit from the top, hairline rim, soft drop;
-   no inner shadow and no backdrop-filter (WKWebView draws it square). The "+N more" row is the same
+/* Shared recipes the catalogue cards build on. Inner tile: a flat faint fill and a hairline, no
+   lighting, no shadow and no backdrop-filter (WKWebView draws it square). The "+N more" row is the same
    glass, centred, mono, and carries a peek listing the rest. Cards that need a variant keep their own. */
 .daily-brief .b-glass {
   position: relative;
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0.015)),
-    radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.06), transparent 60%);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-top-color: rgba(255, 255, 255, 0.18);
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.3),
-    0 8px 20px -8px rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--b-line);
   min-width: 0;
 }
 .daily-brief .b-more {

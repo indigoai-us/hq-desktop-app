@@ -245,7 +245,6 @@
     color: rgba(255, 255, 255, 0.92);
     background: rgba(255, 255, 255, 0.1);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    border-top-color: rgba(255, 255, 255, 0.24);
     transition: background 0.2s;
   }
   .arow:hover,
@@ -307,6 +306,6 @@
   }
   .dots i:hover {
     transform: scale(1.6);
-    box-shadow: 0 0 0 2px #fff, 0 0 12px rgba(255, 255, 255, 0.8);
+    box-shadow: 0 0 0 2px #fff;
   }
 </style>

@@ -149,7 +149,6 @@
     color: rgba(255, 255, 255, 0.82);
     background: rgba(255, 255, 255, 0.08);
     border: 1px solid rgba(255, 255, 255, 0.12);
-    border-top-color: rgba(255, 255, 255, 0.22);
     cursor: default;
   }
   .more:hover,

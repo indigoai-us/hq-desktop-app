@@ -213,14 +213,9 @@
   .pill,
   .node,
   .tile {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.06), transparent 60%);
+    background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.18);
-    box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.3),
-      0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    box-shadow: none;
   }
 
   /* ---- two-row graph ---- */
@@ -248,9 +243,7 @@
     transition: background 0.2s, opacity 0.3s;
   }
   .pill:hover {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.05) 42%, rgba(255, 255, 255, 0.03)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.08), transparent 60%);
+    background: rgba(255, 255, 255, 0.07);
   }
   .pill.dim {
     opacity: 0.45;
@@ -380,8 +373,8 @@
     font-weight: 500;
     letter-spacing: 0;
     color: #fff;
-    background: linear-gradient(145deg, hsl(var(--h) 70% 58%), hsl(var(--h) 60% 38%));
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    background: hsl(var(--h) 45% 42%);
+    box-shadow: none;
   }
   .tile {
     width: 22px;
@@ -454,9 +447,8 @@
   /* Violet is earned once: the call that is yours. */
   .node.you {
     flex: 1.3 1 0;
-    border-color: rgba(255, 255, 255, 0.14);
-    background: linear-gradient(145deg, #6d43c9, #3b2585);
-    box-shadow: 0 6px 16px rgba(60, 30, 140, 0.45);
+    border-color: rgba(192, 132, 252, 0.4);
+    background: rgba(192, 132, 252, 0.1);
   }
   .node.you small {
     color: rgba(255, 255, 255, 0.7);

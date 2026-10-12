@@ -156,13 +156,13 @@
     text-overflow: ellipsis;
   }
   .ev.team {
-    background: linear-gradient(180deg, #4a5260, #363c47);
+    background: #3d3d3d;
   }
   .ev.ext {
-    background: linear-gradient(180deg, #14b8a6, #0f766e);
+    background: #0f766e;
   }
   .ev.learn {
-    background: linear-gradient(180deg, #ffb580, #e07a5f);
+    background: #b8613f;
     color: #2a1408;
   }
   .ev.busy {
@@ -213,7 +213,7 @@
     width: 2px;
     border-radius: 2px;
     background: #ff809f;
-    box-shadow: 0 0 10px rgba(255, 128, 159, 0.8);
+    box-shadow: none;
     z-index: 4;
     pointer-events: none;
   }
