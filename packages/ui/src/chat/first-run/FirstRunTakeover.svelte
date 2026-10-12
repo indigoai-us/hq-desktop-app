@@ -577,6 +577,12 @@
   }
   /** The generation the current company's runs started in (a company change moves it). */
   let runsGen = 0;
+  /**
+   * Cancels this company's browser sign-ins and docs checks: a company change
+   * aborts it, so the old company's sign-in window stops being waited on and
+   * the new company may open its own.
+   */
+  let yourAppsAbort = new AbortController();
 
   function connectTile(tile: AppTile): void {
     const company = appsCompany;
@@ -590,7 +596,7 @@
     if (opensSignIn(tile) && yourAppsShown && signInRunning(yourAppsShown)) return;
     const gen = yourAppsGen;
     setRun(tile.domain, { state: "connecting", via: tile.action === "install" ? "install" : "browser" });
-    void host.connect(company.uid, tile, appsAbort.signal).then((res) => {
+    void host.connect(company.uid, tile, yourAppsAbort.signal).then((res) => {
       if (!sameRun(gen, company.uid)) return;
       if (res.ok) {
         setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
@@ -608,7 +614,7 @@
     if (yourAppsShown && signInRunning(yourAppsShown)) return;
     const gen = yourAppsGen;
     setRun(tile.domain, { state: "checking-docs" });
-    void host.setup(company.uid, tile, appsAbort.signal).then((res) => {
+    void host.setup(company.uid, tile, yourAppsAbort.signal).then((res) => {
       if (!sameRun(gen, company.uid)) return;
       if (res.ok) {
         setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
@@ -660,6 +666,8 @@
         // state and any answer still on its way.
         yourAppsGen += 1;
         runsGen = yourAppsGen;
+        yourAppsAbort.abort();
+        yourAppsAbort = new AbortController();
         yourAppsLoad = null;
         yourAppsLoading = false;
         appRuns = {};
@@ -853,6 +861,7 @@
   });
   onDestroy(() => {
     appsAbort.abort();
+    yourAppsAbort.abort();
     importRunner.dispose();
     teamRunner.dispose();
     importClock?.dispose();
@@ -1221,7 +1230,7 @@
                   }}
                 />
               {:else}
-                <p class="new-bot-muted" data-testid="first-run-apps-loading" role="status" aria-busy="true">Looking for your apps…</p>
+                <p class="new-bot-muted" data-testid="first-run-apps-loading" role="status">Looking for your apps…</p>
               {/if}
             {:else if appKind && appCopy}
               <FirstRunAppStep

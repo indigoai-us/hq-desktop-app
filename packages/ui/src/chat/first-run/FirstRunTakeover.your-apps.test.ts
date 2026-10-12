@@ -285,6 +285,63 @@ describe("Your apps", () => {
     expect(undo).not.toHaveBeenCalledWith(expect.anything(), "inst-acme");
   });
 
+  it("a company change cancels the old company's browser sign-in, and the new company may open its own", async () => {
+    const signals: AbortSignal[] = [];
+    const connect = vi.fn((_uid: string, _tile: unknown, signal?: AbortSignal) => {
+      if (signal) signals.push(signal);
+      return new Promise<YourAppsResult>(() => undefined);
+    });
+    render({ companies: [ACME, BETA], yourApps: yourHost({ connect }), initialStep: "team" });
+    await settle();
+    await pickCompany("acme");
+    q<HTMLButtonElement>('[data-testid="first-run-connect-linear.app"]')!.click();
+    await settle();
+    expect(signals[0]?.aborted).toBe(false);
+    await switchCompany("beta");
+    await settle();
+    expect(signals[0]?.aborted).toBe(true);
+    const linear = q<HTMLButtonElement>('[data-testid="first-run-connect-linear.app"]')!;
+    expect(linear.disabled).toBe(false);
+    linear.click();
+    await settle();
+    expect(connect).toHaveBeenLastCalledWith("cmp_beta", expect.objectContaining({ domain: "linear.app" }), expect.anything());
+    expect(signals[1]?.aborted).toBe(false);
+  });
+
+  it("after Acme, Beta, Acme the first Acme answer is dropped and the latest one shows", async () => {
+    const acmeAnswers: ((load: YourAppsLoad) => void)[] = [];
+    const load = vi.fn((uid: string) =>
+      uid === "cmp_acme" ? new Promise<YourAppsLoad>((resolve) => acmeAnswers.push(resolve)) : Promise.resolve({ ...LOAD, connections: [] }),
+    );
+    render({ companies: [ACME, BETA], yourApps: yourHost({ load }), initialStep: "team" });
+    await settle();
+    await pickCompany("acme");
+    await switchCompany("beta");
+    await switchCompany("acme");
+    await settle();
+    expect(acmeAnswers).toHaveLength(2);
+    // The second Acme load answers with no connections; the first (stale) one with Slack.
+    acmeAnswers[1]!({ ...LOAD, connections: [] });
+    await settle();
+    acmeAnswers[0]!(LOAD);
+    await settle();
+    expect(q('[data-testid="first-run-chip-slack.com"]')).toBeNull();
+    expect(q('[data-testid="first-run-app-slack.com"]')?.getAttribute("data-action")).toBe("integrations");
+  });
+
+  it("a failed Undo's line clears on the next Undo and on Retry", async () => {
+    const undo = vi.fn(async (): Promise<YourAppsResult> => ({ ok: false, reason: "Couldn't undo AWS Knowledge. Try again.", retry: true }));
+    render({ yourApps: yourHost({ undo }) });
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-undo-api.aws"]')!.click();
+    await settle();
+    expect(text('[data-testid="first-run-apps-problem"]')).toContain("Couldn't undo AWS Knowledge.");
+    undo.mockImplementationOnce(() => new Promise<YourAppsResult>(() => undefined));
+    q<HTMLButtonElement>('[data-testid="first-run-undo-api.aws"]')!.click();
+    await settle();
+    expect(q('[data-testid="first-run-apps-problem"]')).toBeNull();
+  });
+
   it("Retry while an automatic install runs does not install the same app twice", async () => {
     const autoConnect = vi.fn(() => new Promise<YourAppsResult>(() => undefined));
     const load = vi.fn(async (): Promise<YourAppsLoad> => ({ ...LOAD, problem: { reason: "Couldn't check which apps HQ can connect. Try again.", retry: true } }));

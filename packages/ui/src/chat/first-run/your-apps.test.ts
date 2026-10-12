@@ -121,13 +121,11 @@ describe("yourAppsView", () => {
   });
 
   it("matches a connection with no domain only on a provider slug that names the app", () => {
-    const found = input().found;
     const aws = yourAppsView(input({ connections: [{ id: "c", domain: null, provider: "aws" }] }));
     expect(aws.connected.map((c) => c.domain)).toContain("api.aws");
     // "api" is a generic label: a provider called "api" matches nothing.
     const generic = yourAppsView(input({ connections: [{ id: "c", domain: null, provider: "api" }] }));
     expect(generic.connected.map((c) => c.domain)).not.toContain("api.aws");
-    expect(found.length).toBeGreaterThan(0);
   });
 
   it("an unsupported docs result ends as not-yet with no retry", () => {
