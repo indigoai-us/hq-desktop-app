@@ -1731,6 +1731,11 @@ export const INTEGRATION_PATHS = {
   oauthStart: "/v1/integrations/factory/oauth/start",
   install: "/v1/integrations/factory/install",
   blueprint: "/v1/integrations/factory/blueprint",
+  /** Which of a fixed list of domains are in the catalog (first-run "Your apps"). */
+  catalogLookup: "/v1/integrations/factory/catalog/lookup",
+  /** Find and probe a vendor's remote MCP server from its docs page. */
+  discoverDocs: "/v1/integrations/factory/discover-docs",
+  uninstall: "/v1/integrations/factory/uninstall",
 } as const;
 
 /** One row of the integration catalog, as the server sends it. Every field may be missing. */
@@ -1810,6 +1815,13 @@ export interface IntegrationInstallInput {
     | { placement: "header"; header: string };
   provider?: string;
   displayName?: string;
+  /** A docs-discovery receipt (`discoverDocs`); the server installs what it verified. */
+  discoveryReceiptId?: string;
+  /**
+   * Marks an install the desktop first run made with no sign-in, so it can be
+   * undone and shown as automatic (hq-pro `installation.origin`).
+   */
+  origin?: "first-run-auto";
 }
 
 /** Who gets to use a connection. A bot's uid is granted as a person. */
@@ -1858,6 +1870,31 @@ export interface IntegrationsApi {
    * carries the HTTP status (`status`) and the server's `code`.
    */
   catalogSearch(companyUid: string, query: string, limit?: number): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/catalog/lookup with `{ companyUid, domains }`:
+   * which of a FIXED list of app domains are in the catalog. The first-run
+   * "Your apps" step always sends its whole signature list, so the request
+   * says nothing about what was found on this computer. Owner or admin only.
+   * Answers `{ ok, companyUid, matches: { [domain]: IntegrationCatalogEntry | null } }`
+   * (hq-pro `lookupFactoryCatalog`, integrations-admin.ts). Optional: hosts
+   * without it leave it out.
+   */
+  catalogLookup?(companyUid: string, domains: readonly string[]): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/discover-docs with `{ companyUid, docsUrl }`:
+   * hq-pro reads the vendor's docs page, finds its remote MCP server and
+   * probes it (it never builds or hosts one). Owner or admin only, runs
+   * synchronously (up to about 18 s). Answers `{ ok, discoveryReceiptId?,
+   * discovery: { authMode, verification, provider, displayName, mcpUrl } }`,
+   * or a CLI-only `cliDetection`. A 404, 409 or 422 means HQ cannot connect
+   * it yet; the server records the attempt. Optional.
+   */
+  discoverDocs?(input: { companyUid: string; docsUrl: string }): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/uninstall with `{ companyUid, installationId }`:
+   * revoke a factory installation's connection. Owner or admin only. Optional.
+   */
+  uninstall?(input: { companyUid: string; installationId: string }): AdapterPromise<Json>;
   /**
    * POST /v1/integrations/factory/oauth/start with `{ companyUid, domain }`
    * or `{ companyUid, catalogEntryId }` and no `redirectUri`: the server's
@@ -1932,6 +1969,40 @@ export interface SyncApi {
   listSyncableWorkspaces(): AdapterPromise<Json[]>;
 }
 
+/** One installed app, as `detect_work_apps` reports it. */
+export interface FoundWorkApp {
+  /** macOS `CFBundleIdentifier`; null on Windows. */
+  bundleId: string | null;
+  name: string;
+}
+
+/** One configured MCP server: its name and host only, never a URL or a credential. */
+export interface FoundMcpServer {
+  tool: "claude_code" | "claude_desktop" | "cursor" | "codex";
+  name: string;
+  transport: "http" | "sse" | "stdio" | "unknown";
+  /** Host only; null for local, unparsable or URL-less servers. */
+  host: string | null;
+  local: boolean;
+  /** A credential field is present in the config; its value was never read. */
+  hasCredentialFields: boolean;
+  enabled: boolean;
+}
+
+/** The answer of `detect_work_apps` (apps/sync/src-tauri/src/commands/work_apps.rs). */
+export interface FoundWorkApps {
+  platform: "macos" | "windows" | "linux";
+  scannedAtMs: number;
+  apps: FoundWorkApp[];
+  mcpServers: FoundMcpServer[];
+  sources: {
+    source: "apps" | FoundMcpServer["tool"];
+    outcome: "read" | "missing" | "unreadable" | "invalid" | "unsupported" | "budget";
+    count: number;
+  }[];
+  truncated: boolean;
+}
+
 /** Desktop-only group (capability: canLaunchApps). */
 export interface ShellApi {
   openInEditor(path: string): AdapterPromise<void>;
@@ -1954,6 +2025,14 @@ export interface ShellApi {
   launchCodexWorkspace(path: string, prompt?: string): AdapterPromise<void>;
   launchCliInTerminal(args: Json): AdapterPromise<void>;
   detectAiTools(): AdapterPromise<Json>;
+  /**
+   * Names-only scan of this computer's work apps (`detect_work_apps`): app
+   * bundle ids and names, and the MCP servers configured in Claude Code,
+   * Claude Desktop, Cursor and Codex by name and host. The values of a
+   * server's credential fields and arguments are never read. Optional:
+   * hosts without the scan leave it out. See {@link FoundWorkApps}.
+   */
+  detectWorkApps?(): AdapterPromise<FoundWorkApps>;
   pickFolder(): AdapterPromise<string | null>;
   pickFile(kind: string): AdapterPromise<string | null>;
 }
@@ -2574,8 +2653,22 @@ export interface StoragePruneResult {
  * Desktop-only. A failure whose message is `update-hq` means the hq CLI is
  * missing or predates `hq storage`.
  */
+/** Last good `hq storage status`, kept by the desktop host. */
+export interface CachedStorageStatus {
+  status: StorageStatus;
+  /** ISO time the scan finished. */
+  fetched_at: string;
+  hq_root: string;
+}
+
 export interface StorageApi {
+  /**
+   * `hq storage status --json`. Slow (minutes cold). The host runs one scan
+   * at a time: a call made while one runs joins it.
+   */
   status(): AdapterPromise<StorageStatus>;
+  /** Last known status without scanning; null when there is none. */
+  cachedStatus?(): AdapterPromise<CachedStorageStatus | null>;
   previewPrune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
   prune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
   /** `hq storage offload --dry-run --json`. */

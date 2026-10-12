@@ -31,6 +31,7 @@
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
     VISUAL_FIRST_RUN_FLAG,
+    FIRST_RUN_FOUND_APPS_FLAG,
     dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
@@ -293,19 +294,15 @@
   import {
     assistantNameIssue,
     firstRunHandoffNotice,
-    firstRunImportNotice,
     firstRunIntro,
-    firstRunKickoffCarry,
     firstRunRoute,
-    firstRunSettledNotice,
-    firstRunSettledParts,
-    firstRunSettledSince,
-    type FirstRunSettledSent,
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+    FIRST_RUN_LISTINGS_WAIT_MS,
     markVisualFirstRunFinished,
     type FirstRunCreation,
+    type FirstRunHandoff,
     type FirstRunImportHandoff,
   } from "../chat/first-run/visual-first-run.js";
   import {
@@ -318,6 +315,7 @@
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
+  import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
   import {
     createFirstRunAppsHost,
     createFirstRunTeamHost,
@@ -359,6 +357,7 @@
     SETUP_BOT_UNAVAILABLE,
     SETUP_BOT_RUNTIME_ORDER,
     isAssistantRecord,
+    isAssistantSlug,
     type SetupBotLauncher,
     type SetupBotRef,
     type SetupBotStart,
@@ -2565,10 +2564,22 @@
    * nothing left to run it.
    */
   let localBotTrace = $state<LocalBotTrace>(readLocalBotTrace(botMachineMemory));
+  /**
+   * The first answer (or failure) from each bot listing. The first run picks
+   * the name its name step opens with only after both, so an account that
+   * already has an assistant is offered that assistant's name.
+   */
+  let localBotsRead = $state(false);
+  let remoteBotsRead = $state(false);
   async function refreshLocalBots(): Promise<void> {
     const api = adapter.bots;
     if (!api) return;
-    const result = await api.list();
+    let result: Awaited<ReturnType<typeof api.list>>;
+    try {
+      result = await api.list();
+    } finally {
+      localBotsRead = true;
+    }
     if (!result.ok) return;
     const bots = result.value?.bots ?? [];
     // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
@@ -2616,7 +2627,10 @@
   let remoteBotPollBusy = false;
   async function refreshRemoteBots(force = false): Promise<void> {
     const listRemote = adapter.bots?.listRemote;
-    if (!listRemote) return;
+    if (!listRemote) {
+      remoteBotsRead = true;
+      return;
+    }
     if (remoteBotPollBusy && !force) return;
     remoteBotPollBusy = true;
     try {
@@ -2650,6 +2664,7 @@
       remoteBotListing = remoteBotListingFailed(remoteBotListing, "network");
     } finally {
       remoteBotPollBusy = false;
+      remoteBotsRead = true;
     }
   }
   /**
@@ -3276,6 +3291,9 @@
       confirmed ? { name: confirmed } : { nameIfNew: existingSetupBot ? null : await pickAssistantName() },
     );
     if (!result.ok) return { ok: false, reason: result.reason };
+    // The person confirmed this name in the takeover and then left for chat:
+    // the assistant gets the takeover's handoff note, as from Done.
+    if (confirmed) adoptFirstRunAssistant(result.bot, result.outcome, confirmed);
     if (result.outcome === "created") {
       recordWelcomeSetupRun();
       return { ok: true, existing: false };
@@ -3327,44 +3345,36 @@
     }
   }
   /**
-   * The owner's create: `hq bot create setup --display-name <name>` with the
-   * first run's intro and kickoff while the takeover is open, else #welcome's.
-   * The progress card, the DM row and the saved name come from
-   * `createBotEntry`, once.
+   * The owner's create: `hq bot create setup --display-name <name>`. For the
+   * visual first run (the takeover is open, or the person confirmed a name
+   * there and then left for chat) it carries the first run's intro and NO
+   * kickoff: the assistant runs no turn until the takeover has closed and the
+   * app has sent it everything the takeover settled, in one handoff note
+   * (`deliverFirstRunHandoff`). Otherwise #welcome's intro and kickoff. The
+   * progress card, the DM row and the saved name come from `createBotEntry`,
+   * once.
    */
   async function createAssistantEntry(
     displayName: string,
     runtime: LocalBotRow["runtime"],
   ): Promise<import("../chat/assistant-owner.js").AssistantCreateResult> {
     const noun = hostComputerNoun();
-    const fromFirstRun = visualFirstRunOpen;
+    const fromFirstRun = firstRunHandoffOwed();
     let input: LocalBotCreateInput;
     if (fromFirstRun) {
       const ready = currentBotRuntimeReadiness();
       const checks = firstRunSignInChecker.current();
       const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
-      // A scan already finished (the name was confirmed late) rides in the kickoff.
-      const imported = firstRunImport;
-      const { team, apps } = firstRunSettled;
-      // The hello and the kickoff say "signed in" only when a real turn worked.
+      // The hello and the handoff say "signed in" only when a real turn worked.
       // A runtime the first run does not check (not Claude Code or Codex) keeps today's words.
       const signInChecked = !(runtime in checks) || checks[runtime as SignInTool] === "passed";
-      // What does not fit the kickoff goes later as a note (firstRunKickoffCarry).
-      const carry = firstRunKickoffCarry(
-        { name: displayName, runtime, toolsReady, signInChecked, imported, team, apps },
-        { noun },
-      );
-      if (imported && carry.importWhole) firstRunImportDelivered = true;
-      // The kickoff carries what was settled when it went out; a part settled
-      // later (the create waited for a coding tool) goes at close.
-      if (carry.settled) firstRunSettledSent = firstRunSettledParts({ team, apps });
+      firstRunCreateFactsPending = { runtime, toolsReady, signInChecked };
       input = {
         name: SETUP_BOT_NAME,
         displayName,
         worker: SETUP_BOT_WORKER,
         runtime,
         intro: firstRunIntro({ name: displayName, runtime, signInChecked }, { noun }),
-        kickoff: carry.kickoff,
       };
     } else {
       // `intro` is sent by the runtime on start, so the first message is
@@ -3383,10 +3393,16 @@
       input,
       // The progress card and the DM row carry the person's name for it.
       { displayName },
-      // The visual first run selects on Done ("Talk to <Name>").
-      { select: !fromFirstRun, cliNamed: assistantCliOwns },
+      // The takeover selects on Done ("Talk to <Name>"); #welcome opens it now.
+      { select: !visualFirstRunOpen, cliNamed: assistantCliOwns },
     );
-    if (created.ok) return { ok: true, agentUid: created.agentUid, outcome: created.outcome ?? null };
+    if (created.ok) {
+      // The facts belong to the assistant this create made, and to no other.
+      if (fromFirstRun && firstRunCreateFactsPending) {
+        firstRunCreateFacts = { agentUid: created.agentUid, ...firstRunCreateFactsPending };
+      }
+      return { ok: true, agentUid: created.agentUid, outcome: created.outcome ?? null };
+    }
     // The generic fallback names the reserved handle; the person knows the
     // assistant by the name they gave it.
     const generic = `Could not create ${SETUP_BOT_NAME}.`;
@@ -3475,6 +3491,48 @@
       active = false;
     };
   });
+  /**
+   * `desktop.first-run-found-apps-v1`, read only once the visual first run is
+   * on. Until it answers (or when it cannot be read) the takeover keeps Note
+   * taker and Project management.
+   */
+  let foundAppsFlag = $state<boolean>(false);
+  let foundAppsFlagRead = false;
+  /**
+   * The found-apps answer is in (or its wait ran out). The takeover opens only
+   * after this, and the answer never changes afterwards, so the steps cannot
+   * swap while the person is in the flow.
+   */
+  let foundAppsFlagSettled = $state(false);
+  function settleFoundAppsFlag(value: boolean): void {
+    if (foundAppsFlagSettled) return;
+    foundAppsFlag = value;
+    foundAppsFlagSettled = true;
+  }
+  $effect(() => {
+    if (visualFirstRunFlag !== true || foundAppsFlagRead) return;
+    foundAppsFlagRead = true;
+    const identity = adapter.identity;
+    if (!identity || typeof identity.hasFeature !== "function") {
+      untrack(() => settleFoundAppsFlag(false));
+      return;
+    }
+    void Promise.resolve()
+      .then(() => identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG))
+      .then(
+        (result) => settleFoundAppsFlag(result.ok && result.value === true),
+        (err: unknown) => {
+          console.warn("[hq-desktop] first-run found-apps flag lookup failed:", err);
+          settleFoundAppsFlag(false);
+        },
+      );
+  });
+  // A found-apps answer that never comes stops holding the takeover (counts as off).
+  $effect(() => {
+    if (visualFirstRunFlag !== true || foundAppsFlagSettled) return;
+    const timer = window.setTimeout(() => settleFoundAppsFlag(false), FIRST_RUN_LISTINGS_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  });
   // The "setup owed" answer is in and the flag is not: the flag has the grace
   // left, then counts as off.
   $effect(() => {
@@ -3499,17 +3557,38 @@
   let visualFirstRunOpen = $state(false);
   /** The name the name step opens with, picked when the takeover opens. */
   let firstRunSuggestedName = $state("");
+  /**
+   * Both bot listings have answered (or failed), so the name step knows
+   * whether the account already has an assistant. A listing that never
+   * answers stops holding the takeover after FIRST_RUN_LISTINGS_WAIT_MS.
+   */
+  let firstRunListingsWaitOver = $state(false);
+  const firstRunListingsRead = $derived(
+    !adapter.bots || firstRunDev.dry || (localBotsRead && remoteBotsRead) || firstRunListingsWaitOver,
+  );
   $effect(() => {
-    if (firstRunRouteNow !== "visual" || untrack(() => visualFirstRunOpen)) return;
+    if (firstRunRouteNow !== "visual" || firstRunListingsRead) return;
+    const timer = window.setTimeout(() => (firstRunListingsWaitOver = true), FIRST_RUN_LISTINGS_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  });
+  $effect(() => {
+    if (firstRunRouteNow !== "visual" || !firstRunListingsRead || !foundAppsFlagSettled || untrack(() => visualFirstRunOpen)) return;
     untrack(() => {
       firstRunSuggestedName = firstRunInitialName();
       visualFirstRunOpen = true;
     });
   });
-  /** An assistant already here keeps its name; otherwise a friendly free one. */
+  /**
+   * The account's assistant keeps its name, whether it is on this computer or
+   * only on the account's listing (a new computer). A friendly free name only
+   * when the account has no assistant anywhere, or its name is not known.
+   * Never its handle, and never "Your assistant".
+   */
   function firstRunInitialName(): string {
-    const known = existingSetupBot ? assistantLabel : "";
-    if (known && known !== ASSISTANT_FALLBACK_NAME && !assistantNameIssue(known)) return known;
+    const known = existingSetupBot || remoteAssistantRow ? assistantLabel : "";
+    if (known && known !== ASSISTANT_FALLBACK_NAME && !isAssistantSlug(known) && !assistantNameIssue(known)) {
+      return known;
+    }
     return pickSetupBotName(takenBotNames(null, Object.values(botDisplayNames)));
   }
   /**
@@ -3566,21 +3645,17 @@
     });
   }
   /**
-   * The assistant the takeover settled on. One it created runs the first
-   * run's kickoff; one that was already here (or came from another path) gets
-   * what the takeover settled as a bot-only note instead.
+   * The assistant the takeover settled on, created or already here. Either
+   * way it runs no turn for the first run until the takeover closes; then it
+   * gets the one handoff note (`deliverFirstRunHandoff`).
    */
   function adoptFirstRunAssistant(bot: SetupBotRef, outcome: "created" | "adopted" | "existing", name: string): void {
     if (firstRunCreatedBot?.agentUid === bot.agentUid) return;
     firstRunCreatedBot = bot;
-    // An assistant adopted or already here did not run this first run's
-    // kickoff: it gets what the takeover settled as a note.
+    firstRunHandoffName = name;
     if (outcome === "created") firstRunCreatedUids.add(bot.agentUid);
-    else sendFirstRunHandoffNotice(bot, name);
-    // A scan that finished while the create ran: its kickoff missed it.
-    deliverFirstRunImport();
-    // The takeover closed while the create ran: the later screens' note.
-    deliverFirstRunSettled();
+    // The takeover closed while the create ran: the note goes now.
+    deliverFirstRunHandoff();
   }
   // A start that failed while the assistant came up anyway (it is in the
   // list): the takeover reads ready, and the assistant gets the handoff.
@@ -3663,109 +3738,109 @@
   const firstRunImportHost = createImportScanHost(adapter.contextImport, syncEvents);
   /** The finished scan's counts and report path, for the setup bot's handoff. */
   let firstRunImport: FirstRunImportHandoff | null = null;
-  /** The setup bot has the import result (in its kickoff or a notice). */
-  let firstRunImportDelivered = false;
-  /** A notice send is in flight (one at a time). */
-  let firstRunImportSending = false;
-  /** The next try of a failed import notice, cleared when the shell goes away. */
-  let firstRunImportRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  let firstRunImportStopped = false;
-  onDestroy(() => {
-    firstRunImportStopped = true;
-    if (firstRunImportRetryTimer !== null) clearTimeout(firstRunImportRetryTimer);
-    firstRunImportRetryTimer = null;
-  });
   function recordFirstRunImport(result: FirstRunImportHandoff): void {
     firstRunImport = result;
-    deliverFirstRunImport();
   }
   /**
-   * The assistant is usually created before the scan finishes (it starts at
-   * the name step), so its kickoff went out without the import. Tell it with
-   * a bot-only note, once. A create that has not started yet carries it in
-   * its kickoff instead.
+   * "Your team", Note taker and Project management (slices 2 and 5): what
+   * they settled, for the handoff note.
+   */
+  let firstRunSettled: FirstRunSettled = { team: null, apps: {} };
+  function recordFirstRunSettled(next: FirstRunSettled): void {
+    firstRunSettled = next;
+  }
+  /** The takeover closed (Done or Continue in chat): what it settled is final. */
+  let firstRunLeft = false;
+  /** The name the handoff gives the assistant (the one the person confirmed). */
+  let firstRunHandoffName: string | null = null;
+  /** The runtime, tools and sign-in check the first-run create used, when it created one. */
+  type FirstRunCreateFacts = { runtime: LocalBotRow["runtime"]; toolsReady: LocalBotRow["runtime"][]; signInChecked: boolean };
+  /** What the create in flight used; kept only once it made an assistant. */
+  let firstRunCreateFactsPending: FirstRunCreateFacts | null = null;
+  let firstRunCreateFacts: (FirstRunCreateFacts & { agentUid: string }) | null = null;
+  /**
+   * Whether a create for the assistant now is the visual first run's: the
+   * takeover is open, or the person confirmed a name there and then left for
+   * chat. That create runs no kickoff; the handoff note starts the assistant.
+   * A dry walk creates and sends nothing.
+   */
+  function firstRunHandoffOwed(): boolean {
+    return !firstRunDev.dry && (visualFirstRunOpen || firstRunConfirmedName !== null);
+  }
+  /** Everything the takeover settled, for the assistant's handoff note. */
+  function firstRunHandoffFor(bot: SetupBotRef, name: string): FirstRunHandoff {
+    const facts = firstRunCreateFacts?.agentUid === bot.agentUid ? firstRunCreateFacts : null;
+    const checks = firstRunSignInChecker.current();
+    const ready = checkedReadiness(localBotRuntimeReady, checks);
+    const toolsReady = facts?.toolsReady ?? SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
+    const runtime =
+      facts?.runtime ?? localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
+    const signInChecked = facts?.signInChecked ?? (!(runtime in checks) || checks[runtime as SignInTool] === "passed");
+    const { team, apps } = firstRunSettled;
+    return { name, runtime, toolsReady, signInChecked, imported: firstRunImport, team, apps };
+  }
+  /**
+   * The assistant that has the handoff note. By uid: an assistant made again
+   * later in this session (removed, then created from #welcome) runs no
+   * kickoff either, so it gets the note too.
+   */
+  let firstRunHandoffDeliveredTo: string | null = null;
+  /** A note send is in flight (one at a time). */
+  let firstRunHandoffSending = false;
+  /** The next try of a failed note, cleared when the shell goes away. */
+  let firstRunHandoffRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstRunHandoffStopped = false;
+  onDestroy(() => {
+    firstRunHandoffStopped = true;
+    if (firstRunHandoffRetryTimer !== null) clearTimeout(firstRunHandoffRetryTimer);
+    firstRunHandoffRetryTimer = null;
+  });
+  /**
+   * THE ONE HANDOFF. Once the takeover has closed and the assistant is known
+   * (created or already here, in either order), send it everything the
+   * takeover settled as one bot-only note, once. The assistant was created
+   * without a kickoff, so this note is what starts its setup conversation:
+   * its first message to the person is written with every screen's outcome
+   * in hand, and no later note makes it answer again (owner run
+   * rc-run-1011-1449: the assistant offered the import the takeover had just
+   * done, then corrected itself after a late note).
    *
    * Delivered only once a send succeeds; the idempotency key keeps a retry
    * from showing the bot the note twice. The first send is the person's own
-   * doing (the scan they just finished). Later ones go through the notice
+   * doing (they just finished the takeover). Later ones go through the notice
    * ledger like every other notice to a bot: a refusal (a 4xx) is not
    * repeated, and other failures are tried a few times, further apart.
    */
-  function deliverFirstRunImport(): void {
-    if (firstRunDev.dry) return;
-    const imported = firstRunImport;
+  function deliverFirstRunHandoff(): void {
+    if (firstRunDev.dry || !firstRunLeft) return;
     const bot = firstRunCreatedBot;
-    if (!imported || !bot || firstRunImportDelivered || firstRunImportSending) return;
-    const key = `first-run-import:${bot.agentUid}`;
+    const name = firstRunHandoffName;
+    if (!bot || !name || firstRunHandoffDeliveredTo === bot.agentUid || firstRunHandoffSending) return;
+    const key = `first-run-handoff:${bot.agentUid}`;
     const first = !connectionNoticeFailures.has(key);
-    firstRunImportSending = true;
-    void sendBotNotice(bot.agentUid, firstRunImportNotice(imported), key, key, first).then((sent) => {
-      firstRunImportSending = false;
+    const body = firstRunHandoffNotice(firstRunHandoffFor(bot, name), { noun: hostComputerNoun() });
+    firstRunHandoffSending = true;
+    void sendBotNotice(bot.agentUid, body, key, key, first).then((sent) => {
+      firstRunHandoffSending = false;
       if (sent) {
-        firstRunImportDelivered = true;
+        firstRunHandoffDeliveredTo = bot.agentUid;
+        // Adopted another assistant while this one went out: that one's turn.
+        if (firstRunCreatedBot && firstRunCreatedBot.agentUid !== bot.agentUid) deliverFirstRunHandoff();
         return;
       }
       // null: refused for good, or out of tries. Otherwise wait for the ledger.
       const nextAt = connectionNoticeFailures.get(key)?.nextAt ?? null;
-      if (nextAt === null || firstRunImportRetryTimer !== null || firstRunImportStopped) return;
-      firstRunImportRetryTimer = setTimeout(() => {
-        firstRunImportRetryTimer = null;
-        deliverFirstRunImport();
+      if (nextAt === null) {
+        // Nothing else starts it: it answers once the person writes, from
+        // the start of setup (the worker's "Your very first message").
+        console.warn("[hq-desktop] the setup assistant did not get the first-run handoff; it starts when the person writes");
+        return;
+      }
+      if (firstRunHandoffRetryTimer !== null || firstRunHandoffStopped) return;
+      firstRunHandoffRetryTimer = setTimeout(() => {
+        firstRunHandoffRetryTimer = null;
+        deliverFirstRunHandoff();
       }, Math.max(0, nextAt - Date.now()));
-    });
-  }
-  /**
-   * A setup bot that already existed ran its kickoff long ago. Tell it what
-   * the takeover settled with a bot-only DM (the same lane and retry ledger
-   * as the app's other notices to bots), once per bot.
-   */
-  function sendFirstRunHandoffNotice(bot: SetupBotRef, displayName: string): void {
-    if (firstRunDev.dry) return;
-    const ready = botRuntimeReadiness;
-    const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
-    const runtime =
-      localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
-    const key = `first-run-handoff:${bot.agentUid}`;
-    const imported = firstRunImport;
-    if (imported) firstRunImportDelivered = true;
-    const { team, apps } = firstRunSettled;
-    // The notice carries what is settled now; a later part goes at close.
-    firstRunSettledSent = firstRunSettledParts({ team, apps });
-    void sendBotNotice(
-      bot.agentUid,
-      firstRunHandoffNotice({ name: displayName, runtime, toolsReady, imported, team, apps }, { noun: hostComputerNoun() }),
-      key,
-      key,
-      true,
-    );
-  }
-  /**
-   * "Your team", Note taker and Project management (slices 2 and 5). The
-   * screens settle while the assistant already runs (it starts at the name
-   * step), so what they settled goes to it as one bot-only note when the
-   * takeover closes, unless the kickoff carried it.
-   */
-  let firstRunSettled: FirstRunSettled = { team: null, apps: {} };
-  /** Each part the assistant already has (in its kickoff or a note), by its JSON. */
-  let firstRunSettledSent: FirstRunSettledSent = {};
-  let firstRunSettledSending = false;
-  /** The takeover closed (Done or Continue in chat): what it settled is final. */
-  let firstRunLeft = false;
-  function recordFirstRunSettled(next: FirstRunSettled): void {
-    firstRunSettled = next;
-  }
-  function deliverFirstRunSettled(): void {
-    if (firstRunDev.dry || !firstRunLeft || firstRunSettledSending) return;
-    const bot = firstRunCreatedBot;
-    if (!bot) return;
-    const settled = firstRunSettled;
-    const body = firstRunSettledNotice(firstRunSettledSince(settled, firstRunSettledSent));
-    if (!body) return;
-    const key = `first-run-settled:${bot.agentUid}`;
-    firstRunSettledSending = true;
-    void sendBotNotice(bot.agentUid, body, key, key, true).then((sent) => {
-      firstRunSettledSending = false;
-      if (sent) firstRunSettledSent = { ...firstRunSettledSent, ...firstRunSettledParts(settled) };
     });
   }
   /** The person's companies and invites, once the roster answered. */
@@ -3831,6 +3906,31 @@
       : null,
   );
 
+  /**
+   * First-run "Your apps" (flag `desktop.first-run-found-apps-v1`): the names-only
+   * scan, the fixed-list catalog lookup, connects, docs-based setup and Undo,
+   * all over the platform adapter. Null keeps Note taker and Project management.
+   */
+  const firstRunYourAppsHost = $derived(
+    foundAppsFlag && adapter.integrations
+      ? createYourAppsHost({
+          dry: firstRunDev.dry,
+          detectWorkApps: adapter.shell?.detectWorkApps ? () => adapter.shell.detectWorkApps!() : null,
+          catalogLookup: adapter.integrations.catalogLookup
+            ? (uid, domains) => adapter.integrations.catalogLookup!(uid, domains)
+            : null,
+          listConnections: adapter.integrations.listConnections
+            ? (uid) => adapter.integrations.listConnections(uid)
+            : null,
+          startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
+          install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
+          discoverDocs: adapter.integrations.discoverDocs ? (input) => adapter.integrations.discoverDocs!(input) : null,
+          uninstall: adapter.integrations.uninstall ? (input) => adapter.integrations.uninstall!(input) : null,
+          openUrl: openConnectionUrl,
+        })
+      : null,
+  );
+
   /** The takeover is done on this computer: it never opens again. */
   function closeVisualFirstRun(): void {
     // Leaving must not set off the automatic start above in this session.
@@ -3838,7 +3938,7 @@
     // A dry walk leaves no marker, so it can be walked again.
     if (!firstRunDev.dry) markVisualFirstRunFinished();
     firstRunLeft = true;
-    deliverFirstRunSettled();
+    deliverFirstRunHandoff();
     visualFirstRunFinished = true;
     visualFirstRunOpen = false;
     // Nothing starts from the takeover once it is closed.
@@ -9894,8 +9994,10 @@
     });
     if (!ready || adapter.kind === "web") return;
     // The visual first run comes first; the tour waits for it (and for the
-    // flag's answer, so it never starts under a takeover about to open).
+    // flag's answer, and for the bot listings the takeover waits on, so it
+    // never starts under a takeover about to open; the found-apps flag holds it too).
     if (visualFirstRunOpen || firstRunRouteNow === "pending") return;
+    if (firstRunRouteNow === "visual" && (!firstRunListingsRead || !foundAppsFlagSettled)) return;
     tourAutoTimer = window.setTimeout(() => {
       if (!tourStartedThisSession) startGuidedTour();
     }, TOUR_AUTO_START_DELAY_MS);
@@ -16053,6 +16155,8 @@
       teamOptions={firstRunTeamOptions}
       teamHost={firstRunTeamHost}
       appsHost={firstRunAppsHost}
+      yourAppsHost={firstRunYourAppsHost}
+      onopenintegrations={(companyUid) => openConnectionUrl(companyIntegrationsUrl(companySlugForUid(companyUid)))}
       onsettled={recordFirstRunSettled}
       ontalk={talkToFirstRunAssistant}
       oncontinueinchat={continueFirstRunInChat}

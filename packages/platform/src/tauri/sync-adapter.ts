@@ -1344,6 +1344,12 @@ export function createSyncPlatformAdapter(
         withoutSecret(await hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ''),
       blueprint: (input) =>
         hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
+      catalogLookup: (companyUid, domains) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+      discoverDocs: (input) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+      uninstall: (input) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
     },
 
     company: {
@@ -1623,6 +1629,7 @@ export function createSyncPlatformAdapter(
         return result;
       },
       detectAiTools: () => call('detect_ai_tools'),
+      detectWorkApps: () => call('detect_work_apps'),
       pickFolder: async () => {
         const result = await call<string | null>('pick_folder');
         if (result.ok && result.value) dispatchPostReadyAction('open_folder');
@@ -1773,6 +1780,7 @@ export function createSyncPlatformAdapter(
     // (src-tauri/src/commands/storage.rs).
     storage: {
       status: () => call('get_storage_status'),
+      cachedStatus: () => call('get_cached_storage_status'),
       previewPrune: (request) => call('preview_storage_prune', { request }),
       prune: (request) => call('run_storage_prune', { request }),
       previewOffload: () => call('preview_storage_offload'),

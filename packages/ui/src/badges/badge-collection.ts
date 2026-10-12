@@ -3,7 +3,8 @@
  * first, the rest locked with what earns them and plain progress.
  *
  * A locked badge sits in the tier its first level would give: Bronze for the
- * three-level badges, the badge's own tier for single-level and limited ones.
+ * badges with levels (three, or four with Legendary on top), the badge's own
+ * tier for single-level and limited ones.
  */
 
 import { BADGES, TIER_NAME, resolveEarned, type BadgeDef, type BadgeTier, type EarnedBadge, type ResolvedBadge } from "./badge-catalog.js";
@@ -14,7 +15,7 @@ export interface CollectionTile {
   tier: BadgeTier;
   /** The earned badge, or null while it is locked. */
   earned: ResolvedBadge | null;
-  /** Locked only: "3 of 5 skills", "Not started", or "No longer available". */
+  /** Locked only: "3 of 5 skills", "Not started", "No longer available" or "Awarded, not earned". */
   progress: string;
 }
 
@@ -34,9 +35,11 @@ export function firstTier(def: BadgeDef): BadgeTier {
 
 const fmt = (n: number) => Math.max(0, Math.floor(n)).toLocaleString("en-US");
 
-/** Plain progress toward a locked badge. */
+/** Plain progress toward a locked badge: "3 of 5 skills", "Not started", or why there is none. */
 export function progressText(def: BadgeDef, progress?: BadgeProgress | null): string {
   if (/^limited/i.test(def.levels)) return "No longer available";
+  // OG, Captain and Patient Zero are given to people, not counted up from use.
+  if (def.family === "honors" && def.levels.split(" · ").length < 3) return "Awarded, not earned";
   if (!progress || !(progress.target > 0) || !(progress.current > 0)) return "Not started";
   const unit = progress.target === 1 ? progress.unit.replace(/s$/, "") : progress.unit;
   return `${fmt(Math.min(progress.current, progress.target))} of ${fmt(progress.target)} ${unit}`.trim();

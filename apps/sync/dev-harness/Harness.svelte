@@ -16,6 +16,7 @@
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
   import CompanyStepPreview from './CompanyStepPreview.svelte';
+  import YourAppsPreview from './YourAppsPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
@@ -297,6 +298,11 @@
     mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
     onfinish={() => {}}
   />
+{:else if view === 'your-apps'}
+  <!-- The first-run "Your apps" step on its own (integration auto-detect MVP):
+       ?state=auto|connect|connecting|failed|docs|member|empty|many. Size the
+       viewport to ~1200x800 or ~960x600. In-page answers only. -->
+  <YourAppsPreview />
 {:else if view === 'onboarding-company'}
   <!-- The first-run company step on its own: ?scenario=create|join|paused.
        Size the viewport to ~800x900 like the welcome window. -->

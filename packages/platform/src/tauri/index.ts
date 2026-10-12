@@ -668,6 +668,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       withoutSecret(await this.hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
     blueprint: (input) =>
       this.hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
+    catalogLookup: (companyUid, domains) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+    discoverDocs: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+    uninstall: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
   };
 
   readonly company: PlatformAdapter["company"] = {
@@ -779,6 +785,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     launchCliInTerminal: (args) =>
       this.call("launch_cli_in_terminal", { args }),
     detectAiTools: () => this.call("detect_ai_tools"),
+    detectWorkApps: () => this.call("detect_work_apps"),
     pickFolder: () => this.call("pick_folder"),
     pickFile: (kind) => this.call("pick_file", { kind }),
   };
@@ -888,6 +895,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
   readonly storage: NonNullable<PlatformAdapter["storage"]> = {
     status: () => this.call("get_storage_status"),
+    cachedStatus: () => this.call("get_cached_storage_status"),
     previewPrune: (request) => this.call("preview_storage_prune", { request }),
     prune: (request) => this.call("run_storage_prune", { request }),
     previewOffload: () => this.call("preview_storage_offload"),

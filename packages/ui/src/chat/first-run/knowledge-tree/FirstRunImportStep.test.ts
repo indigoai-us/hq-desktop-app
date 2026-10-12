@@ -4,6 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import FirstRunTakeover from "../FirstRunTakeover.svelte";
+import type { YourAppsHost } from "../your-apps-host.js";
+import { yourAppsConsentLine } from "../your-apps.js";
+import { hostComputerNoun } from "@hq/platform";
 import FirstRunImportStep from "./FirstRunImportStep.svelte";
 import { IMPORT_COPY, type ImportRunView, type ImportScanEnd, type ImportScanHost } from "./import-runner.js";
 import { parseScanEvent, type ScanEvent } from "./scan-stream.js";
@@ -55,7 +58,7 @@ async function waitForStep(): Promise<void> {
   await settle();
 }
 
-function renderTakeover(opts: { importHost?: ImportScanHost | null; reducedMotion?: boolean } = {}) {
+function renderTakeover(opts: { importHost?: ImportScanHost | null; reducedMotion?: boolean; yourAppsHost?: YourAppsHost | null } = {}) {
   const handlers = {
     onconfirmname: vi.fn(),
     onretry: vi.fn(),
@@ -74,6 +77,13 @@ function renderTakeover(opts: { importHost?: ImportScanHost | null; reducedMotio
       runtimeReady: { claude: true, codex: false, grok: false },
       importHost: opts.importHost ?? null,
       reducedMotion: opts.reducedMotion ?? true,
+      ...(opts.yourAppsHost
+        ? {
+            yourAppsHost: opts.yourAppsHost,
+            teamOptions: { invites: [], companies: [{ companyUid: "cmp_acme", slug: "acme", name: "Acme" }] },
+            teamHost: { join: vi.fn(), create: vi.fn() },
+          }
+        : {}),
       ...handlers,
     },
   });
@@ -110,6 +120,33 @@ describe("Bring in your context: in the flow", () => {
     expect(q('[data-testid="first-run-import-consent"]')?.textContent).toBe("It reads only this Mac, and nothing leaves it.");
     expect(q('[data-testid="first-run-next"]')).toBeNull();
     expect(importHost.run).not.toHaveBeenCalled();
+  });
+
+  it("with Your apps, says the scan lists apps by name and starts it only on Bring it in", async () => {
+    const { importHost } = fakeHost();
+    const yourAppsHost = {
+      detect: vi.fn(async () => null),
+      load: vi.fn(async () => ({ catalog: null, connections: [], installations: {}, canManage: true, problem: null })),
+      autoConnect: vi.fn(),
+      connect: vi.fn(),
+      setup: vi.fn(),
+      undo: vi.fn(),
+    } as unknown as YourAppsHost;
+    renderTakeover({ importHost, yourAppsHost });
+    await settle();
+    while (q('[data-testid="first-run-step"]')?.getAttribute("data-step") !== "context") {
+      click('[data-testid="first-run-next"]');
+      await settle();
+    }
+    await waitForStep();
+    // The owner's line, with this host's word for the computer ("Mac" on a Mac).
+    expect(q('[data-testid="first-run-import-consent"]')?.textContent).toBe(
+      `It reads only this Mac, and nothing leaves it. ${yourAppsConsentLine(hostComputerNoun())}`,
+    );
+    expect(yourAppsHost.detect).not.toHaveBeenCalled();
+    click('[data-testid="first-run-import-start"]');
+    await settle();
+    expect(yourAppsHost.detect).toHaveBeenCalledTimes(1);
   });
 
   it("Bring it in starts one scan, shows it running at once, and Next: Done stays available", async () => {

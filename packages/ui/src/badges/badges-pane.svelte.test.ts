@@ -61,6 +61,8 @@ describe("badge collection", () => {
     expect(firstTier(BADGE_BY_ID.liftoff)).toBe(1);
     expect(firstTier(BADGE_BY_ID.founder)).toBe(3);
     expect(firstTier(BADGE_BY_ID.founding)).toBe(3);
+    expect(firstTier(BADGE_BY_ID.corebuilder)).toBe(1);
+    expect(firstTier(BADGE_BY_ID.og)).toBe("L");
   });
 
   it("says progress plainly", () => {
@@ -70,18 +72,22 @@ describe("badge collection", () => {
     expect(progressText(BADGE_BY_ID.shipit, PROGRESS[2])).toBe("Not started");
     expect(progressText(BADGE_BY_ID.toolbox)).toBe("Not started");
     expect(progressText(BADGE_BY_ID.founding)).toBe("No longer available");
+    expect(progressText(BADGE_BY_ID.captain)).toBe("Awarded, not earned");
+    expect(progressText(BADGE_BY_ID.corebuilder)).toBe("Not started");
+    expect(progressText(BADGE_BY_ID.corebuilder, { id: "corebuilder", current: 0.5, target: 1, unit: "PRs" })).toBe("0 of 1 PR");
     expect(progressText(BADGE_BY_ID.poweruser, { id: "poweruser", current: 1500, target: 10000, unit: "runs" })).toBe("1,500 of 10,000 runs");
   });
 
   it("groups every badge by tier, highest first, earned before locked", () => {
     const groups = badgeCollection(EARNED, PROGRESS);
     expect(groups.map((g) => [g.label, g.earned, g.tiles.length])).toEqual([
+      ["Legendary", 0, 3],
       ["Gold", 2, 3],
       ["Silver", 1, 1],
-      ["Bronze", 1, 11],
+      ["Bronze", 1, 12],
     ]);
-    expect(groups.flatMap((g) => g.tiles).length).toBe(15);
-    const bronze = groups[2].tiles;
+    expect(groups.flatMap((g) => g.tiles).length).toBe(19);
+    const bronze = groups[3].tiles;
     expect(bronze[0]).toMatchObject({ def: { id: "connector" }, earned: { tier: 1 } });
     expect(bronze.slice(1).every((t) => t.earned === null)).toBe(true);
     expect(bronze.find((t) => t.def.id === "toolbox")?.progress).toBe("3 of 5 skills");
@@ -97,11 +103,12 @@ describe("BadgesPane", () => {
     const opened: string[] = [];
     mounted.push(mount(BadgesPane, { target: host, props: { badges: EARNED, progress: PROGRESS, owner: "Maya Chen", onselect: (b) => opened.push(b.def.id) } }));
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 15 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 19 earned");
     expect([...host.querySelectorAll('[data-testid="badges-group"] .k')].map((k) => k.textContent?.replace(/\s+/g, " ").trim())).toEqual([
+      "Legendary 0/3",
       "Gold 2/3",
       "Silver 1/1",
-      "Bronze 1/11",
+      "Bronze 1/12",
     ]);
     const toolbox = host.querySelector('[data-testid="badges-tile"][data-badge-id="toolbox"]')!;
     expect(toolbox.getAttribute("data-state")).toBe("locked");
@@ -225,7 +232,7 @@ describe("See all on a profile", () => {
     await settle();
     click('[data-testid="profile-badges-all"]');
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 15 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 19 earned");
   });
 
   it("shows nothing in production, where there is no source", async () => {
