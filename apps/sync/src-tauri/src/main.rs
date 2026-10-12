@@ -724,6 +724,7 @@ fn main() {
             commands::ai_tools::detect_claude_ready,
             commands::ai_tools::detect_claude_desktop_connectors,
             commands::ai_tools::import_claude_desktop_connectors,
+            commands::work_apps::detect_work_apps,
             commands::launch::launch_claude_code,
             commands::launch::launch_cli_in_terminal,
             commands::launch::launch_codex_workspace,
