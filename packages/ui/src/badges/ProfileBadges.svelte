@@ -75,7 +75,9 @@
   .b:disabled { cursor: default; }
   /* Small under the mark, so a two-word name and its level stay compact
      (owner review 2026-10-08). */
-  .nm { max-width: 100%; font-size: 12px; color: var(--v4-text-1); line-height: 1.3; overflow-wrap: anywhere; }
+  /* Names wrap between words only, balanced over two lines, never mid-word
+     ("Fleet / Commander", not "Command / er"). */
+  .nm { max-width: calc(100% + 8px); font-size: 12px; color: var(--v4-text-1); line-height: 1.3; overflow-wrap: normal; text-wrap: balance; }
   /* The level reads quieter than the name. */
   .tr { font-size: 11px; line-height: 1.4; color: var(--v4-text-3); }
   /* What earns the badge: the app's hover-card style (not the system

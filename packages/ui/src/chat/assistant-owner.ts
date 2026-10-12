@@ -399,7 +399,8 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
         const bot: SetupBotRef = listed?.agentUid === created.agentUid ? listed : { agentUid: created.agentUid, handle: SETUP_BOT_NAME };
         // A create that adopted the account's assistant applied this start's
         // name, intro and kickoff (hq-cli #1812): to every caller it is a
-        // made assistant, whose kickoff runs and needs no handoff note.
+        // made assistant. (The visual first run passes no kickoff; its
+        // assistant starts from the handoff note, whatever the outcome.)
         const outcome = created.outcome === "adopted" ? "created" : (created.outcome ?? (existing ? "existing" : "created"));
         return succeed(bot, label, outcome);
       }

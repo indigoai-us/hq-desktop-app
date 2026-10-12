@@ -37,7 +37,11 @@ export function cardNumber(id: string): string {
 
 /** "Oct 6, 2026", or the raw value when it is not a date. */
 export function cardDate(iso: string): string {
-  const d = new Date(`${iso}T12:00:00`);
+  // hq-pro sends full timestamps ("2026-07-30T17:28:59.454Z"); the samples send
+  // a bare date. Either way the card shows the calendar date, read at noon so
+  // no time zone moves it to the next or previous day.
+  const day = /^\d{4}-\d{2}-\d{2}/.exec(iso)?.[0] ?? iso;
+  const d = new Date(`${day}T12:00:00`);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
