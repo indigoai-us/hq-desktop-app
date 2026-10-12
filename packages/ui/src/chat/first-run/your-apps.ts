@@ -40,8 +40,8 @@ export type AppRun =
   | { state: "idle" }
   | { state: "connecting"; via: "browser" | "install" }
   | { state: "checking-docs" }
-  | { state: "connected"; how: "auto" | "person"; connectionId: string | null }
-  | { state: "undoing"; connectionId: string | null }
+  | { state: "connected"; how: "auto" | "person"; connectionId: string | null; installationId?: string | null }
+  | { state: "undoing"; connectionId: string | null; installationId: string }
   | { state: "failed"; reason: string; retry: boolean }
   | { state: "unsupported" };
 
@@ -66,7 +66,9 @@ export interface ConnectedChip {
   name: string;
   how: "team" | "auto" | "person";
   connectionId: string | null;
-  /** Undo is offered only for what this step connected with no sign-in. */
+  /** The installation Undo removes; null when it is not known (then there is no Undo). */
+  installationId: string | null;
+  /** Undo is offered only for an automatic connection whose installation is known. */
   canUndo: boolean;
   undoing: boolean;
 }
@@ -102,6 +104,8 @@ export interface YourAppsInput {
   /** The catalog lookup, by domain; missing or null means not in the catalog. */
   catalog: Readonly<Record<string, CatalogMatch | null>> | null;
   connections: readonly StepConnection[];
+  /** Installation ids by connection id, from the company's list. */
+  installations?: Readonly<Record<string, string>>;
   /** Owner or admin of the company: may install, sign in and discover. */
   canManage: boolean;
   runs: Readonly<Record<string, AppRun>>;
@@ -160,10 +164,29 @@ export function yourAppsStatus(connected: number, company: string): string {
   return `${connected} connected to ${where}. ${YOUR_APPS_COPY.statusTail}`;
 }
 
+/** Domain labels that never name an app on their own. */
+const GENERIC_LABELS = new Set(["api", "app", "apps", "mcp", "www", "docs", "developers", "developer", "knowledge-mcp", "global"]);
+
+/**
+ * The provider slug a domain stands for: its first label that names
+ * something ("linear" for linear.app), or the last one when every label
+ * before it is generic ("aws" for api.aws).
+ */
+function providerSlug(domain: string): string | null {
+  const labels = domain.split(".").filter(Boolean);
+  const named = labels.slice(0, -1).find((l) => !GENERIC_LABELS.has(l));
+  if (named) return named;
+  const last = labels.at(-1);
+  return labels.length > 1 && last && !GENERIC_LABELS.has(last) ? last : null;
+}
+
 function sameApp(connection: StepConnection, app: FoundApp): boolean {
   if (app.native) return connection.provider === app.native;
   const d = connection.domain;
-  if (!d) return connection.provider === app.domain.split(".")[0];
+  if (!d) {
+    const slug = providerSlug(app.domain);
+    return slug !== null && connection.provider === slug;
+  }
   return d === app.domain || d.endsWith(`.${app.domain}`) || app.domain.endsWith(`.${d}`);
 }
 
@@ -182,7 +205,7 @@ function runNote(run: AppRun, fallback: string): string {
     case "checking-docs":
       return YOUR_APPS_COPY.readingGuide;
     case "failed":
-      return YOUR_APPS_COPY.failed;
+      return run.reason.trim() || YOUR_APPS_COPY.failed;
     case "unsupported":
       return YOUR_APPS_COPY.cantYet;
     default:
@@ -203,25 +226,29 @@ export function yourAppsView(input: YourAppsInput): YourAppsView {
     }
     const run = input.runs[app.domain] ?? { state: "idle" };
     if (run.state === "connected" || run.state === "undoing") {
+      const installationId = run.state === "undoing" ? run.installationId : (run.installationId ?? null);
       connected.push({
         domain: app.domain,
         name: app.name,
         how: run.state === "connected" ? run.how : "auto",
         connectionId: run.connectionId,
-        canUndo: run.state === "undoing" || run.how === "auto",
+        installationId,
+        canUndo: run.state === "undoing" || (run.how === "auto" && installationId !== null),
         undoing: run.state === "undoing",
       });
       continue;
     }
     const existing = input.connections.find((c) => sameApp(c, app));
     if (existing) {
+      const installationId = input.installations?.[existing.id] ?? null;
       connected.push({
         domain: app.domain,
         name: app.name,
         how: existing.autoConnected ? "auto" : "team",
         connectionId: existing.id,
+        installationId,
         // An earlier first run's automatic connection can be undone by an owner or admin.
-        canUndo: existing.autoConnected === true && input.canManage,
+        canUndo: existing.autoConnected === true && input.canManage && installationId !== null,
         undoing: false,
       });
       continue;
@@ -268,19 +295,42 @@ export function yourAppsView(input: YourAppsInput): YourAppsView {
 /**
  * The apps to connect with no sign-in as the step opens: owner or admin
  * only, catalog `authClass: "none"`, not connected yet, not undone in this
- * step, never a native provider. Nothing that needs a credential is here.
+ * step, never a native provider, and not already running, connected or
+ * failed in this step (so a Retry never installs twice). Nothing that needs
+ * a credential is here.
  */
-export function autoConnectPlan(input: Pick<YourAppsInput, "found" | "catalog" | "connections" | "canManage">, undone: ReadonlySet<string>): { domain: string; entryId: string }[] {
+export function autoConnectPlan(
+  input: Pick<YourAppsInput, "found" | "catalog" | "connections" | "canManage"> & { runs?: Readonly<Record<string, AppRun>> },
+  undone: ReadonlySet<string>,
+): { domain: string; entryId: string }[] {
   if (!input.canManage || !input.catalog) return [];
   const plan: { domain: string; entryId: string }[] = [];
   for (const app of input.found) {
     if (app.excluded || app.native || undone.has(app.domain)) continue;
+    const run = input.runs?.[app.domain];
+    if (run && run.state !== "idle") continue;
     const match = input.catalog[app.domain];
     if (!match || match.authClass !== "none" || !match.entryId) continue;
     if (input.connections.some((c) => sameApp(c, app))) continue;
     plan.push({ domain: app.domain, entryId: match.entryId });
   }
   return plan;
+}
+
+/**
+ * A browser sign-in is under way: a Connect waiting in the browser, or a
+ * docs setup (which can end in a sign-in). One at a time, so other sign-ins
+ * wait for it.
+ */
+export function signInRunning(view: Pick<YourAppsView, "ready" | "notInHq">): boolean {
+  return [...view.ready, ...view.notInHq].some(
+    (t) => (t.run.state === "connecting" && t.run.via === "browser") || t.run.state === "checking-docs",
+  );
+}
+
+/** The tile's next press opens a browser sign-in (Connect, Set up, or their Try again). */
+export function opensSignIn(tile: Pick<AppTile, "action">): boolean {
+  return tile.action === "connect" || tile.action === "setup";
 }
 
 /** How many apps the step shows as connected (for the status line and the Done summary). */

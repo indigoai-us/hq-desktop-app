@@ -63,7 +63,7 @@ describe("yourAppsView", () => {
   it("groups by status: team connections, catalog apps, docs-path apps, apps HQ does not offer", () => {
     const view = yourAppsView(input());
     expect(view.connected).toEqual([
-      { domain: "slack.com", name: "Slack", how: "team", connectionId: "c-slack", canUndo: false, undoing: false },
+      { domain: "slack.com", name: "Slack", how: "team", connectionId: "c-slack", installationId: null, canUndo: false, undoing: false },
     ]);
     expect(view.ready.map((t) => [t.domain, t.action, t.note])).toEqual([
       ["linear.app", "connect", "Mac app"],
@@ -92,25 +92,42 @@ describe("yourAppsView", () => {
       input({
         runs: {
           "supabase.com": { state: "connecting", via: "browser" },
-          "linear.app": { state: "failed", reason: "x", retry: true },
+          "linear.app": { state: "failed", reason: "Linear did not finish connecting. Try again.", retry: true },
           "zoom.us": { state: "checking-docs" },
-          "api.aws": { state: "connected", how: "auto", connectionId: "c-aws" },
+          "api.aws": { state: "connected", how: "auto", connectionId: "c-aws", installationId: "inst-aws" },
         },
       }),
     );
     const tile = (d: string) => [...view.ready, ...view.notInHq].find((t) => t.domain === d);
     expect(tile("supabase.com")?.note).toBe(YOUR_APPS_COPY.inBrowser);
-    expect(tile("linear.app")?.note).toBe(YOUR_APPS_COPY.failed);
+    // The reason itself is the visible note (not hidden in a tooltip).
+    expect(tile("linear.app")?.note).toBe("Linear did not finish connecting. Try again.");
     expect(tile("zoom.us")?.note).toBe(YOUR_APPS_COPY.readingGuide);
     expect(view.connected.find((c) => c.domain === "api.aws")).toEqual({
       domain: "api.aws",
       name: "AWS Knowledge",
       how: "auto",
       connectionId: "c-aws",
+      installationId: "inst-aws",
       canUndo: true,
       undoing: false,
     });
     expect(connectedCount(view)).toBe(2);
+  });
+
+  it("offers no Undo for an automatic connection whose installation is not known", () => {
+    const view = yourAppsView(input({ runs: { "api.aws": { state: "connected", how: "auto", connectionId: "c-aws", installationId: null } } }));
+    expect(view.connected.find((c) => c.domain === "api.aws")).toMatchObject({ how: "auto", installationId: null, canUndo: false });
+  });
+
+  it("matches a connection with no domain only on a provider slug that names the app", () => {
+    const found = input().found;
+    const aws = yourAppsView(input({ connections: [{ id: "c", domain: null, provider: "aws" }] }));
+    expect(aws.connected.map((c) => c.domain)).toContain("api.aws");
+    // "api" is a generic label: a provider called "api" matches nothing.
+    const generic = yourAppsView(input({ connections: [{ id: "c", domain: null, provider: "api" }] }));
+    expect(generic.connected.map((c) => c.domain)).not.toContain("api.aws");
+    expect(found.length).toBeGreaterThan(0);
   });
 
   it("an unsupported docs result ends as not-yet with no retry", () => {
@@ -145,6 +162,17 @@ describe("autoConnectPlan", () => {
     expect(autoConnectPlan(input({ catalog: null }), new Set())).toEqual([]);
   });
 
+  it("skips an app already connecting, connected or failed in this step (Retry never installs twice)", () => {
+    for (const run of [
+      { state: "connecting", via: "install" },
+      { state: "connected", how: "auto", connectionId: "c", installationId: "i" },
+      { state: "failed", reason: "r", retry: true },
+    ] as const) {
+      expect(autoConnectPlan({ ...input(), runs: { "api.aws": run } }, new Set())).toEqual([]);
+    }
+    expect(autoConnectPlan({ ...input(), runs: { "api.aws": { state: "idle" } } }, new Set())).toEqual([{ domain: "api.aws", entryId: "e-aws" }]);
+  });
+
   it("never plans an app that needs a sign-in or a key", () => {
     const planned = autoConnectPlan(input(), new Set()).map((p) => p.domain);
     expect(planned).not.toContain("linear.app");
@@ -176,8 +204,11 @@ describe("native providers, fallback and handoff", () => {
 
   it("lets an owner undo an earlier automatic connection, never a member", () => {
     const connections: StepConnection[] = [{ id: "c-aws", domain: "api.aws", provider: "aws", autoConnected: true }];
-    expect(yourAppsView(input({ connections })).connected.find((c) => c.domain === "api.aws")?.canUndo).toBe(true);
-    expect(yourAppsView(input({ connections, canManage: false })).connected.find((c) => c.domain === "api.aws")?.canUndo).toBe(false);
+    const installations = { "c-aws": "inst-aws" };
+    expect(yourAppsView(input({ connections, installations })).connected.find((c) => c.domain === "api.aws")).toMatchObject({ canUndo: true, installationId: "inst-aws" });
+    expect(yourAppsView(input({ connections, installations, canManage: false })).connected.find((c) => c.domain === "api.aws")?.canUndo).toBe(false);
+    // The list did not say which installation it is: no Undo that would do nothing.
+    expect(yourAppsView(input({ connections })).connected.find((c) => c.domain === "api.aws")?.canUndo).toBe(false);
   });
 
   it("offers the catalog's note takers and project tools when nothing was found", () => {

@@ -73,7 +73,9 @@ function yourHost(over: Partial<YourAppsHost> = {}): YourAppsHost {
   };
 }
 
-function render(opts: { yourApps?: YourAppsHost | null; scan?: FoundWorkApps | null; load?: YourAppsLoad } = {}) {
+const BETA = { companyUid: "cmp_beta", slug: "beta", name: "Beta" };
+
+function render(opts: { yourApps?: YourAppsHost | null; scan?: FoundWorkApps | null; load?: YourAppsLoad; companies?: (typeof ACME)[]; initialStep?: string } = {}) {
   const yourAppsHost = opts.yourApps === undefined ? yourHost(opts.load ? { load: vi.fn(async () => opts.load!) } : {}) : opts.yourApps;
   const onsettled = vi.fn((_s: FirstRunSettled) => undefined);
   const onopenintegrations = vi.fn();
@@ -88,10 +90,10 @@ function render(opts: { yourApps?: YourAppsHost | null; scan?: FoundWorkApps | n
     target: host,
     props: {
       initialName: "Atlas",
-      initialStep: opts.yourApps === null ? "notes" : "apps",
+      initialStep: (opts.initialStep ?? (opts.yourApps === null ? "notes" : "apps")) as never,
       creation: { state: "ready", name: "Atlas", bot: { agentUid: "agt_1", handle: "setup" } },
       runtimeReady: { claude: true, codex: false, grok: false },
-      teamOptions: { invites: [], companies: [ACME] },
+      teamOptions: { invites: [], companies: opts.companies ?? [ACME] },
       teamHost,
       appsHost,
       yourAppsHost,
@@ -219,6 +221,106 @@ describe("Your apps", () => {
       ],
     });
     expect(text('[data-testid="first-run-summary-apps"]')).toBe("2 connected");
+  });
+
+  /** Back to the team step, pick another company, forward to "Your apps" again. */
+  async function switchCompany(slug: string): Promise<void> {
+    for (let i = 0; i < 4 && q('[data-testid="first-run-step"]')?.getAttribute("data-step") !== "team"; i += 1) {
+      q<HTMLButtonElement>('[data-testid="first-run-back"]')!.click();
+      await settle();
+    }
+    await pickCompany(slug);
+  }
+  /** Pick a company on the team step and go forward to "Your apps". */
+  async function pickCompany(slug: string): Promise<void> {
+    expect(q('[data-testid="first-run-step"]')?.getAttribute("data-step")).toBe("team");
+    q<HTMLButtonElement>(`[data-testid="first-run-team-existing:${slug}"]`)!.click();
+    await settle();
+    for (let i = 0; i < 4 && q('[data-testid="first-run-step"]')?.getAttribute("data-step") !== "apps"; i += 1) {
+      q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+      await settle();
+    }
+    expect(q('[data-testid="first-run-step"]')?.getAttribute("data-step")).toBe("apps");
+  }
+
+  it("a company change while the list loads loads the new company and drops the old answer", async () => {
+    let finishAcme: (load: YourAppsLoad) => void = () => undefined;
+    const load = vi.fn((uid: string) =>
+      uid === "cmp_acme" ? new Promise<YourAppsLoad>((resolve) => (finishAcme = resolve)) : Promise.resolve({ ...LOAD, connections: [] }),
+    );
+    const { yourAppsHost } = render({ companies: [ACME, BETA], yourApps: yourHost({ load }), initialStep: "team" });
+    await settle();
+    await pickCompany("acme");
+    expect(q('[data-testid="first-run-apps-loading"]')).not.toBeNull();
+    await switchCompany("beta");
+    await settle();
+    expect(load).toHaveBeenLastCalledWith("cmp_beta");
+    expect(q('[data-testid="first-run-apps-loading"]')).toBeNull();
+    // Beta has no Slack connection: Slack is a tile, not a "team" chip.
+    expect(q('[data-testid="first-run-chip-slack.com"]')).toBeNull();
+    finishAcme(LOAD);
+    await settle();
+    expect(q('[data-testid="first-run-chip-slack.com"]')).toBeNull();
+    expect(yourAppsHost!.autoConnect).toHaveBeenLastCalledWith("cmp_beta", "e-aws", "AWS Knowledge");
+  });
+
+  it("an install still running for the old company never shows, or is undone, in the new one", async () => {
+    let finishAcme: (res: YourAppsResult) => void = () => undefined;
+    const autoConnect = vi.fn((uid: string) =>
+      uid === "cmp_acme"
+        ? new Promise<YourAppsResult>((resolve) => (finishAcme = resolve))
+        : Promise.resolve<YourAppsResult>({ ok: true, connectionId: "c-beta-aws", installationId: "inst-beta" }),
+    );
+    const undo = vi.fn(async (): Promise<YourAppsResult> => ({ ok: true, connectionId: null, installationId: "inst-beta" }));
+    render({ companies: [ACME, BETA], yourApps: yourHost({ autoConnect, undo }), initialStep: "team" });
+    await settle();
+    await pickCompany("acme");
+    await switchCompany("beta");
+    await settle();
+    finishAcme({ ok: true, connectionId: "c-acme-aws", installationId: "inst-acme" });
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-undo-api.aws"]')!.click();
+    await settle();
+    expect(undo).toHaveBeenCalledWith("cmp_beta", "inst-beta");
+    expect(undo).not.toHaveBeenCalledWith(expect.anything(), "inst-acme");
+  });
+
+  it("Retry while an automatic install runs does not install the same app twice", async () => {
+    const autoConnect = vi.fn(() => new Promise<YourAppsResult>(() => undefined));
+    const load = vi.fn(async (): Promise<YourAppsLoad> => ({ ...LOAD, problem: { reason: "Couldn't check which apps HQ can connect. Try again.", retry: true } }));
+    render({ yourApps: yourHost({ autoConnect, load }) });
+    await settle();
+    expect(autoConnect).toHaveBeenCalledTimes(1);
+    q<HTMLButtonElement>('[data-testid="first-run-apps-reload"]')!.click();
+    await settle();
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(autoConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("one browser sign-in at a time: a docs setup holds Connect, and a Connect holds Set up", async () => {
+    const setup = vi.fn(() => new Promise<YourAppsResult>(() => undefined));
+    const connect = vi.fn(() => new Promise<YourAppsResult>(() => undefined));
+    render({ yourApps: yourHost({ setup, connect }) });
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-connect-zoom.us"]')!.click();
+    await settle();
+    expect(setup).toHaveBeenCalledTimes(1);
+    const linear = q<HTMLButtonElement>('[data-testid="first-run-connect-linear.app"]')!;
+    expect(linear.disabled).toBe(true);
+    linear.click();
+    await settle();
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("a failed connect shows its reason as text, announced politely", async () => {
+    render({ yourApps: yourHost({ connect: vi.fn(async (): Promise<YourAppsResult> => ({ ok: false, reason: "Linear did not finish connecting. Try again.", retry: true })) }) });
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-connect-linear.app"]')!.click();
+    await settle();
+    const note = q('[data-testid="first-run-app-note-linear.app"]');
+    expect(note?.textContent).toBe("Linear did not finish connecting. Try again.");
+    expect(note?.getAttribute("aria-live")).toBe("polite");
+    expect(q('[data-testid="first-run-connect-linear.app"]')?.getAttribute("aria-label")).toBe("Try again Linear");
   });
 
   it("without the host keeps Note taker and Project management", async () => {

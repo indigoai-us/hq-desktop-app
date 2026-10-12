@@ -3496,21 +3496,40 @@
    */
   let foundAppsFlag = $state<boolean>(false);
   let foundAppsFlagRead = false;
+  /**
+   * The found-apps answer is in (or its wait ran out). The takeover opens only
+   * after this, and the answer never changes afterwards, so the steps cannot
+   * swap while the person is in the flow.
+   */
+  let foundAppsFlagSettled = $state(false);
+  function settleFoundAppsFlag(value: boolean): void {
+    if (foundAppsFlagSettled) return;
+    foundAppsFlag = value;
+    foundAppsFlagSettled = true;
+  }
   $effect(() => {
     if (visualFirstRunFlag !== true || foundAppsFlagRead) return;
     foundAppsFlagRead = true;
     const identity = adapter.identity;
-    if (!identity || typeof identity.hasFeature !== "function") return;
+    if (!identity || typeof identity.hasFeature !== "function") {
+      untrack(() => settleFoundAppsFlag(false));
+      return;
+    }
     void Promise.resolve()
       .then(() => identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG))
       .then(
-        (result) => {
-          foundAppsFlag = result.ok && result.value === true;
-        },
+        (result) => settleFoundAppsFlag(result.ok && result.value === true),
         (err: unknown) => {
           console.warn("[hq-desktop] first-run found-apps flag lookup failed:", err);
+          settleFoundAppsFlag(false);
         },
       );
+  });
+  // A found-apps answer that never comes stops holding the takeover (counts as off).
+  $effect(() => {
+    if (visualFirstRunFlag !== true || foundAppsFlagSettled) return;
+    const timer = window.setTimeout(() => settleFoundAppsFlag(false), FIRST_RUN_LISTINGS_WAIT_MS);
+    return () => window.clearTimeout(timer);
   });
   // The "setup owed" answer is in and the flag is not: the flag has the grace
   // left, then counts as off.
@@ -3551,7 +3570,7 @@
     return () => window.clearTimeout(timer);
   });
   $effect(() => {
-    if (firstRunRouteNow !== "visual" || !firstRunListingsRead || untrack(() => visualFirstRunOpen)) return;
+    if (firstRunRouteNow !== "visual" || !firstRunListingsRead || !foundAppsFlagSettled || untrack(() => visualFirstRunOpen)) return;
     untrack(() => {
       firstRunSuggestedName = firstRunInitialName();
       visualFirstRunOpen = true;
@@ -9937,9 +9956,9 @@
     if (!ready || adapter.kind === "web") return;
     // The visual first run comes first; the tour waits for it (and for the
     // flag's answer, and for the bot listings the takeover waits on, so it
-    // never starts under a takeover about to open).
+    // never starts under a takeover about to open; the found-apps flag holds it too).
     if (visualFirstRunOpen || firstRunRouteNow === "pending") return;
-    if (firstRunRouteNow === "visual" && !firstRunListingsRead) return;
+    if (firstRunRouteNow === "visual" && (!firstRunListingsRead || !foundAppsFlagSettled)) return;
     tourAutoTimer = window.setTimeout(() => {
       if (!tourStartedThisSession) startGuidedTour();
     }, TOUR_AUTO_START_DELAY_MS);

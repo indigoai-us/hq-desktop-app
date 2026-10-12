@@ -95,6 +95,8 @@
     connectedCount,
     fallbackFoundApps,
     yourAppsConsentLine,
+    opensSignIn,
+    signInRunning,
     yourAppsHandoff,
     yourAppsLead,
     yourAppsStatus,
@@ -458,11 +460,14 @@
   let yourAppsLoad = $state.raw<YourAppsLoad | null>(null);
   let yourAppsLoading = $state(false);
   let yourAppsLoadCompany: string | null = null;
+  /**
+   * Bumped whenever "Your apps" starts over (company change, Retry): an answer
+   * that comes back for an older generation is dropped, even after A, B, A.
+   */
+  let yourAppsGen = 0;
   /** Each app's connect in this step, by domain. */
   let appRuns = $state<Record<string, AppRun>>({});
-  /** Installation ids of what this step connected with no sign-in, by domain (for Undo). */
-  const autoInstallations = new Map<string, string>();
-  /** Domains the person undid: never auto-connected again in this run. */
+  /** Domains the person undid in this company: never auto-connected again in this run. */
   const undone = new Set<string>();
   let autoRanFor: string | null = null;
   let yourAppsPassed = $state(false);
@@ -497,6 +502,7 @@
           unmatched: yourAppsFound.fallback ? 0 : yourAppsFound.unmatched,
           catalog: yourAppsLoad.catalog,
           connections: yourAppsLoad.connections,
+          installations: yourAppsLoad.installations,
           canManage: yourAppsLoad.canManage,
           runs: appRuns,
           evidence: (app) => evidenceLine(app.evidence, hostNoun),
@@ -510,15 +516,16 @@
     if (!company || !host) return;
     yourAppsLoadCompany = company.uid;
     yourAppsLoading = true;
+    const gen = ++yourAppsGen;
     void host.load(company.uid).then(
       (load) => {
-        if (appsCompany?.uid !== company.uid) return;
+        if (gen !== yourAppsGen) return;
         yourAppsLoad = load;
         yourAppsLoading = false;
       },
       (err: unknown) => {
         console.warn("[hq-desktop] first-run apps load threw:", err);
-        if (appsCompany?.uid !== company.uid) return;
+        if (gen !== yourAppsGen) return;
         yourAppsLoad = { catalog: null, connections: [], installations: {}, canManage: false, problem: { reason: "Couldn't load your apps. Try again.", retry: true } };
         yourAppsLoading = false;
       },
@@ -537,18 +544,20 @@
     if (!company || !host || !load || !yourAppsFound || yourAppsFound.fallback) return;
     if (autoRanFor === company.uid) return;
     autoRanFor = company.uid;
+    const gen = yourAppsGen;
+    // Apps already running, connected or failed in this step are left alone,
+    // so a Retry during an install never installs the same app twice.
     const plan = autoConnectPlan(
-      { found: yourAppsFound.apps, catalog: load.catalog, connections: load.connections, canManage: load.canManage },
+      { found: yourAppsFound.apps, catalog: load.catalog, connections: load.connections, canManage: load.canManage, runs: appRuns },
       undone,
     );
     for (const item of plan) {
       const name = yourAppsFound.apps.find((a) => a.domain === item.domain)?.name ?? item.domain;
       setRun(item.domain, { state: "connecting", via: "install" });
       void host.autoConnect(company.uid, item.entryId, name).then((res) => {
-        if (appsCompany?.uid !== company.uid) return;
+        if (!sameRun(gen, company.uid)) return;
         if (res.ok) {
-          if (res.installationId) autoInstallations.set(item.domain, res.installationId);
-          setRun(item.domain, { state: "connected", how: "auto", connectionId: res.connectionId });
+          setRun(item.domain, { state: "connected", how: "auto", connectionId: res.connectionId, installationId: res.installationId });
           report();
         } else {
           // Not connected after all: the tile offers Connect again.
@@ -558,6 +567,17 @@
     }
   }
 
+  /**
+   * The answer still belongs to what is on screen: same company, and no
+   * company change since it started (a Retry keeps runs: they finish on their
+   * own).
+   */
+  function sameRun(gen: number, companyUid: string): boolean {
+    return appsCompany?.uid === companyUid && gen >= runsGen;
+  }
+  /** The generation the current company's runs started in (a company change moves it). */
+  let runsGen = 0;
+
   function connectTile(tile: AppTile): void {
     const company = appsCompany;
     const host = yourAppsHost;
@@ -566,9 +586,12 @@
       onopenintegrations?.(company.uid);
       return;
     }
+    // One browser sign-in at a time.
+    if (opensSignIn(tile) && yourAppsShown && signInRunning(yourAppsShown)) return;
+    const gen = yourAppsGen;
     setRun(tile.domain, { state: "connecting", via: tile.action === "install" ? "install" : "browser" });
     void host.connect(company.uid, tile, appsAbort.signal).then((res) => {
-      if (appsCompany?.uid !== company.uid) return;
+      if (!sameRun(gen, company.uid)) return;
       if (res.ok) {
         setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
         report();
@@ -582,9 +605,11 @@
     const company = appsCompany;
     const host = yourAppsHost;
     if (!company || !host) return;
+    if (yourAppsShown && signInRunning(yourAppsShown)) return;
+    const gen = yourAppsGen;
     setRun(tile.domain, { state: "checking-docs" });
     void host.setup(company.uid, tile, appsAbort.signal).then((res) => {
-      if (appsCompany?.uid !== company.uid) return;
+      if (!sameRun(gen, company.uid)) return;
       if (res.ok) {
         setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
         report();
@@ -600,16 +625,17 @@
     const company = appsCompany;
     const host = yourAppsHost;
     if (!company || !host) return;
-    const installationId =
-      autoInstallations.get(chip.domain) ?? (chip.connectionId ? yourAppsLoad?.installations[chip.connectionId] : undefined);
+    // The chip carries the installation of this company's list or run; no id, no Undo.
+    const installationId = chip.installationId;
     if (!installationId) return;
     const before = appRuns[chip.domain] ?? { state: "idle" };
-    setRun(chip.domain, { state: "undoing", connectionId: chip.connectionId });
+    const gen = yourAppsGen;
+    yourAppsUndoProblem = null;
+    setRun(chip.domain, { state: "undoing", connectionId: chip.connectionId, installationId });
     void host.undo(company.uid, installationId).then((res) => {
-      if (appsCompany?.uid !== company.uid) return;
+      if (!sameRun(gen, company.uid)) return;
       if (res.ok) {
         undone.add(chip.domain);
-        autoInstallations.delete(chip.domain);
         // The connection is gone: the app goes back to "Ready to connect".
         if (yourAppsLoad && chip.connectionId) {
           yourAppsLoad = { ...yourAppsLoad, connections: yourAppsLoad.connections.filter((c) => c.id !== chip.connectionId) };
@@ -617,7 +643,7 @@
         setRun(chip.domain, { state: "idle" });
         report();
       } else {
-        setRun(chip.domain, before.state === "idle" ? { state: "connected", how: "auto", connectionId: chip.connectionId } : before);
+        setRun(chip.domain, before.state === "idle" ? { state: "connected", how: "auto", connectionId: chip.connectionId, installationId } : before);
         yourAppsUndoProblem = res.reason;
       }
     });
@@ -630,20 +656,29 @@
     const uid = appsCompany?.uid ?? null;
     untrack(() => {
       if (yourAppsHost && uid !== yourAppsLoadCompany && yourAppsLoadCompany !== null) {
+        // Nothing from the old company carries over: its list, runs, Undo
+        // state and any answer still on its way.
+        yourAppsGen += 1;
+        runsGen = yourAppsGen;
         yourAppsLoad = null;
+        yourAppsLoading = false;
         appRuns = {};
+        undone.clear();
+        yourAppsUndoProblem = null;
         autoRanFor = null;
         yourAppsPassed = false;
         yourAppsLoadCompany = null;
       }
     });
   });
-  // "Your apps" opens: its list loads the first time.
+  // "Your apps" is open with no list and none on its way (first time, or after
+  // a company change): the list loads.
   $effect(() => {
-    if (step !== "apps") return;
-    untrack(() => {
-      if (!yourAppsLoad && !yourAppsLoading) loadYourApps();
-    });
+    const open = step === "apps";
+    const needed = !yourAppsLoad && !yourAppsLoading;
+    const uid = appsCompany?.uid ?? null;
+    if (!open || !needed || !uid) return;
+    untrack(() => loadYourApps());
   });
   // Once the list and the scan are both in, the no-sign-in apps connect.
   $effect(() => {
@@ -1179,13 +1214,14 @@
                   onsetup={setupTile}
                   onundo={undoChip}
                   onreload={() => {
+                    yourAppsUndoProblem = null;
                     yourAppsLoad = null;
                     autoRanFor = null;
                     loadYourApps();
                   }}
                 />
               {:else}
-                <p class="new-bot-muted" data-testid="first-run-apps-loading" aria-busy="true">Looking for your apps…</p>
+                <p class="new-bot-muted" data-testid="first-run-apps-loading" role="status" aria-busy="true">Looking for your apps…</p>
               {/if}
             {:else if appKind && appCopy}
               <FirstRunAppStep

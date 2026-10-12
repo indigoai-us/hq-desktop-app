@@ -17,6 +17,8 @@
     NOT_IN_HQ_SHOWN,
     READY_SHOWN,
     YOUR_APPS_COPY,
+    opensSignIn,
+    signInRunning,
     type AppTile,
     type ConnectedChip,
     type YourAppsView,
@@ -49,10 +51,8 @@
   const notInHq = $derived(view.notInHq.filter(matches));
   const readyShown = $derived(showAllReady || q ? ready : ready.slice(0, READY_SHOWN));
   const notInHqShown = $derived(showAllNotInHq || q ? notInHq : notInHq.slice(0, NOT_IN_HQ_SHOWN));
-  /** One browser sign-in at a time: other Connect presses wait for it. */
-  const browserBusy = $derived(
-    view.ready.some((t) => t.run.state === "connecting" && t.run.via === "browser"),
-  );
+  /** One browser sign-in at a time: other Connect, Set up and Try again presses wait for it. */
+  const browserBusy = $derived(signInRunning(view));
   const alsoNames = $derived(view.alsoFound);
   const alsoShort = $derived(alsoNames.slice(0, 3));
   const alsoRest = $derived(alsoNames.length - alsoShort.length + view.unmatched);
@@ -80,10 +80,9 @@
 
   function pressable(tile: AppTile): boolean {
     if (tile.run.state === "connecting" || tile.run.state === "checking-docs" || tile.run.state === "unsupported") return false;
+    if (opensSignIn(tile) && browserBusy) return false;
     if (tile.run.state === "failed") return tile.run.retry;
-    if (tile.action === "setup") return true;
-    if (tile.action === "connect") return !browserBusy;
-    return tile.action === "install" || tile.action === "integrations";
+    return opensSignIn(tile) || tile.action === "install" || tile.action === "integrations";
   }
 
   function press(tile: AppTile): void {
@@ -134,6 +133,7 @@
               type="button"
               class="first-run-app-undo"
               data-testid={`first-run-undo-${chip.domain}`}
+              aria-label={`${YOUR_APPS_COPY.undo} ${chip.name}`}
               disabled={chip.undoing}
               aria-busy={chip.undoing ? "true" : undefined}
               onclick={() => onundo(chip)}
@@ -205,7 +205,8 @@
     <ConnectionCardLogo logo={appLogo(tile.domain)} size={30} />
     <span class="first-run-app-text">
       <span class="first-run-app-name">{tile.name}</span>
-      <span class="first-run-app-note" title={failed && tile.run.state === "failed" ? tile.run.reason : tile.note}>{tile.note}</span>
+      <!-- The note carries the tile's state (Connecting, Didn't connect and why): read out as it changes. -->
+      <span class="first-run-app-note" aria-live="polite" data-testid={`first-run-app-note-${tile.domain}`}>{tile.note}</span>
     </span>
     {#if hasButton(tile)}
       <button
@@ -213,6 +214,7 @@
         class="first-run-app-connect"
         class:docs={tile.action === "setup"}
         data-testid={`first-run-connect-${tile.domain}`}
+        aria-label={`${label(tile)} ${tile.name}`}
         disabled={!pressable(tile)}
         aria-busy={busy ? "true" : undefined}
         onclick={() => press(tile)}
@@ -330,6 +332,8 @@
   }
   .first-run-app.failed .first-run-app-note {
     color: #fecaca;
+    /* The reason is read in full, not cut off. */
+    white-space: normal;
   }
   .first-run-app-connect {
     flex: 0 0 auto;

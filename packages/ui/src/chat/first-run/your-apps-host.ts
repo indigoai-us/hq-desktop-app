@@ -154,6 +154,16 @@ export function readDocsDiscovery(json: unknown): DocsVerdict {
   return { next: "unsupported" };
 }
 
+/** A well-formed https address (the only kind a sign-in may open). */
+export function isHttpsUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function createYourAppsHost(deps: YourAppsHostDeps): YourAppsHost {
   const delay = deps.delayMs ?? FIRST_RUN_DRY_DELAY_MS;
   const pollMs = deps.pollMs ?? 3000;
@@ -184,15 +194,18 @@ export function createYourAppsHost(deps: YourAppsHostDeps): YourAppsHost {
   }
 
   async function oauth(companyUid: string, tile: AppTile, ref: IntegrationAppRef & { discoveryReceiptId?: string }, signal?: AbortSignal): Promise<YourAppsResult> {
+    // Without the list as it was before the browser opens, an existing
+    // connection would look new: stop with a retry instead of guessing.
     const before = await ids(companyUid, tile.domain);
+    if (!before) return { ok: false, reason: `Could not check on ${tile.name}. Try again.`, retry: true };
     const started = deps.startOAuth ? await deps.startOAuth(ref).catch(() => null) : null;
-    if (!started?.ok || !/^https:\/\//i.test(started.value.authorizationUrl ?? "")) {
+    if (!started?.ok || !isHttpsUrl(started.value.authorizationUrl)) {
       const why = connectFailureSentence(started && !started.ok ? started : null, tile.name);
       return { ok: false, reason: why.sentence, retry: why.retry };
     }
     if (signal?.aborted) return YOUR_APPS_ABORTED;
     deps.openUrl(started.value.authorizationUrl);
-    return waitFor(companyUid, tile, before ?? new Set(), signal);
+    return waitFor(companyUid, tile, before, signal);
   }
 
   async function installWith(input: IntegrationInstallInput, name: string): Promise<YourAppsResult> {

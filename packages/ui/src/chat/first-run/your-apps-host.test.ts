@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { IntegrationInstallInput } from "@hq/platform";
 
 import { SIGNATURE_DOMAINS } from "./found-apps.js";
-import { CANT_CONNECT_YET, LOOKUP_FAILED, createYourAppsHost, readDocsDiscovery, readStepConnections, type YourAppsHostDeps } from "./your-apps-host.js";
+import { CANT_CONNECT_YET, LOOKUP_FAILED, createYourAppsHost, isHttpsUrl, readDocsDiscovery, readStepConnections, type YourAppsHostDeps } from "./your-apps-host.js";
 import type { AppTile } from "./your-apps.js";
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
@@ -112,6 +112,30 @@ describe("createYourAppsHost", () => {
     expect(startOAuth).toHaveBeenCalledWith({ companyUid: "cmp_acme", domain: "linear.app", catalogEntryId: "e-linear" });
     expect(openUrl).toHaveBeenCalledWith("https://linear.app/oauth/authorize?x=1");
     expect(res).toEqual({ ok: true, connectionId: "c-lin", installationId: null });
+  });
+
+  it("stops with a retry when the list before sign-in cannot be read (an old connection never counts as new)", async () => {
+    let reads = 0;
+    const listConnections = vi.fn(async () => {
+      reads += 1;
+      if (reads === 1) return fail(500);
+      return ok({ connections: [{ id: "c-old", provider: "factory:linear", status: "connected", installation: { domain: "linear.app" } }] });
+    });
+    const openUrl = vi.fn();
+    const startOAuth = vi.fn(async () => ok({ authorizationUrl: "https://linear.app/oauth" } as never));
+    const host = createYourAppsHost(deps({ listConnections, startOAuth, openUrl }));
+    const res = await host.connect("cmp_acme", tile());
+    expect(res).toMatchObject({ ok: false, retry: true });
+    expect(startOAuth).not.toHaveBeenCalled();
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("isHttpsUrl accepts only well-formed https addresses", () => {
+    expect(isHttpsUrl("https://linear.app/oauth")).toBe(true);
+    expect(isHttpsUrl("https://")).toBe(false);
+    expect(isHttpsUrl("http://linear.app")).toBe(false);
+    expect(isHttpsUrl("javascript:alert(1)")).toBe(false);
+    expect(isHttpsUrl(null)).toBe(false);
   });
 
   it("does not open a non-https sign-in address", async () => {
