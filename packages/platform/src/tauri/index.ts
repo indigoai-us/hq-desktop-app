@@ -658,6 +658,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("GET", INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.hqProJson("POST", INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    getConnectionAccess: ({ companyUid, connectionId }) =>
+      this.hqProJson("GET", INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+    revokeConnectionAccess: (input) =>
+      this.hqProJson("POST", INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.hqProRequestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
     // No redirectUri: the server's default lands on the console's callback.

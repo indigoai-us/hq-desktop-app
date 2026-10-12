@@ -1134,6 +1134,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.post(INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    getConnectionAccess: ({ companyUid, connectionId }) =>
+      this.get(INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+    revokeConnectionAccess: (input) =>
+      this.post(INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
     // No redirectUri: the server's default lands on the console's callback.

@@ -1723,6 +1723,10 @@ export const INTEGRATION_PATHS = {
   connections: (companyUid: string) =>
     `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}&view=summary`,
   grantAccess: "/v1/integrations/factory/access/grant",
+  /** The per-connection access view: mode, entries, caller's `canManage`. */
+  readAccess: (companyUid: string, connectionId: string) =>
+    `/v1/integrations/factory/access?companyUid=${encodeURIComponent(companyUid)}&connectionId=${encodeURIComponent(connectionId)}`,
+  revokeAccess: "/v1/integrations/factory/access/revoke",
   /** The catalog of apps HQ can connect. `limit` is left out when not given; the server bounds it to 1..100. */
   catalog: (companyUid: string, query: string, limit?: number) =>
     `/v1/integrations/factory/catalog?companyUid=${encodeURIComponent(companyUid)}` +
@@ -1862,6 +1866,20 @@ export interface IntegrationsApi {
    * connection. Only the person who connected it or a company admin may.
    */
   grantConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
+  /**
+   * GET /v1/integrations/factory/access?companyUid=&connectionId=: the mode,
+   * creator and ACL entries for a single connection, plus whether the caller
+   * may manage it. Serves per-bot read of effective access.
+   */
+  getConnectionAccess(input: {
+    companyUid: string;
+    connectionId: string;
+  }): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/access/revoke: remove a person's or bot's
+   * grant on a connection. Same manage check as `grantConnectionAccess`.
+   */
+  revokeConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
   /**
    * GET /v1/integrations/factory/catalog?companyUid=&query=&limit=: the apps
    * HQ can connect that match `query`. Owner or admin only; anyone else gets
