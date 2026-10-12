@@ -17,7 +17,7 @@ import {
   helloCardSource,
   helloCardSourceLogLine,
 } from "./agent-channel.js";
-import { inlineReplyRows } from "./live-messages.js";
+import { botDmRows } from "./live-messages.js";
 import { parseRichContent } from "./messaging/richMessageContent.js";
 import type { ConversationRow } from "./sidebar-model.js";
 import type { ConversationMessageWire } from "./chat-api.js";
@@ -522,7 +522,7 @@ describe("the hidden notices to a bot", () => {
       const rows = [
         { eventId: "n1", direction: "out" as const, fromPersonUid: "prs_me", body, createdAt: "2026-10-02T14:30:00.000Z" },
       ];
-      expect(inlineReplyRows(rows)).toEqual([]);
+      expect(botDmRows(rows)).toEqual([]);
     }
   });
 

@@ -13,11 +13,12 @@ import { firstRunHandoffNotice } from "../chat/first-run/visual-first-run.js";
 import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "../chat/agent-channel.js";
 
 /**
- * Owner walkthrough, 2026-10-02: a hosted bot answered in a thread, so its
- * answer sat under "1 reply" while the conversation looked silent. "See how
- * sheister replies in a DM? That's the flow we want." Hosted bots post every
- * answer as a reply to the message that triggered it; a one-to-one
- * conversation with a bot shows those answers in line.
+ * Owner request, 2026-10-12: HQ DMs are threaded on the server, and a bot's
+ * DM shows them threaded like any other conversation. Hosted bots post every
+ * answer as a reply to the message that triggered it, so the answer sits
+ * under "1 reply" on that message and opens in the thread panel. The bot's
+ * answer to the app's own hidden request (its first message) has no visible
+ * root, so it stays on the main timeline.
  */
 
 /** Newest first, as the server returns a direct-message page. */
@@ -39,6 +40,12 @@ function adapter(peerUid: string): PlatformAdapter {
       fetchChannel: async () => ok({ messages: [], nextCursor: null }),
       fetchDmThread: async () =>
         ok({ messages: THREAD.map((row) => (row.fromPersonUid === "agt_nova" ? { ...row, fromPersonUid: peerUid } : row)) }),
+      fetchReplyThread: async () =>
+        ok({
+          scope: "dm",
+          root: THREAD[1],
+          replies: [{ ...THREAD[0], fromPersonUid: peerUid }],
+        }),
     },
     agents: {
       getStatus: async () => ok({ setupState: { phase: "ready" }, agent: { runtime: { syncOkAt: "2026-10-02T14:20:00.000Z" } } }),
@@ -92,14 +99,17 @@ async function mountDm(peerUid: string, seeded: Array<Record<string, unknown>> =
 }
 
 describe("DesktopApp direct message with a bot", () => {
-  it("shows the bot's answers in line, not under a reply count", async () => {
+  it("keeps the bot's answer in its thread, under a reply count on the message it answers", async () => {
     const text = await mountDm("agt_nova");
     expect(text).toContain("Hello there");
+    expect(text).not.toContain("Here now. What do you need?");
+    expect(text).toMatch(/1 reply/);
+  });
+
+  it("shows the bot's first message, the answer to the app's hidden request, on the main timeline", async () => {
+    const text = await mountDm("agt_nova");
     expect(text).toContain("Hi Corey, I am Nova.");
-    expect(text).toContain("Here now. What do you need?");
     expect(text.indexOf("Hi Corey, I am Nova.")).toBeLessThan(text.indexOf("Hello there"));
-    expect(text.indexOf("Hello there")).toBeLessThan(text.indexOf("Here now. What do you need?"));
-    expect(text).not.toMatch(/\b1 reply\b/);
   });
 
   it("never shows the request the app sent the bot for its first message", async () => {
@@ -115,7 +125,7 @@ describe("DesktopApp direct message with a bot", () => {
     const text = await mountDm("agt_nova", seeded);
     expect(text).toContain("Hi Corey, I am Nova.");
     expect(text).not.toContain("Automatic message from HQ");
-    expect(text).not.toMatch(/\b1 reply\b/);
+    expect(text).not.toContain("Here now. What do you need?");
   });
 
   it("keeps threads under their root in a conversation between two people", async () => {
@@ -125,13 +135,16 @@ describe("DesktopApp direct message with a bot", () => {
     expect(text).toMatch(/1 reply/);
   });
 
-  it("offers no 'Reply in thread' in a bot's direct message, where replies show in line (B-5)", async () => {
+  it("opens the bot's answer in the thread panel from the reply count", async () => {
     await mountDm("agt_nova");
-    expect(host.querySelectorAll('[data-testid="conversation-message"]').length).toBeGreaterThan(0);
-    expect(host.querySelectorAll('[data-testid="message-reply-quick"]')).toHaveLength(0);
-    expect(host.querySelectorAll('[data-testid="message-replies"]')).toHaveLength(0);
-    // The other message actions are still there.
-    expect(host.querySelectorAll('[data-testid="message-copy"]').length).toBeGreaterThan(0);
+    const counts = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="message-replies"]')];
+    expect(counts).toHaveLength(1);
+    expect(host.querySelectorAll('[data-testid="message-reply-quick"]').length).toBeGreaterThan(0);
+    counts[0]!.click();
+    await settle();
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="reply-panel"]')?.textContent ?? "").toContain("Here now. What do you need?"),
+    );
   });
 
   it("still offers 'Reply in thread' between two people, and it opens the thread", async () => {
