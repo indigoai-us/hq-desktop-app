@@ -69,7 +69,7 @@
 
 <style>
   .greet {
-    font-size: 40px;
+    font-size: var(--b-fs-display);
     font-weight: 500;
     letter-spacing: -0.03em;
     line-height: 1.05;

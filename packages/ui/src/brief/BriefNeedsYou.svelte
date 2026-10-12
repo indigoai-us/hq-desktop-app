@@ -195,21 +195,26 @@
 
 <style>
   .lead {
-    font-size: 17px !important;
+    font-size: var(--b-fs-title) !important;
   }
   .lead.tall {
-    font-size: 22px !important;
+    font-size: var(--b-fs-title-lg) !important;
     letter-spacing: -0.02em !important;
   }
+  /* Rows share the card's height: with few decisions each row grows (up to a cap) instead of
+     leaving a block of empty card under the list. */
   .items {
+    flex: 1;
     display: flex;
     flex-direction: column;
     gap: 8px;
     margin-top: 14px;
     min-height: 0;
   }
-  /* Glass row: lit from the top, hairline rim, soft drop. No backdrop-filter, no well. */
+  /* Flat row: faint fill and a hairline. No backdrop-filter, no well. */
   .it {
+    flex: 1 1 auto;
+    max-height: 132px;
     position: relative;
     overflow: hidden;
     display: flex;

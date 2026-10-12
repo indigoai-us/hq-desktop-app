@@ -85,14 +85,14 @@
 
 <style>
   .q {
-    font-size: 20px;
+    font-size: var(--b-fs-title-lg);
     font-weight: 500;
     letter-spacing: -0.02em;
     line-height: 1.15;
     margin-top: 10px;
   }
   .wide .q {
-    font-size: 22px;
+    font-size: var(--b-fs-title-lg);
   }
   .q.cleared {
     text-decoration: line-through;

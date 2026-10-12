@@ -134,10 +134,6 @@
     line-height: 1.3;
     color: var(--b-t1);
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .rows.tall .t {
     white-space: normal;
     display: -webkit-box;
     -webkit-box-orient: vertical;

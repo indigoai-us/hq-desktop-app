@@ -173,7 +173,7 @@
     align-items: baseline;
   }
   .tot .big {
-    font-size: 36px;
+    font-size: var(--b-fs-num);
   }
   .tot .dim {
     color: rgba(255, 255, 255, 0.56);

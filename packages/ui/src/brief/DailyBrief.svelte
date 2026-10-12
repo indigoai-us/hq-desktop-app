@@ -489,6 +489,10 @@
   .slot > :global(.w) {
     flex: 1;
   }
+  /* A quiet day is one hero: let it hold the window instead of leaving the lower half empty. */
+  .daily-brief[data-template="1"] .slot {
+    min-height: clamp(360px, calc(100vh - 220px), 640px);
+  }
   .placeholder {
     border: 1px dashed rgba(255, 255, 255, 0.18);
     background: transparent;

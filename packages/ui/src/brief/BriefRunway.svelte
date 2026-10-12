@@ -285,6 +285,15 @@
     text-overflow: ellipsis;
     max-width: 100%;
   }
+  /* A block too narrow for a readable label shows none; its hover still names the meeting. */
+  .mt {
+    container-type: inline-size;
+  }
+  @container (max-width: 52px) {
+    .mt span {
+      display: none;
+    }
+  }
   .mt.proj {
     background: rgba(255, 255, 255, 0.03);
     border: 1px dashed rgba(255, 255, 255, 0.35);
@@ -377,8 +386,12 @@
     color: var(--b-t1);
     margin-top: 2px;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
   }
   .fit {
     color: var(--b-t2);

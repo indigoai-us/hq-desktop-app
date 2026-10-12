@@ -57,7 +57,7 @@
     <line class="stream" x1="17" y1="17" x2="17" y2="30" stroke="#fff" stroke-width="1.4" />
   </svg>
   <div class="eyebrow">Waiting on</div>
-  <div class="big" style="font-size:42px;margin-top:6px" use:countUp={rows.length}>0</div>
+  <div class="big" style="margin-top:6px" use:countUp={rows.length}>0</div>
   {#each shown as w (w.id)}
     {@const age = waitingAge(w.ageHours)}
     <div class="row" role="group" aria-label={label(w)} data-testid="brief-waiting-row" use:peek={{ state: brief, content: () => content(w) }}>
@@ -114,12 +114,17 @@
   .row .bul {
     margin-top: 0;
   }
+  /* Two lines before cutting off: a 213px column cannot fit a name and a task on one. */
   .tx {
     flex: 1;
     min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
   }
   .row em {
     color: rgba(255, 255, 255, 0.76) !important;

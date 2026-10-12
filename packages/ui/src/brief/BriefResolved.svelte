@@ -117,10 +117,10 @@
 
 <style>
   h3.single.tall {
-    font-size: 20px;
+    font-size: var(--b-fs-title-lg);
   }
   h3.single {
-    font-size: 16px;
+    font-size: var(--b-fs-title);
   }
   /* One recovery: source line, what fixed it, then the timeline or the writer's three lines. */
   .one {

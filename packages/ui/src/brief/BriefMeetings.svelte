@@ -71,7 +71,7 @@
     <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="3" /><path d="M4 10h16M9 3.5v4M15 3.5v4" /></svg> Yesterday
   </div>
   <div class="hd">
-    <span class="big" style="font-size:42px" use:countUp={decisions || all.length}>0</span>
+    <span class="big" use:countUp={decisions || all.length}>0</span>
     <span class="sub" data-testid="brief-meetings-sub"
       >{decisions
         ? `decision${decisions === 1 ? "" : "s"} from ${all.length} meeting${all.length === 1 ? "" : "s"}`

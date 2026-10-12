@@ -427,11 +427,14 @@
     transition: opacity 0.3s;
   }
   .node .t {
-    display: block;
     font-weight: 500;
-    white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
   }
   .node small {
     display: block;

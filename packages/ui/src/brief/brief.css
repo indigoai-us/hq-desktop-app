@@ -48,6 +48,13 @@
   --b-sun-2: #ff809f;
   --b-r: 12px;
   --b-gap: 14px;
+  /* One padding and one type scale for every card. */
+  --b-pad: 18px 20px;
+  --b-fs-display: 40px; /* hero greeting at large sizes */
+  --b-fs-display-sm: 32px; /* hero greeting at small sizes */
+  --b-fs-num: 44px; /* the one measured number a card leads with */
+  --b-fs-title-lg: 20px; /* a card's headline when it leads at a large size */
+  --b-fs-title: 15px; /* every other card headline */
   /* Flat material: a hairline instead of raised/sunken depth. */
   --b-raise: 0 0 0 1px var(--b-line);
   --b-well: 0 0 0 1px var(--b-line);
@@ -178,7 +185,7 @@
   border-radius: var(--b-r);
   background: var(--b-card);
   overflow: hidden;
-  padding: 18px 20px;
+  padding: var(--b-pad);
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -201,13 +208,13 @@
 }
 .daily-brief .w h3 {
   margin: 8px 0 0;
-  font-size: 15px;
+  font-size: var(--b-fs-title);
   font-weight: 500;
   letter-spacing: -0.018em;
   line-height: 1.2;
 }
 .daily-brief .big {
-  font-size: 52px;
+  font-size: var(--b-fs-num);
   font-weight: 300;
   letter-spacing: -0.04em;
   line-height: 0.95;

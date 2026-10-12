@@ -239,7 +239,7 @@
       Morning{userName ? `, ${userName}` : ""}.<br /><span>{line}</span>
     </div>
     {#if big && leadLine}<div class="first" data-testid="brief-sunrise-first">{leadLine}</div>{/if}
-    <div class="sub" style="margin-top:12px;max-width:{big ? 420 : 330}px">{sub}</div>
+    <div class="sub lede" class:big>{sub}</div>
     <div class="tl">
       <div
         class="eyebrow tl-head"
@@ -291,33 +291,43 @@
   }
   .over {
     position: relative;
-    padding: 22px 24px;
+    padding: var(--b-pad);
     height: 100%;
     display: flex;
     flex-direction: column;
   }
   .greet {
-    font-size: 32px;
+    font-size: var(--b-fs-display-sm);
     font-weight: 500;
     letter-spacing: -0.03em;
     line-height: 1.05;
     margin-top: 12px;
   }
   .greet.big {
-    font-size: 40px;
+    font-size: var(--b-fs-display);
   }
   .greet span {
     color: #ffb580;
   }
+  /* Text stays left of the sun (drawn at 68% of the width, radius up to 14%), so it never runs over it. */
   .first {
     margin-top: 10px;
-    max-width: 440px;
+    max-width: min(440px, calc(54% - 32px));
     font-size: 13.5px;
     line-height: 1.35;
     color: rgba(255, 255, 255, 0.86);
   }
+  .lede {
+    margin-top: 12px;
+    max-width: min(330px, calc(54% - 32px));
+  }
+  .lede.big {
+    max-width: min(420px, calc(54% - 32px));
+  }
+  /* The timeline sits at the bottom with a guaranteed gap above it, so the lede never touches its label. */
   .tl {
     margin-top: auto;
+    padding-top: 18px;
     margin-bottom: 12px;
   }
   .tl-head {

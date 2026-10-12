@@ -157,9 +157,13 @@
     min-width: 0;
     font-size: 12px;
     line-height: 1.25;
-    white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
   }
   .linked .t {
     color: var(--b-t2);

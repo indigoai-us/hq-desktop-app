@@ -74,7 +74,7 @@
 <style>
   .prio {
     margin-top: 14px;
-    padding: 12px 18px 10px;
+    padding: 14px 20px;
     animation: none;
   }
   ol {
