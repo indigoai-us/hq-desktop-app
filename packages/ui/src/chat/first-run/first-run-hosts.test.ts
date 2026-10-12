@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { ok, type AdapterResult, type Json } from "@hq/platform";
 
-import { CONNECT_ABORTED, CREATE_UNAVAILABLE, FIND_COMPANY_TIMEOUT_MS, createFirstRunAppsHost, createFirstRunTeamHost } from "./first-run-hosts.js";
+import {
+  CATALOG_LIMIT,
+  CONNECT_ABORTED,
+  CREATE_UNAVAILABLE,
+  FIND_COMPANY_TIMEOUT_MS,
+  KEY_APPS,
+  createFirstRunAppsHost,
+  createFirstRunTeamHost,
+} from "./first-run-hosts.js";
 import type { FirstRunApp } from "./app-step.js";
 
 const ACME = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
@@ -185,6 +193,130 @@ describe("apps host", () => {
     const notes = await host.catalog("cmp_acme", "notes");
     expect(notes).toEqual({ ok: true, apps: [expect.objectContaining({ domain: "granola.ai" })], connected: ["granola.ai"] });
     expect(catalogSearch).toHaveBeenCalledWith("cmp_acme", "", 100);
+  });
+
+  describe("key apps are read by domain", () => {
+    // The unfiltered read: the catalog's first 100 entries, without the key apps.
+    const first100: Json = {
+      ok: true,
+      entries: [
+        { name: "Granola", domain: "granola.ai", authClass: "none" },
+        { name: "Asana", domain: "asana.com", authClass: "oauth" },
+      ],
+    };
+    const byDomain: Record<string, Json> = {
+      "fireflies.ai": {
+        ok: true,
+        entries: [
+          { name: "Fireflies.ai", domain: "fireflies.ai", authClass: "oauth", entryId: "cat_ff" },
+          // Another app the same read returned is not added.
+          { name: "Zoom", domain: "zoom.us", authClass: "oauth" },
+          { name: "Fireflies Notes Clone", domain: "notfireflies.ai", authClass: "oauth" },
+        ],
+      },
+      "otter.ai": { ok: true, entries: [{ name: "otter.ai", domain: "otter.ai", authClass: "oauth" }] },
+      "read.ai": {
+        ok: true,
+        entries: [
+          { name: "read.ai", domain: "read.ai", authClass: "oauth" },
+          // Readwise and Thread are other apps, even though "read" is in their names.
+          { name: "Readwise", domain: "readwise.io", authClass: "oauth" },
+          { name: "Thread AI", domain: "thread.ai", authClass: "oauth" },
+        ],
+      },
+      // tl;dv is not in the catalog: its read finds nothing.
+      "tldv.io": { ok: true, entries: [] },
+      "linear.app": {
+        ok: true,
+        entries: [
+          { name: "Linear", domain: "linear.app", authClass: "oauth", entryId: "cat_linear" },
+          { name: "Jira", domain: "atlassian.com", authClass: "oauth" },
+          // A different app whose name starts with the key app's is not added.
+          { name: "LinearB", domain: "linearb.io", authClass: "oauth" },
+          { name: "Linear Clone", domain: "linear.app.example.com", authClass: "oauth" },
+        ],
+      },
+    };
+    const search = () =>
+      vi.fn(async (_uid: string, query: string, _limit?: number) => ok(query ? (byDomain[query] ?? { ok: true, entries: [] }) : first100));
+
+    it("names the note takers and the project tracker the screens must always list", () => {
+      expect(KEY_APPS).toEqual({ notes: ["fireflies.ai", "otter.ai", "read.ai", "tldv.io"], projects: ["linear.app"] });
+    });
+
+    it("Note taker lists Fireflies, Otter and Read.ai even when the first 100 entries leave them out", async () => {
+      const catalogSearch = search();
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      const notes = await host.catalog("cmp_acme", "notes");
+      expect(notes.ok && notes.apps.map((a) => a.domain)).toEqual(["fireflies.ai", "granola.ai", "otter.ai", "read.ai"]);
+      expect(notes.ok && notes.apps.find((a) => a.domain === "fireflies.ai")?.entryId).toBe("cat_ff");
+      // Every read uses the full limit: the server searches only the first `limit` apps.
+      expect(catalogSearch.mock.calls.map((c) => c.slice(1))).toEqual([
+        ["", CATALOG_LIMIT],
+        ["fireflies.ai", CATALOG_LIMIT],
+        ["otter.ai", CATALOG_LIMIT],
+        ["read.ai", CATALOG_LIMIT],
+        ["tldv.io", CATALOG_LIMIT],
+      ]);
+    });
+
+    it("Project management lists Linear even when the first 100 entries leave it out", async () => {
+      const catalogSearch = search();
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      const projects = await host.catalog("cmp_acme", "projects");
+      expect(projects.ok && projects.apps.map((a) => a.domain)).toEqual(["asana.com", "linear.app"]);
+      expect(catalogSearch.mock.calls.map((c) => c.slice(1))).toEqual([
+        ["", CATALOG_LIMIT],
+        ["linear.app", CATALOG_LIMIT],
+      ]);
+    });
+
+    it("tl;dv shows under Note taker once the catalog has it", async () => {
+      const catalogSearch = vi.fn(async (_uid: string, query: string) =>
+        ok(query === "tldv.io" ? { ok: true, entries: [{ name: "tl;dv", domain: "tldv.io", authClass: "oauth" }] } : query ? { ok: true, entries: [] } : first100),
+      );
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      const notes = await host.catalog("cmp_acme", "notes");
+      expect(notes.ok && notes.apps.map((a) => a.domain)).toEqual(["granola.ai", "tldv.io"]);
+    });
+
+    it("an app the first 100 entries already have is listed once", async () => {
+      const both: Json = { ok: true, entries: [{ name: "Asana", domain: "asana.com", authClass: "oauth" }, { name: "Linear", domain: "linear.app", authClass: "oauth" }] };
+      const catalogSearch = vi.fn(async (_uid: string, query: string) => ok(query ? byDomain[query]! : both));
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      const projects = await host.catalog("cmp_acme", "projects");
+      expect(projects.ok && projects.apps.map((a) => a.domain)).toEqual(["asana.com", "linear.app"]);
+    });
+
+    it.each([
+      ["answers a failure", 0, () => Promise.resolve({ ok: false as const, reason: "error" as const, status: 500, message: "boom" })],
+      ["rejects", 1, () => Promise.reject(new Error("offline"))],
+      [
+        "throws before it returns",
+        1,
+        (): Promise<AdapterResult<Json>> => {
+          throw new Error("no adapter");
+        },
+      ],
+    ] as const)("a by-domain read that %s leaves the first 100 entries on screen", async (_how, logsPerRead, failed) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const catalogSearch = vi.fn((_uid: string, query: string): Promise<AdapterResult<Json>> => (query ? failed() : Promise.resolve(ok(first100))));
+        const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+        expect(await host.catalog("cmp_acme", "notes")).toEqual({ ok: true, apps: [expect.objectContaining({ domain: "granola.ai" })], connected: [] });
+        expect(warn).toHaveBeenCalledTimes(logsPerRead * KEY_APPS.notes.length);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("a failed unfiltered read still fails the screen, whatever the by-domain read found", async () => {
+      const catalogSearch = vi.fn(async (_uid: string, query: string): Promise<AdapterResult<Json>> =>
+        query ? ok(byDomain[query]!) : { ok: false, reason: "error", status: 403, message: "HTTP 403 INTEGRATION_FACTORY_FORBIDDEN" },
+      );
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      expect((await host.catalog("cmp_acme", "notes")).ok).toBe(false);
+    });
   });
 
   it("a refused catalog read says who may connect apps, without Retry", async () => {
