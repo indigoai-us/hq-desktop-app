@@ -1,5 +1,5 @@
 /**
- * US-005: "Hidden from AI" redaction preset toggles for one connected app.
+ * US-005: "Hidden from AI" redaction preset toggles for one connection.
  *
  * The page talks to the server only through `RedactionPresetsApi`. The US-004
  * hq-pro contract is not published yet, so the host wires an adapter that
@@ -9,9 +9,7 @@
  */
 
 export interface RedactionPreset {
-  /** Stable server id, e.g. "emails". */
-  id: string;
-  /** Plain label the server sends; a known id gets a local fallback. */
+  id: RedactionPresetId;
   label: string;
   enabled: boolean;
 }
@@ -20,52 +18,56 @@ export interface RedactionSettings {
   presets: RedactionPreset[];
 }
 
-/**
- * The app the row is about: the page's grouping key (the app's domain, e.g.
- * "slack.com") and the hq-pro connection ids under it. The adapter maps this
- * to whatever key US-004 settles on (per app or per connection).
- */
-export interface RedactionAppRef {
-  key: string;
-  connectionIds: string[];
-}
-
 /** What the page needs from the server. Implemented by the host adapter. */
 export interface RedactionPresetsApi {
-  /** Read the presets for one connected app. */
-  load(companyUid: string, app: RedactionAppRef): Promise<RedactionSettings>;
-  /** Turn one preset on or off. Resolves with the saved settings. */
-  set(companyUid: string, app: RedactionAppRef, presetId: string, enabled: boolean): Promise<RedactionSettings>;
+  /** Read the presets for one hq-pro connection. */
+  load(companyUid: string, connectionId: string): Promise<RedactionSettings>;
+  /** Turn one preset on or off (a PUT). Resolves with the saved settings. */
+  set(companyUid: string, connectionId: string, presetId: RedactionPresetId, enabled: boolean): Promise<RedactionSettings>;
+}
+
+/** The four presets, in display order, with the ids and labels of hq-pro #4910. */
+export const REDACTION_PRESETS = [
+  { id: "personal-ids", label: "Personal IDs" },
+  { id: "hr-pay", label: "Salary and HR" },
+  { id: "legal", label: "Legal matters" },
+  { id: "financial", label: "Bank and card numbers" },
+] as const;
+
+export type RedactionPresetId = (typeof REDACTION_PRESETS)[number]["id"];
+
+const PRESET_IDS = new Set<string>(REDACTION_PRESETS.map((p) => p.id));
+
+/** A connection with no setting hides all four. */
+export function defaultRedactionSettings(): RedactionSettings {
+  return { presets: REDACTION_PRESETS.map((p) => ({ id: p.id, label: p.label, enabled: true })) };
 }
 
 /**
- * Local labels for the four presets this story ships with. Used only when the
- * server sends an id without a label. Ids are a proposal until US-004 lands.
+ * Defensive parse of a server answer. Always returns the four presets in
+ * order with the local labels. A preset the answer leaves out, or an answer
+ * with no `presets` list at all (no setting yet), is on. Unknown ids are
+ * ignored. Accepts `[{ id, enabled }]` or an `{ id: enabled }` map.
  */
-export const DEFAULT_PRESET_LABELS: Readonly<Record<string, string>> = {
-  emails: "Email addresses",
-  phone_numbers: "Phone numbers",
-  payment_cards: "Payment card numbers",
-  government_ids: "Government ID numbers",
-};
-
-/** Defensive parse of a server answer. Throws on a shape it cannot use. */
 export function parseRedactionSettings(body: unknown): RedactionSettings {
-  const list = (body as { presets?: unknown } | null)?.presets;
-  if (!Array.isArray(list)) throw new Error("redaction settings: presets missing");
-  const presets: RedactionPreset[] = [];
-  const seen = new Set<string>();
-  for (const raw of list) {
-    if (!raw || typeof raw !== "object") continue;
-    const r = raw as Record<string, unknown>;
-    const id = typeof r.id === "string" ? r.id.trim() : "";
-    if (!id || seen.has(id) || typeof r.enabled !== "boolean") continue;
-    const label =
-      typeof r.label === "string" && r.label.trim() ? r.label.trim() : (DEFAULT_PRESET_LABELS[id] ?? id);
-    seen.add(id);
-    presets.push({ id, label, enabled: r.enabled });
+  const raw = (body as { presets?: unknown } | null)?.presets;
+  const values = new Map<string, boolean>();
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const r = item as Record<string, unknown>;
+      if (typeof r.id === "string" && PRESET_IDS.has(r.id) && typeof r.enabled === "boolean" && !values.has(r.id)) {
+        values.set(r.id, r.enabled);
+      }
+    }
+  } else if (raw && typeof raw === "object") {
+    for (const [id, enabled] of Object.entries(raw as Record<string, unknown>)) {
+      if (PRESET_IDS.has(id) && typeof enabled === "boolean") values.set(id, enabled);
+    }
   }
-  return { presets };
+  return {
+    presets: REDACTION_PRESETS.map((p) => ({ id: p.id, label: p.label, enabled: values.get(p.id) ?? true })),
+  };
 }
 
 /**
@@ -94,7 +96,7 @@ export interface RedactionRowState {
 export const EMPTY_ROW_STATE: RedactionRowState = { settings: null, pending: new Set(), error: null };
 
 /** The value a toggle shows: the requested value while its save is pending. */
-export function withToggle(state: RedactionRowState, presetId: string, enabled: boolean): RedactionRowState {
+export function withToggle(state: RedactionRowState, presetId: RedactionPresetId, enabled: boolean): RedactionRowState {
   if (!state.settings) return state;
   const pending = new Set(state.pending);
   pending.add(presetId);
@@ -108,7 +110,7 @@ export function withToggle(state: RedactionRowState, presetId: string, enabled: 
 }
 
 /** A save finished: take the server's value for that preset, clear pending. */
-export function withSaved(state: RedactionRowState, presetId: string, saved: RedactionSettings): RedactionRowState {
+export function withSaved(state: RedactionRowState, presetId: RedactionPresetId, saved: RedactionSettings): RedactionRowState {
   const pending = new Set(state.pending);
   pending.delete(presetId);
   const server = saved.presets.find((p) => p.id === presetId);
@@ -123,7 +125,7 @@ export function withSaved(state: RedactionRowState, presetId: string, saved: Red
 }
 
 /** A save failed: put the previous value back, clear pending, say so. */
-export function withFailed(state: RedactionRowState, presetId: string, previous: boolean): RedactionRowState {
+export function withFailed(state: RedactionRowState, presetId: RedactionPresetId, previous: boolean): RedactionRowState {
   const pending = new Set(state.pending);
   pending.delete(presetId);
   if (!state.settings) return { ...state, pending };

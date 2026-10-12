@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_ROW_STATE,
+  REDACTION_PRESETS,
+  defaultRedactionSettings,
   parseRedactionSettings,
   viewerCanEditRedaction,
   withFailed,
@@ -10,39 +12,48 @@ import {
 } from "./redaction-presets";
 
 const LOADED: RedactionRowState = {
-  settings: {
-    presets: [
-      { id: "emails", label: "Email addresses", enabled: true },
-      { id: "phone_numbers", label: "Phone numbers", enabled: false },
-    ],
-  },
+  settings: parseRedactionSettings({ presets: [{ id: "legal", enabled: false }] }),
   pending: new Set(),
   error: null,
 };
 
 describe("US-005 redaction presets model", () => {
-  it("parses presets, keeps server labels and fills known ids", () => {
-    const parsed = parseRedactionSettings({
-      presets: [
-        { id: "emails", label: "Emails", enabled: true },
-        { id: "payment_cards", enabled: false },
-        { id: "custom_x", enabled: true },
-        { id: "emails", label: "dup", enabled: false },
-        { id: "", enabled: true },
-        { id: "no_flag" },
-        null,
-      ],
-    });
-    expect(parsed.presets).toEqual([
-      { id: "emails", label: "Emails", enabled: true },
-      { id: "payment_cards", label: "Payment card numbers", enabled: false },
-      { id: "custom_x", label: "custom_x", enabled: true },
+  it("uses the four hq-pro #4910 presets in order", () => {
+    expect(REDACTION_PRESETS.map((p) => [p.id, p.label])).toEqual([
+      ["personal-ids", "Personal IDs"],
+      ["hr-pay", "Salary and HR"],
+      ["legal", "Legal matters"],
+      ["financial", "Bank and card numbers"],
     ]);
   });
 
-  it("rejects an answer without a presets list", () => {
-    expect(() => parseRedactionSettings({})).toThrow();
-    expect(() => parseRedactionSettings(null)).toThrow();
+  it("turns all four on when the connection has no setting", () => {
+    const allOn = defaultRedactionSettings().presets.map((p) => p.enabled);
+    expect(allOn).toEqual([true, true, true, true]);
+    expect(parseRedactionSettings({}).presets.map((p) => p.enabled)).toEqual(allOn);
+    expect(parseRedactionSettings(null).presets.map((p) => p.enabled)).toEqual(allOn);
+    expect(parseRedactionSettings({ presets: [] }).presets.map((p) => p.enabled)).toEqual(allOn);
+  });
+
+  it("reads list and map answers, keeps local labels, ignores unknown ids", () => {
+    const fromList = parseRedactionSettings({
+      presets: [
+        { id: "legal", label: "server label", enabled: false },
+        { id: "hr-pay", enabled: false },
+        { id: "emails", enabled: false },
+        { id: "legal", enabled: true },
+        { id: "financial", enabled: "no" },
+        null,
+      ],
+    });
+    expect(fromList.presets).toEqual([
+      { id: "personal-ids", label: "Personal IDs", enabled: true },
+      { id: "hr-pay", label: "Salary and HR", enabled: false },
+      { id: "legal", label: "Legal matters", enabled: false },
+      { id: "financial", label: "Bank and card numbers", enabled: true },
+    ]);
+    const fromMap = parseRedactionSettings({ presets: { legal: false, financial: false, other: false } });
+    expect(fromMap.presets.map((p) => p.enabled)).toEqual([true, true, false, false]);
   });
 
   it("lets owners and admins edit and keeps members read-only", () => {
@@ -55,26 +66,23 @@ describe("US-005 redaction presets model", () => {
   });
 
   it("shows the requested value as pending at once", () => {
-    const next = withToggle(LOADED, "phone_numbers", true);
-    expect(next.pending.has("phone_numbers")).toBe(true);
-    expect(next.settings?.presets[1]?.enabled).toBe(true);
+    const next = withToggle(LOADED, "financial", false);
+    expect(next.pending.has("financial")).toBe(true);
+    expect(next.settings?.presets[3]?.enabled).toBe(false);
     expect(LOADED.pending.size).toBe(0);
-    expect(withToggle(EMPTY_ROW_STATE, "emails", false)).toBe(EMPTY_ROW_STATE);
+    expect(withToggle(EMPTY_ROW_STATE, "legal", false)).toBe(EMPTY_ROW_STATE);
   });
 
   it("takes the server value when the save finishes", () => {
-    const pending = withToggle(LOADED, "phone_numbers", true);
-    const saved = withSaved(pending, "phone_numbers", {
-      presets: [{ id: "phone_numbers", label: "Phone numbers", enabled: false }],
-    });
+    const pending = withToggle(LOADED, "legal", true);
+    const saved = withSaved(pending, "legal", parseRedactionSettings({ presets: [{ id: "legal", enabled: false }] }));
     expect(saved.pending.size).toBe(0);
-    expect(saved.settings?.presets[1]?.enabled).toBe(false);
-    expect(saved.settings?.presets[0]?.enabled).toBe(true);
+    expect(saved.settings?.presets[2]?.enabled).toBe(false);
   });
 
   it("puts the old value back and says so when the save fails", () => {
-    const pending = withToggle(LOADED, "emails", false);
-    const failed = withFailed(pending, "emails", true);
+    const pending = withToggle(LOADED, "personal-ids", false);
+    const failed = withFailed(pending, "personal-ids", true);
     expect(failed.pending.size).toBe(0);
     expect(failed.settings?.presets[0]?.enabled).toBe(true);
     expect(failed.error).toBe("Couldn't save that change. Try again.");

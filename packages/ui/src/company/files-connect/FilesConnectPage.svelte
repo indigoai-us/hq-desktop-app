@@ -952,12 +952,12 @@
                   {#if conn.detail && conn.detail !== `Connected by ${conn.owner}`}<span class="meta wrap-meta">{conn.detail}</span>{/if}
                   {#if conn.reason}<span class="conn-note" data-testid="integration-reason">{conn.reason}</span>{/if}
                   {#if conn.fixPath}<span class="conn-note" data-testid="integration-fix">{conn.fixPath}</span>{/if}
+                  {#if redactionPresets && companyUid}
+                    <HiddenFromAiRow api={redactionPresets} {companyUid} connectionId={conn.id} appName={appCurrent.name} canEdit={canEditRedaction} />
+                  {/if}
                 </li>
               {/each}
             </ul>
-            {#if redactionPresets && companyUid}
-              <HiddenFromAiRow api={redactionPresets} {companyUid} app={{ key: appCurrent.key, connectionIds: appCurrent.connections.map((c) => c.id) }} appName={appCurrent.name} canEdit={canEditRedaction} />
-            {/if}
             <div class="actions">
               <RailButton icon="external" data-testid="integration-open-console" onclick={openConsole}>Open console</RailButton>
             </div>

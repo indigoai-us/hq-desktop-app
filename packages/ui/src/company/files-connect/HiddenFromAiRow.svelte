@@ -1,18 +1,19 @@
 <script lang="ts">
   /**
-   * US-005: the "Hidden from AI" row inside the connected-app detail pane.
-   * One switch per redaction preset. Owners and admins can change them;
-   * members see the same switches read-only. A switch flips and shows
-   * "Saving…" the moment it is pressed, and goes back with a plain error line
-   * if the save fails. Server text is never shown.
+   * US-005: the "Hidden from AI" row under one connection in the connected-app
+   * detail pane. Four switches, one per redaction preset. Owners and admins
+   * can change them; members see the same switches read-only. A switch flips
+   * and shows "Saving…" the moment it is pressed, and goes back with a plain
+   * error line if the save fails. Server text is never shown.
    */
   import { untrack } from "svelte";
   import {
     EMPTY_ROW_STATE,
+    parseRedactionSettings,
     withFailed,
     withSaved,
     withToggle,
-    type RedactionAppRef,
+    type RedactionPresetId,
     type RedactionPresetsApi,
     type RedactionRowState,
   } from "./redaction-presets.js";
@@ -20,23 +21,23 @@
   interface Props {
     api: RedactionPresetsApi;
     companyUid: string;
-    app: RedactionAppRef;
+    connectionId: string;
     appName: string;
     canEdit: boolean;
   }
 
-  let { api, companyUid, app, appName, canEdit }: Props = $props();
-  // Reload only when the app itself changes, not on every parent re-render.
-  const appKey = $derived(app.key);
+  let { api, companyUid, connectionId, appName, canEdit }: Props = $props();
+  const titleId = $derived(`redaction-title-${connectionId}`);
 
   let row = $state<RedactionRowState>(EMPTY_ROW_STATE);
   let loadFailed = $state(false);
 
-  async function load(uid: string, key: string, alive: () => boolean): Promise<void> {
+  async function load(uid: string, conn: string, alive: () => boolean): Promise<void> {
     row = EMPTY_ROW_STATE;
     loadFailed = false;
     try {
-      const settings = await api.load(uid, { key, connectionIds: [...app.connectionIds] });
+      // Normalized here too, so a connection with no setting shows all four on.
+      const settings = parseRedactionSettings(await api.load(uid, conn));
       if (!alive()) return;
       row = { settings, pending: new Set(), error: null };
     } catch (err) {
@@ -48,41 +49,41 @@
 
   $effect(() => {
     const uid = companyUid;
-    const key = appKey;
+    const conn = connectionId;
     let active = true;
-    untrack(() => void load(uid, key, () => active && uid === companyUid && key === appKey));
+    untrack(() => void load(uid, conn, () => active && uid === companyUid && conn === connectionId));
     return () => {
       active = false;
     };
   });
 
-  async function toggle(presetId: string, previous: boolean): Promise<void> {
+  async function toggle(presetId: RedactionPresetId, previous: boolean): Promise<void> {
     if (!canEdit || row.pending.has(presetId)) return;
     const uid = companyUid;
-    const key = appKey;
+    const conn = connectionId;
     const next = !previous;
     row = withToggle(row, presetId, next);
     try {
-      const saved = await api.set(uid, { key, connectionIds: [...app.connectionIds] }, presetId, next);
-      if (uid !== companyUid || key !== appKey) return;
+      const saved = parseRedactionSettings(await api.set(uid, conn, presetId, next));
+      if (uid !== companyUid || conn !== connectionId) return;
       row = withSaved(row, presetId, saved);
     } catch (err) {
       console.warn("[redaction] preset save failed:", err);
-      if (uid !== companyUid || key !== appKey) return;
+      if (uid !== companyUid || conn !== connectionId) return;
       row = withFailed(row, presetId, previous);
     }
   }
 
   function retryLoad(): void {
     const uid = companyUid;
-    const key = appKey;
-    void load(uid, key, () => uid === companyUid && key === appKey);
+    const conn = connectionId;
+    void load(uid, conn, () => uid === companyUid && conn === connectionId);
   }
 </script>
 
-<section class="hidden-ai" data-testid="redaction-row" aria-labelledby="redaction-row-title">
+<section class="hidden-ai" data-testid="redaction-row" data-connection={connectionId} aria-labelledby={titleId}>
   <div class="head">
-    <h3 id="redaction-row-title">Hidden from AI</h3>
+    <h3 id={titleId}>Hidden from AI</h3>
     <p class="hint">
       {canEdit
         ? `HQ removes these from ${appName} data before an AI tool sees it.`
@@ -127,9 +128,8 @@
   .hidden-ai {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--line, var(--v4-rowline));
+    gap: 6px;
+    margin-top: 8px;
   }
   h3 {
     margin: 0;
