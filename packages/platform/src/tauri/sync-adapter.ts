@@ -1624,7 +1624,10 @@ export function createSyncPlatformAdapter(
         if (!path || !tool) {
           return failure('invalid-argument', 'launch payload needs path and tool');
         }
-        const result = await call<void>('launch_cli_in_terminal', { path, tool });
+        // Optional first prompt. Rust flattens it to one line and binds it
+        // after `--` as the tool's PROMPT argument.
+        const prompt = typeof rec.prompt === 'string' && rec.prompt.trim() ? rec.prompt : null;
+        const result = await call<void>('launch_cli_in_terminal', { path, tool, prompt });
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },

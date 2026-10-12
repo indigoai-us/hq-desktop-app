@@ -47,9 +47,151 @@ pub(crate) fn cli_binary_for(tool: &str) -> Result<&'static str, String> {
 /// PowerShell single-quote escaping: ' -> ''. Apply before wrapping the
 /// resulting string in single quotes when handing a literal string to
 /// PowerShell.
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 fn powershell_single_quote_escape(s: &str) -> String {
     s.replace('\'', "''")
+}
+
+/// Longest first prompt handed to a terminal CLI. The heal prompts are a few
+/// hundred characters; the cap keeps a runaway caller from building a
+/// multi-megabyte Terminal command.
+pub(crate) const TERMINAL_PROMPT_MAX_CHARS: usize = 4000;
+
+/// Make renderer-supplied prompt text safe to hand to a terminal CLI as ONE
+/// argument.
+///
+/// Every control character (newlines, tabs, carriage returns, escape, NUL,
+/// DEL, C1) and every Unicode whitespace or line/paragraph separator becomes a
+/// space, runs of them collapse to one space, and the result is trimmed and
+/// capped at `TERMINAL_PROMPT_MAX_CHARS` characters. One printable line is
+/// what Terminal's `do script` and PowerShell keep as one command: a raw
+/// newline would be typed into the terminal as Return and split it. Quotes
+/// are kept; the platform quoting below escapes them. Empty input is `None`,
+/// which launches the tool with no prompt at all.
+pub(crate) fn sanitize_terminal_prompt(prompt: Option<&str>) -> Option<String> {
+    let raw = prompt?;
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut pending_space = false;
+    for ch in raw.chars() {
+        if ch.is_whitespace() || ch.is_control() {
+            pending_space = count > 0;
+            continue;
+        }
+        let needed = if pending_space { 2 } else { 1 };
+        if count + needed > TERMINAL_PROMPT_MAX_CHARS {
+            break;
+        }
+        if pending_space {
+            out.push(' ');
+            count += 1;
+            pending_space = false;
+        }
+        out.push(ch);
+        count += 1;
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// POSIX single-quote a value: wrap in `'…'` and turn each `'` into `'\''`.
+/// Inside single quotes the shell expands nothing (`$`, backticks, `\`, `"`
+/// and `!` are all literal), so this is a complete escape for NUL-free text.
+fn posix_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// The shell line Terminal runs: `cd '<path>' && <binary>` and, with a prompt,
+/// ` -- '<prompt>'`. The `--` ends option parsing in grok, codex (clap) and
+/// claude (commander), so a prompt that starts with `--` is still the
+/// positional PROMPT and never read as an option.
+pub(crate) fn unix_terminal_shell_command(
+    path: &str,
+    binary: &str,
+    prompt: Option<&str>,
+) -> String {
+    let escaped_path = path.replace('\'', "'\\''");
+    match prompt {
+        Some(prompt) => format!(
+            "cd '{}' && {} -- {}",
+            escaped_path,
+            binary,
+            posix_single_quote(prompt)
+        ),
+        None => format!("cd '{}' && {}", escaped_path, binary),
+    }
+}
+
+/// Wrap a shell line in the AppleScript that opens it in Terminal. Inside an
+/// AppleScript string literal only `\` and `"` are special; both are escaped.
+/// A sanitized prompt has no newlines, so the literal stays on one line.
+pub(crate) fn terminal_applescript(shell_cmd: &str) -> String {
+    let applescript_safe = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        r#"tell application "Terminal"
+    activate
+    do script "{}"
+end tell"#,
+        applescript_safe
+    )
+}
+
+/// The PowerShell script for a Windows terminal launch with a prompt:
+/// optional `Set-Location`, then `<binary> '--' '<prompt>'`.
+///
+/// The prompt is a PowerShell single-quoted literal (nothing expands inside
+/// one, and `'` doubles to `''`). PowerShell also treats the curly single
+/// quotes U+2018..U+201B as quote delimiters, so those become ASCII `'`
+/// first. Windows PowerShell 5.1 hands an argument that contains `"` to a
+/// native program without escaping it, which splits the argument, so `"` and
+/// the curly double quotes become `'` too, and trailing backslashes (which
+/// would escape the closing quote PowerShell adds) are dropped. `'--'` is
+/// quoted so PowerShell passes it on to npm's `.ps1` shims instead of reading
+/// it as its own end-of-parameters marker.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn windows_powershell_cli_script(
+    set_location: Option<&str>,
+    binary: &str,
+    prompt: Option<&str>,
+) -> String {
+    let mut script = String::new();
+    if let Some(path) = set_location {
+        script.push_str("Set-Location -LiteralPath '");
+        script.push_str(&powershell_single_quote_escape(path));
+        script.push_str("'; ");
+    }
+    script.push_str(binary);
+    if let Some(prompt) = prompt {
+        let normalized: String = prompt
+            .chars()
+            .map(|ch| match ch {
+                '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
+                '"' | '\u{201C}' | '\u{201D}' | '\u{201E}' => '\'',
+                other => other,
+            })
+            .collect();
+        let normalized = normalized.trim_end_matches('\\');
+        script.push_str(" '--' '");
+        script.push_str(&powershell_single_quote_escape(normalized));
+        script.push('\'');
+    }
+    script
+}
+
+/// `powershell.exe -EncodedCommand` payload: base64 of the UTF-16LE script.
+/// Base64 has no `;`, quotes or spaces, so neither wt.exe's own `;` command
+/// splitting nor outer argument quoting can change the script.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn powershell_encoded_command(script: &str) -> String {
+    use base64::Engine as _;
+    let bytes: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 fn is_hex_digit(byte: u8) -> bool {
@@ -420,11 +562,14 @@ pub fn launch_claude_code(path: String) -> Result<(), String> {
     result
 }
 
-/// Open a new Terminal window at `path` and auto-run a CLI coding tool.
+/// Open a new Terminal window at `path` and auto-run a CLI coding tool,
+/// optionally with a first prompt (see `sanitize_terminal_prompt`).
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn launch_cli_in_terminal(path: String, tool: String) -> Result<(), String> {
-    let result = cli_binary_for(&tool).and_then(|binary| spawn_cli_terminal_unix(&path, binary));
+pub fn launch_cli_in_terminal(path: String, tool: String, prompt: Option<String>) -> Result<(), String> {
+    let prompt = sanitize_terminal_prompt(prompt.as_deref());
+    let result = cli_binary_for(&tool)
+        .and_then(|binary| spawn_cli_terminal_unix_with_prompt(&path, binary, prompt.as_deref()));
     let provider = cli_binary_for(&tool).unwrap_or("other");
     crate::commands::cdp_mirror::note_agent_session_launched(provider, "terminal", &result);
     result
@@ -435,16 +580,18 @@ pub fn launch_cli_in_terminal(path: String, tool: String) -> Result<(), String> 
 /// command.
 #[cfg(not(windows))]
 fn spawn_cli_terminal_unix(path: &str, binary: &str) -> Result<(), String> {
-    let escaped_path = path.replace('\'', "'\\''");
-    let shell_cmd = format!("cd '{}' && {}", escaped_path, binary);
-    let applescript_safe = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(
-        r#"tell application "Terminal"
-    activate
-    do script "{}"
-end tell"#,
-        applescript_safe
-    );
+    spawn_cli_terminal_unix_with_prompt(path, binary, None)
+}
+
+/// `spawn_cli_terminal_unix` with an optional prompt that has already been
+/// through `sanitize_terminal_prompt`.
+#[cfg(not(windows))]
+fn spawn_cli_terminal_unix_with_prompt(
+    path: &str,
+    binary: &str,
+    prompt: Option<&str>,
+) -> Result<(), String> {
+    let script = terminal_applescript(&unix_terminal_shell_command(path, binary, prompt));
 
     let output = Command::new("osascript")
         .arg("-e")
@@ -478,8 +625,11 @@ pub fn launch_claude_code(path: String) -> Result<(), String> {
 /// the launched binary can never be attacker-controlled.
 #[cfg(windows)]
 #[tauri::command]
-pub fn launch_cli_in_terminal(path: String, tool: String) -> Result<(), String> {
-    let result = cli_binary_for(&tool).and_then(|binary| spawn_cli_terminal_windows(&path, binary));
+pub fn launch_cli_in_terminal(path: String, tool: String, prompt: Option<String>) -> Result<(), String> {
+    let prompt = sanitize_terminal_prompt(prompt.as_deref());
+    let result = cli_binary_for(&tool).and_then(|binary| {
+        spawn_cli_terminal_windows_with_prompt(&path, binary, prompt.as_deref())
+    });
     let provider = cli_binary_for(&tool).unwrap_or("other");
     crate::commands::cdp_mirror::note_agent_session_launched(provider, "terminal", &result);
     result
@@ -542,12 +692,60 @@ fn executable_candidate(candidate: &std::path::Path) -> Option<PathBuf> {
 /// command to run in the new console.
 #[cfg(windows)]
 fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
+    spawn_cli_terminal_windows_with_prompt(path, binary, None)
+}
+
+/// `spawn_cli_terminal_windows` with an optional prompt that has already been
+/// through `sanitize_terminal_prompt`. Without a prompt the command line is
+/// exactly what it was before prompts existed.
+#[cfg(windows)]
+fn spawn_cli_terminal_windows_with_prompt(
+    path: &str,
+    binary: &str,
+    prompt: Option<&str>,
+) -> Result<(), String> {
     let escaped = powershell_single_quote_escape(path);
     let search_path = extended_search_path();
     find_in_search_path(binary, &search_path)
         .ok_or_else(|| format!("Could not find {binary} on PATH"))?;
     let wt = find_in_search_path("wt.exe", &search_path)
         .or_else(|| find_in_search_path("wt", &search_path));
+
+    if let Some(prompt) = prompt {
+        // The script travels as -EncodedCommand so the prompt never meets
+        // wt.exe's `;` splitting or the outer argument quoting.
+        return match wt {
+            Some(wt_path) => {
+                let script = windows_powershell_cli_script(None, binary, Some(prompt));
+                Command::new(wt_path)
+                    .args([
+                        "-d",
+                        path,
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-NoExit",
+                        "-EncodedCommand",
+                    ])
+                    .arg(powershell_encoded_command(&script))
+                    .env("PATH", &search_path)
+                    .creation_flags(CREATE_NEW_CONSOLE)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|e| format!("Failed to spawn Windows Terminal: {e}"))
+            }
+            None => {
+                let script = windows_powershell_cli_script(Some(path), binary, Some(prompt));
+                Command::new("powershell.exe")
+                    .args(["-NoProfile", "-NoExit", "-EncodedCommand"])
+                    .arg(powershell_encoded_command(&script))
+                    .env("PATH", &search_path)
+                    .creation_flags(CREATE_NEW_CONSOLE)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|e| format!("Failed to spawn PowerShell: {e}"))
+            }
+        };
+    }
 
     if let Some(wt_path) = wt {
         Command::new(wt_path)
@@ -862,5 +1060,183 @@ mod bundled_claude_tests {
         fs::write(dir.path().join("2.1.261/.verified"), b"sha").unwrap();
         assert_eq!(bundled_claude_bin_in(dir.path()), None);
         assert_eq!(bundled_claude_bin_in(&dir.path().join("absent")), None);
+    }
+}
+
+#[cfg(test)]
+mod terminal_prompt_tests {
+    use super::*;
+
+    /// Single quote, double quote, newline, tab, `$`, a backtick and a
+    /// backslash, starting with `--` so an option parser would grab it.
+    const HOSTILE: &str = "--version it's \"quoted\"\nsecond line\t$HOME `x` \\n end";
+    const SANITIZED: &str = "--version it's \"quoted\" second line $HOME `x` \\n end";
+
+    #[test]
+    fn sanitize_flattens_control_characters_into_one_line() {
+        assert_eq!(
+            sanitize_terminal_prompt(Some(HOSTILE)).as_deref(),
+            Some(SANITIZED)
+        );
+        assert_eq!(
+            sanitize_terminal_prompt(Some("  a\r\n\r\n\u{1b}[31m b\u{2028}c\u{0}d  ")).as_deref(),
+            Some("a [31m b c d")
+        );
+    }
+
+    #[test]
+    fn sanitize_turns_empty_or_blank_into_no_prompt() {
+        assert_eq!(sanitize_terminal_prompt(None), None);
+        assert_eq!(sanitize_terminal_prompt(Some("")), None);
+        assert_eq!(sanitize_terminal_prompt(Some(" \n\t\r ")), None);
+    }
+
+    #[test]
+    fn sanitize_caps_the_prompt_length() {
+        let long = "word ".repeat(TERMINAL_PROMPT_MAX_CHARS);
+        let out = sanitize_terminal_prompt(Some(&long)).unwrap();
+        assert!(out.chars().count() <= TERMINAL_PROMPT_MAX_CHARS);
+        assert!(!out.ends_with(' '));
+        let wide = "é".repeat(TERMINAL_PROMPT_MAX_CHARS + 10);
+        assert_eq!(
+            sanitize_terminal_prompt(Some(&wide))
+                .unwrap()
+                .chars()
+                .count(),
+            TERMINAL_PROMPT_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn unix_command_without_a_prompt_is_unchanged() {
+        assert_eq!(
+            unix_terminal_shell_command("/Users/me/HQ", "grok", None),
+            "cd '/Users/me/HQ' && grok"
+        );
+    }
+
+    #[test]
+    fn unix_command_binds_the_prompt_after_double_dash_as_one_argument() {
+        let prompt = sanitize_terminal_prompt(Some(HOSTILE)).unwrap();
+        assert_eq!(
+            unix_terminal_shell_command("/Users/me/it's HQ", "grok", Some(&prompt)),
+            r#"cd '/Users/me/it'\''s HQ' && grok -- '--version it'\''s "quoted" second line $HOME `x` \n end'"#
+        );
+    }
+
+    #[test]
+    fn applescript_escapes_backslashes_and_double_quotes() {
+        let prompt = sanitize_terminal_prompt(Some(HOSTILE)).unwrap();
+        let script = terminal_applescript(&unix_terminal_shell_command(
+            "/Users/me/HQ",
+            "grok",
+            Some(&prompt),
+        ));
+        assert_eq!(
+            script,
+            r#"tell application "Terminal"
+    activate
+    do script "cd '/Users/me/HQ' && grok -- '--version it'\\''s \"quoted\" second line $HOME `x` \\n end'"
+end tell"#
+        );
+    }
+
+    /// The shell itself sees exactly two arguments after the binary: `--` and
+    /// the prompt, byte for byte.
+    #[cfg(unix)]
+    #[test]
+    fn shell_receives_double_dash_then_the_exact_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let prompt = sanitize_terminal_prompt(Some(HOSTILE)).unwrap();
+        let cmd = unix_terminal_shell_command(&path, "printf '[%s]\\n'", Some(&prompt));
+        let out = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&cmd)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            format!("[--]\n[{SANITIZED}]\n")
+        );
+    }
+
+    /// AppleScript decodes the `do script` literal back to the exact shell
+    /// line we built.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn applescript_literal_round_trips_to_the_shell_line() {
+        let prompt = sanitize_terminal_prompt(Some(HOSTILE)).unwrap();
+        let shell_cmd = unix_terminal_shell_command("/Users/me/HQ", "grok", Some(&prompt));
+        let script = terminal_applescript(&shell_cmd);
+        let literal = script
+            .split("do script ")
+            .nth(1)
+            .unwrap()
+            .split("\nend tell")
+            .next()
+            .unwrap();
+        let out = Command::new("osascript")
+            .arg("-e")
+            .arg(format!("return {literal}"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout)
+                .unwrap()
+                .trim_end_matches('\n'),
+            shell_cmd
+        );
+    }
+
+    #[test]
+    fn powershell_script_without_a_prompt_is_the_bare_binary() {
+        assert_eq!(windows_powershell_cli_script(None, "grok", None), "grok");
+    }
+
+    #[test]
+    fn powershell_script_quotes_double_dash_and_the_prompt() {
+        let prompt = sanitize_terminal_prompt(Some(HOSTILE)).unwrap();
+        assert_eq!(
+            windows_powershell_cli_script(None, "grok", Some(&prompt)),
+            "grok '--' '--version it''s ''quoted'' second line $HOME `x` \\n end'"
+        );
+        assert_eq!(
+            windows_powershell_cli_script(
+                Some(r"C:\Users\o'neil\HQ"),
+                "codex",
+                Some("fix it\u{2019}s path\\\\")
+            ),
+            r"Set-Location -LiteralPath 'C:\Users\o''neil\HQ'; codex '--' 'fix it''s path'"
+        );
+    }
+
+    #[test]
+    fn powershell_encoded_command_is_base64_utf16le() {
+        use base64::Engine as _;
+        let script = windows_powershell_cli_script(None, "grok", Some("a; b 'c' “d”"));
+        let encoded = powershell_encoded_command(&script);
+        assert!(encoded
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .unwrap();
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), script);
+        assert_eq!(script, "grok '--' 'a; b ''c'' ''d'''");
     }
 }
