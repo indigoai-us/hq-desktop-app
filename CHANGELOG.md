@@ -14,6 +14,7 @@ The release moves it under the version it ships in.
 - A bot made on this computer is called by its name in Messages and in its "is thinking" row right away. Before, a new bot (such as a pack's setup bot) read "Unknown bot" until HQ's contact list caught up.
 - Every bot on this computer shows the tap-to-answer buttons it writes under its questions, not only HQ's setup bot.
 - A bot's "Working on it" note no longer ends its thinking row; the row stays until the real reply.
+- A bot's buttons no longer show "Something else" twice when the bot already offers its own.
 
 ## [0.11.4] — 2026-10-11
 

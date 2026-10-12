@@ -1181,7 +1181,11 @@
   const SUGGESTION_OTHER_LABEL = "Something else";
   const SUGGESTION_OTHER_PLACEHOLDER = "Type your own answer here…";
   const SUGGESTION_OTHER_MIN = 2;
-  const showSuggestionOther = $derived(visibleSuggestions.length >= SUGGESTION_OTHER_MIN);
+  // The bot may already offer its own "Something else": never show it twice.
+  const showSuggestionOther = $derived(
+    visibleSuggestions.length >= SUGGESTION_OTHER_MIN &&
+      !visibleSuggestions.some((l) => l.trim().toLowerCase() === SUGGESTION_OTHER_LABEL.toLowerCase()),
+  );
   let otherForKey = $state<string | null>(null);
   const composerPlaceholder = $derived(
     offline
