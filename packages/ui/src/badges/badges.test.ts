@@ -27,6 +27,20 @@ describe("badge catalog", () => {
     expect(out[1].tier).toBe(2);
   });
 
+  // Rows are laid out on a grid from the left, so a row narrower than the
+  // one above sits half a cell off: Patient Zero's "(0)" over "_/\_" read
+  // as lopsided (owner review 2026-10-12).
+  it("keeps every micro icon's rows the same width, so they line up", () => {
+    for (const [icon, { art }] of Object.entries(MICRO_ICONS)) {
+      expect(new Set(art.map((row) => row.length)).size, icon).toBe(1);
+    }
+  });
+
+  it("draws OG's micro crown with three points and Patient Zero's as a heart on a pulse line", () => {
+    expect(MICRO_ICONS.crown.art).toEqual(["|\\^/|", "|_o_|"]);
+    expect(MICRO_ICONS.pulse.art).toEqual(["(\\/)", "-\\/-"]);
+  });
+
   it("sizes marks at 54px (micro) and 108px (small)", () => {
     expect(badgeMarkPx("micro")).toBe(54);
     expect(badgeMarkPx("small")).toBe(108);

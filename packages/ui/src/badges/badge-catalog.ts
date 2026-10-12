@@ -122,9 +122,9 @@ export const MICRO_ICONS: Readonly<Record<BadgeIcon, AsciiIcon>> = {
   box: { c: "#e3a36e", a: "#f7d35c", acc: "_", art: ["___", "|_|"] },
   clipboard: { c: "#e3c9a6", a: "#8fd6a0", acc: "v", art: ["|v|", "|_|"] },
   flame: { c: "#ff9f45", a: "#ffe27a", acc: "_", art: [" ( ", ")\\(", "(_)"] },
-  crown: { c: "#ffd23f", a: "#e8566f", acc: "o", art: ["^^^", "|o|"] },
+  crown: { c: "#ffd23f", a: "#e8566f", acc: "o", art: ["|\\^/|", "|_o_|"] },
   wheel: { c: "#e3a96b", a: "#ffd23f", acc: "@", art: ["\\|/", "-@-", "/|\\"] },
-  pulse: { c: "#ff6f91", a: "#5ee0c0", acc: "_/\\", art: ["(0)", "_/\\_"] },
+  pulse: { c: "#ff6f91", a: "#5ee0c0", acc: "-", art: ["(\\/)", "-\\/-"] },
   code: { c: "#8fc7ff", a: "#ffd23f", acc: "/", art: ["</>"] },
 };
 
