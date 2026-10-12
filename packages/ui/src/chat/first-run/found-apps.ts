@@ -249,3 +249,42 @@ export function evidenceLine(evidence: FoundEvidence, hostNoun: "Mac" | "PC" = "
   }
   return evidence.app ? `${hostNoun} app` : "";
 }
+
+/** What the catalog lookup says about one domain. */
+export interface CatalogMatch {
+  entryId: string | null;
+  name: string | null;
+  authClass: "none" | "oauth" | "key" | null;
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Read a catalog lookup answer (`{ ok, companyUid, matches: { [domain]:
+ * entry | null } }`) into a match per requested domain. Domains the answer
+ * leaves out read as not in the catalog; anything not shaped like the answer
+ * is null (the step then offers nothing from the catalog).
+ */
+export function readCatalogLookup(json: unknown, domains: readonly string[] = SIGNATURE_DOMAINS): Record<string, CatalogMatch | null> | null {
+  const root = json && typeof json === "object" ? (json as Record<string, unknown>) : null;
+  const matches = root?.matches && typeof root.matches === "object" && !Array.isArray(root.matches) ? (root.matches as Record<string, unknown>) : null;
+  if (!matches) return null;
+  const out: Record<string, CatalogMatch | null> = {};
+  for (const domain of domains) {
+    const entry = matches[domain];
+    if (!entry || typeof entry !== "object") {
+      out[domain] = null;
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    const auth = e.authClass;
+    out[domain] = {
+      entryId: text(e.entryId),
+      name: text(e.name),
+      authClass: auth === "none" || auth === "oauth" || auth === "key" ? auth : null,
+    };
+  }
+  return out;
+}

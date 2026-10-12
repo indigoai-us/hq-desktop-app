@@ -1144,6 +1144,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       withoutSecret(await this.postWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
     blueprint: (input) =>
       this.postWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
+    catalogLookup: (companyUid, domains) =>
+      this.postWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
   };
 
   readonly company: PlatformAdapter["company"] = {

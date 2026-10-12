@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { FoundMcpServer, FoundWorkApps } from "@hq/platform";
 
-import { APP_SIGNATURES, SIGNATURE_DOMAINS, evidenceLine, matchFoundApps } from "./found-apps.js";
+import { APP_SIGNATURES, SIGNATURE_DOMAINS, evidenceLine, matchFoundApps, readCatalogLookup } from "./found-apps.js";
 
 function server(over: Partial<FoundMcpServer>): FoundMcpServer {
   return {
@@ -113,5 +113,36 @@ describe("evidenceLine", () => {
     expect(evidenceLine({ app: true, tools: ["claude_code", "codex"] })).toBe("In Claude Code and Codex");
     expect(evidenceLine({ app: false, tools: ["claude_code", "cursor", "codex"] })).toBe("In Claude Code, Cursor and Codex");
     expect(evidenceLine({ app: false, tools: [] })).toBe("");
+  });
+});
+
+describe("readCatalogLookup", () => {
+  it("reads one match per requested domain and null for the rest", () => {
+    const read = readCatalogLookup(
+      {
+        ok: true,
+        companyUid: "cmp_acme",
+        matches: {
+          "linear.app": { name: "Linear", domain: "linear.app", authClass: "oauth", entryId: "e1" },
+          "api.aws": { name: "AWS Knowledge", authClass: "none", entryId: "e2" },
+          "zoom.us": null,
+          "posthog.com": { name: "PostHog", authClass: "weird" },
+        },
+      },
+      ["linear.app", "api.aws", "zoom.us", "posthog.com", "vercel.com"],
+    );
+    expect(read).toEqual({
+      "linear.app": { entryId: "e1", name: "Linear", authClass: "oauth" },
+      "api.aws": { entryId: "e2", name: "AWS Knowledge", authClass: "none" },
+      "zoom.us": null,
+      "posthog.com": { entryId: null, name: "PostHog", authClass: null },
+      "vercel.com": null,
+    });
+  });
+
+  it("is null for anything not shaped like the answer", () => {
+    expect(readCatalogLookup(null)).toBeNull();
+    expect(readCatalogLookup({ ok: true })).toBeNull();
+    expect(readCatalogLookup({ matches: [] })).toBeNull();
   });
 });
