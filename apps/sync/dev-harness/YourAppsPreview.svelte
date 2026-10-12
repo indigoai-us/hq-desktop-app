@@ -14,8 +14,8 @@
    */
   import type { FoundWorkApps } from '@hq/platform';
   import FirstRunTakeover from '../../../packages/ui/src/chat/first-run/FirstRunTakeover.svelte';
-  import type { YourAppsHost, YourAppsLoad, YourAppsResult } from '../../../packages/ui/src/chat/first-run/your-apps-host.js';
-  import type { CatalogMatch } from '../../../packages/ui/src/chat/first-run/found-apps.js';
+  import type { YourAppsHost, YourAppsLoad, YourAppsResult } from '../../../packages/ui/src/chat/first-run/your-apps-host';
+  import type { CatalogMatch } from '../../../packages/ui/src/chat/first-run/found-apps';
 
   const state = new URLSearchParams(window.location.search).get('state') ?? 'auto';
   const ACME = { companyUid: 'cmp_preview', slug: 'acme', name: 'Acme' };
