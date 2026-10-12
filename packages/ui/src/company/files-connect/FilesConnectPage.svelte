@@ -27,6 +27,8 @@
   import "../../chat/chat-tokens.css";
   import { companyStore } from "../company-store.svelte.js";
   import DeployAccessForm from "./DeployAccessForm.svelte";
+  import HiddenFromAiRow from "./HiddenFromAiRow.svelte";
+  import { viewerCanEditRedaction, type RedactionPresetsApi } from "./redaction-presets.js";
   import ConnectionCardLogo from "../../chat/messaging/ConnectionCardLogo.svelte";
   import { brandMarkFor } from "../../chat/messaging/app-brand-marks.js";
   import {
@@ -101,9 +103,12 @@
     companyLabel?: string | null;
     /** OWNER-R13: reads a vault object by key when the file is not on this Mac. */
     vaultCloudRead?: ((key: string) => Promise<string | null>) | null;
+    /** US-005: redaction presets for a connected app. Without it the
+     *  "Hidden from AI" row is not shown. */
+    redactionPresets?: RedactionPresetsApi | null;
   }
 
-  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest, deployActions = true, companyLabel = null, vaultCloudRead = null }: Props = $props();
+  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest, deployActions = true, companyLabel = null, vaultCloudRead = null, redactionPresets = null }: Props = $props();
 
   const workflow = $derived({ settings, shell } as AgentWorkflowApi);
 
@@ -127,6 +132,8 @@
   let integrationsError = $state<string | null>(null);
   // The admin answer's `viewer.canManageIntegrations`; null until it says.
   let canManageIntegrations = $state<boolean | null>(null);
+  // US-005: owners and admins edit "Hidden from AI"; members read it.
+  let canEditRedaction = $state(false);
   // Apps HQ can connect (hq-pro factory catalog); null = not loaded yet.
   let catalogApps = $state<IntegrationRow[] | null>(null);
   // A plain line shown instead of the catalog; never server text.
@@ -167,6 +174,7 @@
     connectedApps = null;
     integrationsError = null;
     canManageIntegrations = null;
+    canEditRedaction = false;
     catalogApps = cached.integrations.length ? cached.integrations : null;
     catalogLine = null;
     catalogCanRetry = false;
@@ -240,6 +248,7 @@
       if (!alive()) return;
       connectedApps = rows;
       canManageIntegrations = viewerCanManageIntegrations(res.value);
+      canEditRedaction = viewerCanEditRedaction(res.value);
       integrationsError = null;
     } catch (err) {
       console.error("integrations load failed:", err);
@@ -946,6 +955,9 @@
                 </li>
               {/each}
             </ul>
+            {#if redactionPresets && companyUid}
+              <HiddenFromAiRow api={redactionPresets} {companyUid} app={{ key: appCurrent.key, connectionIds: appCurrent.connections.map((c) => c.id) }} appName={appCurrent.name} canEdit={canEditRedaction} />
+            {/if}
             <div class="actions">
               <RailButton icon="external" data-testid="integration-open-console" onclick={openConsole}>Open console</RailButton>
             </div>
