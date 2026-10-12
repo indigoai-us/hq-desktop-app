@@ -779,6 +779,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     launchCliInTerminal: (args) =>
       this.call("launch_cli_in_terminal", { args }),
     detectAiTools: () => this.call("detect_ai_tools"),
+    detectWorkApps: () => this.call("detect_work_apps"),
     pickFolder: () => this.call("pick_folder"),
     pickFile: (kind) => this.call("pick_file", { kind }),
   };

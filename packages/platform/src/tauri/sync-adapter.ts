@@ -1623,6 +1623,7 @@ export function createSyncPlatformAdapter(
         return result;
       },
       detectAiTools: () => call('detect_ai_tools'),
+      detectWorkApps: () => call('detect_work_apps'),
       pickFolder: async () => {
         const result = await call<string | null>('pick_folder');
         if (result.ok && result.value) dispatchPostReadyAction('open_folder');

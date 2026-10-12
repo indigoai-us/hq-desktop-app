@@ -1311,6 +1311,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     launchCodexWorkspace: async () => DESKTOP_ONLY,
     launchCliInTerminal: async () => DESKTOP_ONLY,
     detectAiTools: async () => DESKTOP_ONLY,
+    detectWorkApps: async () => DESKTOP_ONLY,
     pickFolder: async () => DESKTOP_ONLY,
     pickFile: async () => DESKTOP_ONLY,
   };
