@@ -10,14 +10,32 @@ import { badgeLevel, earnedFromUrl, sampleBadges, sampleProgress } from '../../d
 describe('badge harness switches', () => {
   it('reads ?earn= as earned badges, with an optional tier', () => {
     const today = new Date().toISOString().slice(0, 10);
-    expect(earnedFromUrl('?view=shell&earn=founding,poweruser:3, liftoff:1,closer:L')).toEqual([
+    expect(earnedFromUrl('?view=shell&earn=founding,poweruser:3, liftoff:1,corebuilder:L')).toEqual([
       { id: 'founding', earnedAt: today },
       { id: 'poweruser', tier: 3, earnedAt: today },
       { id: 'liftoff', tier: 1, earnedAt: today },
-      { id: 'closer', tier: 'L', earnedAt: today },
+      { id: 'corebuilder', tier: 'L', earnedAt: today },
     ]);
     expect(earnedFromUrl('?view=shell')).toEqual([]);
     expect(earnedFromUrl('earn=sharer:9')).toEqual([{ id: 'sharer', earnedAt: today }]);
+  });
+
+  // Owner review 2026-10-12: the harness used to show a Legendary toast and
+  // card for any badge (`founding:L`, `closer:L`) that production never would.
+  // It now follows the loader's rules for hq-pro's badges.
+  it('only raises tiers a badge can be earned at, as production does', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    // A three-level badge has no Legendary: dropped, as the loader drops the row.
+    expect(earnedFromUrl('?earn=closer:L')).toEqual([]);
+    expect(earnedFromUrl('?earn=liftoff:L,closer:2')).toEqual([{ id: 'closer', tier: 2, earnedAt: today }]);
+    // A single-level badge shows at its own tier whatever is asked.
+    expect(earnedFromUrl('?earn=founding:L,founder:1,og:2')).toEqual([
+      { id: 'founding', tier: 3, earnedAt: today },
+      { id: 'founder', tier: 3, earnedAt: today },
+      { id: 'og', tier: 'L', earnedAt: today },
+    ]);
+    // Badges the catalog doesn't know are dropped, as the loader drops them.
+    expect(earnedFromUrl('?earn=nope:1,shipit:1')).toEqual([{ id: 'shipit', tier: 1, earnedAt: today }]);
   });
 
   it('raises the notice from the harness entry only', () => {

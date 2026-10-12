@@ -193,7 +193,7 @@
         {:else if item.id === "outpost"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="6" rx="1.5" /><rect x="3" y="13" width="18" height="6" rx="1.5" /><path d="M7 8h.01M7 16h.01" /></svg>
         {:else if item.kind === "you"}
-          <span class="avatar" aria-hidden="true">{youInitials || initials(item.label)}{#if youTop}<TierMark tier={youTop.tier} avatar={26} anySize />{/if}</span>
+          <span class="avatar" aria-hidden="true">{youInitials || initials(item.label)}{#if youTop}<TierMark tier={youTop.tier} avatar={26} badge={youTop} card={false} anySize />{/if}</span>
           {#if youLive}
             <span class="live you-live" class:with-tier={Boolean(youTop)} data-testid="rail-you-live" aria-hidden="true"></span>
           {/if}

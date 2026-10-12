@@ -1,5 +1,6 @@
 /**
- * "You earned <Badge>": the notice when a badge is earned, through the app's
+ * "You earned <Badge>" ("You were awarded <Badge>" for OG, Captain and
+ * Patient Zero): the notice when a badge is earned, through the app's
  * one toast layer. Every tier carries a "Reveal card" action that opens the
  * card with its staged entrance, so the notice stays until it is used or
  * dismissed.
@@ -10,7 +11,7 @@
 
 import { mount, unmount } from "svelte";
 import BadgeCardModal from "./BadgeCardModal.svelte";
-import { TIER_NAME, resolveEarned, type EarnedBadge, type ResolvedBadge } from "./badge-catalog.js";
+import { TIER_NAME, isAwarded, resolveEarned, type EarnedBadge, type ResolvedBadge } from "./badge-catalog.js";
 import { pushToast } from "../shell/toast-stack.svelte.js";
 
 /** Open a badge's card with the reveal. Returns a function that closes it. */
@@ -41,7 +42,8 @@ export function announceBadgeEarned(earned: EarnedBadge): string | null {
     // A notice with an action stays until it is used or dismissed.
     kind: "sticky",
     tone: "neutral",
-    title: `You earned ${badge.def.name}`,
+    // Given, not earned (owner review 2026-10-12).
+    title: isAwarded(badge.def) ? `You were awarded ${badge.def.name}` : `You earned ${badge.def.name}`,
     detail: `${TIER_NAME[badge.tier]} · ${badge.def.crit}.`,
     testId: "badge-earned-toast",
     actions: [{ label: "Reveal card", primary: true, testId: "badge-earned-reveal", onAction: () => void revealBadgeCard(badge) }],

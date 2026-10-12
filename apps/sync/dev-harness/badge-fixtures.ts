@@ -4,7 +4,7 @@
  * every person and bot gets a stable, plausible set and the profile panes can
  * be judged with real art. Same name, same badges, every reload.
  */
-import type { BadgeProgress, BadgeProgressSource, BadgeSource, EarnedBadge } from '@hq/ui';
+import { BADGE_BY_ID, earnedTier, type BadgeProgress, type BadgeProgressSource, type BadgeSource, type EarnedBadge } from '@hq/ui';
 
 const PEOPLE: EarnedBadge[] = [
   { id: 'founding', earnedAt: '2026-03-02' },
@@ -109,6 +109,12 @@ export const sampleProgress: BadgeProgressSource = () => PROGRESS;
  * "Reveal card"). Several are comma separated, e.g.
  * `earn=founding,poweruser:3,liftoff:1`. Harness only: no production code
  * path raises this notice.
+ *
+ * Tiers follow production's rules (`earnedTier`, as the loader reads
+ * hq-pro): a single-level badge shows at its own tier whatever is asked
+ * (`founding:L` is Gold), and a tier the badge can't be earned at drops it,
+ * as the loader drops such a row (`closer:L`). Unknown badges are dropped
+ * too (owner review 2026-10-12).
  */
 export function earnedFromUrl(search: string): EarnedBadge[] {
   const raw = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search).get('earn');
@@ -118,9 +124,14 @@ export function earnedFromUrl(search: string): EarnedBadge[] {
     .split(',')
     .map((part) => part.trim())
     .filter(Boolean)
-    .map((part) => {
+    .flatMap((part) => {
       const [id, tier] = part.split(':');
-      const t = tier === 'L' ? 'L' : tier === '1' || tier === '2' || tier === '3' ? (Number(tier) as 1 | 2 | 3) : undefined;
-      return { id, ...(t ? { tier: t } : {}), earnedAt: today };
+      const def = BADGE_BY_ID[id];
+      if (!def) return [];
+      const asked = tier === 'L' ? 'L' : tier === '1' || tier === '2' || tier === '3' ? (Number(tier) as 1 | 2 | 3) : undefined;
+      // No tier, or one that isn't a tier at all: the badge's own display tier.
+      if (!asked) return [{ id, earnedAt: today }];
+      const t = earnedTier(def, asked);
+      return t === null ? [] : [{ id, tier: t, earnedAt: today }];
     });
 }
