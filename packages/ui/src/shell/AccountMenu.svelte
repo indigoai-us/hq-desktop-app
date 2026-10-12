@@ -16,7 +16,6 @@
     email?: string;
     initials?: string;
     live?: boolean;
-    work?: string;
     /** The badge behind your tier mark on the picture (badges/TierMark). */
     topBadge?: ResolvedBadge | null;
     anchorLeft?: number;
@@ -31,7 +30,6 @@
     email = "",
     initials = "",
     live = false,
-    work = "",
     topBadge = null,
     anchorLeft = 64,
     anchorBottom = 16,
@@ -101,9 +99,6 @@
       <span class="name">{name}</span>
       {#if email}<span class="meta">{email}</span>{/if}
     </span>
-    {#if live}
-      <span class="chip" data-testid="account-menu-live-chip" title={work || undefined}><i aria-hidden="true"></i>{work || "Live"}</span>
-    {/if}
   </button>
   <button type="button" class="row" role="menuitem" data-testid="account-settings" onclick={() => choose("settings")}>
     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
@@ -215,29 +210,6 @@
     text-overflow: ellipsis;
   }
 
-  .chip {
-    margin-left: auto;
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 140px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0;
-    font: 400 13px/1.2 var(--font-ui);
-    color: var(--v4-text-2);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .chip i {
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--v4-ok);
-  }
 
   .row svg {
     flex: 0 0 auto;

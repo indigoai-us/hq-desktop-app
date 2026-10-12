@@ -30,8 +30,6 @@
     youExpanded?: boolean;
     /** Own live dot, from PresenceStore. */
     youLive?: boolean;
-    /** Hover line for current work. Empty keeps the default tooltip. */
-    youWork?: string;
     /** Your earned badges. Any at all turn the You tooltip into a hover card that shows them. */
     youBadges?: readonly EarnedBadge[];
     /** The hover card's "See all": your profile panel. */
@@ -52,7 +50,6 @@
     onyou,
     youExpanded = false,
     youLive = false,
-    youWork = "",
     youBadges = [],
     onyoubadges,
     onyoubadge,
@@ -107,7 +104,6 @@
   {#if item.kind === "you" && youBadges.length}
     <RailYouCard
       name={item.label}
-      work={youWork}
       badges={youBadges}
       suppressed={youExpanded}
       onseeall={onyoubadges}
@@ -117,9 +113,7 @@
     </RailYouCard>
   {:else}
     <Tooltip
-      label={item.kind === "you" && youWork
-        ? `${item.label} · ${youWork}`
-        : railTooltip(item, { unread: unreadCount })}
+      label={railTooltip(item, { unread: unreadCount })}
       side="right"
       delay={150}
     >

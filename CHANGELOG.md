@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The account menu no longer shows "Working in {company}" next to your name, and hovering your picture on the left no longer adds it either. The menu keeps your name, email, picture, green online dot, Settings and Sign out.
 - Settings > Storage shows your backup and cloud history sizes without waiting for the big-file check. The first time you open it, before HQ has any sizes saved, the page used to stay on a loading screen for minutes on a big HQ folder. Now the sizes show as soon as they are read, and the Big files section says "Checking for big files…" until that check finishes, then fills in. Move to cloud waits until the check is done. This needs an hq CLI with `hq storage big-files`; with an older CLI the page works as before. Only one big-file check runs at a time, and reading sizes still never deletes or cleans anything up.
 - Settings › Updates: when an update can't install by itself, Fix in Claude Code, Fix in Codex and Fix in Grok Build now open the tool with a request for that row. For the HQ CLI it names `@indigoai-us/hq-cli`, the installed and new versions and the error HQ saw, and asks the agent to check `which -a hq` and `npm prefix -g`, run `npm install -g @indigoai-us/hq-cli@latest`, and confirm with `hq --version`. HQ Core and the desktop app get their own requests. Grok Build used to open with no request at all, and the codex and claude command line tools did too; all three now get it.
 

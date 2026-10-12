@@ -1,7 +1,6 @@
 <script lang="ts">
   /**
-   * Hover card on the rail's You button: your name, what you are working on,
-   * and the badges you have earned, with "See all" to your profile panel.
+   * Hover card on the rail's You button: your name and the badges you have earned, with "See all" to your profile panel.
    * Takes the place of the button's plain tooltip when you have badges.
    *
    * Opens after a short dwell on hover and at once on keyboard focus. It
@@ -16,8 +15,6 @@
 
   interface Props {
     name: string;
-    /** What you are working on now. Empty hides the line. */
-    work?: string;
     badges: readonly EarnedBadge[];
     /** The account menu is open: stay hidden. */
     suppressed?: boolean;
@@ -28,7 +25,7 @@
     trigger: Snippet;
   }
 
-  let { name, work = "", badges, suppressed = false, delay = 300, onseeall, onselect, trigger }: Props = $props();
+  let { name, badges, suppressed = false, delay = 300, onseeall, onselect, trigger }: Props = $props();
 
   /** Up to two rows of four. */
   const MAX = 8;
@@ -113,7 +110,6 @@
     <div class="card" role="group" aria-label="Your badges" data-testid="rail-you-card">
       <div class="who">
         <div class="nm">{name}</div>
-        {#if work}<div class="work" data-testid="rail-you-card-work">{work}</div>{/if}
       </div>
       <ProfileBadges {badges} max={MAX} onselect={select} onseeall={seeAll} />
     </div>
@@ -142,7 +138,6 @@
   .card::before { content: ""; position: absolute; top: 0; bottom: 0; right: 100%; width: 20px; }
   .who { padding: 0 2px 10px; border-bottom: 1px solid var(--v4-hairline); }
   .nm { font-weight: 500; color: var(--v4-text-1); }
-  .work { margin-top: 2px; color: var(--v4-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* The section sits right under the name here, not after other profile
      sections. */
   .card :global([data-testid="profile-badges"] > .k) { margin-top: 10px; padding: 0 2px; }
