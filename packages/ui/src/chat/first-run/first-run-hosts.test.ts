@@ -380,6 +380,121 @@ describe("apps host", () => {
     });
   });
 
+  it.each(["mcp.linear.app", "api.linear.app", "app.eu.linear.app"])("a sign-in recorded on %s answers the press for linear.app", async (domain) => {
+    // A sign-in can record its connection on a subdomain of the app's domain.
+    // mcp. and www. were already read as the bare domain; any other subdomain was not.
+    const made = { id: "c1", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain } };
+    const listConnections = vi
+      .fn()
+      .mockResolvedValueOnce(ok({ connections: [] }))
+      .mockResolvedValueOnce(ok({ connections: [made] }));
+    let t = 0;
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ok({ provider: "linear", displayName: "Linear", authorizationUrl: "https://linear.app/oauth", state: "s", expiresAt: "x" }),
+      listConnections,
+      openUrl: vi.fn(),
+      dry: false,
+      pollMs: 0,
+      timeoutMs: 5,
+      now: () => (t += 1),
+    });
+    expect(await host.connect("cmp_acme", app("linear.app", "oauth"))).toEqual({ ok: true });
+    expect(listConnections).toHaveBeenCalledTimes(2);
+  });
+
+  it("a subdomain connection that was there before the browser opened is not an answer", async () => {
+    let t = 0;
+    const listConnections = vi.fn(async () =>
+      ok({ connections: [{ id: "c0", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "api.notion.com" } }] }),
+    );
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ok({ provider: "notion", displayName: "Notion", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
+      listConnections,
+      openUrl: vi.fn(),
+      dry: false,
+      pollMs: 0,
+      timeoutMs: 5,
+      now: () => (t += 1),
+    });
+    expect(await host.connect("cmp_acme", app("notion.com", "oauth"))).toEqual({
+      ok: false,
+      reason: "notion did not finish connecting. Try again.",
+      retry: true,
+    });
+  });
+
+  it("a new subdomain connection answers even when another subdomain connection was there before", async () => {
+    const old = { id: "c0", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "api.notion.com" } };
+    const made = { id: "c1", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "app.notion.com" } };
+    const listConnections = vi
+      .fn()
+      .mockResolvedValueOnce(ok({ connections: [old] }))
+      .mockResolvedValueOnce(ok({ connections: [old] }))
+      .mockResolvedValueOnce(ok({ connections: [old, made] }));
+    let t = 0;
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ok({ provider: "notion", displayName: "Notion", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
+      listConnections,
+      openUrl: vi.fn(),
+      dry: false,
+      pollMs: 0,
+      timeoutMs: 50,
+      now: () => (t += 1),
+    });
+    expect(await host.connect("cmp_acme", app("notion.com", "oauth"))).toEqual({ ok: true });
+    expect(listConnections).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["notlinear.app", "linear.app.example.com", "linear.com"])(
+    "a new connection on the lookalike %s is not an answer for linear.app",
+    async (domain) => {
+      let t = 0;
+      const listConnections = vi
+        .fn()
+        .mockResolvedValueOnce(ok({ connections: [] }))
+        .mockResolvedValue(ok({ connections: [{ id: "c9", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain } }] }));
+      const host = createFirstRunAppsHost({
+        startOAuth: async () => ok({ provider: "l", displayName: "L", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
+        listConnections,
+        openUrl: vi.fn(),
+        dry: false,
+        pollMs: 0,
+        timeoutMs: 5,
+        now: () => (t += 1),
+      });
+      expect(await host.connect("cmp_acme", app("linear.app", "oauth"))).toEqual({
+        ok: false,
+        reason: "linear did not finish connecting. Try again.",
+        retry: true,
+      });
+    },
+  );
+
+  it("marks an app connected when its connection is on a subdomain, never on a lookalike", async () => {
+    const entries = {
+      ok: true,
+      entries: [
+        { name: "Linear", domain: "linear.app" },
+        { name: "Jira", domain: "jira.com" },
+        { name: "Asana", domain: "asana.com" },
+      ],
+    };
+    const listConnections = vi.fn(async () =>
+      ok({
+        connections: [
+          { id: "c1", status: "connected", createdAt: "2026-01-01", installation: { domain: "api.linear.app" } },
+          { id: "c2", status: "connected", createdAt: "2026-01-01", installation: { domain: "notjira.com" } },
+          { id: "c3", status: "connected", createdAt: "2026-01-01", installation: { domain: "jira.com.example.org" } },
+          { id: "c4", status: "connected", createdAt: "2026-01-01", installation: { domain: "mcp.asana.com" } },
+        ],
+      }),
+    );
+    const host = createFirstRunAppsHost({ catalogSearch: async () => ok(entries), listConnections, openUrl: vi.fn(), dry: false });
+    const projects = await host.catalog("cmp_acme", "projects");
+    // The screen marks an app Connected when its domain is on this list.
+    expect(projects.ok && [...projects.connected].sort()).toEqual(["asana.com", "linear.app"]);
+  });
+
   it("an aborted wait stops reading the list and answers quietly", async () => {
     const abort = new AbortController();
     const listConnections = vi.fn(async () => ok({ connections: [] }));

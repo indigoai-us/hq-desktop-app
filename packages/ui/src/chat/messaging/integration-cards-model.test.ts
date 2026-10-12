@@ -21,6 +21,7 @@ import {
   connectionsRetryMs,
   connectionAnswersPress,
   connectionForDomain,
+  connectionsForDomain,
   connectionForItem,
   defaultAppName,
   domainsToLookUp,
@@ -183,6 +184,25 @@ describe("connectionForDomain and botCanUse", () => {
     expect(connectionForDomain(f, "asana.com")).toBeNull();
     expect(connectionForDomain(null, "linear.app")).toBeNull();
     expect(connectionForDomain(f, "nope")).toBeNull();
+  });
+
+  it("connectionsForDomain lists every connection of the site, subdomains included, never a lookalike", () => {
+    const f = facts([
+      connection({ id: "acct_root", installation: { displayName: "Linear", domain: "linear.app" } }),
+      connection({ id: "acct_mcp", installation: { displayName: "Linear", domain: "mcp.linear.app" } }),
+      connection({ id: "acct_not", installation: { displayName: "Not Linear", domain: "notlinear.app" } }),
+      connection({ id: "acct_evil", installation: { displayName: "Lookalike", domain: "linear.app.evil.com" } }),
+      connection({ id: "acct_bare", provider: "factory:linear", installation: { displayName: "Linear" } }),
+    ]);
+    expect(connectionsForDomain(f, "linear.app").map((c) => c.id)).toEqual(["acct_root", "acct_mcp"]);
+    expect(connectionsForDomain(f, "https://www.linear.app/").map((c) => c.id)).toEqual(["acct_root", "acct_mcp"]);
+    expect(connectionsForDomain(f, "mcp.linear.app").map((c) => c.id)).toEqual(["acct_root", "acct_mcp"]);
+    // The parent direction: a connection on linear.app counts for a subdomain asked for.
+    expect(connectionsForDomain(f, "api.linear.app").map((c) => c.id)).toEqual(["acct_root", "acct_mcp"]);
+    expect(connectionsForDomain(f, "api.notlinear.app").map((c) => c.id)).toEqual(["acct_not"]);
+    expect(connectionsForDomain(f, "evil-linear.app")).toEqual([]);
+    expect(connectionsForDomain(null, "linear.app")).toEqual([]);
+    expect(connectionsForDomain(f, "nope")).toEqual([]);
   });
 
   it("never matches a connection by its provider name: the first label of a domain proves nothing", () => {
