@@ -7,9 +7,9 @@ import { badgeTheme, inkForLight } from "./badge-theme.js";
 afterEach(() => setBadgeSource(null));
 
 describe("badge catalog", () => {
-  it("has 15 badges with unique ids and art for both sizes", () => {
-    expect(BADGES).toHaveLength(15);
-    expect(new Set(BADGES.map((b) => b.id)).size).toBe(15);
+  it("has 19 badges with unique ids and art for both sizes", () => {
+    expect(BADGES).toHaveLength(19);
+    expect(new Set(BADGES.map((b) => b.id)).size).toBe(19);
     for (const b of BADGES) {
       expect(SMALL_ICONS[b.icon]?.art.length).toBeGreaterThan(0);
       expect(MICRO_ICONS[b.icon]?.art.length).toBeGreaterThan(0);
@@ -64,6 +64,27 @@ describe("badge levels", async () => {
   it("uses the singular for a first level of one", () => {
     expect(badgeLevels(BADGE_BY_ID.fleet, 1).map((r) => r.label)).toEqual(["1 agent", "5 agents", "15 agents"]);
   });
+  it("gives a four-level badge a Legendary top level", () => {
+    const rows = badgeLevels(BADGE_BY_ID.corebuilder, "L");
+    expect(rows.map((r) => [r.tier, r.label])).toEqual([
+      ["Bronze", "1 PR"],
+      ["Silver", "10 PRs"],
+      ["Gold", "100 PRs"],
+      ["Legendary", "200 PRs"],
+    ]);
+    expect(rows.map((r) => [r.reached, r.current])).toEqual([[true, false], [true, false], [true, false], [true, true]]);
+    expect(badgeLevels(BADGE_BY_ID.corebuilder, 3).map((r) => [r.reached, r.current])).toEqual([[true, false], [true, false], [true, true], [false, false]]);
+  });
+  it("keeps three-level badges at three rows, with Gold as the top", () => {
+    const rows = badgeLevels(BADGE_BY_ID.liftoff, "L");
+    expect(rows.map((r) => r.tier)).toEqual(["Bronze", "Silver", "Gold"]);
+    expect(rows.map((r) => r.current)).toEqual([false, false, true]);
+  });
+  it("gives the honors badges one Legendary row", () => {
+    for (const id of ["og", "captain", "patientzero"]) {
+      expect(badgeLevels(BADGE_BY_ID[id], BADGE_BY_ID[id].tier)).toEqual([{ tier: "Legendary", label: "Single level", reached: true, current: true }]);
+    }
+  });
 });
 
 /**
@@ -84,6 +105,17 @@ describe("light-mode badges", () => {
     };
     for (const pastel of ["#8fd6a0", "#ffd27a", "#c3c9dd"]) {
       expect(lum(inkForLight(pastel))).toBeLessThan(lum(pastel) - 0.2);
+    }
+  });
+
+  it("has full-size art for every level of the new badges", async () => {
+    const { FULL_ASCII } = await import("./full-ascii-data.js");
+    for (const key of ["og:L", "captain:L", "patientzero:L", "corebuilder:1", "corebuilder:2", "corebuilder:3", "corebuilder:L"]) {
+      const art = FULL_ASCII[key];
+      expect(art, key).toBeDefined();
+      expect(art.chars).toHaveLength(24);
+      expect(art.colors).toHaveLength(24);
+      for (const row of art.chars) expect(row).toHaveLength(48);
     }
   });
 

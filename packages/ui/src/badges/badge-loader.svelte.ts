@@ -53,14 +53,15 @@ export function badgeUid(subject: BadgeSubject): string | null {
   return PERSON_UID.test(uid) ? uid : null;
 }
 
-function singleLevel(id: string): boolean {
-  return (BADGE_BY_ID[id]?.levels.split(" · ").length ?? 0) < 3;
+function levelCount(id: string): number {
+  return BADGE_BY_ID[id]?.levels.split(" · ").length ?? 0;
 }
 
 /**
  * The earned badges the app can draw. Unknown ids are dropped. A single-level
- * badge (Founding Member, Founder) shows at its own tier whatever the server
- * says; the others need tier 1, 2 or 3 (Bronze, Silver, Gold).
+ * badge (Founding Member, Founder, OG) shows at its own tier whatever the
+ * server says; the others need tier 1, 2 or 3 (Bronze, Silver, Gold), and a
+ * badge with a fourth level (Core Builder) also takes "L" (Legendary).
  */
 export function earnedFromPayload(payload: BadgesPayload): EarnedBadge[] {
   if (!payload.enabled) return [];
@@ -69,8 +70,10 @@ export function earnedFromPayload(payload: BadgesPayload): EarnedBadge[] {
     const def = BADGE_BY_ID[row.id];
     if (!def) continue;
     let tier: BadgeTier;
-    if (singleLevel(row.id)) tier = def.tier;
+    const levels = levelCount(row.id);
+    if (levels < 3) tier = def.tier;
     else if (row.tier === 1 || row.tier === 2 || row.tier === 3) tier = row.tier;
+    else if (row.tier === "L" && levels >= 4) tier = "L";
     else continue;
     out.push({ id: row.id, tier, earnedAt: row.earnedAt });
   }
