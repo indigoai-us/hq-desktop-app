@@ -9,6 +9,7 @@ import {
   clearRowOnReply,
   forgetAnswered,
   releaseAnswered,
+  BUSY_AFTER_POST_MS,
   startThinkingIn,
   syncBusyThinking,
   visibleThinking,
@@ -63,9 +64,9 @@ describe("a bot's reply ends its row at once", () => {
     // Same render as the reply: the visible rows already exclude it.
     expect(visibleThinking(map["dm:a"]!, [earlier, reply])).toEqual([]);
     // And the reply page clears the row outright, busy notwithstanding.
-    const next = clearRowOnReply(map, {}, "dm:a", [reply], ["a"]);
+    const next = clearRowOnReply(map, {}, "dm:a", [reply], ["a"], T0 + 20_000);
     expect(next.map["dm:a"]).toBeUndefined();
-    expect(next.answered).toEqual({ a: true });
+    expect(next.answered).toEqual({ a: T0 + 20_000 });
   });
 
   it("keeps the indicator while the bot has not replied", () => {
@@ -77,7 +78,7 @@ describe("a bot's reply ends its row at once", () => {
   });
 
   it("does not bring the row back from a stale busy poll after the reply", () => {
-    const cleared = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"]);
+    const cleared = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"], T0 + 20_000);
     const answered = releaseAnswered(cleared.answered, ["a"]);
     const next = syncBusyThinking(cleared.map, {
       busy: ["a"],
@@ -90,7 +91,7 @@ describe("a bot's reply ends its row at once", () => {
   });
 
   it("does not bring the row back from a status older than the reply", () => {
-    const cleared = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"]);
+    const cleared = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"], T0 + 20_000);
     const stale = applyAgentStatus(
       cleared.map["dm:a"] ?? [],
       { channelId: "c", agentUid: "a", status: "is working on it", ts: iso(T0 + 15_000) },
@@ -102,18 +103,31 @@ describe("a bot's reply ends its row at once", () => {
   });
 
   it("does not flicker back on between the reply and its follow-up message", () => {
-    let { map, answered } = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"]);
+    let { map, answered } = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"], T0 + 20_000);
     // A busy poll lands between the text and the suggestions.
     answered = releaseAnswered(answered, ["a"]);
     map = syncBusyThinking(map, { busy: ["a"], previouslyBusy: ["a"], nameOf, now: T0 + 20_500, answered });
     expect(map["dm:a"]).toBeUndefined();
-    ({ map, answered } = clearRowOnReply(map, answered, "dm:a", [suggestions], ["a"]));
+    ({ map, answered } = clearRowOnReply(map, answered, "dm:a", [suggestions], ["a"], T0 + 21_000));
     map = syncBusyThinking(map, { busy: ["a"], previouslyBusy: ["a"], nameOf, now: T0 + 27_000, answered });
     expect(map["dm:a"]).toBeUndefined();
   });
 
+  it("shows the row again when the bot is still busy well after a progress post", () => {
+    // Live walkthrough 2026-10-12: a bot posted "Read all three calls. Saving
+    // what I learned…" mid-turn and the thinking row stayed gone for the rest
+    // of a two-minute turn. Busy for longer than BUSY_AFTER_POST_MS after the
+    // post is not the stale tail of a finished turn.
+    const cleared = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"], T0 + 20_000);
+    const answered = releaseAnswered(cleared.answered, ["a"]);
+    const soon = syncBusyThinking(cleared.map, { busy: ["a"], previouslyBusy: ["a"], nameOf, now: T0 + 20_000 + BUSY_AFTER_POST_MS - 1, answered });
+    expect(soon["dm:a"]).toBeUndefined();
+    const later = syncBusyThinking(cleared.map, { busy: ["a"], previouslyBusy: ["a"], nameOf, now: T0 + 20_000 + BUSY_AFTER_POST_MS, answered });
+    expect(later["dm:a"]).toHaveLength(1);
+  });
+
   it("shows the row again when the bot reports a status newer than its reply", () => {
-    const cleared = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"]);
+    const cleared = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"], T0 + 20_000);
     const next = applyAgentStatus(
       cleared.map["dm:a"] ?? [],
       { channelId: "c", agentUid: "a", status: "is still working", ts: iso(T0 + 25_000) },
@@ -125,7 +139,7 @@ describe("a bot's reply ends its row at once", () => {
   });
 
   it("shows the row again after the person writes and the bot works again", () => {
-    let { map, answered } = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"]);
+    let { map, answered } = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"], T0 + 20_000);
     // The person sends another message: an explicit start, pinned past the reply.
     answered = forgetAnswered(answered, "a");
     map = startThinkingIn(map, "dm:a", { agentUid: "a", agentName: "Banjo" }, T0 + 40_000, {
@@ -138,7 +152,7 @@ describe("a bot's reply ends its row at once", () => {
   });
 
   it("shows the row for a new turn once busy has dropped and risen again", () => {
-    const cleared = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"]);
+    const cleared = clearRowOnReply(afterSend(), {}, "dm:a", [reply], ["a"], T0 + 20_000);
     let answered: AnsweredWhileBusy = releaseAnswered(cleared.answered, []);
     expect(answered).toEqual({});
     let map = syncBusyThinking(cleared.map, { busy: [], previouslyBusy: ["a"], nameOf, now: T0 + 30_000, answered });
@@ -154,7 +168,7 @@ describe("a bot's reply ends its row at once", () => {
     const channel = startThinkingIn({}, "ch:c", { agentUid: "a", agentName: "Banjo" }, T0, {
       afterMs: Date.parse(earlier.createdAt),
     });
-    const inChannel = clearRowOnReply(channel, {}, "ch:c", [reply], ["a"]);
+    const inChannel = clearRowOnReply(channel, {}, "ch:c", [reply], ["a"], T0 + 20_000);
     expect(inChannel.map["ch:c"]).toBeUndefined();
     expect(inChannel.answered).toEqual({});
   });

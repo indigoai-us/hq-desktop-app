@@ -1661,6 +1661,9 @@ This final paragraph verifies spacing after a thematic break.
     replayed: false,
   }),
   take_pending_setup_target: () => null,
+  peek_pending_pack_target: () => null,
+  take_pending_pack_target: () => null,
+  pack_deep_link_catalog_name: () => null,
   list_company_members: () => ({
     members: [
       { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', companyName: 'Indigo' },
