@@ -12,9 +12,11 @@ export type BadgeTier = 1 | 2 | 3 | "L";
 
 export type BadgeIcon =
   | "flag" | "house" | "bug" | "rocket" | "bolt" | "toolbox" | "bulb" | "people"
-  | "robot" | "plug" | "plane" | "calendar" | "box" | "clipboard" | "flame";
+  | "robot" | "plug" | "plane" | "calendar" | "box" | "clipboard" | "flame"
+  | "crown" | "wheel" | "pulse" | "code";
 
-export type BadgeFamily = "early" | "usage";
+/** "honors": given to the people who built and lead HQ, not earned by use. */
+export type BadgeFamily = "early" | "usage" | "honors";
 
 export interface BadgeDef {
   id: string;
@@ -23,7 +25,7 @@ export interface BadgeDef {
   family: BadgeFamily;
   /** What earns it, as one plain sentence fragment. */
   crit: string;
-  /** The three levels, or why there is only one. */
+  /** The three or four levels (a fourth is Legendary), or why there is only one. */
   levels: string;
   /** Tier the badge is shown at when no earned level is known. */
   tier: BadgeTier;
@@ -45,6 +47,10 @@ export const BADGES: readonly BadgeDef[] = [
   { id: "shipit", name: "Ship It", icon: "box", family: "usage", crit: "Projects shipped", levels: "1 · 5 · 20 projects", tier: 1 },
   { id: "closer", name: "Closer", icon: "clipboard", family: "usage", crit: "Stories completed", levels: "10 · 100 · 500 stories", tier: 2 },
   { id: "onfire", name: "On Fire", icon: "flame", family: "usage", crit: "Days in a row using HQ", levels: "7 · 30 · 100 days", tier: 1 },
+  { id: "og", name: "OG", icon: "crown", family: "honors", crit: "On the team that built HQ from day one", levels: "Single level", tier: "L" },
+  { id: "captain", name: "Captain", icon: "wheel", family: "honors", crit: "Leads HQ", levels: "Single level", tier: "L" },
+  { id: "patientzero", name: "Patient Zero", icon: "pulse", family: "honors", crit: "The first person to run HQ", levels: "Single level", tier: "L" },
+  { id: "corebuilder", name: "Core Builder", icon: "code", family: "honors", crit: "Pull requests merged into HQ core", levels: "1 · 10 · 100 · 200 PRs", tier: 1 },
 ];
 
 export const BADGE_BY_ID: Readonly<Record<string, BadgeDef>> = Object.fromEntries(BADGES.map((b) => [b.id, b]));
@@ -93,6 +99,10 @@ export const SMALL_ICONS: Readonly<Record<BadgeIcon, AsciiIcon>> = {
   box: { c: "#e3a36e", a: "#f7d35c", acc: "=", art: [" ____", "/___/|", "|== ||", "|___|/"] },
   clipboard: { c: "#e3c9a6", a: "#8fd6a0", acc: "v", art: [" _[_]_", "|  v  |", "| --- |", "|_____|"] },
   flame: { c: "#ff9f45", a: "#ffe27a", acc: "_", art: ["  )", " ) \\", "/ ) (", "\\(_)/"] },
+  crown: { c: "#ffd23f", a: "#e8566f", acc: "o", art: ["*   *   *", "|\\ / \\ /|", "| V   V |", "|__o_o__|"] },
+  wheel: { c: "#e3a96b", a: "#ffd23f", acc: "@", art: [" \\ | /", " .-+-.", "-+ @ +-", " '-+-'", " / | \\"] },
+  pulse: { c: "#ff6f91", a: "#5ee0c0", acc: "_/\\", art: ["  .--.", " |    |", "_|_/\\_|_", " |  \\/|", "  '--'"] },
+  code: { c: "#8fc7ff", a: "#ffd23f", acc: "", art: [" /   / \\", "<   /   >", " \\ /   /"] },
 };
 
 /** Micro version (54px): only a 2–3 character icon stays legible. */
@@ -112,6 +122,10 @@ export const MICRO_ICONS: Readonly<Record<BadgeIcon, AsciiIcon>> = {
   box: { c: "#e3a36e", a: "#f7d35c", acc: "_", art: ["___", "|_|"] },
   clipboard: { c: "#e3c9a6", a: "#8fd6a0", acc: "v", art: ["|v|", "|_|"] },
   flame: { c: "#ff9f45", a: "#ffe27a", acc: "_", art: [" ( ", ")\\(", "(_)"] },
+  crown: { c: "#ffd23f", a: "#e8566f", acc: "o", art: ["^^^", "|o|"] },
+  wheel: { c: "#e3a96b", a: "#ffd23f", acc: "@", art: ["\\|/", "-@-", "/|\\"] },
+  pulse: { c: "#ff6f91", a: "#5ee0c0", acc: "_/\\", art: ["(0)", "_/\\_"] },
+  code: { c: "#8fc7ff", a: "#ffd23f", acc: "/", art: ["</>"] },
 };
 
 export interface ResolvedBadge {
