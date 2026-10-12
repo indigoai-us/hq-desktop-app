@@ -613,6 +613,14 @@ export type FirstRunRoute = "legacy" | "visual" | "pending";
  */
 export const VISUAL_FIRST_RUN_FLAG_GRACE_MS = 1000;
 
+/**
+ * The longest the takeover waits for the bot listings (this computer's and
+ * the account's) before its name step opens anyway. Within it, an account
+ * that already has an assistant is offered that assistant's name; after it,
+ * a slow listing means a friendly free name, as for a new account.
+ */
+export const FIRST_RUN_LISTINGS_WAIT_MS = 5_000;
+
 export interface FirstRunRouteInput {
   /** The host can run local bots (desktop app). */
   hasBots: boolean;

@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - First run: your assistant no longer asks about things you just did in setup. It used to start writing while you were still going through the setup screens, so its first message could offer to bring in the work on your computer right after setup had brought it in, and then correct itself. Now the assistant waits until you press "Talk to <name>" or "Continue in chat", gets everything you chose in setup at once (your company, the work setup brought in, your note taker and project tool), and only then writes its first message, starting at the first step you have not done. Its hello no longer says it is checking your computer while you are still in setup.
+- First run on a new computer: if your account already has an assistant, the name step now opens with your assistant's name, so Continue keeps it. Before, it suggested a new random name, and clicking through renamed your assistant. HQ checks your account's bots before the name step opens. A new account, or one whose bots HQ cannot read right now, still gets a friendly suggested name.
 
 ## [0.11.4] — 2026-10-11
 
