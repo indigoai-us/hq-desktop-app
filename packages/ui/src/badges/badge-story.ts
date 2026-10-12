@@ -40,9 +40,17 @@ export function storyVoice(owner: string | null | undefined, person: StoryPerson
 
 type Line = (v: StoryVoice) => string;
 
+/** "was" agrees with a named person; "you" takes "were". "I was" stays. */
+const was = (v: StoryVoice): string => (v.Subject === "You" ? "were" : "was");
+/** "Maya leads", but "You lead" and "I lead". */
+const leads = (v: StoryVoice): string => (v.Subject === "You" || v.Subject === "I" ? "lead" : "leads");
+
 interface StoryDef {
-  /** What they did, per level reached: Bronze, Silver, Gold. One entry for single-level badges. */
-  did: readonly [Line] | readonly [Line, Line, Line];
+  /**
+   * What they did, per level reached: Bronze, Silver, Gold, and Legendary for
+   * a badge with a fourth level. One entry for single-level badges.
+   */
+  did: readonly [Line] | readonly [Line, Line, Line] | readonly [Line, Line, Line, Line];
   /** Why it matters. */
   why: Line;
 }
@@ -160,9 +168,31 @@ const STORIES: Readonly<Record<string, StoryDef>> = {
     ],
     why: () => "A streak like this means HQ is part of the routine, day after day.",
   },
+  og: {
+    did: [(v) => `${v.Subject} ${was(v)} on the team that built HQ from day one.`],
+    why: () => "This badge goes to the original team, the people who built the first version of HQ.",
+  },
+  captain: {
+    did: [(v) => `${v.Subject} ${leads(v)} HQ.`],
+    why: () => "The captain sets where HQ is going and keeps the team working toward it.",
+  },
+  patientzero: {
+    did: [(v) => `${v.Subject} ${was(v)} the first person ever to run HQ, before it had a name.`],
+    why: () => "HQ started as one person's own setup. Everything in HQ today was built on top of that first version.",
+  },
+  corebuilder: {
+    did: [
+      (v) => `${v.Subject} got ${v.their} first pull request merged into HQ core.`,
+      (v) => `${v.Subject} got 10 pull requests merged into HQ core.`,
+      (v) => `${v.Subject} got 100 pull requests merged into HQ core.`,
+      (v) => `${v.Subject} got 200 pull requests merged into HQ core.`,
+    ],
+    why: () => "HQ core ships to everyone who uses HQ, so each merged change reaches every team.",
+  },
 };
 
-const LEVEL_INDEX: Readonly<Record<string, number>> = { 1: 0, 2: 1, 3: 2, L: 2 };
+/** Which `did` line a tier reads: Legendary is the fourth line when there is one, else the Gold line. */
+const LEVEL_INDEX: Readonly<Record<string, number>> = { 1: 0, 2: 1, 3: 2, L: 3 };
 
 export interface BadgeStory {
   /** What they did to earn it, at the level reached. */
@@ -178,7 +208,7 @@ export function badgeStory(badge: ResolvedBadge, owner?: string | null, person: 
   const def = STORIES[badge.def.id];
   if (!def) return null;
   const voice = storyVoice(owner, person);
-  const at = def.did.length === 1 ? 0 : LEVEL_INDEX[String(badge.tier as BadgeTier)] ?? 0;
+  const at = def.did.length === 1 ? 0 : Math.min(LEVEL_INDEX[String(badge.tier as BadgeTier)] ?? 0, def.did.length - 1);
   return { did: def.did[at](voice), why: def.why(voice), earned: `Earned ${cardDate(badge.earnedAt)}` };
 }
 

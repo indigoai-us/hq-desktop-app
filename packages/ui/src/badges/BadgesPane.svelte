@@ -162,7 +162,7 @@
   </div>
 </aside>
 {#if cardOpen}
-  <BadgeCardModal open badge={cardOpen} owner={owner || null} returnFocus={cardOpener} onclose={() => (cardOpen = null)} />
+  <BadgeCardModal open badge={cardOpen} owner={owner || null} returnFocus={cardOpener} origin={cardOpener} onclose={() => (cardOpen = null)} />
 {/if}
 
 <style>
@@ -218,7 +218,8 @@
   .mark { display: block; opacity: 0.45; }
   /* Same sizes as the profile's Badges section: the name 12px, the level
      or progress under it 11px (owner review 2026-10-08). */
-  .nm { max-width: 100%; font-size: 12px; color: var(--v4-text-1); line-height: 1.3; overflow-wrap: anywhere; }
+  /* Names wrap between words only, balanced over two lines, never mid-word. */
+  .nm { max-width: calc(100% + 8px); font-size: 12px; color: var(--v4-text-1); line-height: 1.3; overflow-wrap: normal; text-wrap: balance; }
   .locked .nm { color: var(--v4-text-2); }
   .tr { font-size: 11px; line-height: 1.4; color: var(--v4-text-3); }
   .pg { margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
