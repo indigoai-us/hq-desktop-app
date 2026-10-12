@@ -10,6 +10,10 @@
    * the desktop-only `adapter.storage` group. Every delete is previewed first
    * (dry run) and needs an explicit confirm. Copy stays plain; raw CLI errors
    * never reach the screen.
+   *
+   * Status is slow (minutes cold). The pane shows the host's last known
+   * figures at once with their age, then refreshes in place; a read already
+   * running is joined, never repeated (storage-load.ts).
    */
   import { onMount } from "svelte";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
@@ -69,6 +73,7 @@
 
   import type { StorageHoldingRef } from "@hq/platform";
   import { isStorageFeatureDisabled } from "./storage-feature.js";
+  import { cachedAgeCopy, joinStatus } from "./storage-load.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -90,6 +95,9 @@
 
   let status = $state<StorageStatus | null>(null);
   let loading = $state(true);
+  /** When the shown figures are the host's cached ones: when they were read. */
+  let cachedAt = $state<string | null>(null);
+  const cachedAge = $derived(cachedAgeCopy(cachedAt));
   let loadError = $state<string | null>(null);
   let localCutoff = $state<BandCutoff>(null);
   let cloudCutoffs = $state<Record<string, BandCutoff>>({});
@@ -163,7 +171,7 @@
     } else {
       offloadResult = offloadOutcome(res.value, device);
     }
-    await load();
+    await load({ afterWrite: true });
     offloadPhase = "idle";
   }
 
@@ -224,17 +232,18 @@
     );
   }
 
-  async function load(): Promise<void> {
+  async function load(opts: { afterWrite?: boolean } = {}): Promise<void> {
     if (!api) {
       loading = false;
       return;
     }
     loading = true;
     loadError = null;
-    const res = await api.status();
+    const res = await joinStatus(api, opts);
     loading = false;
     if (res.ok) {
       status = res.value;
+      cachedAt = null;
       localCutoff = null;
       cloudCutoffs = {};
     } else {
@@ -328,7 +337,7 @@
     result = { lines: outcome.lines, errors: [...outcome.errors, ...errors] };
     preview = null;
     phase = "done";
-    await load();
+    await load({ afterWrite: true });
     phase = "idle";
   }
 
@@ -365,6 +374,16 @@
     return local?.available && bytes > 0 && by ? `${formatBytes(bytes)} will be freed by ${by}.` : null;
   });
 
+  /** The host's last known status, shown while the fresh read runs. */
+  async function loadCached(): Promise<void> {
+    if (!api?.cachedStatus) return;
+    const res = await api.cachedStatus().catch(() => null);
+    // A fresh read or a refusal that already landed wins.
+    if (!res?.ok || !res.value || status || featureDisabled) return;
+    status = res.value.status;
+    cachedAt = res.value.fetched_at;
+  }
+
   async function loadRoles(): Promise<void> {
     const res = await adapter?.identity?.listWorkspaces?.().catch(() => null);
     if (res?.ok) roles = rolesFromMemberships(res.value as Record<string, unknown>[]);
@@ -372,6 +391,7 @@
 
   onMount(() => {
     void load();
+    void loadCached();
     void loadRoles();
     return subscribeHostComputerNoun((next) => (hostNoun = next));
   });
@@ -413,6 +433,9 @@
             {#if pendingReclaim}<span data-testid="settings-storage-pending-reclaim">{pendingReclaim}</span>{/if}
           {:else}
             Update HQ to see your backup history.
+          {/if}
+          {#if cachedAge}
+            <span data-testid="settings-storage-age" aria-live="polite">{cachedAge}{#if loading} Checking for changes…{:else if loadError} Couldn't check for changes.{/if}</span>
           {/if}
         </div>
       </div>
