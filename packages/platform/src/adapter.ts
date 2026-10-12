@@ -2486,11 +2486,20 @@ export interface StorageStatus {
     reclaim_after?: string | null;
   };
   cloud: StorageCloudCompany[];
-  /** Big files that can move to HQ cloud. Absent on CLIs without offload. */
+  /**
+   * Big files that can move to HQ cloud. Absent on CLIs without offload, and
+   * on newer CLIs that leave the big-file scan out of status
+   * (`big_files_included: false`; read them with `StorageApi.bigFiles`).
+   */
   offload?: StorageOffloadStatus | null;
   /** Cloud history could not be read at all (e.g. signed out). */
   cloud_error?: string | null;
   generated_at?: string | null;
+  /**
+   * `false`: this CLI left the big-file scan out of status; `hq storage
+   * big-files` has it. Absent on older CLIs, whose status carries `offload`.
+   */
+  big_files_included?: boolean | null;
   reclaim?: StorageReclaim | null;
 }
 
@@ -2511,6 +2520,12 @@ export interface StorageReclaim {
 export interface StorageCountBytes {
   count: number;
   bytes: number;
+}
+
+/** `hq storage big-files --json`: the big-file scan on its own. */
+export interface StorageBigFiles {
+  offload?: StorageOffloadStatus | null;
+  generated_at?: string | null;
 }
 
 /** `hq storage status --json` → `offload`. */
@@ -2669,6 +2684,13 @@ export interface StorageApi {
   status(): AdapterPromise<StorageStatus>;
   /** Last known status without scanning; null when there is none. */
   cachedStatus?(): AdapterPromise<CachedStorageStatus | null>;
+  /**
+   * `hq storage big-files --json`: the slow big-file scan, separate from
+   * status so the summary shows first. One scan at a time on the host. An
+   * older CLI without the command fails with `update-hq`; its status carries
+   * big files instead.
+   */
+  bigFiles?(): AdapterPromise<StorageBigFiles>;
   previewPrune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
   prune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
   /** `hq storage offload --dry-run --json`. */

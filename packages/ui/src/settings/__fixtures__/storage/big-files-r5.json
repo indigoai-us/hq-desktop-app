@@ -1,0 +1,26 @@
+{
+  "offload": {
+    "history_candidates": {
+      "count": 4,
+      "bytes": 252357290
+    },
+    "current_candidates": {
+      "count": 0,
+      "bytes": 0
+    },
+    "placeholders": {
+      "count": 0,
+      "bytes": 0
+    },
+    "current_available": false,
+    "current_reason": "Offloading current files is not available yet: HQ sync would treat the replaced file as deleted.",
+    "history_held": {
+      "count": 2,
+      "bytes": 126178646,
+      "worktrees": [
+        ".claude/worktrees/old-ui"
+      ]
+    }
+  },
+  "generated_at": "2026-10-09T21:22:40.528Z"
+}

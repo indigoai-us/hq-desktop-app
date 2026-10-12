@@ -14,11 +14,17 @@
    * Status is slow (minutes cold). The pane shows the host's last known
    * figures at once with their age, then refreshes in place; a read already
    * running is joined, never repeated (storage-load.ts).
+   *
+   * Big files are their own read (`hq storage big-files`), started next to
+   * status, so the summary shows without waiting on the big-file scan. The
+   * Big files section has its own loading state. An older CLI has no
+   * `big-files` (`update-hq`) and carries big files in status instead.
    */
   import { onMount } from "svelte";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import type {
     PlatformAdapter,
+    StorageOffloadStatus,
     StorageOffloadResult,
     StoragePruneRequest,
     StoragePruneResult,
@@ -73,7 +79,7 @@
 
   import type { StorageHoldingRef } from "@hq/platform";
   import { isStorageFeatureDisabled } from "./storage-feature.js";
-  import { cachedAgeCopy, joinStatus } from "./storage-load.js";
+  import { cachedAgeCopy, joinBigFiles, joinStatus } from "./storage-load.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -125,12 +131,24 @@
   let offloadError = $state<string | null>(null);
   let offloadResult = $state<{ ok: boolean; lines: string[] } | null>(null);
 
-  const bigFiles = $derived(offloadCandidates(status?.offload));
+  /**
+   * Big files: from `hq storage big-files`, or from status on an older CLI.
+   * Kept across a fresh status, which no longer carries them.
+   */
+  let offload = $state<StorageOffloadStatus | null>(null);
+  /** The big-files read is running. */
+  let bigFilesLoading = $state(false);
+  /** The last big-files read failed (not an older CLI). */
+  let bigFilesFailed = $state(false);
+  /** The CLI has no `hq storage big-files`: big files come in status. */
+  let bigFilesInStatus = $state(false);
+
+  const bigFiles = $derived(offloadCandidates(offload));
   /** Current files are listed only once the CLI can move them. */
-  const showCurrent = $derived(currentOffloadAvailable(status?.offload));
-  const placeholders = $derived(status?.offload?.placeholders ?? null);
+  const showCurrent = $derived(currentOffloadAvailable(offload));
+  const placeholders = $derived(offload?.placeholders ?? null);
   /** Old big files other worktrees still use; they stay on this computer. */
-  const held = $derived(historyHeld(status?.offload));
+  const held = $derived(historyHeld(offload));
   /** Either flow running locks the whole page. */
   const busy = $derived(phase !== "idle" || offloadPhase !== "idle");
 
@@ -239,6 +257,8 @@
     }
     loading = true;
     loadError = null;
+    // Both reads start now; the summary renders as soon as status lands.
+    void loadBigFiles(opts);
     const res = await joinStatus(api, opts);
     loading = false;
     if (res.ok) {
@@ -246,6 +266,8 @@
       cachedAt = null;
       localCutoff = null;
       cloudCutoffs = {};
+      // Older CLI (or `--big-files`): big files came with status.
+      if (res.value.offload) offload = res.value.offload;
     } else {
       if (isStorageFeatureDisabled(res.message)) {
         // Allowlist gate, fail closed: render nothing and let the host hide the entry.
@@ -256,6 +278,32 @@
       console.error("storage status failed:", res.message);
       loadError = res.message ?? "error";
     }
+  }
+
+  /** `hq storage big-files`, with its own loading state. */
+  async function loadBigFiles(opts: { afterWrite?: boolean } = {}): Promise<void> {
+    if (!api || bigFilesInStatus) return;
+    bigFilesLoading = true;
+    const res = await joinBigFiles(api, opts);
+    bigFilesLoading = false;
+    if (res.ok) {
+      bigFilesFailed = false;
+      if (res.value.offload) offload = res.value.offload;
+      return;
+    }
+    if (isStorageFeatureDisabled(res.message)) {
+      featureDisabled = true;
+      onfeaturedisabled?.();
+      return;
+    }
+    if (res.message?.includes(UPDATE_HQ_CODE)) {
+      // Older CLI: no separate scan. Its status carries big files.
+      bigFilesInStatus = true;
+      bigFilesFailed = false;
+      return;
+    }
+    console.error("storage big files failed:", res.message);
+    bigFilesFailed = true;
   }
 
   function describeRequest(req: StoragePruneRequest): string {
@@ -382,6 +430,7 @@
     if (!res?.ok || !res.value || status || featureDisabled) return;
     status = res.value.status;
     cachedAt = res.value.fetched_at;
+    if (!offload && res.value.status.offload) offload = res.value.status.offload;
   }
 
   async function loadRoles(): Promise<void> {
@@ -453,13 +502,21 @@
         {OFFLOAD_CONFIRM_COPY} Moving them frees space on {device}.{#if showCurrent} Files over {BIG_FILE_MB} MB you haven't opened in {IDLE_DAYS} days move too. {OFFLOAD_CURRENT_COPY}{/if}
       </div>
     </div>
-    {#if !status.offload}
+    {#if !offload && (bigFilesLoading || (bigFilesInStatus && loading))}
+      <div class="set-row" role="status" aria-live="polite" data-testid="settings-storage-big-files-loading">
+        <div class="sd">Checking for big files…</div>
+      </div>
+    {:else if !offload && bigFilesFailed}
+      <div class="set-row unavailable" role="alert" data-testid="settings-storage-big-files-error">
+        <div class="sd">We couldn't check for big files. Refresh to try again.</div>
+      </div>
+    {:else if !offload}
       <div class="set-row unavailable" data-testid="settings-storage-big-files-update">
         <div class="sd">Update HQ to move big files to the cloud.</div>
       </div>
-    {:else if status.offload.available === false}
+    {:else if offload.available === false}
       <div class="set-row unavailable" data-testid="settings-storage-big-files-unavailable">
-        <div class="sd">{offloadUnavailableCopy(status.offload.reason)}</div>
+        <div class="sd">{offloadUnavailableCopy(offload.reason)}</div>
       </div>
     {:else}
       <div class="set-row actions">
@@ -469,8 +526,13 @@
           </div>
           {#if bigFiles.count > 0}
             <div class="sd" data-testid="settings-storage-big-files-breakdown">
-              {status.offload.history_candidates.count.toLocaleString()} old copies in backup history ({formatBytes(status.offload.history_candidates.bytes)}){#if showCurrent} · {status.offload.current_candidates.count.toLocaleString()} idle files in your HQ folder ({formatBytes(status.offload.current_candidates.bytes)}){/if}
+              {offload.history_candidates.count.toLocaleString()} old copies in backup history ({formatBytes(offload.history_candidates.bytes)}){#if showCurrent} · {offload.current_candidates.count.toLocaleString()} idle files in your HQ folder ({formatBytes(offload.current_candidates.bytes)}){/if}
             </div>
+          {/if}
+          {#if bigFilesLoading}
+            <div class="sd" aria-live="polite" data-testid="settings-storage-big-files-checking">Checking for changes to big files…</div>
+          {:else if bigFilesFailed}
+            <div class="sd" data-testid="settings-storage-big-files-stale">Couldn't check big files for changes.</div>
           {/if}
           {#if held}
             <div class="sd" data-testid="settings-storage-history-held">{historyHeldCopy(held, device)}</div>
@@ -508,7 +570,7 @@
         <RailButton
           icon="upload"
           variant="primary"
-          disabled={bigFiles.bytes === 0 || busy}
+          disabled={bigFiles.bytes === 0 || busy || bigFilesLoading}
           aria-busy={offloadPhase === "previewing" || offloadPhase === "moving"}
           onclick={() => void startOffload()}
           data-testid="settings-storage-offload"
