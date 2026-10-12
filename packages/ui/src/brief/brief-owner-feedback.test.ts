@@ -7,7 +7,7 @@ import { octoberEightBrief } from "./brief-fixture.js";
 import { humanTitle } from "./brief-distill.js";
 import { keepNativeSession } from "./brief-data.js";
 import { gridStyle } from "./brief-generate.js";
-import { monogram, productName, repoShort } from "./brief-origin.js";
+import { companyDisplayName, monogram, monogramHue, productName, repoShort } from "./brief-origin.js";
 import { briefPriorities, meetingPeek, redAge, todoPrompt } from "./brief-peeks.js";
 import { parseBriefItems } from "./brief-run-files.js";
 import { sweepToInput, type BriefSweep } from "./brief-sweep.js";
@@ -173,6 +173,13 @@ describe("Needs you (8, 11, 16, 17)", () => {
     expect(repoShort("indigoai-us/hq-finance")).toBe("hq-finance");
     expect(monogram("Indigo")).toBe("IN");
     expect(monogram("Live Recover")).toBe("LR");
+    // A raw company uid (no company list from the host) reads as the company, not "CI" for "cmp_…".
+    expect(monogram("cmp_indigo")).toBe("IN");
+    expect(monogram("cmp_liverecover")).toBe("LI");
+    expect(monogram("cmp_live_recover")).toBe("LR");
+    expect(companyDisplayName("cmp_live_recover")).toBe("live recover");
+    expect(monogramHue("cmp_indigo")).toBe(monogramHue("Indigo"));
+    expect(monogramHue("cmp_indigo")).not.toBe(monogramHue("cmp_liverecover"));
   });
 
   it("titles read like a to-do: PR reference and conventional prefix stripped, sentence-cased", () => {

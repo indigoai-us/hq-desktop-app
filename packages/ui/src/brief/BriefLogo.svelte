@@ -6,7 +6,7 @@
    */
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import type { BriefCompanyLogo } from "./brief-context.svelte.js";
-  import { monogram, monogramHue } from "./brief-origin.js";
+  import { companyDisplayName, monogram, monogramHue } from "./brief-origin.js";
 
   let { company, fallback = null, size = 20 }: { company: BriefCompanyLogo | null; fallback?: string | null; size?: number } = $props();
   const name = $derived(company?.label ?? fallback ?? "");
@@ -16,7 +16,7 @@
   {#if company}
     <CompanyLabel name={company.label} iconUrl={company.iconUrl} companyUid={company.uid} {size} iconOnly />
   {:else}
-    <span class="mono" role="img" aria-label={name} data-testid="brief-logo-monogram">{monogram(name)}</span>
+    <span class="mono" role="img" aria-label={companyDisplayName(name)} data-testid="brief-logo-monogram">{monogram(name)}</span>
   {/if}
 </span>
 

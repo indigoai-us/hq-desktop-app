@@ -25,6 +25,11 @@
   const initial = params.get('day');
   let day = $state<Day>(initial && initial in DAYS ? (initial as Day) : 'oct8');
   const input = $derived(DAYS[day].make());
+  // The fixtures' companies, as a signed-in host would pass them (real icons resolve by slug).
+  const companies = [
+    { uid: 'cmp_indigo', slug: 'indigo', label: 'Indigo' },
+    { uid: 'cmp_liverecover', slug: 'liverecover', label: 'LiveRecover' },
+  ];
 
   function pick(next: Day) {
     day = next;
@@ -42,7 +47,7 @@
     <span class="hint">Shift+A · every card</span>
   </nav>
   {#key day}
-    <DailyBrief {input} />
+    <DailyBrief {input} {companies} />
   {/key}
 </div>
 

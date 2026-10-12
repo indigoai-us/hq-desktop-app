@@ -146,15 +146,18 @@
   font-weight: 500;
 }
 .daily-brief .leadchip {
-  font-family: var(--b-mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  padding: 5px 9px;
-  border-radius: 8px;
+  font-family: var(--b-ui);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
   box-shadow: var(--b-well);
   color: var(--b-t2);
   white-space: nowrap;
-  text-transform: uppercase;
+  transition: color 0.15s, background 0.15s;
+}
+.daily-brief .leadchip:hover {
+  color: var(--b-t1);
+  background: rgba(255, 255, 255, 0.05);
 }
 .daily-brief .leadchip b {
   color: var(--b-sun);

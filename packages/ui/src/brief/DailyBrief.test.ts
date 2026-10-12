@@ -128,7 +128,7 @@ describe("DailyBrief", () => {
       "runway",
     ]);
     const chip = q('[data-testid="brief-lead"]')!;
-    expect(chip.textContent!.replace(/\s+/g, " ").trim()).toBe('Lead Decisions · 8 widgets · "Cut the hq-core release" leads · 4 calls and a live incident');
+    expect(chip.textContent!.replace(/\s+/g, " ").trim()).toBe("Why these cards");
     expect(q('[data-testid="brief-today"]')?.textContent).toContain("HQ Founder Office Hours");
     expect(qa('[data-testid="brief-need"]')).toHaveLength(4);
     const origins = qa('[data-testid="brief-origin"]').map((el) => el.textContent?.trim());
@@ -176,6 +176,9 @@ describe("DailyBrief", () => {
     await hover(q('[data-testid="brief-lead"]')!);
     const peek = q('[data-testid="brief-peek"]')!;
     expect(peek.textContent).toContain("Why these cards");
+    // The generator's lead line lives in the peek, not on the page.
+    expect(peek.textContent).toContain("Lead: ");
+    expect(peek.textContent).toContain(generateBrief(day()).reason);
     expect(peek.textContent).toContain("Sunrise — Always first:");
     expect(peek.textContent).toContain("Not shown today");
     expect(peek.querySelectorAll('[data-testid="brief-peek-line"]').length).toBeLessThanOrEqual(10);

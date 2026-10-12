@@ -182,6 +182,7 @@
       title: "Why these cards",
       status: `${plan.template === "1" ? "A quiet day" : `Template ${plan.template}`} · ${plan.dayType}`,
       sections: [
+        { label: `Lead: ${leadLabel(plan.lead)}`, lines: [{ label: `${plan.density} card${plan.density === 1 ? "" : "s"} · ${plan.reason}`, state: "" }] },
         { label: "On the page", lines: plan.widgets.map((w) => ({ label: `${entryOf(w.kind).name} — ${w.reason}`, state: "" })) },
         ...(plan.dropped.length ? [{ label: "Not shown today", lines: plan.dropped.map((d) => ({ label: `${kindName(String(d.kind))}: ${d.why}`, state: "" })) }] : []),
       ],
@@ -269,7 +270,7 @@
     </div>
     <div class="b-prov" title="What this brief was generated from">
       <span class="leadchip" data-testid="brief-lead" role="group" aria-label="Why these cards" use:peek={{ state: briefState, content: whyPeek }}
-        >Lead <b>{leadLabel(plan.lead)}</b> · {plan.density} widget{plan.density === 1 ? "" : "s"} · {plan.reason}</span
+        >Why these cards</span
       >
       {#each plan.provenance as p (p.label)}<span class="prov" role="group" aria-label="{p.n} {p.label}" use:peek={{ state: briefState, content: () => provPeek(p.label) }}><b>{p.n}</b> {p.label}</span>{/each}
     </div>
@@ -292,7 +293,7 @@
       {:else}
         {@const w = t.w}
         {@const entry = entryOf(w.kind)}
-        <!-- One-row cards keep their own height (top-aligned); multi-row cards fill their span. -->
+        <!-- Every card fills its grid area, so a short card never leaves a hole under it; its footer pins to the bottom. -->
         <div
           class="slot"
           class:short={w.rows === 1}
@@ -487,9 +488,6 @@
   }
   .slot > :global(.w) {
     flex: 1;
-  }
-  .slot.short {
-    align-self: start;
   }
   .placeholder {
     border: 1px dashed rgba(255, 255, 255, 0.18);

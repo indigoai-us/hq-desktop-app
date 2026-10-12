@@ -30,9 +30,14 @@ export function productName(repo: string | null | undefined, product?: string | 
   return PRODUCTS[short.toLowerCase()] ?? short;
 }
 
-/** Two letters for a monogram tile: "Indigo" -> "IN", "Live Recover" -> "LR". */
+/** A readable company name from a label or a raw uid: "cmp_live_recover" -> "live recover". */
+export function companyDisplayName(nameOrUid: string): string {
+  return nameOrUid.trim().replace(/^cmp_/i, "").replace(/[_-]+/g, " ").trim();
+}
+
+/** Two letters for a monogram tile: "Indigo" -> "IN", "Live Recover" -> "LR", "cmp_indigo" -> "IN". */
 export function monogram(name: string): string {
-  const parts = name.trim().split(/[\s_-]+/).filter(Boolean);
+  const parts = companyDisplayName(name).split(/\s+/).filter(Boolean);
   if (!parts.length) return "?";
   if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
   return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
@@ -41,6 +46,6 @@ export function monogram(name: string): string {
 /** A stable hue for a name's monogram tile. */
 export function monogramHue(name: string): number {
   let h = 0;
-  for (const ch of name.toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  for (const ch of companyDisplayName(name).toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) % 360;
   return h;
 }
