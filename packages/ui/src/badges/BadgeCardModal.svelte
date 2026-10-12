@@ -250,6 +250,14 @@
   .bc-flip { position: relative; transform-style: preserve-3d; transition: transform 640ms cubic-bezier(0.45, 0, 0.2, 1); }
   .bc-flip.flipped { transform: rotateY(180deg); }
   .bc-face { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  /* WebKit still paints a side's composited insides (the foil canvas, the
+     tilt layer) when that side faces away, so the face showed mirrored for a
+     moment as the card turned. Each side also hides itself as the card passes
+     edge-on: with this easing the turn reaches 90 degrees at 236ms of 640ms. */
+  [data-phase="done"] .bc-face { transition: visibility 0s linear 236ms; }
+  [data-phase="done"] .bc-flip.flipped .bc-face { visibility: hidden; }
+  [data-phase="done"] .bc-back { visibility: hidden; transition: visibility 0s linear 236ms; }
+  [data-phase="done"] .bc-flip.flipped .bc-back { visibility: visible; }
   .bc-foot { display: flex; flex-direction: column; align-items: center; gap: 6px; }
   .bc-actions { display: flex; align-items: center; gap: 12px; }
   .bc-owner { margin: 0; color: rgba(250, 250, 250, 0.56); }
@@ -313,5 +321,6 @@
     .bc-back { transform: none; visibility: hidden; }
     .bc-flip.flipped .bc-back { visibility: visible; }
     .bc-flip.flipped .bc-face { visibility: hidden; }
+    [data-phase="done"] .bc-face, [data-phase="done"] .bc-back { transition: none; }
   }
 </style>
