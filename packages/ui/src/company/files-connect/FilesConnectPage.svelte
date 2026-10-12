@@ -28,7 +28,7 @@
   import { companyStore } from "../company-store.svelte.js";
   import DeployAccessForm from "./DeployAccessForm.svelte";
   import HiddenFromAiRow from "./HiddenFromAiRow.svelte";
-  import { viewerCanEditRedaction, type RedactionPresetsApi } from "./redaction-presets.js";
+  import { createRedactionPresetsApi, viewerCanEditRedaction, type RedactionPresetsApi } from "./redaction-presets.js";
   import ConnectionCardLogo from "../../chat/messaging/ConnectionCardLogo.svelte";
   import { brandMarkFor } from "../../chat/messaging/app-brand-marks.js";
   import {
@@ -103,13 +103,15 @@
     companyLabel?: string | null;
     /** OWNER-R13: reads a vault object by key when the file is not on this Mac. */
     vaultCloudRead?: ((key: string) => Promise<string | null>) | null;
-    /** US-005: redaction presets for a connected app. Without it the
-     *  "Hidden from AI" row is not shown. */
+    /** US-005: overrides the redaction presets API. By default it is built
+     *  from `adapter.company` (hq-pro US-004); with neither, the "Hidden from
+     *  AI" row is not shown. */
     redactionPresets?: RedactionPresetsApi | null;
   }
 
   let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest, deployActions = true, companyLabel = null, vaultCloudRead = null, redactionPresets = null }: Props = $props();
 
+  const redactionApi = $derived(redactionPresets ?? createRedactionPresetsApi(adapter?.company));
   const workflow = $derived({ settings, shell } as AgentWorkflowApi);
 
   function cachedSecrets(s: string): SecretRow[] | null {
@@ -952,8 +954,8 @@
                   {#if conn.detail && conn.detail !== `Connected by ${conn.owner}`}<span class="meta wrap-meta">{conn.detail}</span>{/if}
                   {#if conn.reason}<span class="conn-note" data-testid="integration-reason">{conn.reason}</span>{/if}
                   {#if conn.fixPath}<span class="conn-note" data-testid="integration-fix">{conn.fixPath}</span>{/if}
-                  {#if redactionPresets && companyUid}
-                    <HiddenFromAiRow api={redactionPresets} {companyUid} connectionId={conn.id} appName={appCurrent.name} canEdit={canEditRedaction} />
+                  {#if redactionApi && companyUid}
+                    <HiddenFromAiRow api={redactionApi} {companyUid} connectionId={conn.id} appName={appCurrent.name} canEdit={canEditRedaction} />
                   {/if}
                 </li>
               {/each}

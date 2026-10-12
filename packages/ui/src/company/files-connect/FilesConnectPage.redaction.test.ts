@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 // US-005: a "Hidden from AI" row under each connection in the existing
-// connected-app detail pane.
-import { ok } from "@hq/platform";
+// connected-app detail pane, wired to the US-004 hq-pro contract through the
+// platform adapter (`company.getRedaction` / `company.putRedaction`).
+import { ok, type AdapterResult, type Json } from "@hq/platform";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import FilesConnectPage from "./FilesConnectPage.svelte";
-import type { RedactionPresetId, RedactionPresetsApi, RedactionSettings } from "./redaction-presets";
 
 vi.mock("../company-store.svelte.js", () => ({
   companyStore: {
@@ -16,6 +16,7 @@ vi.mock("../company-store.svelte.js", () => ({
 }));
 
 type Role = "owner" | "admin" | "member";
+const ALL = ["personal-ids", "hr-pay", "legal", "financial"];
 
 const SURFACE = (role: Role) => ({
   companyUid: "cmp_acme",
@@ -27,19 +28,35 @@ const SURFACE = (role: Role) => ({
   audit: [],
 });
 
-/** A stand-in for the US-004 API that keeps what was PUT, like the server. */
-function serverApi(initial: Record<string, Partial<Record<RedactionPresetId, boolean>>> = {}) {
-  const store = new Map(Object.entries(initial));
-  const answer = (conn: string): RedactionSettings =>
-    ({ presets: Object.entries(store.get(conn) ?? {}).map(([id, enabled]) => ({ id, enabled })) }) as never;
-  const api = {
-    load: vi.fn(async (_uid: string, conn: string) => answer(conn)),
-    set: vi.fn(async (_uid: string, conn: string, id: RedactionPresetId, enabled: boolean) => {
-      store.set(conn, { ...(store.get(conn) ?? {}), [id]: enabled });
+const refusal = (status: number, code: string): AdapterResult<Json> => ({
+  ok: false,
+  reason: "error",
+  code,
+  message: "server text that must not show",
+  status,
+});
+
+/** A stand-in for hq-pro #4915 that keeps what was PUT. */
+function hqPro(opts: { canEdit?: boolean; saved?: Record<string, string[]> } = {}) {
+  const store = new Map(Object.entries(opts.saved ?? {}));
+  const answer = (conn: string) =>
+    ok({
+      companyUid: "cmp_acme",
+      connectionId: conn,
+      presets: store.get(conn) ?? ALL,
+      availablePresets: ALL,
+      isDefault: !store.has(conn),
+      updatedAt: store.has(conn) ? "2026-10-12T00:00:00Z" : null,
+      updatedBy: store.has(conn) ? "prs_x" : null,
+      canEdit: opts.canEdit ?? true,
+    } as Json);
+  return {
+    getRedaction: vi.fn(async (_uid: string, conn: string) => answer(conn)),
+    putRedaction: vi.fn(async (_uid: string, conn: string, presets: readonly string[]) => {
+      store.set(conn, [...presets]);
       return answer(conn);
     }),
   };
-  return api;
 }
 
 const settle = async () => {
@@ -48,7 +65,7 @@ const settle = async () => {
   flushSync();
 };
 
-describe("US-005 Hidden from AI row", () => {
+describe("US-005 Hidden from AI row on the US-004 API", () => {
   let component: Record<string, unknown> | null = null;
   afterEach(async () => {
     if (component) await unmount(component);
@@ -56,7 +73,7 @@ describe("US-005 Hidden from AI row", () => {
     document.body.innerHTML = "";
   });
 
-  function mountWith(role: Role, api: RedactionPresetsApi | null) {
+  function mountWith(role: Role, redaction: Partial<ReturnType<typeof hqPro>> | null) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     component = mount(FilesConnectPage, {
@@ -68,8 +85,7 @@ describe("US-005 Hidden from AI row", () => {
         shell: null,
         settings: null,
         companyUid: "cmp_acme",
-        adapter: { company: { listIntegrations: vi.fn(async () => ok(SURFACE(role))) } } as never,
-        redactionPresets: api,
+        adapter: { company: { listIntegrations: vi.fn(async () => ok(SURFACE(role))), ...(redaction ?? {}) } } as never,
       },
     });
     return target;
@@ -77,123 +93,138 @@ describe("US-005 Hidden from AI row", () => {
 
   const rowFor = (t: HTMLElement, conn: string) =>
     t.querySelector<HTMLElement>(`[data-testid='redaction-row'][data-connection='${conn}']`)!;
-  const toggle = (row: HTMLElement, preset: RedactionPresetId) =>
-    row.querySelector<HTMLButtonElement>(`[data-preset='${preset}'] [data-testid='redaction-toggle']`)!;
+  const toggle = (t: HTMLElement, conn: string, preset: string) =>
+    rowFor(t, conn).querySelector<HTMLButtonElement>(`[data-preset='${preset}'] [data-testid='redaction-toggle']`)!;
+  const checked = (t: HTMLElement, conn: string) =>
+    [...rowFor(t, conn).querySelectorAll("[data-testid='redaction-toggle']")].map((b) => b.getAttribute("aria-checked"));
 
-  it("is not shown until the host provides the presets API", async () => {
+  it("is not shown when the host has no redaction calls", async () => {
     const target = mountWith("owner", null);
     await settle();
     expect(target.querySelector("[data-testid='integration-app-detail']")).not.toBeNull();
     expect(target.querySelector("[data-testid='redaction-row']")).toBeNull();
   });
 
-  it("puts a row with four switches under each connection, all on by default", async () => {
-    const api = serverApi();
+  it("reads each connection and shows four switches, all on by default", async () => {
+    const api = hqPro();
     const target = mountWith("owner", api);
     await settle();
     const conns = [...target.querySelectorAll("[data-testid='integration-app-detail'] [data-testid='integration-connection']")];
-    expect(conns).toHaveLength(2);
-    for (const [i, conn] of conns.entries()) {
-      const row = conn.querySelector<HTMLElement>("[data-testid='redaction-row']")!;
-      expect(row.dataset.connection).toBe(`conn_${i + 1}`);
-      expect(row.querySelector("h3")?.textContent).toBe("Hidden from AI");
-      const labels = [...row.querySelectorAll("[data-testid='redaction-preset'] .label")].map((l) => l.textContent);
-      expect(labels).toEqual(["Personal IDs", "Salary and HR", "Legal matters", "Bank and card numbers"]);
-      const sw = [...row.querySelectorAll<HTMLButtonElement>("[data-testid='redaction-toggle']")];
-      expect(sw.map((b) => b.getAttribute("aria-checked"))).toEqual(["true", "true", "true", "true"]);
-      expect(sw.every((b) => !b.disabled)).toBe(true);
-    }
-    expect(api.load).toHaveBeenCalledTimes(2);
-    expect(api.load).toHaveBeenCalledWith("cmp_acme", "conn_1");
-    expect(api.load).toHaveBeenCalledWith("cmp_acme", "conn_2");
-    // No new screen, sheet or dialog.
+    expect(conns.map((c) => c.querySelector<HTMLElement>("[data-testid='redaction-row']")?.dataset.connection)).toEqual([
+      "conn_1",
+      "conn_2",
+    ]);
+    const labels = [...rowFor(target, "conn_1").querySelectorAll("[data-testid='redaction-preset'] .label")].map((l) => l.textContent);
+    expect(labels).toEqual(["Personal IDs", "Salary and HR", "Legal matters", "Bank and card numbers"]);
+    expect(checked(target, "conn_1")).toEqual(["true", "true", "true", "true"]);
+    expect(api.getRedaction).toHaveBeenCalledWith("cmp_acme", "conn_1");
+    expect(api.getRedaction).toHaveBeenCalledWith("cmp_acme", "conn_2");
     expect(target.querySelector("[role='dialog']")).toBeNull();
   });
 
-  it("E2E: an admin turns legal off, the PUT fires, and it stays off after reload", async () => {
-    const api = serverApi();
+  it("success (E2E): an admin turns legal off, the PUT fires, and it stays off after reload", async () => {
+    const api = hqPro();
     let target = mountWith("admin", api);
     await settle();
-    toggle(rowFor(target, "conn_1"), "legal").click();
+    toggle(target, "conn_1", "legal").click();
     await settle();
-    expect(api.set).toHaveBeenCalledTimes(1);
-    expect(api.set).toHaveBeenCalledWith("cmp_acme", "conn_1", "legal", false);
-    expect(toggle(rowFor(target, "conn_1"), "legal").getAttribute("aria-checked")).toBe("false");
-    // Only that connection changed.
-    expect(toggle(rowFor(target, "conn_2"), "legal").getAttribute("aria-checked")).toBe("true");
+    expect(api.putRedaction).toHaveBeenCalledTimes(1);
+    expect(api.putRedaction).toHaveBeenCalledWith("cmp_acme", "conn_1", ["personal-ids", "hr-pay", "financial"]);
+    expect(checked(target, "conn_1")).toEqual(["true", "true", "false", "true"]);
+    expect(checked(target, "conn_2")).toEqual(["true", "true", "true", "true"]);
 
     await unmount(component!);
     document.body.innerHTML = "";
     target = mountWith("admin", api);
     await settle();
-    expect(toggle(rowFor(target, "conn_1"), "legal").getAttribute("aria-checked")).toBe("false");
-    expect(toggle(rowFor(target, "conn_1"), "financial").getAttribute("aria-checked")).toBe("true");
+    expect(checked(target, "conn_1")).toEqual(["true", "true", "false", "true"]);
   });
 
-  it("E2E: a member sees the switches disabled and cannot change them", async () => {
-    const api = serverApi({ conn_1: { legal: false } });
+  it("E2E: a member sees the switches disabled", async () => {
+    const api = hqPro({ canEdit: false, saved: { conn_1: ["personal-ids"] } });
     const target = mountWith("member", api);
     await settle();
-    const row = rowFor(target, "conn_1");
-    const sw = [...row.querySelectorAll<HTMLButtonElement>("[data-testid='redaction-toggle']")];
+    const sw = [...rowFor(target, "conn_1").querySelectorAll<HTMLButtonElement>("[data-testid='redaction-toggle']")];
     expect(sw).toHaveLength(4);
     expect(sw.every((b) => b.disabled)).toBe(true);
-    expect(toggle(row, "legal").getAttribute("aria-checked")).toBe("false");
-    expect(row.querySelector(".hint")?.textContent).toContain("Only owners and admins can change this.");
-    toggle(row, "hr-pay").click();
+    expect(checked(target, "conn_1")).toEqual(["true", "false", "false", "false"]);
+    expect(rowFor(target, "conn_1").querySelector(".hint")?.textContent).toContain("Only owners and admins can change this.");
+    sw[2]!.click();
     await settle();
-    expect(api.set).not.toHaveBeenCalled();
+    expect(api.putRedaction).not.toHaveBeenCalled();
   });
 
-  it("shows the pending state at once and settles on the saved value", async () => {
-    let resolveSave: (v: RedactionSettings) => void = () => {};
+  it("is read-only for an admin when the server's canEdit is false", async () => {
+    const target = mountWith("admin", hqPro({ canEdit: false }));
+    await settle();
+    expect(toggle(target, "conn_1", "legal").disabled).toBe(true);
+  });
+
+  it("403: rolls the switch back, says only owners and admins can change it, and locks the row", async () => {
     const api = {
-      load: vi.fn(async () => ({ presets: [] })),
-      set: vi.fn(() => new Promise<RedactionSettings>((r) => (resolveSave = r))),
+      ...hqPro(),
+      putRedaction: vi.fn(async () => refusal(403, "REDACTION_ADMIN_REQUIRED")),
+    };
+    const target = mountWith("admin", api);
+    await settle();
+    toggle(target, "conn_1", "legal").click();
+    flushSync();
+    expect(toggle(target, "conn_1", "legal").getAttribute("aria-checked")).toBe("false");
+    await settle();
+    expect(api.putRedaction).toHaveBeenCalledTimes(1);
+    expect(toggle(target, "conn_1", "legal").getAttribute("aria-checked")).toBe("true");
+    expect(rowFor(target, "conn_1").querySelector("[data-testid='redaction-save-error']")?.textContent).toBe(
+      "Only owners and admins can change this.",
+    );
+    expect(toggle(target, "conn_1", "financial").disabled).toBe(true);
+    expect(target.textContent).not.toContain("server text that must not show");
+  });
+
+  it("rollback: a failed PUT puts the switch back with a short line and stays editable", async () => {
+    const api = { ...hqPro(), putRedaction: vi.fn(async () => refusal(500, "http-500")) };
+    const target = mountWith("owner", api);
+    await settle();
+    toggle(target, "conn_1", "hr-pay").click();
+    await settle();
+    expect(toggle(target, "conn_1", "hr-pay").getAttribute("aria-checked")).toBe("true");
+    expect(rowFor(target, "conn_1").querySelector("[data-testid='redaction-save-error']")?.textContent).toBe(
+      "Couldn't save that change. Try again.",
+    );
+    expect(toggle(target, "conn_1", "hr-pay").disabled).toBe(false);
+  });
+
+  it("shows Saving… at once while the PUT is in flight", async () => {
+    let answer: (v: AdapterResult<Json>) => void = () => {};
+    const api = {
+      ...hqPro(),
+      putRedaction: vi.fn(() => new Promise<AdapterResult<Json>>((r) => (answer = r))),
     };
     const target = mountWith("owner", api);
     await settle();
-    toggle(rowFor(target, "conn_1"), "hr-pay").click();
+    toggle(target, "conn_1", "financial").click();
     flushSync();
-    const sw = toggle(rowFor(target, "conn_1"), "hr-pay");
+    const sw = toggle(target, "conn_1", "financial");
     expect(sw.getAttribute("aria-checked")).toBe("false");
     expect(sw.getAttribute("aria-busy")).toBe("true");
-    expect(sw.disabled).toBe(true);
     expect(rowFor(target, "conn_1").querySelector("[data-testid='redaction-pending']")?.textContent).toBe("Saving…");
-
-    resolveSave({ presets: [{ id: "hr-pay", label: "Salary and HR", enabled: false }] });
+    answer(ok({ presets: ["personal-ids", "hr-pay", "legal"], canEdit: true } as Json));
     await settle();
     expect(rowFor(target, "conn_1").querySelector("[data-testid='redaction-pending']")).toBeNull();
-    expect(toggle(rowFor(target, "conn_1"), "hr-pay").getAttribute("aria-checked")).toBe("false");
-    expect(toggle(rowFor(target, "conn_1"), "hr-pay").disabled).toBe(false);
+    expect(checked(target, "conn_1")).toEqual(["true", "true", "true", "false"]);
   });
 
-  it("puts the switch back with a plain line when the save fails", async () => {
+  it("hides the row when hq-pro has no redaction route yet, and explains a missing connection", async () => {
     const api = {
-      load: vi.fn(async () => ({ presets: [] })),
-      set: vi.fn(async () => {
-        throw new Error("500 internal: secret server text");
-      }),
+      getRedaction: vi.fn(async (_u: string, conn: string) =>
+        conn === "conn_1" ? refusal(404, "http-404") : refusal(404, "CONNECTION_NOT_FOUND"),
+      ),
+      putRedaction: vi.fn(),
     };
     const target = mountWith("owner", api);
     await settle();
-    toggle(rowFor(target, "conn_1"), "personal-ids").click();
-    await settle();
-    expect(toggle(rowFor(target, "conn_1"), "personal-ids").getAttribute("aria-checked")).toBe("true");
-    const err = rowFor(target, "conn_1").querySelector("[data-testid='redaction-save-error']");
-    expect(err?.textContent).toBe("Couldn't save that change. Try again.");
-    expect(target.textContent).not.toContain("secret server text");
-  });
-
-  it("offers Try again when the presets cannot be read", async () => {
-    const load = vi.fn().mockRejectedValueOnce(new Error("down")).mockResolvedValue({ presets: [] });
-    const api = { load, set: vi.fn(async () => ({ presets: [] })) };
-    const target = mountWith("owner", api);
-    await settle();
-    const row = rowFor(target, "conn_1");
-    expect(row.querySelector("[data-testid='redaction-load-error']")).not.toBeNull();
-    (row.querySelector("[data-testid='redaction-retry']") as HTMLButtonElement).click();
-    await settle();
-    expect(rowFor(target, "conn_1").querySelectorAll("[data-testid='redaction-toggle']")).toHaveLength(4);
+    expect(rowFor(target, "conn_1")).toBeNull();
+    expect(rowFor(target, "conn_2").querySelector("[data-testid='redaction-load-error']")?.textContent).toContain(
+      "This connection is no longer connected.",
+    );
   });
 });

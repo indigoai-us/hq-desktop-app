@@ -1,15 +1,19 @@
 <script lang="ts">
   /**
    * US-005: the "Hidden from AI" row under one connection in the connected-app
-   * detail pane. Four switches, one per redaction preset. Owners and admins
-   * can change them; members see the same switches read-only. A switch flips
-   * and shows "Saving…" the moment it is pressed, and goes back with a plain
-   * error line if the save fails. Server text is never shown.
+   * detail pane, on the US-004 hq-pro contract. Four switches, one per preset.
+   * Owners and admins can change them when the server's `canEdit` agrees;
+   * everyone else sees them read-only. A switch flips and shows "Saving…" the
+   * moment it is pressed; a refused PUT flips it back with a short line.
+   * Server text is never shown.
    */
   import { untrack } from "svelte";
   import {
     EMPTY_ROW_STATE,
-    parseRedactionSettings,
+    enabledPresetIds,
+    isRedactionUnsupported,
+    loadFailureLine,
+    rowCanEdit,
     withFailed,
     withSaved,
     withToggle,
@@ -23,6 +27,7 @@
     companyUid: string;
     connectionId: string;
     appName: string;
+    /** Role rule from the admin surface (owners and admins). */
     canEdit: boolean;
   }
 
@@ -30,20 +35,27 @@
   const titleId = $derived(`redaction-title-${connectionId}`);
 
   let row = $state<RedactionRowState>(EMPTY_ROW_STATE);
-  let loadFailed = $state(false);
+  let loadError = $state<string | null>(null);
+  // hq-pro without the US-004 route: show nothing rather than an error.
+  let unsupported = $state(false);
+  const editable = $derived(rowCanEdit(canEdit, row.settings));
 
   async function load(uid: string, conn: string, alive: () => boolean): Promise<void> {
     row = EMPTY_ROW_STATE;
-    loadFailed = false;
+    loadError = null;
+    unsupported = false;
     try {
-      // Normalized here too, so a connection with no setting shows all four on.
-      const settings = parseRedactionSettings(await api.load(uid, conn));
+      const settings = await api.load(uid, conn);
       if (!alive()) return;
       row = { settings, pending: new Set(), error: null };
     } catch (err) {
-      console.warn("[redaction] presets read failed:", err);
       if (!alive()) return;
-      loadFailed = true;
+      if (isRedactionUnsupported(err)) {
+        unsupported = true;
+        return;
+      }
+      console.warn("[redaction] presets read failed:", err);
+      loadError = loadFailureLine(err);
     }
   }
 
@@ -58,19 +70,20 @@
   });
 
   async function toggle(presetId: RedactionPresetId, previous: boolean): Promise<void> {
-    if (!canEdit || row.pending.has(presetId)) return;
+    if (!editable || row.pending.has(presetId) || !row.settings) return;
     const uid = companyUid;
     const conn = connectionId;
-    const next = !previous;
-    row = withToggle(row, presetId, next);
+    row = withToggle(row, presetId, !previous);
+    // The PUT replaces the whole list, so send everything the row shows as on.
+    const enabled = enabledPresetIds(row.settings!);
     try {
-      const saved = parseRedactionSettings(await api.set(uid, conn, presetId, next));
+      const saved = await api.save(uid, conn, enabled);
       if (uid !== companyUid || conn !== connectionId) return;
       row = withSaved(row, presetId, saved);
     } catch (err) {
       console.warn("[redaction] preset save failed:", err);
       if (uid !== companyUid || conn !== connectionId) return;
-      row = withFailed(row, presetId, previous);
+      row = withFailed(row, presetId, previous, err);
     }
   }
 
@@ -81,18 +94,19 @@
   }
 </script>
 
+{#if !unsupported}
 <section class="hidden-ai" data-testid="redaction-row" data-connection={connectionId} aria-labelledby={titleId}>
   <div class="head">
     <h3 id={titleId}>Hidden from AI</h3>
     <p class="hint">
-      {canEdit
+      {editable || !row.settings
         ? `HQ removes these from ${appName} data before an AI tool sees it.`
         : `HQ removes these from ${appName} data before an AI tool sees it. Only owners and admins can change this.`}
     </p>
   </div>
-  {#if loadFailed}
+  {#if loadError}
     <p class="note" role="alert" data-testid="redaction-load-error">
-      Couldn't load these settings.
+      {loadError}
       <button type="button" class="retry" data-testid="redaction-retry" onclick={retryLoad}>Try again</button>
     </p>
   {:else if !row.settings}
@@ -112,8 +126,8 @@
             aria-checked={preset.enabled}
             aria-label={preset.label}
             aria-busy={pending}
-            aria-readonly={!canEdit}
-            disabled={!canEdit || pending}
+            aria-readonly={!editable}
+            disabled={!editable || pending}
             data-testid="redaction-toggle"
             onclick={() => void toggle(preset.id, preset.enabled)}
           ></button>
@@ -123,6 +137,7 @@
     {#if row.error}<p class="note" role="alert" data-testid="redaction-save-error">{row.error}</p>{/if}
   {/if}
 </section>
+{/if}
 
 <style>
   .hidden-ai {
