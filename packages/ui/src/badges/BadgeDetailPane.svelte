@@ -8,7 +8,7 @@
   import BadgeCardModal from "./BadgeCardModal.svelte";
   import { badgeLevels } from "./badge-levels.js";
   import { cardDate } from "./badge-card.js";
-  import { TIER_NAME, type ResolvedBadge } from "./badge-catalog.js";
+  import { TIER_NAME, isAwarded, type ResolvedBadge } from "./badge-catalog.js";
   import { PROFILE_PANE_WIDTH } from "../shell/profile-panes/profile-pane-model.js";
 
   interface Props {
@@ -28,6 +28,8 @@
   let viewCardEl = $state<HTMLButtonElement | null>(null);
   const levels = $derived(badgeLevels(badge.def, badge.tier));
   const earnedOn = $derived(cardDate(badge.earnedAt));
+  /** OG, Captain and Patient Zero are given, not earned (owner review 2026-10-12). */
+  const awarded = $derived(isAwarded(badge.def));
 </script>
 
 <aside class="pane" style:width="{PROFILE_PANE_WIDTH}px" aria-label="{badge.def.name} badge" data-testid="badge-detail-pane">
@@ -42,7 +44,7 @@
       <FullBadge badge={badge.def} tier={badge.tier} label="{badge.def.name}, {TIER_NAME[badge.tier]}" />
       <div class="nm">{badge.def.name}</div>
       <p class="crit">{badge.def.crit}.</p>
-      <div class="meta">{TIER_NAME[badge.tier]} · Earned {earnedOn}{owner ? ` by ${owner}` : ""}</div>
+      <div class="meta" data-testid="badge-detail-meta">{TIER_NAME[badge.tier]} · {awarded ? "Awarded" : "Earned"} {earnedOn}{owner ? ` ${awarded ? "to" : "by"} ${owner}` : ""}</div>
       <button type="button" class="link" data-testid="badge-detail-view-card" bind:this={viewCardEl} onclick={() => (cardOpen = true)}><RailIcon name="cards" />View card</button>
     </div>
     <div class="k">Levels</div>

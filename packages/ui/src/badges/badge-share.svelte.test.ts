@@ -14,7 +14,7 @@ vi.mock("./badge-share.js", async (importOriginal) => {
 
 import BadgeCardModal from "./BadgeCardModal.svelte";
 import { BADGE_BY_ID, type ResolvedBadge } from "./badge-catalog.js";
-import { SHARE_SIZE, ShareError, balancedLines, groupShift, stackShift, pickVideoType, recordedVideo, ruleXs, shareCode, shareFileName, shareLayout, shareLogoBox, SHARE_SIDE_LABEL, SHARE_TAG, videoFrame, wrapLines, SHARE_VIDEO_MS } from "./badge-share.js";
+import { SHARE_SIZE, ShareError, balancedLines, groupShift, stackShift, pickVideoType, recordedVideo, ruleXs, shareCode, shareFileName, shareKicker, shareLayout, shareLogoBox, SHARE_SIDE_LABEL, SHARE_TAG, videoFrame, wrapLines, SHARE_VIDEO_MS } from "./badge-share.js";
 import { badgeStory } from "./badge-story.js";
 
 const liftoff: ResolvedBadge = { def: BADGE_BY_ID.liftoff, tier: 2, earnedAt: "2026-10-06" };
@@ -79,6 +79,9 @@ describe("share files", () => {
 
   it("labels the card like the gallery's share card", () => {
     expect(shareCode(liftoff)).toBe("HQ-B-004 · T-II");
+    // Core Builder's fourth level is Tier IV, not "T-L" (owner review 2026-10-12).
+    expect(shareCode({ ...liftoff, def: BADGE_BY_ID.corebuilder, tier: "L" })).toBe("HQ-B-019 · T-IV");
+    expect(shareCode({ ...liftoff, def: BADGE_BY_ID.og, tier: "L" })).toBe("HQ-B-016 · T-L");
     // The tag on the bottom rule is where to find HQ; the left rule names what this is.
     expect(SHARE_TAG).toBe("HQFORWORK.COM");
     expect(SHARE_SIDE_LABEL).toBe("HQ ACCOMPLISHMENT BADGE");
@@ -182,6 +185,18 @@ describe("share files", () => {
     expect(badgeStory(liftoff, null, "first")?.did).toBe("I put 50 deploys live.");
     expect(badgeStory({ ...liftoff, def: BADGE_BY_ID.founder, tier: 3 }, null, "first")?.why).toMatch(/started with me\.$/u);
     expect(badgeStory(liftoff, "Maya Chen", "third")?.did).toBe("Maya put 50 deploys live.");
+  });
+
+  // Owner review 2026-10-12: OG, Captain and Patient Zero are given, not earned.
+  it("names who earned it above the badge, or who was awarded it for the given honors", () => {
+    const at = (id: string): ResolvedBadge => ({ ...liftoff, def: BADGE_BY_ID[id], tier: "L" });
+    expect(shareKicker(liftoff, "Maya Chen")).toBe("MAYA CHEN EARNED");
+    expect(shareKicker(liftoff, null)).toBe("EARNED ON HQ");
+    for (const id of ["og", "captain", "patientzero"]) {
+      expect(shareKicker(at(id), "Corey Epstein"), id).toBe("COREY EPSTEIN WAS AWARDED");
+      expect(shareKicker(at(id), null), id).toBe("AWARDED ON HQ");
+    }
+    expect(shareKicker(at("corebuilder"), "Corey Epstein")).toBe("COREY EPSTEIN EARNED");
   });
 });
 

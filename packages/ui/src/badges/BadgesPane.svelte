@@ -13,7 +13,7 @@
   import BadgeMark from "./BadgeMark.svelte";
   import BadgeCard from "./BadgeCard.svelte";
   import BadgeCardModal from "./BadgeCardModal.svelte";
-  import { BADGES, TIER_NAME, resolveEarned, type EarnedBadge, type ResolvedBadge } from "./badge-catalog.js";
+  import { BADGES, TIER_NAME, isAwarded, resolveEarned, type EarnedBadge, type ResolvedBadge } from "./badge-catalog.js";
   import { badgeCollection } from "./badge-collection.js";
   import type { BadgeProgress } from "./badge-source.js";
   import { PROFILE_PANE_WIDTH } from "../shell/profile-panes/profile-pane-model.js";
@@ -121,7 +121,7 @@
                     tabindex="0"
                     aria-describedby="badge-hc-{tile.def.id}"
                   >
-                    <span class="mark"><BadgeMark badge={tile.def} tier={tile.tier} locked label="{tile.def.name}, not earned yet" /></span>
+                    <span class="mark"><BadgeMark badge={tile.def} tier={tile.tier} locked label="{tile.def.name}, not {isAwarded(tile.def) ? 'awarded' : 'earned'} yet" /></span>
                     <span class="nm">{tile.def.name}</span>
                     <span class="pg" data-testid="badges-progress">{tile.progress}</span>
                     <span class="hc" role="tooltip" aria-hidden="true" id="badge-hc-{tile.def.id}" data-testid="badges-hover-card">{tile.def.crit}</span>

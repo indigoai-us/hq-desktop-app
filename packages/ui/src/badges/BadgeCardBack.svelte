@@ -46,7 +46,7 @@
         <p class="did">{badge.def.crit}.</p>
       {/if}
     </div>
-    <div class="bot"><b>{cardTierLabel(badge.tier)}</b><span>{story?.earned ?? ""}</span></div>
+    <div class="bot"><b>{cardTierLabel(badge.def, badge.tier)}</b><span>{story?.earned ?? ""}</span></div>
   </div>
   <span class="frame" aria-hidden="true"></span>
   <span class="rim" aria-hidden="true"></span>

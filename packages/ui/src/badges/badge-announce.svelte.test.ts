@@ -37,8 +37,21 @@ describe("You earned", () => {
     const [gold, legendary] = toastItems();
     expect(gold).toMatchObject({ title: "You earned Power User", detail: "Gold · Skills run.", kind: "sticky", tone: "neutral" });
     expect(gold.actions?.map((a) => a.label)).toEqual(["Reveal card"]);
-    expect(legendary).toMatchObject({ title: "You earned OG", detail: "Legendary · On the team that built HQ from day one." });
+    // OG is given, not earned (owner review 2026-10-12).
+    expect(legendary).toMatchObject({ title: "You were awarded OG", detail: "Legendary · On the team that built HQ from day one." });
     expect(legendary.actions?.[0]).toMatchObject({ label: "Reveal card", primary: true, testId: "badge-earned-reveal" });
+  });
+
+  // Owner review 2026-10-12: OG, Captain and Patient Zero are given, not
+  // earned; Core Builder is earned by merging pull requests.
+  it("tells you that you were awarded the given honors, and that you earned Core Builder", () => {
+    for (const id of ["og", "captain", "patientzero", "corebuilder"]) announceBadgeEarned({ id, tier: "L", earnedAt: "2026-10-11" });
+    expect(toastItems().map((t) => t.title)).toEqual([
+      "You were awarded OG",
+      "You were awarded Captain",
+      "You were awarded Patient Zero",
+      "You earned Core Builder",
+    ]);
   });
 
   it("offers the reveal for Bronze and Silver too, and keeps those notices until they are used", () => {

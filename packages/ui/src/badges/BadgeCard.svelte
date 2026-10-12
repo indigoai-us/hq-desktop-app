@@ -254,7 +254,7 @@
         </div>
         <div class="nm" bind:this={titleEl}>{badge.def.name}</div>
         <div class="cr">{badge.def.crit}.</div>
-        <div class="bot"><b>{cardTierLabel(badge.tier)}</b><span>{cardDate(badge.earnedAt)}</span></div>
+        <div class="bot"><b>{cardTierLabel(badge.def, badge.tier)}</b><span>{cardDate(badge.earnedAt)}</span></div>
       </div>
       <span class="frame" aria-hidden="true"></span>
       <span class="glare" aria-hidden="true"></span>

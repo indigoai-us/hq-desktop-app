@@ -55,6 +55,37 @@ export const BADGES: readonly BadgeDef[] = [
 
 export const BADGE_BY_ID: Readonly<Record<string, BadgeDef>> = Object.fromEntries(BADGES.map((b) => [b.id, b]));
 
+/**
+ * The tiers a badge can be earned at: Bronze to Gold for a badge with three
+ * levels, Legendary too for one with a fourth (Core Builder), and only its
+ * own tier for a single-level or limited badge.
+ */
+export function earnableTiers(def: BadgeDef): BadgeTier[] {
+  const levels = def.levels.split(" · ").length;
+  return levels >= 4 ? [1, 2, 3, "L"] : levels >= 3 ? [1, 2, 3] : [def.tier];
+}
+
+/**
+ * The tier a badge shows at when `tier` is asked for. A single-level badge is
+ * at its own tier whatever is asked; any other needs a tier it can be earned
+ * at, else null. The loader reads hq-pro's badges by this, and the design
+ * harness its `?earn=` switch.
+ */
+export function earnedTier(def: BadgeDef, tier: unknown): BadgeTier | null {
+  const tiers = earnableTiers(def);
+  if (tiers.length === 1) return tiers[0];
+  return tiers.find((t) => t === tier) ?? null;
+}
+
+/**
+ * OG, Captain and Patient Zero are given to people, not earned by use, so
+ * they say "Awarded" where other badges say "Earned". Core Builder is an
+ * honor too, but merging pull requests earns it (owner review 2026-10-12).
+ */
+export function isAwarded(def: BadgeDef): boolean {
+  return def.family === "honors" && earnableTiers(def).length === 1;
+}
+
 export const TIER_NAME: Readonly<Record<string, string>> = { 1: "Bronze", 2: "Silver", 3: "Gold", L: "Legendary" };
 
 /** Ring colour per metal tier; Legendary uses the HQ gradient instead. */

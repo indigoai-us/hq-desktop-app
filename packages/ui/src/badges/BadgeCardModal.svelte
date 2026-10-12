@@ -30,7 +30,7 @@
   import BadgeCard from "./BadgeCard.svelte";
   import BadgeCardBack from "./BadgeCardBack.svelte";
   import BadgeShareMenu from "./BadgeShareMenu.svelte";
-  import { TIER_NAME, type ResolvedBadge } from "./badge-catalog.js";
+  import { TIER_NAME, isAwarded, type ResolvedBadge } from "./badge-catalog.js";
   import { REVEAL_FLIP_MS, REVEAL_GLOW_MS, prefersReducedMotion } from "./badge-card.js";
   import { canFly, fly } from "./card-flight.js";
 
@@ -194,7 +194,7 @@
         </div>
       </div>
       <div class="bc-foot">
-        {#if owner}<p class="bc-owner" data-testid="badge-card-owner">Earned by {owner}</p>{/if}
+        {#if owner}<p class="bc-owner" data-testid="badge-card-owner">{isAwarded(badge.def) ? "Awarded to" : "Earned by"} {owner}</p>{/if}
         <div class="bc-actions">
           <button type="button" class="bc-flip-btn" data-testid="badge-card-flip" aria-pressed={flipped} disabled={!canFlip} onclick={flip}>
             <RailIcon name="arrows-clockwise" size={14} />Flip card

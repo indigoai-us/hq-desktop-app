@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { BADGES, BADGE_BY_ID, MICRO_ICONS, SMALL_ICONS, resolveEarned, type BadgeTier } from "./badge-catalog.js";
+import { BADGES, BADGE_BY_ID, MICRO_ICONS, SMALL_ICONS, earnableTiers, earnedTier, isAwarded, resolveEarned } from "./badge-catalog.js";
 import { badgesFor, setBadgeSource } from "./badge-source.js";
 import { badgeMarkPx } from "./badge-mark.js";
 import { badgeTheme, inkForLight } from "./badge-theme.js";
@@ -25,6 +25,30 @@ describe("badge catalog", () => {
     expect(out.map((e) => e.def.id)).toEqual(["founding", "liftoff"]);
     expect(out[0].tier).toBe(BADGE_BY_ID.founding.tier);
     expect(out[1].tier).toBe(2);
+  });
+
+  // Owner review 2026-10-12: one rule for the tiers a badge can be earned at,
+  // shared by the loader and the design harness.
+  it("knows the tiers each badge can be earned at", () => {
+    expect(earnableTiers(BADGE_BY_ID.closer)).toEqual([1, 2, 3]);
+    expect(earnableTiers(BADGE_BY_ID.corebuilder)).toEqual([1, 2, 3, "L"]);
+    expect(earnableTiers(BADGE_BY_ID.founder)).toEqual([3]);
+    expect(earnableTiers(BADGE_BY_ID.founding)).toEqual([3]);
+    expect(earnableTiers(BADGE_BY_ID.og)).toEqual(["L"]);
+    // A single-level badge is at its own tier whatever is asked; the others need a tier they have.
+    expect(earnedTier(BADGE_BY_ID.founding, "L")).toBe(3);
+    expect(earnedTier(BADGE_BY_ID.og, 1)).toBe("L");
+    expect(earnedTier(BADGE_BY_ID.closer, "L")).toBeNull();
+    expect(earnedTier(BADGE_BY_ID.closer, 2)).toBe(2);
+    expect(earnedTier(BADGE_BY_ID.closer, 9)).toBeNull();
+    expect(earnedTier(BADGE_BY_ID.corebuilder, "L")).toBe("L");
+  });
+
+  // Owner review 2026-10-12: OG, Captain and Patient Zero are given, not
+  // earned. Core Builder is an honor, but merging pull requests earns it.
+  it("marks only the single-level honors as awarded", () => {
+    expect(BADGES.filter(isAwarded).map((b) => b.id)).toEqual(["og", "captain", "patientzero"]);
+    expect(isAwarded(BADGE_BY_ID.corebuilder)).toBe(false);
   });
 
   // Rows are laid out on a grid from the left, so a row narrower than the
@@ -136,10 +160,21 @@ describe("light-mode badges", () => {
   it("has full-size art for every tier each badge can be earned at", async () => {
     const { FULL_ASCII } = await import("./full-ascii-data.js");
     for (const def of BADGES) {
-      const levels = def.levels.split(" · ").length;
-      const tiers: BadgeTier[] = levels >= 4 ? [1, 2, 3, "L"] : levels === 3 ? [1, 2, 3] : [def.tier];
-      for (const tier of tiers) expect(FULL_ASCII[`${def.id}:${tier}`], `${def.id}:${tier}`).toBeDefined();
+      for (const tier of earnableTiers(def)) expect(FULL_ASCII[`${def.id}:${tier}`], `${def.id}:${tier}`).toBeDefined();
     }
+  });
+
+  // Owner review 2026-10-12: Founder is only ever Gold, so its Bronze and
+  // Silver art was dead weight. Art exists only for tiers a badge can reach.
+  it("has no full-size art for a tier a badge can't be earned at", async () => {
+    const [{ FULL_ASCII }, { FULL_ASCII_LIGHT }] = await Promise.all([
+      import("./full-ascii-data.js"),
+      import("./full-ascii-data-light.js"),
+    ]);
+    const reachable = new Set(BADGES.flatMap((def) => earnableTiers(def).map((tier) => `${def.id}:${tier}`)));
+    expect(Object.keys(FULL_ASCII).filter((key) => !reachable.has(key))).toEqual([]);
+    expect(Object.keys(FULL_ASCII_LIGHT).filter((key) => !reachable.has(key))).toEqual([]);
+    expect(FULL_ASCII["founder:3"]).toBeDefined();
   });
 
   it("has light colours for every full-size badge, on the same character grid", async () => {

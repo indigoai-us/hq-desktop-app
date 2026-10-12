@@ -128,6 +128,17 @@ describe("BadgesPane", () => {
     expect(opened).toEqual(["liftoff"]);
   });
 
+  // Owner review 2026-10-12: OG, Captain and Patient Zero are given, not earned.
+  it("says a locked given honor is not awarded yet, and Core Builder not earned yet", async () => {
+    mounted.push(mount(BadgesPane, { target: host, props: { badges: EARNED, progress: PROGRESS } }));
+    await settle();
+    const label = (id: string) => host.querySelector(`[data-testid="badges-tile"][data-badge-id="${id}"] [role="img"]`)?.getAttribute("aria-label");
+    expect(label("og")).toBe("OG, not awarded yet");
+    expect(label("captain")).toBe("Captain, not awarded yet");
+    expect(label("patientzero")).toBe("Patient Zero, not awarded yet");
+    expect(label("corebuilder")).toBe("Core Builder, not earned yet");
+  });
+
   it("shows each badge's criteria in a hover card only on hover or keyboard focus", () => {
     const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "BadgesPane.svelte"), "utf8");
     expect(src).toMatch(/\.hc \{[^}]*opacity: 0;[^}]*visibility: hidden;/);

@@ -14,8 +14,8 @@
  * on foil-gpu.ts) follows the light. Recorded with MediaRecorder.
  */
 
-import { TIER_NAME, type ResolvedBadge } from "./badge-catalog.js";
-import { CARD_BG, cardDate, cardNumber, cardTierLabel } from "./badge-card.js";
+import { TIER_NAME, isAwarded, type ResolvedBadge } from "./badge-catalog.js";
+import { CARD_BG, cardDate, cardNumber, cardTierLabel, tierNumeral } from "./badge-card.js";
 import { drawFullBadge, fullBadgePx } from "./full-badge.js";
 import type { AsciiArt } from "./full-ascii-data.js";
 import { badgeStory, type BadgeStory } from "./badge-story.js";
@@ -329,7 +329,7 @@ function drawFace(ctx: CanvasRenderingContext2D, b: Box, badge: ResolvedBadge, a
   ctx.font = `500 ${8 * u}px ${MONO}`;
   setSpacing(ctx, 0.14, 8 * u);
   ctx.fillStyle = TITLE;
-  ctx.fillText(cardTierLabel(badge.tier).toUpperCase(), b.x + 28 * u, b.y + b.h - 22 * u);
+  ctx.fillText(cardTierLabel(badge.def, badge.tier).toUpperCase(), b.x + 28 * u, b.y + b.h - 22 * u);
   ctx.textAlign = "right";
   ctx.fillStyle = SUB;
   ctx.font = `400 ${8 * u}px ${MONO}`;
@@ -394,12 +394,14 @@ function drawStage(ctx: CanvasRenderingContext2D, shape: ShareShape, badge: Reso
 }
 
 const RULE = "rgba(244, 239, 232, 0.5)";
-const ROMAN_TIER: Readonly<Record<string, string>> = { 1: "I", 2: "II", 3: "III", L: "L" };
-
-/** "HQ-B-004 · T-II": the badge's code, on the right-hand rule. */
+/**
+ * "HQ-B-004 · T-II": the badge's code, on the right-hand rule. Core Builder's
+ * fourth level reads "T-IV"; the single-level Legendary badges keep "T-L"
+ * (owner review 2026-10-12).
+ */
 export function shareCode(badge: ResolvedBadge): string {
   const n = cardNumber(badge.def.id).match(/\d+/u)?.[0] ?? "000";
-  return `HQ-B-${n} · T-${ROMAN_TIER[String(badge.tier)]}`;
+  return `HQ-B-${n} · T-${tierNumeral(badge.def, badge.tier) ?? "L"}`;
 }
 
 /** The light tag on the bottom rule: where to find HQ (owner review 2026-10-08). */
@@ -508,6 +510,17 @@ interface CopyPlan {
 }
 
 /**
+ * The line above the badge name: "MAYA CHEN EARNED", or "EARNED ON HQ" on
+ * your own card. OG, Captain and Patient Zero are given, not earned, so theirs
+ * reads "COREY EPSTEIN WAS AWARDED" or "AWARDED ON HQ" (owner review 2026-10-12).
+ */
+export function shareKicker(badge: ResolvedBadge, owner: string | null): string {
+  const awarded = isAwarded(badge.def);
+  const who = owner?.trim();
+  return (who ? `${who} ${awarded ? "was awarded" : "earned"}` : `${awarded ? "Awarded" : "Earned"} on HQ`).toUpperCase();
+}
+
+/**
  * Lay the words out: the kicker, the badge name, what they did, why. Type
  * steps down until the block fits its space (above the bottom rule in the
  * story, the card's height beside it), so a long story never runs into the tag.
@@ -520,6 +533,7 @@ function planCopy(ctx: CanvasRenderingContext2D, shape: ShareShape, badge: Resol
     setSpacing(ctx, spacing, size);
     return ctx.measureText(t).width;
   };
+  const kicker = shareKicker(badge, owner);
   let plan: CopyPlan | null = null;
   for (let f = 1; f > 0.6; f *= 0.94) {
     const sz = { kicker: L.kicker * Math.max(0.85, f), name: L.name * f, did: L.did * f, why: L.why * f };
@@ -532,7 +546,6 @@ function planCopy(ctx: CanvasRenderingContext2D, shape: ShareShape, badge: Resol
       ...did.map(measure(`400 ${sz.did}px ${SANS}`, -0.01, sz.did)),
       ...why.map(measure(`400 ${sz.why}px ${SANS}`, 0, sz.why)),
     );
-    const kicker = (owner?.trim() ? `${owner.trim()} earned` : "Earned on HQ").toUpperCase();
     plan = { kicker, sizes: sz, name, did, why, h, w };
     if (h <= room) break;
   }
@@ -808,7 +821,7 @@ function drawTurned(ctx: CanvasRenderingContext2D, tex: HTMLCanvasElement, tmp: 
 export interface ShareScene {
   badge: ResolvedBadge;
   shape: ShareShape;
-  /** Whose card; none is your own. Named in the kicker ("Maya Chen earned"). */
+  /** Whose card; none is your own. Named in the kicker ("Maya Chen earned", "Corey Epstein was awarded"). */
   owner: string | null;
   /** The words, laid out once, and how far the card and words move to centre as a group. */
   copy: CopyPlan;
