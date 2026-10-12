@@ -98,6 +98,12 @@ describe("createYourAppsHost", () => {
     expect(res).toEqual({ ok: true, connectionId: "c-new", installationId: "inst-new" });
   });
 
+  it("keeps no Undo id when hq-pro did not mark the install automatic (a person's own install is never undone)", async () => {
+    const install = vi.fn(async (_input: IntegrationInstallInput) => ok({ ok: true, connection: { id: "c-old" }, installation: { id: "inst-person" } }));
+    const host = createYourAppsHost(deps({ install }));
+    expect(await host.autoConnect("cmp_acme", "e-aws", "AWS Knowledge")).toEqual({ ok: true, connectionId: "c-old", installationId: null });
+  });
+
   it("connects by OAuth and answers once a new connection to the domain or a subdomain appears", async () => {
     let reads = 0;
     const listConnections = vi.fn(async () => {

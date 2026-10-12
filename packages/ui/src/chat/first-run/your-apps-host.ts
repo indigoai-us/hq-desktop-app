@@ -137,6 +137,13 @@ function installIds(json: unknown): { connectionId: string | null; installationI
   return { connectionId: str(connection?.id) ?? str(installation?.connectionId), installationId: str(installation?.id) };
 }
 
+/** The install answer says this install is the first run's automatic one (`installation.origin`). */
+function installedAutomatically(json: unknown): boolean {
+  const root = isRecord(json) ? json : null;
+  const installation = isRecord(root?.installation) ? root.installation : null;
+  return installation?.origin === "first-run-auto";
+}
+
 /** The docs-discovery answer, read for the next step. */
 export type DocsVerdict =
   | { next: "install"; receiptId: string }
@@ -208,9 +215,18 @@ export function createYourAppsHost(deps: YourAppsHostDeps): YourAppsHost {
     return waitFor(companyUid, tile, before, signal);
   }
 
-  async function installWith(input: IntegrationInstallInput, name: string): Promise<YourAppsResult> {
+  /**
+   * Install, and answer with the ids. `automaticOnly` keeps the installation
+   * id (what Undo removes) only when hq-pro says this install is the
+   * automatic one: it never relabels an install a person already made.
+   */
+  async function installWith(input: IntegrationInstallInput, name: string, automaticOnly = false): Promise<YourAppsResult> {
     const res = deps.install ? await deps.install(input).catch(() => null) : null;
-    if (res?.ok) return { ok: true, ...installIds(res.value) };
+    if (res?.ok) {
+      const ids = installIds(res.value);
+      if (automaticOnly && !installedAutomatically(res.value)) return { ok: true, connectionId: ids.connectionId, installationId: null };
+      return { ok: true, ...ids };
+    }
     const why = connectFailureSentence(res && !res.ok ? res : null, name);
     return { ok: false, reason: why.sentence, retry: why.retry };
   }
@@ -246,7 +262,7 @@ export function createYourAppsHost(deps: YourAppsHostDeps): YourAppsHost {
         await sleep(delay);
         return { ok: true, connectionId: null, installationId: null };
       }
-      return installWith({ companyUid, catalogEntryId: entryId, origin: "first-run-auto" }, name);
+      return installWith({ companyUid, catalogEntryId: entryId, origin: "first-run-auto" }, name, true);
     },
 
     async connect(companyUid, tile, signal) {
