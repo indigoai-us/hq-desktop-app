@@ -2,7 +2,7 @@
   /**
    * A badge card on its own: the card in the middle of a dark stage, tilting
    * toward the pointer with its foil. Opened by "View card" on a badge, from
-   * the Cards binder, and (with `reveal`) from the "You earned" notice.
+   * a badge on the Badges page, and (with `reveal`) from the "You earned" notice.
    *
    * Like the card modal (chat/messaging/CardModal.svelte) it is dark in both
    * app themes, so no colour here comes from a theme variable, and it shares
@@ -19,8 +19,8 @@
    * of how it was earned (BadgeCardBack.svelte), and back again. Reduced
    * motion swaps the sides without the turn.
    *
-   * With an `origin` (the binder pocket that was tapped) the card grows out
-   * of that pocket onto the stage, and goes back into it on close; the pocket
+   * With an `origin` (the badge tile that was tapped) the card grows out
+   * of that tile onto the stage, and goes back into it on close; the tile
    * stays empty while its card is out. Reduced motion skips the flight.
    */
   import RailIcon from "../common/button/RailIcon.svelte";
