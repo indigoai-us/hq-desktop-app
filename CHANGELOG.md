@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Badge cards: tapping a card in your binder now lifts it out of its pocket and grows it onto the stage, and closing puts it back; only the backdrop fades. Card and badge dates read like "Jul 30, 2026" instead of a long timestamp, and badge names wrap between words ("Fleet / Commander") instead of breaking mid-word.
+
 ## [0.11.4] — 2026-10-11
 
 - Sign out in the account menu works again. It looked greyed out and a click did nothing. It now looks like the other items and asks you to confirm in the app before ending the session.

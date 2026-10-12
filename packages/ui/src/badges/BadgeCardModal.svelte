@@ -18,6 +18,10 @@
    * Clicking the card (or "Flip card") turns it over to its back, the story
    * of how it was earned (BadgeCardBack.svelte), and back again. Reduced
    * motion swaps the sides without the turn.
+   *
+   * With an `origin` (the binder pocket that was tapped) the card grows out
+   * of that pocket onto the stage, and goes back into it on close; the pocket
+   * stays empty while its card is out. Reduced motion skips the flight.
    */
   import RailIcon from "../common/button/RailIcon.svelte";
   import { suspendShortcuts } from "../common/keyboard-shortcuts.js";
@@ -28,6 +32,7 @@
   import BadgeShareMenu from "./BadgeShareMenu.svelte";
   import { TIER_NAME, type ResolvedBadge } from "./badge-catalog.js";
   import { REVEAL_FLIP_MS, REVEAL_GLOW_MS, prefersReducedMotion } from "./badge-card.js";
+  import { canFly, fly } from "./card-flight.js";
 
   interface Props {
     open: boolean;
@@ -40,9 +45,26 @@
     onclose: () => void;
     /** Where focus goes on close. Default: what had focus when it opened. */
     returnFocus?: HTMLElement | null;
+    /** The pocket the card was tapped in: it flies out of it and back. */
+    origin?: HTMLElement | null;
   }
 
-  let { open, badge, owner = null, reveal = false, onclose, returnFocus = null }: Props = $props();
+  let { open, badge, owner = null, reveal = false, onclose, returnFocus = null, origin = null }: Props = $props();
+
+  /** The card is flying back to its pocket; the stage fades out with it. */
+  let closing = $state(false);
+  let cardEl = $state<HTMLDivElement | null>(null);
+
+  /** Every way out (close button, Escape, a click on the stage) comes here. */
+  function requestClose(): void {
+    if (closing) return;
+    if (reveal || !canFly(cardEl, origin)) {
+      onclose();
+      return;
+    }
+    closing = true;
+    void fly(cardEl, origin, "out").then(() => onclose());
+  }
 
   type Phase = "glow" | "flip" | "done";
   let phase = $state<Phase>("done");
@@ -91,8 +113,15 @@
     const releaseInert = inertOutside(node);
     const releaseShortcuts = suspendShortcuts();
     focusIntoDialog(node.querySelector<HTMLElement>('[role="dialog"]'));
+    // The card leaves its pocket: the pocket stays empty until it is back.
+    const pocket = !reveal && canFly(cardEl, origin) ? origin : null;
+    if (pocket) {
+      pocket.style.visibility = "hidden";
+      void fly(cardEl, pocket, "in");
+    }
     return {
       destroy() {
+        if (pocket) pocket.style.visibility = "";
         releaseShortcuts();
         releaseInert();
         ported.destroy?.();
@@ -112,7 +141,7 @@
           panelEl?.querySelector<HTMLElement>('[data-testid="badge-card-share"]')?.focus();
           return;
         }
-        onclose();
+        requestClose();
         return;
       }
       trapTab(event, panelEl);
@@ -122,14 +151,14 @@
   });
 
   function onBackdrop(event: MouseEvent): void {
-    if (event.target === event.currentTarget) onclose();
+    if (event.target === event.currentTarget) requestClose();
   }
 </script>
 
 {#if open}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="bc-layer" data-testid="badge-card-modal" data-phase={phase} data-reveal={reveal ? "true" : "false"} use:layer onclick={onBackdrop}>
+  <div class="bc-layer" class:flown={Boolean(origin) && !reveal} class:closing data-testid="badge-card-modal" data-phase={phase} data-reveal={reveal ? "true" : "false"} use:layer onclick={onBackdrop}>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
@@ -141,7 +170,7 @@
       tabindex="-1"
       onclick={onBackdrop}
     >
-      <button type="button" class="bc-close" data-testid="badge-card-close" aria-label="Close" onclick={() => onclose()}>
+      <button type="button" class="bc-close" data-testid="badge-card-close" aria-label="Close" onclick={requestClose}>
         <RailIcon name="x" size={14} />
       </button>
       {#if reveal}<span class="bc-glow" aria-hidden="true"></span>{/if}
@@ -149,7 +178,7 @@
            the keyboard and screen readers. -->
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="bc-card" class:can-flip={canFlip} data-testid="badge-card-flipper" onclick={flip}>
+      <div class="bc-card" bind:this={cardEl} class:can-flip={canFlip} data-testid="badge-card-flipper" onclick={flip}>
         <div class="bc-flip" class:flipped data-flipped={flipped ? "true" : "false"}>
           <div class="bc-face" aria-hidden={flipped ? "true" : undefined}>
             <BadgeCard {badge} interactive={canFlip && !flipped} />
@@ -187,6 +216,14 @@
     overscroll-behavior: contain;
     animation: bc-fade 180ms ease-out both;
   }
+  /* A card flying out of its pocket: the stage dims in step with the flight,
+     and the controls arrive once the card has landed. */
+  .bc-layer.flown { animation: bc-dim-in 320ms ease-out both; }
+  .bc-layer.flown .bc-foot,
+  .bc-layer.flown .bc-close { animation: bc-fade 200ms ease-out 260ms both; }
+  .bc-layer.closing { animation: bc-dim-out 280ms ease-in both; pointer-events: none; }
+  .bc-layer.closing .bc-foot,
+  .bc-layer.closing .bc-close { animation: bc-fade-out 120ms ease-in both; }
   .bc-stage {
     position: relative; width: 100%; height: 100%;
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
@@ -258,6 +295,10 @@
   [data-phase="flip"] .bc-glow { animation: bc-glow-settle 1000ms ease-in-out both; }
 
   @keyframes bc-fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes bc-fade-out { from { opacity: 1; } to { opacity: 0; } }
+  /* The flight dims only the backdrop: the card itself stays solid. */
+  @keyframes bc-dim-in { from { background-color: rgba(9, 9, 11, 0); } to { background-color: rgba(9, 9, 11, 0.92); } }
+  @keyframes bc-dim-out { from { background-color: rgba(9, 9, 11, 0.92); } to { background-color: rgba(9, 9, 11, 0); } }
   @keyframes bc-glow-in { from { opacity: 0; transform: scale(0.7); } to { opacity: 0.9; transform: scale(1); } }
   @keyframes bc-glow-settle { from { opacity: 0.9; } to { opacity: 0.35; } }
   @keyframes bc-turn {
@@ -266,7 +307,7 @@
     to { transform: rotateY(0deg) scale(1); }
   }
   @media (prefers-reduced-motion: reduce) {
-    .bc-layer { animation: none; }
+    .bc-layer, .bc-layer.flown, .bc-layer.flown .bc-foot, .bc-layer.flown .bc-close { animation: none; }
     .bc-glow, .bc-flip { animation: none !important; transform: none !important; transition: none; }
     /* No turn: the sides swap in place. */
     .bc-back { transform: none; visibility: hidden; }
