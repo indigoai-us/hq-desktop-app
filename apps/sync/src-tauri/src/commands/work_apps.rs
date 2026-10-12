@@ -52,6 +52,8 @@ const APP_SCAN_BUDGET: Duration = Duration::from_secs(2);
 /// Config files larger than this are not read (`~/.claude.json` is usually
 /// well under a few MB).
 const CONFIG_BYTES_MAX: u64 = 16 * 1024 * 1024;
+/// An app's `Info.plist` larger than this is not read.
+const PLIST_BYTES_MAX: u64 = 1024 * 1024;
 /// MCP servers kept per config file, at most. Later ones are still skipped
 /// over by the parser, never stored.
 const SERVERS_PER_FILE_MAX: usize = 200;
@@ -569,25 +571,14 @@ fn read_config(
     let Some(path) = path else {
         return (Vec::new(), outcome("missing", 0), false);
     };
-    match fs::metadata(path) {
-        Ok(meta) if meta.is_file() => {
-            if meta.len() > CONFIG_BYTES_MAX {
-                return (Vec::new(), outcome("budget", 0), true);
-            }
-        }
-        Ok(_) => return (Vec::new(), outcome("missing", 0), false),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return (Vec::new(), outcome("missing", 0), false)
-        }
-        Err(_) => return (Vec::new(), outcome("unreadable", 0), false),
-    }
-    // Bounded read: the file can grow between the size check and the read.
-    let Some(bytes) = read_bounded(path, CONFIG_BYTES_MAX) else {
-        return (Vec::new(), outcome("unreadable", 0), false);
+    // Open first, then check the open handle: a path swapped between a
+    // check and the open cannot make the scan read something else.
+    let bytes = match read_regular_file(path, CONFIG_BYTES_MAX) {
+        ReadFile::Bytes(bytes) => bytes,
+        ReadFile::Missing => return (Vec::new(), outcome("missing", 0), false),
+        ReadFile::TooLarge => return (Vec::new(), outcome("budget", 0), true),
+        ReadFile::Unreadable => return (Vec::new(), outcome("unreadable", 0), false),
     };
-    if bytes.len() as u64 > CONFIG_BYTES_MAX {
-        return (Vec::new(), outcome("budget", 0), true);
-    }
     let parsed = parse_config(kind, &bytes);
     // The raw buffer is dropped here; nothing above kept a copy of it.
     drop(bytes);
@@ -600,26 +591,66 @@ fn read_config(
     (servers, outcome("read", count), truncated)
 }
 
-/// Read at most `max + 1` bytes, so a file over the cap is detected without
-/// reading the rest of it.
-fn read_bounded(path: &Path, max: u64) -> Option<Vec<u8>> {
+enum ReadFile {
+    Bytes(Vec<u8>),
+    Missing,
+    TooLarge,
+    Unreadable,
+}
+
+/// Open `path` without blocking on a FIFO or device, require a regular file
+/// of at most `max` bytes, and read it with a cap so a file that grows after
+/// the size check is still bounded.
+fn read_regular_file(path: &Path, max: u64) -> ReadFile {
     use std::io::Read;
-    let file = fs::File::open(path).ok()?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return ReadFile::Missing,
+        Err(_) => return ReadFile::Unreadable,
+    };
+    let Ok(meta) = file.metadata() else {
+        return ReadFile::Unreadable;
+    };
+    if !meta.is_file() {
+        return ReadFile::Missing;
+    }
+    if meta.len() > max {
+        return ReadFile::TooLarge;
+    }
     let mut bytes = Vec::new();
-    file.take(max + 1).read_to_end(&mut bytes).ok()?;
-    Some(bytes)
+    if file.take(max + 1).read_to_end(&mut bytes).is_err() {
+        return ReadFile::Unreadable;
+    }
+    if bytes.len() as u64 > max {
+        return ReadFile::TooLarge;
+    }
+    ReadFile::Bytes(bytes)
 }
 
 /// Parse a config's bytes into its server map, or `None` when the file is
 /// not valid JSON/TOML. Errors are discarded unread: a parser error can quote
 /// the input.
 fn parse_config(kind: ConfigKind, bytes: &[u8]) -> Option<ServerMap> {
+    // Editors on Windows can save a UTF-8 byte order mark; neither parser
+    // accepts one.
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     match kind {
         ConfigKind::ClaudeCode => {
             let file: ClaudeCodeFile = serde_json::from_slice(bytes).ok()?;
             let mut map = file.mcp_servers;
             map.truncated |= file.projects.0.truncated;
             map.servers.extend(file.projects.0.servers);
+            if map.servers.len() > SERVERS_PER_FILE_MAX {
+                map.servers.truncate(SERVERS_PER_FILE_MAX);
+                map.truncated = true;
+            }
             Some(map)
         }
         ConfigKind::ClaudeDesktop | ConfigKind::Cursor => {
@@ -683,7 +714,9 @@ fn transport_of(server: &RawServer) -> &'static str {
 }
 
 /// The host of a URL and whether it is local. The scheme, userinfo, port,
-/// path, query and fragment are never kept.
+/// path, query and fragment are never kept. The full host is kept (it can
+/// carry a tenant or project label, e.g. `<ref>.supabase.co`): it stays on
+/// this computer and is only matched against the desktop signature table.
 fn host_info(raw: &str) -> HostInfo {
     let Ok(parsed) = url::Url::parse(raw.trim()) else {
         return HostInfo {
@@ -780,12 +813,15 @@ pub struct ScanRoots {
 impl ScanRoots {
     pub fn for_this_computer() -> Self {
         let home = dirs::home_dir();
+        // With CLAUDE_CONFIG_DIR set, Claude Code keeps `.claude.json` there
+        // and nowhere else.
         let claude_code = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .filter(|dir| !dir.is_empty())
             .map(PathBuf::from)
-            .filter(|dir| dir.join(".claude.json").is_file())
-            .map(|dir| dir.join(".claude.json"))
-            .or_else(|| home.as_ref().map(|home| home.join(".claude.json")));
+            .or_else(|| home.clone())
+            .map(|dir| dir.join(".claude.json"));
         let codex = std::env::var_os("CODEX_HOME")
+            .filter(|dir| !dir.is_empty())
             .map(PathBuf::from)
             .or_else(|| home.as_ref().map(|home| home.join(".codex")))
             .map(|dir| dir.join("config.toml"));
@@ -912,7 +948,10 @@ fn scan_bundles(dirs: &[PathBuf], max_entries: usize, budget: Duration) -> AppSc
 
 fn read_bundle(path: &Path) -> Option<FoundApp> {
     let info: InfoPlist =
-        plist::from_file(path.join("Contents").join("Info.plist")).unwrap_or_default();
+        match read_regular_file(&path.join("Contents").join("Info.plist"), PLIST_BYTES_MAX) {
+            ReadFile::Bytes(bytes) => plist::from_bytes(&bytes).unwrap_or_default(),
+            _ => InfoPlist::default(),
+        };
     let bundle_id = info.bundle_id.and_then(|id| clean_name(&id));
     if bundle_id
         .as_deref()
@@ -932,22 +971,31 @@ fn read_bundle(path: &Path) -> Option<FoundApp> {
     Some(FoundApp { bundle_id, name })
 }
 
-/// Folder names directly under `%LOCALAPPDATA%\Programs` (Windows).
-fn scan_program_dirs(dir: Option<&Path>, max_entries: usize) -> Vec<FoundApp> {
-    let Some(dir) = dir else { return Vec::new() };
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
+/// Folder names directly under `%LOCALAPPDATA%\Programs` (Windows). The
+/// flag is true when the entry cap stopped the listing.
+fn scan_program_dirs(dir: Option<&Path>, max_entries: usize) -> (Vec<FoundApp>, bool) {
+    let Some(dir) = dir else {
+        return (Vec::new(), false);
     };
-    entries
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .take(max_entries)
-        .filter_map(|entry| entry.file_name().to_str().and_then(clean_name))
-        .map(|name| FoundApp {
-            bundle_id: None,
-            name,
-        })
-        .collect()
+    let Ok(entries) = fs::read_dir(dir) else {
+        return (Vec::new(), false);
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        if out.len() >= max_entries {
+            return (out, true);
+        }
+        if let Some(name) = entry.file_name().to_str().and_then(clean_name) {
+            out.push(FoundApp {
+                bundle_id: None,
+                name,
+            });
+        }
+    }
+    (out, false)
 }
 
 #[cfg(windows)]
@@ -958,21 +1006,29 @@ fn scan_uninstall_registry(max_entries: usize, budget: Duration) -> (Vec<FoundAp
     const UNINSTALL: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
     const UNINSTALL_WOW64: &str =
         r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
+    // Per-user installs (Slack, Teams, Zoom, Discord) live under HKCU: read
+    // it first, and give each hive its own entry cap so a machine-wide list
+    // full of runtimes and updates cannot crowd it out.
     let roots = [
+        (RegKey::predef(HKEY_CURRENT_USER), UNINSTALL),
         (RegKey::predef(HKEY_LOCAL_MACHINE), UNINSTALL),
         (RegKey::predef(HKEY_LOCAL_MACHINE), UNINSTALL_WOW64),
-        (RegKey::predef(HKEY_CURRENT_USER), UNINSTALL),
     ];
     let started = Instant::now();
     let mut out = Vec::new();
-    let mut visited = 0usize;
+    let mut truncated = false;
     for (hive, path) in roots {
         let Ok(root) = hive.open_subkey_with_flags(path, KEY_READ) else {
             continue;
         };
+        let mut visited = 0usize;
         for name in root.enum_keys().flatten() {
-            if visited >= max_entries || started.elapsed() > budget {
+            if started.elapsed() > budget {
                 return (out, true);
+            }
+            if visited >= max_entries {
+                truncated = true;
+                break;
             }
             visited += 1;
             let Ok(entry) = root.open_subkey_with_flags(&name, KEY_READ) else {
@@ -990,7 +1046,7 @@ fn scan_uninstall_registry(max_entries: usize, budget: Duration) -> (Vec<FoundAp
             }
         }
     }
-    (out, false)
+    (out, truncated)
 }
 
 fn installed_apps(roots: &ScanRoots) -> AppScan {
@@ -1005,7 +1061,11 @@ fn installed_apps(roots: &ScanRoots) -> AppScan {
     // macOS bundles (empty list elsewhere), then the Windows sources.
     let mut scan = scan_bundles(&roots.app_dirs, APP_ENTRY_MAX, APP_SCAN_BUDGET);
     #[allow(unused_mut)]
-    let mut extra = scan_program_dirs(roots.programs_dir.as_deref(), APP_ENTRY_MAX);
+    let (mut extra, programs_cut) = scan_program_dirs(roots.programs_dir.as_deref(), APP_ENTRY_MAX);
+    if programs_cut {
+        scan.truncated = true;
+        scan.outcome = "budget";
+    }
     #[cfg(windows)]
     {
         let (registry, cut) = scan_uninstall_registry(APP_ENTRY_MAX, APP_SCAN_BUDGET);
@@ -1086,6 +1146,25 @@ fn log_line(found: &FoundWorkApps) -> String {
     format!("detect_work_apps {sources} truncated={}", found.truncated)
 }
 
+/// An answer with no apps and every source marked `outcome`.
+fn empty_scan(outcome: &'static str) -> FoundWorkApps {
+    FoundWorkApps {
+        platform: platform(),
+        scanned_at_ms: 0,
+        apps: Vec::new(),
+        mcp_servers: Vec::new(),
+        sources: ["apps", "claude_code", "claude_desktop", "cursor", "codex"]
+            .into_iter()
+            .map(|source| SourceOutcome {
+                source,
+                outcome,
+                count: 0,
+            })
+            .collect(),
+        truncated: false,
+    }
+}
+
 pub fn detect_work_apps_blocking() -> FoundWorkApps {
     let found = detect_work_apps_in(&ScanRoots::for_this_computer());
     crate::util::logfile::log("work-apps", &log_line(&found));
@@ -1100,11 +1179,12 @@ pub async fn detect_work_apps() -> FoundWorkApps {
     match tokio::task::spawn_blocking(detect_work_apps_blocking).await {
         Ok(found) => found,
         Err(error) => {
+            // A panic would most likely repeat inline; answer "nothing found".
             crate::util::logfile::log(
                 "work-apps",
-                &format!("detect_work_apps blocking task failed ({error}); probing inline"),
+                &format!("detect_work_apps blocking task failed ({error})"),
             );
-            detect_work_apps_blocking()
+            empty_scan("unreadable")
         }
     }
 }
@@ -1525,7 +1605,8 @@ startup_timeout_sec = 20
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("Microsoft Teams")).unwrap();
         fs::write(dir.path().join("readme.txt"), "x").unwrap();
-        let apps = scan_program_dirs(Some(dir.path()), 10);
+        let (apps, cut) = scan_program_dirs(Some(dir.path()), 10);
+        assert!(!cut);
         assert_eq!(
             apps,
             vec![FoundApp {
@@ -1562,6 +1643,113 @@ startup_timeout_sec = 20
             assert_eq!(names, vec!["Slack", "Linear"]);
             assert_eq!(installed_apps(&ScanRoots::default()).outcome, "unsupported");
         }
+    }
+
+    #[test]
+    fn every_credential_field_is_presence_only() {
+        for field in CREDENTIAL_FIELDS {
+            let body = format!(
+                r#"{{"serverUrl": "https://mcp.example.com/p?k=SECRET_URL_QUERY_7f3a", "{field}": "SECRET_HEADER_4b2e"}}"#
+            );
+            let entry: RawServer = serde_json::from_str(&body).unwrap();
+            assert!(entry.has_credential_fields, "{field}");
+            assert_eq!(
+                entry.url.as_ref().and_then(|u| u.host.as_deref()),
+                Some("mcp.example.com")
+            );
+            let debug = format!("{entry:?}");
+            assert!(!debug.contains("SECRET_HEADER_4b2e"), "{field}");
+            assert!(!debug.contains("SECRET_URL_QUERY_7f3a"), "{field}");
+        }
+    }
+
+    #[test]
+    fn log_line_names_no_server_or_host() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), ".claude.json", CLAUDE_CODE);
+        write(dir.path(), ".codex/config.toml", CODEX);
+        let found = detect_work_apps_in(&roots_with(dir.path()));
+        let line = log_line(&found);
+        for server in &found.mcp_servers {
+            assert!(!line.contains(&server.name), "{line}");
+            if let Some(host) = &server.host {
+                assert!(!line.contains(host.as_str()), "{line}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_accepted() {
+        let body = "\u{feff}{\"mcpServers\":{\"linear\":{\"url\":\"https://mcp.linear.app/mcp\"}}}";
+        let map = parse_config(ConfigKind::Cursor, body.as_bytes()).unwrap();
+        assert_eq!(map.servers.len(), 1);
+        let toml = "\u{feff}[mcp_servers.linear]\nurl = \"https://mcp.linear.app/mcp\"\n";
+        assert_eq!(
+            parse_config(ConfigKind::Codex, toml.as_bytes())
+                .unwrap()
+                .servers
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn claude_code_cap_applies_after_merging_projects() {
+        let mut top = String::new();
+        let mut project = String::new();
+        for i in 0..SERVERS_PER_FILE_MAX {
+            let sep = if i > 0 { "," } else { "" };
+            top.push_str(&format!(
+                "{sep}\"a{i}\":{{\"url\":\"https://a{i}.example.com\"}}"
+            ));
+            project.push_str(&format!(
+                "{sep}\"b{i}\":{{\"url\":\"https://b{i}.example.com\"}}"
+            ));
+        }
+        let body = format!(
+            "{{\"mcpServers\":{{{top}}},\"projects\":{{\"/p\":{{\"mcpServers\":{{{project}}}}}}}}}"
+        );
+        let map = parse_config(ConfigKind::ClaudeCode, body.as_bytes()).unwrap();
+        assert_eq!(map.servers.len(), SERVERS_PER_FILE_MAX);
+        assert!(map.truncated);
+    }
+
+    #[test]
+    fn non_regular_files_and_oversized_plists_are_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where a config file should be reads as missing.
+        fs::create_dir_all(dir.path().join(".claude.json")).unwrap();
+        let (_, outcome, _) = read_config(
+            ConfigKind::ClaudeCode,
+            Some(&dir.path().join(".claude.json")),
+        );
+        assert_eq!(outcome.outcome, "missing");
+        #[cfg(unix)]
+        {
+            // A FIFO would block a plain open; it must read as missing at once.
+            let fifo = dir.path().join("fifo.json");
+            let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+            let (_, outcome, _) = read_config(ConfigKind::Cursor, Some(&fifo));
+            assert_eq!(outcome.outcome, "missing");
+        }
+        let app = dir.path().join("Big.app");
+        fs::create_dir_all(app.join("Contents")).unwrap();
+        let plist = fs::File::create(app.join("Contents/Info.plist")).unwrap();
+        plist.set_len(PLIST_BYTES_MAX + 1).unwrap();
+        // Unreadable plist: falls back to the folder name, reads nothing else.
+        assert_eq!(read_bundle(&app).unwrap().name, "Big");
+    }
+
+    #[test]
+    fn program_folder_listing_reports_its_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..4 {
+            fs::create_dir_all(dir.path().join(format!("App{i}"))).unwrap();
+        }
+        let (apps, cut) = scan_program_dirs(Some(dir.path()), 2);
+        assert_eq!(apps.len(), 2);
+        assert!(cut);
     }
 
     #[test]
