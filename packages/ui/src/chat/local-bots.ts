@@ -247,8 +247,9 @@ export function localBotNeedsOfflineNotice(
 export const LOCAL_BOT_STARTUP_GRACE_MS = 45_000;
 
 /**
- * A bot is starting when its process is up or its launchd agent is loaded, it
- * has not failed, and it is not held for promotion. `startingSinceMs` is when
+ * A bot is starting when its process is up, its launchd agent is loaded, or it
+ * has never checked in (just created); it has not failed, and it is not held
+ * for promotion. `startingSinceMs` is when
  * the app first saw it in that not-yet-online state; within the grace period
  * no notice shows. A bot that never checks in still gets the notice after it.
  */
@@ -259,7 +260,10 @@ export function localBotInStartupGrace(
 ): boolean {
   if (startingSinceMs === null) return false;
   if (bot.state === "failed" || bot.promotionHold) return false;
-  if (!bot.processAlive && !bot.daemonLoaded) return false;
+  // A bot that has never checked in is still being set up (a pack install
+  // lists it a moment before its launchd agent loads), so it gets the grace
+  // too. One that ran before and is now down gets the notice at once.
+  if (!bot.processAlive && !bot.daemonLoaded && bot.lastHeartbeatAt) return false;
   return nowMs - startingSinceMs < LOCAL_BOT_STARTUP_GRACE_MS;
 }
 

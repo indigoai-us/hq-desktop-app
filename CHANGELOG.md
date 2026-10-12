@@ -15,6 +15,7 @@ The release moves it under the version it ships in.
 - Every bot on this computer shows the tap-to-answer buttons it writes under its questions, not only HQ's setup bot.
 - A bot's "Working on it" note no longer ends its thinking row; the row stays until the real reply.
 - A bot's buttons no longer show "Something else" twice when the bot already offers its own.
+- A bot a pack install just created no longer shows the "offline" notice in the moment before its process starts. It gets the same 45-second start-up grace as a bot that is starting.
 
 ## [0.11.4] — 2026-10-11
 

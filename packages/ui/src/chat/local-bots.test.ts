@@ -243,6 +243,16 @@ describe("localBotNeedsOfflineNotice", () => {
     expect(localBotNeedsOfflineNotice(alive, { startingSinceMs: t0, nowMs: t0 + LOCAL_BOT_STARTUP_GRACE_MS - 1 })).toBe(false);
   });
 
+  it("says nothing for a bot the pack install just created, before its launchd agent loads", () => {
+    // Live walkthrough 2026-10-12: "agency-guide is offline — its computer is
+    // off or the bot is stopped" showed right after the pack installed it.
+    const t0 = 1_000_000;
+    const created = bot({ online: false, processAlive: false, daemonLoaded: false, lastHeartbeatAt: null, state: "stopped" });
+    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(false);
+    // It still says so if the new bot never comes up.
+    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + LOCAL_BOT_STARTUP_GRACE_MS })).toBe(true);
+  });
+
   it("shows once a starting bot is past the grace period, or when it is not starting at all", () => {
     const t0 = 1_000_000;
     const alive = bot({ online: false, processAlive: true, state: "running" });
