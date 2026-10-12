@@ -329,7 +329,25 @@ describe("Your apps", () => {
     expect(q('[data-testid="first-run-app-slack.com"]')?.getAttribute("data-action")).toBe("integrations");
   });
 
-  it("a failed Undo's line clears on the next Undo and on Retry", async () => {
+  it("a company change also cancels the old company's docs setup", async () => {
+    const signals: AbortSignal[] = [];
+    const setup = vi.fn((_uid: string, _tile: unknown, signal?: AbortSignal) => {
+      if (signal) signals.push(signal);
+      return new Promise<YourAppsResult>(() => undefined);
+    });
+    render({ companies: [ACME, BETA], yourApps: yourHost({ setup }), initialStep: "team" });
+    await settle();
+    await pickCompany("acme");
+    q<HTMLButtonElement>('[data-testid="first-run-connect-zoom.us"]')!.click();
+    await settle();
+    expect(signals[0]?.aborted).toBe(false);
+    await switchCompany("beta");
+    await settle();
+    expect(signals[0]?.aborted).toBe(true);
+    expect(q<HTMLButtonElement>('[data-testid="first-run-connect-linear.app"]')?.disabled).toBe(false);
+  });
+
+  it("a failed Undo's line clears on the next Undo", async () => {
     const undo = vi.fn(async (): Promise<YourAppsResult> => ({ ok: false, reason: "Couldn't undo AWS Knowledge. Try again.", retry: true }));
     render({ yourApps: yourHost({ undo }) });
     await settle();

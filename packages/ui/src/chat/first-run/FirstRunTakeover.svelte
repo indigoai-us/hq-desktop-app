@@ -554,6 +554,9 @@
     for (const item of plan) {
       const name = yourAppsFound.apps.find((a) => a.domain === item.domain)?.name ?? item.domain;
       setRun(item.domain, { state: "connecting", via: "install" });
+      // An install is one quick request with no browser, so it is not
+      // cancelled on a company change: it finishes on the server, its answer
+      // is dropped, and the old company's list marks it automatic for Undo.
       void host.autoConnect(company.uid, item.entryId, name).then((res) => {
         if (!sameRun(gen, company.uid)) return;
         if (res.ok) {
