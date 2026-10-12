@@ -147,6 +147,24 @@ function loose(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+/**
+ * An installed-app name without the decorations Windows installers add:
+ * a trailing "(64-bit)", "(User)" or "(Machine - MSI)", and a trailing
+ * version ("Notion 3.14.0", "ClickUp v3.5"). macOS names pass unchanged.
+ */
+export function bareAppName(value: string): string {
+  let name = value.trim();
+  for (let i = 0; i < 3; i += 1) {
+    const next = name
+      .replace(/\s*\([^()]*\)\s*$/, "")
+      .replace(/\s+v?\d+(\.\d+)+\s*$/i, "")
+      .trim();
+    if (next === name) break;
+    name = next;
+  }
+  return name;
+}
+
 function hostMatches(host: string, wanted: string): boolean {
   const h = host.toLowerCase();
   const w = wanted.toLowerCase();
@@ -169,12 +187,20 @@ function buildIndex(signatures: readonly AppSignature[]): Index {
   return index;
 }
 
+/**
+ * A server matches by host when it has one: a listed MCP host (or a
+ * subdomain of it), else the app's own domain for rows that list no MCP
+ * host. Only a server with no host (a local command) matches by its name,
+ * so a remote server named "github" at an unrelated host is not GitHub.
+ */
 function signatureForServer(server: FoundMcpServer, signatures: readonly AppSignature[], index: Index): AppSignature | null {
-  if (server.host) {
-    const byHost = signatures.find(
-      (s) => (s.mcpHosts ?? []).some((h) => hostMatches(server.host!, h)) || hostMatches(server.host!, s.domain),
+  const host = server.host;
+  if (host) {
+    return (
+      signatures.find((s) =>
+        s.mcpHosts?.length ? s.mcpHosts.some((h) => hostMatches(host, h)) : hostMatches(host, s.domain),
+      ) ?? null
     );
-    if (byHost) return byHost;
   }
   if (server.local) return null;
   return index.mcpName.get(loose(server.name)) ?? null;
@@ -215,7 +241,9 @@ export function matchFoundApps(found: FoundWorkApps | null | undefined, signatur
   for (const app of Array.isArray(found.apps) ? found.apps : []) {
     const s =
       (app.bundleId ? index.bundle.get(app.bundleId.toLowerCase()) : undefined) ??
-      (typeof app.name === "string" ? index.appName.get(loose(app.name)) : undefined);
+      (typeof app.name === "string"
+        ? (index.appName.get(loose(app.name)) ?? index.appName.get(loose(bareAppName(app.name))))
+        : undefined);
     if (s) hit(s).evidence.app = true;
     else unmatched += 1;
   }
@@ -269,6 +297,7 @@ function text(value: unknown): string | null {
  */
 export function readCatalogLookup(json: unknown, domains: readonly string[] = SIGNATURE_DOMAINS): Record<string, CatalogMatch | null> | null {
   const root = json && typeof json === "object" ? (json as Record<string, unknown>) : null;
+  if (root?.ok !== true) return null;
   const matches = root?.matches && typeof root.matches === "object" && !Array.isArray(root.matches) ? (root.matches as Record<string, unknown>) : null;
   if (!matches) return null;
   const out: Record<string, CatalogMatch | null> = {};
@@ -287,4 +316,21 @@ export function readCatalogLookup(json: unknown, domains: readonly string[] = SI
     };
   }
   return out;
+}
+
+/** The part of the platform adapter the lookup needs. */
+export interface CatalogLookupApi {
+  catalogLookup?: (companyUid: string, domains: readonly string[]) => Promise<{ ok: true; value: unknown } | { ok: false }>;
+}
+
+/**
+ * Ask the catalog about the WHOLE signature list. This is the only way the
+ * first run should call the lookup: sending only what was found would tell
+ * the server which apps are on this computer. Null when the host has no
+ * lookup or it fails.
+ */
+export async function lookupSignatureCatalog(api: CatalogLookupApi | null | undefined, companyUid: string): Promise<Record<string, CatalogMatch | null> | null> {
+  if (!api?.catalogLookup) return null;
+  const res = await api.catalogLookup(companyUid, SIGNATURE_DOMAINS).catch(() => null);
+  return res?.ok ? readCatalogLookup(res.value) : null;
 }

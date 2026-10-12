@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import type { FoundMcpServer, FoundWorkApps } from "@hq/platform";
 
-import { APP_SIGNATURES, SIGNATURE_DOMAINS, evidenceLine, matchFoundApps, readCatalogLookup } from "./found-apps.js";
+import {
+  APP_SIGNATURES,
+  SIGNATURE_DOMAINS,
+  bareAppName,
+  evidenceLine,
+  lookupSignatureCatalog,
+  matchFoundApps,
+  readCatalogLookup,
+} from "./found-apps.js";
 
 function server(over: Partial<FoundMcpServer>): FoundMcpServer {
   return {
@@ -40,6 +48,42 @@ describe("signature table", () => {
         seen.set(key, s.domain);
       }
     }
+  });
+
+  it("is exactly the offerable, non-native signature domains", () => {
+    expect(SIGNATURE_DOMAINS).toEqual(APP_SIGNATURES.filter((s) => !s.exclude && !s.native).map((s) => s.domain));
+    expect(SIGNATURE_DOMAINS).toMatchInlineSnapshot(`
+      [
+        "fireflies.ai",
+        "granola.ai",
+        "fathom.video",
+        "otter.ai",
+        "loom.com",
+        "zoom.us",
+        "teams.microsoft.com",
+        "linear.app",
+        "atlassian.com",
+        "asana.com",
+        "clickup.com",
+        "monday.com",
+        "todoist.com",
+        "notion.com",
+        "obsidian.md",
+        "figma.com",
+        "miro.com",
+        "hubspot.com",
+        "discord.com",
+        "supabase.com",
+        "airtable.com",
+        "posthog.com",
+        "sentry.io",
+        "github.com",
+        "api.aws",
+        "cloudflare.com",
+        "vercel.com",
+        "stripe.com",
+      ]
+    `);
   });
 
   it("asks the catalog about the same fixed list every time, never excluded or native apps", () => {
@@ -144,5 +188,71 @@ describe("readCatalogLookup", () => {
     expect(readCatalogLookup(null)).toBeNull();
     expect(readCatalogLookup({ ok: true })).toBeNull();
     expect(readCatalogLookup({ matches: [] })).toBeNull();
+  });
+});
+
+describe("Windows app names", () => {
+  it("drops installer decorations and versions", () => {
+    expect(bareAppName("Zoom Workplace (64-bit)")).toBe("Zoom Workplace");
+    expect(bareAppName("Slack (Machine - MSI)")).toBe("Slack");
+    expect(bareAppName("Cursor (User)")).toBe("Cursor");
+    expect(bareAppName("Notion 3.14.0")).toBe("Notion");
+    expect(bareAppName("ClickUp v3.5.1 (User)")).toBe("ClickUp");
+    expect(bareAppName("zoom.us")).toBe("zoom.us");
+    expect(bareAppName("1Password")).toBe("1Password");
+  });
+
+  it("matches the decorated names an uninstall list carries", () => {
+    const result = matchFoundApps(
+      scan({
+        platform: "windows",
+        apps: [
+          { bundleId: null, name: "Zoom Workplace (64-bit)" },
+          { bundleId: null, name: "Notion 3.14.0" },
+          { bundleId: null, name: "Slack (Machine - MSI)" },
+        ],
+      }),
+    );
+    expect(result.apps.map((a) => a.domain).sort()).toEqual(["notion.com", "slack.com", "zoom.us"]);
+  });
+});
+
+describe("server matching", () => {
+  it("does not take a remote server's name when its host is unrelated", () => {
+    const result = matchFoundApps(scan({ mcpServers: [server({ name: "github", host: "tools.example.org" })] }));
+    expect(result.apps).toEqual([]);
+  });
+
+  it("matches AWS Knowledge only on its MCP host, not any api.aws service host", () => {
+    const aws = matchFoundApps(scan({ mcpServers: [server({ name: "k", host: "knowledge-mcp.global.api.aws" })] }));
+    expect(aws.apps.map((a) => a.domain)).toEqual(["api.aws"]);
+    const other = matchFoundApps(scan({ mcpServers: [server({ name: "s3", host: "s3.us-east-1.api.aws" })] }));
+    expect(other.apps).toEqual([]);
+  });
+});
+
+describe("lookupSignatureCatalog", () => {
+  it("always sends the whole fixed list and reads the answer", async () => {
+    const sent: (readonly string[])[] = [];
+    const read = await lookupSignatureCatalog(
+      {
+        catalogLookup: async (_uid, domains) => {
+          sent.push(domains);
+          return { ok: true, value: { ok: true, companyUid: "cmp_acme", matches: { "linear.app": { name: "Linear", authClass: "oauth", entryId: "e1" } } } };
+        },
+      },
+      "cmp_acme",
+    );
+    expect(sent).toEqual([SIGNATURE_DOMAINS]);
+    expect(read?.["linear.app"]).toEqual({ entryId: "e1", name: "Linear", authClass: "oauth" });
+    expect(read?.["zoom.us"]).toBeNull();
+  });
+
+  it("is null without the method, on failure, or on a refused answer", async () => {
+    expect(await lookupSignatureCatalog(null, "c")).toBeNull();
+    expect(await lookupSignatureCatalog({}, "c")).toBeNull();
+    expect(await lookupSignatureCatalog({ catalogLookup: async () => ({ ok: false }) }, "c")).toBeNull();
+    expect(await lookupSignatureCatalog({ catalogLookup: async () => { throw new Error("x"); } }, "c")).toBeNull();
+    expect(readCatalogLookup({ ok: false, matches: {} })).toBeNull();
   });
 });
