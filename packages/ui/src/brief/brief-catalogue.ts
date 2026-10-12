@@ -413,7 +413,9 @@ export const CATALOGUE: readonly WidgetEntry[] = [
     group: "hero",
     component: "BriefCatchUp",
     ready: true,
-    fits: ["XL"],
+    // L as well as XL: quiet template 2 seats its hero at L, and a catch-up day with one card
+    // besides the hero (two calls, nothing else) must keep that card rather than fall to the hero alone.
+    fits: ["XL", "L"],
     hero: (ctx) => ctx.dayType === "catch-up",
     novel: false,
     measure(ctx) {
@@ -556,8 +558,16 @@ export const CATALOGUE: readonly WidgetEntry[] = [
       return ctx.priorities
         .filter((p) => p.itemId && ev.items.includes(p.itemId))
         .map((p) => {
-          const others = [...ctx.incidents].sort(byId).filter((r) => r.id !== p.itemId).slice(0, 2);
-          const rest = others.map((r) => `${incidentLabel(r)} ${incidentState(r, ctx.nowMs)}`).join(", ");
+          // One other incident is named; past that they are counted, so the sentence stays inside the lint's 160 characters.
+          const others = [...ctx.incidents].sort(byId).filter((r) => r.id !== p.itemId);
+          const ages = others.map((r) => redHours(r, ctx.nowMs)).filter((h): h is number => h != null);
+          const oldest = ages.length ? Math.max(...ages) : null;
+          const rest =
+            others.length === 1
+              ? `${incidentLabel(others[0]!)} ${incidentState(others[0]!, ctx.nowMs)}`
+              : others.length > 1
+                ? `so are ${others.length} more${oldest != null ? `, one red for ${hoursText(oldest)}` : ""}`
+                : "";
           return { priority: p.rank, itemId: p.itemId, role: "contains" as const, what: `it is live${rest ? `, and ${rest}` : ""}` };
         });
     },
@@ -1465,7 +1475,11 @@ export function digest(input: BriefInput): Partial<Record<BriefWidgetKind, strin
 // Load-time assertions: the catalogue and the templates agree
 // ---------------------------------------------------------------------------
 
-/** Every entry fits some template slot; every non-hero slot size has at least three fitters; sunrise fits every hero slot. */
+/**
+ * Every entry fits some template slot; every non-hero slot size has at least
+ * three fitters; sunrise fits every hero slot; catchup fits the hero slot of
+ * every template a catch-up day can reach (density up to CATCH_UP_DENSITY).
+ */
 export function checkCatalogue(): string[] {
   const problems: string[] = [];
   const sizes = new Set<BriefSlotSize>();
@@ -1474,6 +1488,7 @@ export function checkCatalogue(): string[] {
     if (slots.length !== new Set(tpl.areas.flatMap((r) => r.split(" "))).size) problems.push(`template ${name}: slots and areas disagree`);
     for (const row of tpl.areas) if (row.split(" ").length !== 6) problems.push(`template ${name}: a row is not 6 wide`);
     if (!fitsSlot(entryOf("sunrise"), tpl.cls[slots[0]!]!)) problems.push(`template ${name}: sunrise does not fit the hero slot`);
+    if (slots.length <= CATCH_UP_DENSITY && !fitsSlot(entryOf("catchup"), tpl.cls[slots[0]!]!)) problems.push(`template ${name}: catchup does not fit the hero slot`);
     for (const slot of slots.slice(1)) sizes.add(tpl.cls[slot]!);
   }
   for (const size of sizes) {
