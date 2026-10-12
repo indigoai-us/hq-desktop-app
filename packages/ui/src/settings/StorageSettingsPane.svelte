@@ -13,7 +13,9 @@
    *
    * Status is slow (minutes cold). The pane shows the host's last known
    * figures at once with their age, then refreshes in place; a read already
-   * running is joined, never repeated (storage-load.ts).
+   * running is joined, never repeated (storage-load.ts). The summary skips the
+   * big-file scan, which is read separately (`hq storage large`) and fills the
+   * Big files section when it lands.
    */
   import { onMount } from "svelte";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
@@ -73,7 +75,7 @@
 
   import type { StorageHoldingRef } from "@hq/platform";
   import { isStorageFeatureDisabled } from "./storage-feature.js";
-  import { cachedAgeCopy, joinStatus } from "./storage-load.js";
+  import { cachedAgeCopy, joinLarge, joinStatus } from "./storage-load.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -99,6 +101,11 @@
   let cachedAt = $state<string | null>(null);
   const cachedAge = $derived(cachedAgeCopy(cachedAt));
   let loadError = $state<string | null>(null);
+  /** The big-file read runs after the summary is on screen. */
+  let largeLoading = $state(false);
+  let largeError = $state<string | null>(null);
+  /** Big-file figures from this open's scan, kept if it beats the summary. */
+  let freshOffload: StorageStatus["offload"] = null;
   let localCutoff = $state<BandCutoff>(null);
   let cloudCutoffs = $state<Record<string, BandCutoff>>({});
   let phase = $state<Phase>("idle");
@@ -239,13 +246,19 @@
     }
     loading = true;
     loadError = null;
+    // The big-file scan is slow, so it runs beside the summary, not after it.
+    const large = loadLarge(opts);
     const res = await joinStatus(api, opts);
     loading = false;
     if (res.ok) {
-      status = res.value;
+      // Keep big-file figures already on screen until the fresh scan lands,
+      // unless a move or delete just changed them.
+      const offload = res.value.offload ?? (opts.afterWrite ? null : (freshOffload ?? status?.offload ?? null));
+      status = { ...res.value, offload };
       cachedAt = null;
       localCutoff = null;
       cloudCutoffs = {};
+      await large;
     } else {
       if (isStorageFeatureDisabled(res.message)) {
         // Allowlist gate, fail closed: render nothing and let the host hide the entry.
@@ -256,6 +269,31 @@
       console.error("storage status failed:", res.message);
       loadError = res.message ?? "error";
     }
+  }
+
+  /**
+   * The big-file list, read separately so the summary never waits on it.
+   * Read-only, like status.
+   */
+  async function loadLarge(opts: { afterWrite?: boolean } = {}): Promise<void> {
+    if (!api) return;
+    largeLoading = true;
+    largeError = null;
+    freshOffload = null;
+    const res = await joinLarge(api, opts);
+    largeLoading = false;
+    if (res.ok) {
+      freshOffload = res.value.offload ?? null;
+      if (status && freshOffload) status = { ...status, offload: freshOffload };
+      return;
+    }
+    if (isStorageFeatureDisabled(res.message)) {
+      featureDisabled = true;
+      onfeaturedisabled?.();
+      return;
+    }
+    if (!res.message?.includes(UPDATE_HQ_CODE)) console.error("storage big files failed:", res.message);
+    largeError = res.message ?? "error";
   }
 
   function describeRequest(req: StoragePruneRequest): string {
@@ -453,7 +491,15 @@
         {OFFLOAD_CONFIRM_COPY} Moving them frees space on {device}.{#if showCurrent} Files over {BIG_FILE_MB} MB you haven't opened in {IDLE_DAYS} days move too. {OFFLOAD_CURRENT_COPY}{/if}
       </div>
     </div>
-    {#if !status.offload}
+    {#if !status.offload && largeLoading}
+      <div class="set-row unavailable" data-testid="settings-storage-big-files-loading" aria-busy="true">
+        <div class="sd" role="status">Checking for big files…</div>
+      </div>
+    {:else if !status.offload && largeError && !largeError.includes(UPDATE_HQ_CODE)}
+      <div class="set-row unavailable" data-testid="settings-storage-big-files-error">
+        <div class="sd">We couldn't check for big files. Refresh to try again.</div>
+      </div>
+    {:else if !status.offload}
       <div class="set-row unavailable" data-testid="settings-storage-big-files-update">
         <div class="sd">Update HQ to move big files to the cloud.</div>
       </div>

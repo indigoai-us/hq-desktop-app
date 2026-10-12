@@ -79,6 +79,8 @@ export function storageAnswer(cmd: string): unknown {
   switch (cmd) {
     case 'get_storage_status':
       return statusFor(variant());
+    case 'get_storage_large':
+      return { offload: (statusFor(variant()) as { offload?: unknown }).offload ?? null, generated_at: new Date().toISOString() };
     case 'get_cached_storage_status':
       // Last known figures from 20 minutes ago, shown while the scan runs.
       return {

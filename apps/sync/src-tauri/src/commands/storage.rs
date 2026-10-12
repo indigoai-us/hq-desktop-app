@@ -69,7 +69,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// How long `run_hq` waits for the given `hq` argv before giving up.
 pub fn timeout_for(args: &[OsString]) -> Duration {
-    if args.get(1).is_some_and(|a| a == "status") {
+    if args.get(1).is_some_and(|a| a == "status" || a == "large") {
         return STATUS_TIMEOUT;
     }
     if args.iter().any(|a| a == "--dry-run") {
@@ -193,6 +193,14 @@ pub struct HistoryHeld {
     pub count: u64,
     pub bytes: u64,
     pub worktrees: Vec<String>,
+}
+
+/// `hq storage large --json`: the big-file section without the summary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct StorageLarge {
+    pub offload: Option<OffloadStatus>,
+    pub generated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -343,11 +351,33 @@ fn is_iso_date(value: &str) -> bool {
             .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
+/// The summary: local report and cloud, without the slow big-file scan.
 pub fn status_args() -> Vec<OsString> {
+    ["storage", "status", "--json", "--no-large"]
+        .iter()
+        .map(OsString::from)
+        .collect()
+}
+
+/// Full status, for CLIs that predate `--no-large`.
+pub fn full_status_args() -> Vec<OsString> {
     ["storage", "status", "--json"]
         .iter()
         .map(OsString::from)
         .collect()
+}
+
+/// The big-file scan on its own. Read-only.
+pub fn large_args() -> Vec<OsString> {
+    ["storage", "large", "--json"]
+        .iter()
+        .map(OsString::from)
+        .collect()
+}
+
+/// True when `run_hq` failed because the CLI does not know `--no-large`.
+pub fn is_no_large_unsupported(err: &str) -> bool {
+    err.contains("--no-large")
 }
 
 pub fn prune_args(req: &PruneRequest, dry_run: bool) -> Result<Vec<OsString>, String> {
@@ -404,6 +434,10 @@ fn is_old_cli(stderr: &str) -> bool {
 
 pub fn parse_status(stdout: &str) -> Result<StorageStatus, String> {
     serde_json::from_str(stdout.trim()).map_err(|e| format!("parse storage status: {e}"))
+}
+
+pub fn parse_large(stdout: &str) -> Result<StorageLarge, String> {
+    serde_json::from_str(stdout.trim()).map_err(|e| format!("parse storage large: {e}"))
 }
 
 pub fn parse_prune(stdout: &str) -> Result<PruneResult, String> {
@@ -603,6 +637,7 @@ impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
 }
 
 static STATUS_FLIGHT: SingleFlight<StorageStatus> = SingleFlight::new();
+static LARGE_FLIGHT: SingleFlight<StorageLarge> = SingleFlight::new();
 static OFFLOAD_PREVIEW_FLIGHT: SingleFlight<OffloadResult> = SingleFlight::new();
 /// When the last prune or offload finished; scans started before it are stale.
 static LAST_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -673,16 +708,47 @@ where
     STATUS_FLIGHT.run(last_write(), move || async move {
         let res = fetch().await;
         match &res {
-            Ok(status) => write_cached(
-                &file,
-                CachedStatus {
-                    status: status.clone(),
-                    fetched_at: chrono::Utc::now().to_rfc3339(),
-                    hq_root: root,
-                },
-            ),
+            Ok(status) => {
+                // The summary has no big-file section: keep the cached one so
+                // the next open still shows big files at once.
+                let mut cached_status = status.clone();
+                if cached_status.offload.is_none() {
+                    cached_status.offload = read_cached(&file, &root).and_then(|c| c.status.offload);
+                }
+                write_cached(
+                    &file,
+                    CachedStatus {
+                        status: cached_status,
+                        fetched_at: chrono::Utc::now().to_rfc3339(),
+                        hq_root: root,
+                    },
+                )
+            }
             Err(e) if e == FEATURE_DISABLED_ERROR => clear_cached(&file),
             Err(_) => {}
+        }
+        res
+    })
+}
+
+/// The big-file scan through its own single flight. A good result goes into
+/// the cached status (when there is one for this HQ) on the scan's own task.
+pub(crate) fn large_flight<F, Fut>(file: PathBuf, root: String, fetch: F) -> Flight<StorageLarge>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<StorageLarge, String>> + Send + 'static,
+{
+    LARGE_FLIGHT.run(last_write(), move || async move {
+        let res = fetch().await;
+        match &res {
+            Ok(large) if large.offload.is_some() => {
+                if let Some(mut cached) = read_cached(&file, &root) {
+                    cached.status.offload = large.offload.clone();
+                    write_cached(&file, cached);
+                }
+            }
+            Err(e) if e == FEATURE_DISABLED_ERROR => clear_cached(&file),
+            _ => {}
         }
         res
     })
@@ -695,13 +761,37 @@ pub async fn get_cached_storage_status() -> Result<Option<CachedStatus>, String>
     Ok(read_cached(&cache_file(), &root))
 }
 
-/// `hq storage status --json`.
+/// The summary, `hq storage status --json --no-large`, without the slow
+/// big-file scan. A CLI that predates `--no-large` gets the full status.
 #[tauri::command]
 pub async fn get_storage_status() -> Result<StorageStatus, String> {
     let root = resolve_hq_folder().to_string_lossy().into_owned();
-    status_flight(cache_file(), root, || async {
-        let stdout = run_hq(status_args()).await?;
-        parse_status(&stdout)
+    status_flight(cache_file(), root, || summary_with_fallback(run_hq)).await
+}
+
+/// Run the summary; on a CLI without `--no-large`, run the full status once.
+pub(crate) async fn summary_with_fallback<R, Fut>(run: R) -> Result<StorageStatus, String>
+where
+    R: Fn(Vec<OsString>) -> Fut,
+    Fut: Future<Output = Result<String, String>>,
+{
+    let stdout = match run(status_args()).await {
+        Err(e) if is_no_large_unsupported(&e) => {
+            log("storage", "hq storage status has no --no-large; using full status");
+            run(full_status_args()).await?
+        }
+        other => other?,
+    };
+    parse_status(&stdout)
+}
+
+/// `hq storage large --json`: the big-file list. Read-only.
+#[tauri::command]
+pub async fn get_storage_large() -> Result<StorageLarge, String> {
+    let root = resolve_hq_folder().to_string_lossy().into_owned();
+    large_flight(cache_file(), root, || async {
+        let stdout = run_hq(large_args()).await?;
+        parse_large(&stdout)
     })
     .await
 }
@@ -874,7 +964,82 @@ mod tests {
 
     #[test]
     fn status_args_shape() {
-        assert_eq!(rendered(&status_args()), ["storage", "status", "--json"]);
+        assert_eq!(rendered(&status_args()), ["storage", "status", "--json", "--no-large"]);
+        assert_eq!(rendered(&full_status_args()), ["storage", "status", "--json"]);
+        assert_eq!(rendered(&large_args()), ["storage", "large", "--json"]);
+    }
+
+    #[test]
+    fn read_only_args_never_reclaim_gc_or_prune() {
+        for args in [status_args(), full_status_args(), large_args()] {
+            let r = rendered(&args);
+            for bad in ["prune", "gc", "reclaim", "offload", "--yes"] {
+                assert!(!r.iter().any(|a| a == bad), "{r:?} must not contain {bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn large_uses_the_status_timeout() {
+        assert_eq!(timeout_for(&large_args()), STATUS_TIMEOUT);
+    }
+
+    #[test]
+    fn parses_large() {
+        let l = parse_large(
+            r#"{"offload":{"history_candidates":{"count":4,"bytes":900},
+                "current_candidates":{"count":0,"bytes":0},
+                "placeholders":{"count":0,"bytes":0}},"generated_at":"2026-10-12T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(l.offload.unwrap().history_candidates.count, 4);
+        assert!(parse_large(r#"{"generated_at":"x"}"#).unwrap().offload.is_none());
+    }
+
+    #[tokio::test]
+    async fn summary_skips_the_big_file_scan() {
+        let calls = std::sync::Mutex::new(Vec::<Vec<String>>::new());
+        let got = summary_with_fallback(|args| {
+            calls.lock().unwrap().push(rendered(&args));
+            async { Ok(STATUS.to_string()) }
+        })
+        .await;
+        assert!(got.is_ok());
+        assert_eq!(*calls.lock().unwrap(), [rendered(&status_args())]);
+    }
+
+    #[tokio::test]
+    async fn summary_falls_back_to_full_status_on_an_older_cli() {
+        let calls = std::sync::Mutex::new(Vec::<Vec<String>>::new());
+        let got = summary_with_fallback(|args| {
+            let r = rendered(&args);
+            calls.lock().unwrap().push(r.clone());
+            async move {
+                if r.iter().any(|a| a == "--no-large") {
+                    Err("hq storage failed: error: unknown option '--no-large'".to_string())
+                } else {
+                    Ok(STATUS.to_string())
+                }
+            }
+        })
+        .await;
+        assert!(got.is_ok());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [rendered(&status_args()), rendered(&full_status_args())]
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_does_not_retry_other_errors() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let got = summary_with_fallback(|_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Err(TIMEOUT_ERROR.to_string()) }
+        })
+        .await;
+        assert_eq!(got.unwrap_err(), TIMEOUT_ERROR);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -1295,6 +1460,55 @@ mod tests {
         assert_eq!(got, Err(FEATURE_DISABLED_ERROR.to_string()));
         assert!(read_cached(&file, "/hq").is_none());
         assert!(!file.exists());
+    }
+
+    fn offload_with(count: u64) -> OffloadStatus {
+        let mut o = OffloadStatus::default();
+        o.history_candidates.count = count;
+        o
+    }
+
+    #[tokio::test]
+    async fn large_fills_the_cached_status_and_the_summary_keeps_it() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        let file = temp_cache();
+        clear_cached(&file);
+        // First open, no cache: the summary lands and is cached without big files.
+        status_flight(file.clone(), "/hq".into(), || async { parse_status(STATUS) })
+            .await
+            .unwrap();
+        assert!(read_cached(&file, "/hq").unwrap().status.offload.is_none());
+        // The big-file scan finishes later and fills the cached status in.
+        let large = large_flight(file.clone(), "/hq".into(), || async {
+            Ok(StorageLarge { offload: Some(offload_with(7)), generated_at: None })
+        })
+        .await
+        .unwrap();
+        assert_eq!(large.offload.unwrap().history_candidates.count, 7);
+        let cached = read_cached(&file, "/hq").unwrap();
+        assert_eq!(cached.status.offload.unwrap().history_candidates.count, 7);
+        // The next summary (no big files) keeps the cached big-file figures.
+        status_flight(file.clone(), "/hq".into(), || async { parse_status(STATUS) })
+            .await
+            .unwrap();
+        let cached = read_cached(&file, "/hq").unwrap();
+        assert_eq!(cached.status.offload.unwrap().history_candidates.count, 7);
+        clear_cached(&file);
+    }
+
+    #[tokio::test]
+    async fn large_feature_disabled_clears_the_cache_fail_closed() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        let file = temp_cache();
+        status_flight(file.clone(), "/hq".into(), || async { parse_status(STATUS) })
+            .await
+            .unwrap();
+        let got = large_flight(file.clone(), "/hq".into(), || async {
+            Err(FEATURE_DISABLED_ERROR.to_string())
+        })
+        .await;
+        assert_eq!(got, Err(FEATURE_DISABLED_ERROR.to_string()));
+        assert!(read_cached(&file, "/hq").is_none());
     }
 
     #[tokio::test]

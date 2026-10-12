@@ -924,6 +924,7 @@ fn main() {
             commands::drift_detail::drift_window_ready,
             commands::feedback::submit_bug_report,
             commands::storage::get_storage_status,
+            commands::storage::get_storage_large,
             commands::storage::get_cached_storage_status,
             commands::storage::preview_storage_prune,
             commands::storage::run_storage_prune,

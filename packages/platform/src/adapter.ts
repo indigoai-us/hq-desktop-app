@@ -2661,12 +2661,24 @@ export interface CachedStorageStatus {
   hq_root: string;
 }
 
+/** `hq storage large --json`: the big-file section on its own. */
+export interface StorageLarge {
+  offload?: StorageOffloadStatus | null;
+  generated_at?: string | null;
+}
+
 export interface StorageApi {
   /**
-   * `hq storage status --json`. Slow (minutes cold). The host runs one scan
-   * at a time: a call made while one runs joins it.
+   * `hq storage status --no-large --json`: local backups and cloud history
+   * without the slow big-file scan (older CLIs: the full status). The host
+   * runs one scan at a time: a call made while one runs joins it.
    */
   status(): AdapterPromise<StorageStatus>;
+  /**
+   * `hq storage large --json`: the big-file scan. Slow (minutes cold),
+   * read-only, one at a time like `status`.
+   */
+  large?(): AdapterPromise<StorageLarge>;
   /** Last known status without scanning; null when there is none. */
   cachedStatus?(): AdapterPromise<CachedStorageStatus | null>;
   previewPrune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
