@@ -115,6 +115,25 @@ function markdownCueCount(lines: string[]): number {
   ).length;
 }
 
+/**
+ * Written paragraphs: most non-empty lines are sentences of several plain
+ * words. Log lines, JSON and key=value dumps fail this (symbols, few words).
+ */
+function looksLikeProse(lines: string[]): boolean {
+  const nonEmpty = lines.map((l) => l.trim()).filter((l) => l.length > 0);
+  if (nonEmpty.length === 0 || nonEmpty.length > 60) return false;
+  const prose = nonEmpty.filter((line) => {
+    const words = line.split(/\s+/).length;
+    const plain = (line.match(/[\p{L}\p{N}\s.,;:'"’“”()!?&$%/-]/gu) ?? []).length / line.length;
+    const machine = /^[[{]|=\S|\d{2}:\d{2}:\d{2}/.test(line);
+    // Real sentences end in . ! ? or : and a paragraph line stays readable;
+    // one endless line of words is still rendered as plain text, cheaply.
+    const sentence = /[.!?:)"’”]$/.test(line) && line.length <= 1_000;
+    return words >= 6 && plain >= 0.9 && sentence && !machine;
+  });
+  return prose.length / nonEmpty.length >= 0.6;
+}
+
 export function isHeavyMessageBody(body: string): boolean {
   // A link is one token however long it is (a sign-in link runs to 600
   // characters), so links count as a few characters toward the size limits;
@@ -127,7 +146,8 @@ export function isHeavyMessageBody(body: string): boolean {
   const lines = text.split("\n");
   // A long reply that is written Markdown (headings, lists, bold) is prose an
   // agent wrote for a person; a dump of the same length has no such cues.
-  if (text.length > MESSAGE_MARKDOWN_MAX_CHARS) return markdownCueCount(lines) < 2;
+  // ...and so is a long reply written in plain paragraphs (a bot's summary).
+  if (text.length > MESSAGE_MARKDOWN_MAX_CHARS) return markdownCueCount(lines) < 2 && !looksLikeProse(lines);
   if (lines.length > 30) return markdownCueCount(lines) < 2;
   return false;
 }
