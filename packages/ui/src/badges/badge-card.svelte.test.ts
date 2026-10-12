@@ -80,8 +80,10 @@ afterEach(() => {
 
 describe("card words", () => {
   it("numbers the card in the set, names the tier, and says it all to a screen reader", () => {
-    expect(cardNumber("founding")).toBe("No. 001 / 015");
-    expect(cardNumber("liftoff")).toBe("No. 004 / 015");
+    expect(cardNumber("founding")).toBe("No. 001 / 019");
+    expect(cardNumber("liftoff")).toBe("No. 004 / 019");
+    expect(cardNumber("og")).toBe("No. 016 / 019");
+    expect(cardNumber("corebuilder")).toBe("No. 019 / 019");
     expect(cardNumber("nope")).toBe("");
     expect(cardTierLabel(2)).toBe("Tier II · Silver");
     expect(cardTierLabel("L")).toBe("Legendary");
@@ -111,7 +113,7 @@ describe("BadgeCard", () => {
     expect(card.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe(cardAccessibleLabel(liftoff));
     const face = card.querySelector(".face")!;
     expect(face.getAttribute("aria-hidden")).toBe("true");
-    expect(face.textContent).toContain("No. 004 / 015");
+    expect(face.textContent).toContain("No. 004 / 019");
     expect(face.textContent).toContain("Liftoff");
     expect(face.textContent).toContain("Deploys that went live.");
     expect(face.textContent).toContain("Tier II · Silver");

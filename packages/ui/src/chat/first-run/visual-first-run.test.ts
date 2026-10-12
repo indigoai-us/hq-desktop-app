@@ -10,7 +10,6 @@ import {
   firstRunHandoffNote,
   firstRunHandoffNotice,
   firstRunIntro,
-  firstRunKickoff,
   firstRunNextLabel,
   firstRunBeforeImport,
   firstRunOffersChat,
@@ -19,18 +18,13 @@ import {
   firstRunStepNumber,
   firstRunStepsFor,
   firstRunImportJson,
-  firstRunImportNotice,
-  firstRunSettledNotice,
-  firstRunSettledParts,
-  firstRunSettledSince,
-  firstRunKickoffCarry,
   firstRunTeamJson,
   firstRunAppsJson,
   firstRunDoneSteps,
   FIRST_RUN_BANNED_DASHES,
   handoffReportPath,
   FIRST_RUN_REPORT_PATH_MAX,
-  FIRST_RUN_KICKOFF_MAX,
+  FIRST_RUN_HANDOFF_NOTICE_MAX,
   hasFinishedVisualFirstRun,
   markVisualFirstRunFinished,
   normalizeAssistantName,
@@ -40,6 +34,7 @@ import {
   type FirstRunStep,
 } from "./visual-first-run.js";
 import { SETUP_BOT_KICKOFF_PREFIX } from "../setup-bot.js";
+import { FIRST_RUN_NOTE_LEAD, isAppNoticeBody } from "../agent-channel.js";
 
 function memoryStorage(): Pick<Storage, "getItem" | "setItem"> {
   const map = new Map<string, string>();
@@ -252,9 +247,9 @@ describe("assistant name whitespace", () => {
   it("collapses tabs and runs of spaces, which is what the host keeps and checks", () => {
     expect(normalizeAssistantName(" Mr\tBiscuit  Pants ")).toBe("Mr Biscuit Pants");
     expect(assistantNameIssue(" Mr\tBiscuit  Pants ")).toBeNull();
-    const kickoff = firstRunKickoff({ name: "Mr\tBiscuit  Pants", runtime: "claude", toolsReady: ["claude"] });
-    expect(kickoff).toContain('"name":"Mr Biscuit Pants"');
-    expect(kickoff).toContain("I chose your name, Mr Biscuit Pants,");
+    const notice = firstRunHandoffNotice({ name: "Mr\tBiscuit  Pants", runtime: "claude", toolsReady: ["claude"] });
+    expect(notice).toContain('"name":"Mr Biscuit Pants"');
+    expect(notice).toContain("I named you Mr Biscuit Pants,");
     expect(firstRunIntro({ name: "Mr\tBiscuit", runtime: "claude" })).toContain("Hi, I'm Mr Biscuit,");
     expect(firstRunHandoffNotice({ name: "Mr  Biscuit", runtime: "claude", toolsReady: ["claude"] })).toContain(
       "I named you Mr Biscuit,",
@@ -262,7 +257,7 @@ describe("assistant name whitespace", () => {
   });
 });
 
-describe("handoff kickoff", () => {
+describe("the handoff note (one note, sent when the takeover closes)", () => {
   const handoff = { name: "Pickles", runtime: "claude" as const, toolsReady: ["claude", "codex"] as const };
 
   it("carries a one-line JSON note naming the settled steps", () => {
@@ -277,65 +272,55 @@ describe("handoff kickoff", () => {
     });
   });
 
-  it("starts with the setup template's prefix, says what not to ask again, and stays inside the CLI limits", () => {
-    const kickoff = firstRunKickoff(handoff, { noun: "Mac" });
-    expect(kickoff.startsWith(SETUP_BOT_KICKOFF_PREFIX)).toBe(true);
-    expect(kickoff).toContain(firstRunHandoffNote(handoff));
-    expect(kickoff).toContain("never ask about it again");
-    expect(kickoff).toContain("Claude Code is signed in on this Mac");
-    expect(kickoff).toContain("do not ask whether I want HQ explained first");
-    // `validate_kickoff`: one line, no control characters, under 2000.
-    // eslint-disable-next-line no-control-regex
-    expect(kickoff).not.toMatch(/[\u0000-\u001f\u007f]/);
-    expect(kickoff.length).toBeLessThan(2000);
-    expect(kickoff).not.toContain(String.fromCharCode(0x2014));
-  });
-
-  it("stays under 2000 characters with the longest name and every tool", () => {
-    const longest = firstRunKickoff(
-      { name: "A".repeat(ASSISTANT_NAME_MAX), runtime: "grok", toolsReady: ["claude", "codex", "grok"] },
-      { noun: "computer" },
-    );
-    expect(longest.length).toBeLessThan(2000);
-  });
-
-  it("tells a setup bot that already existed what was settled, without restarting its kickoff", () => {
+  it("is a bot-only note the person's view hides, never a kickoff, and starts the setup conversation", () => {
     const notice = firstRunHandoffNotice(handoff, { noun: "Mac" });
+    expect(notice.startsWith(FIRST_RUN_NOTE_LEAD)).toBe(true);
+    expect(isAppNoticeBody(notice)).toBe(true);
     expect(notice.startsWith(SETUP_BOT_KICKOFF_PREFIX)).toBe(false);
     expect(notice).toContain(firstRunHandoffNote(handoff));
-    expect(notice).toContain("never ask about it again");
-    expect(notice).toContain("signed in on this Mac: Claude Code, Codex");
+    expect(notice).toContain("never ask about it, offer it or redo it");
+    expect(notice).toContain("Claude Code is signed in on this Mac");
+    expect(notice).toContain("do not ask whether I want HQ explained first");
+    expect(notice).toContain("do not greet me again");
+    // It is what starts setup now, so it asks for the first step's question
+    // rather than waiting for the person to write.
+    expect(notice).toContain('begin the first unfinished step that is not in "done"');
+    expect(notice).not.toContain("When I next write");
     // eslint-disable-next-line no-control-regex
     expect(notice).not.toMatch(/[\u0000-\u001f\u007f]/);
-    expect(notice.length).toBeLessThan(2000);
+    expect(notice.length).toBeLessThan(FIRST_RUN_HANDOFF_NOTICE_MAX);
+    for (const dash of FIRST_RUN_BANNED_DASHES) expect(notice).not.toContain(dash);
   });
 
   it("the hello names the assistant and the tool, on one line under 500 characters", () => {
     const intro = firstRunIntro({ name: "Pickles", runtime: "codex" }, { noun: "PC" });
     expect(intro).toContain("Hi, I'm Pickles, your HQ assistant.");
     expect(intro).toContain("signed in Codex");
-    expect(intro).toContain("your PC");
     expect(intro.length).toBeLessThan(500);
     expect(intro).not.toContain("\n");
   });
 
+  // rc-run-1011-1449: the hello said "I'm checking your Mac now ... I'll post
+  // my next question here as soon as I'm done" while the takeover was still
+  // open, and the question it then posted offered the import the takeover
+  // did next. The assistant runs no turn until the takeover closes.
+  it("the hello promises no question before the person finishes the takeover", () => {
+    const intro = firstRunIntro({ name: "Pickles", runtime: "claude" }, { noun: "Mac" });
+    expect(intro).not.toContain("checking your");
+    expect(intro).toContain("As soon as you finish setting up in the app");
+  });
+
   // The owner's assistant said "You've named me and signed in Claude Code"
   // on a dead stored login, and its first turn failed to sign in.
-  it("the hello and the kickoff do not claim signed in when the real check did not pass", () => {
+  it("the hello and the note do not claim signed in when the real check did not pass", () => {
     const intro = firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: false }, { noun: "Mac" });
     expect(intro).not.toContain("signed in");
     expect(intro).toContain("You've named me and picked Claude Code");
     expect(intro.length).toBeLessThan(500);
-    const kickoff = firstRunKickoff({ ...handoff, signInChecked: false }, { noun: "Mac" });
-    expect(kickoff).not.toContain("Claude Code is signed in");
-    expect(kickoff).not.toContain("sign-in is finished");
-    expect(kickoff).toContain("HQ could not confirm its sign-in");
-    expect(kickoff).not.toContain(String.fromCharCode(0x2014));
-    const longest = firstRunKickoff(
-      { name: "A".repeat(ASSISTANT_NAME_MAX), runtime: "grok", toolsReady: ["claude", "codex", "grok"], signInChecked: false },
-      { noun: "computer" },
-    );
-    expect(longest.length).toBeLessThan(2000);
+    const notice = firstRunHandoffNotice({ ...handoff, signInChecked: false }, { noun: "Mac" });
+    expect(notice).not.toContain("Claude Code is signed in");
+    expect(notice).not.toContain("sign-in is finished");
+    expect(notice).toContain("HQ could not confirm its sign-in");
     // A passing check keeps today's words.
     expect(firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: true })).toContain("signed in Claude Code");
   });
@@ -374,13 +359,7 @@ describe("import handoff (Bring in your context)", () => {
     ]) {
       expect(handoffReportPath(report)).toBeNull();
       const leaky = { summary: { companies: 1 }, report };
-      const sent = [
-        firstRunHandoffNote({ ...handoff, imported: leaky }),
-        firstRunKickoff({ ...handoff, imported: leaky }, { noun: "Mac" }),
-        firstRunImportNotice(leaky),
-        firstRunHandoffNotice({ ...handoff, imported: leaky }, { noun: "Mac" }),
-      ];
-      for (const text of sent) {
+      for (const text of [firstRunHandoffNote({ ...handoff, imported: leaky }), firstRunHandoffNotice({ ...handoff, imported: leaky }, { noun: "Mac" })]) {
         expect(text).not.toContain(report);
         expect(text).not.toMatch(/\/Users\/|~\/|[A-Za-z]:\\/);
         expect(text).not.toContain('"report"');
@@ -389,48 +368,21 @@ describe("import handoff (Bring in your context)", () => {
     expect(handoffReportPath("workspace/imports/x/report.json")).toBe("workspace/imports/x/report.json");
   });
 
-  it("the kickoff says the import is finished and stays inside the CLI limits with the longest path", () => {
-    const kickoff = firstRunKickoff(handoff, { noun: "Mac" });
-    expect(kickoff).toContain(firstRunHandoffNote(handoff));
-    expect(kickoff).toContain("The context import is finished");
-    const longest = firstRunKickoff(
-      {
-        name: "A".repeat(ASSISTANT_NAME_MAX),
-        runtime: "grok",
-        toolsReady: ["claude", "codex", "grok"],
-        imported: {
-          summary: { companies: 99999, projects: 99999, sessions: 99999, a: 1, b: 2, c: 3, d: 4, e: 5 },
-          report: "r".repeat(FIRST_RUN_REPORT_PATH_MAX),
-        },
-      },
-      { noun: "computer" },
-    );
-    expect(longest.length).toBeLessThan(FIRST_RUN_KICKOFF_MAX);
-    // eslint-disable-next-line no-control-regex
-    expect(longest).not.toMatch(/[\u0000-\u001f\u007f]/);
+  // rc-run-1011-1449: the assistant's first message offered "7 past AI
+  // conversations ... 5 project folders. Want me to bring them into HQ?"
+  // after the takeover had imported them, and it ran a second scan itself.
+  it("says the import is finished and must not be offered, asked about or scanned again", () => {
+    const notice = firstRunHandoffNotice(handoff, { noun: "Mac" });
+    expect(notice).toContain(firstRunHandoffNote(handoff));
+    expect(notice).toContain("The context import is finished (counts and report path are in the handoff)");
+    expect(notice).toContain("do not offer it, ask me about it or scan this computer again");
   });
 
-  it("without an import the kickoff is exactly slice 1's", () => {
+  it("without an import the note says nothing about it and does not mark it done", () => {
     const plain = { name: "Pickles", runtime: "claude" as const, toolsReady: ["claude"] as const };
-    expect(firstRunKickoff({ ...plain, imported: null })).toBe(firstRunKickoff(plain));
+    expect(firstRunHandoffNotice({ ...plain, imported: null })).toBe(firstRunHandoffNotice(plain));
+    expect(firstRunHandoffNotice(plain)).not.toContain("context import");
     expect(JSON.parse(firstRunHandoffNote(plain)).done).toEqual(["name", "codingTools"]);
-  });
-
-  it("a notice tells an assistant created before the scan finished, in one line", () => {
-    const notice = firstRunImportNotice(imported);
-    expect(notice.startsWith(SETUP_BOT_KICKOFF_PREFIX)).toBe(false);
-    const json = notice.match(/Handoff from the app: (\{.*?\})\. /)?.[1];
-    expect(JSON.parse(json!)).toEqual({
-      from: "desktop-visual-first-run",
-      v: 1,
-      done: ["import"],
-      import: { companies: 3, projects: 9, sessions: 508, report: imported.report },
-    });
-    expect(notice).toContain("do not ask me to import it again");
-    // eslint-disable-next-line no-control-regex
-    expect(notice).not.toMatch(/[\u0000-\u001f\u007f]/);
-    expect(notice.length).toBeLessThan(2000);
-    expect(notice).not.toContain(String.fromCharCode(0x2014));
   });
 });
 
@@ -522,19 +474,25 @@ describe("team and app handoff (Your team, Note taker, Project management)", () 
     expect(JSON.parse(leaky).done).not.toContain("company");
   });
 
-  it("the kickoff says the company question is settled and stays inside the CLI limits", () => {
-    const kickoff = firstRunKickoff({ ...base, team, apps }, { noun: "Mac" });
-    expect(kickoff).toContain(firstRunHandoffNote({ ...base, team, apps }));
-    expect(kickoff).toContain('The company question is settled (I joined a company, named in "team" in the handoff)');
-    expect(kickoff).toContain("The note taker and project management choices are in the handoff");
-    expect(firstRunKickoffCarry({ ...base, team, apps }, { noun: "Mac" })).toMatchObject({ settled: true, importWhole: true });
+  it("says the company question and the two app screens are settled", () => {
+    const notice = firstRunHandoffNotice({ ...base, team, apps }, { noun: "Mac" });
+    expect(notice).toContain(firstRunHandoffNote({ ...base, team, apps }));
+    expect(notice).toContain('The company question is settled (I joined a company, named in "team" in the handoff)');
+    expect(notice).toContain("The note taker and project management choices are in the handoff");
+    const alone = firstRunHandoffNotice({ ...base, team: { kind: "personal" }, apps: { notes: null } });
+    expect(alone).toContain("do not ask me to join or start a company");
   });
 
-  it("with everything set the kickoff stays under the limit and the report path still reaches the bot", () => {
+  // Before this change the kickoff had to fit `hq bot create --kickoff`
+  // (2000), so a full takeover was split across the kickoff and later notes,
+  // and each note made the assistant answer again. The one note carries
+  // everything whole, the report path included, at the longest values.
+  it("with everything set, one note carries it all, whole, under its bound", () => {
     const everything = {
       name: "A".repeat(ASSISTANT_NAME_MAX),
       runtime: "grok" as const,
       toolsReady: ["claude", "codex", "grok"] as const,
+      signInChecked: false,
       imported: {
         summary: { companies: 99999, projects: 99999, sessions: 99999, a: 1, b: 2, c: 3 },
         report: "workspace/imports/" + "r".repeat(FIRST_RUN_REPORT_PATH_MAX - 30) + "/report.json",
@@ -545,75 +503,15 @@ describe("team and app handoff (Your team, Note taker, Project management)", () 
         projects: { name: "P".repeat(60), domain: "linear.app" },
       },
     };
-    const carry = firstRunKickoffCarry(everything, { noun: "computer" });
-    expect(carry.kickoff.length).toBeLessThan(FIRST_RUN_KICKOFF_MAX);
-    // eslint-disable-next-line no-control-regex
-    expect(carry.kickoff).not.toMatch(/[\u0000-\u001f\u007f]/);
-    // The team and apps did not fit: the host sends them as a settled notice.
-    expect(carry.settled).toBe(false);
-    const settled = firstRunSettledNotice({ team: everything.team, apps: everything.apps })!;
-    expect(settled.length).toBeLessThan(2000);
-    expect(JSON.parse(settled.match(/Handoff from the app: (\{.*?\})\. /)![1]!).done).toEqual([
-      "company",
-      "noteTaker",
-      "projectManagement",
-    ]);
-    // Some message carries import.report: the kickoff when it fit, else the import note.
-    const report = everything.imported.report;
-    const carrier = carry.importWhole ? carry.kickoff : firstRunImportNotice(everything.imported);
-    expect(carrier).toContain(`"report":"${report}"`);
-    expect(carry.importWhole).toBe(true);
-    // The realistic case (the kickoff goes out at the name step, before the
-    // later screens): the report rides in the kickoff itself.
-    const atName = firstRunKickoffCarry({ ...everything, team: null, apps: null });
-    expect(atName.importWhole).toBe(true);
-    expect(atName.kickoff).toContain(`"report":"${report}"`);
-  });
-
-  it("a settled notice tells an assistant created earlier, once, in one line", () => {
-    expect(firstRunSettledNotice({})).toBeNull();
-    expect(firstRunSettledNotice({ team: null, apps: {} })).toBeNull();
-    const notice = firstRunSettledNotice({ team: { kind: "personal" }, apps: { notes: null } })!;
-    expect(notice.startsWith("Setup note from the HQ desktop app:")).toBe(true);
-    expect(notice.startsWith(SETUP_BOT_KICKOFF_PREFIX)).toBe(false);
-    const json = notice.match(/Handoff from the app: (\{.*?\})\. /)?.[1];
-    expect(JSON.parse(json!)).toEqual({
-      from: "desktop-visual-first-run",
-      v: 1,
-      done: ["company", "noteTaker"],
-      team: { kind: "personal" },
-      apps: { notes: "skipped" },
-    });
-    expect(notice).toContain("do not ask me to join or start a company");
+    const notice = firstRunHandoffNotice(everything, { noun: "computer" });
+    expect(notice.length).toBeLessThan(FIRST_RUN_HANDOFF_NOTICE_MAX);
     // eslint-disable-next-line no-control-regex
     expect(notice).not.toMatch(/[\u0000-\u001f\u007f]/);
-    expect(notice.length).toBeLessThan(2000);
-    for (const dash of FIRST_RUN_BANNED_DASHES) expect(notice).not.toContain(dash);
-  });
-
-  it("the settled notice carries an import that was not delivered yet, and no absolute path", () => {
-    const notice = firstRunSettledNotice({
-      imported: { summary: { companies: 2 }, report: "/Users/pat/hq/workspace/imports/r.json" },
-      team,
-    })!;
-    const json = JSON.parse(notice.match(/Handoff from the app: (\{.*?\})\. /)?.[1] ?? "{}");
-    expect(json.done).toEqual(["company", "import"]);
-    expect(json.import).toEqual({ companies: 2 });
-    expect(notice).not.toContain("/Users/");
-  });
-});
-
-describe("settled parts sent one by one (review fix 1)", () => {
-  const team = { kind: "company" as const, how: "joined" as const, name: "Acme", slug: "acme" };
-  it("sends only the parts the bot does not have, or has with another value", () => {
-    const early = { team, apps: {} };
-    const sent = firstRunSettledParts(early);
-    expect(Object.keys(sent)).toEqual(["team"]);
-    const later = { team, apps: { notes: { name: "Granola", domain: "granola.ai" }, projects: null } };
-    expect(firstRunSettledSince(later, sent)).toEqual({ team: null, apps: { notes: { name: "Granola", domain: "granola.ai" }, projects: null } });
-    expect(firstRunSettledNotice(firstRunSettledSince(later, firstRunSettledParts(later)))).toBeNull();
-    const changed = { team: { kind: "personal" as const }, apps: later.apps };
-    expect(firstRunSettledSince(changed, firstRunSettledParts(later)).team).toEqual({ kind: "personal" });
+    const json = JSON.parse(notice.match(/Handoff from the app: (\{.*?\})\. /)![1]!);
+    expect(json.done).toEqual(["name", "codingTools", "company", "import", "noteTaker", "projectManagement"]);
+    expect(json.import.report).toBe(everything.imported.report);
+    expect(json.team.name).toBe("W".repeat(60));
+    expect(json.apps.projects).toEqual({ name: "P".repeat(40), domain: "linear.app" });
   });
 });
 
@@ -623,25 +521,19 @@ describe("names an inviter chose stay data (review fix 2)", () => {
   const apps = { notes: { name: "Evil $(id)", domain: "granola.ai" } };
   const jsonOf = (text: string) => text.match(/Handoff from the app: (\{.*?\})\. Every step/)![1]!;
   it("puts the company and app names only inside the JSON, never in the prose", () => {
-    const texts = [
-      firstRunKickoff({ name: "Pickles", runtime: "claude", toolsReady: ["claude"], team, apps }, { noun: "Mac" }),
-      firstRunHandoffNotice({ name: "Pickles", runtime: "claude", toolsReady: ["claude"], team, apps }, { noun: "Mac" }),
-      firstRunSettledNotice({ team, apps })!,
-    ];
-    for (const text of texts) {
-      const json = jsonOf(text);
-      expect(JSON.parse(json).team.name).toBe(hostile);
-      const prose = text.replace(json, "");
-      expect(prose).not.toContain("curl");
-      expect(prose).not.toContain("Ignore previous");
-      expect(prose).not.toContain("$(id)");
-      expect(prose).toContain('named in "team" in the handoff');
-    }
+    const text = firstRunHandoffNotice({ name: "Pickles", runtime: "claude", toolsReady: ["claude"], team, apps }, { noun: "Mac" });
+    const json = jsonOf(text);
+    expect(JSON.parse(json).team.name).toBe(hostile);
+    const prose = text.replace(json, "");
+    expect(prose).not.toContain("curl");
+    expect(prose).not.toContain("Ignore previous");
+    expect(prose).not.toContain("$(id)");
+    expect(prose).toContain('named in "team" in the handoff');
   });
   it("a bot name outside the display-name rule is named by its place in the JSON", () => {
-    const kickoff = firstRunKickoff({ name: "Bob $(id)", runtime: "claude", toolsReady: ["claude"] });
-    expect(kickoff).toContain('I chose your name ("name" in the handoff), so keep it.');
-    expect(kickoff.replace(jsonOf(kickoff), "")).not.toContain("$(id)");
-    expect(firstRunKickoff({ name: "Pickles", runtime: "claude", toolsReady: ["claude"] })).toContain("I chose your name, Pickles, so keep it.");
+    const notice = firstRunHandoffNotice({ name: "Bob $(id)", runtime: "claude", toolsReady: ["claude"] });
+    expect(notice).toContain('I named you ("name" in the handoff), so use that name.');
+    expect(notice.replace(jsonOf(notice), "")).not.toContain("$(id)");
+    expect(firstRunHandoffNotice({ name: "Pickles", runtime: "claude", toolsReady: ["claude"] })).toContain("I named you Pickles, so use that name.");
   });
 });

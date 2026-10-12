@@ -39,14 +39,30 @@ describe('badge harness switches', () => {
 
 // Avatar tier marks (owner review 2026-10-09): the harness cast spans every
 // tier. Founding Member is a plain Gold badge (adopted criteria 2026-10-10).
+// Corey Epstein holds the honors badges (2026-10-11), so his top is Legendary.
 describe('sample badges span the tiers', () => {
   it('gives the regular cast a top badge at each level, and someone none', () => {
-    // 3 Gold, 2 Silver, 1 Bronze, 0 none.
+    // 4 Legendary, 3 Gold, 2 Silver, 1 Bronze, 0 none.
     const top = (name: string) => Math.max(0, ...sampleBadges({ kind: 'person', name }).map(badgeLevel));
     expect(top('Ada Lovelace')).toBe(3);
-    expect(top('Corey Epstein')).toBe(3);
+    expect(top('Corey Epstein')).toBe(4);
     expect(top('Maya Chen')).toBe(2);
     expect(top('Jacob Moore')).toBe(1);
     expect(top('Stefan Johnson')).toBe(0);
+  });
+
+  it('gives only Corey Epstein the honors badges, with Core Builder at Legendary', () => {
+    const ids = (name: string) => sampleBadges({ kind: 'person', name }).map((b) => b.id);
+    expect(sampleBadges({ kind: 'person', name: 'Corey Epstein' })).toEqual(
+      expect.arrayContaining([
+        { id: 'og', tier: 'L', earnedAt: '2026-10-11' },
+        { id: 'captain', tier: 'L', earnedAt: '2026-10-11' },
+        { id: 'patientzero', tier: 'L', earnedAt: '2026-10-11' },
+        { id: 'corebuilder', tier: 'L', earnedAt: '2026-10-11' },
+      ]),
+    );
+    for (const name of ['Ada Lovelace', 'Maya Chen', 'Jacob Moore']) {
+      expect(ids(name)).not.toEqual(expect.arrayContaining(['og']));
+    }
   });
 });

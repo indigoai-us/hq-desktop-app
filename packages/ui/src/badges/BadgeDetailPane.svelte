@@ -7,6 +7,7 @@
   import FullBadge from "./FullBadge.svelte";
   import BadgeCardModal from "./BadgeCardModal.svelte";
   import { badgeLevels } from "./badge-levels.js";
+  import { cardDate } from "./badge-card.js";
   import { TIER_NAME, type ResolvedBadge } from "./badge-catalog.js";
   import { PROFILE_PANE_WIDTH } from "../shell/profile-panes/profile-pane-model.js";
 
@@ -26,10 +27,7 @@
   /** WebKit does not focus a clicked button, so the opener is named for the return. */
   let viewCardEl = $state<HTMLButtonElement | null>(null);
   const levels = $derived(badgeLevels(badge.def, badge.tier));
-  const earnedOn = $derived.by(() => {
-    const d = new Date(`${badge.earnedAt}T12:00:00`);
-    return Number.isNaN(d.getTime()) ? badge.earnedAt : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  });
+  const earnedOn = $derived(cardDate(badge.earnedAt));
 </script>
 
 <aside class="pane" style:width="{PROFILE_PANE_WIDTH}px" aria-label="{badge.def.name} badge" data-testid="badge-detail-pane">

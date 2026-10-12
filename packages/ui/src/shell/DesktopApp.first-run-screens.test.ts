@@ -3,9 +3,11 @@
 /**
  * Visual first run, slices 2 and 5, through the real shell: "Your team"
  * joins an invite through the invite claim, Note taker and Project
- * management read the integrations catalog and connect inline, and what
- * they settled reaches the setup bot as one bot-only note when the takeover
- * closes. Flag off, none of it runs: no claim, no catalog read.
+ * management read the integrations catalog and connect inline. The setup
+ * bot is created with no kickoff while the takeover is open, and everything
+ * the takeover settled (the import included) reaches it as ONE bot-only note
+ * when the takeover closes. Flag off, none of it runs: no claim, no catalog
+ * read.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -16,7 +18,7 @@ import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { SETUP_BOT_KICKOFF } from "../chat/setup-bot.js";
-import { firstRunKickoff, firstRunSettledNotice } from "../chat/first-run/visual-first-run.js";
+import { firstRunHandoffNotice } from "../chat/first-run/visual-first-run.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
 
 const SETUP_BOT_UID = "agt_setup";
@@ -152,7 +154,7 @@ function q<T extends Element = HTMLElement>(sel: string): T | null {
   return document.querySelector<T>(sel);
 }
 
-async function boot(platform: PlatformAdapter, companies: unknown[] = []): Promise<void> {
+async function boot(platform: PlatformAdapter, companies: unknown[] = [], syncEvents?: unknown): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
@@ -165,6 +167,7 @@ async function boot(platform: PlatformAdapter, companies: unknown[] = []): Promi
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
       coreFixtures: false,
+      ...(syncEvents ? { syncEvents: syncEvents as never } : {}),
       extraPages: {
         sessions: {
           label: "Sessions",
@@ -288,23 +291,34 @@ describe("visual first run with Your team, Note taker and Project management", (
     expect(q('[data-testid="first-run-summary-notes"]')?.textContent?.trim()).toBe("Granola, connected");
     expect(q('[data-testid="first-run-summary-projects"]')?.textContent?.trim()).toBe("Skipped");
     expect(sendDm).not.toHaveBeenCalled();
+    // The create ran no kickoff: the assistant has said nothing past its hello.
+    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).not.toHaveProperty("kickoff");
 
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
     expect(to).toBe(SETUP_BOT_UID);
-    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-settled:${SETUP_BOT_UID}` });
+    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
     expect(body).toBe(
-      firstRunSettledNotice({
-        team: { kind: "company", how: "joined", name: "Acme Robotics", slug: "acme" },
-        apps: { notes: { name: "Granola", domain: "granola.ai" }, projects: null },
-      }),
+      firstRunHandoffNotice(
+        {
+          name: "Biscuit",
+          runtime: "claude",
+          toolsReady: ["claude"],
+          signInChecked: true,
+          team: { kind: "company", how: "joined", name: "Acme Robotics", slug: "acme" },
+          apps: { notes: { name: "Granola", domain: "granola.ai" }, projects: null },
+        },
+        { noun: "computer" },
+      ),
     );
+    await settle(12);
+    expect(sendDm).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledTimes(1);
   });
 
-  it("Finish with defaults settles Just me before the create, so the kickoff carries it and no extra note goes", async () => {
+  it("Finish with defaults settles Just me; the create runs no kickoff and Continue in chat sends the one note", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const claim = vi.fn(async () => ok({ ok: true }));
     const { platform, sendDm } = adapter({ create, flag: true, claim, integrations: integrationsApi() });
@@ -314,21 +328,24 @@ describe("visual first run with Your team, Note taker and Project management", (
     q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     expect(q('[data-testid="first-run-summary-team"]')?.textContent).toBe("Just me");
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kickoff: firstRunKickoff({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], team: { kind: "personal" }, apps: {} }),
-      }),
-    );
+    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).not.toHaveProperty("kickoff");
+    expect(sendDm).not.toHaveBeenCalled();
     q<HTMLButtonElement>('[data-testid="first-run-continue-in-chat"]')!.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    expect(sendDm).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    expect((sendDm.mock.calls[0] as unknown as [string, string])[1]).toBe(
+      firstRunHandoffNotice(
+        { name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true, team: { kind: "personal" }, apps: {} },
+        { noun: "computer" },
+      ),
+    );
     expect(claim).not.toHaveBeenCalled();
   });
 });
 
 describe("settled parts reach the assistant whatever the order", () => {
-  it("team settled before the create rides in the kickoff; apps settled after go in the closing note", async () => {
+  it("a create that runs after the team is settled still carries no kickoff; the one closing note has the team and the apps", async () => {
     // The first create fails (it runs at the name step, before Your team);
     // Retry runs it after the team is settled, as a create that waited for a
     // coding tool would.
@@ -353,9 +370,7 @@ describe("settled parts reach the assistant whatever the order", () => {
     await vi.waitFor(() => expect(q('[data-testid="first-run-retry"]')).toBeTruthy());
     q<HTMLButtonElement>('[data-testid="first-run-retry"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
-    const input = (create.mock.calls as unknown as Array<[{ kickoff: string }]>)[1]![0];
-    expect(input.kickoff).toContain('"team":{"kind":"company","how":"joined","name":"Acme Robotics","slug":"acme"}');
-    expect(input.kickoff).not.toContain('"apps"');
+    expect((create.mock.calls as unknown as Array<[Record<string, unknown>]>)[1]![0]).not.toHaveProperty("kickoff");
     await vi.waitFor(() => expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("ready"));
 
     q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
@@ -371,11 +386,148 @@ describe("settled parts reach the assistant whatever the order", () => {
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const body = (sendDm.mock.calls[0] as unknown as [string, string])[1];
-    // Only what the kickoff did not carry: the two app screens.
+    // Everything, whatever order it settled in, in the one note.
+    expect(JSON.parse(body.match(/Handoff from the app: (\{.*?\})\. /)![1]!).done).toEqual([
+      "name",
+      "codingTools",
+      "company",
+      "noteTaker",
+      "projectManagement",
+    ]);
+    expect(body).toContain('"team":{"kind":"company","how":"joined","name":"Acme Robotics","slug":"acme"}');
+    expect(body).toContain('"apps":{"notes":{"name":"Granola","domain":"granola.ai"},"projects":"skipped"}');
+    await settle(12);
+    expect(sendDm).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The scan host the context step runs on: `scanStart` waits for `finish`,
+ * and `emit` pushes the scan's progress lines through the event bus.
+ */
+function contextImportHost(platform: PlatformAdapter) {
+  const handlers = new Set<(e: { payload?: unknown }) => void>();
+  const syncEvents = {
+    listen: vi.fn(async (_event: string, h: (e: { payload?: unknown }) => void) => {
+      handlers.add(h);
+      return () => handlers.delete(h);
+    }),
+    emit: vi.fn(async () => undefined),
+  };
+  let finishScan: (v: unknown) => void = () => undefined;
+  const scanStart = vi.fn((_scanId: string) => new Promise((resolve) => (finishScan = resolve)));
+  const scanCancel = vi.fn(async () => ok(true));
+  (platform as unknown as Record<string, unknown>).contextImport = { scanStart, scanCancel };
+  return {
+    syncEvents,
+    scanStart,
+    scanCancel,
+    finish(lines: Array<Record<string, unknown>>): void {
+      const scanId = scanStart.mock.calls[0]![0];
+      for (const line of lines) handlers.forEach((h) => h({ payload: { scanId, event: { v: 1, ...line } } }));
+      finishScan(ok({ status: "done", lines: lines.length, dropped: 0 }));
+    },
+  };
+}
+
+/**
+ * Owner run rc-run-1011-1449, 2026-10-11, in the order it happened: the
+ * assistant was created (and its kickoff turn started) at the tools step;
+ * the takeover's scan finished a few seconds later; the person passed Note
+ * taker and Project management; then Done. The assistant's first message
+ * offered the import the takeover had just done, a late import note made it
+ * post "You can skip my last question", and a late settled note made it post
+ * a third message. Now: no turn and no note while the takeover is open, then
+ * one note at close carrying every outcome, the import included.
+ */
+describe("owner run rc-run-1011-1449: the assistant gets every outcome before its first turn", () => {
+  it("creates with no kickoff, sends nothing while the takeover is open, then one note with the import, the team and the apps", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const claim = vi.fn(async () => ok({ ok: true, claimedSlugs: ["acme"], message: "Joined" }));
+    const integrations = integrationsApi();
+    const { platform, sendDm } = adapter({ create, flag: true, claim, integrations });
+    const scan = contextImportHost(platform);
+    await boot(platform, ROSTER, scan.syncEvents);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    const next = () => q<HTMLButtonElement>('[data-testid="first-run-next"]')!;
+
+    // 1. The assistant is created early, as in the run, but runs no turn.
+    typeName("Fluffy");
+    pressEnter();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const input = (create.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+    expect(input).not.toHaveProperty("kickoff");
+    expect(String(input.intro)).not.toContain("checking your");
+    await settle();
+    expect(step()).toBe("team");
+    q<HTMLButtonElement>('[data-testid="first-run-team-invite:acme"]')!.click();
+    await settle();
+    next().click();
+    next().click();
+    await vi.waitFor(() => expect(step()).toBe("tools"));
+    next().click();
+    await vi.waitFor(() => expect(step()).toBe("context"));
+
+    // 2. The takeover's scan runs and finishes after the create.
+    await vi.waitFor(() => expect(q('[data-testid="first-run-import-start"]')).toBeTruthy(), { timeout: 3000 });
+    q<HTMLButtonElement>('[data-testid="first-run-import-start"]')!.click();
+    await vi.waitFor(() => expect(scan.scanStart).toHaveBeenCalledTimes(1));
+    scan.finish([
+      { type: "start", sources: [{ id: "claude-code", label: "Claude Code" }] },
+      { type: "source", id: "claude-code", status: "done", counts: { sessions: 7 } },
+      { type: "done", report: "workspace/imports/20261011T221646Z/report.json", summary: { companies: 3, projects: 6, sessions: 7 } },
+    ]);
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false), { timeout: 3000 });
+    await settle(12);
+    // No note for the import: the assistant hears nothing while the takeover is open.
+    expect(sendDm).not.toHaveBeenCalled();
+
+    // 3. Note taker and Project management, both passed.
+    next().click();
+    await vi.waitFor(() => expect(step()).toBe("notes"));
+    next().click();
+    await vi.waitFor(() => expect(step()).toBe("projects"));
+    next().click();
+    await vi.waitFor(() => expect(step()).toBe("done"));
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
+
+    // 4. Done: exactly one note, with everything.
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
+    const json = JSON.parse(body.match(/Handoff from the app: (\{.*?\})\. /)![1]!);
+    expect(json.done).toEqual(["name", "codingTools", "company", "import", "noteTaker", "projectManagement"]);
+    expect(json.import).toEqual({
+      companies: 3,
+      projects: 6,
+      sessions: 7,
+      report: "workspace/imports/20261011T221646Z/report.json",
+    });
+    expect(json.apps).toEqual({ notes: "skipped", projects: "skipped" });
+    expect(body).toContain("do not offer it, ask me about it or scan this computer again");
     expect(body).toBe(
-      firstRunSettledNotice({ team: null, apps: { notes: { name: "Granola", domain: "granola.ai" }, projects: null } }),
+      firstRunHandoffNotice(
+        {
+          name: "Fluffy",
+          runtime: "claude",
+          toolsReady: ["claude"],
+          signInChecked: true,
+          imported: { summary: { companies: 3, projects: 6, sessions: 7 }, report: "workspace/imports/20261011T221646Z/report.json" },
+          team: { kind: "company", how: "joined", name: "Acme Robotics", slug: "acme" },
+          apps: { notes: null, projects: null },
+        },
+        { noun: "computer" },
+      ),
     );
-    expect(JSON.parse(body.match(/Handoff from the app: (\{.*?\})\. /)![1]!).done).toEqual(["noteTaker", "projectManagement"]);
+
+    // 5. Nothing after it: no second note for the assistant to answer.
+    await settle(20);
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(scan.scanCancel).not.toHaveBeenCalled();
   });
 });
 
