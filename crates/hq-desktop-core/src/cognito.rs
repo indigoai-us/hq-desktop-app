@@ -921,7 +921,20 @@ fn write_tokens_to_path_unlocked(path: &Path, tokens: &CognitoTokens) -> Result<
 
     std::fs::rename(&tmp_path, &path)
         .map_err(|e| format!("Failed to rename temp token file: {}", e))?;
+    if is_person_token_path(path) {
+        crate::token_keychain::mirror_write(&contents);
+    }
     Ok(())
+}
+
+/// Only the person cache at `tokens_file_path()` is mirrored to the Keychain;
+/// path-parameterized test helpers on temp files are not.
+fn is_person_token_path(path: &Path) -> bool {
+    tokens_file_path().is_ok_and(|person| person == path)
+}
+
+fn parse_keychain_tokens(json: Option<String>) -> Option<CognitoTokens> {
+    serde_json::from_str(&json?).ok()
 }
 
 fn write_tokens_to_path(path: &Path, tokens: &CognitoTokens) -> Result<(), String> {
@@ -983,9 +996,17 @@ pub async fn get_tokens_with_read_result() -> (Result<Option<CognitoTokens>, Str
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut guard = cache().lock().await;
             *guard = None;
+            // Step 2: the file decides. No file means another tool (or this
+            // app) signed out, so the Keychain copy must not revive it.
+            crate::token_keychain::mirror_delete_if_not_known_empty();
             return (Ok(None), "ok_none");
         }
-        Err(e) => return (Err(format!("Failed to read file mtime: {}", e)), "err_io"),
+        Err(e) => {
+            if let Some(tokens) = keychain_fallback(&path) {
+                return (Ok(Some(tokens)), "ok_some");
+            }
+            return (Err(format!("Failed to read file mtime: {}", e)), "err_io");
+        }
     };
     let mut guard = cache().lock().await;
 
@@ -1001,18 +1022,26 @@ pub async fn get_tokens_with_read_result() -> (Result<Option<CognitoTokens>, Str
 
     // Cache miss or mtime changed — re-read
     drop(guard);
-    let tokens = match read_tokens_from_path(&path) {
-        Ok(tokens) => tokens,
+    let raw = match read_tokens_from_path_raw(&path) {
+        Ok(raw) => raw,
         Err(TokenReadError::Io(error)) => {
+            if let Some(tokens) = keychain_fallback(&path) {
+                return (Ok(Some(tokens)), "ok_some");
+            }
             return (Err(format!("Failed to read token file: {error}")), "err_io");
         }
         Err(TokenReadError::Parse(error)) => {
+            if let Some(tokens) = keychain_fallback(&path) {
+                return (Ok(Some(tokens)), "ok_some");
+            }
             return (
                 Err(format!("Failed to parse token file: {error}")),
                 "err_parse",
             );
         }
     };
+    let raw = reconcile_with_keychain(raw);
+    let tokens = raw.filter(|tokens| !token_is_invalidated_at(&path, &tokens.access_token));
     if let Some(ref tokens) = tokens {
         let mut guard = cache().lock().await;
         *guard = Some(CachedTokens {
@@ -1030,6 +1059,50 @@ pub async fn get_tokens_with_read_result() -> (Result<Option<CognitoTokens>, Str
         "ok_none"
     };
     (Ok(tokens), result)
+}
+
+/// Step 2 Keychain read for a file that parsed (or was absent mid-race).
+/// Prefers the Keychain value when it matches; otherwise the file wins and the
+/// Keychain is re-synced, or removed when the file is gone.
+fn reconcile_with_keychain(file: Option<CognitoTokens>) -> Option<CognitoTokens> {
+    use crate::token_keychain::{self as kc, FileState, KeychainAction};
+    if kc::active_store().is_none() {
+        return file;
+    }
+    let state = match file {
+        Some(tokens) => FileState::Present(tokens),
+        None => FileState::Absent,
+    };
+    let keychain = parse_keychain_tokens(kc::mirror_read());
+    let (chosen, action) = kc::reconcile(state, keychain);
+    match action {
+        KeychainAction::None => {}
+        KeychainAction::Delete => kc::mirror_delete(),
+        KeychainAction::Resync => {
+            if let Some(json) = chosen
+                .as_ref()
+                .and_then(|tokens| serde_json::to_string_pretty(tokens).ok())
+            {
+                kc::mirror_write(&json);
+            }
+        }
+    }
+    chosen
+}
+
+/// The file could not be read: use the Keychain copy, unless that generation
+/// was rejected (the invalidation markers still live beside the file).
+fn keychain_fallback(path: &Path) -> Option<CognitoTokens> {
+    use crate::token_keychain::{self as kc, FileState};
+    kc::active_store()?;
+    let keychain = parse_keychain_tokens(kc::mirror_read());
+    let (chosen, _) = kc::reconcile(FileState::Unreadable, keychain);
+    let tokens = chosen?;
+    if token_is_invalidated_at(path, &tokens.access_token) {
+        return None;
+    }
+    eprintln!("[cognito] token file unreadable; using the Keychain copy");
+    Some(tokens)
 }
 
 /// Get tokens, using in-memory cache with mtime invalidation.
@@ -1165,7 +1238,11 @@ fn remove_token_file_at_unlocked(path: &Path) -> Result<(), String> {
 
 fn remove_token_file_at(path: &Path) -> Result<(), String> {
     let _lock = lock_token_file_at(path)?;
-    remove_token_file_at_unlocked(path)
+    remove_token_file_at_unlocked(path)?;
+    if is_person_token_path(path) {
+        crate::token_keychain::mirror_delete();
+    }
+    Ok(())
 }
 
 pub fn is_expired(tokens: &CognitoTokens) -> bool {
@@ -3082,6 +3159,197 @@ mod tests {
         assert!(!marker.exists());
         // And the onboarding "is logged in" signal flips to false post-removal.
         assert!(!has_non_empty_token_at(&path).unwrap());
+    }
+
+    /// Installs an in-memory Keychain for one test and removes it on drop.
+    /// Hold a `TestHome` first so the global store swap is serialized.
+    struct TestKeychain(std::sync::Arc<crate::token_keychain::MemoryStore>);
+
+    impl TestKeychain {
+        fn install() -> Self {
+            let store = std::sync::Arc::new(crate::token_keychain::MemoryStore::default());
+            crate::token_keychain::set_store_for_tests(Some(store.clone()));
+            crate::token_keychain::reset_known_empty_for_tests();
+            Self(store)
+        }
+    }
+
+    impl Drop for TestKeychain {
+        fn drop(&mut self) {
+            crate::token_keychain::set_store_for_tests(None);
+            crate::token_keychain::reset_known_empty_for_tests();
+        }
+    }
+
+    fn keychain_tokens(name: &str) -> CognitoTokens {
+        CognitoTokens {
+            access_token: format!("{name}-access"),
+            id_token: None,
+            refresh_token: format!("{name}-refresh"),
+            expires_at: i64::MAX,
+        }
+    }
+
+    fn keychain_value(store: &crate::token_keychain::MemoryStore) -> Option<CognitoTokens> {
+        store
+            .current()
+            .map(|json| serde_json::from_str(&json).expect("keychain holds token json"))
+    }
+
+    #[tokio::test]
+    async fn set_tokens_writes_both_the_file_and_the_keychain() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        let keychain = TestKeychain::install();
+        let tokens = keychain_tokens("dual");
+
+        set_tokens(&tokens).await.expect("store tokens");
+
+        let path = home.path().join(".hq").join("cognito-tokens.json");
+        assert_eq!(read_tokens_from_path_raw(&path).unwrap(), Some(tokens.clone()));
+        assert_eq!(keychain_value(&keychain.0), Some(tokens));
+    }
+
+    #[tokio::test]
+    async fn sign_out_removes_the_file_and_the_keychain_item() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        let keychain = TestKeychain::install();
+        set_tokens(&keychain_tokens("bye")).await.expect("store tokens");
+
+        clear_tokens().await.expect("sign out");
+
+        assert!(!home.path().join(".hq").join("cognito-tokens.json").exists());
+        assert_eq!(keychain.0.current(), None);
+        assert_eq!(get_tokens().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn read_prefers_the_keychain_when_it_matches_the_file() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        let keychain = TestKeychain::install();
+        let tokens = keychain_tokens("same");
+        set_tokens(&tokens).await.expect("store tokens");
+        *cache().lock().await = None;
+
+        assert_eq!(get_tokens().await.unwrap(), Some(tokens.clone()));
+        assert_eq!(keychain_value(&keychain.0), Some(tokens));
+    }
+
+    #[tokio::test]
+    async fn a_file_written_by_another_tool_wins_and_resyncs_the_keychain() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        let keychain = TestKeychain::install();
+        set_tokens(&keychain_tokens("desktop")).await.expect("store tokens");
+
+        // `hq login` as someone else rewrites only the file.
+        let cli = keychain_tokens("cli");
+        let path = home.path().join(".hq").join("cognito-tokens.json");
+        std::fs::write(&path, serde_json::to_string(&cli).unwrap()).unwrap();
+        *cache().lock().await = None;
+
+        assert_eq!(get_tokens().await.unwrap(), Some(cli.clone()));
+        assert_eq!(keychain_value(&keychain.0), Some(cli));
+    }
+
+    #[tokio::test]
+    async fn existing_file_tokens_are_migrated_into_the_keychain_without_deleting_the_file() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        let keychain = TestKeychain::install();
+        let path = home.path().join(".hq").join("cognito-tokens.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let legacy = keychain_tokens("legacy");
+        std::fs::write(&path, serde_json::to_string(&legacy).unwrap()).unwrap();
+        *cache().lock().await = None;
+
+        assert_eq!(get_tokens().await.unwrap(), Some(legacy.clone()));
+        assert_eq!(keychain_value(&keychain.0), Some(legacy));
+        assert!(path.exists(), "step 2 keeps the file for the CLI");
+    }
+
+    #[tokio::test]
+    async fn a_file_removed_by_another_tool_clears_the_keychain_instead_of_reviving_it() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        let keychain = TestKeychain::install();
+        set_tokens(&keychain_tokens("gone")).await.expect("store tokens");
+
+        // `hq logout` deletes only the file.
+        std::fs::remove_file(home.path().join(".hq").join("cognito-tokens.json")).unwrap();
+
+        assert_eq!(get_tokens().await.unwrap(), None);
+        assert_eq!(keychain.0.current(), None);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_file_falls_back_to_the_keychain() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        let keychain = TestKeychain::install();
+        let tokens = keychain_tokens("fallback");
+        set_tokens(&tokens).await.expect("store tokens");
+
+        let path = home.path().join(".hq").join("cognito-tokens.json");
+        std::fs::write(&path, "{ half-written").unwrap();
+        *cache().lock().await = None;
+
+        let (result, class) = get_tokens_with_read_result().await;
+        assert_eq!(result.unwrap(), Some(tokens.clone()));
+        assert_eq!(class, "ok_some");
+        // The fallback does not rewrite the file or touch the Keychain.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ half-written");
+        assert_eq!(keychain_value(&keychain.0), Some(tokens));
+    }
+
+    #[tokio::test]
+    async fn the_keychain_fallback_honours_a_rejected_generation() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        let _keychain = TestKeychain::install();
+        let tokens = keychain_tokens("rejected");
+        set_tokens(&tokens).await.expect("store tokens");
+        invalidate_tokens(&tokens).await.expect("mark rejected");
+
+        let path = home.path().join(".hq").join("cognito-tokens.json");
+        std::fs::write(&path, "not json").unwrap();
+        *cache().lock().await = None;
+
+        let (result, class) = get_tokens_with_read_result().await;
+        assert!(result.is_err());
+        assert_eq!(class, "err_parse");
+    }
+
+    #[tokio::test]
+    async fn a_failing_keychain_never_blocks_the_file_path() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        let keychain = TestKeychain::install();
+        keychain
+            .0
+            .fail
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let tokens = keychain_tokens("nokeychain");
+
+        set_tokens(&tokens).await.expect("file write still succeeds");
+        *cache().lock().await = None;
+        assert_eq!(get_tokens().await.unwrap(), Some(tokens));
+        clear_tokens().await.expect("file delete still succeeds");
+        assert_eq!(get_tokens().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn without_a_keychain_store_the_file_behaviour_is_unchanged() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = TestHome::set(home.path());
+        // No TestKeychain: debug/test builds and non-macOS use the file only.
+        assert!(crate::token_keychain::active_store().is_none());
+        let tokens = keychain_tokens("fileonly");
+        set_tokens(&tokens).await.expect("store tokens");
+        *cache().lock().await = None;
+        assert_eq!(get_tokens().await.unwrap(), Some(tokens));
     }
 
     #[test]

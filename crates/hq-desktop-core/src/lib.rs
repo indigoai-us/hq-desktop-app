@@ -53,6 +53,7 @@ pub mod client_health;
 pub mod client_info;
 pub mod coalesced_poll;
 pub mod cognito;
+pub mod token_keychain;
 pub mod config;
 pub mod conflict_notify;
 pub mod conflicts;

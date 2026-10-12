@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On a Mac, HQ now also keeps your sign-in in the macOS Keychain. The `~/.hq/cognito-tokens.json` file stays where it is, because the hq command line tool and HQ sync still read it. If the file is damaged, HQ uses the Keychain copy instead of asking you to sign in again. Signing out removes both copies.
 - The Badges page is one view now. The Badges and Cards tabs are gone: the page lists every badge by tier, and clicking a badge you have earned opens its card, grown out of the badge, instead of a separate badge page. Closing the card puts it back.
 - The account menu no longer shows "Working in {company}" next to your name, and hovering your picture on the left no longer adds it either. The menu keeps your name, email, picture, green online dot, Settings and Sign out.
 - Settings > Storage shows your backup and cloud history sizes without waiting for the big-file check. The first time you open it, before HQ has any sizes saved, the page used to stay on a loading screen for minutes on a big HQ folder. Now the sizes show as soon as they are read, and the Big files section says "Checking for big files…" until that check finishes, then fills in. Move to cloud waits until the check is done. This needs an hq CLI with `hq storage big-files`; with an older CLI the page works as before. Only one big-file check runs at a time, and reading sizes still never deletes or cleans anything up.
