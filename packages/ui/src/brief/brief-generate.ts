@@ -3,46 +3,56 @@
  *
  * - The lead (what lead the brief) is picked by rules from that day's data, and
  *   the reason is a sentence the header shows, so the composition is never a
- *   mystery.
- * - Density (widget count, 4 to 8) grows with open decisions, incidents and
- *   activity. A quiet day gets four calm widgets.
- * - Coming back after three or more days away gets a fixed five-widget
- *   catch-up view.
- * - Widgets are placed into fixed 6x3 grid templates. Each slot has a size
- *   class, and each widget lists the size classes it fits (the mockup's
- *   TPL / FITS approach).
+ *   mystery. Priority 1 is quoted in it.
+ * - Widgets come from the catalogue (brief-catalogue.ts): each entry measures
+ *   its evidence, is scored against today's priorities and the day type, and
+ *   the picker fills a fixed 6-column template with everything that earned a
+ *   slot (1 to 8 widgets). Every widget carries the sentence that explains it.
+ * - Coming back after three or more days away gets a catch-up hero and at most
+ *   five widgets.
  * - Sessions in companies outside the brief's set are counted, never named.
  */
 
-import type { BriefInput, BriefRisk, BriefSession } from "./brief-types.js";
+import type { BriefInput, BriefPriority, BriefSession, BriefSlotSize, BriefWidgetKind } from "./brief-types.js";
 import { briefPrompts } from "./brief-prompts.js";
+import {
+  CATALOGUE,
+  MIN_DENSITY,
+  TEMPLATES,
+  VARIANTS,
+  assignSlots,
+  buildContext,
+  eligible,
+  entryOf,
+  leadReason,
+  notReadyScored,
+  pick,
+  reasonFor,
+  spanOf,
+  type BriefContext,
+  type BriefLead,
+  type DayType,
+  type Dropped,
+  type Scored,
+  type Serve,
+} from "./brief-catalogue.js";
 
-export type BriefLead = "decisions" | "incident" | "momentum" | "your-day" | "catch-up";
-
-export type BriefWidgetKind =
-  | "sunrise"
-  | "needs"
-  | "team"
-  | "incident"
-  | "fleet"
-  | "shipped"
-  | "waiting"
-  | "meetings"
-  | "risk"
-  | "agenda"
-  | "otherWork"
-  | "oneThing"
-  | "catchup";
-
-export type BriefSlotSize = "XL" | "L" | "M" | "W" | "W3" | "S";
+export type { BriefLead, DayType, Dropped, Scored, Serve } from "./brief-catalogue.js";
+export type { BriefSlotSize, BriefWidgetKind } from "./brief-types.js";
+export { CATCH_UP_DAYS, CATCH_UP_DENSITY, MAX_DENSITY, MIN_DENSITY, TEMPLATES, daysSince, pickLead } from "./brief-catalogue.js";
 
 export interface BriefWidget {
   kind: BriefWidgetKind;
   slot: string;
   size: BriefSlotSize;
-  /** Grid span, in columns of 6 and rows of 3. */
+  /** Grid span, in columns of 6 and rows of 2 or 3. */
   cols: number;
   rows: number;
+  tier: 1 | 2 | 3;
+  score: number;
+  /** One sentence: why this card is on the page today. */
+  reason: string;
+  serves: Serve[];
 }
 
 export interface BriefSessionSummary {
@@ -55,6 +65,7 @@ export interface BriefSessionSummary {
 
 export interface BriefPlan {
   lead: BriefLead;
+  /** Header reason: priority 1 quoted, then the lead's own words. */
   reason: string;
   density: number;
   /** grid-template-areas rows, widget kinds or "." for an empty cell. */
@@ -66,61 +77,23 @@ export interface BriefPlan {
   provenance: { n: number; label: string }[];
   /** Ready-written prompt per actionable item id (decisions, risks, waits, action items). */
   prompts: Record<string, string>;
+  dayType: DayType;
+  /** Template name, e.g. "6B". */
+  template: string;
+  leadPriority: BriefPriority | null;
+  /** Every entry with evidence: the eligible pool plus not-ready entries, for review mode. */
+  scored: Scored[];
+  /** What is not on the page and why, in the entry's own words. */
+  dropped: Dropped[];
+  /** One line per widget (name — reason), then one per dropped kind. */
+  explain: string[];
 }
 
-export const MIN_DENSITY = 4;
-export const MAX_DENSITY = 8;
-export const CATCH_UP_DAYS = 3;
-export const CATCH_UP_DENSITY = 5;
-
-interface Template {
-  areas: string[];
-  cls: Record<string, BriefSlotSize>;
-}
-
-// No full-height single-column slots: short widgets (incident, fleet, waiting,
-// risk) take 1x1 squares so they never stretch into empty columns.
-export const TEMPLATES: Record<number, Template> = {
-  4: { areas: ["a a a b b b", "a a a b b b", "a a a c c d"], cls: { a: "XL", b: "L", c: "W", d: "S" } },
-  5: { areas: ["a a a b b c", "a a a b b d", "a a a e e e"], cls: { a: "XL", b: "M", c: "S", d: "S", e: "W3" } },
-  6: { areas: ["a a b b c d", "a a b b e f"], cls: { a: "M", b: "M", c: "S", d: "S", e: "S", f: "S" } },
-  7: {
-    areas: ["a a a b b c", "a a a b b d", "e e f f g g"],
-    cls: { a: "L", b: "M", c: "S", d: "S", e: "W", f: "W", g: "W" },
-  },
-  8: {
-    areas: ["a a b b c d", "a a b b e f", "g g g h h h"],
-    cls: { a: "M", b: "M", c: "S", d: "S", e: "S", f: "S", g: "W3", h: "W3" },
-  },
-};
-
-/** Size classes each widget can render in. */
-export const FITS: Record<BriefWidgetKind, BriefSlotSize[]> = {
-  sunrise: ["XL", "L", "M"],
-  needs: ["M", "L", "W"],
-  team: ["M", "W3", "W"],
-  incident: ["S", "W"],
-  fleet: ["S", "W"],
-  shipped: ["L", "M", "W3", "W"],
-  waiting: ["S", "W"],
-  meetings: ["S", "W3", "W"],
-  risk: ["S", "W"],
-  agenda: ["M", "W3", "W", "S"],
-  otherWork: ["S", "W", "M"],
-  oneThing: ["W", "W3"],
-  catchup: ["XL"],
-};
-
-const DAY_MS = 86_400_000;
-
-/** Whole days between the last brief and now; null when there was none. */
-export function daysSince(lastBriefAt: string | null, now: string): number | null {
-  if (!lastBriefAt) return null;
-  const last = Date.parse(lastBriefAt);
-  const at = Date.parse(now);
-  if (!Number.isFinite(last) || !Number.isFinite(at)) return null;
-  return Math.max(0, Math.floor((at - last) / DAY_MS));
-}
+/** Size classes each widget can render in, derived from the catalogue. */
+export const FITS: Record<BriefWidgetKind, BriefSlotSize[]> = Object.fromEntries(CATALOGUE.map((e) => [e.id, [...e.fits]])) as Record<
+  BriefWidgetKind,
+  BriefSlotSize[]
+>;
 
 /**
  * Group sessions by workstream. Sessions in a company outside `companies`
@@ -152,125 +125,92 @@ export function summarizeSessions(
   return { count, byWorkstream, otherCompanyCount: other };
 }
 
-function incidents(risks: readonly BriefRisk[]): BriefRisk[] {
-  return risks.filter((r) => r.severity === "incident");
-}
-
-function watches(risks: readonly BriefRisk[]): BriefRisk[] {
-  return risks.filter((r) => r.severity === "watch");
-}
-
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-
-/** What leads, and why, in the header's words. */
-export function pickLead(input: BriefInput): { lead: BriefLead; reason: string } {
-  const away = daysSince(input.lastBriefAt, input.now);
-  if (away != null && away >= CATCH_UP_DAYS) {
-    return { lead: "catch-up", reason: `you were away ${plural(away, "day")}` };
-  }
-  const d = input.decisions.length;
-  const fire = incidents(input.risks).length;
-  if (fire > 0 && d < 3) {
-    return {
-      lead: "incident",
-      reason: d > 0 ? `a live incident and ${plural(d, "call")}` : "a live incident",
-    };
-  }
-  if (d >= 2) {
-    return { lead: "decisions", reason: fire > 0 ? `${plural(d, "call")} and a live incident` : `${plural(d, "call")} waiting on you` };
-  }
-  if (input.shipped.length >= 2) {
-    return { lead: "momentum", reason: `${plural(input.shipped.length, "thing")} shipped yesterday` };
-  }
-  const meetings = input.meetingsYesterday.length;
-  if (meetings >= 4) return { lead: "your-day", reason: "yesterday was mostly meetings" };
-  return { lead: "your-day", reason: d === 1 ? "one call and a light day" : "a quiet day" };
-}
-
-/** Widgets with data behind them, in this lead's order of importance. */
-export function candidates(input: BriefInput, lead: BriefLead, sessions: BriefSessionSummary): BriefWidgetKind[] {
-  const has: Record<BriefWidgetKind, boolean> = {
-    sunrise: true,
-    needs: input.decisions.length > 0,
-    team: input.team.length > 0,
-    incident: incidents(input.risks).length > 0,
-    fleet: (input.fleet?.total ?? 0) > 0,
-    shipped: input.shipped.length > 0,
-    waiting: input.waitingOn.length > 0,
-    meetings: input.meetingsYesterday.length > 0,
-    risk: watches(input.risks).length > 0,
-    agenda: input.calendarToday.length > 0,
-    otherWork: sessions.otherCompanyCount > 0,
-    oneThing: input.decisions.length > 0,
-    catchup: true,
-  };
-  // Fleet (every agent in the company) and other-company session counts are
-  // left out: neither reflects what the user worked on in the last day.
-  const order: Record<BriefLead, BriefWidgetKind[]> = {
-    decisions: ["sunrise", "needs", "team", "incident", "shipped", "waiting", "meetings", "risk", "agenda"],
-    incident: ["sunrise", "incident", "needs", "team", "shipped", "waiting", "risk", "meetings", "agenda"],
-    momentum: ["sunrise", "shipped", "meetings", "team", "waiting", "needs", "risk", "agenda"],
-    "your-day": ["sunrise", "agenda", "shipped", "meetings", "needs", "team", "waiting", "risk"],
-    "catch-up": ["catchup", "needs", "agenda", "team", "oneThing", "shipped", "incident"],
-  };
-  return order[lead].filter((kind) => has[kind]);
-}
-
-/** Widget count for the day, 4 to 8. */
-export function density(input: BriefInput, lead: BriefLead, available: number): number {
-  if (lead === "catch-up") return CATCH_UP_DENSITY;
-  const n =
-    3 +
-    input.decisions.length +
-    (incidents(input.risks).length > 0 ? 1 : 0) +
-    (input.shipped.length >= 3 ? 1 : 0) +
-    (input.meetingsYesterday.length >= 4 ? 1 : 0);
-  return Math.max(MIN_DENSITY, Math.min(MAX_DENSITY, n, available));
-}
-
-/** Fill a template's slots in order with the first widget that fits each. */
-export function place(n: number, pool: readonly BriefWidgetKind[]): { areas: string[]; widgets: BriefWidget[] } {
-  const template = TEMPLATES[n] ?? TEMPLATES[MIN_DENSITY]!;
-  const left = pool.slice(0, n);
-  const bySlot = new Map<string, BriefWidgetKind | null>();
-  for (const [slot, size] of Object.entries(template.cls)) {
-    const i = left.findIndex((kind) => FITS[kind].includes(size));
-    bySlot.set(slot, i >= 0 ? left.splice(i, 1)[0]! : null);
-  }
-  const areas = template.areas.map((row) =>
+/** Areas rows for a template with its slots filled; unfilled slots read ".". */
+function areasOf(name: string, slots: ReadonlyMap<string, Scored>): string[] {
+  const tpl = TEMPLATES[name]!;
+  return tpl.areas.map((row) =>
     row
       .split(" ")
-      .map((slot) => bySlot.get(slot) ?? ".")
+      .map((slot) => slots.get(slot)?.kind ?? ".")
       .join(" "),
   );
+}
+
+function widgetsOf(name: string, slots: ReadonlyMap<string, Scored>, ctx: BriefContext | null): BriefWidget[] {
+  const tpl = TEMPLATES[name]!;
   const widgets: BriefWidget[] = [];
-  for (const [slot, kind] of bySlot) {
-    if (!kind) continue;
-    let x0 = 9;
-    let x1 = -1;
-    let y0 = 9;
-    let y1 = -1;
-    template.areas.forEach((row, y) =>
-      row.split(" ").forEach((cell, x) => {
-        if (cell !== slot) return;
-        x0 = Math.min(x0, x);
-        x1 = Math.max(x1, x);
-        y0 = Math.min(y0, y);
-        y1 = Math.max(y1, y);
-      }),
-    );
-    widgets.push({ kind, slot, size: template.cls[slot]!, cols: x1 - x0 + 1, rows: y1 - y0 + 1 });
+  for (const slot of Object.keys(tpl.cls)) {
+    const s = slots.get(slot);
+    if (!s) continue;
+    const { cols, rows } = spanOf(tpl, slot);
+    widgets.push({
+      kind: s.kind,
+      slot,
+      size: tpl.cls[slot]!,
+      cols,
+      rows,
+      tier: s.tier,
+      score: s.score,
+      reason: ctx ? reasonFor(s.entry, s.ev, s.why, ctx) : "",
+      serves: s.serves,
+    });
   }
-  return { areas, widgets };
+  return widgets;
+}
+
+/** A kind as a bare pool member, for span tests that place kinds without a day. */
+function stub(kind: BriefWidgetKind): Scored {
+  const entry = entryOf(kind);
+  return {
+    kind,
+    entry,
+    ev: { n: 0, value: 1, items: [], hash: kind, fact: "" },
+    serves: [],
+    tier: 3,
+    score: 0,
+    idx: CATALOGUE.indexOf(entry),
+    parts: { value: 0, priority: 0, day: 0, pref: 0, rotation: 0 },
+    why: { kind: "value" },
+  };
+}
+
+/**
+ * Place the first `n` kinds into the density-n template (its first variant):
+ * a thin wrapper over `assignSlots` without pair checks, falling back to a
+ * first-fit fill with holes when the hero does not fit. For span tests.
+ */
+export function place(n: number, pool: readonly BriefWidgetKind[]): { areas: string[]; widgets: BriefWidget[] } {
+  const name = VARIANTS[n]?.[0] ?? String(MIN_DENSITY);
+  const tpl = TEMPLATES[name]!;
+  const picks = pool.slice(0, n).map(stub);
+  let slots = assignSlots(tpl, picks, null);
+  if (!slots) {
+    slots = new Map();
+    const left = [...picks];
+    for (const [slot, size] of Object.entries(tpl.cls)) {
+      const i = left.findIndex((p) => p.entry.fits.includes(size));
+      if (i >= 0) slots.set(slot, left.splice(i, 1)[0]!);
+    }
+  }
+  return { areas: areasOf(name, slots), widgets: widgetsOf(name, slots, null) };
 }
 
 export function generateBrief(input: BriefInput): BriefPlan {
-  const { lead, reason } = pickLead(input);
+  const ctx = buildContext(input);
+  const dropped: Dropped[] = [];
+  const pool = eligible(ctx, dropped);
+  const picked = pick(ctx, pool);
+  const widgets = widgetsOf(picked.template, picked.slots, ctx);
+  const areas = areasOf(picked.template, picked.slots);
   const sessions = summarizeSessions(input.sessions, input.companies);
-  const pool = candidates(input, lead, sessions);
-  // The catch-up template is fixed; a thin pool still fills what it can.
-  const n = density(input, lead, pool.length);
-  const { areas, widgets } = place(n, pool);
+
+  // Host guarantee: a priority whose item has no card today is said so (the list above still shows it).
+  const hosted = new Set([...picked.slots.values()].flatMap((s) => s.ev.items));
+  for (const p of ctx.priorities) {
+    if (p.itemId && !hosted.has(p.itemId)) dropped.push({ kind: `priority-${p.rank}`, why: `priority ${p.rank} has no card; shown in the list above` });
+  }
+  dropped.push(...picked.skipped);
+
   const provenance = [
     { n: sessions.count, label: sessions.count === 1 ? "session" : "sessions" },
     { n: input.dmCount ?? 0, label: input.dmCount === 1 ? "DM" : "DMs" },
@@ -280,16 +220,23 @@ export function generateBrief(input: BriefInput): BriefPlan {
     },
     { n: input.meetingsYesterday.length, label: input.meetingsYesterday.length === 1 ? "meeting" : "meetings" },
   ].filter((p) => p.n > 0);
+  const leadPriority = ctx.priorities[0] ? (input.priorities?.[0] ?? { n: 1, text: ctx.priorities[0].text, because: ctx.priorities[0].because, itemId: ctx.priorities[0].itemId }) : null;
   return {
-    lead,
-    reason,
-    density: n,
+    lead: ctx.lead.lead,
+    reason: leadReason(ctx, ctx.lead.reason),
+    density: widgets.length,
     areas,
     widgets,
     sessions,
-    daysAway: daysSince(input.lastBriefAt, input.now),
+    daysAway: ctx.daysAway,
     provenance,
     prompts: briefPrompts(input),
+    dayType: ctx.dayType,
+    template: picked.template,
+    leadPriority,
+    scored: [...pool, ...notReadyScored(ctx)],
+    dropped,
+    explain: [...widgets.map((w) => `${entryOf(w.kind).name} — ${w.reason}`), ...dropped.map((d) => `${d.kind}: ${d.why}`)],
   };
 }
 

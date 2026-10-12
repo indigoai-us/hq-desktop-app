@@ -22,8 +22,16 @@
     timeline?: TimelineSession[];
     /** End of the timeline window (ISO). */
     now?: string;
+    /** Priority 1 in the writer's words; shown as "First: ..." at XL and L, hidden at M. */
+    lead?: { text: string; because: string | null } | null;
   }
-  let { total, cleared, userName, sub, quietLine, big = false, timeline = [], now = new Date().toISOString() }: Props = $props();
+  let { total, cleared, userName, sub, quietLine, big = false, timeline = [], now = new Date().toISOString(), lead = null }: Props = $props();
+  const leadLine = $derived.by(() => {
+    if (!lead?.text.trim()) return "";
+    const text = lead.text.trim().replace(/[.!?]+$/, "");
+    const because = (lead.because ?? "").trim();
+    return `First: ${text}.${because ? ` ${because.charAt(0).toUpperCase()}${because.slice(1)}${/[.!?]$/.test(because) ? "" : "."}` : ""}`;
+  });
   const end = $derived(Date.parse(now));
   const tl = $derived(distillTimeline(timeline, now));
   const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -213,6 +221,7 @@
     <div class="greet" class:big>
       Morning{userName ? `, ${userName}` : ""}.<br /><span>{line}</span>
     </div>
+    {#if big && leadLine}<div class="first" data-testid="brief-sunrise-first">{leadLine}</div>{/if}
     <div class="sub" style="margin-top:12px;max-width:{big ? 420 : 330}px">{sub}</div>
     <div class="tl">
       <div
@@ -281,6 +290,13 @@
   }
   .greet span {
     color: #ffb580;
+  }
+  .first {
+    margin-top: 10px;
+    max-width: 440px;
+    font-size: 13.5px;
+    line-height: 1.35;
+    color: rgba(255, 255, 255, 0.86);
   }
   .tl {
     margin-top: auto;

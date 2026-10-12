@@ -148,7 +148,8 @@ describe("Needs you (8, 11, 16, 17)", () => {
   });
 
   it("rows carry a company logo and the product name, not a repo slug", () => {
-    render(base({ decisions: [decision(1, { origin: { companyUid: "cmp_indigo", repo: "indigoai-us/hq-finance" } })] }));
+    // Three calls: the one-thing card stays off, so Needs you keeps a two-row slot and shows its origin chips.
+    render(base({ decisions: [decision(1, { origin: { companyUid: "cmp_indigo", repo: "indigoai-us/hq-finance" } }), decision(2), decision(3)] }));
     const chip = q("brief-need")!.querySelector('[data-testid="brief-origin"]')!;
     expect(chip.querySelector('[data-testid="brief-logo"]')).not.toBeNull();
     expect(chip.querySelector('[data-testid="brief-origin-label"]')!.textContent).toBe("Finance dashboard");

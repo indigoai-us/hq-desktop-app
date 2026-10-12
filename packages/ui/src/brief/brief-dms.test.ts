@@ -71,6 +71,9 @@ describe("reply prompt content", () => {
 describe("Team card with live DMs", () => {
   let app: ReturnType<typeof mount> | null = null;
   let target: HTMLElement;
+  // On the Oct 8 preview day nobody on the team needs a call, so the picker leaves the Team card
+  // off a seven-widget page; pinning it ("always show team") puts it back for these card tests.
+  const teamDay = () => ({ ...octoberEightBrief(new Date(2026, 9, 8, 7, 42)), prefs: { density: "auto" as const, pinned: ["team" as const], hidden: [], weights: {} } });
   afterEach(() => {
     if (app) unmount(app);
     app = null;
@@ -86,7 +89,7 @@ describe("Team card with live DMs", () => {
     document.body.appendChild(target);
     app = mount(DailyBrief, {
       target,
-      props: { input: octoberEightBrief(new Date(2026, 9, 8, 7, 42)), dmApi: { fetchDmThread }, onopenthread: () => {} },
+      props: { input: teamDay(), dmApi: { fetchDmThread }, onopenthread: () => {} },
     });
     for (let i = 0; i < 6; i += 1) {
       await new Promise((r) => setTimeout(r, 0));
@@ -107,7 +110,7 @@ describe("Team card with live DMs", () => {
     document.body.appendChild(target);
     app = mount(DailyBrief, {
       target,
-      props: { input: octoberEightBrief(new Date(2026, 9, 8, 7, 42)), dmApi: { fetchDmThread }, onopenthread },
+      props: { input: teamDay(), dmApi: { fetchDmThread }, onopenthread },
     });
     flushSync();
     const row = target.querySelector<HTMLElement>('[data-testid="brief-team"] [aria-label="Izzy"]')!;

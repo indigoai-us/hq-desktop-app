@@ -14,8 +14,8 @@
  *   wait on
  * - local sessions (agents.listLocalSessions) -> sessions by workstream
  * - identity.whoami -> the greeting name
- * No adapter route reports shipped PRs or fleet health yet, so `shipped` and
- * incident risks stay empty unless a seed supplies them.
+ * No adapter route reports shipped PRs or main CI health yet, so `shipped` and
+ * incident risks stay empty unless a seed or the sweep supplies them.
  */
 
 import type { AdapterPromise, Json, WhoAmI } from "@hq/platform";
@@ -336,6 +336,8 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
       }),
       lastBriefAt: opts.lastBriefAt ?? null,
       dmCount: dms.count,
+      // The weekday's only source; the sweep's window.today replaces it when present.
+      today: localDay(now),
   };
   const sweep = opts.sweep === undefined ? adapterSweepSource(adapter.files) : opts.sweep;
   if (sweep) await mergeSweep(input, sweep, opts, now, yesterday, fail);
@@ -375,6 +377,7 @@ async function mergeRunItems(
   if (items.waiting.length) input.waitingOn = items.waiting;
   input.risks = [...items.incidents, ...input.risks];
   if (items.priorities.length) input.priorities = items.priorities;
+  if (items.catchUp) input.catchUp = true;
   // The writer's decided / to-do lines win over the raw signal titles.
   const norm = (t: string) => t.trim().toLowerCase();
   for (const m of items.meetings) {
@@ -406,7 +409,7 @@ export async function readRunHousekeeping(
 /**
  * Lays the sweep under the adapter's data: the adapter wins for the calendar
  * and for any list it filled; the sweep fills what the adapter left empty
- * plus what only it knows (PR totals, fleet, main CI).
+ * plus what only it knows (PR totals, main CI, the brief's local date).
  */
 async function mergeSweep(
   input: BriefInput,
@@ -440,7 +443,7 @@ async function mergeSweep(
   input.risks = [...input.risks, ...s.risks];
   input.merged = input.merged ?? s.merged;
   input.opened = input.opened ?? s.opened;
-  input.fleet = input.fleet ?? s.fleet;
+  if (s.today) input.today = s.today;
   input.prWindow = input.prWindow ?? s.prWindow;
   input.dmCount = Math.max(input.dmCount ?? 0, s.dmCount ?? 0);
 }

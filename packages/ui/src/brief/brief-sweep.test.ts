@@ -22,9 +22,10 @@ describe("sweepToInput on the real Oct 8 sweep", () => {
     expect(s.shipped.every((x) => x.origin.repo?.startsWith("indigoai-us/"))).toBe(true);
   });
 
-  it("maps fleet status, red main CI and meeting signal counts", () => {
+  it("maps the brief's local date, red main CI and meeting signal counts; the fleet count is not a card", () => {
     const s = real();
-    expect(s.fleet).toEqual({ total: 44, active: 30, dormant: 10, provisioning: 4 });
+    expect(s.today).toBe("2026-10-09");
+    expect("fleet" in s).toBe(false);
     expect(s.risks).toEqual([
       expect.objectContaining({ id: "ci:hq-desktop-app", severity: "incident", title: "hq-desktop-app main CI red" }),
     ]);
@@ -93,7 +94,7 @@ describe("BriefSweepSource in gatherBriefInput", () => {
     // Adapter wins for the calendar; the sweep fills the rest.
     expect(input.calendarToday.map((e) => e.title)).toEqual(["Live standup"]);
     expect([input.merged, input.opened]).toEqual([87, 101]);
-    expect(input.fleet?.total).toBe(44);
+    expect(input.today).toBe("2026-10-09");
     expect(input.risks.map((r) => r.id)).toEqual(["ci:hq-desktop-app"]);
     expect(input.shipped.length).toBeGreaterThan(0);
   });
@@ -106,7 +107,7 @@ describe("BriefSweepSource in gatherBriefInput", () => {
       log: () => {},
     });
     expect(input.merged).toBeNull();
-    expect(input.fleet ?? null).toBeNull();
+    expect(input.today).toBe("2026-10-09");
     expect(failures).not.toContain("sweep");
   });
 

@@ -8,8 +8,10 @@
  *                                       counts), shipped cards per repo for
  *                                       the day, window totals by repo
  * - meeting_signals ................... yesterday's meetings with real counts
- * - fleet ............................. fleet breakdown by status
  * - main_health ....................... red main CI becomes a live incident
+ * - window.today ...................... the brief's local date (weekday source)
+ * The fleet breakdown is read but not mapped: the owner rejected a fleet-count
+ * card, and the incident card carries the stuck/healthy measure instead.
  * - dms ............................... who you talked with (agents labeled)
  * - sessions .......................... sessions; other companies counted only
  * It has no calendar, no decision text and no waits; those stay with the
@@ -72,7 +74,7 @@ export function parseSweep(text: string): BriefSweep | null {
 /** The fields of BriefInput the sweep can fill. */
 export type SweepInput = Pick<
   BriefInput,
-  "meetingsYesterday" | "risks" | "shipped" | "team" | "sessions" | "merged" | "opened" | "fleet" | "prWindow" | "dmCount"
+  "meetingsYesterday" | "risks" | "shipped" | "team" | "sessions" | "merged" | "opened" | "prWindow" | "dmCount" | "today"
 >;
 
 export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput {
@@ -183,7 +185,7 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
       company: s.company === sweep.company ? opts.companyUid : s.company,
     }));
 
-  const status = sweep.fleet?.by_status ?? {};
+  const today = sweep.window?.today;
   return {
     meetingsYesterday,
     risks,
@@ -192,10 +194,8 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
     sessions,
     merged: sweep.prs ? windowMerged : null,
     opened: sweep.prs ? windowOpened : null,
-    fleet: sweep.fleet
-      ? { total: sweep.fleet.total, active: status.active ?? 0, dormant: status.dormant ?? 0, provisioning: status.provisioning ?? 0 }
-      : null,
     prWindow,
     dmCount: dmsToday.length,
+    ...(today && /^\d{4}-\d{2}-\d{2}$/.test(today) ? { today } : {}),
   };
 }
