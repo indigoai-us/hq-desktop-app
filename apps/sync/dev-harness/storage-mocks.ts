@@ -8,6 +8,8 @@
 //   ?storage=partial      the move uploads but frees nothing (real CLI result)
 //   ?storage=holders      branches and saved versions hold old history, so
 //                         deleting old backups would free nothing
+//   ?storage=old-cli      an hq CLI without `storage big-files`: big files
+//                         arrive inside status, as before
 //
 // Status, a successful move and a successful delete use the round-3 contract
 // fixtures (24 h undo backup, pending reclaim); see the fixtures README.
@@ -77,8 +79,19 @@ function variant(): string {
 
 export function storageAnswer(cmd: string): unknown {
   switch (cmd) {
-    case 'get_storage_status':
-      return statusFor(variant());
+    case 'get_storage_status': {
+      // Newer CLIs: status without the big-file scan; big files come from
+      // get_storage_big_files. ?storage=old-cli serves the older single call.
+      const full = statusFor(variant()) as Record<string, unknown>;
+      if (variant() === 'old-cli') return full;
+      const { offload: _offload, ...fast } = full;
+      return { ...fast, big_files_included: false };
+    }
+    case 'get_storage_big_files': {
+      if (variant() === 'old-cli') throw new Error('update-hq');
+      const full = statusFor(variant()) as Record<string, unknown>;
+      return { offload: full.offload, generated_at: full.generated_at };
+    }
     case 'get_cached_storage_status':
       // Last known figures from 20 minutes ago, shown while the scan runs.
       return {

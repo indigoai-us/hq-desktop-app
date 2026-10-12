@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Settings > Storage shows your backup and cloud history sizes without waiting for the big-file check. The first time you open it, before HQ has any sizes saved, the page used to stay on a loading screen for minutes on a big HQ folder. Now the sizes show as soon as they are read, and the Big files section says "Checking for big files…" until that check finishes, then fills in. Move to cloud waits until the check is done. This needs an hq CLI with `hq storage big-files`; with an older CLI the page works as before. Only one big-file check runs at a time, and reading sizes still never deletes or cleans anything up.
+
 ## [0.11.5] — 2026-10-12
 
 - Direct messages with a cloud bot are threaded again, the same as messages between people. A bot's answer now sits under "1 reply" on the message it answers, and clicking it opens the thread on the side, where you can keep replying. The bot's first hello and answers with connect cards stay in the main chat so their buttons keep working. The reply count updates as answers arrive, and "is thinking" ends when the bot answers in a thread.
