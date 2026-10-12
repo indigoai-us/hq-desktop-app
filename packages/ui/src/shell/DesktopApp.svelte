@@ -225,6 +225,7 @@
   } from "../chat/messaging/richMessageContent.js";
   import {
     CONNECTING_TIMEOUT_MS,
+    botReplyKeepsCardsInMain,
     connectMoreAnswerIds,
     companyUidFromStatus,
     connectionActionKey,
@@ -918,7 +919,7 @@
     resolveConversationTitle,
   } from "../chat/conversation-title.js";
   import {
-    inlineReplyRows,
+    botDmRows,
     mergeFetchedTimeline,
     mergeTimelineMessages,
     messagesForDisplay,
@@ -926,6 +927,7 @@
     sentMessageFromResult,
     sinceForChannelWake,
     timelineHasEvent,
+    withThreadAnswers,
     type TimelineDisplayOptions,
     timelinePageFromPayload,
     HUMAN_HISTORY_VIEW,
@@ -6584,7 +6586,7 @@
     if (!row || !note) return null;
     if ((thinkingByRow[row.id] ?? []).some((entry) => entry.agentUid === uid)) return null;
     if (liveTimelineId !== row.id || timelineHydrating) return null;
-    if (!stoppedRespondingApplies(note, timeline, { agentUid: uid, selfUid: self?.uid })) return null;
+    if (!stoppedRespondingApplies(note, withThreadAnswers(timeline, uid), { agentUid: uid, selfUid: self?.uid })) return null;
     return stoppedRespondingLine(agentLabel(uid, row.title?.trim() || note.name));
   });
 
@@ -6624,14 +6626,33 @@
   }
 
   /**
-   * A one-to-one conversation with a bot reads as one exchange: the bot's
-   * answers show in line, whether or not it posted them as thread replies.
+   * A one-to-one conversation with a bot keeps the bot's threaded answers in
+   * their threads, like any other conversation. Answers that carry connect
+   * cards stay on the main timeline, where the cards' buttons work.
    */
   function timelineDisplayFor(row: ConversationRow | null | undefined): TimelineDisplayOptions {
     // The viewer's uid goes with it: a row with no audience counts as the
     // app's own hidden request only when this person sent it (live-messages.ts,
     // `isAppRequestRow`). A bot's row is never hidden, whatever it says.
-    return { inlineReplies: row?.kind === "dm" && (row.personUid ?? "").startsWith("agt_"), selfUid: self?.uid ?? null };
+    if (!isBotDmRow(row)) return { selfUid: self?.uid ?? null };
+    return { botDm: true, keepReplyInMain: botReplyKeepsCardsInMain, selfUid: self?.uid ?? null };
+  }
+
+  function isBotDmRow(row: ConversationRow | null | undefined): boolean {
+    return row?.kind === "dm" && (row.personUid ?? "").startsWith("agt_");
+  }
+
+  /**
+   * The rows of a fetched page that can end a bot's thinking row. In a bot's
+   * conversation the answer is usually a thread reply, which the timeline
+   * folds away, so the page's replies count too.
+   */
+  function thinkingRowsFrom(
+    row: ConversationRow,
+    raw: unknown,
+    shown: ConversationMessageWire[],
+  ): ConversationMessageWire[] {
+    return isBotDmRow(row) ? normalizeConversationMessages(raw) : shown;
   }
 
   /** Same messages (by reference) in the same order — nothing to repaint. */
@@ -6918,7 +6939,7 @@
       incoming = patchLifecycleCardState(incoming, pendingCardId, { state: "pending", reason: null });
     }
     commitTimeline(row, incoming);
-    clearThinkingFromIncoming(incoming, row.id);
+    clearThinkingFromIncoming(thinkingRowsFrom(row, raw, incoming), row.id);
   }
 
   async function catchUpTimeline(row: ConversationRow): Promise<void> {
@@ -6937,7 +6958,7 @@
       ? liveTimeline
       : (timelineCache.get(row.id) ?? []);
     commitTimeline(row, mergeFetchedTimeline(current, raw, timelineDisplayFor(row)));
-    clearThinkingFromIncoming(incoming, row.id);
+    clearThinkingFromIncoming(thinkingRowsFrom(row, raw, incoming), row.id);
   }
 
   $effect(() => {
@@ -7006,16 +7027,17 @@
   const timeline = $derived.by(() => {
     if (!selectedRow) return [];
     const injected = messagesByRow?.(selectedRow) ?? [];
-    const rows =
+    const source =
       liveTimelineId === selectedRow.id
         ? liveTimeline
         : injected.length > 0
           ? injected
           : [];
-    // One flat exchange with a bot: whichever path put a row on the timeline
-    // (a fetched page, the host's stored thread, a live update), replies show
-    // in line and rows written for the bot only are left out.
-    if (timelineDisplayFor(selectedRow).inlineReplies) return inlineReplyRows(rows, { selfUid: self?.uid ?? null });
+    // In a bot's conversation, whichever path put a row on the timeline (a
+    // fetched page, the host's stored thread, a live update), rows written
+    // for the bot only are left out and an answer whose root is not shown
+    // stays visible.
+    const rows = isBotDmRow(selectedRow) ? botDmRows(source, timelineDisplayFor(selectedRow)) : source;
     if (Object.keys(replyCountOverride).length === 0) return rows;
     return rows.map((msg) =>
       replyCountOverride[msg.eventId] != null
@@ -8558,7 +8580,7 @@
    */
   function withoutCardsOnlyRows(rows: ConversationMessageWire[]): ConversationMessageWire[] {
     const row = selectedRow;
-    if (!row || !timelineDisplayFor(row).inlineReplies || dmCloudBotUid) return rows;
+    if (!row || !isBotDmRow(row) || dmCloudBotUid) return rows;
     const kept = rows.filter((message) => !isCardsOnlyMessage(message));
     return kept.length === rows.length ? rows : kept;
   }
@@ -10672,11 +10694,6 @@
     const row = selectedRow;
     return wakes.on("reply:new", (payload) => {
       if (!replyNewMatchesConversation(payload, row)) return;
-      if (row && timelineDisplayFor(row).inlineReplies) {
-        // The reply is a row of the main timeline here, not a count on its root.
-        void catchUpTimeline(row).catch(() => undefined);
-        return;
-      }
       if (openReplyRootId === payload.rootEventId) return;
       const injected = row ? (messagesByRow?.(row) ?? []) : [];
       const source =
@@ -12147,7 +12164,7 @@
     if (selectedRow?.id !== row.id) return;
     const incoming = messagesForDisplay(res.value, timelineDisplayFor(row));
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value, timelineDisplayFor(row)));
-    clearThinkingFromIncoming(incoming, row.id);
+    clearThinkingFromIncoming(thinkingRowsFrom(row, res.value, incoming), row.id);
   }
 
   /**
@@ -15764,7 +15781,7 @@
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   allowHereMention={Boolean(selectedRow?.channelId)}
-                  onreply={timelineDisplayFor(selectedRow).inlineReplies ? undefined : openReply}
+                  onreply={openReply}
                   onforward={adapter.messaging.forwardMessage ? openForward : undefined}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
