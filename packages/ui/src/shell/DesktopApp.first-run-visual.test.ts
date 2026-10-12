@@ -36,6 +36,8 @@ interface AdapterOptions {
   create?: NonNullable<PlatformAdapter["bots"]>["create"];
   /** `hq bot list` rows (a setup bot that already exists here). */
   bots?: unknown[];
+  /** Answer `hq bot list` this way instead (a slow listing). */
+  listImpl?: () => Promise<unknown>;
   /** Answer `hasFeature` for the flag this way instead (timing tests). */
   hasFeatureImpl?: (name: string) => Promise<unknown>;
   /** Answer the host's setup status this way instead (timing tests). */
@@ -67,6 +69,7 @@ function adapter({
   loginStart,
   loginStatus,
   listRemote,
+  listImpl,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
     hasFeatureImpl ?? (async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false)),
@@ -107,7 +110,7 @@ function adapter({
       ...(loginStatus ? { loginStatus } : {}),
     },
     bots: {
-      list: async () => ok({ bots }),
+      list: listImpl ?? (async () => ok({ bots })),
       create: create ?? (async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID })),
       start: async () => ok({}),
       stop: async () => ok({}),
@@ -837,6 +840,125 @@ describe("visual first run: the name step on an account that already has an assi
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("visual first run: #welcome's start while the takeover waits for the bot listings", () => {
+  // #1570 holds the takeover until the bot listings answer, and #welcome's
+  // start button is live in that wait. A create made there with #welcome's
+  // kickoff, then adopted by the takeover, would write twice: once on create
+  // and once on the note at close. The start reads the listings itself before
+  // it creates, which ends the wait first; these pin that order.
+  const listedSetupBot = {
+    name: "setup",
+    agentUid: SETUP_BOT_UID,
+    ownerUid: "prs_test",
+    runtime: "claude",
+    state: "running",
+    pid: 1,
+    processAlive: true,
+    online: true,
+    lastHeartbeatAt: null,
+    daemonInstalled: true,
+    daemonLoaded: true,
+    dir: "/tmp/HQ/personal/workers/setup",
+    workerId: "setup",
+  };
+
+  /**
+   * `hq bot list` answers with whatever `rows` holds. With `holdAll`, every
+   * call waits for `release`; otherwise only the first (the boot read the
+   * takeover waits on) does.
+   */
+  function slowListing({ holdAll }: { holdAll: boolean }) {
+    const rows: unknown[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const listImpl = vi.fn(async () => {
+      calls += 1;
+      if (holdAll || calls === 1) await held;
+      return ok({ bots: [...rows] });
+    });
+    return { rows, listImpl, release: () => release() };
+  }
+
+  const takeoverOpen = () => Boolean(q('[data-testid="first-run-takeover"]'));
+
+  async function clickWelcomeStartInTheWait(): Promise<void> {
+    await settle(12);
+    expect(takeoverOpen()).toBe(false);
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+  }
+
+  async function walkTheTakeoverToDone(): Promise<void> {
+    await vi.waitFor(() => expect(takeoverOpen()).toBe(true));
+    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+  }
+
+  function expectOneHandoffNote(sendDm: ReturnType<typeof vi.fn>): void {
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    const [to, , extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
+  }
+
+  it("with this computer's bot list slow, the click creates nothing until the takeover is open; no kickoff, one note at close", async () => {
+    const listing = slowListing({ holdAll: true });
+    const openAtCreate: boolean[] = [];
+    let landCreate!: (value: unknown) => void;
+    const create = vi.fn((_input: unknown) => {
+      openAtCreate.push(takeoverOpen());
+      return new Promise((r) => (landCreate = r));
+    });
+    const { platform, sendDm } = adapter({ create: create as never, flag: true, listImpl: listing.listImpl });
+    await boot(platform);
+    await clickWelcomeStartInTheWait();
+    await settle(12);
+    expect(create).not.toHaveBeenCalled();
+
+    listing.release();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(openAtCreate).toEqual([true]);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
+    listing.rows.push(listedSetupBot);
+    landCreate(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
+
+    await walkTheTakeoverToDone();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    await settle(12);
+    expect(create).toHaveBeenCalledTimes(1);
+    expectOneHandoffNote(sendDm);
+  });
+
+  it("with only the boot read slow, the click's own read opens the takeover before it creates; no kickoff, one note at close", async () => {
+    const listing = slowListing({ holdAll: false });
+    const openAtCreate: boolean[] = [];
+    const create = vi.fn(async (_input: unknown) => {
+      openAtCreate.push(takeoverOpen());
+      listing.rows.push(listedSetupBot);
+      return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
+    });
+    const { platform, sendDm } = adapter({ create: create as never, flag: true, listImpl: listing.listImpl });
+    await boot(platform);
+    await clickWelcomeStartInTheWait();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(openAtCreate).toEqual([true]);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
+
+    listing.release();
+    await walkTheTakeoverToDone();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    await settle(12);
+    expect(create).toHaveBeenCalledTimes(1);
+    expectOneHandoffNote(sendDm);
   });
 });
 
