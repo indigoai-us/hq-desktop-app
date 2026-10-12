@@ -735,12 +735,14 @@
     busyLocalBotUids,
     isAlreadyExistsFailure,
     LOCAL_BOT_BUSY_POLL_MS,
+    LOCAL_BOT_STARTUP_GRACE_MS,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
     localBotInCompany,
     localBotNeedsOfflineNotice,
     localBotOfflineNotice,
     localBotPresence,
+    thinkingAgentName,
     type LocalBotEntryResult,
     locallyHostedBots,
     plainBotFailure,
@@ -4264,6 +4266,9 @@
       if (setupToolOffer) return null;
       return bot.agentUid;
     }
+    // Any other bot on this computer (a pack's setup bot, say) draws the
+    // suggestions it writes too: its questions come with tap-to-answer buttons.
+    if (bot) return bot.agentUid;
     return dmCloudBotUid;
   });
   /** "Shown" is recorded once per bot, however often the card re-renders. */
@@ -4352,7 +4357,44 @@
     if (key) tenantStorage.setItem(key, "1");
     setupFinaleDismissedAt = Date.now();
   }
-  const selectedLocalBotOffline = $derived(localBotNeedsOfflineNotice(selectedLocalBot));
+  /**
+   * When the app first saw each local bot not yet online, by agent uid; dropped
+   * once HQ reports it online. A bot that was just started (a pack install, a
+   * restart) reaches HQ Cloud a few seconds later, and the offline notice waits
+   * out LOCAL_BOT_STARTUP_GRACE_MS from this moment instead of flashing.
+   */
+  let localBotStartingSince = $state<Record<string, number>>({});
+  let localBotGraceClock = $state(Date.now());
+  /** Bots in the first local listing; a bot not in it appeared while the app was open. */
+  let localBotsAtOpen = null as Set<string> | null;
+  $effect(() => {
+    const bots = localBots;
+    untrack(() => {
+      if (localBotsAtOpen === null && bots.length > 0) localBotsAtOpen = new Set(bots.map((b) => b.agentUid));
+      const now = Date.now();
+      const next: Record<string, number> = {};
+      for (const b of bots) {
+        if (b.online === true) continue;
+        next[b.agentUid] = localBotStartingSince[b.agentUid] ?? now;
+      }
+      localBotStartingSince = next;
+    });
+  });
+  $effect(() => {
+    const since = selectedLocalBot ? localBotStartingSince[selectedLocalBot.agentUid] : undefined;
+    if (since === undefined) return;
+    const wait = since + LOCAL_BOT_STARTUP_GRACE_MS - Date.now();
+    if (wait <= 0) return;
+    const timer = setTimeout(() => { localBotGraceClock = Date.now(); }, wait + 50);
+    return () => clearTimeout(timer);
+  });
+  const selectedLocalBotOffline = $derived(
+    localBotNeedsOfflineNotice(selectedLocalBot, {
+      startingSinceMs: selectedLocalBot ? (localBotStartingSince[selectedLocalBot.agentUid] ?? null) : null,
+      nowMs: Math.max(localBotGraceClock, Date.now()),
+      justCreated: selectedLocalBot ? localBotsAtOpen !== null && !localBotsAtOpen.has(selectedLocalBot.agentUid) : false,
+    }),
+  );
   /**
    * The open bot's coding tool needs a new sign-in (`hq bot list` reports it):
    * the bot has paused, so the conversation says so above the composer and
@@ -6221,7 +6263,7 @@
       thinkingByRow = startThinkingIn(
         thinkingByRow,
         row.id,
-        { agentUid: uid, agentName: agentLabel(uid, row.title?.trim() || pending.name) },
+        { agentUid: uid, agentName: agentLabel(uid, thinkingAgentName(row.title, uid, localBots, pending.name)) },
         decision.startedAt,
         { afterMs: decision.afterMs },
       );
@@ -6373,7 +6415,7 @@
     kickoffPendingByUid = rest;
     if (decision.state === "start") {
       answeredWhileBusy = forgetAnswered(answeredWhileBusy, uid);
-      thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: agentLabel(uid, row.title?.trim() || name) }, Date.now(), {
+      thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: agentLabel(uid, thinkingAgentName(row.title, uid, localBots, name)) }, Date.now(), {
         afterMs: decision.afterMs,
       });
     }
@@ -6610,6 +6652,7 @@
     messages: ReadonlyArray<{
       fromPersonUid?: string | null;
       createdAt?: string | null;
+      body?: string | null;
     }>,
     rowId: string,
   ): void {
@@ -7992,7 +8035,7 @@
       thinkingByRow = startThinkingIn(
         thinkingByRow,
         row.id,
-        { agentUid, agentName: agentLabel(agentUid, row.title?.trim() || "bot") },
+        { agentUid, agentName: agentLabel(agentUid, thinkingAgentName(row.title, agentUid, localBots, "bot")) },
         Date.now(),
         { afterMs: botPinFor(row.id, agentUid) },
       );
@@ -12565,7 +12608,7 @@
             row.id,
             {
               agentUid: row.personUid,
-              agentName: agentLabel(row.personUid, row.title?.trim() || "Bot"),
+              agentName: agentLabel(row.personUid, thinkingAgentName(row.title, row.personUid ?? "", localBots, "Bot")),
             },
             Date.now(),
             // A new ask: the row is for this message, and the 90 s silence
