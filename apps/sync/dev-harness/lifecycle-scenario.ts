@@ -1372,6 +1372,9 @@ export function createLifecycleInvoke(options: LifecycleOptions = {}) {
       case 'get_setup_status':
         return { hqFolderPath: '/Users/corey/Documents/HQ', configured: true };
       case 'take_pending_setup_target':
+      case 'peek_pending_pack_target':
+      case 'take_pending_pack_target':
+      case 'pack_deep_link_catalog_name':
       case 'desktop_alt_consume_pending_route':
       case 'meetings_take_pending_focus':
       case 'shell_ready':

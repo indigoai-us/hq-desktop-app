@@ -44,6 +44,7 @@ const INITIAL = {
   cliProbeError: null as string | null,
   availableVersion: null as string | null,
   coreState: null as unknown,
+  cliLatestVersion: null as string | null,
   checking: false,
   installPhase: "idle" as AppInstallPhase,
   downloadPercent: null as number | null,
@@ -62,6 +63,7 @@ let coreProbeError = $state<string | null>(INITIAL.coreProbeError);
 let cliProbeError = $state<string | null>(INITIAL.cliProbeError);
 let availableVersion = $state<string | null>(INITIAL.availableVersion);
 let coreState = $state<unknown>(INITIAL.coreState);
+let cliLatestVersion = $state<string | null>(INITIAL.cliLatestVersion);
 let checking = $state(INITIAL.checking);
 let installPhase = $state<AppInstallPhase>(INITIAL.installPhase);
 let downloadPercent = $state<number | null>(INITIAL.downloadPercent);
@@ -121,6 +123,7 @@ function applyOutcome(outcome: UpdateCheckOutcome): void {
   cliProbeError = outcome.cliProbeError;
   availableVersion = outcome.appUpdateVersion;
   coreState = outcome.coreState;
+  cliLatestVersion = outcome.cliLatestVersion;
 }
 
 const NOT_ON_THIS_HOST = async (): Promise<AdapterResult<never>> => ({
@@ -432,6 +435,7 @@ export function resetUpdateStore(): void {
   cliProbeError = INITIAL.cliProbeError;
   availableVersion = INITIAL.availableVersion;
   coreState = INITIAL.coreState;
+  cliLatestVersion = INITIAL.cliLatestVersion;
   checking = INITIAL.checking;
   installPhase = INITIAL.installPhase;
   downloadPercent = INITIAL.downloadPercent;
@@ -477,6 +481,9 @@ export const updateStore = {
   },
   get coreState() {
     return coreState;
+  },
+  get cliLatestVersion() {
+    return cliLatestVersion;
   },
   get checking() {
     return checking;

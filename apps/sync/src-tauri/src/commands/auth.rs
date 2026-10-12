@@ -613,7 +613,8 @@ pub async fn get_stored_token_presence() -> String {
     hq_desktop_core::unexpected_surface::stored_token_presence_label(presence).to_string()
 }
 
-/// Sign out: clear the locally stored Cognito tokens (file + in-memory cache)
+/// Sign out: revoke the refresh token at Cognito (single attempt, 5s bound),
+/// then always clear the locally stored Cognito tokens (file + in-memory cache)
 /// and reset the Sentry user scope. After this, `get_auth_state` / a relaunch
 /// both report unauthenticated — without it, a frontend-only sign-out leaves the
 /// token file on disk and the app re-authenticates silently on next launch.

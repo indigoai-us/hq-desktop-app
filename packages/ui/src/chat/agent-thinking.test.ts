@@ -32,6 +32,9 @@ import {
   stoppedRespondingLine,
   STATUS_SILENT_AFTER_MS,
   visibleThinking,
+  clearRowOnReply,
+  isBotWorkingNotice,
+  BOT_WORKING_NOTICE_TEXT,
   clearFromMessages as clearRows,
   endedBotDmThinking,
   thinkingEndedLogLine,
@@ -950,5 +953,26 @@ describe('a busy local bot row is pinned when its DM timeline is known', () => {
     );
     expect(next['dm:agt_a']![0]!.afterMs).toBe(400);
     expect(next['dm:agt_b']![0]!.afterMs).toBeUndefined();
+  });
+});
+
+describe("a bot's 'still working' note is not a reply", () => {
+  const agent = "agt_guide";
+  const row = (afterMs: number): ThinkingEntry[] => [
+    { agentUid: agent, agentName: "Agency Guide", startedAt: afterMs, afterMs } as ThinkingEntry,
+  ];
+  const at = (ms: number, body: string) => ({ fromPersonUid: agent, createdAt: new Date(ms).toISOString(), body });
+
+  it("keeps the thinking row while the bot posts its working note", () => {
+    const rows = row(1_000);
+    expect(isBotWorkingNotice(BOT_WORKING_NOTICE_TEXT)).toBe(true);
+    expect(visibleThinking(rows, [at(5_000, BOT_WORKING_NOTICE_TEXT)])).toBe(rows);
+    const cleared = clearRowOnReply({ r: rows }, {}, "r", [at(5_000, BOT_WORKING_NOTICE_TEXT)], [agent]);
+    expect(cleared.map.r).toEqual(rows);
+  });
+
+  it("still ends the row on a real reply", () => {
+    const rows = row(1_000);
+    expect(visibleThinking(rows, [at(5_000, BOT_WORKING_NOTICE_TEXT), at(9_000, "Here is your playbook.")])).toEqual([]);
   });
 });

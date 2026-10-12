@@ -76,7 +76,7 @@
     LocalBotWorkerOption,
   } from "@hq/platform";
   import type { BotDisplayNames } from "./bot-display-names.js";
-  import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
+  import { localBotForRow, localBotPeers, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import { withAssistantNames } from "./assistant-owner.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import { botHandle, newBotOtherWayLabel, type BotRuntime } from "./create-bot/create-bot-model.js";
@@ -1131,6 +1131,9 @@
     for (const channel of channels) {
       addToPeerDirectory(directory, channel.members ?? []);
     }
+    // A bot made on this computer (a pack's setup bot, say) is named here
+    // before HQ's rosters list it, so its row never reads "Unknown bot".
+    addToPeerDirectory(directory, localBotPeers(localBots));
     return directory;
   });
 

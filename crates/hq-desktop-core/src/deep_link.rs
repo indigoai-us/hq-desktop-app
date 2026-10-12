@@ -6,13 +6,18 @@
 //! or tested without a GTK/WebKit toolchain. A parser nobody can run the tests
 //! for on an ordinary machine is a parser that quietly rots.
 //!
-//! Two targets, and only two:
+//! Three targets, and only three:
 //!
 //! - `hq-desktop://setup?checkout=done&company={uid}` — Stripe checkout return.
 //! - `hq-desktop://signin` — start sign-in. Carries NOTHING: no identity, no
 //!   token, no challenge, no callback override, no company. Any query string or
 //!   fragment at all is a refusal, so nobody can begin smuggling one parameter
 //!   at a time. It is a doorbell, not a key.
+//! - `hq-desktop://pack/{slug}` — the pack page's "Add to HQ" button. The slug
+//!   is the only input and must match `^[a-z0-9-]{2,64}$`. A query string, a
+//!   fragment, a second path segment or a userinfo/port is a refusal for the
+//!   same reason as `signin`: the app confirms with the person and then runs
+//!   its own managed CLI with that one validated token, nothing else.
 //!
 //! Nothing parsed here is ever logged verbatim by callers. A custom-scheme URL
 //! is untrusted input and the desktop log file gets pasted into support
@@ -32,6 +37,13 @@ pub struct SetupDeepLinkTarget {
     pub company_uid: String,
 }
 
+/// Parsed `hq-desktop://pack/{slug}` target: one validated registry slug.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackDeepLinkTarget {
+    pub slug: String,
+}
+
 /// Everything this process will act on from a `hq-desktop://` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HqDesktopTarget {
@@ -39,6 +51,19 @@ pub enum HqDesktopTarget {
     Setup(SetupDeepLinkTarget),
     /// Start sign-in. Deliberately carries no data of any kind.
     SignIn,
+    /// Confirm, then install a registry pack and open its bot.
+    Pack(PackDeepLinkTarget),
+}
+
+/// Pack slugs forwarded from a deep link must match `^[a-z0-9-]{2,64}$`.
+/// The value becomes one argv element of `hq packages install` and a log
+/// line, so anything else a third-party URL could carry (uppercase, dots,
+/// path separators, whitespace, percent escapes) is rejected here.
+pub fn is_valid_pack_slug(value: &str) -> bool {
+    (2..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// Parse a `hq-desktop://` URL. Only `setup` (with a valid company) and the
@@ -72,6 +97,35 @@ pub fn parse_hq_desktop_target(raw: &str) -> Option<HqDesktopTarget> {
         return Some(HqDesktopTarget::SignIn);
     }
 
+    if host.eq_ignore_ascii_case("pack") {
+        // Same posture as `signin`: the slug is the whole payload. Anything
+        // alongside it — a query, a fragment, a userinfo, a port, a second
+        // path segment — is refused outright rather than ignored.
+        if url.query().is_some()
+            || url.fragment().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+        {
+            return None;
+        }
+        if path.is_empty() || path.contains('/') || !is_valid_pack_slug(path) {
+            return None;
+        }
+        // The URL parser normalises dot segments and percent escapes before
+        // this point (`pack/x/../other` parses as `other`). Only a URL that is
+        // byte-for-byte the canonical form is accepted, so what the person saw
+        // on the web page is exactly what the app acts on.
+        let canonical = format!("{SCHEME}://pack/{path}");
+        let lowered = trimmed.to_ascii_lowercase();
+        if lowered != canonical && lowered != format!("{canonical}/") {
+            return None;
+        }
+        return Some(HqDesktopTarget::Pack(PackDeepLinkTarget {
+            slug: path.to_string(),
+        }));
+    }
+
     if !names("setup") {
         return None;
     }
@@ -98,7 +152,7 @@ pub fn parse_hq_desktop_target(raw: &str) -> Option<HqDesktopTarget> {
 pub fn parse_hq_desktop_url(raw: &str) -> Option<SetupDeepLinkTarget> {
     match parse_hq_desktop_target(raw)? {
         HqDesktopTarget::Setup(target) => Some(target),
-        HqDesktopTarget::SignIn => None,
+        HqDesktopTarget::SignIn | HqDesktopTarget::Pack(_) => None,
     }
 }
 
@@ -255,6 +309,99 @@ mod tests {
                 company_uid: "cmp_acme".into(),
             }))
         );
+    }
+
+    #[test]
+    fn parse_accepts_the_pack_target_with_one_valid_slug() {
+        for (raw, slug) in [
+            ("hq-desktop://pack/agency-kit", "agency-kit"),
+            ("hq-desktop://pack/agency-kit/", "agency-kit"),
+            ("hq-desktop://PACK/hq-pack-agency-kit", "hq-pack-agency-kit"),
+            ("  hq-desktop://pack/a1  ", "a1"),
+            ("hq-desktop://pack/00", "00"),
+        ] {
+            assert_eq!(
+                parse_hq_desktop_target(raw),
+                Some(HqDesktopTarget::Pack(PackDeepLinkTarget {
+                    slug: slug.to_string(),
+                })),
+                "expected {raw:?} to be the pack target {slug}"
+            );
+        }
+        let longest = "a".repeat(64);
+        assert_eq!(
+            parse_hq_desktop_target(&format!("hq-desktop://pack/{longest}")),
+            Some(HqDesktopTarget::Pack(PackDeepLinkTarget { slug: longest }))
+        );
+    }
+
+    #[test]
+    fn pack_refuses_any_parameter_fragment_or_extra_segment() {
+        let too_long = format!("hq-desktop://pack/{}", "a".repeat(65));
+        for raw in [
+            "hq-desktop://pack/agency-kit?x=1",
+            "hq-desktop://pack/agency-kit?",
+            "hq-desktop://pack/agency-kit#frag",
+            "hq-desktop://pack/agency-kit/extra",
+            "hq-desktop://pack/agency-kit/../other",
+            "hq-desktop://pack/",
+            "hq-desktop://pack",
+            "hq-desktop://user:pw@pack/agency-kit",
+            "hq-desktop://pack:8080/agency-kit",
+            "hq-desktop://pack/Agency-Kit",
+            "hq-desktop://pack/agency_kit",
+            "hq-desktop://pack/agency.kit",
+            "hq-desktop://pack/agency%20kit",
+            "hq-desktop://pack/agency%2Fkit",
+            "hq-desktop://pack/a",
+            "hq-desktop://pack/-",
+            "hq-desktop://pack/agency kit",
+            "hq-desktop://packs/agency-kit",
+            "hq-desktop:///pack/agency-kit",
+            too_long.as_str(),
+        ] {
+            assert_eq!(
+                parse_hq_desktop_target(raw),
+                None,
+                "expected {raw:?} to be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn is_valid_pack_slug_matches_the_pattern() {
+        assert!(is_valid_pack_slug("agency-kit"));
+        assert!(is_valid_pack_slug("ab"));
+        assert!(is_valid_pack_slug("hq-pack-agency-kit"));
+        assert!(is_valid_pack_slug(&"z".repeat(64)));
+        assert!(!is_valid_pack_slug("a"));
+        assert!(!is_valid_pack_slug(""));
+        assert!(!is_valid_pack_slug(&"z".repeat(65)));
+        assert!(!is_valid_pack_slug("Agency"));
+        assert!(!is_valid_pack_slug("agency_kit"));
+        assert!(!is_valid_pack_slug("agency kit"));
+        assert!(!is_valid_pack_slug("agency/kit"));
+        assert!(!is_valid_pack_slug("agencé"));
+    }
+
+    #[test]
+    fn pack_is_neither_a_setup_nor_a_signin_target() {
+        assert!(parse_hq_desktop_url("hq-desktop://pack/agency-kit").is_none());
+        assert_ne!(
+            parse_hq_desktop_target("hq-desktop://pack/agency-kit"),
+            Some(HqDesktopTarget::SignIn)
+        );
+    }
+
+    #[test]
+    fn argv_picks_the_pack_target_but_not_a_refused_one() {
+        let argv = vec!["HQ".into(), "hq-desktop://pack/agency-kit".into()];
+        assert_eq!(
+            hq_desktop_url_from_argv(&argv).as_deref(),
+            Some("hq-desktop://pack/agency-kit")
+        );
+        let refused = vec!["HQ".into(), "hq-desktop://pack/agency-kit?x=1".into()];
+        assert!(hq_desktop_url_from_argv(&refused).is_none());
     }
 
     #[test]

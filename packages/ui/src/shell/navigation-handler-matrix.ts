@@ -71,7 +71,7 @@ export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 14;
 export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
 // Was 7 before the Sessions removal: the Sessions row-extras "New session"
 // and history-session navigations went with the feature.
-export const HQ_WORK_SHELL_NAVIGATE_COUNT = 5;
+export const HQ_WORK_SHELL_NAVIGATE_COUNT = 7;
 
 export const DESKTOP_APP_FUNCTION_RE =
   /(?:async )?function (open[A-Z]\w*|close[A-Z]\w*|apply[A-Z]\w*|toggle[A-Z]\w*|navigate[A-Z]\w*|handle[A-Z]\w*|leave[A-Z]\w*|changeTenantCompany|onOpenChannel|onMessagePerson|onOpenSettingsEvent|onEmbeddedNavigation|onKey|navigate|resolveDestination|commitDestination|goBack|goForward)\b/g;
@@ -1223,6 +1223,46 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "push",
     host: "hq-work-host",
     inScope: true,
+  },
+  {
+    id: "hq-work-restore-pack-target",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "peek_pending_pack_target",
+    destinationKind: "none",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "hq-desktop://pack/{slug} cold start: opens the confirmation sheet, no route change until Add finishes.",
+  },
+  {
+    id: "hq-work-live-open-pack",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "PACK_OPEN_INSTALL_EVENT",
+    destinationKind: "none",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Live hq-desktop://pack/{slug}: same sheet as the cold-start path.",
+  },
+  {
+    id: "hq-work-pack-bot-dm",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "function focusPackBotDm(",
+    destinationKind: "dm",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "After `hq packages install --start-bot`: Messages on the DM with the bot the install named.",
+  },
+  {
+    id: "hq-work-pack-open-messages",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "function openMessagesAfterPackInstall(",
+    destinationKind: "messages",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Pack installed with no bot DM to open: the sheet's Open Messages.",
   },
   {
     id: "hq-work-attach-bridge",
