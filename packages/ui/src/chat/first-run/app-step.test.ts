@@ -56,8 +56,20 @@ describe("catalog filter (the catalog has no category: filtered here)", () => {
       { name: "Readwise", domain: "readwise.io" },
       { name: "Enzo Reader", domain: "enzoreader.com" },
       { name: "Spotter", domain: "spotter.io" },
+      // Same top-level domain: a plain substring match on otter.ai or read.ai would take these.
+      { name: "Spotter", domain: "spotter.ai" },
+      { name: "Thread AI", domain: "thread.ai" },
+      { name: "Bread", domain: "app.bread.ai" },
     ];
     expect(appsForKind(entries, "notes")).toEqual([]);
+  });
+
+  it("files a subdomain of a note taker's website, and tl;dv by its name alone, under Note taker", () => {
+    const entries = [
+      { name: "Otter", domain: "mcp.otter.ai" },
+      { name: "tl;dv", domain: "tl-dv.example.org" },
+    ];
+    expect(appsForKind(entries, "notes").map((a) => a.domain)).toEqual(["mcp.otter.ai", "tl-dv.example.org"]);
   });
 
   it("lists trackers for Project management and nothing else", () => {

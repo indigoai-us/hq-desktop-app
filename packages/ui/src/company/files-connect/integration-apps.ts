@@ -145,17 +145,33 @@ const CATEGORY_BY_FRAGMENT: ReadonlyArray<[string, string]> = [
   ["otter.ai", "Meetings"],
   ["read.ai", "Meetings"],
   ["tldv", "Meetings"],
+  ["tl;dv", "Meetings"],
   ["stripe", "Payments"],
   ["paypal", "Payments"],
   ["quickbooks", "Payments"],
   ["intuit", "Payments"],
 ];
 
+/**
+ * Whether an app matches one fragment. A fragment without a dot matches
+ * anywhere in the domain or the name. A fragment with a dot is a website
+ * (`read.ai`): it matches that domain or a subdomain of it, or a name that is
+ * exactly it, so `thread.ai` and `spotter.ai` are not `read.ai` or `otter.ai`.
+ */
+function matchesFragment(domain: string, name: string, fragment: string): boolean {
+  if (!fragment.includes(".")) return `${domain} ${name}`.toLowerCase().includes(fragment);
+  const host = domain
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
+    .replace(/[/?#].*$/, "");
+  return host === fragment || host.endsWith(`.${fragment}`) || name.trim().toLowerCase() === fragment;
+}
+
 /** Presentation-only category for an app. Never used for access decisions. */
 export function deriveCategory(domain: string, name: string): string {
-  const hay = `${domain} ${name}`.toLowerCase();
   for (const [fragment, category] of CATEGORY_BY_FRAGMENT) {
-    if (hay.includes(fragment)) return category;
+    if (matchesFragment(domain, name, fragment)) return category;
   }
   return "Other";
 }
