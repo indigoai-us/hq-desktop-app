@@ -255,7 +255,6 @@
    * the tab it was opened from.
    */
   let badgesPage = $state(false);
-  let badgesTab = $state<"badges" | "cards">("badges");
   $effect(() => {
     void kind;
     void name;
@@ -263,7 +262,6 @@
     untrack(() => {
       openBadge = badgeId ? (resolveEarned(badges).find((b) => b.def.id === badgeId) ?? null) : null;
       badgesPage = view === "badges";
-      badgesTab = "badges";
     });
   });
   const badgeProgress = $derived(
@@ -301,8 +299,6 @@
       {badges}
       progress={badgeProgress}
       owner={kind === "bot" ? botName : name}
-      bind:tab={badgesTab}
-      onselect={(b) => (openBadge = b)}
       onback={() => (badgesPage = false)}
       {onclose}
     />
