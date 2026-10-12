@@ -1776,6 +1776,7 @@ export function createSyncPlatformAdapter(
     // (src-tauri/src/commands/storage.rs).
     storage: {
       status: () => call('get_storage_status'),
+      cachedStatus: () => call('get_cached_storage_status'),
       previewPrune: (request) => call('preview_storage_prune', { request }),
       prune: (request) => call('run_storage_prune', { request }),
       previewOffload: () => call('preview_storage_offload'),
