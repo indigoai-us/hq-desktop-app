@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Badges: on the full-size Toolbox badge the toolbox is now the same size as the other badges' icons, and on Team Builder the two people sit centred in the frame instead of low.
 - Badges: the mark on profile pictures now shows the person's top badge as its icon in a ring of the tier's colour, instead of a plain dot. Its hover card is one compact line: the same mark, the badge name and its level. The mark is never smaller than 12px, so the icon stays readable.
 - Badges: the small OG crown and Patient Zero heartbeat now read clearly. The crown has three points, and the heartbeat is a heart on a pulse line that no longer sits off centre.
 - Badges: Founding Member's full-size badge now has the gold ring of the other Gold badges. It moved from Legendary to Gold, but the large badge on its page and card still wore the Legendary ring in the HQ colours.

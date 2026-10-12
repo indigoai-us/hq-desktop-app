@@ -241,6 +241,42 @@ describe("full-size frames", async () => {
     }
   }
 
+  /**
+   * The icon's cells in a Silver badge: inked cells that differ from what
+   * every Silver badge shares (the frame), leaving out the grey sparkles.
+   */
+  const silver = keys.filter((k) => tierOf(k) === "2");
+  const shared = (y: number, x: number) =>
+    silver.every((k) => glyph(k, [y, x]) === glyph(silver[0], [y, x]) && FULL_ASCII[k].colors[y][x] === FULL_ASCII[silver[0]].colors[y][x]);
+  const iconCells = (key: string): Cell[] => {
+    const cells: Cell[] = [];
+    for (let y = 0; y < 24; y++) {
+      for (let x = 0; x < 48; x++) {
+        if (glyph(key, [y, x]) === " " || shared(y, x)) continue;
+        if (dark(key, [y, x])?.startsWith("#8a8298")) continue;
+        cells.push([y, x]);
+      }
+    }
+    return cells;
+  };
+
+  // Team Builder's figures sat low in the frame (owner review 2026-10-12).
+  it("centres every icon in the frame", () => {
+    for (const key of silver) {
+      const cells = iconCells(key);
+      const row = cells.reduce((sum, [y]) => sum + y, 0) / cells.length;
+      expect(row, key).toBeGreaterThanOrEqual(10.5);
+      expect(row, key).toBeLessThanOrEqual(12.5);
+    }
+  });
+
+  // Toolbox's box filled more of the frame than the others (owner review 2026-10-12).
+  it("keeps Toolbox no bigger than a typical icon", () => {
+    const sizes = silver.filter((k) => k !== "toolbox:2").map((k) => iconCells(k).length).sort((a, b) => a - b);
+    const median = sizes[Math.floor(sizes.length / 2)];
+    expect(iconCells("toolbox:2").length).toBeLessThanOrEqual(median);
+  });
+
   it("finds the ring all the way round", () => {
     expect(frame.length).toBeGreaterThan(200);
   });
