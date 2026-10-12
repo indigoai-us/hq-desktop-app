@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run: connecting an app on the Note taker or Project management screen no longer times out on screen when the sign-in worked but the connection was recorded on a subdomain of the app's website, such as api.linear.app for Linear. The screen now counts a connection on the app's domain or any subdomain of it, the same way the rest of HQ does, and an app already connected that way shows as Connected. A lookalike domain such as notlinear.app or linear.app.example.com still does not count.
 - First run on a new computer: if your account already has an assistant, the name step now opens with your assistant's name, so Continue keeps it. Before, it suggested a new random name, and clicking through renamed your assistant. HQ checks your account's bots before the name step opens. A new account, or one whose bots HQ cannot read right now, still gets a friendly suggested name.
 
 ## [0.11.4] — 2026-10-11

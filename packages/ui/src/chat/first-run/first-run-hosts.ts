@@ -16,7 +16,7 @@ import type { AdapterResult, IntegrationAppRef, IntegrationInstallInput, Integra
 
 import { catalogFailureLine } from "../../company/files-connect/integration-apps.js";
 import { CONNECTING_TIMEOUT_MS } from "../messaging/connection-card-model.js";
-import { connectFailureSentence, readCompanyConnections } from "../messaging/integration-cards-model.js";
+import { connectFailureSentence, connectionsForDomain, readCompanyConnections, type CompanyConnections } from "../messaging/integration-cards-model.js";
 import { appsForKind, catalogEntries, type AppCatalogResult, type AppConnectResult, type FirstRunApp, type FirstRunAppKind } from "./app-step.js";
 import { FIRST_RUN_DRY_DELAY_MS } from "./dev-switches.js";
 import { companySlugFromName, type FirstRunTeamCompany, type TeamActionResult } from "./team-step.js";
@@ -206,8 +206,13 @@ export interface AppsHostDeps {
 /** The catalog's server bound (1..100): one read covers both screens' apps. */
 export const CATALOG_LIMIT = 100;
 
-function connectedDomains(json: unknown): string[] {
-  return (readCompanyConnections(json)?.connections ?? []).map((c) => c.domain).filter((d): d is string => !!d);
+/**
+ * The listed apps the company already has a connection to. A connection
+ * counts for an app when its domain is the app's or a subdomain of it
+ * (`api.linear.app` for Linear), the same rule the rest of the app uses.
+ */
+function connectedAppDomains(facts: CompanyConnections | null, apps: readonly FirstRunApp[]): string[] {
+  return apps.filter((app) => connectionsForDomain(facts, app.domain).length > 0).map((app) => app.domain);
 }
 
 export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
@@ -216,14 +221,18 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
   const timeoutMs = deps.timeoutMs ?? CONNECTING_TIMEOUT_MS;
   const now = deps.now ?? Date.now;
 
-  /** The ids of the company's connections to this app's domain, or null when the list cannot be read. */
+  /**
+   * The ids of the company's connections to this app's domain or a subdomain
+   * of it (a sign-in can record `api.linear.app` for `linear.app`), or null
+   * when the list cannot be read.
+   */
   async function connectionIds(companyUid: string, domain: string): Promise<Set<string> | null> {
     const list = deps.listConnections;
     if (!list) return null;
     const read = await list(companyUid).catch(() => null);
     if (!read?.ok) return null;
     const facts = readCompanyConnections(read.value);
-    return new Set((facts?.connections ?? []).filter((c) => c.domain === domain).map((c) => c.id));
+    return new Set(connectionsForDomain(facts, domain).map((c) => c.id));
   }
 
   /**
@@ -260,7 +269,7 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
       }
       const apps = appsForKind(catalogEntries(res.value), kind);
       const listed = deps.listConnections ? await deps.listConnections(companyUid).catch(() => null) : null;
-      return { ok: true, apps, connected: listed?.ok ? connectedDomains(listed.value) : [] };
+      return { ok: true, apps, connected: listed?.ok ? connectedAppDomains(readCompanyConnections(listed.value), apps) : [] };
     },
     async connect(companyUid, app, signal) {
       if (deps.dry) {
