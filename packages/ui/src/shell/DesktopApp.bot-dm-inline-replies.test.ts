@@ -9,7 +9,8 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
-import { firstRunHandoffNotice, firstRunSettledNotice } from "../chat/first-run/visual-first-run.js";
+import { firstRunHandoffNotice } from "../chat/first-run/visual-first-run.js";
+import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "../chat/agent-channel.js";
 
 /**
  * Owner walkthrough, 2026-10-02: a hosted bot answered in a thread, so its
@@ -277,6 +278,19 @@ describe("DesktopApp: which rows opening with the app's words are hidden", () =>
 });
 
 /**
+ * A note as builds before the one-handoff change wrote it, after the kickoff:
+ * they stay in people's threads, so they must stay hidden.
+ */
+function olderBuildNote(json: Record<string, unknown>): string {
+  return (
+    `${FIRST_RUN_NOTE_LEAD} I just finished more of the app's visual setup. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${JSON.stringify({ from: "desktop-visual-first-run", v: 1, ...json })}. ` +
+    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
+    "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\"."
+  );
+}
+
+/**
  * Owner finding, round 2: after the visual first run the setup assistant's
  * chat showed a message from the person ("Test Engineer", avatar TE) holding
  * the raw handoff. The server's thread read returns the app's bot-only notes
@@ -286,7 +300,8 @@ describe("DesktopApp: the setup assistant's chat after the visual first run", ()
   it("never shows the app's handoff notes, and nothing with the handoff is shown as the person's", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
-    const settled = firstRunSettledNotice({ imported: null, team: { kind: "personal" }, apps: null })!;
+    // A note an older build sent after the kickoff; still in people's threads.
+    const settled = olderBuildNote({ done: ["company"], team: { kind: "personal" } });
     const handoff = firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], imported: null, team: null, apps: null });
     const page = [
       { eventId: "s4", fromPersonUid: "agt_setup", fromDisplayName: "Biscuit", body: "You're working alone, noted. Which project first?", createdAt: "2026-10-10T13:55:10.000Z" },

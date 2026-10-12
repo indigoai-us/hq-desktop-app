@@ -553,7 +553,7 @@ describe("the progress card's Retry goes through the owner (review fix 4)", () =
 });
 
 describe("round 2 review items", () => {
-  it("an assistant brought back as it is (hq bot adopt) gets the handoff note when the first run settles on it (4)", async () => {
+  it("an assistant brought back as it is (hq bot adopt) gets the handoff note when the takeover closes (4)", async () => {
     // An older CLI on a computer whose account owns yesterday's assistant: the
     // listing shows it, the person confirms a name, and the create adopts it.
     let here: LocalBotRow[] = [];
@@ -569,14 +569,21 @@ describe("round 2 review items", () => {
     await nameAssistant("Hazel");
     q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
-    await vi.waitFor(() => expect(sendDm).toHaveBeenCalled());
+    // Nothing goes while the takeover is open: the assistant would answer it now.
+    await settle(30);
+    expect(sendDm).not.toHaveBeenCalled();
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const [to, , opts] = (sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string }]>)[0]!;
     expect(to).toBe(ASSISTANT_UID);
     expect(opts.idempotencyKey).toBe(`first-run-handoff:${ASSISTANT_UID}`);
-    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));
+    // The note starts its first turn: the open conversation shows it working,
+    // under its name, never the handle.
+    await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')?.textContent).toContain("Hazel is thinking"));
+    expectNoSlug("the assistant's conversation after the handoff");
     await settle(30);
-    expect(q('[data-testid="agent-thinking-row"]')).toBeNull();
+    expect(sendDm).toHaveBeenCalledTimes(1);
   });
 
   it("Restore all leaves out the assistant before setup has run here (3)", async () => {
