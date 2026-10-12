@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Badge cards no longer show their front mirrored for a moment when you flip them over. Each side now hides as the card turns edge-on.
 - Sign out now also ends your session on the server. Before, signing out only removed the sign-in saved on this computer, so a copy of it could still be used until it expired. HQ now asks the sign-in service to cancel it first, waits at most 5 seconds, and then removes the saved sign-in either way, so you are always signed out on this computer even when you are offline.
 - The Badges page is one view now. The Badges and Cards tabs are gone: the page lists every badge by tier, and clicking a badge you have earned opens its card, grown out of the badge, instead of a separate badge page. Closing the card puts it back.
 - The account menu no longer shows "Working in {company}" next to your name, and hovering your picture on the left no longer adds it either. The menu keeps your name, email, picture, green online dot, Settings and Sign out.
