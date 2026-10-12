@@ -4363,9 +4363,12 @@
    */
   let localBotStartingSince = $state<Record<string, number>>({});
   let localBotGraceClock = $state(Date.now());
+  /** Bots in the first local listing; a bot not in it appeared while the app was open. */
+  let localBotsAtOpen = null as Set<string> | null;
   $effect(() => {
     const bots = localBots;
     untrack(() => {
+      if (localBotsAtOpen === null && bots.length > 0) localBotsAtOpen = new Set(bots.map((b) => b.agentUid));
       const now = Date.now();
       const next: Record<string, number> = {};
       for (const b of bots) {
@@ -4387,6 +4390,7 @@
     localBotNeedsOfflineNotice(selectedLocalBot, {
       startingSinceMs: selectedLocalBot ? (localBotStartingSince[selectedLocalBot.agentUid] ?? null) : null,
       nowMs: Math.max(localBotGraceClock, Date.now()),
+      justCreated: selectedLocalBot ? localBotsAtOpen !== null && !localBotsAtOpen.has(selectedLocalBot.agentUid) : false,
     }),
   );
   /**

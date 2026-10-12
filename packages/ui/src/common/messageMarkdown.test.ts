@@ -33,6 +33,18 @@ describe("heavy message bodies", () => {
     expect(isHeavyMessageBody("log line without cues\n".repeat(80))).toBe(true);
   });
 
+  it("renders a short message with one long sign-in link as Markdown, not a plain dump", () => {
+    // Live walkthrough 2026-10-12: a bot's Slack sign-in message (a 580-character
+    // link plus a few sentences) rendered as a scrolling monospace box.
+    const link = `https://slack.com/oauth/v2/authorize?client_id=1&state=${"x".repeat(560)}`;
+    const body = `Google Drive is connected. I read the three transcripts there.\n\nSlack next: a sign-in page should have opened. If it didn't, use this link:\n\n${link}\n\nOnly a workspace owner can connect it for now. If the page says HQ can't be installed, tell me.`.repeat(1) + " More plain words.".repeat(20);
+    expect(body.length).toBeGreaterThan(1_200);
+    expect(isHeavyMessageBody(body)).toBe(false);
+    expect(renderMessageBodyMarkdown(body).startsWith('<pre class="dm-plain">')).toBe(false);
+    // A real dump with a link in it is still a dump.
+    expect(isHeavyMessageBody(`log line without cues ${link}\n`.repeat(80))).toBe(true);
+  });
+
   it("treats large JSON dumps as heavy and renders them as a plain pre", () => {
     const body =
       `${JSON.stringify({ outcome: "doc-wrong", commandsRun: ["a"] })}\n`.repeat(

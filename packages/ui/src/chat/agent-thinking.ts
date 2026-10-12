@@ -1076,7 +1076,8 @@ export function syncBusyThinking(
   for (const uid of opts.busy) {
     const rowId = `dm:${uid}`;
     if (next[rowId]?.some((e) => e.agentUid === uid)) continue;
-    if (opts.answered?.[uid]) continue;
+    const answeredAt = opts.answered?.[uid];
+    if (answeredAt !== undefined && opts.now - answeredAt < BUSY_AFTER_POST_MS) continue;
     const afterMs = opts.afterMsOf?.(uid);
     next = startThinkingIn(
       next,
@@ -1161,10 +1162,22 @@ export function thinkingEndedLogLine(input: {
 // a status newer than its reply (`applyAgentStatus`), or `busy` drops and
 // rises again (a new turn).
 
-/** Local bots (by agent uid) whose reply ended their DM row while their CLI
- *  `busy` flag was still set. Their `busy` is ignored until it drops or an
- *  explicit start supersedes it. */
-export type AnsweredWhileBusy = Readonly<Record<string, true>>;
+/** Local bots (by agent uid) whose post ended their DM row while their CLI
+ *  `busy` flag was still set, with when that happened (ms). Their `busy` is
+ *  ignored for {@link BUSY_AFTER_POST_MS}, until it drops, or until an explicit
+ *  start supersedes it. */
+export type AnsweredWhileBusy = Readonly<Record<string, number>>;
+
+/**
+ * How long a `busy` flag that is still set after a bot's post is treated as
+ * stale. The CLI's in-flight marker outlives the final reply by a poll or two
+ * (a few seconds). A bot still busy well after its post is still working: it
+ * posted a progress update ("Read all three calls. Saving what I learned…")
+ * in the middle of a long turn, and the row comes back. Live walkthrough
+ * 2026-10-12: the thinking row vanished after the first progress update and
+ * stayed gone for the rest of a two-minute turn.
+ */
+export const BUSY_AFTER_POST_MS = 15_000;
 
 /**
  * `clearRowFromMessages`, plus: a bot that was `busy` when its reply ended its
@@ -1196,18 +1209,19 @@ export function clearRowOnReply(
   rowId: string,
   allMessages: ReadonlyArray<ThinkingMessage>,
   busy: readonly string[],
+  now: number = Date.now(),
 ): { map: ThinkingByRow; answered: AnsweredWhileBusy } {
   const before = map[rowId];
   if (!before || before.length === 0) return { map, answered };
   const messages = withoutWorkingNotices(allMessages);
   const nextMap = clearRowFromMessages(map, rowId, messages);
   const after = new Set((nextMap[rowId] ?? []).map((e) => e.agentUid));
-  let nextAnswered: Record<string, true> | null = null;
+  let nextAnswered: Record<string, number> | null = null;
   for (const entry of before) {
     if (after.has(entry.agentUid)) continue;
     if (rowId !== `dm:${entry.agentUid}` || !busy.includes(entry.agentUid)) continue;
     nextAnswered ??= { ...answered };
-    nextAnswered[entry.agentUid] = true;
+    nextAnswered[entry.agentUid] = now;
   }
   return { map: nextMap, answered: nextAnswered ?? answered };
 }
@@ -1223,7 +1237,7 @@ export function releaseAnswered(
   const busyNow = new Set(busy);
   const kept = keys.filter((uid) => busyNow.has(uid));
   if (kept.length === keys.length) return answered;
-  return Object.fromEntries(kept.map((uid) => [uid, true as const]));
+  return Object.fromEntries(kept.map((uid) => [uid, answered[uid]!]));
 }
 
 /** An explicit start for `agentUid` (the person wrote to it again) supersedes
@@ -1233,7 +1247,7 @@ export function forgetAnswered(
   agentUid: string,
 ): AnsweredWhileBusy {
   const uid = agentUid.trim();
-  if (!answered[uid]) return answered;
+  if (answered[uid] === undefined) return answered;
   const { [uid]: _gone, ...rest } = answered;
   return rest;
 }

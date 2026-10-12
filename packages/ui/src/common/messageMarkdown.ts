@@ -116,7 +116,10 @@ function markdownCueCount(lines: string[]): number {
 }
 
 export function isHeavyMessageBody(body: string): boolean {
-  const text = body.trim();
+  // A link is one token however long it is (a sign-in link runs to 600
+  // characters), so links count as a few characters toward the size limits;
+  // otherwise a short message with one sign-in link renders as a raw dump.
+  const text = body.trim().replace(/https?:\/\/\S+/g, "https://link");
   if (text.length > MESSAGE_MARKDOWN_HARD_MAX_CHARS) return true;
   if (text.length > 400 && (text.startsWith("{") || text.startsWith("["))) {
     return true;

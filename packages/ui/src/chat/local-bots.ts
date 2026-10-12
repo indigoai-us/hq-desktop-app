@@ -229,11 +229,11 @@ export function localBotPresence(
  */
 export function localBotNeedsOfflineNotice(
   bot: LocalBotRow | null | undefined,
-  opts: { startingSinceMs?: number | null; nowMs?: number } = {},
+  opts: { startingSinceMs?: number | null; nowMs?: number; justCreated?: boolean } = {},
 ): boolean {
   if (!bot || bot.online === true) return false;
   if (bot.online === null && bot.processAlive && bot.state !== "failed" && !bot.promotionHold) return false;
-  if (localBotInStartupGrace(bot, opts.startingSinceMs ?? null, opts.nowMs ?? Date.now())) return false;
+  if (localBotInStartupGrace(bot, opts.startingSinceMs ?? null, opts.nowMs ?? Date.now(), opts.justCreated === true)) return false;
   return true;
 }
 
@@ -248,8 +248,8 @@ export const LOCAL_BOT_STARTUP_GRACE_MS = 45_000;
 
 /**
  * A bot is starting when its process is up, its launchd agent is loaded, or it
- * has never checked in (just created); it has not failed, and it is not held
- * for promotion. `startingSinceMs` is when
+ * is `justCreated` (it appeared in the list while the app was open and has
+ * never checked in); it has not failed, and it is not held for promotion. `startingSinceMs` is when
  * the app first saw it in that not-yet-online state; within the grace period
  * no notice shows. A bot that never checks in still gets the notice after it.
  */
@@ -257,13 +257,15 @@ export function localBotInStartupGrace(
   bot: LocalBotRow,
   startingSinceMs: number | null,
   nowMs: number,
+  justCreated = false,
 ): boolean {
   if (startingSinceMs === null) return false;
   if (bot.state === "failed" || bot.promotionHold) return false;
-  // A bot that has never checked in is still being set up (a pack install
-  // lists it a moment before its launchd agent loads), so it gets the grace
-  // too. One that ran before and is now down gets the notice at once.
-  if (!bot.processAlive && !bot.daemonLoaded && bot.lastHeartbeatAt) return false;
+  // A pack install lists its new bot a moment before the launchd agent
+  // loads, so a bot that just appeared and has never checked in gets the
+  // grace too. A bot that was already here and is not running gets the
+  // notice at once.
+  if (!bot.processAlive && !bot.daemonLoaded && !(justCreated && !bot.lastHeartbeatAt)) return false;
   return nowMs - startingSinceMs < LOCAL_BOT_STARTUP_GRACE_MS;
 }
 

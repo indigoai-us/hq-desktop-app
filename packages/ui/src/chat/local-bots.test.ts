@@ -248,9 +248,12 @@ describe("localBotNeedsOfflineNotice", () => {
     // off or the bot is stopped" showed right after the pack installed it.
     const t0 = 1_000_000;
     const created = bot({ online: false, processAlive: false, daemonLoaded: false, lastHeartbeatAt: null, state: "stopped" });
-    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(false);
+    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + 1_000, justCreated: true })).toBe(false);
     // It still says so if the new bot never comes up.
-    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + LOCAL_BOT_STARTUP_GRACE_MS })).toBe(true);
+    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + LOCAL_BOT_STARTUP_GRACE_MS, justCreated: true })).toBe(true);
+    // A bot that was already listed when the app opened and is not running
+    // gets the notice at once, even if it never checked in.
+    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(true);
   });
 
   it("shows once a starting bot is past the grace period, or when it is not starting at all", () => {
