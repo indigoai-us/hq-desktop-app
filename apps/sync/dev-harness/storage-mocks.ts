@@ -79,6 +79,13 @@ export function storageAnswer(cmd: string): unknown {
   switch (cmd) {
     case 'get_storage_status':
       return statusFor(variant());
+    case 'get_cached_storage_status':
+      // Last known figures from 20 minutes ago, shown while the scan runs.
+      return {
+        status: statusFor(variant()),
+        fetched_at: new Date(Date.now() - 20 * 60 * 1000).toISOString(),
+        hq_root: '/Users/corey/Documents/HQ',
+      };
     case 'preview_storage_offload':
       return { ...offloadDry, current: { ...offloadDry.current, ...CURRENT_BLOCKED } };
     case 'run_storage_offload':
