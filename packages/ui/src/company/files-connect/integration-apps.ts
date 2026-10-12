@@ -141,6 +141,7 @@ const CATEGORY_BY_FRAGMENT: ReadonlyArray<[string, string]> = [
   ["granola", "Meetings"],
   ["zoom", "Meetings"],
   ["loom", "Meetings"],
+  ["fireflies", "Meetings"],
   ["stripe", "Payments"],
   ["paypal", "Payments"],
   ["quickbooks", "Payments"],

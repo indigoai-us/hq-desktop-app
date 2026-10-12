@@ -38,6 +38,15 @@ describe("catalog filter (the catalog has no category: filtered here)", () => {
     });
   });
 
+  it("lists Fireflies under Note taker, not under Project management", () => {
+    const entries = [
+      { name: "Fireflies.ai", domain: "fireflies.ai", authClass: "oauth" as const },
+      { name: "Granola", domain: "granola.ai", authClass: "none" as const },
+    ];
+    expect(appsForKind(entries, "notes").map((a) => a.domain)).toEqual(["fireflies.ai", "granola.ai"]);
+    expect(appsForKind(entries, "projects")).toEqual([]);
+  });
+
   it("lists trackers for Project management and nothing else", () => {
     expect(appsForKind(ENTRIES, "projects").map((a) => a.name)).toEqual(["Asana", "Jira", "Linear"]);
   });

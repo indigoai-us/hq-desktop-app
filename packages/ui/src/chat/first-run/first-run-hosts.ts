@@ -12,12 +12,20 @@
  * reads, but every action only pretends.
  */
 
-import type { AdapterResult, IntegrationAppRef, IntegrationInstallInput, IntegrationOAuthStart, Json } from "@hq/platform";
+import type {
+  AdapterResult,
+  IntegrationAppRef,
+  IntegrationCatalogEntry,
+  IntegrationInstallInput,
+  IntegrationOAuthStart,
+  Json,
+} from "@hq/platform";
 
 import { catalogFailureLine } from "../../company/files-connect/integration-apps.js";
 import { CONNECTING_TIMEOUT_MS } from "../messaging/connection-card-model.js";
 import { connectFailureSentence, readCompanyConnections } from "../messaging/integration-cards-model.js";
 import { appsForKind, catalogEntries, type AppCatalogResult, type AppConnectResult, type FirstRunApp, type FirstRunAppKind } from "./app-step.js";
+import { normalizeConnectDomain } from "../messaging/richMessageContent.js";
 import { FIRST_RUN_DRY_DELAY_MS } from "./dev-switches.js";
 import { companySlugFromName, type FirstRunTeamCompany, type TeamActionResult } from "./team-step.js";
 import type { FirstRunAppsHandoff, FirstRunTeamHandoff } from "./visual-first-run.js";
@@ -203,7 +211,33 @@ export interface AppsHostDeps {
   now?: () => number;
 }
 
-/** The catalog's server bound (1..100): one read covers both screens' apps. */
+/**
+ * The apps each screen also asks the catalog for by name, as the main label
+ * of their website (`linear` for linear.app). The unfiltered read is capped at
+ * 100 entries across the catalog's recommended, community and listed apps, so
+ * a listed app can be cut from it (Linear was). A read by name keeps only
+ * matching entries and returns the app wherever it ranks. It uses
+ * CATALOG_LIMIT too: the server searches the first `limit` apps of its
+ * listing, so a smaller limit can miss it.
+ */
+export const KEY_APPS: Record<FirstRunAppKind, readonly string[]> = {
+  notes: ["fireflies"],
+  projects: ["linear"],
+};
+
+/**
+ * The entries a by-name read returned whose website's main label is the name:
+ * `linear.app` and `mcp.linear.app` for `linear`, never `linearb.io` or
+ * `notlinear.app`.
+ */
+function namedEntries(json: unknown, name: string): IntegrationCatalogEntry[] {
+  return catalogEntries(json).filter((entry) => {
+    const labels = (normalizeConnectDomain(entry.domain) ?? "").split(".");
+    return labels.length >= 2 && labels[labels.length - 2] === name;
+  });
+}
+
+/** The catalog's server bound (1..100). */
 export const CATALOG_LIMIT = 100;
 
 function connectedDomains(json: unknown): string[] {
@@ -253,12 +287,25 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
     async catalog(companyUid, kind) {
       const search = deps.catalogSearch;
       if (!search) return { ok: false, reason: "Apps can't be listed here. You can skip this.", retry: false };
-      const res = await search(companyUid, "", CATALOG_LIMIT);
+      const names = KEY_APPS[kind];
+      // A by-name read that fails leaves the screen with the unfiltered read alone.
+      const [res, ...byName] = await Promise.all([
+        search(companyUid, "", CATALOG_LIMIT),
+        ...names.map((name) =>
+          Promise.resolve()
+            .then(() => search(companyUid, name, CATALOG_LIMIT))
+            .catch((err: unknown) => {
+              console.warn(`[hq-desktop] first-run catalog read for ${name} threw:`, err);
+              return null;
+            }),
+        ),
+      ]);
       if (!res.ok) {
         const verdict = catalogFailureLine(res);
         return { ok: false, reason: verdict.line, retry: verdict.retry };
       }
-      const apps = appsForKind(catalogEntries(res.value), kind);
+      const named = byName.flatMap((read, i) => (read?.ok ? namedEntries(read.value, names[i]!) : []));
+      const apps = appsForKind([...catalogEntries(res.value), ...named], kind);
       const listed = deps.listConnections ? await deps.listConnections(companyUid).catch(() => null) : null;
       return { ok: true, apps, connected: listed?.ok ? connectedDomains(listed.value) : [] };
     },
