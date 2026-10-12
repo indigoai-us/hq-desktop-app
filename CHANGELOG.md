@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run on a new computer: if your account already has an assistant, the name step now opens with your assistant's name, so Continue keeps it. Before, it suggested a new random name, and clicking through renamed your assistant. HQ checks your account's bots before the name step opens. A new account, or one whose bots HQ cannot read right now, still gets a friendly suggested name.
+
 ## [0.11.4] — 2026-10-11
 
 - Sign out in the account menu works again. It looked greyed out and a click did nothing. It now looks like the other items and asks you to confirm in the app before ending the session.

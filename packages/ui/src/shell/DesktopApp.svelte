@@ -304,6 +304,7 @@
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+    FIRST_RUN_LISTINGS_WAIT_MS,
     markVisualFirstRunFinished,
     type FirstRunCreation,
     type FirstRunImportHandoff,
@@ -359,6 +360,7 @@
     SETUP_BOT_UNAVAILABLE,
     SETUP_BOT_RUNTIME_ORDER,
     isAssistantRecord,
+    isAssistantSlug,
     type SetupBotLauncher,
     type SetupBotRef,
     type SetupBotStart,
@@ -2563,10 +2565,22 @@
    * nothing left to run it.
    */
   let localBotTrace = $state<LocalBotTrace>(readLocalBotTrace(botMachineMemory));
+  /**
+   * The first answer (or failure) from each bot listing. The first run picks
+   * the name its name step opens with only after both, so an account that
+   * already has an assistant is offered that assistant's name.
+   */
+  let localBotsRead = $state(false);
+  let remoteBotsRead = $state(false);
   async function refreshLocalBots(): Promise<void> {
     const api = adapter.bots;
     if (!api) return;
-    const result = await api.list();
+    let result: Awaited<ReturnType<typeof api.list>>;
+    try {
+      result = await api.list();
+    } finally {
+      localBotsRead = true;
+    }
     if (!result.ok) return;
     const bots = result.value?.bots ?? [];
     // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
@@ -2614,7 +2628,10 @@
   let remoteBotPollBusy = false;
   async function refreshRemoteBots(force = false): Promise<void> {
     const listRemote = adapter.bots?.listRemote;
-    if (!listRemote) return;
+    if (!listRemote) {
+      remoteBotsRead = true;
+      return;
+    }
     if (remoteBotPollBusy && !force) return;
     remoteBotPollBusy = true;
     try {
@@ -2648,6 +2665,7 @@
       remoteBotListing = remoteBotListingFailed(remoteBotListing, "network");
     } finally {
       remoteBotPollBusy = false;
+      remoteBotsRead = true;
     }
   }
   /**
@@ -3497,17 +3515,38 @@
   let visualFirstRunOpen = $state(false);
   /** The name the name step opens with, picked when the takeover opens. */
   let firstRunSuggestedName = $state("");
+  /**
+   * Both bot listings have answered (or failed), so the name step knows
+   * whether the account already has an assistant. A listing that never
+   * answers stops holding the takeover after FIRST_RUN_LISTINGS_WAIT_MS.
+   */
+  let firstRunListingsWaitOver = $state(false);
+  const firstRunListingsRead = $derived(
+    !adapter.bots || firstRunDev.dry || (localBotsRead && remoteBotsRead) || firstRunListingsWaitOver,
+  );
   $effect(() => {
-    if (firstRunRouteNow !== "visual" || untrack(() => visualFirstRunOpen)) return;
+    if (firstRunRouteNow !== "visual" || firstRunListingsRead) return;
+    const timer = window.setTimeout(() => (firstRunListingsWaitOver = true), FIRST_RUN_LISTINGS_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  });
+  $effect(() => {
+    if (firstRunRouteNow !== "visual" || !firstRunListingsRead || untrack(() => visualFirstRunOpen)) return;
     untrack(() => {
       firstRunSuggestedName = firstRunInitialName();
       visualFirstRunOpen = true;
     });
   });
-  /** An assistant already here keeps its name; otherwise a friendly free one. */
+  /**
+   * The account's assistant keeps its name, whether it is on this computer or
+   * only on the account's listing (a new computer). A friendly free name only
+   * when the account has no assistant anywhere, or its name is not known.
+   * Never its handle, and never "Your assistant".
+   */
   function firstRunInitialName(): string {
-    const known = existingSetupBot ? assistantLabel : "";
-    if (known && known !== ASSISTANT_FALLBACK_NAME && !assistantNameIssue(known)) return known;
+    const known = existingSetupBot || remoteAssistantRow ? assistantLabel : "";
+    if (known && known !== ASSISTANT_FALLBACK_NAME && !isAssistantSlug(known) && !assistantNameIssue(known)) {
+      return known;
+    }
     return pickSetupBotName(takenBotNames(null, Object.values(botDisplayNames)));
   }
   /**
@@ -9855,8 +9894,10 @@
     });
     if (!ready || adapter.kind === "web") return;
     // The visual first run comes first; the tour waits for it (and for the
-    // flag's answer, so it never starts under a takeover about to open).
+    // flag's answer, and for the bot listings the takeover waits on, so it
+    // never starts under a takeover about to open).
     if (visualFirstRunOpen || firstRunRouteNow === "pending") return;
+    if (firstRunRouteNow === "visual" && !firstRunListingsRead) return;
     tourAutoTimer = window.setTimeout(() => {
       if (!tourStartedThisSession) startGuidedTour();
     }, TOUR_AUTO_START_DELAY_MS);
