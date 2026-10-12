@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
-import Host from "./BriefWeekArc.test.svelte";
+import Harness from "./BriefWeekArcHarness.test-support.svelte";
 import {
   arcSentence,
   BAR_SCALE,
@@ -160,7 +160,7 @@ describe("BriefWeekArc", () => {
   function render(props: { days: BriefDay[]; today: string; cols?: number; rows?: number }) {
     target = document.createElement("div");
     document.body.appendChild(target);
-    app = mount(Host, { target, props: { cols: 2, rows: 2, ...props } });
+    app = mount(Harness, { target, props: { cols: 2, rows: 2, ...props } });
     flushSync();
   }
   async function hover(el: Element): Promise<void> {

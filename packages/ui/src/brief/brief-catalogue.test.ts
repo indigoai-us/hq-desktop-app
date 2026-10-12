@@ -269,6 +269,22 @@ describe("quiet Saturday and catch-up Thursday", () => {
     expect(plan.density).toBeLessThanOrEqual(CATCH_UP_DENSITY);
     expect(plan.widgets[0]!.kind).toBe("catchup");
   });
+
+  it("a catch-up brief.json asked for on a day without time away says so, never 'you were away 0 days'", () => {
+    const now = "2026-10-15T13:00:00.000Z";
+    // No last brief (daysAway unknown) and a last brief three hours ago (daysAway 0).
+    for (const lastBriefAt of [null, hoursAgo(now, 3)]) {
+      const plan = generateBrief({ ...catchUpThursday(), lastBriefAt, catchUp: true });
+      expect(plan.dayType).toBe("catch-up");
+      expect(plan.widgets[0]!.kind).toBe("catchup");
+      expect(plan.widgets[0]!.reason).toBe('Always first: you asked for a catch-up: what changed, in five tiles, starting with "Approve the Q4 plan".');
+      expect(plan.widgets[0]!.reason).not.toMatch(/away 0 days/);
+      expect(lintReason(plan.widgets[0]!.reason)).toBeNull();
+      expect(plan.reason).toBe('"Approve the Q4 plan" leads · a catch-up brief');
+    }
+    // A real absence keeps the day count.
+    expect(generateBrief({ ...catchUpThursday(), catchUp: true }).widgets[0]!.reason).toMatch(/^Always first: you were away 4 days:/);
+  });
 });
 
 describe("prefs", () => {

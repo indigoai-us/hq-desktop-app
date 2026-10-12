@@ -12,7 +12,7 @@
   import { DAWN_CELL, DAWN_PITCH, dawnNoise } from "../chat/create-bot/NewBotDawn.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import { etaLabel, firstLine, type HeroLead } from "./brief-hero.js";
-  import { distillTimeline, sessionPeek, type Timeline, type TimelineSession } from "./brief-timeline.js";
+  import { distillTimeline, sessionPeek, sessionTitle, type Timeline, type TimelineSession } from "./brief-timeline.js";
 
   interface Props {
     total: number;
@@ -258,10 +258,10 @@
             class="dot"
             class:last={i === tl.items.length - 1}
             style="left:{((tx(Date.parse(it.at)) - 8) / 344) * 100}%;--lift:{lift * -9}px;animation-delay:{0.8 + i * 0.08}s"
-            aria-label="{hhmm(it.at)} {it.title || 'Untitled session'}"
+            aria-label="{hhmm(it.at)} {sessionTitle(it.title)}"
             data-testid="brief-session-dot"
             use:peek={{ state: brief, content: () => dotPeek(it, i) }}
-          ><span class="tip" class:end={tx(Date.parse(it.at)) > 260} class:start={tx(Date.parse(it.at)) < 100}>{hhmm(it.at)} {it.title || "Untitled session"}</span></button>
+          ><span class="tip" class:end={tx(Date.parse(it.at)) > 260} class:start={tx(Date.parse(it.at)) < 100}>{hhmm(it.at)} {sessionTitle(it.title)}</span></button>
         {/each}
       </div>
       <svg viewBox="0 0 360 14" aria-hidden="true">

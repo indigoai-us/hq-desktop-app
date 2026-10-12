@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
-import BriefFleetRecoveryHost from "./BriefFleetRecoveryHost.svelte";
+import Harness from "./BriefFleetRecoveryHarness.test-support.svelte";
 import {
   CHART,
   FLEET_LIST_CAP,
@@ -191,7 +191,7 @@ describe("BriefFleetRecovery", () => {
     const { cols = 2, rows = 2, prompts = {}, reducedMotion = true, ...extra } = card;
     target = document.createElement("div");
     document.body.appendChild(target);
-    app = mount(BriefFleetRecoveryHost, { target, props: { card: { incident: incident(extra), prompts, now: NOW, cols, rows, reducedMotion }, ...host } });
+    app = mount(Harness, { target, props: { card: { incident: incident(extra), prompts, now: NOW, cols, rows, reducedMotion }, ...host } });
     flushSync();
   }
   const q = (sel: string) => target.querySelector<HTMLElement>(sel);

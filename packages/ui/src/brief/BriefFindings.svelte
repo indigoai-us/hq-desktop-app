@@ -190,10 +190,11 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
-    padding: 6px 10px;
+    padding: 5px 9px;
     border-radius: 10px;
     background: rgba(255, 255, 255, 0.04);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    /* Hairline rim as a real border, never an inset shadow (the glass-tile rule). */
+    border: 1px solid rgba(255, 255, 255, 0.06);
     font-size: 12.5px;
   }
   .kind {

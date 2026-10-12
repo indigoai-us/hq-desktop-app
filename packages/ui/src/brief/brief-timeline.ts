@@ -5,6 +5,7 @@
  */
 
 import type { PeekContent } from "./brief-context.svelte.js";
+import { humanTitle } from "./brief-distill.js";
 
 export interface TimelineSession {
   at: string;
@@ -59,18 +60,27 @@ export interface Timeline {
 const HOUR = 3600_000;
 
 /**
+ * A session title as the page shows it everywhere (sunrise dots, their hover
+ * cards, the Focus tiles): a plain to-do with no repo, PR number or commit
+ * prefix; "Untitled session" when nothing is left.
+ */
+export function sessionTitle(title: string): string {
+  return humanTitle(title).text.trim() || "Untitled session";
+}
+
+/**
  * The hover card for a session dot, as in the approved mockup: eyebrow
  * "Session · Oct 8", the company chip, the title, "4:07 PM · session 5 of 8"
  * (then "· <project>" when the session has one), and two buttons, Resume in
  * <engine> and Copy prompt. The prompt text itself is not shown; it names the
- * project so the engine opens in the right place. An empty title reads
- * "Untitled session".
+ * project so the engine opens in the right place. The title is the humanized
+ * one the dot and the Focus card show; an empty title reads "Untitled session".
  */
 export function sessionPeek(s: TimelineSession, index: number, total: number): PeekContent {
   const at = new Date(s.at);
   const time = at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   const day = at.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  const title = s.title.trim() || "Untitled session";
+  const title = sessionTitle(s.title);
   const named = s.title.trim() ? `my session "${title}"` : "my untitled session";
   const project = s.project?.trim() || "";
   return {

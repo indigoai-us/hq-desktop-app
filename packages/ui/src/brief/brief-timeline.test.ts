@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { distillTimeline, isBackgroundSession, sessionPeek } from "./brief-timeline.js";
+import { distillTimeline, isBackgroundSession, sessionPeek, sessionTitle } from "./brief-timeline.js";
 
 const NOW = "2026-10-09T20:00:00.000Z";
 const at = (hoursAgo: number, min = 0) => new Date(Date.parse(NOW) - hoursAgo * 3600_000 + min * 60_000).toISOString();
@@ -75,5 +75,23 @@ describe("sessionPeek", () => {
       expect(p.status).toMatch(/· session 2 of 2$/);
       expect(p.prompt!.text).not.toContain("project");
     }
+  });
+
+  it("shows the same plain title as the Focus card (no repo, PR number or commit prefix) and names it in the Resume prompt", () => {
+    const p = sessionPeek({ at: at(2), title: "hq-core #1217: feat(conduct): on by default in v16", id: "s3", company: "cmp_indigo" }, 0, 1);
+    expect(p.title).toBe("On by default in v16");
+    expect(p.prompt!.text).toContain('my session "On by default in v16"');
+    expect(p.prompt!.text).not.toContain("#1217");
+    expect(p.prompt!.text).not.toContain("feat(");
+    expect(sessionPeek({ at: at(2), title: "   ", id: "s4" }, 0, 1).title).toBe("Untitled session");
+  });
+});
+
+describe("sessionTitle", () => {
+  it("is the one wording for a session everywhere on the page: plain to-do, Untitled session when blank", () => {
+    expect(sessionTitle("hq-core #1217: feat(conduct): on by default in v16")).toBe("On by default in v16");
+    expect(sessionTitle("Weekend fix")).toBe("Weekend fix");
+    expect(sessionTitle("")).toBe("Untitled session");
+    expect(sessionTitle("   ")).toBe("Untitled session");
   });
 });

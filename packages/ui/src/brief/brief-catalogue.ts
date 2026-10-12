@@ -427,13 +427,16 @@ export const CATALOGUE: readonly WidgetEntry[] = [
         ...sortedIds(ctx.input.handoffs ?? []),
       ];
       const p1 = ctx.priorities[0];
-      const away = ctx.daysAway ?? 0;
+      // brief.json can ask for a catch-up on a day the owner was not away (daysAway 0 or
+      // unknown): say what was asked for rather than "you were away 0 days".
+      const away = ctx.daysAway;
+      const opener = away != null && away >= 1 ? `you were away ${plural(away, "day")}` : "you asked for a catch-up";
       return {
         n: items.length,
         value: 3,
         items,
         hash: sortedKey(items),
-        fact: `you were away ${plural(away, "day")}: what changed, in five tiles${p1 ? `, starting with "${p1.text}"` : ""}`,
+        fact: `${opener}: what changed, in five tiles${p1 ? `, starting with "${p1.text}"` : ""}`,
       };
     },
     serves(ctx, ev) {

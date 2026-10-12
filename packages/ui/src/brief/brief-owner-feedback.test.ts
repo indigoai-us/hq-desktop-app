@@ -112,6 +112,15 @@ describe("session strip (10) and session peek (15)", () => {
     expect(qa("brief-session-dot")).toHaveLength(2);
   });
 
+  it("a session dot's tip and label read the plain title the Focus card shows, never the repo or PR number", () => {
+    render(base({ recentSessions: [{ id: "s9", title: "hq-core #1217: feat(conduct): on by default in v16", startedAt: at(2), workstream: "Work", company: "cmp_indigo" }] }));
+    const dot = qa("brief-session-dot")[0]!;
+    expect(dot.getAttribute("aria-label")).toMatch(/ On by default in v16$/);
+    expect(dot.textContent).toContain("On by default in v16");
+    expect(dot.textContent).not.toContain("#1217");
+    expect(dot.textContent).not.toContain("hq-core");
+  });
+
   it("the session peek is the mockup card: eyebrow, company chip, title, time line, two buttons, no prompt text", async () => {
     const p = sessionPeek({ at: at(5), title: "", id: "s2", company: "cmp_indigo" }, 4, 8);
     expect(p.title).toBe("Untitled session");

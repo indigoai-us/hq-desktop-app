@@ -6,8 +6,7 @@
  * last start. Pure: no clock, no locale; the component formats times.
  */
 
-import { humanTitle } from "./brief-distill.js";
-import { isTimelineSession } from "./brief-timeline.js";
+import { isTimelineSession, sessionTitle } from "./brief-timeline.js";
 import type { BriefSession } from "./brief-types.js";
 
 /** Every list on the card: five, then "+N more". */
@@ -147,9 +146,9 @@ export function hasFocus(sum: FocusSummary): boolean {
   return sum.total >= FOCUS_MIN_SESSIONS && sum.groups.length >= FOCUS_MIN_PRODUCTS;
 }
 
-/** A session title as a plain to-do: no repo, PR number or commit prefix. */
+/** A session title as a plain to-do: no repo, PR number or commit prefix. Same words as the sunrise dots and their peeks. */
 export function sessionLabel(title: string): string {
-  return humanTitle(title).text.trim() || "Untitled session";
+  return sessionTitle(title);
 }
 
 /**

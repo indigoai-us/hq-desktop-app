@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
-import BriefHandoffsHost from "./BriefHandoffsHost.svelte";
+import Harness from "./BriefHandoffsHarness.test-support.svelte";
 import {
   HANDOFF_ROWS,
   HANDOFF_ROWS_SHORT,
@@ -185,7 +185,7 @@ describe("BriefHandoffs card", () => {
   function render(props: Record<string, unknown>) {
     target = document.createElement("div");
     document.body.appendChild(target);
-    app = mount(BriefHandoffsHost, { target, props: { now: NOW, rows: 2, prompts: {}, handoffs: three, ...props } });
+    app = mount(Harness, { target, props: { now: NOW, rows: 2, prompts: {}, handoffs: three, ...props } });
     flushSync();
   }
   const q = (sel: string) => target.querySelector<HTMLElement>(sel);

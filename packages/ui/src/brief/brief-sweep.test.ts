@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { fleetIncidentOf, parseSweep, redRows, sweepToInput, type BriefSweep } from "./brief-sweep.js";
+import { fleetIncidentOf, isMainHealthRow, parseSweep, redRows, sweepToInput, type BriefSweep } from "./brief-sweep.js";
 import { gatherBriefInput, sweepPath, adapterSweepSource, type BriefAdapter, type BriefSweepSource } from "./brief-data.js";
+import { mainHealthLabel, mainHealthPeek, mainHealthSummary } from "./brief-peeks.js";
 import { octoberEightBrief } from "./brief-fixture.js";
 import { generateBrief } from "./brief-generate.js";
 import sweepJson from "./fixtures/sweep-2026-10-08.json";
@@ -465,5 +466,38 @@ describe("sweepToInput never throws on a row the sweep writes without its fields
     );
     expect(s.team.map((t) => t.name)).toEqual(["Geoff"]);
     expect(s.dmCount).toBe(2);
+  });
+
+  it("a main_health repo whose check failed (an error object) is unknown, not a green repo with 0 workflows", () => {
+    const s = sweepToInput(
+      {
+        ...base,
+        main_health: {
+          "hq-pro": { workflows: 4, red: [] },
+          "hq-cloud": { error: "gh run list: HTTP 502 (timeout)" },
+          "hq-cli": null,
+        },
+      },
+      { day: "2026-10-10", companyUid: "cmp_indigo" },
+    );
+    expect(s.mainHealth!.map((h) => h.repo)).toEqual(["hq-pro"]);
+    expect(s.risks).toEqual([]);
+    // Nothing downstream counts the errored repo as green.
+    expect(mainHealthSummary(s.mainHealth)).toEqual({ total: 1, green: 1, red: [] });
+    expect(mainHealthLabel(mainHealthSummary(s.mainHealth)!)).toBe("Main health · 1 of 1 product green");
+    const peek = mainHealthPeek(s.mainHealth!);
+    expect(peek.status).toBe("1 of 1 product green");
+    expect(peek.sections[0]!.lines!.map((l) => l.label)).toEqual(["HQ Pro"]);
+  });
+
+  it("isMainHealthRow keeps rows that carry health and drops error, null and empty entries", () => {
+    expect(isMainHealthRow({ workflows: 4, red: [] })).toBe(true);
+    expect(isMainHealthRow({ workflows: 0, red: [] })).toBe(true);
+    expect(isMainHealthRow({ red: ["Sync nightly"] })).toBe(true);
+    expect(isMainHealthRow({ error: "boom" })).toBe(false);
+    expect(isMainHealthRow({ error: "boom", workflows: 3 })).toBe(false);
+    expect(isMainHealthRow({})).toBe(false);
+    expect(isMainHealthRow(null)).toBe(false);
+    expect(isMainHealthRow("red")).toBe(false);
   });
 });

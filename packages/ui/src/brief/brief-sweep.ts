@@ -58,6 +58,31 @@ export interface SweepFleetAgent {
 /** A red workflow row: newer sweeps write objects, older ones the workflow name. */
 export type SweepRed = string | { workflow: string; since?: string | null; merges_on_top?: number | null };
 
+/** One repo's main-branch health as the sweep writes it. */
+export interface SweepMainHealthRow {
+  workflows: number;
+  red: SweepRed[];
+  product?: string | null;
+  delta?: { newly_red?: string[]; still_red?: string[]; recovered?: string[] };
+}
+
+/** A repo whose health check failed: the sweep writes `{ error }` with no workflows and no red rows. */
+export interface SweepMainHealthError {
+  error: string;
+}
+
+/**
+ * True when a main_health entry carries health (a workflows count or a red
+ * array). An error object, null, or an empty object says nothing about the
+ * repo: its health is unknown, not green, so the caller leaves it out.
+ */
+export function isMainHealthRow(h: unknown): h is SweepMainHealthRow {
+  if (!h || typeof h !== "object" || Array.isArray(h)) return false;
+  const row = h as Partial<SweepMainHealthRow> & Partial<SweepMainHealthError>;
+  if (typeof row.error === "string" && row.error.trim()) return false;
+  return Array.isArray(row.red) || (typeof row.workflows === "number" && Number.isFinite(row.workflows));
+}
+
 export interface BriefSweep {
   generated_at?: string;
   company?: string;
@@ -115,7 +140,7 @@ export interface BriefSweep {
     authored_by_me?: boolean;
     url?: string;
   }[];
-  main_health?: Record<string, { workflows: number; red: SweepRed[]; delta?: { newly_red?: string[]; still_red?: string[]; recovered?: string[] } }>;
+  main_health?: Record<string, SweepMainHealthRow | SweepMainHealthError | null>;
   releases?: {
     product?: string | null;
     repo?: string | null;
@@ -359,18 +384,22 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
     })
     .sort((a, b) => b.decisions + b.actions - (a.decisions + a.actions));
 
-  // Main health: every repo for the release train; the red ones are incidents.
-  const mainHealth: BriefMainHealth[] = Object.entries(sweep.main_health ?? {}).map(([repo, h]) => {
-    const delta = h.delta;
-    return {
-      repo,
-      product: productOf(repo, products),
-      companyUid: opts.companyUid,
-      workflows: finite(h.workflows) ?? 0,
-      red: redRows(h.red),
-      ...(delta ? { delta: { newlyRed: strs(delta.newly_red), stillRed: strs(delta.still_red), recovered: strs(delta.recovered) } } : {}),
-    };
-  });
+  // Main health: every repo for the release train; the red ones are incidents. A repo
+  // whose check failed (an `{ error }` entry) is unknown, not green: it gets no row, so
+  // "N of M products green" never counts it.
+  const mainHealth: BriefMainHealth[] = Object.entries(sweep.main_health ?? {})
+    .filter((entry): entry is [string, SweepMainHealthRow] => isMainHealthRow(entry[1]))
+    .map(([repo, h]) => {
+      const delta = h.delta;
+      return {
+        repo,
+        product: productOf(repo, products),
+        companyUid: opts.companyUid,
+        workflows: finite(h.workflows) ?? 0,
+        red: redRows(h.red),
+        ...(delta ? { delta: { newlyRed: strs(delta.newly_red), stillRed: strs(delta.still_red), recovered: strs(delta.recovered) } } : {}),
+      };
+    });
   const risks: BriefRisk[] = mainHealth
     .filter((h) => h.red.length > 0)
     .map((h) => {

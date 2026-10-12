@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
-import BriefFirstsProbe from "./BriefFirstsProbe.test.svelte";
+import Harness from "./BriefFirstsHarness.test-support.svelte";
 import {
   CAPTION_WORDS,
   FIRSTS_TILE_MAX,
@@ -123,7 +123,7 @@ describe("BriefFirsts", () => {
   function render(props: Record<string, unknown>) {
     target = document.createElement("div");
     document.body.appendChild(target);
-    app = mount(BriefFirstsProbe, { target, props: { shipped: DAY, cols: 3, rows: 1, ...props } });
+    app = mount(Harness, { target, props: { shipped: DAY, cols: 3, rows: 1, ...props } });
     flushSync();
   }
   const q = (sel: string) => target.querySelector<HTMLElement>(sel);
