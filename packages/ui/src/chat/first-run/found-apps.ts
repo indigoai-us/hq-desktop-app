@@ -33,7 +33,7 @@ export type FoundAppKind =
   | "Other";
 
 /** HQ connects these through its own providers, not the integration catalog. */
-export type NativeProvider = "slack" | "google";
+export type NativeProvider = "slack" | "google-workspace";
 
 export interface AppSignature {
   /** The app's website domain: the catalog handle and the connection match. */
@@ -92,7 +92,7 @@ export const APP_SIGNATURES: readonly AppSignature[] = [
   { domain: "miro.com", name: "Miro", kind: "Design", bundleIds: ["com.electron.realtimeboard"], appNames: ["Miro"], mcpHosts: ["mcp.miro.com"], mcpNames: ["miro"] },
   // Comms
   { domain: "slack.com", name: "Slack", kind: "Comms", bundleIds: ["com.tinyspeck.slackmacgap"], appNames: ["Slack"], mcpNames: ["slack"], native: "slack" },
-  { domain: "workspace.google.com", name: "Google Workspace", kind: "Comms", bundleIds: ["com.google.drivefs"], appNames: ["Google Drive"], mcpNames: ["gmail", "google-drive", "gdrive", "google-workspace"], native: "google" },
+  { domain: "workspace.google.com", name: "Google Workspace", kind: "Comms", bundleIds: ["com.google.drivefs"], appNames: ["Google Drive"], mcpNames: ["gmail", "google-drive", "gdrive", "google-workspace"], native: "google-workspace" },
   { domain: "hubspot.com", name: "HubSpot", kind: "Comms", mcpHosts: ["mcp.hubspot.com"], mcpNames: ["hubspot"] },
   { domain: "discord.com", name: "Discord", kind: "Comms", bundleIds: ["com.hnc.Discord"], appNames: ["Discord"] },
   // Data and analytics
