@@ -1,4 +1,5 @@
 <script lang="ts" module>
+  import { asciiDecode } from "./brief-hover.js";
   import type { BriefDecision } from "./brief-types.js";
 
   /** Minutes one call takes, by the writer's effort tag (the same scale the sunrise meter uses). */
@@ -146,6 +147,7 @@
       {@const carried = carriedLabel(d.carriedBriefs)}
       <div
         class="it"
+        data-decode-host
         class:done={brief.cleared[d.id]}
         data-testid="brief-need"
         role="group"
@@ -158,7 +160,7 @@
         {/if}
         <div class="tx">
           <div class="tt">
-            <span class="t" data-testid="brief-need-title">{d.title}</span>
+            <span class="t" data-testid="brief-need-title" use:asciiDecode>{d.title}</span>
             {#if tall || carried || age}
               <span class="meta">
                 {#if tall}<BriefOrigin origin={d.origin} product />{/if}

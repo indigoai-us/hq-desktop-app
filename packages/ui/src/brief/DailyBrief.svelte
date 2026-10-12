@@ -55,6 +55,10 @@
   import { briefPriorities, watchTitle } from "./brief-peeks.js";
   import type { BriefInput, BriefRisk as BriefRiskRow } from "./brief-types.js";
   import { effortMinutes } from "./brief-hero.js";
+  import { briefHover } from "./brief-hover.js";
+  /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
+  const REWARD_KINDS = new Set(["shipped", "firsts", "resolved"]);
+  const NO_HOVER_KINDS = new Set(["sunrise", "catchup"]);
   import { distillTimeline, isTimelineSession, sinceLabel } from "./brief-timeline.js";
 
   interface Props {
@@ -297,6 +301,8 @@
         <div
           class="slot"
           class:short={w.rows === 1}
+          class:lit={!NO_HOVER_KINDS.has(String(w.kind))}
+          use:briefHover={{ tilt: REWARD_KINDS.has(String(w.kind)) }}
           style="{allCards ? `grid-column:span ${w.cols};grid-row:span ${w.rows}` : `grid-area:${w.kind}`};animation-delay:{i * 70}ms"
           data-widget={w.kind}
           data-reason={w.reason}
@@ -485,6 +491,7 @@
     display: flex;
     min-width: 0;
     min-height: 0;
+    will-change: transform;
   }
   .slot > :global(.w) {
     flex: 1;
