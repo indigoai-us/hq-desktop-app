@@ -103,7 +103,7 @@
           const entries =
             kind === "shared-on"
               ? [
-                  { granteeType: "agent", granteeId: "agt_nova", permission: "use" },
+                  { granteeType: "person", granteeId: "agt_nova", permission: "use" },
                 ]
               : [];
           return {

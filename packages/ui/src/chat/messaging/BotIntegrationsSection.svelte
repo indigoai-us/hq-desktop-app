@@ -46,11 +46,12 @@
     error: string | null;
   };
 
-  let flagOn = $state<boolean | null>(flagEnabled);
+  let flagOn = $state<boolean | null>(null);
   let loading = $state(false);
   let listError = $state<string | null>(null);
   let rows = $state<RowState[]>([]);
   let generation = 0;
+  let destroyed = false;
 
   const roleLower = $derived((botRole ?? "").toLowerCase());
 
@@ -63,9 +64,13 @@
     listError = null;
   }
 
-  async function resolveFlag(): Promise<void> {
+  async function resolveFlag(coUid: string | null): Promise<void> {
     if (flagEnabled !== null) {
       flagOn = flagEnabled;
+      return;
+    }
+    if (!coUid) {
+      flagOn = false;
       return;
     }
     if (!adapter.identity || typeof adapter.identity.hasFeature !== "function") {
@@ -74,7 +79,7 @@
     }
     const result = await adapter.identity.hasFeature(
       BOT_INTEGRATION_CONTROL_FLAG,
-      companyUid ? { companyUid } : undefined,
+      { companyUid: coUid },
     );
     flagOn = result.ok ? result.value === true : false;
   }
@@ -95,14 +100,14 @@
     }
   }
 
-  async function loadAll(): Promise<void> {
-    if (!companyUid || !botUid) return;
+  async function loadAll(coUid: string, botForLoad: string): Promise<void> {
+    if (destroyed) return;
     loading = true;
     listError = null;
     const myGen = ++generation;
     try {
-      const listResult = await adapter.integrations.listConnections(companyUid);
-      if (myGen !== generation) return;
+      const listResult = await adapter.integrations.listConnections(coUid);
+      if (myGen !== generation || destroyed) return;
       if (!listResult.ok) {
         listError = "We could not load connected apps. Try again in a moment.";
         rows = [];
@@ -119,8 +124,9 @@
       rows = nextRows;
       await Promise.all(
         nextRows.map(async (row, idx) => {
-          const access = await loadAccessFor(companyUid!, row.connection.id);
-          if (myGen !== generation) return;
+          const access = await loadAccessFor(coUid, row.connection.id);
+          if (myGen !== generation || destroyed) return;
+          if (botForLoad !== (botUid ?? "")) return;
           rows[idx] = { ...rows[idx], access };
         }),
       );
@@ -130,17 +136,25 @@
   }
 
   $effect(() => {
+    // Read all prop dependencies synchronously so the effect re-runs when
+    // the panel switches to a different bot or role under the same company.
+    const coUid = companyUid;
+    const bot = botUid;
+    // Reading botRole (via roleLower) registers it as a tracked dependency.
+    void roleLower;
     void (async () => {
-      await resolveFlag();
-      if (!canRender) {
+      await resolveFlag(coUid);
+      if (destroyed) return;
+      if (flagOn !== true || !coUid || !bot) {
         resetAll();
         return;
       }
-      await loadAll();
+      await loadAll(coUid, bot);
     })();
   });
 
   onDestroy(() => {
+    destroyed = true;
     generation++;
   });
 
@@ -165,6 +179,21 @@
       return "This app is open to everyone in the company.";
     }
     return "";
+  }
+
+  function ariaLabelFor(
+    name: string,
+    state: BotConnectionAccessState,
+    interactive: boolean,
+    switchOn: boolean,
+  ): string {
+    if (!interactive) {
+      if (state === "read-only") return `${name} access is locked`;
+      if (state === "on-admin") return `${name} is on for admins`;
+      if (state === "on-everyone") return `${name} is on for everyone`;
+      return `${name} access`;
+    }
+    return switchOn ? `Turn off ${name}` : `Turn on ${name}`;
   }
 
   async function toggle(row: RowState, index: number): Promise<void> {
@@ -193,9 +222,18 @@
         return;
       }
       const fresh = await loadAccessFor(companyUid, row.connection.id);
+      if (fresh === null) {
+        rows[index] = {
+          ...rows[index],
+          pending: false,
+          error:
+            "Saved, but HQ could not re-read this app's sharing. Reopen the panel to check.",
+        };
+        return;
+      }
       rows[index] = {
         ...rows[index],
-        access: fresh ?? rows[index].access,
+        access: fresh,
         pending: false,
         error: null,
       };
@@ -235,7 +273,7 @@
                 class="bis-switch"
                 role="switch"
                 aria-checked={switchOn}
-                aria-label={switchOn ? `Turn off ${row.connection.name}` : `Turn on ${row.connection.name}`}
+                aria-label={state ? ariaLabelFor(row.connection.name, state, interactive, switchOn) : row.connection.name}
                 data-testid="bot-integrations-switch"
                 data-state={state ?? ""}
                 data-on={switchOn ? "true" : "false"}

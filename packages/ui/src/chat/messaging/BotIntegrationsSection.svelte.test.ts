@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 
 import BotIntegrationsSection from "./BotIntegrationsSection.svelte";
+import BotIntegrationsSectionHarness from "./BotIntegrationsSectionHarness.test.svelte";
 
 type OkResult<T> = { ok: true; value: T };
 type FailResult = {
@@ -328,6 +329,199 @@ describe("BotIntegrationsSection: locked states", () => {
 
     const help = host.querySelector("[data-testid='bot-integrations-help']");
     expect(help!.textContent).toContain("Ask the connection's owner");
+  });
+});
+
+describe("BotIntegrationsSection: on-everyone state", () => {
+  it("shows the on-everyone locked state when the connection is open to all", async () => {
+    const adapter = makeAdapter();
+    adapter.integrations.listConnections.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...CONNECTIONS_ENVELOPE,
+        connections: CONNECTIONS_ENVELOPE.connections.map((c) => ({
+          ...c,
+          access: { mode: "everyone" },
+        })),
+      },
+    });
+    adapter.integrations.getConnectionAccess.mockResolvedValueOnce(
+      okAccess({ mode: "everyone", canManage: true, entries: [] }),
+    );
+
+    mountSection({ adapter });
+    await settle();
+
+    const button = host.querySelector<HTMLButtonElement>(
+      "[data-testid='bot-integrations-switch']",
+    );
+    expect(button).not.toBeNull();
+    expect(button!.getAttribute("data-state")).toBe("on-everyone");
+    expect(button!.disabled).toBe(true);
+    expect(button!.getAttribute("aria-label")).toContain("on for everyone");
+
+    const help = host.querySelector("[data-testid='bot-integrations-help']");
+    expect(help!.textContent).toContain("open to everyone in the company");
+  });
+});
+
+describe("BotIntegrationsSection: revoke failure", () => {
+  it("leaves the switch on and shows a friendly error when revoke fails", async () => {
+    const adapter = makeAdapter();
+    adapter.integrations.getConnectionAccess.mockResolvedValueOnce(
+      okAccess({
+        entries: [{ granteeType: "person", granteeId: "agt_nova", permission: "read" }],
+      }),
+    );
+    adapter.integrations.revokeConnectionAccess.mockResolvedValueOnce({
+      ok: false,
+      reason: "error",
+      code: "http-500",
+      message: "SERVER BOOM: raw backend trace",
+    } satisfies FailResult);
+
+    mountSection({ adapter });
+    await settle();
+
+    const button = host.querySelector<HTMLButtonElement>(
+      "[data-testid='bot-integrations-switch']",
+    );
+    expect(button!.getAttribute("data-state")).toBe("on");
+
+    button!.click();
+    await settle();
+
+    const after = host.querySelector<HTMLButtonElement>(
+      "[data-testid='bot-integrations-switch']",
+    );
+    expect(after!.getAttribute("data-state")).toBe("on");
+    expect(after!.disabled).toBe(false);
+
+    const alert = host
+      .querySelector("[data-testid='bot-integrations-row']")!
+      .querySelector("[role='alert']");
+    expect(alert).not.toBeNull();
+    expect(alert!.textContent).toContain("Could not turn this app off");
+    expect(alert!.textContent).not.toContain("SERVER BOOM");
+    expect(alert!.textContent).not.toContain("raw backend trace");
+    expect(alert!.textContent).not.toContain("http-500");
+
+    // Nothing stale got written: the second getConnectionAccess call never happened.
+    expect(adapter.integrations.getConnectionAccess).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("BotIntegrationsSection: heal path when reload fails after a successful mutation", () => {
+  it("marks the row with the reopen-the-panel message when the follow-up read returns null", async () => {
+    const adapter = makeAdapter();
+    adapter.integrations.getConnectionAccess
+      .mockResolvedValueOnce(okAccess({ entries: [] }))
+      .mockResolvedValueOnce({
+        ok: false,
+        reason: "error",
+        code: "http-502",
+        message: "RAW: reload failed",
+      } satisfies FailResult);
+
+    mountSection({ adapter });
+    await settle();
+
+    const button = host.querySelector<HTMLButtonElement>(
+      "[data-testid='bot-integrations-switch']",
+    );
+    expect(button!.getAttribute("data-state")).toBe("off");
+
+    button!.click();
+    await settle();
+
+    expect(adapter.integrations.grantConnectionAccess).toHaveBeenCalledTimes(1);
+    expect(adapter.integrations.getConnectionAccess).toHaveBeenCalledTimes(2);
+
+    const alert = host
+      .querySelector("[data-testid='bot-integrations-row']")!
+      .querySelector("[role='alert']");
+    expect(alert).not.toBeNull();
+    expect(alert!.textContent).toContain("Saved, but HQ could not re-read");
+    expect(alert!.textContent).toContain("Reopen the panel");
+    expect(alert!.textContent).not.toContain("RAW");
+    expect(alert!.textContent).not.toContain("http-502");
+
+    const after = host.querySelector<HTMLButtonElement>(
+      "[data-testid='bot-integrations-switch']",
+    );
+    expect(after!.disabled).toBe(false);
+  });
+});
+
+describe("BotIntegrationsSection: bot change under a live panel", () => {
+  it("reloads rows and routes toggles to the new bot when botUid changes", async () => {
+    const adapter = makeAdapter();
+    // Three sequential getConnectionAccess calls: first bot (A), second bot (B)
+    // after the prop change, plus the follow-up read after toggle.
+    adapter.integrations.getConnectionAccess
+      .mockResolvedValueOnce(
+        okAccess({
+          entries: [{ granteeType: "person", granteeId: "agt_a", permission: "read" }],
+        }),
+      )
+      .mockResolvedValueOnce(okAccess({ entries: [] }))
+      .mockResolvedValueOnce(
+        okAccess({
+          entries: [{ granteeType: "person", granteeId: "agt_b", permission: "read" }],
+        }),
+      );
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(BotIntegrationsSectionHarness, {
+      target: host,
+      props: {
+        initialCompanyUid: "cmp_acme",
+        initialBotUid: "agt_a",
+        initialBotRole: "member",
+        initialFlagEnabled: true,
+        adapter: adapter as unknown,
+      },
+    });
+    const harness = component as unknown as {
+      setBotUid: (value: string | null) => void;
+    };
+    flushSync();
+    await settle();
+
+    // Bot A: shared, with A on, switch reads "on".
+    let button = host.querySelector<HTMLButtonElement>(
+      "[data-testid='bot-integrations-switch']",
+    );
+    expect(button!.getAttribute("data-state")).toBe("on");
+    expect(adapter.integrations.getConnectionAccess).toHaveBeenCalledTimes(1);
+    expect(adapter.integrations.listConnections).toHaveBeenCalledTimes(1);
+
+    // Change the bot under the live panel.
+    harness.setBotUid("agt_b");
+    flushSync();
+    await settle();
+
+    // Reload fires: listConnections AND getConnectionAccess called again.
+    expect(adapter.integrations.listConnections).toHaveBeenCalledTimes(2);
+    expect(adapter.integrations.getConnectionAccess).toHaveBeenCalledTimes(2);
+
+    // Bot B: shared, no entries → switch reads "off".
+    button = host.querySelector<HTMLButtonElement>(
+      "[data-testid='bot-integrations-switch']",
+    );
+    expect(button!.getAttribute("data-state")).toBe("off");
+
+    // Toggling now must target bot B, not bot A.
+    button!.click();
+    await settle();
+
+    expect(adapter.integrations.grantConnectionAccess).toHaveBeenCalledTimes(1);
+    expect(adapter.integrations.grantConnectionAccess).toHaveBeenCalledWith({
+      companyUid: "cmp_acme",
+      connectionId: "acct_linear",
+      granteeUid: "agt_b",
+    });
   });
 });
 
