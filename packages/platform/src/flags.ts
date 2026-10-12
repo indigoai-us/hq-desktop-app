@@ -120,6 +120,14 @@ export const HQ_STORAGE_FLAG = "hq-storage";
  */
 export const VISUAL_FIRST_RUN_FLAG = "desktop.visual-first-run";
 /**
+ * First-run "Your apps" (integration auto-detect MVP, owner decision
+ * dec-20261012015131-z0g0): one step listing the work apps found on this
+ * computer replaces Note taker and Project management. Read only when
+ * {@link VISUAL_FIRST_RUN_FLAG} is on. Registered default off; it stays as
+ * the kill switch once it goes default-on. Missing or unreadable means off.
+ */
+export const FIRST_RUN_FOUND_APPS_FLAG = "desktop.first-run-found-apps-v1";
+/**
  * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
  * Targeted to one company, so it must be read with that company's uid:
  * `hasFeature(DESKTOP_AGENT_CREATION_FLAG, { companyUid })`. A person-only

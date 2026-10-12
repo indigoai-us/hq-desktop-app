@@ -269,13 +269,14 @@ const TOOL_LABEL: Record<FoundMcpServer["tool"], string> = {
 };
 
 /** One short line saying where an app was found: "Mac app", "In Claude Code and Codex". */
-export function evidenceLine(evidence: FoundEvidence, hostNoun: "Mac" | "PC" = "Mac"): string {
+export function evidenceLine(evidence: FoundEvidence, hostNoun: string = "Mac"): string {
   if (evidence.tools.length > 0) {
     const names = evidence.tools.map((t) => TOOL_LABEL[t]);
     const joined = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
     return `In ${joined}`;
   }
-  return evidence.app ? `${hostNoun} app` : "";
+  if (!evidence.app) return "";
+  return hostNoun === "Mac" || hostNoun === "PC" ? `${hostNoun} app` : "Installed app";
 }
 
 /** What the catalog lookup says about one domain. */

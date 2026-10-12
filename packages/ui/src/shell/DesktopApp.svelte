@@ -31,6 +31,7 @@
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
     VISUAL_FIRST_RUN_FLAG,
+    FIRST_RUN_FOUND_APPS_FLAG,
     dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
@@ -314,6 +315,7 @@
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
+  import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
   import {
     createFirstRunAppsHost,
     createFirstRunTeamHost,
@@ -3487,6 +3489,29 @@
       active = false;
     };
   });
+  /**
+   * `desktop.first-run-found-apps-v1`, read only once the visual first run is
+   * on. Until it answers (or when it cannot be read) the takeover keeps Note
+   * taker and Project management.
+   */
+  let foundAppsFlag = $state<boolean>(false);
+  let foundAppsFlagRead = false;
+  $effect(() => {
+    if (visualFirstRunFlag !== true || foundAppsFlagRead) return;
+    foundAppsFlagRead = true;
+    const identity = adapter.identity;
+    if (!identity || typeof identity.hasFeature !== "function") return;
+    void Promise.resolve()
+      .then(() => identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG))
+      .then(
+        (result) => {
+          foundAppsFlag = result.ok && result.value === true;
+        },
+        (err: unknown) => {
+          console.warn("[hq-desktop] first-run found-apps flag lookup failed:", err);
+        },
+      );
+  });
   // The "setup owed" answer is in and the flag is not: the flag has the grace
   // left, then counts as off.
   $effect(() => {
@@ -3855,6 +3880,31 @@
             : null,
           startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
           install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
+          openUrl: openConnectionUrl,
+        })
+      : null,
+  );
+
+  /**
+   * First-run "Your apps" (flag `desktop.first-run-found-apps-v1`): the names-only
+   * scan, the fixed-list catalog lookup, connects, docs-based setup and Undo,
+   * all over the platform adapter. Null keeps Note taker and Project management.
+   */
+  const firstRunYourAppsHost = $derived(
+    foundAppsFlag && adapter.integrations
+      ? createYourAppsHost({
+          dry: firstRunDev.dry,
+          detectWorkApps: adapter.shell?.detectWorkApps ? () => adapter.shell.detectWorkApps!() : null,
+          catalogLookup: adapter.integrations.catalogLookup
+            ? (uid, domains) => adapter.integrations.catalogLookup!(uid, domains)
+            : null,
+          listConnections: adapter.integrations.listConnections
+            ? (uid) => adapter.integrations.listConnections(uid)
+            : null,
+          startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
+          install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
+          discoverDocs: adapter.integrations.discoverDocs ? (input) => adapter.integrations.discoverDocs!(input) : null,
+          uninstall: adapter.integrations.uninstall ? (input) => adapter.integrations.uninstall!(input) : null,
           openUrl: openConnectionUrl,
         })
       : null,
@@ -16047,6 +16097,8 @@
       teamOptions={firstRunTeamOptions}
       teamHost={firstRunTeamHost}
       appsHost={firstRunAppsHost}
+      yourAppsHost={firstRunYourAppsHost}
+      onopenintegrations={(companyUid) => openConnectionUrl(companyIntegrationsUrl(companySlugForUid(companyUid)))}
       onsettled={recordFirstRunSettled}
       ontalk={talkToFirstRunAssistant}
       oncontinueinchat={continueFirstRunInChat}

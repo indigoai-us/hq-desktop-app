@@ -62,6 +62,7 @@
     FIRST_RUN_COPY,
     FIRST_RUN_NAME_TITLE,
     FIRST_RUN_STEPS,
+    FIRST_RUN_STEPS_YOUR_APPS,
     anyToolReady,
     assistantNameIssue,
     firstRunCanLeave,
@@ -86,6 +87,24 @@
   import FirstRunTeamStep from "./FirstRunTeamStep.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   import FirstRunAppStep from "./FirstRunAppStep.svelte";
+  import FirstRunYourAppsStep from "./FirstRunYourAppsStep.svelte";
+  import { evidenceLine, matchFoundApps, type FoundAppKind, type FoundAppsResult } from "./found-apps.js";
+  import {
+    YOUR_APPS_COPY,
+    autoConnectPlan,
+    connectedCount,
+    fallbackFoundApps,
+    yourAppsConsentLine,
+    yourAppsHandoff,
+    yourAppsLead,
+    yourAppsStatus,
+    yourAppsView,
+    type AppRun,
+    type AppTile,
+    type ConnectedChip,
+  } from "./your-apps.js";
+  import type { YourAppsHost, YourAppsLoad } from "./your-apps-host.js";
+  import type { FoundWorkApps } from "@hq/platform";
   import FirstRunToolsSignIn from "./FirstRunToolsSignIn.svelte";
   import {
     checkedReadiness,
@@ -186,6 +205,16 @@
     teamHost?: FirstRunTeamHost | null;
     /** Without it there are no Note taker and Project management screens. */
     appsHost?: FirstRunAppsHost | null;
+    /**
+     * "Your apps" (flag `desktop.first-run-found-apps-v1`): with it, one step
+     * listing every app found on this computer replaces Note taker and
+     * Project management.
+     */
+    yourAppsHost?: YourAppsHost | null;
+    /** Opens the company's Integrations page (Slack and Google Workspace connect there). */
+    onopenintegrations?: ((companyUid: string) => void) | null;
+    /** Test and harness seam: a names-only scan that already ran. */
+    initialWorkScan?: FoundWorkApps | null;
     /** Every change to what "Your team" and the app screens settled. */
     onsettled?: ((settled: FirstRunSettled) => void) | null;
   }
@@ -220,6 +249,9 @@
     teamOptions = null,
     teamHost = null,
     appsHost = null,
+    yourAppsHost = null,
+    onopenintegrations = null,
+    initialWorkScan = null,
     onsettled = null,
   }: Props = $props();
 
@@ -287,10 +319,11 @@
       {
         canImport: !!importHost,
         canTeam,
-        canConnectApps: !!appsHost && !!appsCompany,
+        canConnectApps: (yourAppsHost ? true : !!appsHost) && !!appsCompany,
         personal: !appsCompany,
       },
-      steps,
+      // "Your apps" replaces the two app screens of the standard flow.
+      yourAppsHost && steps === FIRST_RUN_STEPS ? FIRST_RUN_STEPS_YOUR_APPS : steps,
     ),
   );
 
@@ -309,6 +342,12 @@
 
   function settled(): FirstRunSettled {
     const apps: FirstRunAppsHandoff = {};
+    if (yourAppsPassed && yourAppsShown) {
+      const handoff = yourAppsHandoff(yourAppsShown, foundKinds);
+      apps.notes = handoff.notes;
+      apps.projects = handoff.projects;
+      if (handoff.others.length) apps.others = handoff.others;
+    }
     for (const kind of ["notes", "projects"] as const) {
       if (!appsPassed[kind]) continue;
       const app = connectedAppOf(kind);
@@ -409,6 +448,208 @@
     untrack(() => {
       if (!appCatalog[kind]) loadCatalog(kind);
     });
+  });
+
+  // ── Your apps ──────────────────────────────────────────────────────────
+  /** What the names-only scan found, matched to known apps; null until it answers. */
+  let workScan = $state.raw<FoundAppsResult | null>(untrack(() => (initialWorkScan ? matchFoundApps(initialWorkScan) : null)));
+  let workScanStarted = untrack(() => !!initialWorkScan);
+  /** The catalog lookup and connections for the company the apps connect to. */
+  let yourAppsLoad = $state.raw<YourAppsLoad | null>(null);
+  let yourAppsLoading = $state(false);
+  let yourAppsLoadCompany: string | null = null;
+  /** Each app's connect in this step, by domain. */
+  let appRuns = $state<Record<string, AppRun>>({});
+  /** Installation ids of what this step connected with no sign-in, by domain (for Undo). */
+  const autoInstallations = new Map<string, string>();
+  /** Domains the person undid: never auto-connected again in this run. */
+  const undone = new Set<string>();
+  let autoRanFor: string | null = null;
+  let yourAppsPassed = $state(false);
+
+  /** Start the names-only scan once, with the context scan (it is part of "Bring it in"). */
+  function startWorkAppScan(): void {
+    const host = yourAppsHost;
+    // Only when "Your apps" is in this flow (a company to connect to).
+    if (!host || workScanStarted || !yourAppsShownInFlow) return;
+    workScanStarted = true;
+    void host.detect().then(
+      (found) => (workScan = matchFoundApps(found)),
+      () => (workScan = matchFoundApps(null)),
+    );
+  }
+
+  /** "Your apps" is one of this flow's steps. */
+  const yourAppsShownInFlow = $derived(!!yourAppsHost && shownSteps.some((s) => s.id === "apps"));
+  /** The apps the step lists: what was found, else the catalog's common note takers and project tools. */
+  const yourAppsFound = $derived.by(() => {
+    if (!yourAppsLoad) return null;
+    const found = workScan?.apps ?? [];
+    return found.length ? { apps: found, unmatched: workScan?.unmatched ?? 0, fallback: false } : { apps: fallbackFoundApps(yourAppsLoad.catalog), unmatched: workScan?.unmatched ?? 0, fallback: true };
+  });
+  const foundKinds = $derived<Record<string, FoundAppKind>>(
+    Object.fromEntries((yourAppsFound?.apps ?? []).map((a) => [a.domain, a.kind])),
+  );
+  const yourAppsShown = $derived(
+    yourAppsLoad && yourAppsFound
+      ? yourAppsView({
+          found: yourAppsFound.apps,
+          unmatched: yourAppsFound.fallback ? 0 : yourAppsFound.unmatched,
+          catalog: yourAppsLoad.catalog,
+          connections: yourAppsLoad.connections,
+          canManage: yourAppsLoad.canManage,
+          runs: appRuns,
+          evidence: (app) => evidenceLine(app.evidence, hostNoun),
+        })
+      : null,
+  );
+
+  function loadYourApps(): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    if (!company || !host) return;
+    yourAppsLoadCompany = company.uid;
+    yourAppsLoading = true;
+    void host.load(company.uid).then(
+      (load) => {
+        if (appsCompany?.uid !== company.uid) return;
+        yourAppsLoad = load;
+        yourAppsLoading = false;
+      },
+      (err: unknown) => {
+        console.warn("[hq-desktop] first-run apps load threw:", err);
+        if (appsCompany?.uid !== company.uid) return;
+        yourAppsLoad = { catalog: null, connections: [], installations: {}, canManage: false, problem: { reason: "Couldn't load your apps. Try again.", retry: true } };
+        yourAppsLoading = false;
+      },
+    );
+  }
+
+  function setRun(domain: string, run: AppRun): void {
+    appRuns = { ...appRuns, [domain]: run };
+  }
+
+  /** Connect the no-sign-in catalog apps that were found (owner or admin only). */
+  function runAutoConnect(): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    const load = yourAppsLoad;
+    if (!company || !host || !load || !yourAppsFound || yourAppsFound.fallback) return;
+    if (autoRanFor === company.uid) return;
+    autoRanFor = company.uid;
+    const plan = autoConnectPlan(
+      { found: yourAppsFound.apps, catalog: load.catalog, connections: load.connections, canManage: load.canManage },
+      undone,
+    );
+    for (const item of plan) {
+      const name = yourAppsFound.apps.find((a) => a.domain === item.domain)?.name ?? item.domain;
+      setRun(item.domain, { state: "connecting", via: "install" });
+      void host.autoConnect(company.uid, item.entryId, name).then((res) => {
+        if (appsCompany?.uid !== company.uid) return;
+        if (res.ok) {
+          if (res.installationId) autoInstallations.set(item.domain, res.installationId);
+          setRun(item.domain, { state: "connected", how: "auto", connectionId: res.connectionId });
+          report();
+        } else {
+          // Not connected after all: the tile offers Connect again.
+          setRun(item.domain, res.reason ? { state: "failed", reason: res.reason, retry: res.retry } : { state: "idle" });
+        }
+      });
+    }
+  }
+
+  function connectTile(tile: AppTile): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    if (!company || !host) return;
+    if (tile.action === "integrations") {
+      onopenintegrations?.(company.uid);
+      return;
+    }
+    setRun(tile.domain, { state: "connecting", via: tile.action === "install" ? "install" : "browser" });
+    void host.connect(company.uid, tile, appsAbort.signal).then((res) => {
+      if (appsCompany?.uid !== company.uid) return;
+      if (res.ok) {
+        setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
+        report();
+      } else {
+        setRun(tile.domain, res.reason ? { state: "failed", reason: res.reason, retry: res.retry } : { state: "idle" });
+      }
+    });
+  }
+
+  function setupTile(tile: AppTile): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    if (!company || !host) return;
+    setRun(tile.domain, { state: "checking-docs" });
+    void host.setup(company.uid, tile, appsAbort.signal).then((res) => {
+      if (appsCompany?.uid !== company.uid) return;
+      if (res.ok) {
+        setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
+        report();
+      } else if (res.unsupported) {
+        setRun(tile.domain, { state: "unsupported" });
+      } else {
+        setRun(tile.domain, res.reason ? { state: "failed", reason: res.reason, retry: res.retry } : { state: "idle" });
+      }
+    });
+  }
+
+  function undoChip(chip: ConnectedChip): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    if (!company || !host) return;
+    const installationId =
+      autoInstallations.get(chip.domain) ?? (chip.connectionId ? yourAppsLoad?.installations[chip.connectionId] : undefined);
+    if (!installationId) return;
+    const before = appRuns[chip.domain] ?? { state: "idle" };
+    setRun(chip.domain, { state: "undoing", connectionId: chip.connectionId });
+    void host.undo(company.uid, installationId).then((res) => {
+      if (appsCompany?.uid !== company.uid) return;
+      if (res.ok) {
+        undone.add(chip.domain);
+        autoInstallations.delete(chip.domain);
+        // The connection is gone: the app goes back to "Ready to connect".
+        if (yourAppsLoad && chip.connectionId) {
+          yourAppsLoad = { ...yourAppsLoad, connections: yourAppsLoad.connections.filter((c) => c.id !== chip.connectionId) };
+        }
+        setRun(chip.domain, { state: "idle" });
+        report();
+      } else {
+        setRun(chip.domain, before.state === "idle" ? { state: "connected", how: "auto", connectionId: chip.connectionId } : before);
+        yourAppsUndoProblem = res.reason;
+      }
+    });
+  }
+  /** An Undo that failed: one line above the groups. */
+  let yourAppsUndoProblem = $state<string | null>(null);
+
+  // The company the apps connect to changed: "Your apps" starts over.
+  $effect(() => {
+    const uid = appsCompany?.uid ?? null;
+    untrack(() => {
+      if (yourAppsHost && uid !== yourAppsLoadCompany && yourAppsLoadCompany !== null) {
+        yourAppsLoad = null;
+        appRuns = {};
+        autoRanFor = null;
+        yourAppsPassed = false;
+        yourAppsLoadCompany = null;
+      }
+    });
+  });
+  // "Your apps" opens: its list loads the first time.
+  $effect(() => {
+    if (step !== "apps") return;
+    untrack(() => {
+      if (!yourAppsLoad && !yourAppsLoading) loadYourApps();
+    });
+  });
+  // Once the list and the scan are both in, the no-sign-in apps connect.
+  $effect(() => {
+    if (step !== "apps" || !yourAppsLoad || !yourAppsFound) return;
+    void workScan;
+    untrack(() => runAutoConnect());
   });
 
   let step = $state<FirstRunStepId>(untrack(() => initialStep));
@@ -617,6 +858,10 @@
         appsPassed = { ...appsPassed, [id]: true };
         changed = true;
       }
+      if (id === "apps" && i === from && !yourAppsPassed) {
+        yourAppsPassed = true;
+        changed = true;
+      }
     }
     if (changed) report();
   }
@@ -778,7 +1023,7 @@
   const summaryRows = $derived(
     2 +
       (canTeam ? 1 : 0) +
-      shownSteps.filter((s) => s.id === "context" || s.id === "notes" || s.id === "projects").length,
+      shownSteps.filter((s) => s.id === "context" || s.id === "notes" || s.id === "projects" || s.id === "apps").length,
   );
 
   /**
@@ -844,7 +1089,11 @@
               finishLabel: FIRST_RUN_COPY.finish,
               leaving: leaving !== null,
               onback: () => goTo(prevFirstRunStep("context", shownSteps)),
-              onstart: () => importRunner.start(),
+              onstart: () => {
+                importRunner.start();
+                startWorkAppScan();
+              },
+              appsConsent: yourAppsShownInFlow ? yourAppsConsentLine(hostNoun) : null,
               onskip: () => {
                 importRunner.skip();
                 goTo(nextFirstRunStep("context", shownSteps));
@@ -894,7 +1143,7 @@
         {:else}
           {@const appKind = step === "notes" || step === "projects" ? step : null}
           {@const appCopy = appKind ? appStepCopy(appKind, shownName, appsCompany?.name ?? "") : null}
-          {@const title = step === "tools" ? toolsTitle : step === "team" ? TEAM_COPY : appCopy ?? doneTitle}
+          {@const title = step === "tools" ? toolsTitle : step === "team" ? TEAM_COPY : step === "apps" ? { kicker: YOUR_APPS_COPY.kicker, lead: YOUR_APPS_COPY.lead, em: YOUR_APPS_COPY.em, copy: "" } : appCopy ?? doneTitle}
           {@const isLast = nextFirstRunStep(step, shownSteps) === null}
           {@const canLeave = firstRunCanLeave(step, runtimeReady)}
           <NewBotStepHead
@@ -920,6 +1169,24 @@
                 nameLocked={!!createdChoice}
                 onsubmit={teamNext}
               />
+            {:else if step === "apps"}
+              {#if yourAppsShown && yourAppsFound}
+                <FirstRunYourAppsStep
+                  lead={yourAppsLead(yourAppsFound.fallback ? 0 : yourAppsShown.foundCount, shownName, hostNoun)}
+                  view={yourAppsShown}
+                  problem={yourAppsUndoProblem ? { reason: yourAppsUndoProblem, retry: false } : yourAppsLoad?.problem ?? null}
+                  onconnect={connectTile}
+                  onsetup={setupTile}
+                  onundo={undoChip}
+                  onreload={() => {
+                    yourAppsLoad = null;
+                    autoRanFor = null;
+                    loadYourApps();
+                  }}
+                />
+              {:else}
+                <p class="new-bot-muted" data-testid="first-run-apps-loading" aria-busy="true">Looking for your apps…</p>
+              {/if}
             {:else if appKind && appCopy}
               <FirstRunAppStep
                 kind={appKind}
@@ -1022,6 +1289,18 @@
                     </span>
                   </li>
                 {/if}
+                {#if shownSteps.some((s) => s.id === "apps")}
+                  {@const n = yourAppsShown ? connectedCount(yourAppsShown) : 0}
+                  <li>
+                    <span class="first-run-summary-dot" class:ready={n > 0} aria-hidden="true"></span>
+                    <span class="first-run-summary-text">
+                      <span class="first-run-summary-label">Your apps</span>
+                      <span class="first-run-summary-value" data-testid="first-run-summary-apps">
+                        {n > 0 ? `${n} connected` : yourAppsPassed ? "Skipped" : "Not set up"}
+                      </span>
+                    </span>
+                  </li>
+                {/if}
                 {#each ["notes", "projects"] as const as kind (kind)}
                   {#if shownSteps.some((s) => s.id === kind)}
                     {@const state = appConnect[kind]}
@@ -1056,6 +1335,10 @@
                 {#if failed.retry}<button type="button" class="new-bot-inline-link" data-testid={`first-run-${appKind}-retry`} onclick={() => runnerFor(appKind)?.retry()}>{FIRST_RUN_COPY.retry}</button>
                 <span aria-hidden="true">·</span>{/if}
                 <button type="button" class="new-bot-inline-link" data-testid={`first-run-${appKind}-chat`} disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
+              </p>
+            {:else if step === "apps" && yourAppsShown && creation.state !== "failed"}
+              <p class="new-bot-price first-run-status" data-testid="first-run-apps-status">
+                {yourAppsStatus(connectedCount(yourAppsShown), appsCompany?.name ?? "")}
               </p>
             {:else if appKind && appConnect[appKind].state === "idle" && creation.state !== "failed"}
               <p class="new-bot-price first-run-status" data-testid={`first-run-${appKind}-hint`}>Don't use one? Skip this with Next.</p>
@@ -1097,7 +1380,7 @@
                   disabled={!canLeave || teamBusy}
                   aria-busy={teamBusy ? "true" : undefined}
                   onclick={() => (step === "team" ? teamNext() : goTo(nextFirstRunStep(step, shownSteps)))}
-                >{#if teamBusy && teamPending}{teamPending.verb}<CompanyLabel name={teamPending.name} companyUid={teamPending.companyUid} size={14} />…{:else}{firstRunNextLabel(step, shownSteps)}<RailIcon name="arrow-right" />{/if}</button>
+                >{#if teamBusy && teamPending}{teamPending.verb}<CompanyLabel name={teamPending.name} companyUid={teamPending.companyUid} size={14} />…{:else}{step === "apps" ? YOUR_APPS_COPY.continue : firstRunNextLabel(step, shownSteps)}<RailIcon name="arrow-right" />{/if}</button>
                 {#if offersFinish}
                   <button
                     type="button"

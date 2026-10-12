@@ -1146,6 +1146,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.postWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
     catalogLookup: (companyUid, domains) =>
       this.postWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+    discoverDocs: (input) =>
+      this.postWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+    uninstall: (input) =>
+      this.postWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
   };
 
   readonly company: PlatformAdapter["company"] = {
