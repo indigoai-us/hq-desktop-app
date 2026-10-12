@@ -1117,8 +1117,9 @@ pub async fn invalidate_tokens(tokens: &CognitoTokens) -> Result<(), String> {
 /// next launch. A missing file is treated as already-signed-out (not an error).
 /// The cache is cleared regardless so an in-session sign-out takes effect even
 /// if the file delete races. Also clears the cached feature gate, mirroring
-/// `set_tokens`. This is a local sign-out (this device) — it does not revoke the
-/// refresh token server-side, so other signed-in devices are unaffected.
+/// `set_tokens`. This only clears local state; an explicit user sign-out should
+/// go through `revoke_and_clear_tokens`, which also revokes the refresh token
+/// at Cognito before clearing.
 pub async fn clear_tokens() -> Result<(), String> {
     let path = tokens_file_path()?;
     let mut guard = cache().lock().await;
@@ -1126,6 +1127,106 @@ pub async fn clear_tokens() -> Result<(), String> {
     *guard = None;
     crate::feature_gate::clear_cached_gate();
     Ok(())
+}
+
+/// What happened to the server-side refresh token during a sign-out. Carries no
+/// token material, so it is safe to log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshRevocation {
+    /// Cognito accepted the RevokeToken call.
+    Revoked,
+    /// No readable refresh token was stored, so there was nothing to revoke.
+    NothingToRevoke,
+    /// The call failed (network, timeout, or a non-2xx answer). Local tokens
+    /// were still cleared.
+    Failed,
+}
+
+impl RefreshRevocation {
+    pub const fn as_tag(self) -> &'static str {
+        match self {
+            Self::Revoked => "revoked",
+            Self::NothingToRevoke => "nothing_to_revoke",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+const REVOKE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Call Cognito `RevokeToken` for one refresh token. A single attempt bounded by
+/// `REVOKE_REQUEST_TIMEOUT`; sign-out must not hang on a slow network. Revoking
+/// the refresh token also invalidates the access and id tokens Cognito issued
+/// from it. Errors never include token values.
+async fn revoke_refresh_token_at(
+    cognito_endpoint: &str,
+    refresh_token: &str,
+) -> Result<(), String> {
+    let client = crate::client_info::build_client();
+    let body = serde_json::json!({
+        "Token": refresh_token,
+        "ClientId": crate::oauth::cognito_client_id(),
+    });
+    let response = client
+        .post(cognito_endpoint)
+        .timeout(REVOKE_REQUEST_TIMEOUT)
+        .header("Content-Type", "application/x-amz-json-1.1")
+        .header(
+            "X-Amz-Target",
+            "AWSCognitoIdentityProviderService.RevokeToken",
+        )
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| {
+            if err.is_timeout() {
+                "Cognito RevokeToken timed out".to_string()
+            } else {
+                "Cognito RevokeToken request failed".to_string()
+            }
+        })?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body_text = response.text().await.unwrap_or_default();
+    let code = cognito_error_code(&body_text).unwrap_or_else(|| "unknown".to_string());
+    Err(format!(
+        "Cognito RevokeToken failed: status={} code={}",
+        status.as_u16(),
+        code
+    ))
+}
+
+/// Sign out on this device AND revoke the refresh token server-side.
+///
+/// Reads the stored refresh token (including a generation already marked
+/// invalid locally, since it may still be live at Cognito), asks Cognito to
+/// revoke it, then always clears the local token file and cache — a failed or
+/// timed-out revocation never leaves the device signed in. Returns the
+/// revocation outcome; the error path is reserved for the local clear failing.
+pub async fn revoke_and_clear_tokens() -> Result<RefreshRevocation, String> {
+    revoke_and_clear_tokens_at(COGNITO_ENDPOINT).await
+}
+
+async fn revoke_and_clear_tokens_at(cognito_endpoint: &str) -> Result<RefreshRevocation, String> {
+    let refresh_token = tokens_file_path()
+        .ok()
+        .and_then(|path| read_tokens_from_path_raw(&path).ok().flatten())
+        .map(|tokens| tokens.refresh_token)
+        .filter(|token| !token.trim().is_empty());
+    let revocation = match refresh_token {
+        None => RefreshRevocation::NothingToRevoke,
+        Some(token) => match revoke_refresh_token_at(cognito_endpoint, &token).await {
+            Ok(()) => RefreshRevocation::Revoked,
+            Err(message) => {
+                eprintln!("[cognito] sign-out revocation did not complete: {message}");
+                RefreshRevocation::Failed
+            }
+        },
+    };
+    clear_tokens().await?;
+    Ok(revocation)
 }
 
 /// Delete a token file. A missing file is success (already signed out), so this
@@ -3082,6 +3183,148 @@ mod tests {
         assert!(!marker.exists());
         // And the onboarding "is logged in" signal flips to false post-removal.
         assert!(!has_non_empty_token_at(&path).unwrap());
+    }
+
+    fn revocable_tokens() -> CognitoTokens {
+        CognitoTokens {
+            access_token: "signout-access-token".into(),
+            id_token: Some("signout-id-token".into()),
+            refresh_token: "signout-refresh-token".into(),
+            expires_at: i64::MAX,
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_out_revokes_refresh_token_then_clears_local_tokens() {
+        use wiremock::matchers::{body_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+        let token_path = home.path().join(".hq").join("cognito-tokens.json");
+        set_tokens(&revocable_tokens()).await.expect("store tokens");
+        assert!(token_path.exists());
+
+        let cognito = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(header(
+                "X-Amz-Target",
+                "AWSCognitoIdentityProviderService.RevokeToken",
+            ))
+            .and(body_json(serde_json::json!({
+                "Token": "signout-refresh-token",
+                "ClientId": crate::oauth::cognito_client_id(),
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&cognito)
+            .await;
+
+        let outcome = revoke_and_clear_tokens_at(&cognito.uri())
+            .await
+            .expect("sign-out succeeds");
+        assert_eq!(outcome, RefreshRevocation::Revoked);
+        cognito.verify().await;
+        assert!(
+            !token_path.exists(),
+            "token file is removed after revocation"
+        );
+        assert_eq!(get_tokens().await.expect("read after sign-out"), None);
+    }
+
+    #[tokio::test]
+    async fn sign_out_clears_local_tokens_when_cognito_rejects_revocation() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+        let token_path = home.path().join(".hq").join("cognito-tokens.json");
+        set_tokens(&revocable_tokens()).await.expect("store tokens");
+
+        let cognito = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "__type": "UnsupportedTokenTypeException",
+                "message": "rejected"
+            })))
+            .expect(1)
+            .mount(&cognito)
+            .await;
+
+        let outcome = revoke_and_clear_tokens_at(&cognito.uri())
+            .await
+            .expect("a failed revocation still signs out locally");
+        assert_eq!(outcome, RefreshRevocation::Failed);
+        cognito.verify().await;
+        assert!(
+            !token_path.exists(),
+            "token file is removed despite the failure"
+        );
+        assert_eq!(get_tokens().await.expect("read after sign-out"), None);
+    }
+
+    #[tokio::test]
+    async fn sign_out_clears_local_tokens_when_cognito_is_unreachable() {
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+        let token_path = home.path().join(".hq").join("cognito-tokens.json");
+        set_tokens(&revocable_tokens()).await.expect("store tokens");
+
+        // Bind then drop a listener so the port refuses connections.
+        let unreachable = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            format!("http://{}/", listener.local_addr().expect("addr"))
+        };
+        let started = Instant::now();
+        let outcome = revoke_and_clear_tokens_at(&unreachable)
+            .await
+            .expect("an unreachable endpoint still signs out locally");
+        assert_eq!(outcome, RefreshRevocation::Failed);
+        assert!(started.elapsed() < REVOKE_REQUEST_TIMEOUT + Duration::from_secs(1));
+        assert!(!token_path.exists());
+        assert_eq!(get_tokens().await.expect("read after sign-out"), None);
+    }
+
+    #[tokio::test]
+    async fn sign_out_without_stored_tokens_makes_no_revocation_call() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+
+        let cognito = MockServer::start().await;
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&cognito)
+            .await;
+
+        let outcome = revoke_and_clear_tokens_at(&cognito.uri())
+            .await
+            .expect("signing out with no tokens is a no-op");
+        assert_eq!(outcome, RefreshRevocation::NothingToRevoke);
+        cognito.verify().await;
+    }
+
+    #[test]
+    fn revocation_errors_never_carry_the_token() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let unreachable = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            format!("http://{}/", listener.local_addr().expect("addr"))
+        };
+        let err = rt
+            .block_on(revoke_refresh_token_at(
+                &unreachable,
+                "secret-refresh-value",
+            ))
+            .expect_err("unreachable endpoint fails");
+        assert!(!err.contains("secret-refresh-value"));
     }
 
     #[test]
