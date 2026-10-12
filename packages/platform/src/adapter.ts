@@ -1971,7 +1971,7 @@ export interface FoundWorkApps {
   apps: FoundWorkApp[];
   mcpServers: FoundMcpServer[];
   sources: {
-    source: string;
+    source: "apps" | FoundMcpServer["tool"];
     outcome: "read" | "missing" | "unreadable" | "invalid" | "unsupported" | "budget";
     count: number;
   }[];
