@@ -6,14 +6,29 @@
 //! The CLI owns the git and S3 work; this module only builds argv, runs the
 //! command off the main thread, and parses the JSON into typed structs.
 //!
+//! Status and the offload preview are slow scans (`hq-storage.sh report` and
+//! `large` under the CLI; minutes on a big HQ). They go through a single
+//! flight per scan: a second request joins the running one instead of
+//! starting another, the scan runs on its own task so leaving the screen does
+//! not cancel or duplicate it, and a timeout stops the whole process group
+//! (hq and the scripts it started), not only `hq`. The last good status is
+//! kept in memory and in `~/.hq/desktop/storage-status.json` so the screen can
+//! show it at once while a fresh scan runs. Status stays read-only: it never
+//! runs reclaim, gc or prune.
+//!
 //! A missing `hq` binary or a CLI that predates the `storage` command maps to
 //! the `update-hq` error code so the UI can say "Update HQ to manage storage"
 //! instead of showing raw CLI output.
 
 use std::ffi::OsString;
-use std::time::Duration;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
+use futures_util::future::{BoxFuture, FutureExt, Shared};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 
 use crate::commands::feedback::resolve_hq_folder;
 use crate::util::logfile::log;
@@ -420,12 +435,17 @@ pub(crate) async fn run_hq(args: Vec<OsString>) -> Result<String, String> {
         .current_dir(&folder)
         .env("HQ_NO_UPDATE_CHECK", "1")
         .env("HQ_ROOT", &folder)
-        // Dropping the future on timeout must not leave `hq` running.
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        // Last resort if this future is dropped mid-run.
         .kill_on_drop(true);
-    let output = run_with_timeout(cmd.output(), limit).await?.map_err(|e| {
-        log("storage", &format!("spawn hq failed: {e}"));
-        UPDATE_HQ_ERROR.to_string()
-    })?;
+    // hq leads its own process group so a timeout can stop the
+    // `hq-storage.sh report|large` scripts it started too; killing only hq
+    // left them running and piling up.
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let output = run_child(cmd, limit).await?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     // Checked before any parse, whatever the exit status: a refusal must
     // never be read as an empty status or a partial prune.
@@ -456,11 +476,234 @@ pub(crate) async fn run_hq(args: Vec<OsString>) -> Result<String, String> {
     Ok(stdout)
 }
 
+/// Spawn `cmd` (already set to lead its own process group on Unix), collect
+/// its output, and on timeout stop the whole group so no scan outlives it.
+async fn run_child(
+    mut cmd: tokio::process::Command,
+    limit: Duration,
+) -> Result<std::process::Output, String> {
+    let mut child = cmd.spawn().map_err(|e| {
+        log("storage", &format!("spawn hq failed: {e}"));
+        UPDATE_HQ_ERROR.to_string()
+    })?;
+    let pgid = child.id().map(|p| p as i32);
+    let mut out = child.stdout.take();
+    let mut err = child.stderr.take();
+    let read_out = async move {
+        let mut buf = Vec::new();
+        if let Some(o) = out.as_mut() {
+            let _ = o.read_to_end(&mut buf).await;
+        }
+        buf
+    };
+    let read_err = async move {
+        let mut buf = Vec::new();
+        if let Some(e) = err.as_mut() {
+            let _ = e.read_to_end(&mut buf).await;
+        }
+        buf
+    };
+    let run = async {
+        let (stdout, stderr, status) = tokio::join!(read_out, read_err, child.wait());
+        (stdout, stderr, status)
+    };
+    let finished = run_with_timeout(run, limit).await;
+    match finished {
+        Ok((stdout, stderr, status)) => {
+            let status = status.map_err(|e| {
+                log("storage", &format!("wait hq failed: {e}"));
+                UPDATE_HQ_ERROR.to_string()
+            })?;
+            Ok(std::process::Output { status, stdout, stderr })
+        }
+        Err(code) => {
+            // hq and every script in its group, so no scan outlives the cap.
+            crate::commands::import_scan::stop_child(&mut child, pgid).await;
+            Err(code)
+        }
+    }
+}
+
+// ── Single flight and last-known status ─────────────────────────────────────
+
+type Flight<T> = Shared<BoxFuture<'static, Result<T, String>>>;
+
+struct Running<T> {
+    id: u64,
+    started: Instant,
+    flight: Flight<T>,
+}
+
+/// At most one run of a scan at a time. A request joins the running scan
+/// unless that scan started before `not_before` (e.g. before a prune finished),
+/// in which case the new run waits for the old one and then starts, so two
+/// never overlap. The work runs on its own task: callers going away (the
+/// Storage screen closing) neither cancels it nor lets a re-open start another.
+pub struct SingleFlight<T: Clone + Send + Sync + 'static> {
+    slot: Mutex<Option<Running<T>>>,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
+    pub const fn new() -> Self {
+        Self {
+            slot: Mutex::new(None),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// True while a run is in progress.
+    #[cfg(test)]
+    pub fn in_flight(&self) -> bool {
+        self.slot.lock().map(|s| s.is_some()).unwrap_or(false)
+    }
+
+    pub fn run<F, Fut>(
+        &'static self,
+        not_before: Option<Instant>,
+        make: F,
+    ) -> Flight<T>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let mut slot = self.slot.lock().unwrap_or_else(|p| p.into_inner());
+        let previous = match slot.as_ref() {
+            Some(r) if not_before.is_none_or(|t| r.started >= t) => return r.flight.clone(),
+            Some(r) => Some(r.flight.clone()),
+            None => None,
+        };
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let task = tokio::spawn(async move {
+            if let Some(prev) = previous {
+                let _ = prev.await;
+            }
+            let result = make().await;
+            let mut slot = self.slot.lock().unwrap_or_else(|p| p.into_inner());
+            if slot.as_ref().is_some_and(|r| r.id == id) {
+                *slot = None;
+            }
+            result
+        });
+        let flight: Flight<T> = async move {
+            task.await
+                .unwrap_or_else(|e| Err(format!("storage scan task failed: {e}")))
+        }
+        .boxed()
+        .shared();
+        *slot = Some(Running {
+            id,
+            started: Instant::now(),
+            flight: flight.clone(),
+        });
+        flight
+    }
+}
+
+static STATUS_FLIGHT: SingleFlight<StorageStatus> = SingleFlight::new();
+static OFFLOAD_PREVIEW_FLIGHT: SingleFlight<OffloadResult> = SingleFlight::new();
+/// When the last prune or offload finished; scans started before it are stale.
+static LAST_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
+static LAST_STATUS: Mutex<Option<CachedStatus>> = Mutex::new(None);
+
+fn last_write() -> Option<Instant> {
+    *LAST_WRITE.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn note_write() {
+    *LAST_WRITE.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+}
+
+/// The last good `hq storage status`, with when it was read and for which HQ.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CachedStatus {
+    pub status: StorageStatus,
+    /// RFC 3339 time the scan finished.
+    pub fetched_at: String,
+    pub hq_root: String,
+}
+
+fn cache_file() -> PathBuf {
+    hq_desktop_core::journal::state_dir()
+        .join("desktop")
+        .join("storage-status.json")
+}
+
+/// The cached status for `root`, from memory or else `file`.
+pub fn read_cached(file: &Path, root: &str) -> Option<CachedStatus> {
+    let mem = LAST_STATUS.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let cached = mem.or_else(|| {
+        let text = std::fs::read_to_string(file).ok()?;
+        serde_json::from_str::<CachedStatus>(&text).ok()
+    })?;
+    (cached.hq_root == root).then_some(cached)
+}
+
+pub fn write_cached(file: &Path, cached: CachedStatus) {
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match serde_json::to_string(&cached) {
+        Ok(text) => {
+            let tmp = file.with_extension("json.tmp");
+            if std::fs::write(&tmp, text).is_ok() {
+                let _ = std::fs::rename(&tmp, file);
+            }
+        }
+        Err(e) => log("storage", &format!("cache status: {e}")),
+    }
+    *LAST_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = Some(cached);
+}
+
+/// Fail closed: once the flag says no, nothing cached stays to be shown.
+pub fn clear_cached(file: &Path) {
+    *LAST_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    let _ = std::fs::remove_file(file);
+}
+
+/// Status through the single flight, storing a good result in the cache (on
+/// the scan's own task, so it lands even when the screen has closed).
+pub(crate) fn status_flight<F, Fut>(file: PathBuf, root: String, fetch: F) -> Flight<StorageStatus>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<StorageStatus, String>> + Send + 'static,
+{
+    STATUS_FLIGHT.run(last_write(), move || async move {
+        let res = fetch().await;
+        match &res {
+            Ok(status) => write_cached(
+                &file,
+                CachedStatus {
+                    status: status.clone(),
+                    fetched_at: chrono::Utc::now().to_rfc3339(),
+                    hq_root: root,
+                },
+            ),
+            Err(e) if e == FEATURE_DISABLED_ERROR => clear_cached(&file),
+            Err(_) => {}
+        }
+        res
+    })
+}
+
+/// Last known status for this HQ, or null. Never runs a scan.
+#[tauri::command]
+pub async fn get_cached_storage_status() -> Result<Option<CachedStatus>, String> {
+    let root = resolve_hq_folder().to_string_lossy().into_owned();
+    Ok(read_cached(&cache_file(), &root))
+}
+
 /// `hq storage status --json`.
 #[tauri::command]
 pub async fn get_storage_status() -> Result<StorageStatus, String> {
-    let stdout = run_hq(status_args()).await?;
-    parse_status(&stdout)
+    let root = resolve_hq_folder().to_string_lossy().into_owned();
+    status_flight(cache_file(), root, || async {
+        let stdout = run_hq(status_args()).await?;
+        parse_status(&stdout)
+    })
+    .await
 }
 
 /// `hq storage prune ... --dry-run --json`: what would be deleted.
@@ -474,23 +717,29 @@ pub async fn preview_storage_prune(request: PruneRequest) -> Result<PruneResult,
 #[tauri::command]
 pub async fn run_storage_prune(request: PruneRequest) -> Result<PruneResult, String> {
     log("storage", &format!("prune requested: {request:?}"));
-    let stdout = run_hq(prune_args(&request, false)?).await?;
-    parse_prune(&stdout)
+    let res = run_hq(prune_args(&request, false)?).await;
+    note_write();
+    parse_prune(&res?)
 }
 
 /// `hq storage offload --dry-run --json`: what "Move to cloud" would move.
 #[tauri::command]
 pub async fn preview_storage_offload() -> Result<OffloadResult, String> {
-    let stdout = run_hq(offload_args(true)).await?;
-    parse_offload(&stdout)
+    OFFLOAD_PREVIEW_FLIGHT
+        .run(last_write(), || async {
+            let stdout = run_hq(offload_args(true)).await?;
+            parse_offload(&stdout)
+        })
+        .await
 }
 
 /// `hq storage offload --yes --json`: uploads, verifies, then frees space.
 #[tauri::command]
 pub async fn run_storage_offload() -> Result<OffloadResult, String> {
     log("storage", "offload requested");
-    let stdout = run_hq(offload_args(false)).await?;
-    parse_offload(&stdout)
+    let res = run_hq(offload_args(false)).await;
+    note_write();
+    parse_offload(&res?)
 }
 
 #[cfg(test)]
@@ -898,5 +1147,208 @@ mod tests {
     fn old_cli_detection() {
         assert!(is_old_cli("error: unknown command 'storage'"));
         assert!(!is_old_cli("network timeout"));
+    }
+
+    // ── Single flight, cache, and process-group stop (slow Storage screen) ──
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn leak<T: Clone + Send + Sync + 'static>() -> &'static SingleFlight<T> {
+        Box::leak(Box::new(SingleFlight::new()))
+    }
+
+    #[tokio::test]
+    async fn second_request_joins_the_running_scan() {
+        let flight = leak::<u32>();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let mk = |runs: Arc<AtomicUsize>| {
+            move || async move {
+                runs.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok(7)
+            }
+        };
+        let a = flight.run(None, mk(runs.clone()));
+        let b = flight.run(None, mk(runs.clone()));
+        let c = flight.run(None, mk(runs.clone()));
+        assert_eq!((a.await, b.await, c.await), (Ok(7), Ok(7), Ok(7)));
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "only one scan may run");
+    }
+
+    #[tokio::test]
+    async fn a_new_request_after_the_scan_ends_runs_again() {
+        let flight = leak::<u32>();
+        let runs = Arc::new(AtomicUsize::new(0));
+        for _ in 0..2 {
+            let r = runs.clone();
+            let got = flight
+                .run(None, move || async move { Ok(r.fetch_add(1, Ordering::SeqCst) as u32) })
+                .await;
+            assert!(got.is_ok());
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+        assert!(!flight.in_flight());
+    }
+
+    #[tokio::test]
+    async fn leaving_the_screen_does_not_cancel_or_duplicate_the_scan() {
+        let flight = leak::<u32>();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let r = runs.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        // The screen asks, then goes away (drops its future).
+        drop(flight.run(None, move || async move {
+            r.fetch_add(1, Ordering::SeqCst);
+            let _ = rx.await;
+            Ok(1)
+        }));
+        tokio::task::yield_now().await;
+        assert!(flight.in_flight(), "the scan keeps running on its own task");
+        // Re-opening joins it instead of starting a second scan.
+        let r2 = runs.clone();
+        let again = flight.run(None, move || async move {
+            r2.fetch_add(1, Ordering::SeqCst);
+            Ok(2)
+        });
+        tx.send(()).unwrap();
+        assert_eq!(again.await, Ok(1));
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert!(!flight.in_flight(), "the slot clears when the scan ends");
+    }
+
+    #[tokio::test]
+    async fn a_stale_scan_is_followed_not_overlapped() {
+        let flight = leak::<u32>();
+        let live = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mk = |v: u32, live: Arc<AtomicUsize>, peak: Arc<AtomicUsize>| {
+            move || async move {
+                let n = live.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(n, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                live.fetch_sub(1, Ordering::SeqCst);
+                Ok(v)
+            }
+        };
+        let first = flight.run(None, mk(1, live.clone(), peak.clone()));
+        // A prune finished after the first scan started: its figures are old.
+        let not_before = Some(Instant::now());
+        let second = flight.run(not_before, mk(2, live.clone(), peak.clone()));
+        // A third request with the same bar joins the fresh run.
+        let third = flight.run(not_before, mk(3, live.clone(), peak.clone()));
+        assert_eq!(first.await, Ok(1));
+        assert_eq!(second.await, Ok(2));
+        assert_eq!(third.await, Ok(2));
+        assert_eq!(peak.load(Ordering::SeqCst), 1, "scans never overlap");
+    }
+
+    static CACHE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn temp_cache() -> PathBuf {
+        std::env::temp_dir()
+            .join(format!("hq-storage-cache-test-{}-{}", std::process::id(), rand_suffix()))
+            .join("storage-status.json")
+    }
+
+    fn rand_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn good_status_is_cached_for_the_next_open() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        clear_cached(&temp_cache());
+        let file = temp_cache();
+        let got = status_flight(file.clone(), "/hq".into(), || async { parse_status(STATUS) }).await;
+        assert!(got.is_ok());
+        let cached = read_cached(&file, "/hq").expect("cached in memory");
+        assert_eq!(cached.status, parse_status(STATUS).unwrap());
+        assert!(!cached.fetched_at.is_empty());
+        // Another HQ folder never sees it.
+        assert!(read_cached(&file, "/other").is_none());
+        // After an app restart (memory empty) it comes back from disk.
+        *LAST_STATUS.lock().unwrap() = None;
+        assert_eq!(read_cached(&file, "/hq").map(|c| c.status), Some(parse_status(STATUS).unwrap()));
+        clear_cached(&file);
+    }
+
+    #[tokio::test]
+    async fn feature_disabled_clears_the_cache_fail_closed() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        let file = temp_cache();
+        write_cached(
+            &file,
+            CachedStatus {
+                status: parse_status(STATUS).unwrap(),
+                fetched_at: "2026-10-11T00:00:00Z".into(),
+                hq_root: "/hq".into(),
+            },
+        );
+        let got = status_flight(file.clone(), "/hq".into(), || async {
+            Err(FEATURE_DISABLED_ERROR.to_string())
+        })
+        .await;
+        assert_eq!(got, Err(FEATURE_DISABLED_ERROR.to_string()));
+        assert!(read_cached(&file, "/hq").is_none());
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn failed_scan_keeps_the_last_good_status() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        let file = temp_cache();
+        clear_cached(&file);
+        status_flight(file.clone(), "/hq".into(), || async { parse_status(STATUS) })
+            .await
+            .unwrap();
+        let got = status_flight(file.clone(), "/hq".into(), || async {
+            Err(TIMEOUT_ERROR.to_string())
+        })
+        .await;
+        assert!(got.is_err());
+        assert!(read_cached(&file, "/hq").is_some());
+        clear_cached(&file);
+    }
+
+    #[test]
+    fn status_stays_read_only() {
+        let args = rendered(&status_args());
+        for word in ["reclaim", "gc", "prune", "drop-backups", "--yes"] {
+            assert!(!args.iter().any(|a| a.contains(word)), "status must not run {word}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_stops_the_scripts_hq_started_too() {
+        let dir = std::env::temp_dir().join(format!("hq-storage-pg-{}-{}", std::process::id(), rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("child.pid");
+        // Stands in for hq starting `hq-storage.sh large`, which outlived hq.
+        let script = format!("sleep 30 & echo $! > '{}'; wait", pidfile.display());
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &script])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .process_group(0);
+        let res = run_child(cmd, Duration::from_millis(300)).await;
+        assert_eq!(res.unwrap_err(), TIMEOUT_ERROR);
+        let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        let mut gone = false;
+        for _ in 0..50 {
+            // Reaped by init or a zombie we cannot see: kill(pid, 0) fails.
+            if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(gone, "the grandchild scan must not outlive the timeout");
     }
 }

@@ -2616,8 +2616,22 @@ export interface StoragePruneResult {
  * Desktop-only. A failure whose message is `update-hq` means the hq CLI is
  * missing or predates `hq storage`.
  */
+/** Last good `hq storage status`, kept by the desktop host. */
+export interface CachedStorageStatus {
+  status: StorageStatus;
+  /** ISO time the scan finished. */
+  fetched_at: string;
+  hq_root: string;
+}
+
 export interface StorageApi {
+  /**
+   * `hq storage status --json`. Slow (minutes cold). The host runs one scan
+   * at a time: a call made while one runs joins it.
+   */
   status(): AdapterPromise<StorageStatus>;
+  /** Last known status without scanning; null when there is none. */
+  cachedStatus?(): AdapterPromise<CachedStorageStatus | null>;
   previewPrune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
   prune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
   /** `hq storage offload --dry-run --json`. */

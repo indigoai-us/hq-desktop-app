@@ -889,6 +889,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
   readonly storage: NonNullable<PlatformAdapter["storage"]> = {
     status: () => this.call("get_storage_status"),
+    cachedStatus: () => this.call("get_cached_storage_status"),
     previewPrune: (request) => this.call("preview_storage_prune", { request }),
     prune: (request) => this.call("run_storage_prune", { request }),
     previewOffload: () => this.call("preview_storage_offload"),
