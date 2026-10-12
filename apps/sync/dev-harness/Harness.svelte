@@ -22,6 +22,7 @@
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
+  import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
@@ -238,7 +239,13 @@
   }
 </script>
 
-{#if view === 'claude-code'}
+{#if view === 'bot-integrations'}
+  <!-- Per-bot integration control section (BotIntegrationsSection) rendered in
+       both Agent profile and Local bot card contexts. Flag
+       desktop.bot-integration-control-v1 is forced on via the flagEnabled
+       prop. Size the preview viewport to ~1180x760. -->
+  <BotIntegrationsPreview />
+{:else if view === 'claude-code'}
   <!-- New Bot waking screen at the Claude code paste-back (?claude= variants in ClaudeCodePreview.svelte). -->
   <ClaudeCodePreview />
 {:else if view === 'forward'}
