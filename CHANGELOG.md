@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Badges: Founding Member's full-size badge now has the gold ring of the other Gold badges. It moved from Legendary to Gold, but the large badge on its page and card still wore the Legendary ring in the HQ colours.
 - Settings > Storage shows your backup and cloud history sizes without waiting for the big-file check. The first time you open it, before HQ has any sizes saved, the page used to stay on a loading screen for minutes on a big HQ folder. Now the sizes show as soon as they are read, and the Big files section says "Checking for big files…" until that check finishes, then fills in. Move to cloud waits until the check is done. This needs an hq CLI with `hq storage big-files`; with an older CLI the page works as before. Only one big-file check runs at a time, and reading sizes still never deletes or cleans anything up.
 
 ## [0.11.5] — 2026-10-12
