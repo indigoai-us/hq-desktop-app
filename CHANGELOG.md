@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 - Badges: four new badges. OG goes to the team that built HQ from day one, Captain to the person who leads HQ, and Patient Zero to the first person to run HQ; each is a single Legendary badge. Core Builder counts pull requests merged into HQ core and has four levels: Bronze at 1, Silver at 10, Gold at 100 and Legendary at 200. The set now has 19 cards. OG, Captain and Patient Zero say "Awarded, not earned" while locked.
 - First run on a new computer: if your account already has an assistant, the name step now opens with your assistant's name, so Continue keeps it. Before, it suggested a new random name, and clicking through renamed your assistant. HQ checks your account's bots before the name step opens. A new account, or one whose bots HQ cannot read right now, still gets a friendly suggested name.
+- Badge cards: tapping a card in your binder now lifts it out of its pocket and grows it onto the stage, and closing puts it back; only the backdrop fades. Card and badge dates read like "Jul 30, 2026" instead of a long timestamp, and badge names wrap between words ("Fleet / Commander") instead of breaking mid-word.
 
 ## [0.11.4] — 2026-10-11
 
