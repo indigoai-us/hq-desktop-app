@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Badges: the "You earned" notice now has the cards' holographic shimmer: an iridescent edge and a sheen that sweeps across as it comes in and while you hover it, with the badge's mark beside the words. When several badges arrive at once, such as everything since your last visit, they come as one notice ("You earned 4 badges") with their marks in a row, and Reveal cards shows each card in turn. Reduced motion keeps the edge still.
 - Badge cards no longer show their front mirrored for a moment when you flip them over. Each side now hides as the card turns edge-on.
 - Sign out now also ends your session on the server. Before, signing out only removed the sign-in saved on this computer, so a copy of it could still be used until it expired. HQ now asks the sign-in service to cancel it first, waits at most 5 seconds, and then removes the saved sign-in either way, so you are always signed out on this computer even when you are offline.
 - The Badges page is one view now. The Badges and Cards tabs are gone: the page lists every badge by tier, and clicking a badge you have earned opens its card, grown out of the badge, instead of a separate badge page. Closing the card puts it back.

@@ -107,7 +107,8 @@ export const sampleProgress: BadgeProgressSource = () => PROGRESS;
  * `?view=shell&earn=<badge>[:<tier>]` raises the "You earned" notice a few
  * seconds after the shell loads, to demo the card reveal (Gold carries
  * "Reveal card"). Several are comma separated, e.g.
- * `earn=founding,poweruser:3,liftoff:1`. Harness only: no production code
+ * `earn=founding,poweruser:3,liftoff:1`, and raise one notice for all of
+ * them ("You earned 3 badges", "Reveal cards"). Harness only: no production code
  * path raises this notice.
  *
  * Tiers follow production's rules (`earnedTier`, as the loader reads
