@@ -56,6 +56,14 @@ export interface LaunchActionsInput {
    * path settles trust before that scan, so it keeps `prompt` unchanged.
    */
   deepLinkPrompt?: string;
+  /**
+   * First prompt for the TERMINAL CLIs (grok, the codex CLI fallback, the
+   * claude CLI), passed to `launch_cli_in_terminal` and bound after `--` as
+   * the tool's PROMPT argument. Opt-in: callers that omit it keep the bare
+   * terminal launch they had before (the `/setup` and `/startwork` surfaces
+   * tell the person what to type instead).
+   */
+  terminalPrompt?: string;
 }
 
 export interface LaunchActions {
@@ -124,10 +132,19 @@ export function createLaunchActions({
   hqFolderPath,
   prompt,
   deepLinkPrompt,
+  terminalPrompt,
 }: LaunchActionsInput): LaunchActions {
   const folder = hqFolderPath.trim();
   const prefill = prefillOf(prompt);
   const deepLinkPrefill = prefillOf(deepLinkPrompt) ?? prefill;
+  const terminalPrefill = prefillOf(terminalPrompt);
+
+  /** `launch_cli_in_terminal` payload, with the prompt only when one is set. */
+  function terminalArgs(tool: LaunchKey) {
+    return terminalPrefill
+      ? { path: folder, tool, prompt: terminalPrefill }
+      : { path: folder, tool };
+  }
   let aiTools: AiTools | null | undefined;
 
   async function ensureAiTools(): Promise<AiTools | null> {
@@ -147,7 +164,11 @@ export function createLaunchActions({
       return res.ok ? null : failureMessage(res, "Claude Code");
     }
     if (path === "cli") {
-      const res = await shell.launchClaudeCode(folder);
+      // Same Terminal launch as `launchClaudeCode`, through the command that
+      // can carry a prompt.
+      const res = terminalPrefill
+        ? await shell.launchCliInTerminal(terminalArgs("claude"))
+        : await shell.launchClaudeCode(folder);
       return res.ok ? null : failureMessage(res, "Claude Code");
     }
     return claudeNotDetectedMessage(prefill);
@@ -172,10 +193,9 @@ export function createLaunchActions({
       }
     }
     if (path !== "none") {
-      const res = await shell.launchCliInTerminal({
-        path: folder,
-        tool: SETUP_LAUNCH_COMMANDS.codex.kind,
-      });
+      const res = await shell.launchCliInTerminal(
+        terminalArgs(SETUP_LAUNCH_COMMANDS.codex.kind),
+      );
       return res.ok ? null : failureMessage(res, "Codex");
     }
     let copied = false;
@@ -192,10 +212,9 @@ export function createLaunchActions({
 
   async function launchGrok(): Promise<string | null> {
     if (!folder) return null;
-    const res = await shell.launchCliInTerminal({
-      path: folder,
-      tool: SETUP_LAUNCH_COMMANDS.grok.tool,
-    });
+    const res = await shell.launchCliInTerminal(
+      terminalArgs(SETUP_LAUNCH_COMMANDS.grok.tool),
+    );
     return res.ok ? null : failureMessage(res, "Grok Build");
   }
 

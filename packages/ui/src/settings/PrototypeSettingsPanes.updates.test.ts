@@ -377,35 +377,139 @@ describe("Updates pane: per-row Update now", () => {
     expect(statusTexts()).not.toMatch(/hq update|npm i |pnpm /i);
   });
 
-  it("opens Claude Code with the self-heal prompt from the CLI row", async () => {
-    const { adapter } = updatesAdapter({
-      checkCliUpdate: vi.fn(async () => ok({ latest: "5.347.0" })),
-      installCliUpdate: vi.fn(async () => ({ ok: false, message: "nope" })),
-    });
+  /** The CLI-row request for installed 1.2.3, npm latest 5.347.0, failure "nope". */
+  const CLI_HEAL_PROMPT =
+    "Update the HQ CLI (@indigoai-us/hq-cli, the `hq` command) from v1.2.3 to v5.347.0. " +
+    "HQ's own update failed: nope. Check `which -a hq` and `npm prefix -g`, run " +
+    "`npm install -g @indigoai-us/hq-cli@latest` (fix EACCES or Node version if it fails), " +
+    "then confirm with `hq --version`.";
+
+  type ShellMocks = Record<string, ReturnType<typeof vi.fn>>;
+
+  function shellOf(adapter: PlatformAdapter): ShellMocks {
+    return (adapter as unknown as { shell: ShellMocks }).shell;
+  }
+
+  /** Fail the row's own install, then press one of its heal buttons. */
+  async function failRowThenHeal(
+    adapter: PlatformAdapter,
+    row: "cli" | "core",
+    label: string,
+  ): Promise<void> {
     mountUpdates(adapter);
     const update = await vi.waitFor(() => {
-      const btn = host.querySelector<HTMLButtonElement>('[data-testid="settings-cli-update"]');
+      const btn = host.querySelector<HTMLButtonElement>(`[data-testid="settings-${row}-update"]`);
       expect(btn).toBeTruthy();
       return btn!;
     });
     update.click();
     const heal = await vi.waitFor(() => {
-      const btn = Array.from(host.querySelectorAll("button")).find((b) =>
-        b.textContent?.includes("Fix in Claude Code"),
-      );
+      const btn = Array.from(
+        host.querySelectorAll<HTMLButtonElement>(`[data-testid="settings-${row}-heal"] button`),
+      ).find((b) => b.textContent?.includes(label));
       expect(btn).toBeTruthy();
       return btn!;
     });
     heal.click();
-    const shell = (adapter as unknown as { shell: Record<string, ReturnType<typeof vi.fn>> }).shell;
+  }
+
+  function failingCliAdapter() {
+    return updatesAdapter({
+      checkCliUpdate: vi.fn(async () => ok({ latest: "5.347.0" })),
+      installCliUpdate: vi.fn(async () => ({ ok: false, message: "nope" })),
+    }).adapter;
+  }
+
+  /** Same pane, with only some AI tools detected. */
+  function withTools(adapter: PlatformAdapter, tools: Record<string, boolean>): PlatformAdapter {
+    shellOf(adapter).detectAiTools.mockImplementation(async () => ok(tools));
+    return adapter;
+  }
+
+  it("opens Claude Code with the CLI-row heal prompt on the deep link", async () => {
+    const adapter = failingCliAdapter();
+    await failRowThenHeal(adapter, "cli", "Fix in Claude Code");
+    const shell = shellOf(adapter);
     await vi.waitFor(() => {
       expect(shell.openClaudeCodeLink).toHaveBeenCalled();
     });
     const url = String(shell.openClaudeCodeLink.mock.calls[0]?.[0] ?? "");
-    const prompt = new URL(url).searchParams.get("q");
-    expect(prompt).toBe(
-      "HQ couldn't update itself. Find out why and get it up to date.",
-    );
+    expect(new URL(url).searchParams.get("q")).toBe(CLI_HEAL_PROMPT);
+  });
+
+  it("launches grok with the CLI-row heal prompt", async () => {
+    const adapter = failingCliAdapter();
+    await failRowThenHeal(adapter, "cli", "Fix in Grok Build");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCliInTerminal).toHaveBeenCalled();
+    });
+    expect(shell.launchCliInTerminal).toHaveBeenCalledWith({
+      path: "/tmp/HQ",
+      tool: "grok",
+      prompt: CLI_HEAL_PROMPT,
+    });
+    expect(CLI_HEAL_PROMPT).toContain("HQ CLI (@indigoai-us/hq-cli");
+  });
+
+  it("opens the Codex app with the CLI-row heal prompt", async () => {
+    const adapter = failingCliAdapter();
+    await failRowThenHeal(adapter, "cli", "Fix in Codex");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCodexWorkspace).toHaveBeenCalled();
+    });
+    expect(shell.launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ", CLI_HEAL_PROMPT);
+  });
+
+  it("launches the codex CLI in a terminal with the CLI-row heal prompt", async () => {
+    const adapter = withTools(failingCliAdapter(), { codex_cli: true });
+    await failRowThenHeal(adapter, "cli", "Fix in Codex");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCliInTerminal).toHaveBeenCalled();
+    });
+    expect(shell.launchCodexWorkspace).not.toHaveBeenCalled();
+    expect(shell.launchCliInTerminal).toHaveBeenCalledWith({
+      path: "/tmp/HQ",
+      tool: "codex",
+      prompt: CLI_HEAL_PROMPT,
+    });
+  });
+
+  it("launches the claude CLI in a terminal with the CLI-row heal prompt", async () => {
+    const adapter = withTools(failingCliAdapter(), { claude_cli: true });
+    await failRowThenHeal(adapter, "cli", "Fix in Claude Code");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCliInTerminal).toHaveBeenCalled();
+    });
+    expect(shell.openClaudeCodeLink).not.toHaveBeenCalled();
+    expect(shell.launchClaudeCode).not.toHaveBeenCalled();
+    expect(shell.launchCliInTerminal).toHaveBeenCalledWith({
+      path: "/tmp/HQ",
+      tool: "claude",
+      prompt: CLI_HEAL_PROMPT,
+    });
+  });
+
+  it("sends the Core row its own heal prompt, not the CLI one", async () => {
+    const { adapter } = updatesAdapter({
+      checkCoreState: vi.fn(async () => ok({ versionBehind: true, targetVersion: "15.1.0" })),
+      installCoreUpdate: vi.fn(async () => ({ ok: false, message: "rescue clone failed" })),
+    });
+    await failRowThenHeal(adapter, "core", "Fix in Grok Build");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCliInTerminal).toHaveBeenCalled();
+    });
+    const args = shell.launchCliInTerminal.mock.calls[0]?.[0] as { tool: string; prompt: string };
+    expect(args.tool).toBe("grok");
+    expect(args.prompt).toMatch(/^Update HQ Core \(the HQ files in this folder/);
+    expect(args.prompt).toContain("from v15.0.118 to v15.1.0");
+    expect(args.prompt).toContain("HQ's own update failed: rescue clone failed.");
+    expect(args.prompt).toContain("/update-hq");
+    expect(args.prompt).not.toContain("hq-cli");
   });
 
   it("labels a staged desktop update Restart HQ", async () => {

@@ -21,7 +21,7 @@
 
 import type { BrandMark } from "./app-brand-marks.js";
 import { integrationDisplayName } from "../../common/integration-display.js";
-import type { ConnectItem, ConnectItemState, ConnectTarget } from "./richMessageContent.js";
+import { messageHasConnectBlock, type ConnectItem, type ConnectItemState, type ConnectTarget } from "./richMessageContent.js";
 import {
   slackCapabilityFromStatus,
   slackRowFromStatus,
@@ -1008,6 +1008,18 @@ export const CONNECT_MORE_REQUEST = "Connect more tools";
 export function isConnectMoreRequest(text: string | null | undefined): boolean {
   const said = (text ?? "").trim().replace(/\s*\.$/, "").trim().toLowerCase();
   return said === CONNECT_MORE_REQUEST.toLowerCase();
+}
+
+/**
+ * In a bot's direct message, a threaded answer that stays on the main
+ * timeline: one carrying connect cards of its own, or the answer to "Connect
+ * more tools". The cards' buttons work there, not in the thread panel.
+ */
+export function botReplyKeepsCardsInMain(
+  reply: { body?: string | null; richContent?: unknown },
+  root: { body?: string | null },
+): boolean {
+  return messageHasConnectBlock(reply) || isConnectMoreRequest(root.body);
 }
 
 interface ConversationMessageLike {

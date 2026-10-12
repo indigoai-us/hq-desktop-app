@@ -6,9 +6,13 @@
 //! The CLI owns the git and S3 work; this module only builds argv, runs the
 //! command off the main thread, and parses the JSON into typed structs.
 //!
-//! Status and the offload preview are slow scans (`hq-storage.sh report` and
-//! `large` under the CLI; minutes on a big HQ). They go through a single
-//! flight per scan: a second request joins the running one instead of
+//! Status, big files and the offload preview are slow scans (`hq-storage.sh
+//! report` and `large` under the CLI; minutes on a big HQ). Newer CLIs leave
+//! the big-file scan out of `status` (`big_files_included: false`) and run it
+//! as `hq storage big-files --json`, so the summary shows without waiting on
+//! it. An older CLI has no `big-files` (it answers "unknown command", mapped to
+//! `update-hq`) and puts big files in `status` as before. Each scan goes
+//! through a single flight: a second request joins the running one instead of
 //! starting another, the scan runs on its own task so leaving the screen does
 //! not cancel or duplicate it, and a timeout stops the whole process group
 //! (hq and the scripts it started), not only `hq`. The last good status is
@@ -69,7 +73,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// How long `run_hq` waits for the given `hq` argv before giving up.
 pub fn timeout_for(args: &[OsString]) -> Duration {
-    if args.get(1).is_some_and(|a| a == "status") {
+    if args.get(1).is_some_and(|a| a == "status" || a == "big-files") {
         return STATUS_TIMEOUT;
     }
     if args.iter().any(|a| a == "--dry-run") {
@@ -205,6 +209,18 @@ pub struct StorageStatus {
     pub cloud_error: Option<String>,
     pub generated_at: Option<String>,
     pub reclaim: Option<Reclaim>,
+    /// `Some(false)`: this CLI left the big-file scan out of status; get it
+    /// from `hq storage big-files`. `None` on older CLIs, whose status always
+    /// carries `offload` (or predates it).
+    pub big_files_included: Option<bool>,
+}
+
+/// `hq storage big-files --json`: the big-file scan on its own.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct StorageBigFiles {
+    pub offload: Option<OffloadStatus>,
+    pub generated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -348,6 +364,18 @@ pub fn status_args() -> Vec<OsString> {
         .iter()
         .map(OsString::from)
         .collect()
+}
+
+/// `hq storage big-files --json`: read-only, like status.
+pub fn big_files_args() -> Vec<OsString> {
+    ["storage", "big-files", "--json"]
+        .iter()
+        .map(OsString::from)
+        .collect()
+}
+
+pub fn parse_big_files(stdout: &str) -> Result<StorageBigFiles, String> {
+    serde_json::from_str(stdout.trim()).map_err(|e| format!("parse storage big-files: {e}"))
 }
 
 pub fn prune_args(req: &PruneRequest, dry_run: bool) -> Result<Vec<OsString>, String> {
@@ -603,10 +631,15 @@ impl<T: Clone + Send + Sync + 'static> SingleFlight<T> {
 }
 
 static STATUS_FLIGHT: SingleFlight<StorageStatus> = SingleFlight::new();
+static BIG_FILES_FLIGHT: SingleFlight<StorageBigFiles> = SingleFlight::new();
 static OFFLOAD_PREVIEW_FLIGHT: SingleFlight<OffloadResult> = SingleFlight::new();
 /// When the last prune or offload finished; scans started before it are stale.
 static LAST_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
 static LAST_STATUS: Mutex<Option<CachedStatus>> = Mutex::new(None);
+/// Last good big-file result per HQ root, for a status that lands after it.
+static LAST_BIG_FILES: Mutex<Option<(String, OffloadStatus)>> = Mutex::new(None);
+/// Status and big files both rewrite the cache file; one at a time.
+static CACHE_WRITE: Mutex<()> = Mutex::new(());
 
 fn last_write() -> Option<Instant> {
     *LAST_WRITE.lock().unwrap_or_else(|p| p.into_inner())
@@ -660,7 +693,44 @@ pub fn write_cached(file: &Path, cached: CachedStatus) {
 /// Fail closed: once the flag says no, nothing cached stays to be shown.
 pub fn clear_cached(file: &Path) {
     *LAST_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    *LAST_BIG_FILES.lock().unwrap_or_else(|p| p.into_inner()) = None;
     let _ = std::fs::remove_file(file);
+}
+
+/// Cache a fresh status. A status without big files (newer CLI) keeps the
+/// big files already known for this HQ, so the next open shows them at once.
+fn cache_status(file: &Path, root: String, status: &StorageStatus) {
+    let _w = CACHE_WRITE.lock().unwrap_or_else(|p| p.into_inner());
+    let mut status = status.clone();
+    if status.offload.is_none() && status.big_files_included == Some(false) {
+        let from_big_files = LAST_BIG_FILES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .filter(|(r, _)| *r == root)
+            .map(|(_, o)| o);
+        status.offload =
+            from_big_files.or_else(|| read_cached(file, &root).and_then(|c| c.status.offload));
+    }
+    write_cached(
+        file,
+        CachedStatus {
+            status,
+            fetched_at: chrono::Utc::now().to_rfc3339(),
+            hq_root: root,
+        },
+    );
+}
+
+/// Put fresh big files into the cached status (when there is one yet).
+fn cache_big_files(file: &Path, root: String, offload: OffloadStatus) {
+    let _w = CACHE_WRITE.lock().unwrap_or_else(|p| p.into_inner());
+    *LAST_BIG_FILES.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some((root.clone(), offload.clone()));
+    if let Some(mut cached) = read_cached(file, &root) {
+        cached.status.offload = Some(offload);
+        write_cached(file, cached);
+    }
 }
 
 /// Status through the single flight, storing a good result in the cache (on
@@ -673,16 +743,33 @@ where
     STATUS_FLIGHT.run(last_write(), move || async move {
         let res = fetch().await;
         match &res {
-            Ok(status) => write_cached(
-                &file,
-                CachedStatus {
-                    status: status.clone(),
-                    fetched_at: chrono::Utc::now().to_rfc3339(),
-                    hq_root: root,
-                },
-            ),
+            Ok(status) => cache_status(&file, root, status),
             Err(e) if e == FEATURE_DISABLED_ERROR => clear_cached(&file),
             Err(_) => {}
+        }
+        res
+    })
+}
+
+/// Big files through their own single flight (independent of status, so the
+/// summary never waits on them), storing a good result in the cache.
+pub(crate) fn big_files_flight<F, Fut>(
+    file: PathBuf,
+    root: String,
+    fetch: F,
+) -> Flight<StorageBigFiles>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = Result<StorageBigFiles, String>> + Send + 'static,
+{
+    BIG_FILES_FLIGHT.run(last_write(), move || async move {
+        let res = fetch().await;
+        match &res {
+            Ok(StorageBigFiles {
+                offload: Some(o), ..
+            }) => cache_big_files(&file, root, o.clone()),
+            Err(e) if e == FEATURE_DISABLED_ERROR => clear_cached(&file),
+            _ => {}
         }
         res
     })
@@ -702,6 +789,18 @@ pub async fn get_storage_status() -> Result<StorageStatus, String> {
     status_flight(cache_file(), root, || async {
         let stdout = run_hq(status_args()).await?;
         parse_status(&stdout)
+    })
+    .await
+}
+
+/// `hq storage big-files --json`. An older CLI without it fails with
+/// `update-hq`; its `status` already carries big files.
+#[tauri::command]
+pub async fn get_storage_big_files() -> Result<StorageBigFiles, String> {
+    let root = resolve_hq_folder().to_string_lossy().into_owned();
+    big_files_flight(cache_file(), root, || async {
+        let stdout = run_hq(big_files_args()).await?;
+        parse_big_files(&stdout)
     })
     .await
 }
@@ -1004,6 +1103,38 @@ mod tests {
         assert_passthrough::<OffloadResult>(&fixture("offload-dry-held-r4.json"));
         assert_passthrough::<OffloadResult>(&fixture("offload-refused-r4.json"));
         assert_passthrough::<PruneResult>(&fixture("prune-refused-worktree-r4.json"));
+        // Round-5 shapes: status without big files, and big files on their own.
+        assert_passthrough::<StorageStatus>(&fixture("status-fast-r5.json"));
+        assert_passthrough::<StorageStatus>(&fixture("status-big-files-r5.json"));
+        assert_passthrough::<StorageBigFiles>(&fixture("big-files-r5.json"));
+    }
+
+    #[test]
+    fn parses_fast_status_and_big_files() {
+        let fast = parse_status(&fixture("status-fast-r5.json")).unwrap();
+        assert_eq!(fast.big_files_included, Some(false));
+        assert!(fast.offload.is_none());
+        assert!(fast.local.available);
+        let full = parse_status(&fixture("status-big-files-r5.json")).unwrap();
+        assert_eq!(full.big_files_included, Some(true));
+        let big = parse_big_files(&fixture("big-files-r5.json")).unwrap();
+        assert_eq!(big.offload, full.offload);
+        assert_eq!(big.offload.unwrap().history_candidates.count, 4);
+        // An older CLI's status: no marker, big files inline.
+        let old = parse_status(&fixture("status-held-r4.json")).unwrap();
+        assert_eq!(old.big_files_included, None);
+        assert!(old.offload.is_some());
+        assert!(parse_big_files("error: unknown command 'big-files'").is_err());
+    }
+
+    #[test]
+    fn big_files_args_shape_and_read_only() {
+        let args = rendered(&big_files_args());
+        assert_eq!(args, ["storage", "big-files", "--json"]);
+        for word in ["reclaim", "gc", "prune", "drop-backups", "offload", "--yes"] {
+            assert!(!args.iter().any(|a| a.contains(word)), "big files must not run {word}");
+        }
+        assert_eq!(timeout_for(&big_files_args()), STATUS_TIMEOUT);
     }
 
     #[test]
@@ -1146,6 +1277,8 @@ mod tests {
     #[test]
     fn old_cli_detection() {
         assert!(is_old_cli("error: unknown command 'storage'"));
+        // What hq 5.345.89 prints for `hq storage big-files --json`.
+        assert!(is_old_cli("error: unknown command 'big-files'"));
         assert!(!is_old_cli("network timeout"));
     }
 
@@ -1312,6 +1445,116 @@ mod tests {
         assert!(got.is_err());
         assert!(read_cached(&file, "/hq").is_some());
         clear_cached(&file);
+    }
+
+    fn big(count: u64) -> StorageBigFiles {
+        StorageBigFiles {
+            offload: Some(OffloadStatus {
+                history_candidates: CountBytes { count, bytes: count * 100 },
+                ..Default::default()
+            }),
+            generated_at: Some("2026-10-12T00:00:00Z".into()),
+        }
+    }
+
+    fn fast_status() -> StorageStatus {
+        parse_status(&fixture("status-fast-r5.json")).unwrap()
+    }
+
+    #[tokio::test]
+    async fn big_files_have_their_own_single_flight() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        let file = temp_cache();
+        clear_cached(&file);
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let r = runs.clone();
+        let first = big_files_flight(file.clone(), "/hq".into(), move || async move {
+            r.fetch_add(1, Ordering::SeqCst);
+            let _ = rx.await;
+            Ok(big(3))
+        });
+        // The summary is not held up by the running big-file scan.
+        let summary = status_flight(file.clone(), "/hq".into(), || async { Ok(fast_status()) }).await;
+        assert!(summary.is_ok());
+        // A second big-files request joins the running one.
+        let r2 = runs.clone();
+        let second = big_files_flight(file.clone(), "/hq".into(), move || async move {
+            r2.fetch_add(1, Ordering::SeqCst);
+            Ok(big(9))
+        });
+        tx.send(()).unwrap();
+        assert_eq!(first.await, Ok(big(3)));
+        assert_eq!(second.await, Ok(big(3)));
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "only one big-file scan may run");
+        clear_cached(&file);
+    }
+
+    #[tokio::test]
+    async fn big_files_fill_the_cache_and_survive_the_next_summary() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        let file = temp_cache();
+        clear_cached(&file);
+        status_flight(file.clone(), "/hq".into(), || async { Ok(fast_status()) }).await.unwrap();
+        assert!(read_cached(&file, "/hq").unwrap().status.offload.is_none());
+        big_files_flight(file.clone(), "/hq".into(), || async { Ok(big(4)) }).await.unwrap();
+        assert_eq!(read_cached(&file, "/hq").unwrap().status.offload, big(4).offload);
+        // A later summary without big files keeps the known ones, also after a restart.
+        *LAST_STATUS.lock().unwrap() = None;
+        *LAST_BIG_FILES.lock().unwrap() = None;
+        status_flight(file.clone(), "/hq".into(), || async { Ok(fast_status()) }).await.unwrap();
+        let cached = read_cached(&file, "/hq").unwrap();
+        assert_eq!(cached.status.offload, big(4).offload);
+        assert_eq!(cached.status.big_files_included, Some(false));
+        clear_cached(&file);
+    }
+
+    #[tokio::test]
+    async fn first_open_big_files_before_any_summary_are_kept() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        let file = temp_cache();
+        clear_cached(&file);
+        // No cache yet: big files land first, then the summary.
+        big_files_flight(file.clone(), "/hq".into(), || async { Ok(big(2)) }).await.unwrap();
+        assert!(read_cached(&file, "/hq").is_none());
+        status_flight(file.clone(), "/hq".into(), || async { Ok(fast_status()) }).await.unwrap();
+        assert_eq!(read_cached(&file, "/hq").unwrap().status.offload, big(2).offload);
+        // Another HQ folder never gets them.
+        clear_cached(&file);
+        big_files_flight(file.clone(), "/hq".into(), || async { Ok(big(2)) }).await.unwrap();
+        status_flight(file.clone(), "/other".into(), || async { Ok(fast_status()) }).await.unwrap();
+        assert!(read_cached(&file, "/other").unwrap().status.offload.is_none());
+        clear_cached(&file);
+    }
+
+    #[tokio::test]
+    async fn older_cli_status_is_cached_as_is() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        let file = temp_cache();
+        clear_cached(&file);
+        let old = parse_status(&fixture("status-held-r4.json")).unwrap();
+        // The big-files read fails on an older CLI and leaves the cache alone.
+        let got = big_files_flight(file.clone(), "/hq".into(), || async { Err(UPDATE_HQ_ERROR.to_string()) }).await;
+        assert_eq!(got, Err(UPDATE_HQ_ERROR.to_string()));
+        let o = old.clone();
+        status_flight(file.clone(), "/hq".into(), move || async move { Ok(o) }).await.unwrap();
+        assert_eq!(read_cached(&file, "/hq").unwrap().status, old);
+        clear_cached(&file);
+    }
+
+    #[tokio::test]
+    async fn feature_disabled_from_big_files_clears_the_cache() {
+        let _g = CACHE_TEST_LOCK.lock().await;
+        let file = temp_cache();
+        clear_cached(&file);
+        status_flight(file.clone(), "/hq".into(), || async { Ok(fast_status()) }).await.unwrap();
+        let got = big_files_flight(file.clone(), "/hq".into(), || async {
+            Err(FEATURE_DISABLED_ERROR.to_string())
+        })
+        .await;
+        assert_eq!(got, Err(FEATURE_DISABLED_ERROR.to_string()));
+        assert!(read_cached(&file, "/hq").is_none());
+        assert!(!file.exists());
     }
 
     #[test]

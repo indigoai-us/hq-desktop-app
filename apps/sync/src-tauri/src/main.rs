@@ -927,6 +927,7 @@ fn main() {
             commands::feedback::submit_bug_report,
             commands::storage::get_storage_status,
             commands::storage::get_cached_storage_status,
+            commands::storage::get_storage_big_files,
             commands::storage::preview_storage_prune,
             commands::storage::run_storage_prune,
             commands::storage::preview_storage_offload,

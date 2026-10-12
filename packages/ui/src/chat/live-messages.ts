@@ -345,7 +345,7 @@ export interface NormalizeMessagesOptions {
    * channel or a conversation between people carry no audience, so nothing
    * about how those are shown (the human-only view reads the field) changes.
    * A one-to-one conversation with a bot turns it on, to leave out the rows
-   * written for the bot only ({@link inlineReplyRows}).
+   * written for the bot only ({@link botDmRows}).
    */
   keepAudience?: boolean;
 }
@@ -405,12 +405,15 @@ export function normalizeConversationMessages(
 /** How a conversation's fetched rows are laid out on the main timeline. */
 export interface TimelineDisplayOptions {
   /**
-   * Show thread replies in the main timeline, in time order, instead of
-   * tucking them under their root. A one-to-one conversation with a bot is a
-   * single exchange: hosted bots answer every message as a reply to it, and a
-   * person should read those answers in line like any other chat.
+   * A one-to-one conversation with a bot. Replies stay in their thread, as in
+   * any other conversation, with three differences: the app's own requests to
+   * the bot ({@link isAppRequestRow}) are left out, a reply whose root is not
+   * on the timeline is shown on it, and {@link keepReplyInMain} can keep other
+   * replies there too.
    */
-  inlineReplies?: boolean;
+  botDm?: boolean;
+  /** In a bot conversation, a reply that stays on the main timeline. */
+  keepReplyInMain?: (reply: ConversationMessageWire, root: ConversationMessageWire) => boolean;
   /**
    * The signed-in person's uid, for {@link isAppRequestRow}: with it, a row
    * that carries no audience counts as the app's own request only when this
@@ -464,37 +467,88 @@ export function isAppRequestRow(
 }
 
 /**
- * Lay a page out as one flat exchange: replies become ordinary rows, the
- * "N replies" affordance is dropped, and the app's own requests to the bot
- * ({@link isAppRequestRow}) are left out because they are not for the person.
+ * Lay out rows of a conversation with a bot, oldest first. The app's own
+ * requests to the bot are left out. A reply stays a reply when its root is
+ * on the timeline (in `rows` or `knownRoots`); otherwise, or when
+ * `keepReplyInMain` says so, it loses its root and shows on the main
+ * timeline. A hidden request's answer, such as the bot's first message, is
+ * therefore shown. Same array when nothing changes.
  */
-export function inlineReplyRows(
+export function botDmRows(
   rows: readonly ConversationMessageWire[],
-  options: { selfUid?: string | null } = {},
+  options: Pick<TimelineDisplayOptions, "selfUid" | "keepReplyInMain"> = {},
+  knownRoots: readonly ConversationMessageWire[] = [],
 ): ConversationMessageWire[] {
-  const out: ConversationMessageWire[] = [];
-  let changed = false;
-  for (const row of rows) {
-    if (isAppRequestRow(row, options)) {
-      changed = true;
-      continue;
-    }
-    if (
-      row.rootEventId === undefined &&
-      row.replyCount === undefined &&
-      row.lastReplyAt === undefined &&
-      row.replyAuthors === undefined
-    ) {
-      out.push(row);
-      continue;
-    }
-    const { rootEventId: _root, replyCount: _count, lastReplyAt: _last, replyAuthors: _authors, ...flat } = row;
-    out.push(flat);
-    changed = true;
+  const shown = rows.filter((row) => !isAppRequestRow(row, options));
+  let changed = shown.length !== rows.length;
+  const roots = new Map<string, ConversationMessageWire>();
+  for (const row of [...knownRoots, ...shown]) {
+    if (!isReplyMessage(row)) roots.set(row.eventId, row);
   }
-  // Nothing to change: hand back the caller's own array so reactive readers
-  // of an already flat timeline are not re-run.
+  const out = shown.map((row) => {
+    if (!isReplyMessage(row)) return row;
+    const root = roots.get((row.rootEventId ?? "").trim());
+    if (root && !options.keepReplyInMain?.(row, root)) return row;
+    changed = true;
+    const { rootEventId: _root, ...main } = row;
+    return main;
+  });
   return changed ? out : (rows as ConversationMessageWire[]);
+}
+
+/**
+ * The timeline plus one row per thread `agentUid` answered in, at the
+ * thread's last reply. A bot's answer in its thread is folded off the
+ * timeline, and code that asks "did the bot answer last?" needs to see it.
+ * Same array when no thread has an answer from the bot.
+ */
+export function withThreadAnswers(
+  rows: ConversationMessageWire[],
+  agentUid: string,
+): ConversationMessageWire[] {
+  const uid = agentUid.trim();
+  if (!uid) return rows;
+  const answers: ConversationMessageWire[] = [];
+  for (const row of rows) {
+    if (!row.lastReplyAt) continue;
+    if (!(row.replyAuthors ?? []).some((author) => author.personUid === uid)) continue;
+    answers.push({ eventId: `${row.eventId}#thread`, fromPersonUid: uid, createdAt: row.lastReplyAt });
+  }
+  return answers.length > 0 ? [...rows, ...answers] : rows;
+}
+
+/**
+ * Count replies from a page that does not carry their root (a `since`
+ * catch-up) onto the root already on the timeline. A reply counts once: only
+ * when it is newer than the root's last known reply, so the same page read
+ * again changes nothing.
+ */
+function countRepliesOntoRoots(
+  rows: ConversationMessageWire[],
+  replies: readonly ConversationMessageWire[],
+): ConversationMessageWire[] {
+  if (replies.length === 0) return rows;
+  const index = new Map(rows.map((row, i) => [row.eventId, i]));
+  let out = rows;
+  const ordered = [...replies].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+  for (const reply of ordered) {
+    const at = index.get((reply.rootEventId ?? "").trim());
+    if (at === undefined) continue;
+    const root = out[at]!;
+    const last = root.lastReplyAt ? Date.parse(root.lastReplyAt) : Number.NaN;
+    const replyAt = Date.parse(reply.createdAt);
+    const isNew = !Number.isFinite(last) || (Number.isFinite(replyAt) && replyAt > last);
+    const replyAuthors = appendReplyAuthor([...(root.replyAuthors ?? [])], reply);
+    if (!isNew && replyAuthors.length === (root.replyAuthors ?? []).length) continue;
+    if (out === rows) out = rows.slice();
+    out[at] = {
+      ...root,
+      ...(isNew ? { replyCount: (root.replyCount ?? 0) + 1 } : {}),
+      lastReplyAt: laterIso(reply.createdAt, root.lastReplyAt ?? null) ?? undefined,
+      replyAuthors,
+    };
+  }
+  return out;
 }
 
 /** REST returns newest-first; ChannelConversation wants oldest → newest. */
@@ -506,10 +560,10 @@ export function messagesForDisplay(
   // remains absent, so older and untagged rows retain their human-visible
   // behavior while an explicit agent lane can be filtered correctly.
   const oldestFirst = [...normalizeConversationMessages(raw, { keepAudience: true })].reverse();
-  if (options.inlineReplies) return inlineReplyRows(oldestFirst, options);
+  const rows = options.botDm ? botDmRows(oldestFirst, options) : oldestFirst;
   // Fold FIRST: the reply rows carry the author + time the root affordance
   // needs, and are discarded on the next line.
-  return foldReplyMetadata(oldestFirst)
+  return foldReplyMetadata(rows)
     .filter((row) => !isReplyMessage(row));
 }
 
@@ -604,13 +658,21 @@ export function mergeFetchedTimeline(
   raw: unknown,
   options: TimelineDisplayOptions = {},
 ): ConversationMessageWire[] {
-  if (options.inlineReplies) {
-    // Rows already on the timeline (a cached thread, rows the host seeded) get
-    // the same treatment as the page, so a bot-only row cannot linger.
-    const merged = inlineReplyRows(
-      mergeTimelineMessages(inlineReplyRows(existing, options), messagesForDisplay(raw, options)),
+  if (options.botDm) {
+    // Rows already on the timeline (a cached thread, rows the host seeded)
+    // get the same treatment as the page, so a request for the bot cannot
+    // linger and an answer whose root is gone is not lost.
+    const shown = botDmRows(existing, options);
+    const page = botDmRows(
+      [...normalizeConversationMessages(raw, { keepAudience: true })].reverse(),
       options,
+      shown,
     );
+    const replies = page.filter(isReplyMessage);
+    const replyIds = new Set(replies.map((row) => row.eventId));
+    const kept = shown.filter((row) => !replyIds.has(row.eventId) && !isReplyMessage(row));
+    const roots = foldReplyMetadata(page).filter((row) => !isReplyMessage(row));
+    const merged = countRepliesOntoRoots(mergeTimelineMessages(kept, roots), replies);
     if (merged === existing) return existing;
     return timelinesContentEqual(existing, merged) ? existing : merged;
   }

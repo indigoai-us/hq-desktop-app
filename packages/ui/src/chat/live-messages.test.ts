@@ -3,7 +3,8 @@ import { isHumanMessage } from "@hq/platform";
 
 import {
   collectTimelineRoots,
-  inlineReplyRows,
+  botDmRows,
+  withThreadAnswers,
   isAppRequestRow,
   isReplyMessage,
   mergeFetchedTimeline,
@@ -498,9 +499,9 @@ describe("sentMessageFromResult", () => {
 });
 
 describe("a one-to-one conversation with a bot", () => {
-  // Regression (owner walkthrough 2026-10-02): a hosted bot answers each
-  // message as a thread reply, so its answer sat under "1 reply". "See how
-  // sheister replies in a DM? That's the flow we want."
+  // Owner request, 2026-10-12: a bot's DM is threaded like any other
+  // conversation. A hosted bot answers each message as a thread reply, and
+  // that answer stays under "1 reply" on the message it answers.
   const PAGE = {
     messages: [
       { eventId: "e4", fromPersonUid: "agt_nova", body: "Here now.", createdAt: "2026-10-02T13:55:10.000Z", rootEventId: "e3" },
@@ -511,15 +512,20 @@ describe("a one-to-one conversation with a bot", () => {
     ],
   };
 
-  it("shows the bot's replies in line, in time order, with no reply counts", () => {
-    const rows = messagesForDisplay(PAGE, { inlineReplies: true });
-    expect(rows.map((row) => row.eventId)).toEqual(["e0", "e2", "e3", "e4"]);
-    expect(rows.every((row) => row.rootEventId === undefined && row.replyCount === undefined)).toBe(true);
+  it("keeps the bot's answers in their thread, under a reply count on the message they answer", () => {
+    const rows = messagesForDisplay(PAGE, { botDm: true });
+    expect(rows.map((row) => row.eventId)).toEqual(["e0", "e2", "e3"]);
+    const root = rows.find((row) => row.eventId === "e3")!;
+    expect(root.replyCount).toBe(1);
+    expect(root.replyAuthors?.map((author) => author.personUid)).toEqual(["agt_nova"]);
+    expect(root.lastReplyAt).toBe("2026-10-02T13:55:10.000Z");
   });
 
-  it("leaves out rows written for the bot only", () => {
-    const rows = messagesForDisplay(PAGE, { inlineReplies: true });
+  it("leaves out rows written for the bot only, and shows the bot's answer to one on the main timeline", () => {
+    const rows = messagesForDisplay(PAGE, { botDm: true });
     expect(rows.some((row) => row.eventId === "e1")).toBe(false);
+    const hello = rows.find((row) => row.eventId === "e2")!;
+    expect(hello.rootEventId).toBeUndefined();
   });
 
   it("keeps threads tucked under their root everywhere else", () => {
@@ -528,12 +534,45 @@ describe("a one-to-one conversation with a bot", () => {
     expect(rows.find((row) => row.eventId === "e3")?.replyCount).toBe(1);
   });
 
-  it("merges a later page without dropping the replies already shown", () => {
-    const first = messagesForDisplay({ messages: PAGE.messages.slice(2) }, { inlineReplies: true });
-    const merged = mergeFetchedTimeline(first, PAGE, { inlineReplies: true });
-    expect(merged.map((row) => row.eventId)).toEqual(["e0", "e2", "e3", "e4"]);
-    expect(mergeFetchedTimeline(merged, PAGE, { inlineReplies: true })).toBe(merged);
+  it("merges a later page, and the same page again changes nothing", () => {
+    const first = messagesForDisplay({ messages: PAGE.messages.slice(2) }, { botDm: true });
+    expect(first.map((row) => row.eventId)).toEqual(["e0", "e2"]);
+    const merged = mergeFetchedTimeline(first, PAGE, { botDm: true });
+    expect(merged.map((row) => row.eventId)).toEqual(["e0", "e2", "e3"]);
+    expect(merged.find((row) => row.eventId === "e3")?.replyCount).toBe(1);
+    expect(mergeFetchedTimeline(merged, PAGE, { botDm: true })).toBe(merged);
   });
+
+  it("counts an answer from a catch-up page that does not carry its root, once", () => {
+    const root = { eventId: "e3", fromPersonUid: "prs_me", body: "Hello?", createdAt: "2026-10-02T13:54:50.000Z" };
+    const open = mergeFetchedTimeline([], { messages: [root] }, { botDm: true });
+    expect(open.find((row) => row.eventId === "e3")?.replyCount).toBeUndefined();
+    const catchUp = { messages: [PAGE.messages[0]] };
+    const after = mergeFetchedTimeline(open, catchUp, { botDm: true });
+    expect(after.map((row) => row.eventId)).toEqual(["e3"]);
+    expect(after[0]!.replyCount).toBe(1);
+    expect(after[0]!.lastReplyAt).toBe("2026-10-02T13:55:10.000Z");
+    expect(after[0]!.replyAuthors?.map((author) => author.personUid)).toEqual(["agt_nova"]);
+    expect(mergeFetchedTimeline(after, catchUp, { botDm: true })).toBe(after);
+    const second = { eventId: "e5", fromPersonUid: "agt_nova", body: "Done.", createdAt: "2026-10-02T13:56:00.000Z", rootEventId: "e3" };
+    const later = mergeFetchedTimeline(after, { messages: [second] }, { botDm: true });
+    expect(later[0]!.replyCount).toBe(2);
+  });
+
+  it("keeps an answer on the main timeline when the host says so", () => {
+    const page = {
+      messages: [
+        { eventId: "c2", fromPersonUid: "agt_nova", body: "Pick one.", createdAt: "2026-10-02T13:56:00.000Z", rootEventId: "c1" },
+        { eventId: "c1", fromPersonUid: "prs_me", body: "Connect more tools", createdAt: "2026-10-02T13:55:50.000Z", replyCount: 1 },
+      ],
+    };
+    const keepReplyInMain = (_reply: unknown, root: { body?: string | null }) => root.body === "Connect more tools";
+    const rows = messagesForDisplay(page, { botDm: true, keepReplyInMain });
+    expect(rows.map((row) => row.eventId)).toEqual(["c1", "c2"]);
+    expect(rows[1]!.rootEventId).toBeUndefined();
+    expect(mergeFetchedTimeline([], page, { botDm: true, keepReplyInMain }).map((row) => row.eventId)).toEqual(["c1", "c2"]);
+  });
+
   it("hides the app's hello request even when a row carries no lane", () => {
     // Regression (owner, 2026-10-02): "this 'automatic message' thing - that's
     // not great to be able to see that". The row came from the host's stored
@@ -542,14 +581,31 @@ describe("a one-to-one conversation with a bot", () => {
       { eventId: "e0", fromPersonUid: "agt_nova", body: "Nova just joined.", createdAt: "2026-10-02T13:50:42.000Z" },
       { eventId: "e1", fromPersonUid: "prs_me", body: "Automatic message from HQ: your setup has just finished", createdAt: "2026-10-02T13:53:50.000Z" },
     ];
-    expect(inlineReplyRows(seeded).map((row) => row.eventId)).toEqual(["e0"]);
-    const merged = mergeFetchedTimeline(seeded, PAGE, { inlineReplies: true });
-    expect(merged.map((row) => row.eventId)).toEqual(["e0", "e2", "e3", "e4"]);
+    expect(botDmRows(seeded).map((row) => row.eventId)).toEqual(["e0"]);
+    const merged = mergeFetchedTimeline(seeded, PAGE, { botDm: true });
+    expect(merged.map((row) => row.eventId)).toEqual(["e0", "e2", "e3"]);
   });
 
-  it("hands back the same array when a timeline is already flat", () => {
-    const flat = messagesForDisplay(PAGE, { inlineReplies: true });
-    expect(inlineReplyRows(flat)).toBe(flat);
+  it("hands back the same array when there is nothing to change", () => {
+    const shown = messagesForDisplay(PAGE, { botDm: true });
+    expect(botDmRows(shown)).toBe(shown);
+  });
+});
+
+describe("withThreadAnswers", () => {
+  it("adds the bot's answer in a thread, at the thread's last reply", () => {
+    const rows = messagesForDisplay(
+      {
+        messages: [
+          { eventId: "r1", fromPersonUid: "agt_nova", body: "On it.", createdAt: "2026-10-02T13:55:10.000Z", rootEventId: "p1" },
+          { eventId: "p1", fromPersonUid: "prs_me", body: "Check the deploy", createdAt: "2026-10-02T13:55:00.000Z", replyCount: 1 },
+        ],
+      },
+      { botDm: true },
+    );
+    const withAnswers = withThreadAnswers(rows, "agt_nova");
+    expect(withAnswers.at(-1)).toEqual({ eventId: "p1#thread", fromPersonUid: "agt_nova", createdAt: "2026-10-02T13:55:10.000Z" });
+    expect(withThreadAnswers(rows, "agt_other")).toBe(rows);
   });
 });
 
@@ -620,8 +676,11 @@ describe("the app's own requests to a bot: which rows are left out", () => {
         { eventId: "p1", fromPersonUid: ME, body: "What did the app tell you?", createdAt: at(0), audience: "both", replyCount: 2 },
       ],
     };
-    for (const options of [{ inlineReplies: true }, { inlineReplies: true, selfUid: ME }]) {
-      expect(ids(messagesForDisplay(page, options))).toEqual(["p1", "b1", "b2", "b3"]);
+    for (const options of [{ botDm: true }, { botDm: true, selfUid: ME }]) {
+      expect(ids(botDmRows([...normalizeConversationMessages(page, { keepAudience: true })].reverse(), options))).toEqual(["p1", "b1", "b2", "b3"]);
+      const rows = messagesForDisplay(page, options);
+      expect(ids(rows)).toEqual(["p1", "b1"]);
+      expect(rows[0]!.replyCount).toBe(2);
     }
     for (const row of normalizeConversationMessages(page, { keepAudience: true })) {
       if (row.fromPersonUid === BOT) {
@@ -641,7 +700,7 @@ describe("the app's own requests to a bot: which rows are left out", () => {
     expect(isAppRequestRow(rows[0]!)).toBe(true);
     expect(isAppRequestRow(rows[0]!, { selfUid: ME })).toBe(true);
     expect(isAppRequestRow({ ...rows[0]!, audience: " Agent " })).toBe(true);
-    expect(inlineReplyRows(rows)).toEqual([]);
+    expect(botDmRows(rows)).toEqual([]);
   });
 
   it("shows a message the person typed themselves that starts with the opening words", () => {
@@ -654,8 +713,10 @@ describe("the app's own requests to a bot: which rows are left out", () => {
         { eventId: "p1", fromPersonUid: ME, body: `${LEAD} is that what you get sent?`, createdAt: at(1), audience: "both", replyCount: 1 },
       ],
     };
-    for (const options of [{ inlineReplies: true }, { inlineReplies: true, selfUid: ME }]) {
-      expect(ids(messagesForDisplay(page, options))).toEqual(["p1", "b1"]);
+    for (const options of [{ botDm: true }, { botDm: true, selfUid: ME }]) {
+      const rows = messagesForDisplay(page, options);
+      expect(ids(rows)).toEqual(["p1"]);
+      expect(rows[0]!.replyCount).toBe(1);
     }
     for (const audience of ["both", "human", "everyone"]) {
       expect(isAppRequestRow({ eventId: "p1", fromPersonUid: ME, body: `${LEAD} typed`, audience }, { selfUid: ME }), audience).toBe(false);
@@ -668,8 +729,8 @@ describe("the app's own requests to a bot: which rows are left out", () => {
     expect(isAppRequestRow(sending)).toBe(false);
     expect(isAppRequestRow(sending, { selfUid: ME })).toBe(false);
     const timeline = [sending];
-    expect(inlineReplyRows(timeline)).toBe(timeline);
-    expect(inlineReplyRows(timeline, { selfUid: ME })).toBe(timeline);
+    expect(botDmRows(timeline)).toBe(timeline);
+    expect(botDmRows(timeline, { selfUid: ME })).toBe(timeline);
   });
 
   it("hides the request copied from the host's stored thread, which keeps no lane, only when the person sent it", () => {
@@ -677,7 +738,7 @@ describe("the app's own requests to a bot: which rows are left out", () => {
     // The host says who is looking: the sender must be that person.
     expect(isAppRequestRow(stored, { selfUid: ME })).toBe(true);
     expect(isAppRequestRow({ ...stored, fromPersonUid: "prs_teammate" }, { selfUid: ME })).toBe(false);
-    expect(inlineReplyRows([{ ...stored, fromPersonUid: "prs_teammate" }], { selfUid: ME })).toHaveLength(1);
+    expect(botDmRows([{ ...stored, fromPersonUid: "prs_teammate" }], { selfUid: ME })).toHaveLength(1);
     // The host does not say: any sender that is not a bot, which in a
     // one-to-one conversation with a bot is the person.
     expect(isAppRequestRow(stored)).toBe(true);
@@ -692,11 +753,11 @@ describe("the app's own requests to a bot: which rows are left out", () => {
     const typed = `${LEAD} is that what you get sent?`;
     const stored = [{ eventId: "p1", fromPersonUid: ME, body: typed, createdAt: at(1) }];
     const page = { messages: [{ eventId: "p1", fromPersonUid: ME, body: typed, createdAt: at(1), audience: "both" }] };
-    const merged = mergeFetchedTimeline(stored, page, { inlineReplies: true, selfUid: ME });
+    const merged = mergeFetchedTimeline(stored, page, { botDm: true, selfUid: ME });
     expect(ids(merged)).toEqual(["p1"]);
     // And the app's request stays out when the server's row says it is the bot's alone.
     const request = { messages: [{ eventId: "p1", fromPersonUid: ME, body: typed, createdAt: at(1), audience: "agent" }] };
-    expect(mergeFetchedTimeline(stored, request, { inlineReplies: true, selfUid: ME })).toEqual([]);
+    expect(mergeFetchedTimeline(stored, request, { botDm: true, selfUid: ME })).toEqual([]);
   });
 });
 
@@ -732,7 +793,7 @@ describe("audience on conversation rows", () => {
         { eventId: "e1", fromPersonUid: "prs_me", body: "Automatic message from HQ: your setup has just finished", createdAt: "2026-10-02T13:53:50.000Z", audience: "agent", replyCount: 1 },
       ],
     };
-    const rows = messagesForDisplay(BOT_DM, { inlineReplies: true });
+    const rows = messagesForDisplay(BOT_DM, { botDm: true });
     expect(rows.map((row) => row.eventId)).toEqual(["e2"]);
     expect(rows[0]!.audience).toBe("both");
   });
@@ -779,7 +840,7 @@ describe("the visual first run's notes to the setup assistant", () => {
   };
 
   it("are left out of the conversation, though the server returns them with no lane", () => {
-    const rows = messagesForDisplay(page, { inlineReplies: true, selfUid: ME });
+    const rows = messagesForDisplay(page, { botDm: true, selfUid: ME });
     expect(rows.map((row) => row.eventId)).toEqual(["e1", "e5"]);
     const shown = rows.map((row) => row.body ?? "").join("\n");
     expect(shown).not.toContain("Handoff from the app");
@@ -790,7 +851,7 @@ describe("the visual first run's notes to the setup assistant", () => {
   });
 
   it("stay out when merged into an open timeline and when tagged for the bot", () => {
-    const merged = mergeFetchedTimeline([], page, { inlineReplies: true, selfUid: ME });
+    const merged = mergeFetchedTimeline([], page, { botDm: true, selfUid: ME });
     expect(merged.map((row) => row.eventId)).toEqual(["e1", "e5"]);
     const tagged = { eventId: "t1", fromPersonUid: ME, body: settled, createdAt: at(1), audience: "agent" };
     expect(isAppRequestRow(tagged, { selfUid: ME })).toBe(true);
@@ -824,14 +885,14 @@ describe("the visual first run's notes to the setup assistant", () => {
     const typed = `I saw this in the chat, what is it? Handoff from the app: ${json}. Is that normal?`;
     const row = { eventId: "q1", fromPersonUid: ME, body: typed, createdAt: at(6) };
     expect(isAppRequestRow(row, { selfUid: ME })).toBe(false);
-    expect(messagesForDisplay({ messages: [row] }, { inlineReplies: true, selfUid: ME }).map((r) => r.eventId)).toEqual(["q1"]);
+    expect(messagesForDisplay({ messages: [row] }, { botDm: true, selfUid: ME }).map((r) => r.eventId)).toEqual(["q1"]);
   });
 
   it("shows a message the person typed that opens with the note's lead but carries no handoff", () => {
     const typed = "Setup note from the HQ desktop app: I want to redo the team step.";
     const row = { eventId: "q2", fromPersonUid: ME, body: typed, createdAt: at(6) };
     expect(isAppRequestRow(row, { selfUid: ME })).toBe(false);
-    expect(messagesForDisplay({ messages: [row] }, { inlineReplies: true, selfUid: ME }).map((r) => r.eventId)).toEqual(["q2"]);
+    expect(messagesForDisplay({ messages: [row] }, { botDm: true, selfUid: ME }).map((r) => r.eventId)).toEqual(["q2"]);
   });
 
   it("hides the note this build writes, whatever it carries, and the notes older builds wrote", () => {

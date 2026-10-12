@@ -26,7 +26,7 @@
  * sender nor the direction. For such a hit the conversation decides. In a
  * direct message with a bot there are two sides, the person and the bot, and
  * the conversation already leaves out every row that opens with the lead,
- * whoever wrote it (`inlineReplyRows`). A hit for that row would open a
+ * whoever wrote it (`botDmRows`). A hit for that row would open a
  * thread that does not show it, so it is left out here too. Anywhere else
  * (a channel, a group, a direct message with a person) a hit that does not
  * say who sent it is kept.

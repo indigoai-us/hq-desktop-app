@@ -18,3 +18,8 @@ Round 4 (hq-cli feat/hq-storage 8c616b80, shapes from src/commands/storage*.test
 status-held-r4.json adds offload.history_held; offload-dry-held-r4.json adds held_by_worktrees and
 worktree_holders; offload-refused-r4.json and offload-dry-refused-r4.json are the exit-4
 nothing_to_free refusal; prune-refused-worktree-r4.json has a worktree:<path> holder.
+
+Round 5 (hq-cli fix/storage-status-fast-default, shapes from src/commands/storage.test.ts): every *-r5.json file.
+Each starts from status-held-r4.json. status-fast-r5.json is a default status: no offload, big_files_included
+false. status-big-files-r5.json is status --big-files (offload, big_files_included true). big-files-r5.json is
+hq storage big-files --json: { offload, generated_at }.
