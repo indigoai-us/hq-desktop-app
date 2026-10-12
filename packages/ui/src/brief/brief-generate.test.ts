@@ -8,7 +8,8 @@ import {
   place,
   summarizeSessions,
 } from "./brief-generate.js";
-import { VARIANTS } from "./brief-catalogue.js";
+import { VARIANTS, entryOf } from "./brief-catalogue.js";
+import { catchUpThursday, octoberEleven } from "./brief-catalogue-fixtures.js";
 import { octoberEightBrief } from "./brief-fixture.js";
 import type { BriefInput } from "./brief-types.js";
 
@@ -87,19 +88,51 @@ describe("generateBrief: lead", () => {
 });
 
 describe("generateBrief: density and placement", () => {
-  it("gives the Oct 8 preview day seven widgets on template 7, each in a slot it fits, each with a reason", () => {
+  it("gives the Oct 8 preview day eight widgets on template 8, each in a slot it fits, each with a reason", () => {
     const plan = generateBrief(full());
-    expect(plan.template).toBe("7");
-    expect(plan.density).toBe(7);
-    expect(plan.widgets).toHaveLength(7);
+    expect(plan.template).toBe("8");
+    expect(plan.density).toBe(8);
+    expect(plan.widgets).toHaveLength(8);
     for (const w of plan.widgets) expect(FITS[w.kind]).toContain(w.size);
-    expect(plan.widgets.map((w) => w.kind)).toEqual(["sunrise", "needs", "incident", "waiting", "shipped", "meetings", "agenda"]);
+    // Focus time serves priority 1 (a clear stretch for it) and takes the W3 beside shipped; Today's calls
+    // fold into it (pair rule), and Team, value 1, finds no room.
+    expect(plan.widgets.map((w) => w.kind)).toEqual(["sunrise", "needs", "incident", "waiting", "meetings", "risk", "shipped", "runway"]);
     for (const w of plan.widgets) expect(w.reason).toMatch(/^(Always first|Shown)\b.*\.$/);
     expect(plan.widgets.find((w) => w.kind === "needs")).toMatchObject({ tier: 2, rows: 2 });
     expect(plan.widgets.find((w) => w.kind === "incident")).toMatchObject({ tier: 2, size: "S" });
-    // Value-1 cards did not make the cut; the plan says why.
-    expect(plan.dropped.map((d) => d.kind)).toEqual(expect.arrayContaining(["risk", "team"]));
+    expect(plan.widgets.find((w) => w.kind === "runway")).toMatchObject({ tier: 3, size: "W3" });
+    expect(plan.widgets.find((w) => w.kind === "runway")!.reason).toMatch(/^Shown for priority 1, "Cut the hq-core release": .* clear after .* fits it\.$/);
+    expect(plan.dropped).toEqual(
+      expect.arrayContaining([
+        { kind: "agenda", why: "Focus time already shows today's calls and gaps" },
+        { kind: "team", why: "no room at 8 widgets" },
+      ]),
+    );
     expect(plan.explain.length).toBe(plan.widgets.length + plan.dropped.length);
+  });
+
+  it("the Oct 11 run with the whole catalogue built: template 7, focus beside team; the catch-up Thursday is the spec's template 5", () => {
+    const sunday = generateBrief(octoberEleven());
+    expect(sunday.template).toBe("7");
+    expect(sunday.widgets.map((w) => w.kind)).toEqual(["sunrise", "needs", "incident", "risk", "shipped", "team", "focus"]);
+    // Firsts (one first, value 1) is a weekend filler; blockedByMe has no edges and decided's meetings are two days old, so neither measures.
+    expect(sunday.dropped).toEqual([{ kind: "firsts", why: "a weekend filler; it comes back Monday" }]);
+    expect(sunday.scored.map((s) => s.kind)).not.toContain("blockedByMe");
+    expect(sunday.scored.map((s) => s.kind)).not.toContain("decided");
+    const thursday = generateBrief(catchUpThursday());
+    expect(thursday.template).toBe("5");
+    expect(thursday.areas).toEqual([
+      "catchup catchup catchup needs needs meetings",
+      "catchup catchup catchup needs needs carry",
+      "catchup catchup catchup weekArc weekArc weekArc",
+    ]);
+    expect(thursday.widgets.map((w) => [w.kind, w.size])).toEqual([
+      ["catchup", "XL"],
+      ["needs", "M"],
+      ["meetings", "S"],
+      ["carry", "S"],
+      ["weekArc", "W3"],
+    ]);
   });
 
   it("never gives a widget a full-height single column", () => {
@@ -151,11 +184,22 @@ describe("generateBrief: density and placement", () => {
     }
   });
 
-  it("carries the review-mode fields: scored includes not-built entries with evidence", () => {
+  it("carries the review-mode fields: every entry with evidence is scored, and an unbuilt one is dropped with what it would say", () => {
     const plan = generateBrief(full());
-    expect(plan.scored.map((s) => s.kind)).toEqual(expect.arrayContaining(["sunrise", "needs", "incident", "risk", "team"]));
-    expect(plan.scored.find((s) => s.kind === "runway")?.entry.ready).toBe(false);
-    expect(plan.dropped.find((d) => d.kind === "runway")?.why).toMatch(/^no card yet; it would say: /);
+    expect(plan.scored.map((s) => s.kind)).toEqual(expect.arrayContaining(["sunrise", "needs", "incident", "risk", "team", "runway", "agenda", "blockedByMe"]));
+    for (const s of plan.scored) expect(s.entry.ready).toBe(true);
+    expect(plan.dropped.find((d) => d.kind === "runway")).toBeUndefined();
+    // The not-built path stays for the next entry without a card.
+    const runway = entryOf("runway") as { ready: boolean };
+    runway.ready = false;
+    try {
+      const unbuilt = generateBrief(full());
+      expect(unbuilt.scored.find((s) => s.kind === "runway")?.entry.ready).toBe(false);
+      expect(unbuilt.dropped.find((d) => d.kind === "runway")?.why).toMatch(/^no card yet; it would say: .* clear after /);
+      expect(unbuilt.widgets.map((w) => w.kind)).toContain("agenda");
+    } finally {
+      runway.ready = true;
+    }
   });
 });
 

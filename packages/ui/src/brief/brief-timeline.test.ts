@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { distillTimeline, isBackgroundSession } from "./brief-timeline.js";
+import { distillTimeline, isBackgroundSession, sessionPeek } from "./brief-timeline.js";
 
 const NOW = "2026-10-09T20:00:00.000Z";
 const at = (hoursAgo: number, min = 0) => new Date(Date.parse(NOW) - hoursAgo * 3600_000 + min * 60_000).toISOString();
@@ -57,5 +57,23 @@ describe("distillTimeline", () => {
 
   it("does not treat ordinary titles as background", () => {
     expect(isBackgroundSession("Fix checkpoint button copy")).toBe(false);
+  });
+});
+
+describe("sessionPeek", () => {
+  it("names the session's project in the status line and the Resume prompt when it has one", () => {
+    const p = sessionPeek({ at: at(2), title: "Daily brief design", id: "s1", company: "cmp_indigo", project: "daily-brief" }, 0, 3);
+    expect(p.status).toMatch(/^\d{1,2}:\d{2} (AM|PM) · session 1 of 3 · daily-brief$/);
+    expect(p.prompt!.text).toContain('my session "Daily brief design" in the daily-brief project');
+    expect(p.prompt!.text).toContain("Open the daily-brief project first.");
+    expect(p.prompt!.text).toContain("id s1");
+  });
+
+  it("leaves the project out when the session has none or it is blank", () => {
+    for (const project of [undefined, null, "  "]) {
+      const p = sessionPeek({ at: at(2), title: "Storage settings", id: "s2", project }, 1, 2);
+      expect(p.status).toMatch(/· session 2 of 2$/);
+      expect(p.prompt!.text).not.toContain("project");
+    }
   });
 });

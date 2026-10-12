@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { sweepToInput, parseSweep, type BriefSweep } from "./brief-sweep.js";
+import { fleetIncidentOf, parseSweep, redRows, sweepToInput, type BriefSweep } from "./brief-sweep.js";
 import { gatherBriefInput, sweepPath, adapterSweepSource, type BriefAdapter, type BriefSweepSource } from "./brief-data.js";
 import { octoberEightBrief } from "./brief-fixture.js";
 import sweepJson from "./fixtures/sweep-2026-10-08.json";
@@ -131,5 +131,217 @@ describe("BriefSweepSource in gatherBriefInput", () => {
     expect(getFileContent).toHaveBeenCalledWith("workspace/brief/2026-10-09/brief-data.json");
     expect(input.merged).toBe(87);
     expect(adapterSweepSource(null)).toBeNull();
+  });
+});
+
+describe("sweepToInput on a newer sweep", () => {
+  const newer: BriefSweep = {
+    generated_at: "2026-10-11T14:00:00Z",
+    company: "indigo",
+    window: { from: "2026-10-10", to: "2026-10-11", today: "2026-10-11" },
+    prs: [
+      { repo: "hq-core-staging", product: "HQ core", number: 1, title: "fix(gate): retry", state: "merged", created: "2026-10-10T10:00:00Z", closed: "2026-10-10T12:00:00Z", merge_hours: 2 },
+      { repo: "hq-core-staging", product: "HQ core", number: 2, title: "feat(gate): wait", state: "merged", created: "2026-10-10T10:00:00Z", closed: "2026-10-10T20:00:00Z", merge_hours: 10 },
+      { repo: "hq-core-staging", number: 3, title: "open one", state: "open", created: "2026-10-10T18:00:00Z", closed: null },
+    ],
+    main_health: {
+      "hq-core-staging": {
+        workflows: 6,
+        red: [
+          { workflow: "Promote", since: "2026-10-09T14:00:00Z", merges_on_top: 4 },
+          { workflow: "Gate", since: "2026-10-10T14:00:00Z", merges_on_top: 1 },
+        ],
+        delta: { newly_red: ["Gate"], still_red: ["Promote"], recovered: [] },
+      },
+      "hq-pro": { workflows: 4, red: [] },
+      "hq-cloud": { workflows: 3, red: ["Sync nightly"] },
+    },
+    releases: [
+      {
+        product: "Desktop app",
+        repo: "hq-desktop-app",
+        version: "0.11.3",
+        merged_at: "2026-10-10T21:13:12Z",
+        pending_count: 4,
+        pending_by_day: [{ day: "2026-10-11", count: 3, theme: "onboarding" }, { day: "2026-10-10", count: 1 }],
+      },
+    ],
+    sessions: [
+      {
+        id: "s-1",
+        date: "2026-10-10",
+        time: "09:33",
+        company: "indigo",
+        title: "Fix the gate",
+        kind: "you",
+        started_at: "2026-10-10T15:33:29Z",
+        project: "hq-core-staging",
+        product: "HQ core",
+        end: "2026-10-10T16:10:00Z",
+        has_handoff: true,
+      },
+      { id: "s-2", date: "2026-10-10", time: "10:00", company: "other", title: null, kind: "you", started_at: "2026-10-10T16:00:00Z", project: "secret", product: "Secret" },
+      { date: "2026-10-10", time: "11:00", company: "indigo", title: "Background", kind: "agent" },
+    ],
+  };
+  const s = sweepToInput(newer, { day: "2026-10-10", companyUid: "cmp_indigo" });
+
+  it("maps main_health rows with since, merges on top and the delta, for every repo", () => {
+    expect(s.mainHealth).toEqual([
+      {
+        repo: "hq-core-staging",
+        product: "HQ core",
+        companyUid: "cmp_indigo",
+        workflows: 6,
+        red: [
+          { workflow: "Promote", since: "2026-10-09T14:00:00Z", mergesOnTop: 4 },
+          { workflow: "Gate", since: "2026-10-10T14:00:00Z", mergesOnTop: 1 },
+        ],
+        delta: { newlyRed: ["Gate"], stillRed: ["Promote"], recovered: [] },
+      },
+      { repo: "hq-pro", product: "HQ Pro", companyUid: "cmp_indigo", workflows: 4, red: [] },
+      { repo: "hq-cloud", product: "HQ Cloud", companyUid: "cmp_indigo", workflows: 3, red: [{ workflow: "Sync nightly", since: null, mergesOnTop: null }] },
+    ]);
+  });
+
+  it("a red main is an incident with the earliest since, its age at sweep time and the merges on top", () => {
+    expect(s.risks.map((r) => r.id)).toEqual(["ci:hq-core-staging", "ci:hq-cloud"]);
+    expect(s.risks[0]!.ci).toEqual({
+      repo: "hq-core-staging",
+      workflow: "Promote +1 more",
+      job: null,
+      since: "2026-10-09T14:00:00.000Z",
+      ageHours: 48,
+      note: "2 of 6 workflows red on main.",
+      mergesOnTop: 4,
+    });
+    expect(s.risks[1]!.ci).toMatchObject({ repo: "hq-cloud", workflow: "Sync nightly", since: null, ageHours: null });
+    expect("mergesOnTop" in s.risks[1]!.ci!).toBe(false);
+  });
+
+  it("shipped rollups carry the product and the median merge hours; open rows with a null close still count", () => {
+    expect(s.shipped).toHaveLength(1);
+    expect(s.shipped[0]).toMatchObject({ id: "ship:hq-core-staging", status: "2 merged", note: "1 open", origin: { product: "HQ core" }, mergeHoursMedian: 6 });
+    expect([s.merged, s.opened]).toEqual([2, 3]);
+  });
+
+  it("maps releases with pending days oldest first", () => {
+    expect(s.releases).toEqual([
+      {
+        product: "Desktop app",
+        version: "0.11.3",
+        origin: { companyUid: "cmp_indigo", repo: "indigoai-us/hq-desktop-app", product: "Desktop app" },
+        releasedAt: "2026-10-10T21:13:12Z",
+        pending: [
+          { day: "2026-10-10", count: 1, theme: "" },
+          { day: "2026-10-11", count: 3, theme: "onboarding" },
+        ],
+        pendingCount: 4,
+        held: [],
+        light: "ok",
+      },
+    ]);
+  });
+
+  it("sessions keep project, product, end and handoff inside the sweep's company only", () => {
+    expect(s.sessions).toEqual([
+      {
+        id: "s-1",
+        title: "Fix the gate",
+        startedAt: "2026-10-10T15:33:29Z",
+        workstream: "Work",
+        company: "cmp_indigo",
+        project: "hq-core-staging",
+        product: "HQ core",
+        endedAt: "2026-10-10T16:10:00Z",
+        hasHandoff: true,
+      },
+      { id: "s-2", title: "", startedAt: "2026-10-10T16:00:00Z", workstream: "Other", company: "other" },
+    ]);
+  });
+
+  it("without fleet data there is no fleet incident and never a fleet count", () => {
+    expect("fleetIncident" in s).toBe(false);
+    expect("fleet" in s).toBe(false);
+  });
+
+  it("redRows accepts names or rows and drops blanks", () => {
+    expect(redRows(["CI", "", { workflow: " Gate ", since: "2026-10-10T00:00:00Z", merges_on_top: 2 }, { workflow: "" }])).toEqual([
+      { workflow: "CI", since: null, mergesOnTop: null },
+      { workflow: "Gate", since: "2026-10-10T00:00:00Z", mergesOnTop: 2 },
+    ]);
+    expect(redRows(undefined)).toEqual([]);
+  });
+});
+
+describe("fleetIncidentOf", () => {
+  const origin = { companyUid: "cmp_indigo", repo: null };
+  const now = "2026-10-11T14:00:00Z";
+  const stuck = (name: string, phase = "waiting", since: string | null = null) => ({ name, status: "provisioning", phase, since });
+
+  it("is null when nothing is stuck, nothing recovered and the series is quiet for a day", () => {
+    expect(fleetIncidentOf(null, now, origin)).toBeNull();
+    expect(fleetIncidentOf({ total: 10, stuck: [], series: [{ generated_at: "2026-10-09T14:00:00Z", stuck: 2 }] }, now, origin)).toBeNull();
+    expect(fleetIncidentOf({ total: 10, by_status: { active: 10 } }, now, origin)).toBeNull();
+  });
+
+  it("healing when the stuck count fell since the previous run", () => {
+    const fi = fleetIncidentOf(
+      { total: 50, stuck: [stuck("agent-b", "waiting", "2026-10-09T12:00:00Z"), stuck("agent-a", "failed")], delta: { still_stuck: ["agent-a", "agent-b"], recovered: ["agent-c"] }, series: [{ generated_at: "2026-10-10T14:00:00Z", stuck: 3 }] },
+      now,
+      origin,
+    )!;
+    expect(fi).toMatchObject({ id: "fleet:cmp_indigo", verdict: "healing", incidentStart: "2026-10-09T12:00:00.000Z", incidentEnd: null, fixes: [] });
+    expect(fi.stillStuck).toEqual([
+      { name: "agent-a", reason: "setup failed", since: null },
+      { name: "agent-b", reason: "waiting in setup", since: "2026-10-09T12:00:00Z" },
+    ]);
+    expect(fi.series).toEqual([
+      { at: "2026-10-10T14:00:00Z", stuck: 3 },
+      { at: now, stuck: 2 },
+    ]);
+  });
+
+  it("relapsing when agents got stuck again after the count had fallen", () => {
+    const fi = fleetIncidentOf(
+      {
+        total: 50,
+        stuck: [stuck("x"), stuck("y"), stuck("z")],
+        delta: { newly_stuck: ["y", "z"], still_stuck: ["x"], recovered: [] },
+        series: [
+          { generated_at: "2026-10-09T14:00:00Z", stuck: 5 },
+          { generated_at: "2026-10-10T14:00:00Z", stuck: 1 },
+        ],
+      },
+      now,
+      origin,
+    )!;
+    expect(fi.verdict).toBe("relapsing");
+    expect(fi.incidentStart).toBe("2026-10-09T14:00:00Z");
+  });
+
+  it("plateaued when the count is flat or there is no history", () => {
+    expect(fleetIncidentOf({ total: 50, stuck: [stuck("x"), stuck("y")], series: [{ generated_at: "2026-10-10T14:00:00Z", stuck: 2 }] }, now, origin)!.verdict).toBe("plateaued");
+    expect(fleetIncidentOf({ total: 50, stuck: [stuck("x")] }, now, origin)!.verdict).toBe("plateaued");
+  });
+
+  it("healed under two percent or when nobody is left stuck; a healed incident ended at sweep time", () => {
+    expect(fleetIncidentOf({ total: 100, stuck: [stuck("x")], series: [{ generated_at: "2026-10-10T14:00:00Z", stuck: 4 }] }, now, origin)!.verdict).toBe("healed");
+    const done = fleetIncidentOf({ total: 50, stuck: [], delta: { recovered: ["x", "y"] } }, now, origin)!;
+    expect(done).toMatchObject({ verdict: "healed", incidentEnd: now, stillStuck: [] });
+    expect(done.series).toEqual([{ at: now, stuck: 0 }]);
+  });
+
+  it("falls back to agents outside the ready phase in older sweeps", () => {
+    const fi = fleetIncidentOf(
+      { total: 3, agents: [{ name: "A", status: "active", phase: "ready" }, { name: "C", status: "provisioning", phase: "failed" }, { name: "B", status: "provisioning", phase: "waiting" }] },
+      now,
+      origin,
+    )!;
+    expect(fi.stillStuck.map((a) => [a.name, a.reason])).toEqual([
+      ["B", "waiting in setup"],
+      ["C", "setup failed"],
+    ]);
+    expect(fi.verdict).toBe("plateaued");
   });
 });

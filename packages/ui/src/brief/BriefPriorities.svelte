@@ -1,29 +1,53 @@
 <script lang="ts">
   /**
    * Today's priorities: a slim full-width card above the grid, one line per
-   * priority (at most five), the text bold and the reason muted. Hovering a
-   * row opens the linked item's peek with its Start and Copy actions; a row
-   * is struck through once that item is cleared.
+   * priority (at most five), the text bold and the reason muted, the linked
+   * item's company logo at the row end. Hovering a row opens the linked item's
+   * peek with its Start and Copy actions; when the writer scored the row, the
+   * peek status appends the score in words ("unblocks 3 people and revenue ·
+   * 44h old"). A row is struck through once that item is cleared.
    */
+  import BriefLogo from "./BriefLogo.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
-  import { decisionPeek, riskPeek } from "./brief-peeks.js";
+  import { decisionPeek, priorityScoreWords, riskPeek, riskProduct } from "./brief-peeks.js";
+  import { productName } from "./brief-origin.js";
   import type { BriefDecision, BriefPriority, BriefRisk } from "./brief-types.js";
 
-  let {
-    priorities,
-    decisions,
-    risks,
-    prompts,
-  }: { priorities: BriefPriority[]; decisions: BriefDecision[]; risks: BriefRisk[]; prompts: Record<string, string> } = $props();
+  interface Props {
+    priorities: BriefPriority[];
+    decisions: BriefDecision[];
+    risks: BriefRisk[];
+    prompts: Record<string, string>;
+    /** ISO time the brief is for; red ages in incident peeks count back from it. */
+    now?: string;
+  }
+  let { priorities, decisions, risks, prompts, now = "" }: Props = $props();
   const brief = useBrief();
   const rows = $derived(priorities.slice(0, 5));
 
+  const decisionOf = (p: BriefPriority) => (p.itemId ? decisions.find((x) => x.id === p.itemId) : undefined);
+  const riskOf = (p: BriefPriority) => (p.itemId ? risks.find((x) => x.id === p.itemId) : undefined);
+
+  /** The linked item's company and product, for the row's logo. */
+  function originOf(p: BriefPriority): { companyUid: string; product: string } | null {
+    const d = decisionOf(p);
+    if (d?.origin.companyUid) return { companyUid: d.origin.companyUid, product: productName(d.origin.repo, d.origin.product) };
+    const r = riskOf(p);
+    if (r?.origin.companyUid) return { companyUid: r.origin.companyUid, product: riskProduct(r) };
+    return null;
+  }
+
   function content(p: BriefPriority): PeekContent {
-    const d = p.itemId ? decisions.find((x) => x.id === p.itemId) : undefined;
-    if (d) return decisionPeek(d, prompts[d.id]);
-    const r = p.itemId ? risks.find((x) => x.id === p.itemId) : undefined;
-    if (r) return riskPeek(r, prompts[r.id] ?? r.prompt);
-    return { title: p.text, status: p.because ?? undefined, sections: [] };
+    const d = decisionOf(p);
+    const r = d ? undefined : riskOf(p);
+    const c: PeekContent = d
+      ? decisionPeek(d, prompts[d.id])
+      : r
+        ? riskPeek(r, prompts[r.id] ?? r.prompt, now)
+        : { title: p.text, status: p.because ?? undefined, sections: [] };
+    const words = priorityScoreWords(p, d ?? r ?? null, now);
+    if (words) c.status = [c.status, words].filter(Boolean).join(" · ");
+    return c;
   }
 </script>
 
@@ -31,6 +55,7 @@
   <div class="eyebrow">Today's priorities</div>
   <ol>
     {#each rows as p, i (`${i}|${p.text}`)}
+      {@const o = originOf(p)}
       <li
         class:done={p.itemId ? brief.cleared[p.itemId] : false}
         data-testid="brief-priority"
@@ -38,6 +63,9 @@
       >
         <span class="n">{i + 1}</span>
         <span class="tx"><b>{p.text}</b>{#if p.because}<span class="why">{" · "}{p.because}</span>{/if}</span>
+        {#if o}
+          <span class="lg" title={o.product} data-testid="brief-priority-logo"><BriefLogo company={brief.company(o.companyUid)} fallback={o.companyUid} size={14} /></span>
+        {/if}
       </li>
     {/each}
   </ol>
@@ -85,6 +113,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .lg {
+    flex: none;
+    margin-left: auto;
+    align-self: center;
+    display: inline-grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    overflow: hidden;
+    opacity: 0.85;
   }
   b {
     font-weight: 500;

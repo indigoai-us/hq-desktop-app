@@ -13,18 +13,30 @@
    */
   import "./brief.css";
   import BriefAgenda from "./BriefAgenda.svelte";
+  import BriefBlockedByMe from "./BriefBlockedByMe.svelte";
+  import BriefCarry from "./BriefCarry.svelte";
   import BriefCatchUp from "./BriefCatchUp.svelte";
+  import BriefDecided from "./BriefDecided.svelte";
+  import BriefFirsts from "./BriefFirsts.svelte";
+  import BriefFleetRecovery from "./BriefFleetRecovery.svelte";
+  import BriefFocus from "./BriefFocus.svelte";
+  import BriefHandoffs from "./BriefHandoffs.svelte";
   import BriefIncident from "./BriefIncident.svelte";
   import BriefMeetings from "./BriefMeetings.svelte";
   import BriefNeedsYou from "./BriefNeedsYou.svelte";
   import BriefOneThing from "./BriefOneThing.svelte";
   import BriefPeek from "./BriefPeek.svelte";
+  import BriefReleaseTrain from "./BriefReleaseTrain.svelte";
+  import BriefReminders from "./BriefReminders.svelte";
+  import BriefResolved from "./BriefResolved.svelte";
   import BriefRisk from "./BriefRisk.svelte";
+  import BriefRunway from "./BriefRunway.svelte";
   import BriefShipped from "./BriefShipped.svelte";
   import BriefSunrise from "./BriefSunrise.svelte";
   import BriefTeam from "./BriefTeam.svelte";
   import BriefTodayStrip from "./BriefTodayStrip.svelte";
   import BriefWaiting from "./BriefWaiting.svelte";
+  import BriefWeekArc from "./BriefWeekArc.svelte";
   import BriefHousekeeping from "./BriefHousekeeping.svelte";
   import type { Snippet } from "svelte";
   import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
@@ -41,8 +53,9 @@
   import { CATALOGUE, SPAN, buildContext, entryOf, rankDecisions, reasonFor, type Scored, type WidgetGroup } from "./brief-catalogue.js";
   import BriefPriorities from "./BriefPriorities.svelte";
   import { briefPriorities } from "./brief-peeks.js";
-  import type { BriefInput } from "./brief-types.js";
-  import { isTimelineSession, sinceLabel } from "./brief-timeline.js";
+  import type { BriefInput, BriefRisk as BriefRiskRow } from "./brief-types.js";
+  import { effortMinutes } from "./brief-hero.js";
+  import { distillTimeline, isTimelineSession, sinceLabel } from "./brief-timeline.js";
 
   interface Props {
     input: BriefInput;
@@ -75,8 +88,13 @@
   // Needs rows: the ones a priority points at first, then by what they unblock.
   const needsRows = $derived(rankDecisions(ctx));
   const cleared = $derived(input.decisions.filter((d) => briefState.cleared[d.id]).length);
-  const incident = $derived(input.risks.find((r) => r.severity === "incident") ?? null);
-  const watch = $derived(input.risks.find((r) => r.severity === "watch") ?? null);
+  // Every live incident the catalogue counted; the lead is the one a priority points at (by rank), else the first.
+  const incidents = $derived(input.risks.filter((r) => r.severity === "incident"));
+  const incident = $derived.by((): BriefRiskRow | null => {
+    const rank = (r: BriefRiskRow) => ctx.priorities.find((p) => p.itemId === r.id)?.rank ?? 99;
+    return [...incidents].sort((a, b) => rank(a) - rank(b))[0] ?? null;
+  });
+  const watches = $derived(input.risks.filter((r) => r.severity === "watch"));
   const nowDate = $derived(new Date(input.now));
   const dateLabel = $derived(
     nowDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }).replace(",", " ·"),
@@ -114,8 +132,12 @@
         return t > end - 24 * 3600_000 && t <= end;
       })
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-      .map((s) => ({ at: s.startedAt, title: s.title, id: s.id, company: s.company }));
+      .map((s) => ({ at: s.startedAt, title: s.title, id: s.id, company: s.company, project: s.project ?? null }));
   });
+  // Distilled once here so the hero does not distill the same sessions again.
+  const tl = $derived(distillTimeline(timeline, input.now));
+  // The writer's total minutes to clear every call, else summed from each call's effort size.
+  const timeToClear = $derived(input.timeToClearMin ?? effortMinutes(input.decisions));
 
   // Hover detail for the header counts: what each number is made of, five lines at most.
   function provPeek(label: string): PeekContent {
@@ -196,6 +218,8 @@
   });
   const liveTiles = $derived.by((): Tile[] => plan.widgets.map((w) => ({ type: "card", key: w.kind, w, scored: plan.scored.find((s) => s.kind === w.kind)! })));
   const tiles = $derived(allCards ? reviewTiles : liveTiles);
+  // When the Handoffs card is on the page, the Waiting card leaves handoff rows to it.
+  const handoffsPlaced = $derived(tiles.some((t) => t.type === "card" && t.w.kind === "handoffs"));
   const partsOf = (kind: string) => {
     const s = plan.scored.find((x) => x.kind === kind);
     return s ? `value ${s.parts.value} · priority ${s.parts.priority} · day ${s.parts.day} · pref ${s.parts.pref} · rotation -${s.parts.rotation}` : undefined;
@@ -244,7 +268,7 @@
 
   <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} {onopenmeetings} />
 
-  {#if priorities.length}<BriefPriorities {priorities} decisions={input.decisions} risks={input.risks} prompts={plan.prompts} />{/if}
+  {#if priorities.length}<BriefPriorities {priorities} decisions={input.decisions} risks={input.risks} prompts={plan.prompts} now={input.now} />{/if}
 
   {#if allCards}<div class="b-review" data-testid="brief-review">Review mode · every card with evidence, by group · Shift+A to go back</div>{/if}
   <main
@@ -283,30 +307,96 @@
               {quietLine}
               big={w.cols >= 3}
               {timeline}
+              distilled={tl}
               now={input.now}
               lead={leadForHero}
+              timeToClearMin={timeToClear}
             />
-          {:else if w.kind === "needs"}
-            <BriefNeedsYou decisions={needsRows} prompts={plan.prompts} rows={w.rows} />
-          {:else if w.kind === "team"}
-            <BriefTeam team={input.team} rows={w.rows} />
-          {:else if w.kind === "incident" && incident}
-            <BriefIncident risk={incident} prompt={plan.prompts[incident.id]} rows={w.rows} now={input.now} />
-          {:else if w.kind === "shipped"}
-            <BriefShipped shipped={input.shipped} merged={input.merged ?? null} opened={input.opened ?? null} cols={w.cols} rows={w.rows} prWindow={input.prWindow ?? null} />
-          {:else if w.kind === "waiting"}
-            <BriefWaiting waiting={input.waitingOn} prompts={plan.prompts} />
-          {:else if w.kind === "meetings"}
-            <BriefMeetings meetings={input.meetingsYesterday} rows={w.rows} />
-          {:else if w.kind === "risk" && watch}
-            <BriefRisk risk={watch} prompt={plan.prompts[watch.id]} />
-          {:else if w.kind === "agenda"}
-            <BriefAgenda events={input.calendarToday} rows={w.rows} />
-          {:else if w.kind === "oneThing" && input.decisions[0]}
-            {@const one = input.decisions.find((d) => d.id === t.scored.ev.items[0]) ?? input.decisions[0]}
-            <BriefOneThing decision={one} prompt={plan.prompts[one.id]} />
           {:else if w.kind === "catchup"}
-            <BriefCatchUp {input} daysAway={plan.daysAway ?? 0} />
+            <BriefCatchUp {input} daysAway={plan.daysAway ?? 0} lead={leadForHero} decisions={needsRows} prompts={plan.prompts} />
+          {:else if w.kind === "needs"}
+            <BriefNeedsYou decisions={needsRows} prompts={plan.prompts} rows={w.rows} timeToClearMin={input.timeToClearMin ?? null} />
+          {:else if w.kind === "oneThing"}
+            <!-- The call the entry picked (argmax of what it unblocks); null on a lead-hint-only day. -->
+            {@const one = input.decisions.find((d) => d.id === t.scored.ev.items[0]) ?? null}
+            <BriefOneThing
+              decision={one}
+              prompt={one ? plan.prompts[one.id] : undefined}
+              leadHint={input.leadHint ?? null}
+              because={one && plan.leadPriority?.itemId === one.id ? plan.leadPriority.because : null}
+              cols={w.cols}
+            />
+          {:else if w.kind === "blockedByMe"}
+            <BriefBlockedByMe decisions={input.decisions} prompts={plan.prompts} cols={w.cols} rows={w.rows} />
+          {:else if w.kind === "incident" && incident}
+            <BriefIncident risk={incident} prompt={plan.prompts[incident.id]} rows={w.rows} now={input.now} {incidents} prompts={plan.prompts} />
+          {:else if w.kind === "fleetRecovery" && input.fleetIncident}
+            <BriefFleetRecovery incident={input.fleetIncident} prompts={plan.prompts} now={input.now} cols={w.cols} rows={w.rows} />
+          {:else if w.kind === "resolved"}
+            <BriefResolved recovered={input.recovered ?? []} prompts={plan.prompts} now={input.now} rows={w.rows} />
+          {:else if w.kind === "risk"}
+            <BriefRisk risks={watches} prompts={plan.prompts} rows={w.rows} cols={w.cols} mainHealth={input.mainHealth ?? []} now={input.now} />
+          {:else if w.kind === "waiting"}
+            <BriefWaiting waiting={input.waitingOn} prompts={plan.prompts} cols={w.cols} hideKinds={handoffsPlaced ? ["handoff"] : []} now={input.now} />
+          {:else if w.kind === "carry"}
+            <BriefCarry
+              carry={input.carry ?? []}
+              decisions={input.decisions}
+              risks={input.risks}
+              prompts={plan.prompts}
+              rows={w.rows}
+              now={input.now}
+              catchUp={plan.dayType === "catch-up"}
+            />
+          {:else if w.kind === "handoffs"}
+            <BriefHandoffs handoffs={input.handoffs ?? []} prompts={plan.prompts} now={input.now} rows={w.rows} />
+          {:else if w.kind === "shipped"}
+            <BriefShipped
+              shipped={input.shipped}
+              merged={input.merged ?? null}
+              opened={input.opened ?? null}
+              cols={w.cols}
+              rows={w.rows}
+              prWindow={input.prWindow ?? null}
+              landedDays={input.landedDays ?? null}
+              today={ctx.today}
+            />
+          {:else if w.kind === "firsts"}
+            <BriefFirsts shipped={input.shipped} cols={w.cols} rows={w.rows} prompts={plan.prompts} />
+          {:else if w.kind === "releaseTrain"}
+            <BriefReleaseTrain
+              releases={input.releases ?? []}
+              mainHealth={input.mainHealth ?? []}
+              prompts={plan.prompts}
+              cols={w.cols}
+              rows={w.rows}
+              now={input.now}
+              today={ctx.today}
+            />
+          {:else if w.kind === "meetings"}
+            <BriefMeetings
+              meetings={input.meetingsYesterday}
+              rows={w.rows}
+              cols={w.cols}
+              now={input.now}
+              windowFrom={plan.dayType === "catch-up" ? input.lastBriefAt : null}
+              days={input.days ?? []}
+              today={ctx.today}
+            />
+          {:else if w.kind === "decided"}
+            <BriefDecided meetings={input.meetingsYesterday} now={input.now} rows={w.rows} windowFrom={ctx.windowFrom} userName={input.userName} />
+          {:else if w.kind === "weekArc"}
+            <BriefWeekArc days={input.days ?? []} today={ctx.today} cols={w.cols} rows={w.rows} />
+          {:else if w.kind === "team"}
+            <BriefTeam team={input.team} rows={w.rows} cols={w.cols} />
+          {:else if w.kind === "agenda"}
+            <BriefAgenda events={input.calendarToday} rows={w.rows} cols={w.cols} now={input.now} sample={input.calendarSample ?? false} {onopenmeetings} />
+          {:else if w.kind === "runway"}
+            <BriefRunway events={input.calendarToday} {priorities} prompts={plan.prompts} now={input.now} sample={input.calendarSample ?? false} cols={w.cols} rows={w.rows} />
+          {:else if w.kind === "focus"}
+            <BriefFocus sessions={input.recentSessions ?? input.sessions} companies={input.companies} now={input.now} cols={w.cols} rows={w.rows} />
+          {:else if w.kind === "reminders"}
+            <BriefReminders reminders={input.reminders ?? []} prompts={plan.prompts} now={input.now} today={ctx.today} rows={w.rows} cols={w.cols} />
           {/if}
         </div>
       {/if}
@@ -317,10 +407,10 @@
     <div class="b-dropped" data-testid="brief-dropped">
       <span class="eyebrow">Not shown today</span>
       {#each notShown.slice(0, 5) as r, i (`${r.kind}-${i}`)}
-        <span class="drop" data-testid="brief-dropped-row" title={partsOf(r.kind) ?? r.why}><b>{r.kind}</b> {r.why}</span>
+        <span class="drop b-glass" data-testid="brief-dropped-row" title={partsOf(r.kind) ?? r.why}><b>{r.kind}</b> {r.why}</span>
       {/each}
       {#if notShown.length > 5}
-        <span class="drop more" role="group" aria-label="More not shown" use:peek={{ state: briefState, content: notShownRest }}>+{notShown.length - 5} more</span>
+        <span class="drop b-glass more" role="group" aria-label="More not shown" use:peek={{ state: briefState, content: notShownRest }}>+{notShown.length - 5} more</span>
       {/if}
     </div>
   {/if}
@@ -407,7 +497,6 @@
   .b-dropped .drop {
     padding: 3px 8px;
     border-radius: 8px;
-    box-shadow: var(--b-well);
     cursor: default;
     max-width: 420px;
     overflow: hidden;

@@ -505,7 +505,7 @@ export const CATALOGUE: readonly WidgetEntry[] = [
     name: "What your calls unblock",
     group: "needs",
     component: "BriefBlockedByMe",
-    ready: false,
+    ready: true,
     fits: ["M", "W", "W3"],
     novel: false,
     measure(ctx) {
@@ -567,7 +567,7 @@ export const CATALOGUE: readonly WidgetEntry[] = [
     name: "Fleet recovery",
     group: "health",
     component: "BriefFleetRecovery",
-    ready: false,
+    ready: true,
     fits: ["M", "W", "S"],
     novel: false,
     measure(ctx) {
@@ -592,7 +592,7 @@ export const CATALOGUE: readonly WidgetEntry[] = [
     name: "Resolved",
     group: "health",
     component: "BriefResolved",
-    ready: false,
+    ready: true,
     fits: ["M", "W", "W3", "S"],
     novel: true,
     measure(ctx) {
@@ -663,7 +663,7 @@ export const CATALOGUE: readonly WidgetEntry[] = [
     name: "Carried over",
     group: "waiting",
     component: "BriefCarry",
-    ready: false,
+    ready: true,
     fits: ["W", "W3", "S", "M"],
     novel: false,
     measure(ctx) {
@@ -691,10 +691,10 @@ export const CATALOGUE: readonly WidgetEntry[] = [
   },
   {
     id: "handoffs",
-    name: "Handoffs",
+    name: "Ownership moved",
     group: "waiting",
     component: "BriefHandoffs",
-    ready: false,
+    ready: true,
     fits: ["W", "W3", "M", "S"],
     novel: false,
     measure(ctx) {
@@ -752,7 +752,7 @@ export const CATALOGUE: readonly WidgetEntry[] = [
     name: "Firsts",
     group: "momentum",
     component: "BriefFirsts",
-    ready: false,
+    ready: true,
     fits: ["W", "W3", "S"],
     novel: true,
     measure(ctx) {
@@ -773,7 +773,7 @@ export const CATALOGUE: readonly WidgetEntry[] = [
     name: "Release train",
     group: "momentum",
     component: "BriefReleaseTrain",
-    ready: false,
+    ready: true,
     fits: ["W3", "W", "M"],
     novel: true,
     measure(ctx) {
@@ -835,10 +835,10 @@ export const CATALOGUE: readonly WidgetEntry[] = [
   },
   {
     id: "decided",
-    name: "Decided",
+    name: "What got settled",
     group: "momentum",
     component: "BriefDecided",
-    ready: false,
+    ready: true,
     fits: ["W", "W3", "S", "M"],
     novel: true,
     measure(ctx) {
@@ -861,7 +861,7 @@ export const CATALOGUE: readonly WidgetEntry[] = [
     name: "Your week",
     group: "momentum",
     component: "BriefWeekArc",
-    ready: false,
+    ready: true,
     fits: ["M", "W", "W3"],
     novel: true,
     measure(ctx) {
@@ -952,7 +952,7 @@ export const CATALOGUE: readonly WidgetEntry[] = [
     name: "Focus time",
     group: "self",
     component: "BriefRunway",
-    ready: false,
+    ready: true,
     fits: ["W3", "W", "M"],
     novel: false,
     measure(ctx) {
@@ -976,10 +976,10 @@ export const CATALOGUE: readonly WidgetEntry[] = [
   },
   {
     id: "focus",
-    name: "Where your time went",
+    name: "Where your day went",
     group: "self",
     component: "BriefFocus",
-    ready: false,
+    ready: true,
     fits: ["M", "W"],
     novel: true,
     measure(ctx) {
@@ -1000,10 +1000,10 @@ export const CATALOGUE: readonly WidgetEntry[] = [
   },
   {
     id: "reminders",
-    name: "You said",
+    name: "You asked to be reminded",
     group: "self",
     component: "BriefReminders",
-    ready: false,
+    ready: true,
     fits: ["W", "W3", "S"],
     novel: false,
     measure(ctx) {

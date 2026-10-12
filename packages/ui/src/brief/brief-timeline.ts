@@ -12,6 +12,8 @@ export interface TimelineSession {
   id?: string;
   /** Company uid or slug the session ran in. */
   company?: string | null;
+  /** The HQ project the session worked in, when known; named in the Resume prompt. */
+  project?: string | null;
 }
 
 /**
@@ -58,9 +60,11 @@ const HOUR = 3600_000;
 
 /**
  * The hover card for a session dot, as in the approved mockup: eyebrow
- * "Session · Oct 8", the company chip, the title, "4:07 PM · session 5 of 8",
- * and two buttons, Resume in <engine> and Copy prompt. The prompt text itself
- * is not shown. An empty title reads "Untitled session".
+ * "Session · Oct 8", the company chip, the title, "4:07 PM · session 5 of 8"
+ * (then "· <project>" when the session has one), and two buttons, Resume in
+ * <engine> and Copy prompt. The prompt text itself is not shown; it names the
+ * project so the engine opens in the right place. An empty title reads
+ * "Untitled session".
  */
 export function sessionPeek(s: TimelineSession, index: number, total: number): PeekContent {
   const at = new Date(s.at);
@@ -68,17 +72,18 @@ export function sessionPeek(s: TimelineSession, index: number, total: number): P
   const day = at.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   const title = s.title.trim() || "Untitled session";
   const named = s.title.trim() ? `my session "${title}"` : "my untitled session";
+  const project = s.project?.trim() || "";
   return {
     compact: true,
     eyebrow: `Session · ${day}`,
     origin: { companyUid: s.company ?? null, label: "sessions" },
     title,
-    status: `${time} · session ${index + 1} of ${total}`,
+    status: `${time} · session ${index + 1} of ${total}${project ? ` · ${project}` : ""}`,
     sections: [],
     prompt: {
       id: `session:${s.id ?? s.at}`,
       verb: "Resume",
-      text: `Pick up where ${named} (started ${time}${s.id ? `, id ${s.id}` : ""}) left off. Read its last state, tell me in two lines where it stopped, then continue.`,
+      text: `Pick up where ${named}${project ? ` in the ${project} project` : ""} (started ${time}${s.id ? `, id ${s.id}` : ""}) left off. ${project ? `Open the ${project} project first. ` : ""}Read its last state, tell me in two lines where it stopped, then continue.`,
     },
   };
 }

@@ -60,9 +60,13 @@ describe("catalogue and templates", () => {
     ]);
     expect(Object.keys(FITS)).not.toContain("fleet");
     expect(Object.keys(FITS)).not.toContain("otherWork");
-    expect(CATALOGUE.filter((e) => e.ready).map((e) => e.id)).toEqual([
-      "sunrise", "catchup", "needs", "oneThing", "incident", "risk", "waiting", "shipped", "meetings", "team", "agenda",
-    ]);
+    // Every kind has its card now; `ready: false` stays available for the next unbuilt entry.
+    expect(CATALOGUE.filter((e) => !e.ready).map((e) => e.id)).toEqual([]);
+    // Entry names read as the cards' eyebrows, so review placeholders and the "Why these cards" peek match the page.
+    expect(entryOf("decided").name).toBe("What got settled");
+    expect(entryOf("handoffs").name).toBe("Ownership moved");
+    expect(entryOf("focus").name).toBe("Where your day went");
+    expect(entryOf("reminders").name).toBe("You asked to be reminded");
   });
 
   it("every entry fits a template slot and every non-hero slot size has at least three fitters", () => {
@@ -102,11 +106,43 @@ describe("catalogue and templates", () => {
 });
 
 describe("the real Oct 11 run (a Sunday)", () => {
-  it("picks template 6B: sunrise, needs, incident, risk, shipped, team", () => {
+  // The spec's worked day was written with eleven kinds built (template 6B). With the whole catalogue
+  // built, "Where your day went" has evidence too (6 sessions across 3 products, value 2, so not a
+  // weekend filler) and the same day fills template 7. Not template 8 as the spec guessed: firsts is
+  // value 1 (one first) and a weekend filler, blockedByMe has no edges, and decided's meetings are
+  // outside the window, so none of them join.
+  it("picks template 7: sunrise, needs, incident, risk, shipped, team, focus", () => {
     const plan = generateBrief(octoberEleven());
     expect(plan.dayType).toBe("weekend");
+    expect(plan.template).toBe("7");
+    expect(plan.density).toBe(7);
+    expect(plan.areas).toEqual([
+      "sunrise sunrise sunrise needs needs incident",
+      "sunrise sunrise sunrise needs needs risk",
+      "shipped shipped team team focus focus",
+    ]);
+    expect(plan.widgets.map((w) => [w.kind, w.size, w.tier])).toEqual([
+      ["sunrise", "L", 1],
+      ["needs", "M", 2],
+      ["incident", "S", 2],
+      ["risk", "S", 3],
+      ["shipped", "W", 3],
+      ["team", "W", 3],
+      ["focus", "W", 3],
+    ]);
+    expect(plan.widgets.find((w) => w.kind === "team")!.score).toBe(26);
+    expect(plan.widgets.find((w) => w.kind === "risk")!.score).toBe(30);
+    expect(plan.widgets.find((w) => w.kind === "shipped")!.score).toBe(30);
+    expect(plan.widgets.find((w) => w.kind === "focus")!.score).toBe(20);
+    expect(plan.widgets.find((w) => w.kind === "focus")!.reason).toBe("Shown because 6 sessions across 3 products since yesterday.");
+  });
+
+  it("falls back to the spec's template 6B when focus has nothing to show", () => {
+    // One product only: focus measures null and the page is the spec's 6B exactly.
+    const input = octoberEleven();
+    input.recentSessions = input.recentSessions!.map((s) => ({ ...s, product: "Desktop app" }));
+    const plan = generateBrief(input);
     expect(plan.template).toBe("6B");
-    expect(plan.density).toBe(6);
     expect(plan.areas).toEqual([
       "sunrise sunrise sunrise needs needs incident",
       "sunrise sunrise sunrise needs needs risk",
@@ -120,9 +156,6 @@ describe("the real Oct 11 run (a Sunday)", () => {
       ["shipped", "W3", 3],
       ["team", "W3", 3],
     ]);
-    expect(plan.widgets.find((w) => w.kind === "team")!.score).toBe(26);
-    expect(plan.widgets.find((w) => w.kind === "risk")!.score).toBe(30);
-    expect(plan.widgets.find((w) => w.kind === "shipped")!.score).toBe(30);
   });
 
   it("explains the header, the hero and every card in one sentence each", () => {
@@ -140,16 +173,25 @@ describe("the real Oct 11 run (a Sunday)", () => {
     expect(plan.explain[0]).toBe(`Sunrise — ${reason("sunrise")}`);
   });
 
-  it("lists what is not shown, in each card's own words, and the not-built cards with what they would say", () => {
+  it("lists what is not shown, in each card's own words; a not-built entry says what it would have said", () => {
     const plan = generateBrief(octoberEleven());
     const why = Object.fromEntries(plan.dropped.map((d) => [d.kind, d.why]));
     expect(why.oneThing).toBeUndefined(); // 5 decisions: oneThing measures null, so it is "no data", not dropped
     expect(why.blockedByMe).toBeUndefined(); // no edges in this fixture
-    expect(why.firsts).toMatch(/^no card yet; it would say: a first shipped yesterday$/);
+    expect(why.decided).toBeUndefined(); // the meetings are two days old: measures null
+    expect(why.firsts).toBe("a weekend filler; it comes back Monday"); // one first: value 1
     expect(plan.dropped.map((d) => d.kind)).not.toContain("meetings"); // two days old: measures null
-    expect(plan.scored.map((s) => s.kind)).toContain("firsts");
-    expect(plan.scored.find((s) => s.kind === "firsts")!.entry.ready).toBe(false);
     expect(plan.dropped.filter((d) => String(d.kind).startsWith("priority-"))).toEqual([]);
+    // The not-built path still works for the next entry without a card.
+    const firsts = entryOf("firsts") as { ready: boolean };
+    firsts.ready = false;
+    try {
+      const unbuilt = generateBrief(octoberEleven());
+      expect(unbuilt.dropped.find((d) => d.kind === "firsts")?.why).toBe("no card yet; it would say: a first shipped yesterday");
+      expect(unbuilt.scored.find((s) => s.kind === "firsts")!.entry.ready).toBe(false);
+    } finally {
+      firsts.ready = true;
+    }
   });
 
   it("weekend gate keeps needs and anything that serves a priority, drops value-1 fillers", () => {
@@ -167,25 +209,19 @@ describe("the real Oct 11 run (a Sunday)", () => {
     expect(rankDecisions(ctx).map((d) => d.id)).toEqual(["d1", "d4", "d5", "d2", "d3"]);
   });
 
-  it("once firsts and blockedByMe are built, a fit-beats-score case stays on the dropped list by design", () => {
+  it("with firsts and blockedByMe on the page, a fit-beats-score case stays on the dropped list by design", () => {
     const input = { ...octoberEleven(), today: "2026-10-14" }; // a weekday, so value-1 cards are not gated
     input.decisions[0]!.blocks = [{ who: "Jonathan", what: "the round close", kind: "person" }];
     input.decisions[3]!.blocks = [{ who: "Geoff", what: "the pricing page", kind: "person" }];
     input.shipped[2]!.first = true; // two firsts -> firsts is strong and may share the grid with shipped
-    const built = CATALOGUE.map((e) => e.ready);
-    for (const e of CATALOGUE) if (e.id === "firsts" || e.id === "blockedByMe") (e as { ready: boolean }).ready = true;
-    try {
-      const plan = generateBrief(input);
-      expect(["7", "8"]).toContain(plan.template);
-      expect(kinds(plan)).toEqual(expect.arrayContaining(["sunrise", "needs", "incident", "blockedByMe", "risk", "shipped"]));
-      // Eight strong cards compete for seven or eight slots: whatever did not fit says so, in the strip.
-      const unplaced = plan.scored.filter((s) => s.entry.ready && !kinds(plan).includes(s.kind));
-      expect(unplaced.length).toBeGreaterThan(0);
-      for (const s of unplaced) expect(plan.dropped.find((d) => d.kind === s.kind)?.why).toMatch(/^(no slot fits it|no room) at [78] widgets$/);
-      for (const w of plan.widgets) expect(fitsSlot(entryOf(w.kind), w.size)).toBe(true);
-    } finally {
-      CATALOGUE.forEach((e, i) => ((e as { ready: boolean }).ready = built[i]!));
-    }
+    const plan = generateBrief(input);
+    expect(["7", "8"]).toContain(plan.template);
+    expect(kinds(plan)).toEqual(expect.arrayContaining(["sunrise", "needs", "incident", "blockedByMe", "risk", "shipped"]));
+    // More strong cards than slots: whatever did not fit says so, in the strip.
+    const unplaced = plan.scored.filter((s) => s.entry.ready && !kinds(plan).includes(s.kind));
+    expect(unplaced.length).toBeGreaterThan(0);
+    for (const s of unplaced) expect(plan.dropped.find((d) => d.kind === s.kind)?.why).toMatch(/^(no slot fits it|no room) at [78] widgets$/);
+    for (const w of plan.widgets) expect(fitsSlot(entryOf(w.kind), w.size)).toBe(true);
   });
 });
 
@@ -221,7 +257,7 @@ describe("quiet Saturday and catch-up Thursday", () => {
     expect(plan.dropped.find((d) => d.kind === "shipped")?.why).toBe("shown in the Welcome back tiles");
     expect(plan.widgets[0]!.reason).toBe('Always first: you were away 4 days: what changed, in five tiles, starting with "Approve the Q4 plan".');
     expect(plan.reason).toBe('"Approve the Q4 plan" leads · you were away 4 days');
-    // Carry and weekArc carry their day bonus even though they are not built yet.
+    // Carry and weekArc carry their day bonus.
     const carry = plan.scored.find((s) => s.kind === "carry")!;
     expect(carry.parts.day).toBe(10);
     expect(plan.scored.find((s) => s.kind === "weekArc")!.parts.day).toBe(15);
@@ -305,15 +341,11 @@ describe("pairs", () => {
     expect(pairRuleFor("incident", "risk")).toBeNull();
   });
 
-  it("agenda and runway never share the grid once runway is built", () => {
-    const flip = (id: BriefWidgetKind, ready: boolean) => ((entryOf(id) as { ready: boolean }).ready = ready);
-    flip("runway", true);
-    try {
-      const plan = generateBrief(everything());
-      expect(kinds(plan).filter((k) => k === "agenda" || k === "runway").length).toBeLessThanOrEqual(1);
-    } finally {
-      flip("runway", false);
-    }
+  it("agenda and runway never share the grid", () => {
+    const plan = generateBrief(everything());
+    expect(kinds(plan)).toContain("runway");
+    expect(kinds(plan)).not.toContain("agenda");
+    expect(plan.dropped.find((d) => d.kind === "agenda")?.why).toBe("Focus time already shows today's calls and gaps");
   });
 });
 
@@ -419,12 +451,12 @@ describe("determinism and lint", () => {
   it("density: strong cards count, value-1 cards only top up to four, never above the pool", () => {
     const ctx = buildContext(octoberEleven());
     const pool = eligible(ctx, []);
-    expect(density(ctx, pool)).toBe(6);
+    expect(density(ctx, pool)).toBe(7);
     expect(density(ctx, pool.slice(0, 2))).toBe(2);
     const dropped: Dropped[] = [];
     eligible(buildContext({ ...octoberEleven(), prefs: { density: "auto", pinned: [], hidden: ["risk"], weights: {} } }), dropped);
     expect(dropped).toContainEqual({ kind: "risk", why: "hidden by you" });
     expect(leadReason(ctx, "x")).toBe('"Close out the $20-cap SAFE allotment" leads · x');
-    expect(pick(ctx, pool).template).toBe("6B");
+    expect(pick(ctx, pool).template).toBe("7");
   });
 });

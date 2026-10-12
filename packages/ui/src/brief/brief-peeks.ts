@@ -1,12 +1,37 @@
 /**
- * Peek contents shared by several cards (Needs you, the incident, Yesterday,
- * Today's priorities), and the priorities list itself. Pure.
+ * Peek contents shared by several cards (Needs you, the incident, the watch
+ * list, Yesterday, Today's priorities), the priorities list itself, and the
+ * pure helpers the health cards (incident, risk) render from: plain titles
+ * with product names, red ages, main-health summaries, five-row caps. Pure.
+ * Display-only helpers here may read `now`; none use toLocale*.
  */
 import type { PeekContent } from "./brief-context.svelte.js";
-import type { BriefDecision, BriefInput, BriefMeeting, BriefPriority, BriefRisk } from "./brief-types.js";
+import { humanTitle } from "./brief-distill.js";
+import { productName, repoShort } from "./brief-origin.js";
+import type { BriefDecision, BriefInput, BriefLine, BriefMainHealth, BriefMeeting, BriefPriority, BriefRisk } from "./brief-types.js";
 
 /** Lines per peek section for meetings: past three the peek stops being a glance. */
 const MEETING_LINES = 3;
+
+/** Every list on a card shows at most this many rows, then "+N more". */
+export const LIST_CAP = 5;
+
+/** "1 agent", "5 agents", "2 people". */
+export function countNoun(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** "a", "a and b", "a, b and c". */
+export function joinAnd(parts: readonly string[]): string {
+  const p = parts.filter(Boolean);
+  if (p.length <= 1) return p[0] ?? "";
+  return `${p.slice(0, -1).join(", ")} and ${p[p.length - 1]}`;
+}
+
+/** The first `cap` rows and the rest, for a list with a "+N more" row. */
+export function capList<T>(rows: readonly T[], cap = LIST_CAP): { shown: T[]; rest: T[] } {
+  return { shown: rows.slice(0, cap), rest: rows.slice(cap) };
+}
 
 /** A decision's peek: why, what clearing it unlocks, and its prompt. */
 export function decisionPeek(d: BriefDecision, prompt: string | undefined): PeekContent {
@@ -23,16 +48,196 @@ export function decisionPeek(d: BriefDecision, prompt: string | undefined): Peek
   };
 }
 
-/** A risk or incident's peek: summary, fixes in review, and its prompt. */
-export function riskPeek(risk: BriefRisk, prompt: string | undefined): PeekContent {
+// ---------------------------------------------------------------------------
+// Incidents and watches: what the health cards say, in the owner's words
+// ---------------------------------------------------------------------------
+
+/** The product a risk is about: the writer's product, else from its repo (the CI repo as a fallback). "" when unknown. */
+export function riskProduct(r: BriefRisk): string {
+  return productName(r.origin.repo ?? r.ci?.repo ?? null, r.origin.product ?? null);
+}
+
+/** "HQ Cloud main is red" for a red main; "Main is red" when the product is unknown. */
+export function redMainTitle(r: BriefRisk): string {
+  const product = riskProduct(r);
+  return `${product ? `${product} main` : "Main"} is red`;
+}
+
+/**
+ * The incident card's eyebrow, never a repo slug: "HQ Cloud main is red" for a
+ * red main, "Fleet incident" for a measured one, else the title as a to-do.
+ */
+export function incidentEyebrow(r: BriefRisk): string {
+  if (r.ci) return redMainTitle(r);
+  if (r.measure) {
+    const product = riskProduct(r);
+    return product ? `${product} incident` : "Incident";
+  }
+  return humanTitle(r.title).text;
+}
+
+/** A watch row's plain title: red mains name the product; anything else loses its repo slug, PR number and prefix. */
+export function watchTitle(r: BriefRisk): string {
+  return r.ci ? redMainTitle(r) : humanTitle(r.title).text;
+}
+
+/** How long a main has been red, in hours, from ci.ageHours or ci.since; null when unknown. */
+export function redHoursOf(r: BriefRisk, nowIso: string): number | null {
+  if (!r.ci) return null;
+  if (r.ci.ageHours != null && Number.isFinite(r.ci.ageHours) && r.ci.ageHours >= 0) return r.ci.ageHours;
+  if (r.ci.since) {
+    const t = Date.parse(r.ci.since);
+    const now = Date.parse(nowIso);
+    if (Number.isFinite(t) && Number.isFinite(now)) return Math.max(0, (now - t) / 3_600_000);
+  }
+  return null;
+}
+
+/** Mono age for a row end: "<1h", "5h", "2d"; null when unknown. */
+export function shortHours(hours: number | null | undefined): string | null {
+  if (hours == null || !Number.isFinite(hours) || hours < 0) return null;
+  if (hours < 1) return "<1h";
+  if (hours < 48) return `${Math.round(hours)}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+/** Affected count of a measured incident (stuck = total - healthy), or null. */
+export function affectedOf(r: BriefRisk): number | null {
+  const m = r.measure;
+  if (!m) return null;
+  return Math.max(0, m.total - m.healthy);
+}
+
+/** A short state for a secondary incident row: "2d red", "5 agents stuck", or "". */
+export function incidentShortState(r: BriefRisk, nowIso: string): string {
+  if (r.ci) {
+    const age = shortHours(redHoursOf(r, nowIso));
+    return age ? `${age} red` : "red";
+  }
+  const n = affectedOf(r);
+  if (n != null && r.measure) return `${countNoun(n, r.measure.unit.replace(/s$/, ""), r.measure.unit)} stuck`;
+  return "";
+}
+
+/** "3 changes merged on top" when the writer counted merges after the main went red; null otherwise. */
+export function mergesOnTopText(r: BriefRisk): string | null {
+  const n = r.ci?.mergesOnTop;
+  if (n == null || !Number.isFinite(n) || n <= 0) return null;
+  return `${countNoun(Math.round(n), "change")} merged on top`;
+}
+
+/**
+ * A risk or incident's peek: the plain title with the company chip, the
+ * summary, the facts the card counted (red age, job, merges on top, the
+ * affected set), fixes in review, and its prompt.
+ */
+export function riskPeek(risk: BriefRisk, prompt: string | undefined, nowIso = ""): PeekContent {
+  const live = risk.severity === "incident";
+  const facts: BriefLine[] = [];
+  if (risk.ci) {
+    const age = redAge(risk.ci, nowIso);
+    if (age) facts.push({ label: age, state: "SINCE", tone: "red" });
+    if (risk.ci.job) facts.push({ label: risk.ci.job, state: "JOB", tone: "neutral" });
+    const onTop = mergesOnTopText(risk);
+    if (onTop) facts.push({ label: onTop, state: "ON TOP", tone: "warn" });
+  }
+  const affected = affectedOf(risk);
+  if (risk.measure && affected != null) {
+    facts.push({ label: `${affected} of ${countNoun(risk.measure.total, risk.measure.unit.replace(/s$/, ""), risk.measure.unit)} ${risk.measure.cause}`, state: "MEASURED", tone: "red" });
+  }
+  const sections: PeekContent["sections"] = [];
+  if (facts.length) sections.push({ label: live ? "Live" : "Facts", lines: facts });
+  if (risk.links.length) sections.push({ label: "Fixes in review", lines: risk.links.map((l) => ({ label: l.label, state: "REVIEW", tone: "warn" as const })) });
+  const product = riskProduct(risk) || repoShort(risk.origin.repo);
   return {
     sample: risk.sample,
-    title: risk.ci?.workflow ?? risk.title,
+    eyebrow: live ? "Incident · live" : "Watch",
+    origin: risk.origin.companyUid || product ? { companyUid: risk.origin.companyUid, label: product } : undefined,
+    // A red main is titled by its workflow (the chip already names the product); anything else by its plain title.
+    title: risk.ci?.workflow ?? (risk.ci ? redMainTitle(risk) : humanTitle(risk.title).text),
     status: risk.summary,
-    sections: risk.links.length ? [{ label: "Fixes in review", lines: risk.links.map((l) => ({ label: l.label, state: "REVIEW", tone: "warn" as const })) }] : [],
+    sections,
     prompt: prompt ? { id: risk.id, text: prompt } : undefined,
   };
 }
+
+/** The peek behind an incident card's "+N more" row: the other live incidents with their state. */
+export function moreIncidentsPeek(rest: readonly BriefRisk[], nowIso: string): PeekContent {
+  return {
+    title: `${rest.length} more live`,
+    status: "Also live",
+    sections: [{ label: "Incidents", lines: rest.map((r) => ({ label: watchTitle(r), state: incidentShortState(r, nowIso).toUpperCase(), tone: "red" as const })) }],
+  };
+}
+
+/** The peek behind the watch card's "+N more" row: the other watch rows, red mains marked. */
+export function moreWatchesPeek(rest: readonly BriefRisk[]): PeekContent {
+  return {
+    title: `${rest.length} more`,
+    status: "Also worth watching",
+    sections: [{ label: "Watch", lines: rest.map((r) => ({ label: watchTitle(r), state: r.ci ? "RED" : "", tone: r.ci ? ("red" as const) : ("neutral" as const) })) }],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Main health (the watch card's footer)
+// ---------------------------------------------------------------------------
+
+/** Case-insensitive name order, the same on every machine (no locale). */
+const byName = (a: string, b: string): number => {
+  const x = a.toLowerCase();
+  const y = b.toLowerCase();
+  return x < y ? -1 : x > y ? 1 : 0;
+};
+
+export interface MainHealthSummary {
+  total: number;
+  green: number;
+  /** Products with a red workflow, most red first. */
+  red: BriefMainHealth[];
+}
+
+/** Products green of total from the sweep's main health; null when the sweep carried none. */
+export function mainHealthSummary(rows: readonly BriefMainHealth[] | null | undefined): MainHealthSummary | null {
+  if (!rows?.length) return null;
+  const red = rows.filter((r) => r.red.length > 0).sort((a, b) => b.red.length - a.red.length || byName(a.repo, b.repo));
+  return { total: rows.length, green: rows.length - red.length, red };
+}
+
+/** "Main health · 6 of 7 products green". */
+export function mainHealthLabel(s: MainHealthSummary): string {
+  return `Main health · ${s.green} of ${countNoun(s.total, "product")} green`;
+}
+
+/** The product a main-health row is about, never a repo slug. */
+export function mainHealthProduct(r: BriefMainHealth): string {
+  return productName(r.repo, r.product);
+}
+
+/** The footer's peek: every product GREEN or RED, red first (the peek shows five, then "+N more"). */
+export function mainHealthPeek(rows: readonly BriefMainHealth[]): PeekContent {
+  const s = mainHealthSummary(rows) ?? { total: 0, green: 0, red: [] };
+  const redIds = new Set(s.red.map((r) => r.repo));
+  const greens = rows.filter((r) => !redIds.has(r.repo)).sort((a, b) => byName(mainHealthProduct(a), mainHealthProduct(b)));
+  const lines: BriefLine[] = [
+    ...s.red.map((r) => ({
+      label: `${mainHealthProduct(r)}${r.red.length > 1 ? ` · ${countNoun(r.red.length, "workflow")} red` : r.red[0]?.workflow ? ` · ${r.red[0].workflow}` : ""}`,
+      state: "RED",
+      tone: "red" as const,
+    })),
+    ...greens.map((r) => ({ label: mainHealthProduct(r), state: "GREEN", tone: "ok" as const })),
+  ];
+  const redNames = s.red.map(mainHealthProduct);
+  return {
+    title: "Main health",
+    status: `${s.green} of ${countNoun(s.total, "product")} green${redNames.length ? ` · ${joinAnd(redNames)} red` : ""}`,
+    sections: [{ label: "Products", lines }],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Meetings
+// ---------------------------------------------------------------------------
 
 /** The prompt that starts one of your own meeting to-dos. */
 export function todoPrompt(meeting: string, text: string): string {
@@ -70,6 +275,10 @@ export function meetingPeek(m: BriefMeeting, actions: PeekContent["actions"] = [
   };
 }
 
+// ---------------------------------------------------------------------------
+// Today's priorities
+// ---------------------------------------------------------------------------
+
 /**
  * Today's priorities: the writer's list from brief.json when it has one,
  * else the top three decisions and then the live incident, so the card is
@@ -88,6 +297,34 @@ export function briefPriorities(input: BriefInput): BriefPriority[] {
     out.push({ n: out.length + 1, text: incident.ci?.workflow ? `Fix ${incident.ci.repo}: ${incident.ci.workflow}` : incident.title, because: incident.summary || null, itemId: incident.id });
   }
   return out;
+}
+
+/**
+ * The writer's unblock score said in words, for a priority row's peek:
+ * "unblocks 3 people and revenue · 44h old" for a decision, "red for 2 days"
+ * or "5 agents stuck" for an incident. Falls back to "rank score N" when the
+ * item carries no facts. Null when the writer wrote no score.
+ */
+export function priorityScoreWords(p: BriefPriority, item: BriefDecision | BriefRisk | null, nowIso = ""): string | null {
+  if (p.score == null || !Number.isFinite(p.score)) return null;
+  const parts: string[] = [];
+  if (item && "action" in item) {
+    const people = item.peopleWaiting ?? new Set((item.blocks ?? []).filter((b) => b.kind === "person").map((b) => b.who.trim().toLowerCase())).size;
+    const things = item.detail?.unlocks.length ?? (item.blocks ?? []).filter((b) => b.kind === "work").length;
+    const frees = [people > 0 ? countNoun(people, "person", "people") : "", things > 0 ? countNoun(things, "thing") : "", item.revenue ? "revenue" : ""].filter(Boolean);
+    if (frees.length) parts.push(`unblocks ${joinAnd(frees)}`);
+    const age = shortHours(item.ageHours);
+    if (age) parts.push(`${age} old`);
+  } else if (item) {
+    if (item.ci) {
+      const age = redAge(item.ci, nowIso);
+      parts.push(age ? age.charAt(0).toLowerCase() + age.slice(1) : "red on main");
+    }
+    const n = affectedOf(item);
+    if (n != null && item.measure) parts.push(`${countNoun(n, item.measure.unit.replace(/s$/, ""), item.measure.unit)} stuck`);
+  }
+  if (!parts.length) parts.push(`rank score ${p.score}`);
+  return parts.join(" · ");
 }
 
 /** "Red for 3h", "Red for 2 days" or "Red since Oct 9", from the incident's CI detail; null when unknown. */

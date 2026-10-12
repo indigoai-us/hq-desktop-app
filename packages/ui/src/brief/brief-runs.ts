@@ -128,6 +128,21 @@ export function latestReadyRun(entries: readonly BriefIndexEntry[]): BriefIndexE
   return entries.find((e) => e.state === "ready") ?? null;
 }
 
+/**
+ * The ready run before `runId`, for "days away" and rotation. When the run is
+ * in the index (newest first), the next ready entry after it; when it is not
+ * listed yet (a run that just finished), the newest ready run that started
+ * before it. With no run id, the newest ready run. Pure, read-only.
+ */
+export function previousReadyRun(entries: readonly BriefIndexEntry[], runId: string | null): BriefIndexEntry | null {
+  if (!runId) return latestReadyRun(entries);
+  const at = entries.findIndex((e) => e.runId === runId);
+  if (at >= 0) return entries.slice(at + 1).find((e) => e.state === "ready") ?? null;
+  const start = runIdTime(runId)?.getTime() ?? Number.POSITIVE_INFINITY;
+  const startOf = (e: BriefIndexEntry) => runIdTime(e.runId)?.getTime() ?? Date.parse(e.createdAt);
+  return entries.find((e) => e.state === "ready" && e.runId !== runId && startOf(e) < start) ?? null;
+}
+
 /** Neighbours for prev/next stepping; `older` is further back in time. */
 export function stepRun(
   entries: readonly BriefIndexEntry[],

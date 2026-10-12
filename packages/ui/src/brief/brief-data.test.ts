@@ -1,6 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { calendarToday, configureBriefSeed, gatherBriefInput, signalsByKind, type BriefAdapter } from "./brief-data.js";
+import {
+  applyRunItems,
+  baseInput,
+  calendarToday,
+  configureBriefSeed,
+  foldMainHealth,
+  gatherBriefInput,
+  mergeMeetings,
+  mergeReleases,
+  mergeShipped,
+  mergeTeam,
+  signalsByKind,
+  type BriefAdapter,
+} from "./brief-data.js";
+import { parseBriefItems } from "./brief-run-files.js";
 import { octoberEightBrief } from "./brief-fixture.js";
+import type { BriefDecision, BriefMeeting, BriefRelease, BriefRisk, BriefShipped, BriefTeammate } from "./brief-types.js";
 
 const NOW = new Date(2026, 9, 8, 7, 40);
 const at = (day: number, h: number, m = 0) => new Date(2026, 9, day, h, m).toISOString();
@@ -169,5 +184,202 @@ describe("mergePastMeetings", () => {
       { id: "r3", title: "Later", start: "2026-10-09T23:00:00Z", kind: "team" as const },
     ];
     expect(mergePastMeetings(cal, rec, now).map((e) => e.id)).toEqual(["r2", "c1"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Row-level folds between the sweep and the writer. Pure.
+// ---------------------------------------------------------------------------
+
+const INDIGO = "cmp_indigo";
+const ciRisk = (repo: string, workflow: string, extra: Partial<NonNullable<BriefRisk["ci"]>> = {}): BriefRisk => ({
+  id: `ci:${repo}`,
+  title: `${repo} main CI red`,
+  summary: `${workflow} failing on main.`,
+  severity: "incident",
+  links: [],
+  origin: { companyUid: INDIGO, repo: `indigoai-us/${repo}` },
+  ci: { repo, workflow, job: null, since: null, ageHours: null, note: null, ...extra },
+});
+const decision = (id: string, extra: Partial<BriefDecision>): BriefDecision => ({
+  id,
+  title: id,
+  summary: id,
+  action: "decide",
+  origin: { companyUid: INDIGO, repo: null },
+  ...extra,
+});
+const rollup = (repo: string, merged: number, product?: string): BriefShipped => ({
+  id: `ship:${repo}`,
+  title: repo,
+  status: `${merged} merged`,
+  note: "nothing open",
+  origin: { companyUid: INDIGO, repo: `indigoai-us/${repo}`, ...(product ? { product } : {}) },
+  lines: Array.from({ length: merged }, (_, i) => ({ label: `${i} change`, state: "MERGED" })),
+});
+const writerShip = (id: string, title: string, product: string, extra: Partial<BriefShipped> = {}): BriefShipped => ({
+  id,
+  title,
+  status: "",
+  note: "",
+  origin: { companyUid: INDIGO, repo: null, product },
+  lines: [],
+  ...extra,
+});
+
+describe("foldMainHealth", () => {
+  const writerIncident: BriefRisk = {
+    id: "p1",
+    title: "Fix the failing nightly check",
+    summary: "",
+    severity: "incident",
+    links: [],
+    origin: { companyUid: INDIGO, repo: null, product: "HQ Cloud" },
+    ci: { repo: "HQ Cloud", workflow: null, job: null, since: null, ageHours: 48, note: "Two days red" },
+  };
+
+  it("drops the sweep row the writer covers by repo (decision) or by product (incident), and keeps the rest", () => {
+    const risks = [writerIncident, ciRisk("hq-core-staging", "Promote", { since: "2026-10-09T14:00:00Z", mergesOnTop: 4 }), ciRisk("hq-cloud", "Sync nightly"), ciRisk("hq-pro", "pr-checks")];
+    const decisions = [decision("d3", { source: "main_health", origin: { companyUid: INDIGO, repo: "hq-core-staging", product: "HQ core" } })];
+    const out = foldMainHealth(risks, decisions);
+    expect(out.map((r) => r.id)).toEqual(["p1", "ci:hq-pro"]);
+    // The writer's row keeps its own facts and gains the sweep's where it had none.
+    expect(out[0]!.ci).toEqual({ repo: "hq-cloud", workflow: "Sync nightly", job: null, since: null, ageHours: 48, note: "Two days red" });
+    expect(out[0]).not.toBe(writerIncident);
+  });
+
+  it("a decision from another source on the same repo does not fold the red main away", () => {
+    const risks = [ciRisk("hq-core-staging", "Promote")];
+    const out = foldMainHealth(risks, [decision("d1", { source: "dms", origin: { companyUid: INDIGO, repo: "hq-core-staging" } })]);
+    expect(out.map((r) => r.id)).toEqual(["ci:hq-core-staging"]);
+  });
+
+  it("is a copy when nothing folds", () => {
+    const risks = [writerIncident];
+    const out = foldMainHealth(risks, []);
+    expect(out).toEqual(risks);
+    expect(out).not.toBe(risks);
+  });
+});
+
+describe("mergeShipped", () => {
+  const rollups = [rollup("hq-cli", 3), rollup("hq-pro", 2, "HQ Pro")];
+
+  it("folds a plain product row onto its rollup (by repo or product) and keeps a named ship as its own row", () => {
+    const out = mergeShipped(rollups, [
+      writerShip("s1", "HQ command line", "HQ command line", { first: true, why: "Colors landed.", highlights: ["Colors in the CLI", "colors in the cli"], mergeHoursMedian: 4, origin: { companyUid: INDIGO, repo: "hq-cli", product: "HQ command line" } }),
+      writerShip("s2", "Pro 2.0 is out", "HQ Pro", { first: true, why: "The release finished." }),
+      writerShip("s3", "Finance dashboard", "Finance dashboard", { first: true }),
+    ]);
+    expect(out.map((s) => s.id)).toEqual(["ship:hq-cli", "ship:hq-pro", "s2", "s3"]);
+    expect(out[0]).toMatchObject({ first: true, why: "Colors landed.", highlights: ["Colors in the CLI"], mergeHoursMedian: 4, origin: { product: "HQ command line" } });
+    expect(out[0]!.lines).toHaveLength(3);
+    expect(out[1]).toMatchObject({ why: "The release finished." });
+    expect(out[1]!.first).toBeUndefined();
+    expect(out.filter((s) => s.first).map((s) => s.id)).toEqual(["ship:hq-cli", "s2", "s3"]);
+    // Inputs are not mutated.
+    expect(rollups[0]!.first).toBeUndefined();
+    expect(rollups[0]!.origin.product).toBeUndefined();
+  });
+
+  it("without rollups the writer rows stand alone", () => {
+    expect(mergeShipped([], [writerShip("s1", "Desktop app", "Desktop app")]).map((s) => s.id)).toEqual(["s1"]);
+    expect(mergeShipped(rollups, [])).toEqual(rollups);
+  });
+});
+
+describe("mergeTeam", () => {
+  const dm = (id: string, name: string, dmCount: number): BriefTeammate => ({ id, name, doing: "Messaged you", tone: "ok", dmCount, isAgent: false });
+
+  it("writer people win on status, tone and load; the DM count and unmatched senders stay", () => {
+    const team = [dm("prs_ada", "Ada", 2), dm("prs_dee", "Dee", 1)];
+    const people: BriefTeammate[] = [
+      { id: "Ada", name: "Ada", doing: "Waiting on your check.", tone: "decision", isAgent: false, load: "heavy", owes: ["the launch email"] },
+      { id: "agt_izzy", name: "Izzy", doing: "Watching the thread", tone: "neutral", isAgent: true },
+    ];
+    expect(mergeTeam(team, people)).toEqual([
+      { id: "prs_ada", name: "Ada", doing: "Waiting on your check.", tone: "decision", dmCount: 2, isAgent: false, load: "heavy", owes: ["the launch email"] },
+      { id: "agt_izzy", name: "Izzy", doing: "Watching the thread", tone: "neutral", isAgent: true },
+      dm("prs_dee", "Dee", 1),
+    ]);
+    expect(team[0]!.doing).toBe("Messaged you");
+  });
+});
+
+describe("mergeMeetings", () => {
+  const meeting = (id: string, title: string, startTime: string, extra: Partial<BriefMeeting> = {}): BriefMeeting => ({
+    id,
+    title,
+    startTime,
+    companyUid: INDIGO,
+    decisions: 0,
+    actions: 0,
+    risks: 0,
+    questions: 0,
+    ...extra,
+  });
+
+  it("matches by title or start, takes the writer's lines and attendance, adds unknown meetings with a start, drops startless ones", () => {
+    const existing = [meeting("sw-0", "Launch sync", "2026-10-10T15:00:00Z", { decisions: 1 }), meeting("sw-1", "Board prep", "2026-10-10T17:00:00Z")];
+    const writer = [
+      meeting("m1", "launch sync", "", { decided: ["Ship Friday"], attended: true, durationMin: 30, with: "the launch team" }),
+      meeting("m2", "Prep for the board", "2026-10-10T17:00:00Z", { attended: false }),
+      meeting("m3", "Investor call", "2026-10-10T18:00:00Z", { decisions: 2, attended: true }),
+      meeting("m4", "No start", "", { attended: true }),
+    ];
+    const out = mergeMeetings(existing, writer);
+    expect(out.map((m) => [m.id, m.attended ?? null, m.decisions])).toEqual([
+      ["sw-0", true, 1],
+      ["sw-1", false, 0],
+      ["m3", true, 2],
+    ]);
+    expect(out[0]).toMatchObject({ decided: ["Ship Friday"], durationMin: 30, with: "the launch team" });
+    expect(existing[0]!.attended).toBeUndefined();
+  });
+});
+
+describe("mergeReleases", () => {
+  const release = (product: string, extra: Partial<BriefRelease> = {}): BriefRelease => ({
+    product,
+    version: null,
+    origin: { companyUid: INDIGO, repo: null, product },
+    releasedAt: null,
+    pending: [],
+    pendingCount: 0,
+    held: [],
+    light: "ok",
+    ...extra,
+  });
+
+  it("the writer's held items, light and prompt win; the sweep's counts stay when the writer has none; new products are added", () => {
+    const sweep = [release("Desktop app", { version: "0.11.3", releasedAt: "2026-10-10T21:00:00Z", pending: [{ day: "2026-10-11", count: 3, theme: "onboarding" }], pendingCount: 3, origin: { companyUid: INDIGO, repo: "indigoai-us/hq-desktop-app", product: "Desktop app" } })];
+    const writer = [release("Desktop app", { held: [{ title: "Pricing page", why: "waits on the answer" }], light: "warn", prompt: "Cut it." }), release("HQ Pro", { pendingCount: 5, light: "red" })];
+    const out = mergeReleases(sweep, writer);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({
+      product: "Desktop app",
+      version: "0.11.3",
+      pending: [{ day: "2026-10-11", count: 3, theme: "onboarding" }],
+      pendingCount: 3,
+      held: [{ title: "Pricing page", why: "waits on the answer" }],
+      light: "warn",
+      prompt: "Cut it.",
+      origin: { repo: "indigoai-us/hq-desktop-app" },
+    });
+    expect(out[1]).toMatchObject({ product: "HQ Pro", pendingCount: 5, light: "red" });
+    expect(sweep[0]!.held).toEqual([]);
+  });
+});
+
+describe("applyRunItems with an empty brief.json", () => {
+  it("leaves every new list absent and only sets default prefs", () => {
+    const input = baseInput(new Date(2026, 9, 11, 9, 0), "Corey", [{ uid: INDIGO, slug: "indigo", label: "Indigo" }], null);
+    const before = JSON.stringify(input);
+    applyRunItems(input, parseBriefItems("{}", INDIGO)!);
+    expect(input.prefs).toEqual({ density: "auto", pinned: [], hidden: [], weights: {} });
+    for (const key of ["carry", "handoffs", "recovered", "releases", "reminders", "days", "landedDays", "timeToClearMin", "leadHint", "fleetIncident", "mainHealth", "catchUp"] as const) {
+      expect(input[key]).toBeUndefined();
+    }
+    expect(JSON.stringify({ ...input, prefs: undefined })).toBe(before);
   });
 });

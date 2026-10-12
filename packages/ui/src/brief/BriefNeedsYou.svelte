@@ -1,17 +1,89 @@
+<script lang="ts" module>
+  import type { BriefDecision } from "./brief-types.js";
+
+  /** Minutes one call takes, by the writer's effort tag (the same scale the sunrise meter uses). */
+  export const EFFORT_MIN: Record<NonNullable<BriefDecision["effort"]>, number> = { quick: 2, medium: 6, large: 15 };
+
+  /** Mono age for a row: "<1h", "44h", then "3d" from two days; null when unknown. */
+  export function ageLabel(hours: number | null | undefined): string | null {
+    if (hours == null || !Number.isFinite(hours) || hours < 0) return null;
+    if (hours < 1) return "<1h";
+    if (hours < 48) return `${Math.round(hours)}h`;
+    return `${Math.round(hours / 24)}d`;
+  }
+
+  /** Age tone: red past two days, amber past one, else neutral. */
+  export function ageTone(hours: number | null | undefined): "red" | "warn" | null {
+    if (hours == null || !Number.isFinite(hours)) return null;
+    return hours > 48 ? "red" : hours > 24 ? "warn" : null;
+  }
+
+  /** "2nd brief" for a call carried from one earlier brief, "3rd brief" from two; null when it is new today. */
+  export function carriedLabel(carriedBriefs: number | null | undefined): string | null {
+    if (carriedBriefs == null || !Number.isFinite(carriedBriefs) || carriedBriefs < 1) return null;
+    const n = Math.floor(carriedBriefs) + 1;
+    const tens = n % 100;
+    const suffix = tens >= 11 && tens <= 13 ? "th" : n % 10 === 1 ? "st" : n % 10 === 2 ? "nd" : n % 10 === 3 ? "rd" : "th";
+    return `${n}${suffix} brief`;
+  }
+
+  function joinNames(list: readonly string[]): string {
+    if (list.length <= 1) return list[0] ?? "";
+    if (list.length <= 3) return `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
+    return `${list.slice(0, 3).join(", ")} and ${list.length - 3} more`;
+  }
+
+  /**
+   * Who waits on a reply: the people named in `blocks`, else "N waiting" from
+   * `peopleWaiting`; null when nobody is known. Never says "people" without names.
+   */
+  export function waitersLine(d: BriefDecision): string | null {
+    const people = [...new Set((d.blocks ?? []).filter((b) => b.kind === "person").map((b) => b.who.trim()).filter(Boolean))];
+    if (people.length) return `${joinNames(people)} wait${people.length === 1 ? "s" : ""} on your reply`;
+    if (d.peopleWaiting && d.peopleWaiting > 0) return `${d.peopleWaiting} waiting`;
+    return null;
+  }
+
+  /**
+   * Minutes left to clear the open calls: the writer's total when it wrote one
+   * (less the effort of calls cleared here), else the sum of each open call's
+   * effort. Null when nothing carries an effort tag.
+   */
+  export function minutesToClear(decisions: readonly BriefDecision[], cleared: Record<string, boolean>, writerTotal: number | null | undefined): number | null {
+    const effort = (d: BriefDecision) => (d.effort ? EFFORT_MIN[d.effort] : 0);
+    if (writerTotal != null && Number.isFinite(writerTotal)) {
+      const done = decisions.filter((d) => cleared[d.id]).reduce((n, d) => n + effort(d), 0);
+      return Math.max(0, Math.round(writerTotal - done));
+    }
+    if (!decisions.some((d) => d.effort)) return null;
+    return decisions.filter((d) => !cleared[d.id]).reduce((n, d) => n + effort(d), 0);
+  }
+</script>
+
 <script lang="ts">
   /**
-   * Needs you: the decisions waiting on the person. Each row reveals its own
-   * launch controls on hover (no card lift). A row's peek shows why, what it
-   * unlocks, and the full prompt. Full detail sits on the card only when the
-   * item is marked important.
+   * Needs you: the decisions waiting on the person, in the order the picker
+   * ranked them (a priority's call first, then by what it unblocks, then age).
+   * Each row reveals its own launch controls on hover (no card lift); a decide
+   * row's pill splits into its two answers. The row end carries a mono age
+   * (amber past a day, red past two) and a "2nd brief" chip when the call was
+   * carried from an earlier brief. Reply rows name who waits. A row's peek
+   * shows why, what it unlocks, who it blocks, and the full prompt. Full detail
+   * sits on the card only when the item is marked important.
    */
   import BriefLaunch from "./BriefLaunch.svelte";
   import BriefOrigin from "./BriefOrigin.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import { decisionPeek } from "./brief-peeks.js";
-  import type { BriefDecision } from "./brief-types.js";
 
-  let { decisions, prompts, rows }: { decisions: BriefDecision[]; prompts: Record<string, string>; rows: number } = $props();
+  interface Props {
+    decisions: BriefDecision[];
+    prompts: Record<string, string>;
+    rows: number;
+    /** Sum of effort minutes over the open calls, when the writer wrote it (brief.json). Else summed from each call's effort. */
+    timeToClearMin?: number | null;
+  }
+  let { decisions, prompts, rows, timeToClearMin = null }: Props = $props();
   const brief = useBrief();
   const tall = $derived(rows > 1);
   // At most five rows in a list; a "+N more" row opens the rest in the peek.
@@ -20,9 +92,10 @@
   const morePeek = (): PeekContent => ({
     title: `${rest.length} more decision${rest.length === 1 ? "" : "s"}`,
     status: "Also waiting on you",
-    sections: [{ label: "Decisions", lines: rest.map((d) => ({ label: d.title, state: brief.cleared[d.id] ? "DONE" : "" })) }],
+    sections: [{ label: "Decisions", lines: rest.map((d) => ({ label: d.title, state: brief.cleared[d.id] ? "DONE" : (ageLabel(d.ageHours) ?? ""), tone: brief.cleared[d.id] ? "ok" : (ageTone(d.ageHours) ?? "neutral") })) }],
   });
   const done = $derived(decisions.filter((d) => brief.cleared[d.id]).length);
+  const minutes = $derived(minutesToClear(decisions, brief.cleared, timeToClearMin));
 
   const ICON: Record<string, string> = {
     cut: "M3 12V4h8l9 9-8 8zM7.5 8h.01",
@@ -32,7 +105,26 @@
     prep: "M4 5.5h16v14H4zM4 10h16M9 3.5v4M15 3.5v4",
   };
 
-  const content = (d: BriefDecision): PeekContent => decisionPeek(d, prompts[d.id]);
+  /** The sub line: who waits on a reply, then the why (important) or the summary. */
+  function subLine(d: BriefDecision): string {
+    const base = d.important && d.detail ? d.detail.why : d.summary;
+    const waiters = d.action === "reply" ? waitersLine(d) : null;
+    return waiters ? [waiters, base].filter(Boolean).join(" · ") : base;
+  }
+
+  /** The row's peek: the shared decision peek plus age, effort and who it blocks. */
+  function content(d: BriefDecision): PeekContent {
+    const p = decisionPeek(d, prompts[d.id]);
+    const facts = [ageLabel(d.ageHours) ? `${ageLabel(d.ageHours)} old` : null, d.effort ? `~${EFFORT_MIN[d.effort]} min` : null, carriedLabel(d.carriedBriefs)].filter(Boolean);
+    if (facts.length) p.status = [p.status, facts.join(" · ")].filter(Boolean).join(" · ");
+    if (d.blocks?.length) {
+      p.sections.push({
+        label: "Waiting on this",
+        lines: d.blocks.slice(0, 5).map((b) => ({ label: b.who, state: b.what, tone: b.kind === "person" ? ("warn" as const) : ("neutral" as const) })),
+      });
+    }
+    return p;
+  }
 
   function track(event: PointerEvent): void {
     const el = event.currentTarget as HTMLElement;
@@ -50,6 +142,8 @@
   <h3 class="lead" class:tall>Clear these and the day is yours.</h3>
   <div class="items">
     {#each shown as d (d.id)}
+      {@const age = ageLabel(d.ageHours)}
+      {@const carried = carriedLabel(d.carriedBriefs)}
       <div
         class="it"
         class:done={brief.cleared[d.id]}
@@ -63,15 +157,24 @@
           <div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={ICON[d.action] ?? ICON.go} /></svg></div>
         {/if}
         <div class="tx">
-          <div class="tt"><span class="t" data-testid="brief-need-title">{d.title}</span>{#if tall}<BriefOrigin origin={d.origin} product />{/if}</div>
-          {#if tall}<div class="ts">{d.important && d.detail ? d.detail.why : d.summary}</div>{/if}
+          <div class="tt">
+            <span class="t" data-testid="brief-need-title">{d.title}</span>
+            {#if tall || carried || age}
+              <span class="meta">
+                {#if tall}<BriefOrigin origin={d.origin} product />{/if}
+                {#if carried}<span class="chip-m carried" data-testid="brief-need-carried" title="Carried from {d.carriedBriefs} earlier brief{d.carriedBriefs === 1 ? '' : 's'}">{carried}</span>{/if}
+                {#if age}<span class="chip-m age" class:warn={ageTone(d.ageHours) === "warn"} class:red={ageTone(d.ageHours) === "red"} data-testid="brief-need-age" title="Open for {age}">{age}</span>{/if}
+              </span>
+            {/if}
+          </div>
+          {#if tall}<div class="ts" data-testid="brief-need-sub">{subLine(d)}</div>{/if}
           {#if brief.notes[d.id]}<div class="ts note" role="status">{brief.notes[d.id]}</div>{/if}
         </div>
         <div class="acts">
           {#if brief.cleared[d.id]}
             <span class="donechip">Done</span>
           {:else if prompts[d.id]}
-            <BriefLaunch id={d.id} prompt={prompts[d.id]!} compact={!tall} />
+            <BriefLaunch id={d.id} prompt={prompts[d.id]!} compact={!tall} choices={d.action === "decide" ? d.choices ?? null : null} />
           {/if}
         </div>
       </div>
@@ -83,7 +186,10 @@
     {/if}
   </div>
   {#if tall}
-    <div class="foot"><span>{done} of {decisions.length} cleared</span><span>Hover a row to start it</span></div>
+    <div class="foot">
+      <span>{done} of {decisions.length} cleared</span>
+      <span data-testid="brief-need-time">{done === decisions.length ? "All clear" : minutes ? `~${minutes} min` : "Hover a row to start it"}</span>
+    </div>
   {/if}
 </div>
 
@@ -102,6 +208,7 @@
     margin-top: 14px;
     min-height: 0;
   }
+  /* Glass row: lit from the top, hairline rim, soft drop. No backdrop-filter, no well. */
   .it {
     position: relative;
     overflow: hidden;
@@ -110,12 +217,14 @@
     gap: 12px;
     padding: 9px 10px 9px 12px;
     border-radius: 16px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.06));
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 6px 14px rgba(20, 8, 60, 0.25);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.06));
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-top-color: rgba(255, 255, 255, 0.2);
+    box-shadow: 0 6px 14px rgba(20, 8, 60, 0.25);
     transition: background 0.25s, opacity 0.5s;
   }
   .it:hover {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.09));
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.09));
   }
   /* Iridescent sheen = the decision under your cursor. */
   .it::before {
@@ -150,7 +259,9 @@
     display: grid;
     place-items: center;
     background: rgba(255, 255, 255, 0.13);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 3px 8px rgba(20, 8, 60, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-top-color: rgba(255, 255, 255, 0.26);
+    box-shadow: 0 3px 8px rgba(20, 8, 60, 0.3);
   }
   .ic svg {
     width: 15px;
@@ -164,9 +275,7 @@
   .tx {
     flex: 1;
     min-width: 0;
-  }
-  /* Two lines of title before the ellipsis; the product chip never truncates. */
-  .tx {
+    /* Two lines of title before the ellipsis; the product chip never truncates. */
     container-type: inline-size;
   }
   .tt {
@@ -187,9 +296,16 @@
     overflow: hidden;
     overflow-wrap: anywhere;
   }
-  .tt :global(.org) {
+  /* Row end: product chip, then the carried and age marks. */
+  .meta {
     flex: none;
     margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tt :global(.org) {
+    flex: none;
     font-size: 9.5px;
   }
   /* Too narrow for the product name: keep the logo, hide the text. */
@@ -197,6 +313,26 @@
     .tt :global(.org b) {
       display: none;
     }
+  }
+  .chip-m {
+    flex: none;
+    font-family: var(--b-mono);
+    font-size: 9.5px;
+    font-weight: 400;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    padding: 3px 6px;
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.72);
+    background: rgba(0, 0, 0, 0.22);
+    white-space: nowrap;
+  }
+  .age.warn {
+    color: var(--b-warn);
+  }
+  .age.red {
+    color: #ffc1bb;
+    background: rgba(255, 69, 58, 0.42);
   }
   .more-row {
     justify-content: center;

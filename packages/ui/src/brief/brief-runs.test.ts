@@ -14,6 +14,7 @@ import {
   parseBriefIndex,
   parseBriefStatus,
   pickBriefBot,
+  previousReadyRun,
   relativeRunLabel,
   runIdTime,
   stepRun,
@@ -270,5 +271,36 @@ describe("the bot that runs the job", () => {
     expect(indigo.split("\n")[0]).toBe("/daily-brief indigo --run-id brief-20261009-090122");
     expect(indigo).toContain("for company indigo");
     expect(indigo).toContain("do not pick another company");
+  });
+});
+
+describe("previousReadyRun", () => {
+  const line = (run_id: string, created_at: string, state: string) => JSON.stringify({ run_id, created_at, state });
+  const { entries } = parseBriefIndex(
+    [
+      line("brief-20261008-090000", "2026-10-08T15:05:00Z", "ready"),
+      line("brief-20261009-090000", "2026-10-09T15:05:00Z", "ready"),
+      line("brief-20261010-090000", "2026-10-10T15:05:00Z", "failed"),
+      line("brief-20261010-120000", "2026-10-10T18:05:00Z", "ready"),
+      line("brief-20261011-090000", "2026-10-11T15:05:00Z", "ready"),
+    ].join("\n"),
+  );
+
+  it("steps back from a listed run to the next ready one, skipping failed runs", () => {
+    expect(previousReadyRun(entries, "brief-20261011-090000")?.runId).toBe("brief-20261010-120000");
+    expect(previousReadyRun(entries, "brief-20261010-120000")?.runId).toBe("brief-20261009-090000");
+    expect(previousReadyRun(entries, "brief-20261010-090000")?.runId).toBe("brief-20261009-090000");
+    expect(previousReadyRun(entries, "brief-20261008-090000")).toBeNull();
+  });
+
+  it("for a run not yet listed, takes the newest ready run that started before it", () => {
+    expect(previousReadyRun(entries, "brief-20261011-093000")?.runId).toBe("brief-20261011-090000");
+    expect(previousReadyRun(entries, "brief-20261010-100000")?.runId).toBe("brief-20261009-090000");
+    expect(previousReadyRun(entries, "brief-20261001-090000")).toBeNull();
+  });
+
+  it("with no run id, the latest ready run; with no entries, null", () => {
+    expect(previousReadyRun(entries, null)?.runId).toBe("brief-20261011-090000");
+    expect(previousReadyRun([], "brief-20261011-090000")).toBeNull();
   });
 });

@@ -3,12 +3,16 @@
    * Pixel sunrise: progress of today's decisions. The sun rises one step per
    * decision cleared, a ripple runs out from it on each clear, and hovering
    * shows a ghost sun where clearing every decision takes you. Same matrix and
-   * palette as Stefan's NewBotDawn (6 px cells on an 8 px pitch).
+   * palette as Stefan's NewBotDawn (6 px cells on an 8 px pitch). Under the
+   * greeting, "First: ..." names priority 1 (XL and L only); the last 24 hours
+   * of your sessions are dots with a hover card; the meter shows cleared of
+   * total and, when the writer sized the decisions, "~N min" to clear them.
    */
   import { onMount } from "svelte";
   import { DAWN_CELL, DAWN_PITCH, dawnNoise } from "../chat/create-bot/NewBotDawn.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
-  import { distillTimeline, sessionPeek, type TimelineSession } from "./brief-timeline.js";
+  import { etaLabel, firstLine, type HeroLead } from "./brief-hero.js";
+  import { distillTimeline, sessionPeek, type Timeline, type TimelineSession } from "./brief-timeline.js";
 
   interface Props {
     total: number;
@@ -18,22 +22,33 @@
     /** Line shown when nothing is owed. */
     quietLine: string;
     big?: boolean;
-    /** Sessions from the 24 hours before `now`, oldest first. */
+    /** Sessions from the 24 hours before `now`, oldest first. Ignored when `distilled` is given. */
     timeline?: TimelineSession[];
+    /** The same sessions already distilled by the page, so the strip is not distilled twice. */
+    distilled?: Timeline | null;
     /** End of the timeline window (ISO). */
     now?: string;
     /** Priority 1 in the writer's words; shown as "First: ..." at XL and L, hidden at M. */
-    lead?: { text: string; because: string | null } | null;
+    lead?: HeroLead | null;
+    /** Minutes to clear every open decision (writer's sum of effort sizes); shown beside the meter as "~N min". */
+    timeToClearMin?: number | null;
   }
-  let { total, cleared, userName, sub, quietLine, big = false, timeline = [], now = new Date().toISOString(), lead = null }: Props = $props();
-  const leadLine = $derived.by(() => {
-    if (!lead?.text.trim()) return "";
-    const text = lead.text.trim().replace(/[.!?]+$/, "");
-    const because = (lead.because ?? "").trim();
-    return `First: ${text}.${because ? ` ${because.charAt(0).toUpperCase()}${because.slice(1)}${/[.!?]$/.test(because) ? "" : "."}` : ""}`;
-  });
+  let {
+    total,
+    cleared,
+    userName,
+    sub,
+    quietLine,
+    big = false,
+    timeline = [],
+    distilled = null,
+    now = new Date().toISOString(),
+    lead = null,
+    timeToClearMin = null,
+  }: Props = $props();
+  const leadLine = $derived(firstLine(lead));
   const end = $derived(Date.parse(now));
-  const tl = $derived(distillTimeline(timeline, now));
+  const tl = $derived(distilled ?? distillTimeline(timeline, now));
   const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   // One dot per session; hover opens the session card with Resume and Copy prompt.
   const dotPeek = (s: TimelineSession, i: number): PeekContent => sessionPeek(s, i, tl.items.length);
@@ -52,6 +67,8 @@
     !total ? quietLine : left > 0 ? `${left} decision${left > 1 ? "s" : ""} before sunrise.` : "Sun's up. Go build.",
   );
   const progress = $derived(total ? 0.1 + (0.9 * cleared) / total : 1);
+  // "~N min" to clear what is left, from the writer's effort sizes; nothing when unknown or done.
+  const eta = $derived(etaLabel(timeToClearMin, left, total));
 
   let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
@@ -256,6 +273,7 @@
     <div class="meter">
       <div class="track"><i style="width:{total ? (cleared / total) * 100 : 100}%"></i></div>
       <b>{total ? `${cleared} / ${total}` : "CLEAR"}</b>
+      {#if eta}<span class="eta" data-testid="brief-sunrise-eta" title="Time to clear what is left, from the size of each decision">{eta}</span>{/if}
     </div>
   </div>
 </div>
@@ -387,32 +405,6 @@
     overflow: visible;
     font-family: var(--b-mono);
   }
-  .tl .ln {
-    stroke-dasharray: 400;
-    stroke-dashoffset: 400;
-    animation: draw 1.6s cubic-bezier(0.2, 0.8, 0.2, 1) 0.6s forwards;
-  }
-  .tl .sd {
-    opacity: 0;
-    animation: pop 0.4s cubic-bezier(0.3, 1.6, 0.5, 1) forwards;
-    transform-box: fill-box;
-    transform-origin: center;
-  }
-  .tl g.s text {
-    opacity: 0;
-    transition: opacity 0.2s;
-  }
-  .tl g.s:hover text {
-    opacity: 1;
-  }
-  .tl g.s:hover .sd {
-    fill: #fff;
-  }
-  @keyframes draw {
-    to {
-      stroke-dashoffset: 0;
-    }
-  }
   @keyframes pop {
     from {
       opacity: 0;
@@ -423,12 +415,10 @@
       transform: scale(1);
     }
   }
+  /* brief.css turns every animation off here; the dots must not stay at their hidden start frame. */
   @media (prefers-reduced-motion: reduce) {
-    .tl .sd {
+    .dot {
       opacity: 1;
-    }
-    .tl .ln {
-      stroke-dashoffset: 0;
     }
   }
   .meter {
@@ -460,5 +450,18 @@
     font-size: 12px;
     font-weight: 500;
     color: rgba(255, 255, 255, 0.56);
+  }
+  /* The estimate sits after the count in the same mono, dimmer, with its own chip. */
+  .eta {
+    flex: none;
+    font-family: var(--b-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    color: rgba(255, 190, 160, 0.9);
+    border: 1px solid rgba(255, 190, 160, 0.3);
+    background: rgba(255, 181, 128, 0.08);
+    white-space: nowrap;
   }
 </style>

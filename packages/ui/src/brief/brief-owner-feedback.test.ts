@@ -189,17 +189,26 @@ describe("incident card (12) and grid rows (13)", () => {
     prompt: "Look at the gate.",
   };
 
-  it("eyebrow is '<repo> main CI red · live'; the workflow is the title; the body has job, age and fixes", () => {
+  it("eyebrow is '<product> main is red · live' (never the repo slug) with the company logo; the workflow is the title; the body has job, age and fixes", () => {
     const items = parseBriefItems(JSON.stringify({ items: { incidents: [incident] } }), "cmp_indigo")!;
     const risk = items.incidents[0]!;
     expect(risk.ci).toMatchObject({ repo: "hq-core-staging", workflow: "Recheck hq-core release gate", job: "verify-release", ageHours: 5 });
     expect(risk.links.map((l) => l.label)).toEqual(["hq-core-staging #1239"]);
     render(base({ risks: [risk] }));
-    expect(q("brief-incident-eyebrow")!.textContent!.trim()).toBe("hq-core-staging main CI red · live");
+    expect(q("brief-incident-eyebrow")!.textContent!.trim()).toBe("HQ core main is red · live");
+    expect(q("brief-incident-eyebrow")!.textContent).not.toContain("hq-core-staging");
+    expect(q("brief-incident-logo")!.querySelector('[data-testid="brief-logo"]')).not.toBeNull();
     expect(q("brief-incident-title")!.textContent).toBe("Recheck hq-core release gate");
     const facts = q("brief-incident-facts")!.textContent!;
     expect(facts).toContain("verify-release");
     expect(facts).toContain("Red for 5h");
+  });
+
+  it("the facts grid adds the changes merged on top of the red main when the writer counted them", () => {
+    const items = parseBriefItems(JSON.stringify({ items: { incidents: [incident] } }), "cmp_indigo")!;
+    const risk = { ...items.incidents[0]!, ci: { ...items.incidents[0]!.ci!, mergesOnTop: 3 } };
+    render(base({ risks: [risk] }));
+    expect(q("brief-incident-facts")!.textContent).toContain("3 changes merged on top");
   });
 
   it("red age reads from age_hours, a since time, or 'since Oct 9' in the note", () => {
@@ -257,7 +266,18 @@ describe("Yesterday card (14, 19)", () => {
 
   it("brief.json meeting items fill decided and to-do lines", () => {
     const items = parseBriefItems(JSON.stringify({ items: { meetings: [{ title: "HQ <> Sales Sync", decided: ["A"], todo: [{ text: "B", owner: "Corey", mine: true }, "C"] }] } }), null)!;
-    expect(items.meetings[0]).toEqual({ title: "HQ <> Sales Sync", decided: ["A"], todo: [{ text: "B", owner: "Corey", mine: true }, { text: "C" }] });
+    expect(items.meetings[0]).toEqual({
+      id: "brief-meeting-0",
+      title: "HQ <> Sales Sync",
+      startTime: "",
+      companyUid: null,
+      decisions: 1,
+      actions: 2,
+      risks: 0,
+      questions: 0,
+      decided: ["A"],
+      todo: [{ text: "B", owner: "Corey", mine: true }, { text: "C" }],
+    });
   });
 });
 
@@ -291,6 +311,22 @@ describe("Today's priorities (18)", () => {
       ["Decision number 3", "d3"],
       ["Fix x: Gate", "ci:x"],
     ]);
+  });
+
+  it("a scored priority's peek says the score in words; an unscored one does not", async () => {
+    const d1 = decision(1, { ageHours: 44, peopleWaiting: 3, revenue: true });
+    const priorities = [
+      { n: 1, text: "Close out the SAFE allotment", because: "Investors wait on it", itemId: "d1", score: 7 },
+      { n: 2, text: "Decision number 2", because: null, itemId: "d2" },
+    ];
+    render(base({ priorities, decisions: [d1, decision(2)] }));
+    const rows = qa("brief-priority");
+    expect(rows[0]!.querySelector('[data-testid="brief-priority-logo"]')).not.toBeNull();
+    await hover(rows[0]!);
+    expect(q("brief-peek")!.textContent).toContain("unblocks 3 people and revenue · 44h old");
+    await hover(rows[1]!);
+    expect(q("brief-peek")!.textContent).not.toContain("unblocks");
+    expect(q("brief-peek")!.textContent).not.toContain("score");
   });
 
   it("hovering a priority opens its item's peek, and a cleared item is struck through", async () => {
