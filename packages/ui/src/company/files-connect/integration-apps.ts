@@ -1,5 +1,6 @@
 import { integrationDisplayName, integrationDomain, providerSlug, registrableDomain } from "../../common/integration-display.js";
 import type { IntegrationRow } from "./files-connect-model.js";
+import { normalizeConnectDomain } from "../../chat/messaging/richMessageContent.js";
 
 /**
  * Integrations grouped by app, with health, the way the web console's
@@ -153,23 +154,33 @@ const CATEGORY_BY_FRAGMENT: ReadonlyArray<[string, string]> = [
 ];
 
 /**
+ * App names that map to a category only when the whole name is equal, for
+ * apps whose short name is a common word or part of one (`Otter`, `Read AI`).
+ */
+const CATEGORY_BY_EXACT_NAME: ReadonlyMap<string, string> = new Map([
+  ["otter", "Meetings"],
+  ["otter ai", "Meetings"],
+  ["read ai", "Meetings"],
+]);
+
+/**
  * Whether an app matches one fragment. A fragment without a dot matches
- * anywhere in the domain or the name. A fragment with a dot is a website
- * (`read.ai`): it matches that domain or a subdomain of it, or a name that is
- * exactly it, so `thread.ai` and `spotter.ai` are not `read.ai` or `otter.ai`.
+ * anywhere in the domain or the name, as it always has. A fragment with a dot
+ * is a website (`read.ai`): it matches that domain or a subdomain of it, read
+ * the way a connection's domain is read (`normalizeConnectDomain`), or a name
+ * that is exactly it. So `thread.ai` and `spotter.ai` are not `read.ai` or
+ * `otter.ai`.
  */
 function matchesFragment(domain: string, name: string, fragment: string): boolean {
   if (!fragment.includes(".")) return `${domain} ${name}`.toLowerCase().includes(fragment);
-  const host = domain
-    .trim()
-    .toLowerCase()
-    .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
-    .replace(/[/?#].*$/, "");
+  const host = normalizeConnectDomain(domain) ?? "";
   return host === fragment || host.endsWith(`.${fragment}`) || name.trim().toLowerCase() === fragment;
 }
 
 /** Presentation-only category for an app. Never used for access decisions. */
 export function deriveCategory(domain: string, name: string): string {
+  const exact = CATEGORY_BY_EXACT_NAME.get(name.trim().toLowerCase().replace(/\s+/g, " "));
+  if (exact) return exact;
   for (const [fragment, category] of CATEGORY_BY_FRAGMENT) {
     if (matchesFragment(domain, name, fragment)) return category;
   }
