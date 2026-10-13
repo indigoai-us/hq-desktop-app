@@ -1100,9 +1100,9 @@
   margin: 0;
   font-family: var(--b-serif);
   font-size: 44px;
-  font-weight: 400;
+  font-weight: 300;
   line-height: 1.08;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.035em;
 }
 .daily-brief .b-stats {
   display: flex;
