@@ -53,6 +53,26 @@ async function expectCentred(page: Page, parts: string[], bottomSelector: string
   for (const selector of parts) {
     expect(Math.abs(centre(await box(page, selector)) - axis), selector).toBeLessThanOrEqual(1);
   }
+  // Measure the panel once its own screen change (the new screen rising in) has
+  // finished; mid-entrance its box still carries the rise transform. Endless
+  // decorative animations (spinners, caret) are left out, and a change that does
+  // not settle in 5s fails the test.
+  await page.locator('.scene.on .panel-block').evaluate(async (el) => {
+    const settling = el
+      .getAnimations({ subtree: true })
+      .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime ?? Infinity))
+      // A cancelled animation (its screen was replaced) rejects; it is settled too.
+      .map((animation) => animation.finished.catch(() => undefined));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('panel screen change did not finish within 5s')), 5000);
+    });
+    try {
+      await Promise.race([Promise.all(settling), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  });
   const panel = await box(page, '.scene.on .panel-block');
   const last = await box(page, bottomSelector);
   expect(panel.top).toBeGreaterThanOrEqual(0);
