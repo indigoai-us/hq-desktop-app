@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WebPlatformAdapter } from "./index.js";
 import {
+  FIRST_RUN_FOUND_APPS_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
 } from "../flags.js";
@@ -72,6 +73,41 @@ describe("WebPlatformAdapter hasFeature", () => {
       adapter.identity.hasFeature(PERSONAL_WORKSPACE_BOARD_FLAG),
     ).resolves.toEqual({ ok: true, value: false });
     expect(calledIdentityFeatures(calls)).toBe(false);
+  });
+
+  it("first-run found-apps flag uses the registry value and fails closed without the identity features route", async () => {
+    const enabled = makeAdapter({
+      "GET /v1/flags/resolve": {
+        status: 200,
+        body: { version: 2, flags: { [FIRST_RUN_FOUND_APPS_FLAG]: true } },
+      },
+    });
+    await expect(enabled.adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(calledFlagsResolve(enabled.calls)).toBe(true);
+    expect(calledIdentityFeatures(enabled.calls)).toBe(false);
+
+    const missing = makeAdapter({
+      "GET /v1/flags/resolve": {
+        status: 200,
+        body: { version: 2, flags: {} },
+      },
+    });
+    await expect(missing.adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(calledFlagsResolve(missing.calls)).toBe(true);
+    expect(calledIdentityFeatures(missing.calls)).toBe(false);
+
+    const unavailable = makeAdapter({});
+    await expect(unavailable.adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(calledIdentityFeatures(unavailable.calls)).toBe(false);
   });
 
   it("personal transcript flag uses the registry value and fails closed when missing or unreadable", async () => {
