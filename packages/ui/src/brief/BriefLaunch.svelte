@@ -80,32 +80,24 @@
 </span>
 
 <style>
-  /* The label and the two answers share one cell, so the pill keeps one width
-     and only its contents swap on hover (or when an answer has focus). */
+  /* At rest the pill is just its label, sized to it; on hover (or when an answer
+     has focus) it swaps to the two answers. The answers never widen the resting pill. */
   .choice {
-    display: inline-grid;
-    place-items: center;
-    cursor: default;
-  }
-  .choice > .lbl,
-  .choice > .alt {
-    grid-area: 1 / 1;
-    transition: opacity 0.2s;
-  }
-  .choice > .alt {
     display: inline-flex;
     align-items: center;
-    opacity: 0;
-    pointer-events: none;
+    cursor: default;
+  }
+  .choice > .alt {
+    display: none;
+    align-items: center;
   }
   .choice:hover > .lbl,
   .choice:focus-within > .lbl {
-    opacity: 0;
+    display: none;
   }
   .choice:hover > .alt,
   .choice:focus-within > .alt {
-    opacity: 1;
-    pointer-events: auto;
+    display: inline-flex;
   }
   .alt button {
     all: unset;

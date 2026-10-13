@@ -170,7 +170,6 @@
     };
   }
   const next = $derived(nextCall(input.calendarToday, input.now));
-  const callsLeft = $derived(input.calendarToday.filter((e) => !e.busy && Date.parse(e.start) >= (next ? Date.parse(next.event.start) : Infinity)).length);
   const nextTime = $derived.by(() => {
     if (!next) return { t: "", ap: "" };
     const d = new Date(next.event.start);
@@ -308,19 +307,15 @@
         <div class="nx-detail">
         <div class="nx-title">{next.event.title}</div>
         {#if next.event.attendees?.length}
-          {@const people = next.event.attendees}
           <!-- Who is on it, in a few words. -->
           <div class="nx-who" data-testid="brief-next-who">
-            <span class="names">{withLine(people)}</span>
+            <span class="names">{withLine(next.event.attendees)}</span>
           </div>
-        {:else}
-          <!-- The time to the call is already beside the hour; this line says what follows. -->
-          <div class="nx-in">{callsLeft > 1 ? `${callsLeft - 1} more after` : "Last call today"}</div>
         {/if}
         </div>
       {:else}
         <div class="nx-time">Free</div>
-        <div class="nx-detail"><div class="nx-title">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</div></div>
+        <div class="nx-detail"><div class="nx-who"><span class="names">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</span></div></div>
       {/if}
       <!-- A quiet orbit: the day around you. On a call three nodes circle it and a soft ring pulses; otherwise it is still and empty. -->
       <svg class="orbit" class:live={next?.live} class:idle={!next} viewBox="0 0 120 120" aria-hidden="true">

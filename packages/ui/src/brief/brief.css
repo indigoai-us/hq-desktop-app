@@ -1044,7 +1044,8 @@
   background-image: var(--b-deco), var(--b-edge), var(--b-field-bg);
   background-position: right bottom, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
   /* The motif is capped, so on the big cards it stays a corner accent instead of running under the rows. */
-  background-size: auto min(100%, 240px), 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
+  /* Near one size on every card, so the motifs read as a family whatever the card's height. */
+  background-size: auto clamp(190px, 100%, 220px), 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
   background-repeat: no-repeat;
   box-shadow: 0 1px 2px rgba(30, 20, 60, 0.06), 0 14px 28px -20px var(--b-field-glow, rgba(60, 30, 110, 0.4));
   background-repeat: no-repeat;
@@ -1173,7 +1174,8 @@
   margin: 0;
   font-family: var(--b-ui);
   font-size: 44px;
-  font-weight: 300;
+  /* The app ships Geist at 400-600; 400 is the lightest real face. */
+  font-weight: 400;
   line-height: 1.08;
   letter-spacing: -0.04em;
 }
@@ -1296,11 +1298,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.daily-brief .b-next .nx-in {
-  margin-top: 4px;
-  font-size: 11px;
-  color: var(--b-t3);
 }
 /* A large, quiet orbit bleeding off the bottom-right corner; the text sits on top of it. */
 .daily-brief .b-next .orbit {

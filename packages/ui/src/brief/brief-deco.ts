@@ -11,6 +11,9 @@ const DEFS =
   "<defs>" +
   "<radialGradient id='o' cx='.34' cy='.22' r='.85'><stop offset='0' stop-color='white' stop-opacity='.18'/><stop offset='.45' stop-color='white' stop-opacity='.07'/><stop offset='1' stop-color='white' stop-opacity='.02'/></radialGradient>" +
   "<linearGradient id='r' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='white' stop-opacity='.45'/><stop offset='.6' stop-color='white' stop-opacity='.06'/></linearGradient>" +
+  // Fades a motif out from the bottom-right corner (used by the priorities grid).
+  "<radialGradient id='fg' cx='1' cy='1' r='1'><stop offset='0' stop-color='white'/><stop offset='.55' stop-color='white' stop-opacity='.5'/><stop offset='1' stop-color='white' stop-opacity='0'/></radialGradient>" +
+  "<mask id='fade' maskUnits='userSpaceOnUse' x='0' y='0' width='200' height='200'><rect width='200' height='200' fill='url(#fg)'/></mask>" +
   "</defs>";
 
 /** Glass: soft white fill with a light rim. */
@@ -37,51 +40,59 @@ function polygon(cx: number, cy: number, r: number, sides: number, turn = 0): st
   return `M${pts.join(" L")} Z`;
 }
 
+/** Grid lines every `step` over a box, as one path. */
+function grid(x: number, y: number, w: number, h: number, step: number): string {
+  let d = "";
+  for (let gx = x; gx <= x + w + 0.1; gx += step) d += `M${gx} ${y} V ${y + h} `;
+  for (let gy = y; gy <= y + h + 0.1; gy += step) d += `M${x} ${gy} H ${x + w} `;
+  return d.trim();
+}
+
 const ORB = `<circle cx='176' cy='212' r='90' ${G}/><circle cx='176' cy='212' r='114' ${D}/>`;
 
 export const DECO: Record<string, string> = {
-  // A checklist: three glass rows stepping down, held in a dotted frame.
-  needs: `<rect x='122' y='112' width='120' height='26' rx='13' ${G}/><rect x='106' y='148' width='136' height='26' rx='13' ${G}/><rect x='90' y='184' width='152' height='26' rx='13' ${G}/><rect x='74' y='96' width='180' height='130' rx='26' ${D}/>`,
+  // Priorities: just a fine grid fading out from the corner, quiet under a list of rows.
+  needs: `<path d='${grid(96, 96, 104, 104, 16)}' fill='none' stroke='white' stroke-opacity='.2' stroke-width='.6' mask='url(#fade)'/>`,
   // A target: a glass ring and its bullseye, with a dotted outer ring.
-  oneThing: `<circle cx='180' cy='196' r='62' ${G}/><circle cx='180' cy='196' r='22' ${G}/><circle cx='180' cy='196' r='88' ${D}/>`,
+  oneThing: `<circle cx='182' cy='184' r='48' ${G}/><circle cx='182' cy='184' r='16' ${G}/><circle cx='182' cy='184' r='70' ${D}/>`,
   // A flame, with dotted heat rising around it.
-  incident: `<path d='M172 92 C 196 128 236 152 236 198 A 64 64 0 0 1 108 198 C 108 168 128 150 140 132 C 146 150 156 156 162 150 C 168 132 166 112 172 92 Z' ${G}/><path d='M172 58 C 212 110 266 142 266 204 M172 58 C 132 110 80 140 80 204' ${D}/>`,
-  // A warning triangle inside a dotted one.
-  risk: `<path d='M176 96 L 258 236 L 94 236 Z' ${G}/><path d='M176 62 L 290 258 L 62 258 Z' ${D}/>`,
-  // An hourglass: two glass triangles meeting at the waist, dotted caps.
-  waiting: `<path d='M116 112 L 236 112 L 176 172 Z' ${G}/><path d='M176 172 L 236 232 L 116 232 Z' ${G}/><path d='M100 98 H 252 M100 246 H 252' ${D}/>`,
-  // A calendar page, its weeks in dotted rows.
-  agenda: `<rect x='96' y='104' width='150' height='140' rx='18' ${G}/><path d='M96 136 H 246' stroke='white' stroke-opacity='.18' stroke-width='.8'/><path d='M112 160 H 236 M112 184 H 236 M112 208 H 236' ${D}/>`,
+  incident: `<g transform='translate(28 26) scale(.8)'><path d='M172 92 C 196 128 236 152 236 198 A 64 64 0 0 1 108 198 C 108 168 128 150 140 132 C 146 150 156 156 162 150 C 168 132 166 112 172 92 Z' ${G}/><path d='M172 58 C 212 110 266 142 266 204 M172 58 C 132 110 80 140 80 204' ${D}/></g>`,
+  // A warning sign: a glass triangle with its "!", inside a dotted one.
+  risk: `<path d='M164 92 L 240 222 L 88 222 Z' ${G}/><rect x='157' y='138' width='14' height='38' rx='7' ${G}/><circle cx='164' cy='194' r='7' ${G}/><path d='M164 60 L 274 250 L 54 250 Z' ${D}/>`,
+  // An hourglass: both bulbs in view, dotted caps.
+  waiting: `<g transform='translate(-20 -34)'><path d='M116 112 L 236 112 L 176 172 Z' ${G}/><path d='M176 172 L 236 232 L 116 232 Z' ${G}/><path d='M100 98 H 252 M100 246 H 252' ${D}/></g>`,
+  // A calendar page with its binder tabs, weeks in dotted rows.
+  agenda: `<rect x='122' y='118' width='104' height='100' rx='16' ${G}/><rect x='142' y='108' width='8' height='18' rx='4' ${G}/><rect x='196' y='108' width='8' height='18' rx='4' ${G}/><path d='M122 142 H 226' stroke='white' stroke-opacity='.18' stroke-width='.8'/><path d='M134 166 H 214 M134 190 H 214' ${D}/>`,
   // An arrow going up, with a dotted launch trail.
-  shipped: `<path d='M176 98 L 238 160 L 204 160 L 204 236 L 148 236 L 148 160 L 114 160 Z' ${G}/><path d='M126 246 V 270 M176 246 V 280 M226 246 V 270' ${D}/><path d='M176 60 L 270 154' ${D}/>`,
+  shipped: `<g transform='translate(-6 -22)'><path d='M176 98 L 238 160 L 204 160 L 204 236 L 148 236 L 148 160 L 114 160 Z' ${G}/><path d='M126 246 V 270 M176 246 V 280 M226 246 V 270' ${D}/><path d='M176 60 L 270 154' ${D}/></g>`,
   // A star, ringed with dots.
-  firsts: `<path d='${star(178, 194, 72, 30)}' ${G}/><circle cx='178' cy='194' r='96' ${D}/>`,
+  firsts: `<path d='${star(162, 168, 66, 28)}' ${G}/><circle cx='162' cy='168' r='90' ${D}/>`,
   // A solved circle with a dotted check through it.
-  resolved: `<circle cx='182' cy='196' r='64' ${G}/><path d='M118 190 L 160 232 L 248 144' ${D}/>`,
-  // A gavel: the glass head and a dotted handle.
-  decided: `<rect x='128' y='104' width='112' height='52' rx='14' transform='rotate(-35 184 130)' ${G}/><path d='M164 162 L 86 256' ${D}/><path d='M110 236 H 230' ${D}/>`,
+  resolved: `<circle cx='172' cy='176' r='56' ${G}/><path d='M136 176 L 160 200 L 208 150' ${D}/>`,
+  // A gavel: glass head and handle over a dotted base.
+  decided: `<rect x='110' y='108' width='112' height='52' rx='14' transform='rotate(-35 166 134)' ${G}/><rect x='150' y='150' width='16' height='86' rx='8' transform='rotate(40 158 193)' ${G}/><path d='M96 232 H 216' ${D}/>`,
   // Two people side by side, a dotted arc around them.
-  team: `<circle cx='150' cy='204' r='50' ${G}/><circle cx='214' cy='178' r='50' ${G}/><path d='M86 230 A 110 110 0 0 1 270 120' ${D}/>`,
+  team: `<circle cx='146' cy='176' r='44' ${G}/><circle cx='196' cy='154' r='44' ${G}/><path d='M80 220 A 110 110 0 0 1 250 100' ${D}/>`,
   // Two people, a dotted pass from one to the other.
-  handoffs: `<circle cx='128' cy='212' r='40' ${G}/><circle cx='218' cy='146' r='40' ${G}/><path d='M140 166 Q 150 116 196 104' ${D}/>`,
+  handoffs: `<circle cx='118' cy='170' r='32' ${G}/><circle cx='182' cy='122' r='32' ${G}/><path d='M112 134 Q 118 96 152 100' ${D}/>`,
   // A card carried over: a glass page and a dotted bent arrow into it.
-  carry: `<rect x='150' y='140' width='100' height='100' rx='18' ${G}/><path d='M86 92 Q 86 186 150 190' ${D}/>`,
-  // A video call: the screen and its camera.
-  meetings: `<rect x='98' y='124' width='122' height='92' rx='16' ${G}/><path d='M226 152 L 262 130 L 262 210 L 226 188 Z' ${G}/><rect x='82' y='108' width='154' height='124' rx='24' ${D}/>`,
-  // A week climbing: glass bars and the dotted trend over them.
-  weekArc: `<rect x='98' y='182' width='26' height='60' rx='8' ${G}/><rect x='134' y='154' width='26' height='88' rx='8' ${G}/><rect x='170' y='124' width='26' height='118' rx='8' ${G}/><rect x='206' y='94' width='26' height='148' rx='8' ${G}/><path d='M84 166 L 126 138 L 162 110 L 198 82 L 240 52' ${D}/>`,
-  // A bell, with dotted rings either side.
-  reminders: `<path d='M176 100 C 142 100 126 128 126 166 L 126 196 L 110 218 L 242 218 L 226 196 L 226 166 C 226 128 210 100 176 100 Z' ${G}/><circle cx='176' cy='232' r='14' ${G}/><path d='M104 112 Q 84 146 96 184 M248 112 Q 268 146 256 184' ${D}/>`,
-  // A train: two glass cars on a dotted track.
-  releaseTrain: `<rect x='86' y='150' width='74' height='54' rx='12' ${G}/><rect x='170' y='150' width='74' height='54' rx='12' ${G}/><path d='M60 222 H 270' ${D}/>`,
+  carry: `<rect x='124' y='118' width='96' height='96' rx='16' ${G}/><path d='M80 96 Q 80 166 120 168 M110 158 L 120 168 L 110 178' ${D}/>`,
+  // A video call: the screen and its camera, in a dotted frame.
+  meetings: `<rect x='92' y='118' width='84' height='64' rx='14' ${G}/><path d='M182 136 L 206 122 L 206 178 L 182 164 Z' ${G}/><rect x='78' y='104' width='146' height='96' rx='22' ${D}/>`,
+  // The week rising: a glass sun on a dotted arc (not bars, which would read as data).
+  weekArc: `<circle cx='182' cy='170' r='46' ${G}/><path d='M70 210 Q 130 120 230 96' ${D}/>`,
+  // A bell with its clapper, dotted rings either side.
+  reminders: `<g transform='translate(-12 -38)'><path d='M176 100 C 142 100 126 128 126 166 L 126 196 L 110 218 L 242 218 L 226 196 L 226 166 C 226 128 210 100 176 100 Z' ${G}/><circle cx='176' cy='232' r='14' ${G}/><path d='M104 112 Q 84 146 96 184 M248 112 Q 268 146 256 184' ${D}/></g>`,
+  // A train: two glass cars low on a dotted track, under the card's buttons.
+  releaseTrain: `<rect x='86' y='178' width='74' height='40' rx='12' ${G}/><rect x='170' y='178' width='74' height='40' rx='12' ${G}/><path d='M60 226 H 270' ${D}/>`,
   // A stop: a glass octagon in a dotted one.
-  blockedByMe: `<path d='${polygon(180, 194, 64, 8, Math.PI / 8)}' ${G}/><path d='${polygon(180, 194, 90, 8, Math.PI / 8)}' ${D}/>`,
+  blockedByMe: `<path d='${polygon(172, 182, 64, 8, Math.PI / 8)}' ${G}/><path d='${polygon(172, 182, 90, 8, Math.PI / 8)}' ${D}/>`,
   // First aid: a glass cross in a dotted ring.
-  fleetRecovery: `<path d='M162 112 H 198 V 160 H 246 V 196 H 198 V 244 H 162 V 196 H 114 V 160 H 162 Z' ${G}/><circle cx='180' cy='178' r='92' ${D}/>`,
+  fleetRecovery: `<path d='M138 102 H 174 V 132 H 204 V 168 H 174 V 198 H 138 V 168 H 108 V 132 H 138 Z' ${G}/><circle cx='156' cy='150' r='84' ${D}/>`,
   // A clear run: a dotted road winding to a glass marker.
-  runway: `<path d='M64 112 H 168 A 40 40 0 0 1 168 192 H 120 A 30 30 0 0 0 120 252 H 200' ${D}/><circle cx='206' cy='190' r='34' ${G}/>`,
+  runway: `<g transform='translate(-20 -24)'><path d='M64 112 H 168 A 40 40 0 0 1 168 192 H 120 A 30 30 0 0 0 120 252 H 200' ${D}/></g><circle cx='170' cy='158' r='40' ${G}/>`,
   // Focus: a glass lens on dotted crosshairs.
-  focus: `<circle cx='180' cy='192' r='56' ${G}/><path d='M180 100 V 284 M88 192 H 272' ${D}/><circle cx='180' cy='192' r='16' ${G}/>`,
+  focus: `<circle cx='176' cy='168' r='56' ${G}/><path d='M176 112 V 260 M116 168 H 260' ${D}/><circle cx='176' cy='168' r='16' ${G}/>`,
 };
 
 /** The motif's SVG for a card kind (the plain orb when the kind has none). */

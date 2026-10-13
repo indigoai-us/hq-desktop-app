@@ -134,7 +134,12 @@
       <div class="more" role="button" tabindex="0" data-testid="brief-strip-more" use:peek={{ state: brief, content: moreContent }}>+{plan.hidden.length} more</div>
     {/if}
   {:else}
-    <p class="empty">Nothing on the calendar. A clear run at the work.</p>
+    <!-- An open day: the rail with nothing on it, and one quiet line in the middle. -->
+    <div class="empty" data-testid="brief-today-empty">
+      <span class="pt" aria-hidden="true"></span>
+      <span class="lbl">No calls today</span>
+      <span class="msg">A clear run at the work.</span>
+    </div>
   {/if}
 </section>
 
@@ -286,9 +291,49 @@
   .more:hover {
     color: var(--b-t1);
   }
+  /* Same dotted rail as a busy day, faded at both ends, with the line centred beside it. */
   .empty {
-    margin: 12px 0 0;
-    font-size: 13px;
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    padding-left: 26px;
+  }
+  .empty::before {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: radial-gradient(circle, rgb(var(--b-ink) / 0.5) 0.8px, transparent 1px) center top / 2px 8px repeat-y;
+    -webkit-mask: linear-gradient(180deg, transparent, #000 35%, #000 65%, transparent);
+    mask: linear-gradient(180deg, transparent, #000 35%, #000 65%, transparent);
+  }
+  .empty .pt {
+    display: block;
+    position: absolute;
+    left: -6px;
+    top: 50%;
+    width: 22px;
+    height: 22px;
+    margin-top: -11px;
+    border-radius: 50%;
+    background: var(--b-knob);
+    box-shadow: 0 0 0 1px rgb(var(--b-ink) / 0.05);
+  }
+  .empty .lbl {
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--b-t3);
+  }
+  .empty .msg {
+    font-size: 13px;
+    color: var(--b-t2);
   }
 </style>

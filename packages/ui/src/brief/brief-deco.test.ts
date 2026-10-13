@@ -12,11 +12,14 @@ describe("card corner motifs", () => {
     expect(new Set(bodies).size).toBe(bodies.length);
   });
 
-  it("each motif is one glass shape family plus a dotted line, in the shared style", () => {
+  it("each motif is a glass shape plus a dotted line, in the shared style; priorities is only a fading grid", () => {
     for (const [k, body] of Object.entries(DECO)) {
+      if (k === "needs") continue;
       expect(body, k).toContain("fill='url(#o)'");
       expect(body, k).toContain("stroke-dasharray='0 5'");
     }
+    expect(DECO.needs).toContain("mask='url(#fade)'");
+    expect(DECO.needs).not.toContain("url(#o)");
   });
 
   it("falls back to the orb and encodes as a CSS url", () => {
