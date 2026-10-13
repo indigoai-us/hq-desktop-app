@@ -128,23 +128,27 @@ export const FIELD: Record<string, "violet" | "dusk" | "pink" | "sunset" | "sky"
 type Box = { left: number; right: number; top: number; bottom: number };
 
 /**
- * Where a hover card goes, by one rule so every peek lands predictably: beside
- * the card (or top-section panel) the hovered thing sits in, not beside the
- * thing itself, so every row in a card opens its peek in the same column.
- * Right of the card when it fits, else left of it; when neither fits (a
- * full-width card), beside the hovered thing; else kept inside the window.
- * The top aligns with the hovered thing; `peekTop` then keeps it on screen
- * once its real height is known.
+ * Where a hover card goes, by one rule so every peek lands next to what you
+ * are pointing at: beside the hovered thing's own content (its text, not the
+ * full width of its row or panel), on the right when it fits, else on the
+ * left, else kept inside the window. The top aligns with the hovered thing;
+ * `peekTop` then keeps it on screen once its real height is known.
  */
-export function placePeek(anchor: Box, zone: Box | null, view: { w: number; h: number }, width = 340, gap = 12): { x: number; anchorTop: number; side: "r" | "l" } {
-  const fitsRight = (edge: number) => edge + gap + width <= view.w - 8;
-  const fitsLeft = (edge: number) => edge - gap - width >= 8;
-  const z = zone ?? anchor;
-  if (fitsRight(z.right)) return { x: z.right + gap, anchorTop: anchor.top, side: "r" };
-  if (fitsLeft(z.left)) return { x: z.left - gap - width, anchorTop: anchor.top, side: "l" };
-  if (fitsRight(anchor.right)) return { x: anchor.right + gap, anchorTop: anchor.top, side: "r" };
-  if (fitsLeft(anchor.left)) return { x: anchor.left - gap - width, anchorTop: anchor.top, side: "l" };
+export function placePeek(anchor: Box, view: { w: number; h: number }, width = 340, gap = 10): { x: number; anchorTop: number; side: "r" | "l" } {
+  if (anchor.right + gap + width <= view.w - 8) return { x: anchor.right + gap, anchorTop: anchor.top, side: "r" };
+  if (anchor.left - gap - width >= 8) return { x: anchor.left - gap - width, anchorTop: anchor.top, side: "l" };
   return { x: Math.max(8, Math.min(view.w - width - 8, anchor.right + gap)), anchorTop: anchor.top, side: "r" };
+}
+
+/** The box of what an element actually shows (its text and inline content), within the element; the element's own box when empty. */
+export function contentBox(el: Element): Box {
+  const own = el.getBoundingClientRect();
+  if (typeof document === "undefined" || !document.createRange) return own;
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  const c = r.getBoundingClientRect();
+  if (!c.width || !c.height) return own;
+  return { left: Math.max(own.left, c.left), right: Math.min(own.right, c.right), top: own.top, bottom: own.bottom };
 }
 
 /** The peek's top: level with the hovered thing, moved up only as far as needed to stay 16px inside the window. */

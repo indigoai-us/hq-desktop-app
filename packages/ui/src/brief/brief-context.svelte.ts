@@ -4,7 +4,7 @@
  */
 
 import { getContext, setContext } from "svelte";
-import { placePeek } from "./brief-layout.js";
+import { contentBox, placePeek } from "./brief-layout.js";
 import type { BriefLine } from "./brief-types.js";
 import { loadSenderDms, type BriefDmApi, type BriefDmLoad } from "./brief-dms.js";
 
@@ -160,10 +160,8 @@ export class BriefState {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.showTimer) clearTimeout(this.showTimer);
     this.showTimer = setTimeout(() => {
-      const r = anchor.getBoundingClientRect();
-      // The card or top-section panel the hovered thing sits in: its peeks share one column.
-      const zone = anchor.closest<HTMLElement>(".slot, .b-top > *")?.getBoundingClientRect() ?? null;
-      const at = placePeek(r, zone, { w: window.innerWidth, h: window.innerHeight });
+      // Beside what the hovered thing shows (its text), level with it.
+      const at = placePeek(contentBox(anchor), { w: window.innerWidth, h: window.innerHeight });
       this.peek = { content, ...at };
     }, 220);
   }

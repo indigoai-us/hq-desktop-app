@@ -611,7 +611,7 @@
   position: fixed;
   z-index: 50;
   width: 340px;
-  max-height: min(520px, calc(100vh - 32px));
+  max-height: min(460px, calc(100vh - 32px));
   overflow: auto;
   padding: 18px 18px 16px;
   border-radius: 8px;

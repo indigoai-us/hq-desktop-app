@@ -73,18 +73,15 @@ describe("nextCall", () => {
 describe("placePeek / peekTop", () => {
   const view = { w: 1440, h: 900 };
   const box = (left: number, right: number, top = 100, bottom = 130) => ({ left, right, top, bottom });
-  it("opens beside the card, not the row, so every row in a card shares one column", () => {
-    const card = box(40, 709, 360, 816);
-    const rowA = box(60, 690, 400, 440);
-    const rowB = box(60, 300, 600, 640);
-    expect(placePeek(rowA, card, view)).toEqual({ x: 721, anchorTop: 400, side: "r" });
-    expect(placePeek(rowB, card, view).x).toBe(721);
+  it("opens right beside the hovered content, level with it", () => {
+    expect(placePeek(box(691, 760, 480, 500), view)).toEqual({ x: 770, anchorTop: 480, side: "r" });
+    expect(placePeek(box(40, 114, 156, 200), view)).toEqual({ x: 124, anchorTop: 156, side: "r" });
   });
-  it("goes left of a card at the right edge, beside the row for a full-width card, and stays inside the window", () => {
-    expect(placePeek(box(1180, 1380), box(1168, 1386), view)).toMatchObject({ x: 1168 - 12 - 340, side: "l" });
-    const full = box(40, 1400);
-    expect(placePeek(box(60, 400), full, view)).toMatchObject({ x: 412, side: "r" });
-    expect(placePeek(box(100, 1300), full, { w: 1440, h: 900 }).x).toBeLessThanOrEqual(1440 - 340 - 8);
+  it("goes left when the right side has no room, and stays inside the window when neither fits", () => {
+    expect(placePeek(box(1182, 1266), view)).toMatchObject({ x: 1182 - 10 - 340, side: "l" });
+    const wide = placePeek(box(100, 1300), view);
+    expect(wide.x).toBeGreaterThanOrEqual(8);
+    expect(wide.x).toBeLessThanOrEqual(1440 - 340 - 8);
   });
   it("sits level with the hovered thing and only moves up to stay on screen", () => {
     expect(peekTop(300, 200, 900)).toBe(294);

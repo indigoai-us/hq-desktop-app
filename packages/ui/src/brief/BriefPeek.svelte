@@ -37,7 +37,7 @@
     bind:offsetHeight={peekH}
     style:left="{p.x}px"
     style:top="{top}px"
-    style:max-height="calc(100vh - 32px)"
+    style:max-height="min(460px, calc(100vh - 32px))"
     onmouseenter={() => brief.keepPeek()}
     onmouseleave={() => brief.hidePeekSoon()}
   >
