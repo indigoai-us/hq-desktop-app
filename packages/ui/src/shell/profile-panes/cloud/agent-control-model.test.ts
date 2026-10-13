@@ -85,6 +85,9 @@ describe("controlError", () => {
 
   it("flags an offline box", () => {
     expect(controlError({ ok: false, reason: "error", code: "BOX_OFFLINE", message: "Box is offline." }).offline).toBe(true);
+    expect(controlError({ ok: false, reason: "error", code: "box_offline", message: "The box is offline.", status: 503 })).toEqual({
+      offline: true, message: "The box is offline.",
+    });
     expect(controlError({ ok: false, reason: "error", code: "AGENT_UNREACHABLE" })).toEqual({
       offline: true, message: "This bot is offline. Try again when it's back.",
     });

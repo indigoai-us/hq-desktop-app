@@ -15,6 +15,7 @@
   const CONNECTABLE: readonly AgentControlChannelKind[] = ["slack", "telegram"];
 
   function stateOf(ch: AgentControlChannel): { tone: "ok" | "error" | "idle"; text: string } {
+    if (ch.detail === "pending_restart") return { tone: "idle", text: "Applies when the bot restarts" };
     if (ch.status === "error") return { tone: "error", text: ch.detail ?? "Needs attention" };
     if (ch.status === "connected") return { tone: ch.enabled ? "ok" : "idle", text: ch.enabled ? (ch.detail ?? "On") : "Off" };
     return { tone: "idle", text: "Not connected" };

@@ -37,10 +37,11 @@
   const isMemory = $derived(target.kind === "memory" || target.kind === "new-memory");
 
   // svelte-ignore state_referenced_locally
+  let memoryId = $state(target.kind === "memory" ? target.id : "");
+  // svelte-ignore state_referenced_locally
   let mode = $state<"loading" | "view" | "edit">(target.kind === "new-memory" || target.kind === "new-knowledge" ? "edit" : "loading");
   let original = $state("");
   let content = $state("");
-  let newTitle = $state("");
   let newPath = $state("");
   let busy = $state<"save" | "delete" | null>(null);
   let error = $state<string | null>(null);
@@ -52,7 +53,7 @@
     : target.kind === "new-memory" ? "New memory"
     : "New knowledge file",
   );
-  const dirty = $derived(mode === "edit" && (content !== original || newTitle.trim() !== "" || newPath.trim() !== ""));
+  const dirty = $derived(mode === "edit" && (content !== original || newPath.trim() !== ""));
   const html = $derived(mode === "view" ? renderMarkdownDocument(content) : "");
   const canSave = $derived(
     mode === "edit" &&
@@ -73,12 +74,12 @@
 
   async function read(): Promise<boolean> {
     if (target.kind === "memory") {
-      const res = await control.getMemory(uid, target.id);
+      const res = await control.getMemory(uid, memoryId);
       if (!res.ok) {
         fail(res);
         return false;
       }
-      original = content = memoryDocFromPayload(res.value, target.id).content;
+      original = content = memoryDocFromPayload(res.value, memoryId).content;
       return true;
     }
     if (target.kind === "knowledge") {
@@ -109,14 +110,18 @@
     busy = "save";
     error = null;
     let res;
-    if (target.kind === "memory") res = await control.updateMemory(uid, target.id, content);
+    if (target.kind === "memory") res = await control.updateMemory(uid, memoryId, content);
     else if (target.kind === "knowledge") res = await control.putKnowledge(uid, target.path, content);
-    else if (target.kind === "new-memory") res = await control.createMemory(uid, { content, ...(newTitle.trim() ? { title: newTitle.trim() } : {}) });
+    else if (target.kind === "new-memory") res = await control.createMemory(uid, { content });
     else res = await control.putKnowledge(uid, newPath.trim(), content);
     if (!res.ok) {
       busy = null;
       fail(res);
       return;
+    }
+    if (target.kind === "memory") {
+      const next = res.value && typeof res.value === "object" ? (res.value as { id?: unknown }).id : null;
+      if (typeof next === "string" && next) memoryId = next;
     }
     await onchanged();
     if (isNew) {
@@ -139,7 +144,7 @@
     busy = "delete";
     error = null;
     const res =
-      target.kind === "memory" ? await control.deleteMemory(uid, target.id)
+      target.kind === "memory" ? await control.deleteMemory(uid, memoryId)
       : target.kind === "knowledge" ? await control.deleteKnowledge(uid, target.path)
       : null;
     if (res && !res.ok) {
@@ -172,10 +177,7 @@
     {/if}
   {:else}
     {#if target.kind === "new-memory"}
-      <label class="cp-field">
-        <span>Title</span>
-        <input class="cp-input" data-autofocus data-testid="cloud-brain-title-input" bind:value={newTitle} placeholder="Optional" />
-      </label>
+      <p class="cp-hint">The first line becomes the memory's title.</p>
     {:else if target.kind === "new-knowledge"}
       <label class="cp-field">
         <span>File path</span>

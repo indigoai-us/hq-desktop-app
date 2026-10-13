@@ -168,8 +168,10 @@ export interface AgentControlApi {
   updatePersona(agentUid: string, patch: AgentControlPersonaPatch): AdapterPromise<unknown>;
   getBrain(agentUid: string): AdapterPromise<unknown>;
   setModel(agentUid: string, model: string): AdapterPromise<unknown>;
-  createMemory(agentUid: string, input: { title?: string; content: string }): AdapterPromise<unknown>;
+  /** The box titles a memory from its first line; `target` picks the memory or user store. */
+  createMemory(agentUid: string, input: { content: string; target?: "memory" | "user" }): AdapterPromise<unknown>;
   getMemory(agentUid: string, memoryId: string): AdapterPromise<unknown>;
+  /** Memory ids are content hashes: the answer carries the entry's new id. */
   updateMemory(agentUid: string, memoryId: string, content: string): AdapterPromise<unknown>;
   deleteMemory(agentUid: string, memoryId: string): AdapterPromise<unknown>;
   getKnowledge(agentUid: string, path: string): AdapterPromise<unknown>;

@@ -72,12 +72,16 @@ function controlApi(over: Partial<Record<keyof AgentControlApi, (...a: never[]) 
       view.brain.model = model;
       return ok({ model });
     }),
-    createMemory: vi.fn(async (_u: string, input: { title?: string; content: string }) => {
-      view.brain.memory.push({ id: "m2", title: input.title ?? "New", preview: input.content, updatedAt: null });
-      return ok({ id: "m2" });
+    createMemory: vi.fn(async (_u: string, input: { content: string }) => {
+      const title = input.content.split("\n")[0]!;
+      view.brain.memory.push({ id: "m2", title, preview: input.content, updatedAt: null });
+      return ok({ id: "m2", target: "memory", title, content: input.content, updatedAt: null });
     }),
     getMemory: vi.fn(async (_u: string, id: string) => ok({ id, title: "Prefers tea", content: "# Tea\n\nNot **coffee**." })),
-    updateMemory: vi.fn(async () => ok({ ok: true })),
+    updateMemory: vi.fn(async (_u: string, _id: string, content: string) => {
+      view.brain.memory = view.brain.memory.map((m) => (m.id === "m1" ? { ...m, id: "m1b" } : m));
+      return ok({ id: "m1b", target: "memory", title: "Prefers tea", content, updatedAt: null });
+    }),
     deleteMemory: vi.fn(async (_u: string, id: string) => {
       view.brain.memory = view.brain.memory.filter((m) => m.id !== id);
       return ok(null);
@@ -542,6 +546,8 @@ describe("Brain tab", () => {
     await settle();
     expect(api.updateMemory).toHaveBeenCalledWith(UID, "m1", "Tea only.");
     expect(api.getBrain).toHaveBeenCalled();
+    expect(api.getMemory).toHaveBeenLastCalledWith(UID, "m1b");
+    expect(q('[data-testid="cloud-brain-error"]')).toBeNull();
   });
 
   it("deletes a knowledge file after a confirm", async () => {
@@ -584,11 +590,10 @@ describe("Brain tab", () => {
     await openTab("brain");
     click('[data-testid="cloud-brain-memory-add"]');
     await settle();
-    type('[data-testid="cloud-brain-title-input"]', "Timezone");
     type('[data-testid="cloud-brain-editor"]', "Works in Denver.");
     click('[data-testid="cloud-brain-save"]');
     await settle();
-    expect(api.createMemory).toHaveBeenCalledWith(UID, { title: "Timezone", content: "Works in Denver." });
+    expect(api.createMemory).toHaveBeenCalledWith(UID, { content: "Works in Denver." });
     expect(qa('[data-testid="cloud-brain-memory-row"]')).toHaveLength(2);
   });
 
