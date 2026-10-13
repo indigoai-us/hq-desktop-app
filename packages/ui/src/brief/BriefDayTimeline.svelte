@@ -8,10 +8,13 @@
   }
 
   /**
-   * Today's calls as steps, after the reference's vertical progress list:
-   * up to two finished calls for context, the call in progress (or the next
-   * one) as the active step, then what follows, five rows at most. Busy holds
-   * are left out. `hidden` counts the calls that did not fit.
+   * Today's calls as steps, after the reference's vertical progress list. The
+   * active call (in progress, else the next one) sits in the middle: two
+   * finished calls above it and two to come below, when the day has them.
+   * With fewer than two behind it (early in the day), more upcoming calls fill
+   * the list; it is never padded with extra past calls. A day with nothing
+   * still ahead shows its last five calls. Busy holds are left
+   * out. `hidden` holds the calls that did not fit (they open from "+N more").
    */
   export function daySteps(events: readonly BriefCalendarEvent[], nowIso: string, max = 5): { steps: Step[]; hidden: BriefCalendarEvent[] } {
     const now = Date.parse(nowIso);
@@ -19,10 +22,10 @@
     const endOf = (e: BriefCalendarEvent) => (e.end ? Date.parse(e.end) : Date.parse(e.start) + 30 * 60_000);
     const past = calls.filter((e) => endOf(e) <= now);
     const open = calls.filter((e) => endOf(e) > now);
-    const ahead = open.length ? Math.min(open.length, max - Math.min(2, past.length)) : 0;
-    const keepPast = Math.min(past.length, max - ahead);
-    const shownPast = past.slice(past.length - keepPast);
-    const shownOpen = open.slice(0, ahead);
+    const side = Math.floor((max - 1) / 2);
+    const shownPast = open.length ? past.slice(Math.max(0, past.length - side)) : past.slice(Math.max(0, past.length - max));
+    // Early in the day there is nothing to put above it, so the rows below take the room.
+    const shownOpen = open.slice(0, side + 1 + (side - shownPast.length));
     const steps: Step[] = [
       ...shownPast.map((e) => ({ e, state: "done" as const })),
       ...shownOpen.map((e, i) => ({ e, state: (i === 0 ? (Date.parse(e.start) <= now ? "now" : "next") : "later") as StepState })),
