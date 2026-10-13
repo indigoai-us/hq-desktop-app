@@ -114,14 +114,21 @@ for (const size of SIZES) {
     }
     // The line under the heading is centred with the heading and stays on one line
     // (it may be wider than the form column by design).
-    const subtitle = await page.locator('.scene.on .follow-on .cs-pane > .body').evaluate((el) => {
+    // The name screen's own pane (the fading "Getting things ready…" pane may still be in the DOM).
+    const subtitle = await page.locator('.scene.on .follow-on .cs-pane:has(form.cs-form) > .body').evaluate((el) => {
       const range = document.createRange();
       range.selectNodeContents(el);
       const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
       const text = range.getBoundingClientRect();
-      return { lineTops: new Set(rects.map((rect) => Math.round(rect.top))).size, centre: text.left + text.width / 2 };
+      const pane = el.closest('.cs-pane')!.getBoundingClientRect();
+      return {
+        lineTops: new Set(rects.map((rect) => Math.round(rect.top))).size,
+        centre: text.left + text.width / 2,
+        paneCentre: pane.left + pane.width / 2,
+      };
     });
     expect(subtitle.lineTops).toBe(1);
+    expect(Math.abs(subtitle.centre - subtitle.paneCentre)).toBeLessThanOrEqual(1);
     expect(Math.abs(subtitle.centre - centre(await box(page, '.scene.on [data-scene-heading]')))).toBeLessThanOrEqual(1);
 
     // Typing and moving through the fields (focus, caret) leaves it in place.
