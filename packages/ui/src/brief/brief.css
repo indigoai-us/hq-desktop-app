@@ -485,10 +485,11 @@
 }
 
 /* launch controls: primary start button, engine switcher, copy prompt */
+/* Every launch control is one height (30px): the Start button, the engine switch and copy. */
 .daily-brief .launch {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex: none;
 }
 .daily-brief .launch .go {
@@ -498,10 +499,12 @@
   align-items: center;
   /* No gap while the arrow is hidden, so the label sits centred with even 12px sides. */
   gap: 0;
+  box-sizing: border-box;
+  height: 30px;
   font-size: 13px;
   font-weight: 500;
   letter-spacing: -0.005em;
-  padding: 7px 12px;
+  padding: 0 12px;
   border-radius: 8px;
   color: #18181b;
   background: #fff;
@@ -532,10 +535,23 @@
 .daily-brief .launch .go:active {
   background: #d4d4d4;
 }
+/* In a hover card the Start button is the filled primary, like the session card's Resume. */
+.daily-brief .peek .launch .go {
+  color: var(--b-bg);
+  background: rgb(var(--b-ink) / 0.92);
+  box-shadow: none;
+}
+.daily-brief .peek .launch .go:hover {
+  background: rgb(var(--b-ink) / 0.8);
+}
 .daily-brief .launch .eng {
   display: inline-flex;
-  padding: 2px;
-  border-radius: 6px;
+  align-items: center;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 8px;
   background: rgb(var(--b-ink) / 0.06);
 }
 /* Engine marks: the rail's brand marks at 14px. Muted until chosen; the
@@ -545,9 +561,10 @@
   cursor: pointer;
   display: inline-grid;
   place-items: center;
-  height: 14px;
-  padding: 3px 6px;
-  border-radius: 4px;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 5px;
   color: rgb(var(--b-ink) / 0.55);
   transition: background 0.2s, color 0.2s;
 }
@@ -575,11 +592,13 @@
 .daily-brief .launch .copy {
   all: unset;
   cursor: pointer;
-  width: 28px;
-  height: 28px;
-  display: grid;
+  box-sizing: border-box;
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
   place-items: center;
   border-radius: 8px;
+  background: rgb(var(--b-ink) / 0.06);
   color: rgb(var(--b-ink) / 0.75);
   transition: background 0.2s, color 0.2s;
 }
