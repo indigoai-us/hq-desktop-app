@@ -94,6 +94,14 @@ describe("the story", () => {
     expect(founding.did).toBe("Maya joined HQ before the public launch, while it was still being built.");
   });
 
+  // Owner review 2026-10-12: OG, Captain and Patient Zero are given, not
+  // earned. Core Builder is earned by merging pull requests.
+  it("dates the given honors as Awarded, and Core Builder as Earned", () => {
+    const at = (id: string): ResolvedBadge => ({ def: BADGE_BY_ID[id], tier: "L", earnedAt: "2026-10-11" });
+    for (const id of ["og", "captain", "patientzero"]) expect(badgeStory(at(id))?.earned, id).toBe("Awarded Oct 11, 2026");
+    expect(badgeStory(at("corebuilder"))?.earned).toBe("Earned Oct 11, 2026");
+  });
+
   it("writes every line as a full sentence at every level", () => {
     for (const def of BADGES) {
       for (const tier of [1, 2, 3, "L"] as BadgeTier[]) {
@@ -181,5 +189,37 @@ describe("flipping the card", () => {
     viewCard.click();
     flushSync();
     expect(flipState()).toBe("false");
+  });
+});
+
+// Owner review 2026-10-12: the given honors say "Awarded" on the detail page,
+// the card stage and the card's back; Core Builder's Legendary is Tier IV.
+describe("the honors on the detail page and the card", () => {
+  const modal = () => document.querySelector('[data-testid="badge-card-modal"]') as HTMLElement;
+  const open = (badge: ResolvedBadge) => {
+    mounted.push(mount(BadgeDetailPane, { target: host, props: { badge, owner: "Corey Epstein" } }));
+    flushSync();
+    (host.querySelector('[data-testid="badge-detail-view-card"]') as HTMLButtonElement).click();
+    flushSync();
+  };
+
+  it("says OG was awarded, to whom and when", () => {
+    open({ def: BADGE_BY_ID.og, tier: "L", earnedAt: "2026-10-11" });
+    expect(host.querySelector('[data-testid="badge-detail-meta"]')?.textContent).toBe("Legendary · Awarded Oct 11, 2026 to Corey Epstein");
+    expect(modal().querySelector('[data-testid="badge-card-owner"]')?.textContent).toBe("Awarded to Corey Epstein");
+    const back = modal().querySelector('[data-testid="badge-card-back"] .bot')!;
+    expect(back.querySelector("b")?.textContent).toBe("Legendary");
+    expect(back.querySelector("span")?.textContent).toBe("Awarded Oct 11, 2026");
+    expect(modal().querySelector(".bc-face")?.textContent).not.toMatch(/Tier IV/u);
+  });
+
+  it("says Core Builder was earned, at Tier IV · Legendary on both sides of the card", () => {
+    open({ def: BADGE_BY_ID.corebuilder, tier: "L", earnedAt: "2026-10-11" });
+    expect(host.querySelector('[data-testid="badge-detail-meta"]')?.textContent).toBe("Legendary · Earned Oct 11, 2026 by Corey Epstein");
+    expect(modal().querySelector('[data-testid="badge-card-owner"]')?.textContent).toBe("Earned by Corey Epstein");
+    const back = modal().querySelector('[data-testid="badge-card-back"] .bot')!;
+    expect(back.querySelector("b")?.textContent).toBe("Tier IV · Legendary");
+    expect(back.querySelector("span")?.textContent).toBe("Earned Oct 11, 2026");
+    expect(modal().querySelector(".bc-face")?.textContent).toContain("Tier IV · Legendary");
   });
 });

@@ -3,10 +3,14 @@
  *
  * Profile, Billing, and Settings paint from this cache on the first frame.
  * Refresh is the caller's job and runs after paint. Stripe is the only
- * external hand-off. Settings section ids are the SettingsPage vocabulary.
+ * external hand-off (billing-portal.ts). Settings section ids are the
+ * SettingsPage vocabulary.
+ *
+ * No invoice rows live here. Invoices are read in the Stripe customer portal,
+ * which hq-pro mints per company. The earlier sample invoices, and the links
+ * built from their made-up ids, were never real data and are gone.
  */
 
-import { approvedStripeUrl, stripeDestination } from "../company/company-settings.js";
 import { advertisedShortcutRows } from "../shell/advertised-shortcuts.js";
 import { SETTINGS_SECTIONS, type SettingsTab } from "../settings/settings-sections.js";
 
@@ -32,14 +36,6 @@ export interface AccountCompany {
   since: string;
 }
 
-export interface AccountInvoice {
-  id: string;
-  date: string;
-  summary: string;
-  amount: string;
-  status: "Paid";
-}
-
 export interface ShortcutBinding {
   id: string;
   label: string;
@@ -54,15 +50,8 @@ export interface AccountCache {
   bio: string;
   botAddress: string;
   companies: AccountCompany[];
-  invoices: AccountInvoice[];
   shortcuts: ShortcutBinding[];
 }
-
-export const FIXTURE_INVOICES: AccountInvoice[] = [
-  { id: "IN-2026-0009", date: "Sep 1, 2026", summary: "HQ Workforce · 2 hosted agents · Outpost · 11.2 meeting hours", amount: "$791.20", status: "Paid" },
-  { id: "IN-2026-0008", date: "Aug 1, 2026", summary: "HQ Workforce · 2 hosted agents · Outpost · 9.6 meeting hours", amount: "$789.60", status: "Paid" },
-  { id: "IN-2026-0007", date: "Jul 1, 2026", summary: "HQ Workforce · 1 hosted agent · Outpost", amount: "$680.00", status: "Paid" },
-];
 
 /** Derived from the shell's advertised table so the list cannot drift (QA-077). */
 export const DEFAULT_SHORTCUTS: ShortcutBinding[] = advertisedShortcutRows(true);
@@ -77,7 +66,6 @@ export function fixtureAccount(name = "You", email = ""): AccountCache {
     bio: "",
     botAddress: "",
     companies: [],
-    invoices: FIXTURE_INVOICES,
     shortcuts: DEFAULT_SHORTCUTS.map((row) => ({ ...row })),
   };
 }
@@ -87,10 +75,12 @@ export function readAccountCache(): AccountCache | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as AccountCache & { pronouns?: unknown };
+    const parsed = JSON.parse(raw) as AccountCache & { pronouns?: unknown; invoices?: unknown };
+    if (!parsed || typeof parsed.displayName !== "string") return null;
     // OWNER-R20: pronouns are gone from the profile; an older cache drops them.
     delete parsed.pronouns;
-    if (!parsed || typeof parsed.displayName !== "string" || !Array.isArray(parsed.invoices)) return null;
+    // Older caches carried sample invoices that were never real; drop them.
+    delete parsed.invoices;
     // Rows come from the advertised table, not the cache: an older cache
     // could list a chord the shell no longer binds (QA-077).
     return { ...parsed, shortcuts: DEFAULT_SHORTCUTS.map((row) => ({ ...row })) };
@@ -119,29 +109,8 @@ export function paintAccount(
     displayName: identity.name || base.displayName,
     email: identity.email || base.email,
     companies: identity.companies.length > 0 ? identity.companies : base.companies,
-    invoices: base.invoices.length > 0 ? base.invoices : FIXTURE_INVOICES,
     shortcuts: base.shortcuts.length > 0 ? base.shortcuts : DEFAULT_SHORTCUTS.map((row) => ({ ...row })),
   };
-}
-
-function stripeInvoice(id: string, pdf: boolean): string {
-  const path = pdf ? `/invoices/${encodeURIComponent(id)}.pdf` : `/invoices/${encodeURIComponent(id)}`;
-  const url = approvedStripeUrl(`https://billing.stripe.com${path}`);
-  if (!url) throw new Error("Invoice URL is not on the Stripe host");
-  return url;
-}
-
-export function invoicePdfUrl(id: string): string {
-  return stripeInvoice(id, true);
-}
-
-export function invoiceStripeUrl(id: string): string {
-  return stripeInvoice(id, false);
-}
-
-/** Manage payment opens the Stripe customer portal. */
-export function managePaymentUrl(): string {
-  return stripeDestination("portal");
 }
 
 export const DELETE_CONFIRM_PHRASE = "delete";

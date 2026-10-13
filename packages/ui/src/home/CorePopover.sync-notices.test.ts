@@ -94,18 +94,6 @@ describe("CorePopover sync status header (PL-01)", () => {
     );
   });
 
-  it("reads Sync paused with a warn tone when there are conflicts", () => {
-    mountPopover({ syncState: "conflict", conflictCount: 2, lastSyncLabel: null });
-    const header = host.querySelector('[data-testid="core-popover-sync-status"]');
-    expect(header?.getAttribute("data-tone")).toBe("warn");
-    expect(text(host.querySelector('[data-testid="core-popover-sync-state"]'))).toContain(
-      "Sync paused",
-    );
-    expect(text(host.querySelector('[data-testid="core-popover-last-sync"]'))).toBe(
-      "Last sync · never",
-    );
-  });
-
   it("reads All synced with no caption when idle", () => {
     mountPopover({ syncState: "idle", lastSyncLabel: "1h ago" });
     const header = host.querySelector('[data-testid="core-popover-sync-status"]');
@@ -119,23 +107,6 @@ describe("CorePopover sync status header (PL-01)", () => {
 });
 
 describe("CorePopover sync trouble notices (PL-02)", () => {
-  it("renders the conflict notice with Resolve and Copy prompt", () => {
-    mountPopover({
-      syncState: "conflict",
-      conflictCount: 2,
-      conflictCompany: "indigo",
-    });
-    const row = notice("conflict");
-    expect(text(row)).toContain("Sync paused");
-    expect(text(row)).toContain(
-      "2 files changed in two places. Resolve in Claude Code, then Sync again.",
-    );
-    expect(
-      row?.querySelector('[data-testid="core-popover-open-in-claude"]')
-        ?.getAttribute("data-issue-kind"),
-    ).toBe("sync-conflict");
-  });
-
   it("renders the sync-failed notice", () => {
     mountPopover({
       syncState: "error",

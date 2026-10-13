@@ -304,7 +304,7 @@
   // on the main window without touching the first-run flags; clears when the
   // film ends or is skipped.
   let replayIntro = $state(false);
-  let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
+  let syncState = $state<'idle' | 'syncing' | 'error' | 'setup-needed' | 'auth-error'>('idle');
   let watcherWaitingForLock = $state(false);
   let watcherLockHolder = $state<string | null>(null);
   // True while a manual "Sync Now" owns the progress UI — its richer
@@ -1329,14 +1329,9 @@
         // Adding skips here would inflate the numerator and break the
         // ratio.
         syncFanoutFilesSkipped += event.payload.filesSkipped;
-        if (event.payload.aborted) {
-          // Conflict-aborted. The tray goes to its conflict state; the
-          // actionable resolve surface (count, company, Copy prompt,
-          // Open in Claude Code) is the desktop window's Core popover,
-          // which reads the same aggregate from `get_sync_status`.
-          syncState = 'conflict';
-          await invoke('set_tray_state', { state: 'conflict' });
-        }
+        // An aborted company has no tray state of its own: parked conflict
+        // copies have no desktop surface (owner decision 2026-10-13). The
+        // desktop window's source rows still say the run stopped early.
       })
     );
 
@@ -1351,8 +1346,8 @@
         manualSyncTelemetryPending = false;
         manualSyncActive = false;
         externalSyncActive = false;
-        // Only flip to idle if nothing raised conflict/error mid-stream
-        if (syncState !== 'conflict' && syncState !== 'error') {
+        // Only flip to idle if nothing raised an error mid-stream
+        if (syncState !== 'error') {
           syncState = 'idle';
           await invoke('set_tray_state', { state: 'idle' });
         }

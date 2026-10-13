@@ -343,6 +343,10 @@ export { VISUAL_FIRST_RUN_DONE_KEY } from "./chat/first-run/visual-first-run.js"
 export { loadAtlas } from "./shell/atlas-lazy.js";
 // Personal telemetry (US-032): lazy door only — never re-export ./telemetry statically.
 export { loadTelemetry } from "./shell/telemetry-lazy.js";
+// Daily Brief: lazy door plus the dependency-free dev-harness seed seam and fixture.
+export { loadBrief } from "./shell/brief-lazy.js";
+export { configureBriefSeed } from "./brief/brief-seed.js";
+export { octoberEightBrief } from "./brief/brief-fixture.js";
 // Accomplishment badges: profile panes read earned badges from this source.
 export {
   setBadgeSource,
@@ -353,5 +357,8 @@ export {
   type BadgeProgressSource,
 } from "./badges/badge-source.js";
 export type { EarnedBadge } from "./badges/badge-catalog.js";
+// The rule for the tiers a badge can be earned at, which the loader reads
+// hq-pro's badges by; the design harness's ?earn= switch follows it too.
+export { BADGE_BY_ID, earnedTier } from "./badges/badge-catalog.js";
 // The "You earned" notice and the Gold / Legendary card reveal. No earning events call it yet.
-export { announceBadgeEarned } from "./badges/badge-announce.js";
+export { announceBadgeEarned, announceBadgesEarned } from "./badges/badge-announce.js";

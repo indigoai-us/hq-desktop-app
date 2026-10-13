@@ -14,6 +14,7 @@
   import { onMount } from "svelte";
   import { hostComputerNoun, subscribeHostComputerNoun, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
   import IdentityMark from "./messaging/IdentityMark.svelte";
+  import BotIntegrationsSection from "./messaging/BotIntegrationsSection.svelte";
   import BotKindChip from "./BotKindChip.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import {
@@ -37,7 +38,14 @@
 
   interface Props {
     bot: LocalBotRow;
-    adapter: Pick<PlatformAdapter, "bots"> | { bots?: PlatformAdapter["bots"] };
+    adapter:
+      | (Pick<PlatformAdapter, "bots"> &
+          Partial<Pick<PlatformAdapter, "integrations" | "identity">>)
+      | {
+          bots?: PlatformAdapter["bots"];
+          integrations?: PlatformAdapter["integrations"];
+          identity?: PlatformAdapter["identity"];
+        };
     avatarUrl?: string | null;
     /** Cloud companies the owner is in; `slug` lets a company bot's list narrow the promote targets. */
     companies?: Array<{ uid: string; name: string; slug?: string }>;
@@ -177,6 +185,23 @@
     return heartbeat ? `Offline · ${heartbeat}` : "Offline · never checked in";
   });
   const memoryPath = $derived(bot.memoryDir?.trim() || `personal/workers/${bot.name}/memory`);
+
+  // The first bound company's uid, resolved from the bot's slugs via `companies`.
+  // Null when the bot has no bound company (e.g., personal bot) or the slug is
+  // not in the companies list the host provided. `BotIntegrationsSection`
+  // no-ops when `companyUid` is null, so the whole section hides.
+  const botCompanyUid = $derived.by(() => {
+    const slugs: readonly string[] = Array.isArray(bot.companies)
+      ? bot.companies
+      : bot.companySlug
+        ? [bot.companySlug]
+        : [];
+    for (const slug of slugs) {
+      const match = companies.find((c) => c.slug && c.slug === slug);
+      if (match?.uid) return match.uid;
+    }
+    return null;
+  });
   const startedFrom = $derived(
     bot.workerId ? `${bot.workerId}${bot.companySlug ? ` · ${bot.companySlug}` : ""}` : null,
   );
@@ -375,6 +400,15 @@
           {/if}
         </div>
       </section>
+    {/if}
+
+    {#if "integrations" in adapter && "identity" in adapter && adapter.integrations && adapter.identity}
+      <BotIntegrationsSection
+        companyUid={botCompanyUid}
+        botUid={bot.agentUid}
+        botRole={bot.role ?? null}
+        adapter={{ integrations: adapter.integrations, identity: adapter.identity }}
+      />
     {/if}
 
     {#if bot.kind === "personal"}

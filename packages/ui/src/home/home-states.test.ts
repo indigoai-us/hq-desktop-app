@@ -47,17 +47,16 @@ describe("US-016 home states", () => {
   it("shows the offline banner with queued-send copy", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
-    const onresolve = vi.fn();
     const view = mount(OfflineBanner, {
       target: host,
-      props: { lastSynced: "4m ago", conflictCount: 2, onresolve },
+      props: { lastSynced: "4m ago" },
     });
     const text = host.textContent ?? "";
     expect(text).toContain("Offline");
     expect(text).toContain("4m ago");
-    expect(text).toContain("2 conflicts");
-    host.querySelector<HTMLButtonElement>("[data-testid=offline-resolve]")?.click();
-    expect(onresolve).toHaveBeenCalledOnce();
+    // Sync conflicts have no desktop surface (owner decision 2026-10-13).
+    expect(text).not.toMatch(/conflict/i);
+    expect(host.querySelector("[data-testid=offline-resolve]")).toBeNull();
     unmount(view);
     host.remove();
   });

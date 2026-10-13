@@ -12,7 +12,7 @@
   import TierMark from "../badges/TierMark.svelte";
   import { topBadge } from "../badges/badge-tier.js";
   import type { EarnedBadge, ResolvedBadge } from "../badges/badge-catalog.js";
-  import { railInitials, railTooltip, type RailItem, type RailItemId } from "./app-rail.js";
+  import { railInitials, railShortcutItems, railTooltip, type RailItem, type RailItemId } from "./app-rail.js";
 
   interface Props {
     items: RailItem[];
@@ -30,6 +30,8 @@
     youExpanded?: boolean;
     /** Own live dot, from PresenceStore. */
     youLive?: boolean;
+    /** A Daily Brief run in progress: a slim bar on the Brief item, step on hover. */
+    briefRun?: { progress: number; step: string } | null;
     /** Your earned badges. Any at all turn the You tooltip into a hover card that shows them. */
     youBadges?: readonly EarnedBadge[];
     /** The hover card's "See all": your profile panel. */
@@ -50,6 +52,7 @@
     onyou,
     youExpanded = false,
     youLive = false,
+    briefRun = null,
     youBadges = [],
     onyoubadges,
     onyoubadge,
@@ -87,15 +90,15 @@
     if (from !== item.companyUid) onreorderpins?.(from, item.companyUid);
   }
 
-  /** Hairline groups: Home+Meetings | companies+More | personal pages. */
+  /** Hairline groups: Home+Daily Brief+Meetings | companies+More | personal pages. */
   function railGroup(item: RailItem): number {
-    if (item.kind === "home" || item.kind === "meetings") return 0;
+    if (item.kind === "home" || item.kind === "brief" || item.kind === "meetings") return 0;
     if (item.kind === "company" || item.kind === "more-companies") return 1;
     return 2;
   }
 
   function shortcutHint(item: RailItem): string | null {
-    const index = items.indexOf(item);
+    const index = railShortcutItems(items).indexOf(item);
     return index >= 0 && index < 9 ? `⌘${index + 1}` : null;
   }
 </script>
@@ -113,7 +116,9 @@
     </RailYouCard>
   {:else}
     <Tooltip
-      label={railTooltip(item, { unread: unreadCount })}
+      label={item.kind === "brief" && briefRun
+        ? `Daily Brief · ${briefRun.step} · ${Math.round(briefRun.progress * 100)}%`
+        : railTooltip(item, { unread: unreadCount })}
       side="right"
       delay={150}
     >
@@ -160,6 +165,19 @@
         {#if item.kind === "home"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5" /><path d="M5 10v10h5v-6h4v6h5V10" /></svg>
           {#if unreadCount > 0}<span class="badge" data-testid="rail-home-badge" aria-hidden="true"></span>{/if}
+        {:else if item.kind === "brief"}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18M6 17a6 6 0 0 1 12 0M12 5v2M5.6 8.6l1.4 1.4M18.4 8.6 17 10" /></svg>
+          {#if briefRun}
+            <span
+              class="run-bar"
+              role="progressbar"
+              aria-label="Daily Brief in progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(briefRun.progress * 100)}
+              data-testid="rail-brief-progress"
+            ><span style="--fill:{Math.max(0.06, briefRun.progress)}"></span></span>
+          {/if}
         {:else if item.kind === "meetings"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="13" height="10" rx="2" /><path d="m16 11 5-3v8l-5-3" /></svg>
         {:else if item.kind === "company"}
@@ -193,7 +211,7 @@
         {:else if item.id === "outpost"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="6" rx="1.5" /><rect x="3" y="13" width="18" height="6" rx="1.5" /><path d="M7 8h.01M7 16h.01" /></svg>
         {:else if item.kind === "you"}
-          <span class="avatar" aria-hidden="true">{youInitials || initials(item.label)}{#if youTop}<TierMark tier={youTop.tier} avatar={26} anySize />{/if}</span>
+          <span class="avatar" aria-hidden="true">{youInitials || initials(item.label)}{#if youTop}<TierMark tier={youTop.tier} avatar={26} badge={youTop} card={false} anySize />{/if}</span>
           {#if youLive}
             <span class="live you-live" class:with-tier={Boolean(youTop)} data-testid="rail-you-live" aria-hidden="true"></span>
           {/if}
@@ -287,6 +305,26 @@
     stroke-linejoin: round;
   }
 
+  .run-bar {
+    position: absolute;
+    left: 9px;
+    right: 9px;
+    bottom: 5px;
+    height: 3px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--v4-text-1) 14%, transparent);
+    overflow: hidden;
+  }
+  .run-bar > span {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: #ffb580;
+    /* Fill ratio via --fill (0..1) + scaleX so the transition stays on the compositor. */
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left;
+    transition: transform 0.6s ease;
+  }
   .badge {
     position: absolute;
     top: 7px;

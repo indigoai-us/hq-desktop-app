@@ -27,21 +27,10 @@ import {
  *
  * Home answers "is anything wrong, what needs me, what happened": a compact
  * meta line under the title, a NEEDS YOU queue of inline-action cards
- * (conflicts + core drift), a syncing progress card with per-company fanout,
+ * (invites + core drift), a syncing progress card with per-company fanout,
  * a plain-language error card, and an actor-grouped narrative digest. All
  * logic lives here (node-testable); the Svelte components only render.
  */
-
-// ── Conflicts (from the `sync:conflict` event stream) ───────────────────────
-
-export interface HomeConflict {
-  path: string;
-  canAutoResolve: boolean;
-  status: "pending" | "resolving" | "error";
-  /** When the conflict event arrived (ms epoch). */
-  at: number;
-  error?: string;
-}
 
 /** A local deletion the currency gate intentionally refused to propagate. */
 export interface HomeDeleteRefusal {
@@ -118,79 +107,6 @@ export interface HomeCardModel {
   actions: HomeCardAction[];
 }
 
-/** Conflict card — Keep mine / Take theirs / Compare (home-healthy.png). */
-export function getConflictCardModel(
-  conflict: HomeConflict,
-  now = Date.now(),
-): HomeCardModel {
-  const age = timeAgo(conflict.at).toLowerCase();
-  const resolving = conflict.status === "resolving";
-  const subParts = [age];
-  if (conflict.error) subParts.push(`could not resolve — ${conflict.error}`);
-  else if (resolving) subParts.push("resolving…");
-  else
-    subParts.push(
-      conflict.canAutoResolve
-        ? "can auto-resolve"
-        : "auto-resolve not possible",
-    );
-  void now;
-  return {
-    title: `Conflict — ${conflict.path} was edited here and in the cloud`,
-    sub: subParts.join(" · "),
-    tone: "warn",
-    actions: [
-      {
-        id: "keep-local",
-        label: "Keep mine",
-        kind: "primary",
-        disabled: resolving,
-      },
-      {
-        id: "keep-remote",
-        label: "Take theirs",
-        kind: "secondary",
-        disabled: resolving,
-      },
-      { id: "compare", label: "Compare", kind: "text", disabled: false },
-    ],
-  };
-}
-
-/**
- * Aggregate conflict card for the current runner contract. The runner reports a
- * count on `sync:complete` but no file paths, so offer the canonical guided
- * resolver instead of inventing per-file actions the desktop cannot perform.
- */
-export function getAggregateConflictCardModel(
-  count: number,
-  company: string | null = null,
-): HomeCardModel {
-  const normalizedCount = Math.max(0, count);
-  const title =
-    normalizedCount > 0
-      ? `${normalizedCount} file conflict${normalizedCount === 1 ? "" : "s"} need review`
-      : "Sync conflicts need review";
-  return {
-    title,
-    sub: [
-      company,
-      "local files were preserved",
-      "resolve the conflicts before syncing again",
-    ]
-      .filter(Boolean)
-      .join(" · "),
-    tone: "warn",
-    actions: [
-      {
-        id: "resolve-conflicts",
-        label: "Resolve conflicts",
-        kind: "primary",
-      },
-    ],
-  };
-}
-
 /** Drift card — Restore / Keep edit / View diff (home-healthy.png). */
 export function getDriftCardModel(
   core: HomeCoreState,
@@ -231,26 +147,20 @@ export function getDriftCardModel(
   };
 }
 
-/** NEEDS YOU queue count — pending invites + conflicts + the drift card. */
+/**
+ * NEEDS YOU queue count — pending invites + the drift card. A parked sync
+ * conflict is not counted (owner decision 2026-10-13).
+ */
 export function getNeedsYouCount(
-  conflicts: HomeConflict[],
   core: HomeCoreState | null,
   driftDismissed: boolean,
   pendingInviteCount = 0,
-  hasAggregateConflict = false,
 ): number {
-  const conflictCount = conflicts.length;
   const driftCount =
     !driftDismissed && core && core.driftReport && core.driftReport.count > 0
       ? 1
       : 0;
-  const aggregateConflictCount = hasAggregateConflict ? 1 : 0;
-  return (
-    conflictCount +
-    driftCount +
-    Math.max(0, pendingInviteCount) +
-    aggregateConflictCount
-  );
+  return driftCount + Math.max(0, pendingInviteCount);
 }
 
 /**

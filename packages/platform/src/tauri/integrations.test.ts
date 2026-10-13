@@ -63,6 +63,38 @@ async function callBoth(adapter: PlatformAdapter): Promise<void> {
   await adapter.integrations.grantConnectionAccess(GRANT);
 }
 
+async function callAccessPair(adapter: PlatformAdapter): Promise<void> {
+  await adapter.integrations.getConnectionAccess({
+    companyUid: "cmp_acme",
+    connectionId: "acct_linear",
+  });
+  await adapter.integrations.revokeConnectionAccess(GRANT);
+}
+
+const EXPECTED_ACCESS_PAIR: Invocation[] = [
+  {
+    cmd: "hq_pro_fetch",
+    args: {
+      url: INTEGRATION_PATHS.readAccess("cmp_acme", "acct_linear"),
+      method: "GET",
+      body: null,
+    },
+  },
+  {
+    cmd: "hq_pro_fetch",
+    args: {
+      url: INTEGRATION_PATHS.revokeAccess,
+      method: "POST",
+      body: JSON.stringify({
+        companyUid: "cmp_acme",
+        connectionId: "acct_linear",
+        granteeType: "person",
+        granteeId: "agt_nova",
+      }),
+    },
+  },
+];
+
 /** The four calls a card makes to connect an app, in order. */
 async function callConnectFlow(adapter: PlatformAdapter): Promise<void> {
   await adapter.integrations.catalogSearch("cmp_acme", "linear.app", 20);
@@ -158,6 +190,26 @@ describe("TauriPlatformAdapter integrations", () => {
       message: "Only the connection owner or a company admin can manage access",
     });
   });
+
+  it("routes the per-connection access read and the revoke through hq_pro_fetch, with the same body shape as grant", async () => {
+    const { adapter, calls } = makeTauri();
+    await callAccessPair(adapter);
+    expect(calls).toEqual(EXPECTED_ACCESS_PAIR);
+  });
+
+  it("returns a refused revoke as a failure that names the 403", async () => {
+    const { adapter } = makeTauri(() => ({
+      status: 403,
+      body: JSON.stringify({ error: "Only the connection owner or a company admin can manage access" }),
+    }));
+    const result = await adapter.integrations.revokeConnectionAccess(GRANT);
+    expect(result).toEqual({
+      ok: false,
+      reason: "error",
+      code: "http-403",
+      message: "Only the connection owner or a company admin can manage access",
+    });
+  });
 });
 
 describe("createSyncPlatformAdapter integrations", () => {
@@ -190,6 +242,22 @@ describe("createSyncPlatformAdapter integrations", () => {
       body: JSON.stringify({ error: "Only the connection owner or a company admin can manage access" }),
     }));
     const result = await adapter.integrations.grantConnectionAccess(GRANT);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("http-403");
+  });
+
+  it("routes the per-connection access read and the revoke through hq_pro_fetch, with the same body shape as grant", async () => {
+    const { adapter, calls } = makeSync();
+    await callAccessPair(adapter);
+    expect(calls).toEqual(EXPECTED_ACCESS_PAIR);
+  });
+
+  it("returns a refused revoke as a failure that names the 403", async () => {
+    const { adapter } = makeSync(() => ({
+      status: 403,
+      body: JSON.stringify({ error: "Only the connection owner or a company admin can manage access" }),
+    }));
+    const result = await adapter.integrations.revokeConnectionAccess(GRANT);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("http-403");
   });

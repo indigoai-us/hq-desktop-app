@@ -8,8 +8,19 @@
  * notice that fires on every poll never stacks.
  */
 
+import type { Component } from "svelte";
+
 export type ToastTone = "ok" | "err" | "neutral";
 export type ToastKind = "sticky" | "quiet";
+/** `holo`: the holographic shimmer of the badge cards, for badge notices. */
+export type ToastLook = "plain" | "holo";
+
+/** A component drawn left of the toast's text (a badge's mark, say). */
+export interface ToastLead {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  component: Component<any>;
+  props?: Record<string, unknown>;
+}
 
 export interface ToastAction {
   label: string;
@@ -45,6 +56,8 @@ export interface ToastItem {
   onDismiss?: () => void;
   testId?: string;
   dismissLabel?: string;
+  look?: ToastLook;
+  lead?: ToastLead;
 }
 
 export type ToastInput = Omit<ToastItem, "id" | "kind"> & { kind?: ToastKind };

@@ -152,20 +152,51 @@ describe("desktop-alt sync model attention states", () => {
     expect(row.warning).toBe("Access denied");
   });
 
-  it("surfaces conflict-aborted syncs in source rows and attention items", () => {
+  it("keeps a source with parked conflicts healthy and silent", () => {
+    // Owner decision 2026-10-13: a parked conflict copy has no desktop
+    // surface. The count still arrives on sync:complete; nothing reads it.
     const statsBySlug = {
-      personal: stats({ conflicts: 1, aborted: true }),
+      personal: stats({ conflicts: 3 }),
     };
     const [row] = buildSourceRows({
       workspaces: [personalWorkspace],
-      syncState: "conflict",
+      syncState: "idle",
       progress: null,
       statsBySlug,
       cloudReachable: true,
     });
     const attention = buildAttentionItems({
       workspaces: [personalWorkspace],
-      syncState: "conflict",
+      syncState: "idle",
+      syncErrorMessage: "",
+      cloudReachable: true,
+      cloudError: null,
+      manifestError: null,
+      statsBySlug,
+    });
+
+    expect(row.liveState).not.toBe("warn");
+    expect(row.warning).toBeNull();
+    expect(attention).toEqual([]);
+    expect(JSON.stringify({ row, attention })).not.toMatch(/conflict/i);
+  });
+
+  it("surfaces an aborted sync without calling it a conflict", () => {
+    // A run that stopped early is still a real stop and stays visible, but
+    // it is not described as a conflict any more.
+    const statsBySlug = {
+      personal: stats({ conflicts: 1, aborted: true }),
+    };
+    const [row] = buildSourceRows({
+      workspaces: [personalWorkspace],
+      syncState: "idle",
+      progress: null,
+      statsBySlug,
+      cloudReachable: true,
+    });
+    const attention = buildAttentionItems({
+      workspaces: [personalWorkspace],
+      syncState: "idle",
       syncErrorMessage: "",
       cloudReachable: true,
       cloudError: null,
@@ -175,14 +206,15 @@ describe("desktop-alt sync model attention states", () => {
 
     expect(row.liveState).toBe("warn");
     expect(row.action).toBe("Needs attention");
-    expect(attention).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          key: "source-attention:personal",
-          title: "Personal needs attention",
-        }),
-      ]),
-    );
+    expect(row.warning).toBe("Sync stopped before it finished.");
+    expect(attention).toEqual([
+      expect.objectContaining({
+        key: "source-attention:personal",
+        title: "Personal needs attention",
+        detail: "Sync stopped before it finished.",
+      }),
+    ]);
+    expect(JSON.stringify({ row, attention })).not.toMatch(/conflict/i);
   });
 
   it("shows personal first-push progress on the personal source row", () => {

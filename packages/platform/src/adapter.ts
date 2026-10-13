@@ -1234,6 +1234,15 @@ export interface CompanyApi {
    * slug) since callers already have it from the workspace roster.
    */
   ensureHomeChannel(companyUid: string): AdapterPromise<{ homeChannelId: string }>;
+  /**
+   * Mint a Stripe customer-portal session for a company
+   * (`POST /v1/billing/portal`, body `{ companyUid }`). hq-pro owner-gates the
+   * call and verifies the Stripe customer belongs to that company before it
+   * mints; a non-owner gets 403 (`FORBIDDEN`), a mislinked customer 409
+   * (`BILLING_CUSTOMER_CONFLICT`). The `url` is short-lived: mint one per
+   * click and never cache it.
+   */
+  createBillingPortalSession(companyUid: string): AdapterPromise<{ url: string }>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }
@@ -1748,6 +1757,10 @@ export const INTEGRATION_PATHS = {
   connections: (companyUid: string) =>
     `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}&view=summary`,
   grantAccess: "/v1/integrations/factory/access/grant",
+  /** The per-connection access view: mode, entries, caller's `canManage`. */
+  readAccess: (companyUid: string, connectionId: string) =>
+    `/v1/integrations/factory/access?companyUid=${encodeURIComponent(companyUid)}&connectionId=${encodeURIComponent(connectionId)}`,
+  revokeAccess: "/v1/integrations/factory/access/revoke",
   /** The catalog of apps HQ can connect. `limit` is left out when not given; the server bounds it to 1..100. */
   catalog: (companyUid: string, query: string, limit?: number) =>
     `/v1/integrations/factory/catalog?companyUid=${encodeURIComponent(companyUid)}` +
@@ -1888,6 +1901,20 @@ export interface IntegrationsApi {
    */
   grantConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
   /**
+   * GET /v1/integrations/factory/access?companyUid=&connectionId=: the mode,
+   * creator and ACL entries for a single connection, plus whether the caller
+   * may manage it. Serves per-bot read of effective access.
+   */
+  getConnectionAccess(input: {
+    companyUid: string;
+    connectionId: string;
+  }): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/access/revoke: remove a person's or bot's
+   * grant on a connection. Same manage check as `grantConnectionAccess`.
+   */
+  revokeConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
+  /**
    * GET /v1/integrations/factory/catalog?companyUid=&query=&limit=: the apps
    * HQ can connect that match `query`. Owner or admin only; anyone else gets
    * a 403 with code `INTEGRATION_FACTORY_FORBIDDEN`. Answers
@@ -1992,6 +2019,29 @@ export interface SyncApi {
   restoreFromUpstream(args: Json): AdapterPromise<void>;
   beginReauth(): AdapterPromise<Json>;
   listSyncableWorkspaces(): AdapterPromise<Json[]>;
+  /**
+   * Per-company download footprint (`get_sync_mode`; CLI `hq sync mode`).
+   * `isDefault: true` means no saved choice, so the effective mode is `all`.
+   * Footprint only: access is unchanged by either mode.
+   */
+  getCompanySyncMode?(slug: string): AdapterPromise<CompanySyncModeConfig>;
+  /** Set a company's footprint to `all` or `shared` (`set_sync_mode`). */
+  setCompanySyncMode?(
+    slug: string,
+    mode: CompanySyncMode,
+  ): AdapterPromise<CompanySyncModeConfig>;
+}
+
+/** Download footprint choices the desktop exposes; `custom` stays CLI-only. */
+export type CompanySyncMode = 'all' | 'shared';
+
+/** Wire shape of `get_sync_mode` / `set_sync_mode` (`MembershipSyncConfig`). */
+export interface CompanySyncModeConfig {
+  membershipId: string;
+  syncMode: 'all' | 'shared' | 'custom';
+  isDefault: boolean;
+  customPaths?: string[] | null;
+  updatedBy?: string | null;
 }
 
 /** One installed app, as `detect_work_apps` reports it. */
@@ -2029,6 +2079,15 @@ export interface FoundWorkApps {
 }
 
 /** Desktop-only group (capability: canLaunchApps). */
+/** Claude Code permission modes a launch may ask for. */
+export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
+
+export interface ClaudeLaunchOptions {
+  permissionMode?: ClaudePermissionMode;
+  /** Initial prompt, passed to `claude` as its positional prompt argument. */
+  prompt?: string;
+}
+
 export interface ShellApi {
   openInEditor(path: string): AdapterPromise<void>;
   openClaudeCodeLink(url: string): AdapterPromise<void>;
@@ -2042,7 +2101,12 @@ export interface ShellApi {
    */
   openCodexDeepLink(url: string): AdapterPromise<void>;
   openFileInClaude(path: string): AdapterPromise<void>;
-  launchClaudeCode(path: string): AdapterPromise<void>;
+  /**
+   * Open a terminal at `path` running `claude`. `permissionMode` adds
+   * `--permission-mode <mode>` (the Daily Brief asks for bypassPermissions);
+   * omitted, the launch is unchanged.
+   */
+  launchClaudeCode(path: string, opts?: ClaudeLaunchOptions): AdapterPromise<void>;
   /** Open the Codex desktop app (the ChatGPT app's Codex surface) with the
    *  folder loaded as the workspace and an optional pre-typed composer prompt.
    *  Backed by the `launch_codex_workspace` command (ChatGPT-bundled CLI's

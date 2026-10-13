@@ -487,3 +487,46 @@ it("explains a blocked file transfer beside promotion without exposing paths as 
   expect(q('[data-testid="local-bot-detail-actions"]')?.textContent).not.toContain("unsafe or private path");
   expect(host.textContent).toContain("files are still on this computer");
 });
+
+describe("LocalBotDetailPanel: BotIntegrationsSection flag parity", () => {
+  it("does not render the bot integrations section when the flag is off", async () => {
+    const hasFeature = vi.fn(async () => ok(false));
+    const listConnections = vi.fn(async () =>
+      ok({
+        viewer: { personUid: "prs_me", canManageIntegrations: true },
+        connections: [],
+        audit: [],
+      }),
+    );
+    const getConnectionAccess = vi.fn();
+    const grantConnectionAccess = vi.fn();
+    const revokeConnectionAccess = vi.fn();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(LocalBotDetailPanel, {
+      target: host,
+      props: {
+        bot: bot({ companySlug: "indigo" }),
+        companies: [{ uid: "cmp_indigo", slug: "indigo", name: "Indigo" }],
+        adapter: {
+          bots: botsApi(),
+          integrations: {
+            listConnections,
+            getConnectionAccess,
+            grantConnectionAccess,
+            revokeConnectionAccess,
+          },
+          identity: { hasFeature },
+        } as unknown as PlatformAdapter,
+        onclose: () => {},
+        onchanged: () => {},
+        onstart: null,
+      },
+    });
+    await tick();
+    await tick();
+    expect(host.querySelector('[data-testid="bot-integrations-section"]')).toBeNull();
+    expect(listConnections).not.toHaveBeenCalled();
+    expect(getConnectionAccess).not.toHaveBeenCalled();
+  });
+});
