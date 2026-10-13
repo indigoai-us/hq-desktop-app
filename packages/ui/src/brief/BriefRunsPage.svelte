@@ -79,7 +79,6 @@
   const openedBefore = store?.getItem(LAST_KEY) ?? null;
   // The brief log: what was shown and what the person did with it. Hosts
   // without the append (web, harness, demo) log nothing.
-  // svelte-ignore state_referenced_locally
   const appendLog = demo ? null : adapter.files?.appendBriefLog?.bind(adapter.files);
   const logBrief = createBriefLogger(appendLog);
   function logItem(event: BriefItemEvent): void {
