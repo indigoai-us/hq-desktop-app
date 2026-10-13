@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Settings: a new Companies screen lists every company you belong to with your role. For each one you can choose how it syncs to this computer, and an owner can move a company's files to a cloud vault. Clicking a company opens its General settings.
 - Badges: the "You earned" notice now has the cards' holographic shimmer: an iridescent edge and a sheen that sweeps across as it comes in and while you hover it, with the badge's mark beside the words. When several badges arrive at once, such as everything since your last visit, they come as one notice ("You earned 4 badges") with their marks in a row, and Reveal cards shows each card in turn. Reduced motion keeps the edge still.
 - Marketplace: a pack's details panel now has a "View public page" link that opens the pack's page on hqforwork.com in your browser, and a "Copy link" button that copies that page's address so you can share it.
 - Badge cards no longer show their front mirrored for a moment when you flip them over. Each side now hides as the card turns edge-on.
