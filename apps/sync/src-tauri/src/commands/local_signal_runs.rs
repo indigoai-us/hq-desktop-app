@@ -1010,3 +1010,7 @@ mod tests {
         assert!(load(d.path(), "../../etc/passwd").is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "local_signal_runs_acceptance.rs"]
+mod acceptance;
