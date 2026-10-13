@@ -19,6 +19,7 @@
   import type { DawnPhase } from "./brief-dawn.js";
   import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
   import { adapterSweepSource, gatherBriefInput, readRunHousekeeping, type BriefAdapter, type BriefSweepSource } from "./brief-data.js";
+  import { adapterBriefLog } from "./brief-log.js";
   import type { BriefHousekeeping } from "./brief-run-files.js";
   import { BRIEF_FIX_LABEL, BRIEF_INDEX_PATH, latestReadyRun, parseBriefIndex, runIdTime, type BriefIndexEntry } from "./brief-runs.js";
   import type { BriefLaunch } from "./brief-context.svelte.js";
@@ -52,6 +53,9 @@
   const demo = typeof location === "undefined" ? null : briefDemoFromUrl(location.search);
   // svelte-ignore state_referenced_locally
   const source = demo ? demo.source : sourceProp === undefined ? adapterSweepSource(adapter.files) : sourceProp;
+  // The brief log, when the host can append to it (never for the demo).
+  // svelte-ignore state_referenced_locally
+  const briefLog = demo ? null : adapterBriefLog(adapter.files);
 
   let entries = $state<BriefIndexEntry[]>([]);
   let selectedRunId = $state<string | null>(null);
@@ -308,7 +312,7 @@
   <div class="daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
   {#if dawn}<div class="masthead-wrap">{@render dawnScene("masthead")}</div>{/if}
-  <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} header={entries.length || run ? runBar : undefined} />
+  <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} log={briefLog} header={entries.length || run ? runBar : undefined} />
 {:else if failed}
   <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
 {:else}

@@ -41,6 +41,7 @@
   import type { Snippet } from "svelte";
   import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
   import type { BriefDmApi } from "./brief-dms.js";
+  import { briefItemKinds, type BriefLogSink } from "./brief-log.js";
   import {
     BriefState,
     launchBriefPromptViaClipboard,
@@ -72,17 +73,30 @@
     onopenthread?: (uid: string) => void;
     /** Opens the Meetings page. */
     onopenmeetings?: () => void;
+    /** The brief log (shown, dismiss, launch, pin, hide), when the host keeps one. */
+    log?: BriefLogSink | null;
   }
-  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings }: Props = $props();
+  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings, log = null }: Props = $props();
 
   const briefState = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
     () => companies,
-    { dmApi: () => dmApi, openThread: () => onopenthread },
+    { dmApi: () => dmApi, openThread: () => onopenthread, log: () => log, runId: () => input.runId ?? null, kindOf: (id) => itemKinds[id] ?? null },
   );
   provideBrief(briefState);
 
   const plan = $derived(generateBrief(input));
+  /** The card each item id sits on, for the brief log. */
+  const itemKinds = $derived(briefItemKinds(input));
+  // One `shown` line per run, with the cards on the page.
+  let loggedRun: string | null | undefined;
+  $effect(() => {
+    const runId = input.runId ?? null;
+    const widgets = plan.widgets.map((w) => w.kind);
+    if (!log || loggedRun === runId) return;
+    loggedRun = runId;
+    log.append({ event: "shown", run_id: runId, widgets });
+  });
   const ctx = $derived(buildContext(input));
   const priorities = $derived(briefPriorities(input));
   // Needs rows: the ones a priority points at first, then by what they unblock.

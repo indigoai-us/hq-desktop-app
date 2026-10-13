@@ -1477,6 +1477,7 @@ export function createSyncPlatformAdapter(
       },
       getFileContent: (path) => call('get_company_file_content', { path }),
       createFile: (path, contents) => call('create_project_file', { path, contents }),
+      appendBriefLogLine: (line) => call('append_brief_log_line', { line }),
       listVaultPrefix: (companyUid, prefix, cursor) =>
         hqProJson(
           'GET',

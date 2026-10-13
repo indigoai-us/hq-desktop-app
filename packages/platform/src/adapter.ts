@@ -1377,6 +1377,14 @@ export interface FilesApi {
    */
   createFile?(path: string, contents: string): AdapterPromise<CreatedFile>;
   /**
+   * Append one event line to the Daily Brief's log in the HQ folder
+   * (personal/brief/brief-log.jsonl, the only file the host writes for it).
+   * The line must be a single-line JSON object with a string `event`. The
+   * writer skill folds the log into brief preferences weekly. Desktop only;
+   * hosts without it omit it and the brief keeps no log.
+   */
+  appendBriefLogLine?(line: string): AdapterPromise<void>;
+  /**
    * ACL-filtered vault browse (hq-pro GET /v1/files/list). Pass the previous
    * page's `cursor` to continue a listing.
    */

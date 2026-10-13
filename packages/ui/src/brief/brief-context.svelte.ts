@@ -4,8 +4,9 @@
  */
 
 import { getContext, setContext } from "svelte";
-import type { BriefLine } from "./brief-types.js";
+import type { BriefLine, BriefWidgetKind } from "./brief-types.js";
 import { loadSenderDms, type BriefDmApi, type BriefDmLoad } from "./brief-dms.js";
+import type { BriefLogEvent, BriefLogSink } from "./brief-log.js";
 
 export type BriefEngine = "claude" | "codex" | "grok";
 export const ENGINES: { id: BriefEngine; label: string; short: string }[] = [
@@ -92,6 +93,12 @@ export class BriefState {
     readonly links: {
       dmApi?: () => BriefDmApi | null | undefined;
       openThread?: () => ((uid: string) => void) | undefined;
+      /** The brief log, when the host can append to it. */
+      log?: () => BriefLogSink | null | undefined;
+      /** The shown run, for log lines. */
+      runId?: () => string | null | undefined;
+      /** The card an item id sits on, for log lines. */
+      kindOf?: (id: string) => BriefWidgetKind | null;
     } = {},
   ) {
     try {
@@ -141,17 +148,39 @@ export class BriefState {
     );
   }
 
-  /** Mark an item done in this brief only. Nothing is sent anywhere. */
-  clear(id: string): void {
+  /** One line in the brief log, when the host keeps one. */
+  log(event: BriefLogEvent["event"], extra: Omit<BriefLogEvent, "event" | "run_id"> = {}): void {
+    this.links.log?.()?.append({ event, run_id: this.links.runId?.() ?? null, ...extra });
+  }
+
+  /**
+   * Mark an item done in this brief only. Nothing is sent anywhere. A clear
+   * that did not come from a launch is logged as a dismiss.
+   */
+  clear(id: string, via: "dismiss" | "launch" = "dismiss"): void {
     if (this.cleared[id]) return;
     this.cleared = { ...this.cleared, [id]: true };
     this.ripple += 1;
+    if (via === "dismiss") this.log("dismiss", { item_id: id, kind: this.links.kindOf?.(id) ?? null });
   }
 
   async start(id: string, prompt: string): Promise<void> {
-    const error = await this.launch(this.engine, prompt);
-    this.notes = { ...this.notes, [id]: error ?? `Started in ${ENGINES.find((e) => e.id === this.engine)!.label}.` };
-    if (!error || error.startsWith("Prompt copied")) this.clear(id);
+    const engine = this.engine;
+    const error = await this.launch(engine, prompt);
+    this.notes = { ...this.notes, [id]: error ?? `Started in ${ENGINES.find((e) => e.id === engine)!.label}.` };
+    if (!error || error.startsWith("Prompt copied")) {
+      this.log("launch", { item_id: id, kind: this.links.kindOf?.(id) ?? null, engine });
+      this.clear(id, "launch");
+    }
+  }
+
+  /** A card pinned or hidden by the person; the writer reads these in its fold. */
+  pin(kind: BriefWidgetKind): void {
+    this.log("pin", { kind });
+  }
+
+  hide(kind: BriefWidgetKind): void {
+    this.log("hide", { kind });
   }
 
   showPeek(anchor: HTMLElement, content: PeekContent): void {
