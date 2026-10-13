@@ -324,6 +324,7 @@
       <div class="nx-head"><span class="nx-tag"><svg viewBox={tagViewBox(CARD_TAG.meetings)} style:width="{tagIconWidth(CARD_TAG.meetings)}px" aria-hidden="true"><path d={CARD_TAG.meetings.d} /></svg>{next ? (next.live ? "On a call" : "Next call") : "Calls today"}</span></div>
       {#if next}
         <div class="nx-time">{nextTime.t}<span>{nextTime.ap}{next.live ? "" : ` · ${inLabel(next.inMin, false)}`}</span></div>
+        <div class="nx-detail">
         <div class="nx-title">{next.event.title}</div>
         {#if next.event.attendees?.length}
           {@const people = next.event.attendees}
@@ -335,11 +336,12 @@
           <!-- The time to the call is already beside the hour; this line says what follows. -->
           <div class="nx-in">{callsLeft > 1 ? `${callsLeft - 1} more after` : "Last call today"}</div>
         {/if}
+        </div>
       {:else}
         <div class="nx-time">Free</div>
-        <div class="nx-title">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</div>
+        <div class="nx-detail"><div class="nx-title">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</div></div>
       {/if}
-      <!-- A small orbit: the day around you. On a call the node circles and a soft ring pulses; before a call it waits at the top. -->
+      <!-- A quiet orbit: the day around you. On a call three nodes circle it and a soft ring pulses; otherwise it is still and empty. -->
       <svg class="orbit" class:live={next?.live} class:idle={!next} viewBox="0 0 120 120" aria-hidden="true">
         <defs>
           <radialGradient id="b-orb-fill" cx="0.35" cy="0.3" r="0.8">
@@ -350,7 +352,7 @@
         {#if next?.live}<circle class="pulse" cx="60" cy="60" r="28" />{/if}
         <circle class="orb" cx="60" cy="60" r="28" fill="url(#b-orb-fill)" />
         <circle class="path" cx="60" cy="60" r="46" />
-        {#if next}<g class="spin"><circle class="node" cx="60" cy="14" r="4.5" />{#if next.live}<circle class="node trail" cx="99.8" cy="83" r="3.5" /><circle class="node trail" cx="20.2" cy="83" r="3.5" />{/if}</g>{/if}
+        {#if next?.live}<g class="spin"><circle class="node" cx="60" cy="14" r="4.5" /><circle class="node trail" cx="99.8" cy="83" r="3.5" /><circle class="node trail" cx="20.2" cy="83" r="3.5" /></g>{/if}
       </svg>
     </aside>
   </section>

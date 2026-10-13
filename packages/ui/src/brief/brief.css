@@ -1160,6 +1160,8 @@
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 18px 40px -24px rgba(40, 40, 70, 0.35);
   cursor: default;
   min-height: 190px;
+  /* Label, time and the call's details, spread evenly down the panel. */
+  justify-content: space-between;
 }
 .daily-brief .b-next .nx-head {
   display: flex;
@@ -1188,7 +1190,7 @@
   fill: currentColor;
 }
 .daily-brief .b-next .nx-time {
-  margin-top: 14px;
+  margin-top: 0;
   font-size: var(--b-fs-num);
   font-weight: 400;
   letter-spacing: -0.03em;
@@ -1201,7 +1203,7 @@
   color: var(--b-t3);
 }
 .daily-brief .b-next .nx-title {
-  margin-top: 10px;
+  margin-top: 0;
   font-size: 13px;
   font-weight: 500;
   line-height: 1.35;
