@@ -4,8 +4,7 @@
   import { hostComputerNoun } from "@hq/platform";
   import "./settings-chrome.css";
   import { announceRuntimeSignedIn } from "../chat/messaging/runtime-repair.svelte.js";
-  import { CONNECTOR_APPS, INDIGO_MCP_URL, CLAUDE_CODE_CONNECT_PROMPT } from "./hq-connector-setup.js";
-  import { buildClaudeCodeUrl } from "./claude-code-link";
+  import { CONNECTOR_APPS, INDIGO_MCP_URL } from "./hq-connector-setup.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -219,26 +218,6 @@
     }
   }
 
-  // Claude Code is the one app here with a deep link that carries a prompt
-  // (claude://code/new?q=…), so its row opens Claude Code with the setup
-  // prompt ready to send instead of asking the person to paste it.
-  let openingClaude = $state(false);
-  let openClaudeFailed = $state(false);
-
-  async function openInClaudeCode() {
-    if (openingClaude || !adapter?.shell?.openClaudeCodeLink) return;
-    openingClaude = true;
-    openClaudeFailed = false;
-    const result = await adapter.shell.openClaudeCodeLink(
-      buildClaudeCodeUrl({ folder: "", prompt: CLAUDE_CODE_CONNECT_PROMPT }),
-    );
-    openingClaude = false;
-    if (!result.ok) {
-      console.warn("[agents-settings] open Claude Code link failed", result.message);
-      openClaudeFailed = true;
-    }
-  }
-
   $effect(() => {
     void adapter;
     void load();
@@ -309,23 +288,16 @@
         <div class="ss-field-text">
           <div class="ss-field-label">{app.name}</div>
           <div class="ss-field-help">{app.help}</div>
+          {#if "steps" in app && app.steps}
+            <ol class="ss-field-help hq-connector-steps" data-testid={`settings-hq-connector-${app.id}-steps`}>
+              {#each app.steps as step}<li>{step}</li>{/each}
+            </ol>
+          {/if}
           {#if copyFailedId === app.id}
             <pre class="ss-field-help hq-connector-manual" data-testid={`settings-hq-connector-${app.id}-manual`}>{app.copyText}</pre>
             <div class="ss-field-help" role="status">Copy didn't work. Select the text above, or tap Copy to try again.</div>
           {/if}
-          {#if app.id === "claude-code" && openClaudeFailed}
-            <div class="ss-field-help" role="status" data-testid="settings-hq-connector-claude-code-open-failed">Couldn't open Claude Code. Copy the setup and paste it into a session, or tap Open to try again.</div>
-          {/if}
         </div>
-        {#if app.id === "claude-code" && adapter?.shell?.openClaudeCodeLink}
-          <button
-            type="button"
-            class="ss-btn"
-            data-testid="settings-hq-connector-claude-code-open"
-            disabled={openingClaude}
-            onclick={() => void openInClaudeCode()}
-          >{openingClaude ? "Opening…" : "Open"}</button>
-        {/if}
         <button
           type="button"
           class="ss-btn"
@@ -338,6 +310,13 @@
 </div>
 
 <style>
+  .hq-connector-steps {
+    margin: 6px 0 0;
+    padding-left: 18px;
+  }
+  .hq-connector-steps li + li {
+    margin-top: 2px;
+  }
   .hq-connector-manual {
     margin: 6px 0 0;
     white-space: pre-wrap;

@@ -102,45 +102,14 @@ describe("Settings → AI tools: Connect AI apps to HQ", () => {
   });
 });
 
-describe("Settings → AI tools: Claude Code deep link", () => {
-  async function renderWithShell(openClaudeCodeLink: (url: string) => Promise<unknown>) {
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    const adapter = {
-      isAvailable: () => true,
-      sessions: { preflight: async () => ({ ok: true, value: {} }) },
-      shell: { openClaudeCodeLink },
-    } as unknown as PlatformAdapter;
-    component = mount(AgentsSettingsPane, { target: host, props: { adapter } });
-    await tick();
-    await Promise.resolve();
-    flushSync();
-  }
-
-  it("opens Claude Code with the connector prompt prefilled", async () => {
-    const open = vi.fn(async (_url: string) => ({ ok: true, value: undefined }));
-    await renderWithShell(open);
-    q("settings-hq-connector-claude-code-open")?.click();
-    await settle();
-    expect(open).toHaveBeenCalledTimes(1);
-    const url = new URL(open.mock.calls[0][0]);
-    expect(`${url.protocol}//${url.host}${url.pathname}`).toBe("claude://code/new");
-    expect(url.searchParams.get("q")).toContain(`claude mcp add --transport http indigo ${INDIGO_MCP_URL}`);
-  });
-
-  it("on a failed open, offers copy as the fallback and keeps Open live", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const open = vi.fn(async () => ({ ok: false, message: "open exited 1: raw" }));
-    await renderWithShell(open);
-    q("settings-hq-connector-claude-code-open")?.click();
-    await settle();
-    expect(q("settings-hq-connector-claude-code-open-failed")?.textContent).toContain("Copy the setup");
-    expect((q("settings-hq-connector-claude-code-open") as HTMLButtonElement).disabled).toBe(false);
-    expect(host.textContent).not.toContain("open exited");
-  });
-
-  it("hides Open where the host has no Claude Code link command", async () => {
+describe("Settings → AI tools: Claude setup steps", () => {
+  it("shows Claude's connector steps and no deep-link buttons", async () => {
     await render();
-    expect(q("settings-hq-connector-claude-code-open")).toBeNull();
+    const steps = q("settings-hq-connector-claude-steps");
+    expect(steps?.querySelectorAll("li").length).toBe(4);
+    expect(steps?.textContent).toContain("Add custom connector");
+    expect(steps?.textContent).toContain("Indigo HQ");
+    expect(host.querySelector("[data-testid$='-open']")).toBeNull();
+    expect(q("settings-hq-connector-grok-bot-steps")).toBeNull();
   });
 });

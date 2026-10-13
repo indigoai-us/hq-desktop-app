@@ -21,6 +21,8 @@ export interface ConnectorApp {
   help: string;
   /** What the Copy button puts on the clipboard. */
   copyText: string;
+  /** Step-by-step setup, for apps added through their own settings screens. */
+  steps?: readonly string[];
 }
 
 /**
@@ -59,14 +61,20 @@ export const CONNECTOR_APPS: readonly ConnectorApp[] = [
   {
     id: "grok-bot",
     name: "Grok Bot",
-    help: "Paste into a Grok Bot chat, click Add it, then Authorize on the connect card.",
+    help: "Copy this prompt and paste it into a Grok Bot chat. It adds HQ and asks you to sign in.",
     copyText: GROK_BOT_CONNECT_PROMPT,
   },
   {
     id: "claude",
     name: "Claude",
-    help: "In Settings → Connectors, choose Add custom connector and paste the URL.",
+    help: "Works in the Claude desktop app and on claude.ai. Copy gives you the connector URL.",
     copyText: INDIGO_MCP_URL,
+    steps: [
+      "Open Settings → Connectors.",
+      "Choose Add custom connector.",
+      "Name it Indigo HQ and paste the connector URL. Leave the advanced OAuth fields empty.",
+      "Click Add, then sign in to HQ when the browser opens.",
+    ],
   },
   {
     id: "chatgpt",
