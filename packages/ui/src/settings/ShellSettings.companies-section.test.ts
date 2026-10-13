@@ -25,21 +25,22 @@ async function render(initialSection: "companies" | null): Promise<void> {
   await tick();
 }
 
-// Companies are reached from the rail tiles and the More companies popover.
-describe("ShellSettings without a companies list", () => {
-  it("has no Companies section in the settings nav", async () => {
+// Owner-approved 2026-10-11: Companies is its own Settings screen again, and
+// the Companies and roles list moved off Profile into it.
+describe("ShellSettings Companies section", () => {
+  it("lists Companies in the settings nav", async () => {
     await render(null);
     const nav = host.querySelector('[data-testid="settings-nav"]');
-    expect(nav?.querySelector('[data-testid="settings-nav-profile"]')).not.toBeNull();
-    expect(nav?.querySelector('[data-testid="settings-nav-companies"]')).toBeNull();
-    expect(nav?.textContent).not.toMatch(/companies/i);
+    expect(nav?.querySelector('[data-testid="settings-nav-companies"]')?.textContent).toMatch(
+      /Companies/,
+    );
   });
 
-  it("lands an old companies deep link on Profile", async () => {
+  it("lands a companies deep link on the Companies screen", async () => {
     await render("companies");
     expect(
-      host.querySelector('[data-testid="settings-nav-profile"]')?.getAttribute("aria-current"),
+      host.querySelector('[data-testid="settings-nav-companies"]')?.getAttribute("aria-current"),
     ).toBe("page");
-    expect(host.querySelector('[data-testid="settings-company-row"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="settings-company-row"]').length).toBe(1);
   });
 });

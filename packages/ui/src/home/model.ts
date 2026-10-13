@@ -296,7 +296,7 @@ export interface V4SecondaryFooter {
 
 /** Title-bar primary action — contextual, always exactly one. */
 export interface V4TitleBarAction {
-  id: "sync" | "cancel" | "retry" | "resolve";
+  id: "sync" | "cancel" | "retry";
   label: "Sync Now" | "Cancel" | "Retry" | "Sign in" | "Resolve";
 }
 
@@ -346,8 +346,7 @@ export function getV4TitleBarModel(input: V4TitleBarInput): V4TitleBarModel {
   const hasAuthoritativeOperationalState =
     input.syncState === "syncing" ||
     input.syncState === "error" ||
-    input.syncState === "auth-error" ||
-    input.syncState === "conflict";
+    input.syncState === "auth-error";
 
   if (input.hydrationIssue && !hasAuthoritativeOperationalState) {
     const sentenceByKind: Record<V4HydrationIssueKind, string> = {
@@ -391,13 +390,6 @@ export function getV4TitleBarModel(input: V4TitleBarInput): V4TitleBarModel {
         sentence: "Ready to reconnect",
         meta: "sign in to keep sync moving",
         action: { id: "retry", label: "Sign in" },
-      };
-    case "conflict":
-      return {
-        tone: "warn",
-        sentence: "Needs your review",
-        meta: "resolve conflicts to continue",
-        action: { id: "resolve", label: "Resolve" },
       };
     case "setup-needed":
       return {

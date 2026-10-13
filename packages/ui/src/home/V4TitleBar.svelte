@@ -7,7 +7,6 @@
   import type { BrandIconName } from "../common/button/rail-icons.js";
   import { startWindowDrag } from "./window-drag.js";
   import { titlebarDayDate } from "../chat/sidebar-model.js";
-  import type { HomeConflict } from "./home-model.js";
   import CorePopover from "./CorePopover.svelte";
   import { corePillDotTone } from "./core-popover-model.js";
   import {
@@ -55,8 +54,6 @@
     hydrationRefreshing?: boolean;
     errorMessage?: string;
     errorCompany?: string | null;
-    conflictCount?: number;
-    conflictCompany?: string | null;
     hqFolderPath?: string | null;
     accountInitials?: string | null;
     sidebarCollapsed?: boolean;
@@ -66,7 +63,6 @@
     oncancel?: () => void | Promise<void>;
     onretry?: () => void | Promise<void>;
     onretryhydration?: () => void | Promise<void>;
-    onresolveconflicts?: () => void | Promise<void>;
     ontogglesidebar?: () => void;
     oncommand?: () => void;
     onaccount?: () => void;
@@ -97,10 +93,9 @@
      * Lights the Core pill and replaces "All synced" in the Core popover.
      */
     uploadsPaused?: readonly { company: string; upgradeUrl?: string | null }[] | null;
-    conflicts?: HomeConflict[];
     /**
-     * Inject the D-08 designed Core-popover fixtures (conflict card / packs /
-     * update / core version). Visual-QA only — MUST stay false on real data.
+     * Inject the D-08 designed Core-popover fixtures (packs / update / core
+     * version). Visual-QA only — MUST stay false on real data.
      */
     coreUseFixtures?: boolean;
     /** USER-EDIT drift count from the shell's core-state scan (G7 dot tone). */
@@ -115,11 +110,6 @@
     /** Workspaces, used only to resolve uids in error copy. */
     workspaces?: readonly Record<string, unknown>[] | null;
     oncloudtoggle?: (paused: boolean) => void;
-    onresolveconflict?: (
-      path: string,
-      strategy: "keep-local" | "keep-remote" | "discard",
-    ) => void | Promise<void>;
-    onopenconflict?: (path: string) => void | Promise<void>;
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
     onopenMarketplace?: () => void;
@@ -159,14 +149,11 @@
     errorCompany = null,
     hydrationIssue = null,
     hydrationRefreshing = false,
-    conflictCount = 0,
-    conflictCompany = null,
     hqFolderPath = null,
     onsync,
     oncancel,
     onretry,
     onretryhydration,
-    onresolveconflicts,
     sidebarCollapsed = false,
     sidebarToggleHidden = false,
     ontogglesidebar,
@@ -179,15 +166,12 @@
     onopenSync,
     cloudPaused = false,
     uploadsPaused = null,
-    conflicts = [],
     coreUseFixtures = false,
     driftCount = 0,
     manifestError = null,
     cloudReachable = true,
     cloudError = null,
     workspaces = null,
-    onresolveconflict,
-    onopenconflict,
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
@@ -246,8 +230,7 @@
   /**
    * Canonical status model. The minimal titlebar (D-04) hides idle sync
    * chrome, but recovery flows stay first-class: hydration Retry re-runs the
-   * real hydration commands and conflicts route through the canonical
-   * resolve-conflicts prompt — never a bare Sync.
+   * real hydration commands — never a bare Sync.
    */
   const model = $derived(
     getV4TitleBarModel({
@@ -270,7 +253,6 @@
       if (model.recovery === "hydration") await onretryhydration?.();
       else if (model.action.id === "cancel") await oncancel?.();
       else if (model.action.id === "retry") await onretry?.();
-      else if (model.action.id === "resolve") await onresolveconflicts?.();
       else await onsync?.();
     } catch (err) {
       console.error(`titlebar: ${model.action.id} action failed`, err);
@@ -281,8 +263,7 @@
 
   /**
    * Recovery card for the Core popover (D-04: no recovery chrome in the bar).
-   * Hydration Retry re-runs the real hydration commands; conflicts route
-   * through the canonical resolve-conflicts prompt — never a bare Sync.
+   * Hydration Retry re-runs the real hydration commands — never a bare Sync.
    */
   const recoveryCard = $derived.by(() => {
     if (model.recovery === "hydration") {
@@ -291,17 +272,6 @@
         label: hydrationRefreshing || recoveryBusy ? "Retrying…" : "Retry",
         busy: hydrationRefreshing || recoveryBusy,
         copyIssue: null,
-      };
-    }
-    if (syncState === "conflict" && model.action.id === "resolve") {
-      return {
-        sentence: model.sentence,
-        label: recoveryBusy ? "Opening…" : "Resolve conflicts",
-        busy: recoveryBusy,
-        copyIssue: {
-          kind: "sync-conflict" as const,
-          payload: { count: conflictCount, company: conflictCompany },
-        },
       };
     }
     if (syncState === "error" || syncState === "auth-error") {
@@ -558,7 +528,7 @@
    * Phase the Core popover header speaks about.
    *
    * `syncState` is reduced from the on-disk journal, which only ever reports
-   * `idle` or `conflict`. The event-stream reducer (`syncStatus`) is the only
+   * `idle`. The event-stream reducer (`syncStatus`) is the only
    * source that sees a run start or a run fail, so a non-idle phase there
    * wins — otherwise a failing sync would read "All synced".
    */
@@ -566,11 +536,10 @@
     syncStatus && syncStatus.phase !== "idle" ? syncStatus.phase : syncState,
   );
 
-  /** G7: amber dot while a conflict/attention item is pending; green when
+  /** G7: amber dot while an attention item is pending; green when
    *  healthy; a quiet blue while a run is in flight (PL-01). */
   const coreDotTone = $derived(
     corePillDotTone({
-      conflictCount: Math.max(conflictCount, conflicts.length),
       syncState: coreSyncPhase,
       manifestError,
       cloudReachable,
@@ -958,15 +927,12 @@
           <CorePopover
             {adapter}
             appVersion={version}
-            {conflicts}
             {cloudPaused}
             {uploadsPaused}
             {onopenurl}
             syncState={coreSyncPhase}
             {lastSyncLabel}
             syncCaption={syncCaptionText}
-            conflictCount={Math.max(conflictCount, conflicts.length)}
-            {conflictCompany}
             errorMessage={syncErrorMessage}
             errorCompany={errorCompany ?? null}
             {manifestError}
@@ -978,8 +944,6 @@
             recovery={recoveryCard}
             onrecovery={handleRecoveryAction}
             onclose={() => (coreOpen = false)}
-            onresolve={onresolveconflict}
-            onopeneditor={onopenconflict}
             {onopendrift}
             onopenLibrary={() => {
               onopenLibrary?.();
@@ -1295,7 +1259,7 @@
     line-height: 1;
   }
 
-  /* Attention pending (conflicts / sync error / paused): amber, tokens
+  /* Attention pending (sync error / paused): amber, tokens
      rgb(240,168,0) light / rgb(250,204,21) dark via --warn (G7). */
   .v4-core-dot.active {
     color: var(--ice-ink);

@@ -1,7 +1,7 @@
 /**
  * Pure model for the V4 titlebar Core popover (US-016).
  *
- * Derives conflict header copy, drift / update pills, pack rows, and
+ * Derives drift / update pills, pack rows, and
  * pause-gated Sync Now behaviour from plain inputs — no Svelte / Tauri.
  *
  * PL-01/PL-02 added the sync status header and the four sync trouble notices
@@ -11,15 +11,6 @@
 import type { Issue } from "./copy-prompts.js";
 
 // ── Inputs ───────────────────────────────────────────────────────────────────
-
-export type CorePopoverConflictStatus =
-  "pending" | "resolving" | "resolved" | "error";
-
-export interface CorePopoverConflict {
-  path: string;
-  status: CorePopoverConflictStatus;
-  error?: string;
-}
 
 export interface CorePopoverPack {
   name: string;
@@ -45,9 +36,6 @@ export interface CorePopoverCoreState {
 }
 
 export interface BuildCorePopoverInput {
-  conflicts?: readonly CorePopoverConflict[];
-  /** Epoch-ms of the newest conflict for "· 2m ago" header suffix. */
-  conflictUpdatedAtMs?: number | null;
   core?: CorePopoverCoreState | null;
   appVersion?: string | null;
   updateAvailable?: boolean;
@@ -87,22 +75,7 @@ export interface CoreUploadsPausedInput {
 
 // ── Outputs ──────────────────────────────────────────────────────────────────
 
-export interface CorePopoverConflictRow {
-  path: string;
-  fileName: string;
-  companyPath: string;
-  status: CorePopoverConflictStatus;
-  error?: string;
-  /** Primary actions disabled while resolving. */
-  actionsDisabled: boolean;
-}
-
 export interface CorePopoverViewModel {
-  /** Unresolved conflict rows for the rescue card (empty → hide card). */
-  conflictRows: CorePopoverConflictRow[];
-  /** "N conflicts need you" — empty string when no conflicts. */
-  conflictHeader: string;
-  conflictCount: number;
   hqVersionLabel: string;
   /** False when no local hq-core install was detected (version unreadable). */
   coreDetected: boolean;
@@ -163,56 +136,6 @@ export function buildUploadsPausedRows(
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
-export function conflictFileName(path: string): string {
-  const trimmed = path.trim();
-  if (!trimmed) return path;
-  const parts = trimmed.split(/[/\\]/).filter(Boolean);
-  return parts[parts.length - 1] ?? trimmed;
-}
-
-/** Parent path under HQ (filename stripped) — company / personal path. */
-export function conflictCompanyPath(path: string): string {
-  const trimmed = path.trim();
-  if (!trimmed.includes("/") && !trimmed.includes("\\")) return "HQ root";
-  const normalized = trimmed.replace(/\\/g, "/");
-  const idx = normalized.lastIndexOf("/");
-  if (idx <= 0) return "HQ root";
-  return normalized.slice(0, idx);
-}
-
-export function conflictHeaderLabel(
-  count: number,
-  agoLabel?: string | null,
-): string {
-  const n = Math.max(0, Math.floor(count));
-  if (n <= 0) return "";
-  const base = n === 1 ? "1 conflict needs you" : `${n} conflicts need you`;
-  const ago = (agoLabel ?? "").trim();
-  return ago ? `${base} · ${ago}` : base;
-}
-
-/** Relative ago label for conflict header (e.g. "2m ago"). */
-export function conflictAgoLabel(
-  updatedAtMs?: number | null,
-  now: number = Date.now(),
-): string {
-  if (
-    updatedAtMs == null ||
-    !Number.isFinite(updatedAtMs) ||
-    updatedAtMs <= 0
-  ) {
-    return "just now";
-  }
-  const delta = Math.max(0, now - updatedAtMs);
-  const mins = Math.floor(delta / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 48) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
 export function driftPillLabel(
   count: number,
   coreDetected: boolean = true,
@@ -236,11 +159,11 @@ export function driftPillTone(
 }
 
 /**
- * Titlebar Core pill dot tone (G7): amber whenever a conflict / attention item
- * is pending; green only when healthy.
+ * Titlebar Core pill dot tone (G7): amber whenever an attention item is
+ * pending; green only when healthy. A parked sync conflict is not an
+ * attention item (owner decision 2026-10-13).
  */
 export function corePillDotTone(input: {
-  conflictCount?: number;
   syncState?: string | null;
   driftCount?: number;
   cloudPaused?: boolean;
@@ -250,9 +173,8 @@ export function corePillDotTone(input: {
   /** Companies whose uploads are paused by a plan limit (US-019). */
   uploadsPausedCount?: number;
 }): "ok" | "warn" | "active" {
-  if ((input.conflictCount ?? 0) > 0) return "warn";
   const s = (input.syncState ?? "").toLowerCase();
-  if (s === "conflict" || s === "error" || s === "auth-error") return "warn";
+  if (s === "error" || s === "auth-error") return "warn";
   if ((input.driftCount ?? 0) > 0) return "warn";
   if (input.cloudPaused) return "warn";
   if ((input.manifestError ?? "").trim()) return "warn";
@@ -364,29 +286,10 @@ export function isSyncNowAllowed(cloudPaused: boolean): boolean {
 
 /**
  * Build the Core popover view-model from plain inputs.
- *
- * Conflicts with status `resolved` are filtered out so the card clears as
- * rows resolve. Pending/resolving/error rows stay visible.
  */
 export function buildCorePopoverViewModel(
   input: BuildCorePopoverInput = {},
 ): CorePopoverViewModel {
-  const rawConflicts = input.conflicts ?? [];
-  const active = rawConflicts.filter((c) => c.status !== "resolved");
-  const conflictRows: CorePopoverConflictRow[] = active.map((c) => ({
-    path: c.path,
-    fileName: conflictFileName(c.path),
-    companyPath: conflictCompanyPath(c.path),
-    status: c.status,
-    error: c.error,
-    actionsDisabled: c.status === "resolving",
-  }));
-  const conflictCount = conflictRows.length;
-  const ago =
-    input.conflictUpdatedAtMs != null && conflictCount > 0
-      ? conflictAgoLabel(input.conflictUpdatedAtMs, input.now ?? Date.now())
-      : null;
-
   const core = input.core ?? null;
   const driftCount = Math.max(0, Math.floor(core?.driftCount ?? 0));
   const coreDetected = Boolean(core?.hqVersion && core.hqVersion.trim());
@@ -398,9 +301,6 @@ export function buildCorePopoverViewModel(
   const uploadsPaused = buildUploadsPausedRows(input.uploadsPaused);
 
   return {
-    conflictRows,
-    conflictHeader: conflictHeaderLabel(conflictCount, ago),
-    conflictCount,
     hqVersionLabel: hqVersionLabel(core?.hqVersion, coreChecking),
     coreDetected,
     driftPill: driftPillLabel(driftCount, coreDetected, coreChecking),
@@ -421,32 +321,17 @@ export function buildCorePopoverViewModel(
       syncState: input.syncState,
       lastSyncLabel: input.lastSyncLabel,
       syncCaption: input.syncCaption,
-      // The journal count (from `notices`) is authoritative when the caller
-      // supplies one: a conflict recorded on disk is real even when this
-      // session's event stream has not replayed it.
-      conflictCount: Math.max(
-        conflictCount,
-        input.notices?.conflictCount ?? 0,
-      ),
       uploadsPausedCount: uploadsPaused.length,
     }),
     uploadsPaused,
     notices: buildCoreNoticeRows({
       syncState: input.syncState,
-      conflictCount,
       ...(input.notices ?? {}),
     }),
   };
 }
 
 // ── Visual-QA fixtures (D-08) ────────────────────────────────────────────────
-
-export const CORE_POPOVER_FIXTURE_CONFLICTS: CorePopoverConflict[] = [
-  {
-    path: "companies/indigo/knowledge/pricing-notes.md",
-    status: "pending",
-  },
-];
 
 export const CORE_POPOVER_FIXTURE_PACKS: CorePopoverPack[] = [
   { name: "engineering", version: "1.4.0" },
@@ -463,13 +348,11 @@ export const CORE_POPOVER_FIXTURE_CORE: CorePopoverCoreState = {
   channel: "release",
 };
 
-/** Fixture input: conflicts + update available + 4 packs (one NEW) + paused. */
+/** Fixture input: update available + 4 packs (one NEW) + paused. */
 export function corePopoverFixtureInput(
   overrides: Partial<BuildCorePopoverInput> = {},
 ): BuildCorePopoverInput {
   return {
-    conflicts: CORE_POPOVER_FIXTURE_CONFLICTS,
-    conflictUpdatedAtMs: Date.now() - 3 * 60_000,
     updateAvailable: true,
     packs: CORE_POPOVER_FIXTURE_PACKS,
     cloudPaused: true,
@@ -493,14 +376,13 @@ export function corePopoverFixtureInput(
 export type CoreSyncPhase =
   | "idle"
   | "syncing"
-  | "conflict"
   | "error"
   | "auth-error"
   | "setup-needed"
   | "uploads-paused";
 
 /** Header tone. `active` is the in-flight blue; `warn` is the amber already
- *  used by the drift pill and conflict card. No new colours. */
+ *  used by the drift pill. No new colours. */
 export type CoreSyncTone = "ok" | "warn" | "active";
 
 /**
@@ -514,8 +396,6 @@ export function syncStateWord(phase: string | null | undefined): string {
       return "Syncing";
     case "auth-error":
       return "Sign in required";
-    case "conflict":
-      return "Sync paused";
     case "error":
       return "Needs attention";
     case "uploads-paused":
@@ -530,7 +410,6 @@ export function syncStateTone(phase: string | null | undefined): CoreSyncTone {
     case "syncing":
       return "active";
     case "auth-error":
-    case "conflict":
     case "error":
     case "uploads-paused":
       return "warn";
@@ -551,7 +430,7 @@ export function lastSyncLine(label: string | null | undefined): string {
 }
 
 export interface CorePopoverSyncHeader {
-  /** "All synced" / "Syncing" / "Sync paused" / … */
+  /** "All synced" / "Syncing" / "Uploads paused" / … */
   stateWord: string;
   tone: CoreSyncTone;
   /** Always present: "Last sync · …". */
@@ -568,14 +447,10 @@ export interface BuildCoreSyncHeaderInput {
   lastSyncLabel?: string | null;
   /** Live caption while syncing (`syncStatusLabel(...).detail` in the shell). */
   syncCaption?: string | null;
-  /** Unresolved conflicts. > 0 forces "Sync paused" on an otherwise idle read:
-   *  a journal that reports conflicts is not "All synced", whatever the
-   *  event-stream phase says. A run in flight still wins — it is more recent. */
-  conflictCount?: number;
   /** Companies whose uploads are paused by a plan limit. > 0 turns an
    *  otherwise idle read into "Uploads paused" (hard-stop US-019): a pass that
-   *  skipped refused files is not "All synced". A run in flight, an error, or
-   *  a conflict still wins — each is more urgent. */
+   *  skipped refused files is not "All synced". A run in flight or an error
+   *  still wins — each is more urgent. */
   uploadsPausedCount?: number;
 }
 
@@ -583,16 +458,13 @@ export function buildCoreSyncHeader(
   input: BuildCoreSyncHeaderInput = {},
 ): CorePopoverSyncHeader {
   const raw = (input.syncState ?? "idle").toLowerCase();
-  const conflicts = Math.max(0, Math.floor(input.conflictCount ?? 0));
   const paused = Math.max(0, Math.floor(input.uploadsPausedCount ?? 0));
   const phase =
     raw === "syncing" || raw === "auth-error" || raw === "error"
       ? raw
-      : conflicts > 0
-        ? "conflict"
-        : paused > 0 && raw !== "conflict"
-          ? "uploads-paused"
-          : raw;
+      : paused > 0
+        ? "uploads-paused"
+        : raw;
   const syncing = phase === "syncing";
   const caption = (input.syncCaption ?? "").trim();
   return {
@@ -607,7 +479,6 @@ export function buildCoreSyncHeader(
 // ── Sync trouble notices (PL-02) ─────────────────────────────────────────────
 
 export type CoreNoticeKind =
-  | "conflict"
   | "sync-failed"
   | "manifest-error"
   | "cloud-unreachable";
@@ -630,8 +501,6 @@ export interface CoreNoticeRow {
 
 export interface BuildCoreNoticeRowsInput {
   syncState?: string | null;
-  conflictCount?: number;
-  conflictCompany?: string | null;
   /** Message behind an `error` phase. Empty → no sync-failed row (matches
    *  the tray popover, which required `errorMessage` to render it). */
   errorMessage?: string | null;
@@ -644,16 +513,9 @@ export interface BuildCoreNoticeRowsInput {
   cloudError?: string | null;
 }
 
-export function conflictNoticeBody(count: number): string {
-  const n = Math.max(0, Math.floor(count));
-  if (n <= 0) {
-    return "A file changed in two places. Resolve in Claude Code, then Sync again.";
-  }
-  return `${n} file${n === 1 ? "" : "s"} changed in two places. Resolve in Claude Code, then Sync again.`;
-}
-
 /**
- * The four trouble rows, in the same order the tray popover rendered them.
+ * The three trouble rows, in the same order the tray popover rendered them.
+ * A parked sync conflict has no row (owner decision 2026-10-13).
  *
  * Each row owns its copy AND its prompt payload, so a row can never show one
  * problem and hand Claude Code another.
@@ -663,25 +525,7 @@ export function buildCoreNoticeRows(
 ): CoreNoticeRow[] {
   const rows: CoreNoticeRow[] = [];
   const phase = (input.syncState ?? "").toLowerCase();
-  const conflictCount = Math.max(0, Math.floor(input.conflictCount ?? 0));
-  const conflictCompany = input.conflictCompany ?? "";
   const errorMessage = (input.errorMessage ?? "").trim();
-
-  if (phase === "conflict" || conflictCount > 0) {
-    rows.push({
-      kind: "conflict",
-      tone: "alert",
-      title: "Sync paused",
-      body: conflictNoticeBody(conflictCount),
-      detail: null,
-      copyLabel: "Copy prompt",
-      openLabel: "Resolve",
-      issue: {
-        kind: "sync-conflict",
-        payload: { count: conflictCount, company: conflictCompany },
-      },
-    });
-  }
 
   if (phase === "error" && errorMessage) {
     rows.push({
