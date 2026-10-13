@@ -155,12 +155,14 @@ describe("DailyBrief", () => {
     expect(q('[data-testid="brief-sunrise-eta"]')).toBeNull();
   });
 
-  it("shows the time to clear beside the meter once a call carries an effort size, and in the Needs you footer", () => {
+  it("shows the time to clear in the priorities footer, beside its progress bar, once a call carries an effort size", () => {
     const input = day();
     input.decisions[0]!.effort = "medium";
     render({ input });
-    expect(q('[data-testid="brief-sunrise-eta"]')?.textContent).toMatch(/^~\d+ min$/);
+    // Progress lives in the priorities card now; Sunrise has no meter.
+    expect(q('[data-testid="brief-sunrise-eta"]')).toBeNull();
     expect(q('[data-testid="brief-need-time"]')?.textContent).toMatch(/^~\d+ min$/);
+    expect(q('[data-testid="brief-need-progress"]')?.getAttribute("aria-valuenow")).toBe("0");
   });
 
   it("the priorities card takes the hero's L slot: on the Oct 11 Sunday it opens with priority 1 and its because", () => {

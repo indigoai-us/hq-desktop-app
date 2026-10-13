@@ -27,7 +27,7 @@
     flex: none;
     width: var(--s);
     height: var(--s);
-    border-radius: 6px;
+    border-radius: calc(var(--s) * 0.3);
     overflow: hidden;
   }
   .mono,
@@ -36,13 +36,16 @@
     place-items: center;
     width: var(--s);
     height: var(--s);
-    border-radius: 6px;
+    box-sizing: border-box;
+    border-radius: calc(var(--s) * 0.3);
     font-family: var(--b-ui, system-ui);
-    font-size: calc(var(--s) * 0.45);
+    font-size: calc(var(--s) * 0.42);
     font-weight: 500;
-    letter-spacing: 0;
-    color: #fff;
-    background: linear-gradient(145deg, hsl(var(--h) 60% 56%), hsl(var(--h) 55% 36%));
-    box-shadow: none;
+    letter-spacing: 0.02em;
+    /* A quiet glass tile in the surrounding ink (white on a coloured card, dark on a hover card), not a loud swatch. */
+    color: inherit;
+    opacity: 0.9;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 22%, transparent);
   }
 </style>

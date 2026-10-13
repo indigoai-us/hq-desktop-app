@@ -156,13 +156,16 @@ export class BriefState {
     if (!error || error.startsWith("Prompt copied")) this.clear(id);
   }
 
-  showPeek(anchor: HTMLElement, content: PeekContent, place: "side" | "below" = "side"): void {
+  showPeek(anchor: HTMLElement, content: PeekContent, place: PeekPlace = "side"): void {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.showTimer) clearTimeout(this.showTimer);
     const open = () => {
       const view = { w: window.innerWidth, h: window.innerHeight };
       // Beside what the hovered thing shows (its text), level with it; or under it for a row of neighbours.
-      const at = place === "below" ? placePeekBelow(contentBox(anchor), view) : placePeek(contentBox(anchor), view);
+      const at =
+        place === "below"
+          ? placePeekBelow(contentBox(anchor), view)
+          : placePeek(place === "row" ? anchor.getBoundingClientRect() : contentBox(anchor), view);
       this.peek = { content, ...at };
     };
     // A peek already open follows the pointer straight to the next thing; a fresh one waits a beat.
@@ -190,7 +193,10 @@ export function useBrief(): BriefState {
 }
 
 /** `use:peek` for anything with more behind it. */
-export function peek(node: HTMLElement, args: { state: BriefState; content: () => PeekContent; place?: "side" | "below" }) {
+/** side: beside what the thing shows (its text). row: beside the whole row, for rows with a hover plate. below: under it. */
+export type PeekPlace = "side" | "row" | "below";
+
+export function peek(node: HTMLElement, args: { state: BriefState; content: () => PeekContent; place?: PeekPlace }) {
   let current = args;
   const enter = () => current.state.showPeek(node, current.content(), current.place);
   const leave = () => current.state.hidePeekSoon();

@@ -181,9 +181,11 @@ describe("Needs you rows", () => {
     expect(q("brief-needs")!.textContent).toContain("3 of 3 cleared");
   });
 
-  it("without effort tags the footer keeps its hover hint", () => {
+  it("without effort tags the footer shows no time and no hover hint, just the count and its bar", () => {
     render(day([decision(1), decision(2), decision(3)]));
-    expect(q("brief-need-time")!.textContent).toBe("Hover a row to start it");
+    expect(q("brief-need-time")).toBeNull();
+    expect(q("brief-needs")!.textContent).not.toContain("Hover a row");
+    expect(q("brief-need-progress")!.getAttribute("aria-valuemax")).toBe("3");
   });
 
   it("a decide row with choices gets the split pill; one without keeps the start button", () => {

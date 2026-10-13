@@ -5,13 +5,13 @@
    * shows a ghost sun where clearing every decision takes you. Same matrix and
    * palette as Stefan's NewBotDawn (6 px cells on an 8 px pitch). Under the
    * greeting, "First: ..." names priority 1 (XL and L only); the last 24 hours
-   * of your sessions are dots with a hover card; the meter shows cleared of
-   * total and, when the writer sized the decisions, "~N min" to clear them.
+   * of your sessions are lit cells in hour columns, each with a hover card.
+   * Progress (cleared of total, "~N min") lives in the priorities card's footer.
    */
   import { onMount } from "svelte";
   import { DAWN_CELL, DAWN_PITCH, dawnNoise } from "../chat/create-bot/NewBotDawn.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
-  import { etaLabel, firstLine, type HeroLead } from "./brief-hero.js";
+  import { firstLine, type HeroLead } from "./brief-hero.js";
   import { distillTimeline, sessionPeek, sessionTitle, type Timeline, type TimelineSession } from "./brief-timeline.js";
 
   interface Props {
@@ -30,8 +30,6 @@
     now?: string;
     /** Priority 1 in the writer's words; shown as "First: ..." at XL and L, hidden at M. */
     lead?: HeroLead | null;
-    /** Minutes to clear every open decision (writer's sum of effort sizes); shown beside the meter as "~N min". */
-    timeToClearMin?: number | null;
     /** Say "Morning, name." above the line; off when the page greets in its own header. */
     greet?: boolean;
   }
@@ -46,7 +44,6 @@
     distilled = null,
     now = new Date().toISOString(),
     lead = null,
-    timeToClearMin = null,
     greet = true,
   }: Props = $props();
   const leadLine = $derived(firstLine(lead));
@@ -55,19 +52,24 @@
   const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   // One dot per session; hover opens the session card with Resume and Copy prompt.
   const dotPeek = (s: TimelineSession, i: number): PeekContent => sessionPeek(s, i, tl.items.length);
-  // Hour ticks every 6h across the window, labelled in local time.
+  // The strip's columns are whole clock hours; the last one is the hour we are in.
+  const hourStart = $derived.by(() => {
+    const d = new Date(end);
+    d.setMinutes(0, 0, 0);
+    return d.getTime() - 23 * 3600_000;
+  });
+  // A label under every sixth column, centred on its cell; the last column reads NOW.
   const ticks = $derived(
-    [24, 18, 12, 6, 0].map((back) => {
-      const t = end - back * 3600_000;
-      const d = new Date(t);
-      return { pct: ((24 - back) / 24) * 100, label: back === 0 ? "now" : `${d.getHours() % 12 || 12} ${d.getHours() >= 12 ? "PM" : "AM"}` };
+    [0, 6, 12, 18, 23].map((col) => {
+      const d = new Date(hourStart + col * 3600_000);
+      return { col, label: col === 23 ? "now" : `${d.getHours() % 12 || 12} ${d.getHours() >= 12 ? "PM" : "AM"}` };
     }),
   );
   // The strip: one column per hour of the window, each session a lit cell stacked in its hour.
   const hours = $derived.by(() => {
     const cols: { s: TimelineSession; i: number }[][] = Array.from({ length: 24 }, () => []);
     tl.items.forEach((s, i) => {
-      const h = Math.floor((Date.parse(s.at) - (end - 24 * 3600_000)) / 3600_000);
+      const h = Math.floor((Date.parse(s.at) - hourStart) / 3600_000);
       cols[Math.max(0, Math.min(23, h))]!.push({ s, i });
     });
     return cols;
@@ -78,7 +80,7 @@
       if (c.length > 1 && (best < 0 || c.length > hours[best]!.length)) best = h;
     });
     if (best < 0) return "";
-    const d = new Date(end - (24 - best) * 3600_000);
+    const d = new Date(hourStart + best * 3600_000);
     return `busiest ${d.toLocaleTimeString([], { hour: "numeric" }).replace(/\s/g, " ")}`;
   });
   const brief = useBrief();
@@ -96,8 +98,6 @@
         : { pre: "Sun's up. ", em: "Go build.", post: "" },
   );
   const progress = $derived(total ? 0.1 + (0.9 * cleared) / total : 1);
-  // "~N min" to clear what is left, from the writer's effort sizes; nothing when unknown or done.
-  const eta = $derived(etaLabel(timeToClearMin, left, total));
 
   let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
@@ -294,21 +294,16 @@
                 aria-label="{hhmm(it.at)} {sessionTitle(it.title)}"
                 data-testid="brief-session-dot"
                 use:peek={{ state: brief, content: () => dotPeek(it, i) }}
-              ><span class="tip" class:end={h > 17} class:start={h < 6}>{hhmm(it.at)} {sessionTitle(it.title)}</span></button>
+              ><span class="tip">{hhmm(it.at)} {sessionTitle(it.title)}</span></button>
             {/each}
           </div>
         {/each}
       </div>
       <div class="ticks" aria-hidden="true">
         {#each ticks as t (t.label)}
-          <span class="tick" class:start={t.pct === 0} class:end={t.label === "now"} style="left:{t.pct}%">{t.label}</span>
+          <span class="tick" class:start={t.col === 0} class:end={t.col === 23} style="grid-column:{t.col + 1}">{t.label}</span>
         {/each}
       </div>
-    </div>
-    <div class="meter">
-      <div class="track"><i style="width:{total ? (cleared / total) * 100 : 100}%"></i></div>
-      <b>{total ? `${cleared} / ${total}` : "CLEAR"}</b>
-      {#if eta}<span class="eta" data-testid="brief-sunrise-eta">{eta}</span>{/if}
     </div>
   </div>
 </div>
@@ -385,7 +380,12 @@
     white-space: nowrap;
   }
   .tl-head .eyebrow {
-    color: rgba(255, 255, 255, 0.85);
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.7);
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -402,10 +402,18 @@
     grid-template-columns: repeat(24, minmax(0, 1fr));
     align-items: end;
     gap: 3px;
-    height: 44px;
+    min-height: 8px;
     margin-top: 12px;
   }
+  /* Edge columns hold their cells flush with the strip's ends, like their labels. */
+  .hour:first-child {
+    align-items: flex-start;
+  }
+  .hour:last-child {
+    align-items: flex-end;
+  }
   .hour {
+    justify-self: stretch;
     display: flex;
     flex-direction: column-reverse;
     align-items: center;
@@ -449,42 +457,20 @@
     scale: 1.35;
     outline: none;
   }
-  /* The hovered session's time and title, just above the strip (counter-scaled against the cell's hover zoom). */
+  /* The session's time and title, for screen readers; the hover card shows it on screen. */
   .tip {
     position: absolute;
-    bottom: calc(100% + 6px);
-    left: 50%;
-    translate: -50% 0;
-    scale: 0.74;
-    transform-origin: bottom center;
-    font-family: var(--b-code);
-    font-size: 11px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
     white-space: nowrap;
-    color: #fff;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s;
-  }
-  .tip.end {
-    left: auto;
-    right: 0;
-    translate: 0 0;
-    transform-origin: bottom right;
-  }
-  .tip.start {
-    left: 0;
-    translate: 0 0;
-    transform-origin: bottom left;
-  }
-  .dot:hover .tip,
-  .dot:focus-visible .tip {
-    opacity: 1;
   }
   /* Axis labels at a fixed 10px, whatever the card's width. */
   .ticks {
-    position: relative;
+    display: grid;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    column-gap: 3px;
     height: 16px;
     margin-top: 8px;
     font-family: var(--b-code);
@@ -494,16 +480,16 @@
     color: rgba(255, 255, 255, 0.62);
   }
   .tick {
-    position: absolute;
-    top: 0;
-    translate: -50% 0;
+    grid-row: 1;
+    justify-self: center;
     white-space: nowrap;
   }
+  /* The end labels start and end flush with their cells. */
   .tick.start {
-    translate: 0 0;
+    justify-self: start;
   }
   .tick.end {
-    translate: -100% 0;
+    justify-self: end;
   }
   @keyframes pop {
     from {
@@ -520,47 +506,5 @@
     .dot {
       opacity: 1;
     }
-  }
-  .meter {
-    margin-top: auto;
-    display: flex;
-    align-items: center;
-    gap: 14px;
-  }
-  .tl + .meter {
-    margin-top: 0;
-  }
-  .track {
-    flex: 1;
-    height: 8px;
-    border-radius: 99px;
-    background: rgba(255, 255, 255, 0.22);
-  }
-  .track i {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: #fff;
-    box-shadow: 0 0 12px rgba(255, 255, 255, 0.6);
-    transition: width 1.1s cubic-bezier(0.2, 0.8, 0.2, 1);
-  }
-  .meter b {
-    font-family: var(--b-mono);
-    font-size: 13px;
-    font-weight: 500;
-    color: rgb(var(--b-ink) / 0.8);
-  }
-  /* The estimate sits after the count in the same mono, dimmer, with its own chip. */
-  .eta {
-    flex: none;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    padding: 3px 8px;
-    border-radius: 999px;
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    background: rgba(255, 255, 255, 0.12);
-    white-space: nowrap;
   }
 </style>

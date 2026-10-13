@@ -282,12 +282,33 @@
   {#if tall}
     <div class="foot">
       <span>{done} of {decisions.length} cleared</span>
-      <span data-testid="brief-need-time">{done === decisions.length ? "All clear" : minutes ? `~${minutes} min` : "Hover a row to start it"}</span>
+      <!-- Progress, quietly: a hairline that fills as calls are cleared. -->
+      <span class="bar" role="progressbar" aria-label="Decisions cleared" aria-valuemin="0" aria-valuemax={decisions.length} aria-valuenow={done} data-testid="brief-need-progress"
+        ><i style="width:{decisions.length ? (done / decisions.length) * 100 : 100}%"></i></span
+      >
+      {#if done === decisions.length || minutes}<span data-testid="brief-need-time">{done === decisions.length ? "All clear" : `~${minutes} min`}</span>{/if}
     </div>
   {/if}
 </div>
 
 <style>
+  .foot {
+    align-items: center;
+  }
+  .bar {
+    flex: 1;
+    height: 3px;
+    border-radius: 99px;
+    background: rgb(var(--b-ink) / 0.16);
+    overflow: hidden;
+  }
+  .bar i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: rgb(var(--b-ink) / 0.7);
+    transition: width 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
   .lead {
     font-size: var(--b-fs-title) !important;
   }
@@ -517,6 +538,11 @@
   /* One height for every control on the row (28px), light glass chips, no ring or drop. */
   .acts :global(.launch) {
     gap: 6px;
+    /* The row title's shadow must not reach the buttons' labels. */
+    text-shadow: none;
+  }
+  .acts :global(.launch .go:hover) {
+    background: rgba(255, 255, 255, 0.86);
   }
   .acts :global(.launch .go) {
     height: 28px;
@@ -557,10 +583,12 @@
     display: none;
   }
   .acts:hover :global(.eng),
-  .acts:focus-within :global(.eng),
+  .acts:focus-within :global(.eng) {
+    display: inline-flex;
+  }
   .acts:hover :global(.copy),
   .acts:focus-within :global(.copy) {
-    display: inline-flex;
+    display: inline-grid;
   }
   /* Row text stays readable on the dusk gradient's bright corner. */
   .it .t {

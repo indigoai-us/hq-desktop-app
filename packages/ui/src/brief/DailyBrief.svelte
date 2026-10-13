@@ -385,7 +385,6 @@
               distilled={tl}
               now={input.now}
               lead={leadForHero}
-              timeToClearMin={timeToClear}
             />
           {:else if w.kind === "catchup"}
             <BriefCatchUp {input} daysAway={plan.daysAway ?? 0} lead={leadForHero} decisions={needsRows} prompts={plan.prompts} />

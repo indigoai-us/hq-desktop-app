@@ -114,7 +114,7 @@
     font-weight: 500;
     padding: 6px 14px;
     border-radius: 8px;
-    color: #1b1b1e;
+    color: var(--b-bg);
     background: rgb(var(--b-ink) / 0.92);
   }
   .head {
@@ -124,8 +124,15 @@
     gap: 10px;
     margin-bottom: 8px;
   }
+  /* The card's kind, in the shared label style: mono, all caps. */
   .head .eyebrow {
     white-space: nowrap;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--b-t3);
   }
   .ochip {
     display: inline-flex;
@@ -137,8 +144,10 @@
     white-space: nowrap;
   }
   .compact :global(.ttl) {
-    font-size: 20px;
+    font-size: 15px;
+    line-height: 1.3;
   }
+  /* Two equal buttons, 30px tall: the primary filled in page ink, Copy as a hairline outline. */
   .pills {
     display: flex;
     gap: 8px;
@@ -146,18 +155,32 @@
   }
   .pill {
     all: unset;
+    box-sizing: border-box;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    height: 30px;
+    padding: 0 12px;
     font-size: 13px;
     font-weight: 500;
-    padding: 7px 14px;
+    white-space: nowrap;
     border-radius: 8px;
     color: var(--b-t1, #fff);
-    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.18);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.14);
+    transition: background 0.15s;
+  }
+  .pill:hover {
+    background: rgb(var(--b-ink) / 0.05);
   }
   .pill.go {
-    color: #1b1b1e;
+    color: var(--b-bg);
     background: rgb(var(--b-ink) / 0.92);
     box-shadow: none;
+  }
+  .pill.go:hover {
+    background: rgb(var(--b-ink) / 0.8);
   }
   .pill:focus-visible {
     outline: 2px solid var(--b-sun, #ffb580);
@@ -167,8 +190,10 @@
     margin: 4px 0 6px;
   }
   .pills.small .pill {
+    flex: none;
+    height: 24px;
     font-size: 11px;
-    padding: 4px 11px;
+    padding: 0 10px;
   }
   /* The shared highlight label (terracotta, white, fully rounded). */
   .tag {

@@ -610,7 +610,8 @@
   width: 320px;
   max-height: min(460px, calc(100vh - 32px));
   overflow: auto;
-  padding: 16px;
+  /* Text's line box adds air under the last line, so the bottom padding is a touch less to look even. */
+  padding: 16px 16px 12px;
   border-radius: var(--b-r);
   background: linear-gradient(180deg, rgb(var(--b-ink) / 0.015), transparent 40px), var(--b-card-hi);
   color: var(--b-t1);

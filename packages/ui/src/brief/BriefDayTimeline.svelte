@@ -120,7 +120,7 @@
           aria-label="{s.e.title}, {rangeText(s.e)}, {STATE_LABEL[s.state]}"
           data-testid="brief-day-step"
           data-state={s.state}
-          use:peek={{ state: brief, content: () => content(s.e) }}
+          use:peek={{ state: brief, content: () => content(s.e), place: "row" }}
         >
           <span class="pt" aria-hidden="true"></span>
           <span class="tt">{s.e.title}</span>
