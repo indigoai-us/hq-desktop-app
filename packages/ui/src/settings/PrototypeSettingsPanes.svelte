@@ -91,6 +91,13 @@
   import { formatHqFolderMeta } from "./settings-sections.js";
   import { autoUpdateRow } from "../account/account-pages.js";
   import {
+    CLOUD_SWITCH_COPY,
+    announceCloudSwitch,
+    cloudEnabledFromSettings,
+    readCachedCloudEnabled,
+    writeCachedCloudEnabled,
+  } from "./cloud-switch.js";
+  import {
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
     readLiveSyncStatus,
@@ -277,6 +284,10 @@
   let native = $state<NativeSettings>({ ...DEFAULT_NATIVE_SETTINGS });
   let nativeLoaded = $state(false);
   let nativeError = $state<string | null>(null);
+  // Cloud switch (US-016). Painted from the last-known value first, then
+  // reconciled with the host's saved setting.
+  let cloudEnabled = $state<boolean>(readCachedCloudEnabled() ?? true);
+  let cloudNotice = $state<string | null>(null);
   let pendingControls = $state<string[]>([]);
   let nativeReadGeneration = 0;
   let nativeReconcileAfterWrites = false;
@@ -673,6 +684,11 @@
     }
     hydrateNativeSettings(result.value);
     hydrateHostBackedToggles(result.value);
+    const hostCloudEnabled = cloudEnabledFromSettings(result.value);
+    if (hostCloudEnabled !== null && !pending("cloud")) {
+      cloudEnabled = hostCloudEnabled;
+      writeCachedCloudEnabled(hostCloudEnabled);
+    }
     if (adapter.isAvailable("canSync")) {
       customHqRoot = readCustomHqRoot(result.value);
       hqFolder = customHqRoot ?? readFolderFromSettings(result.value) ?? hqFolder;
@@ -721,6 +737,34 @@
         }),
       );
     }
+  }
+
+  /**
+   * The Cloud switch. The host persists it first and then stops (or restarts)
+   * background sync, so a failure here means nothing changed on disk.
+   */
+  async function toggleCloud(): Promise<void> {
+    const setCloudEnabled = adapter?.sync.setCloudEnabled;
+    if (!adapter || !setCloudEnabled || pending("cloud")) return;
+    const previous = cloudEnabled;
+    const next = !previous;
+    cloudEnabled = next;
+    cloudNotice = null;
+    nativeReadGeneration += 1;
+    nativeReconcileAfterWrites = true;
+    beginPending("cloud");
+    nativeError = null;
+    const result = await setCloudEnabled.call(adapter.sync, next);
+    endPending("cloud");
+    if (!result.ok) {
+      cloudEnabled = previous;
+      nativeError = actionableError("Cloud", result.message);
+      return;
+    }
+    cloudEnabled = result.value.cloudEnabled;
+    cloudNotice = result.value.notice ?? null;
+    announceCloudSwitch(cloudEnabled);
+    if (section === "sync") void refreshLiveSync();
   }
 
   async function toggleRealtimeSync(): Promise<void> {
@@ -1477,6 +1521,37 @@
       </div>
     {/if}
   {:else if section === "sync" && canSync}
+    {#if adapter?.sync.setCloudEnabled}
+      <div class="set-row" data-testid="settings-cloud-row">
+        <div>
+          <div class="sn">{CLOUD_SWITCH_COPY.label}</div>
+          <div class="sd">{CLOUD_SWITCH_COPY.onDescription}</div>
+        </div>
+        <button
+          type="button"
+          class="toggle"
+          class:on={cloudEnabled}
+          role="switch"
+          aria-checked={cloudEnabled}
+          aria-label="Cloud"
+          data-testid="settings-cloud-toggle"
+          disabled={pending("cloud")}
+          aria-busy={pending("cloud")}
+          onclick={() => void toggleCloud()}
+        ></button>
+      </div>
+      {#if !cloudEnabled}
+        <div class="cloud-off" role="status" data-testid="settings-cloud-off">
+          <div class="cloud-off-title">{CLOUD_SWITCH_COPY.offTitle}</div>
+          <div class="cloud-off-body">{CLOUD_SWITCH_COPY.offBody}</div>
+          <div class="cloud-off-body">{CLOUD_SWITCH_COPY.cliCaveat}</div>
+          <div class="cloud-off-body">{CLOUD_SWITCH_COPY.turnOnHint}</div>
+        </div>
+      {/if}
+      {#if cloudNotice}
+        <p class="cloud-notice" role="status" data-testid="settings-cloud-notice">{cloudNotice}</p>
+      {/if}
+    {/if}
     <div class="set-row">
       <div>
         <div class="sn">HQ folder</div>
@@ -1530,6 +1605,9 @@
           {/if}
         </div>
       </div>
+    {/if}
+    {#if adapter?.sync.setCloudEnabled && !cloudEnabled}
+      <p class="cloud-per-sync-note" data-testid="settings-cloud-per-sync-note">{CLOUD_SWITCH_COPY.perSyncNote}</p>
     {/if}
     <div class="set-row">
       <div>
@@ -2045,6 +2123,38 @@
   .sd.mono-path {
     font-family: var(--font-mono, ui-monospace, Menlo, monospace);
     font-size: 13px;
+  }
+
+  /* Cloud is off (US-016): a background highlight, never an edge stripe. */
+  .cloud-off {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0 16px 12px;
+    padding: 12px 14px;
+    border: none;
+    border-radius: 10px;
+    background: var(--raised);
+  }
+
+  .cloud-off-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--t1);
+  }
+
+  .cloud-off-body,
+  .cloud-notice,
+  .cloud-per-sync-note {
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--t2);
+  }
+
+  .cloud-notice,
+  .cloud-per-sync-note {
+    margin: 0;
+    padding: 0 16px 12px;
   }
 
   .val {

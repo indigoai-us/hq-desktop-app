@@ -258,6 +258,10 @@ fn emit(app: &AppHandle, placeholder: &Path, phase: &'static str, error: Option<
 
 /// Download the original behind `placeholder` and return its restored path.
 pub async fn fetch(placeholder: &Path) -> Result<PathBuf, &'static str> {
+    // Cloud switch off (usage-only-pricing US-016): no vault downloads.
+    if hq_desktop_core::daemon::is_cloud_paused() {
+        return Err(CLOUD_OFF_CODE);
+    }
     // Read before fetching: the CLI deletes the placeholder once restored.
     let pointer = read_pointer_path(placeholder);
     let stdout = match run_hq(fetch_args(placeholder, true).map_err(|_| "failed")?).await {
@@ -311,6 +315,9 @@ pub async fn fetch_and_open(app: AppHandle, placeholder: PathBuf) -> Result<Path
     emit(&app, &placeholder, "opened", None);
     Ok(restored)
 }
+
+/// Error code for a fetch refused because the Cloud switch is off.
+pub const CLOUD_OFF_CODE: &str = "cloud-off";
 
 pub fn spawn_fetch_and_open(app: &AppHandle, placeholder: PathBuf) {
     let app = app.clone();

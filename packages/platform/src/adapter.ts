@@ -265,6 +265,21 @@ export interface DaemonStatus {
   source?: string;
 }
 
+/**
+ * Result of the Settings Cloud switch (usage-only-pricing US-016). The host
+ * persists the switch as `cloudPaused` in the desktop settings file, outside
+ * the app bundle, so it survives restarts and app updates.
+ */
+export interface CloudSwitchOutcome {
+  /** Persisted state after the change. */
+  cloudEnabled: boolean;
+  /**
+   * Plain-language note when the switch saved but stopping or starting
+   * background sync did not finish. Null when everything completed.
+   */
+  notice: string | null;
+}
+
 export interface DaemonSyncStatus {
   running: boolean;
   paused: boolean;
@@ -1979,6 +1994,13 @@ export interface SyncApi {
   daemonSyncStatus(): AdapterPromise<DaemonSyncStatus | null>;
   startSync(slug?: string): AdapterPromise<void>;
   cancelSync(): AdapterPromise<void>;
+  /** Cloud switch (US-016). `true` = Cloud on. Optional: older hosts lack it. */
+  getCloudEnabled?(): AdapterPromise<boolean>;
+  /**
+   * Turn Cloud on or off for this computer: persists the switch and stops (or
+   * restarts) background sync. Optional: older hosts lack it.
+   */
+  setCloudEnabled?(enabled: boolean): AdapterPromise<CloudSwitchOutcome>;
   getSyncStatus(): AdapterPromise<SyncStatus>;
   getActivityLog(): AdapterPromise<Json[]>;
   resolveConflict(path: string, strategy: string): AdapterPromise<void>;
