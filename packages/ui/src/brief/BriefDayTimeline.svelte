@@ -111,16 +111,21 @@
 </section>
 
 <style>
+  /* The list spans the height of the Next call panel beside it: rows share the space. */
   .day {
     min-width: 0;
     display: flex;
     flex-direction: column;
-    padding: 2px 0 0;
+    align-self: stretch;
+    padding: 0;
   }
 
 
   ol {
     position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
     list-style: none;
     margin: 0;
     padding: 0 0 0 18px;
@@ -144,7 +149,9 @@
     grid-template-columns: minmax(0, 1fr) auto 52px;
     align-items: center;
     gap: 10px;
-    height: 32px;
+    flex: 1 1 0;
+    min-height: 32px;
+    max-height: 48px;
     padding: 0 8px;
     margin: 0;
     border-radius: 6px;
