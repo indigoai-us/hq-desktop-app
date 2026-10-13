@@ -1065,8 +1065,14 @@
 
 /* The card label, top left: HQ's standard label (mono, all caps, tracked) with a
    Phosphor icon on its left. Hover it for why the card is on the page today. */
+/* The whole slot rises in (card and its top-left label together), staggered by the
+   per-slot animation-delay the page sets; the card inside does not animate on its own. */
 .daily-brief .slot {
   position: relative;
+  animation: b-in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.daily-brief .slot > .w {
+  animation: none;
 }
 .daily-brief .slot > .why {
   position: absolute;
