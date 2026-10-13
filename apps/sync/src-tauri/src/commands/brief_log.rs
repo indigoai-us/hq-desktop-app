@@ -48,11 +48,23 @@ pub fn validate_brief_log_line(line: &str) -> Result<String, String> {
 /// creating `personal/brief/` when it is missing.
 pub fn append_brief_log_line_to(hq_root: &Path, line: &str) -> Result<PathBuf, String> {
     let line = validate_brief_log_line(line)?;
+    // Only a real HQ folder gets a log; the resolver's last-resort default
+    // must not grow a personal/brief folder on a machine with no HQ yet.
+    if !hq_root.join("core").join("core.yaml").is_file() {
+        return Err(format!("{} is not an HQ folder", hq_root.display()));
+    }
     let path = hq_root.join(BRIEF_LOG_PATH);
     let dir = path
         .parent()
         .ok_or_else(|| "brief log path has no parent".to_string())?;
     std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    // The folder must really sit under the HQ folder: a symlinked personal/ or
+    // personal/brief/ would carry the append somewhere else.
+    let real_dir = std::fs::canonicalize(dir).map_err(|e| format!("could not resolve {}: {e}", dir.display()))?;
+    let real_root = std::fs::canonicalize(hq_root).map_err(|e| format!("could not resolve HQ folder: {e}"))?;
+    if real_dir != real_root.join("personal").join("brief") {
+        return Err("brief log folder is a symlink; refusing to write through it".to_string());
+    }
     if let Ok(meta) = std::fs::symlink_metadata(&path) {
         if meta.file_type().is_symlink() {
             return Err("brief log is a symlink; refusing to write through it".to_string());
@@ -61,9 +73,15 @@ pub fn append_brief_log_line_to(hq_root: &Path, line: &str) -> Result<PathBuf, S
             return Err("brief log path is not a regular file".to_string());
         }
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    // No window between the check above and the open: the open itself refuses a symlink.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
         .open(&path)
         .map_err(|e| format!("could not open brief log: {e}"))?;
     file.write_all(line.as_bytes())
@@ -93,8 +111,33 @@ mod tests {
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("hq-brief-log-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("core")).unwrap();
+        std::fs::write(dir.join("core").join("core.yaml"), "version: 1\n").unwrap();
         dir
+    }
+
+    #[test]
+    fn refuses_a_folder_that_is_not_an_hq_folder() {
+        let root = temp_root("not-hq");
+        std::fs::remove_file(root.join("core").join("core.yaml")).unwrap();
+        let err = append_brief_log_line_to(&root, "{\"event\":\"shown\"}").unwrap_err();
+        assert!(err.contains("not an HQ folder"), "{err}");
+        assert!(!root.join("personal").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_to_write_through_a_symlinked_folder() {
+        let root = temp_root("symlink-dir");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(root.join("personal")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("personal").join("brief")).unwrap();
+        let err = append_brief_log_line_to(&root, "{\"event\":\"shown\"}").unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
+        assert!(!elsewhere.join("brief-log.jsonl").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

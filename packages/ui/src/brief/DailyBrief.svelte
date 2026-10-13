@@ -88,13 +88,14 @@
   const plan = $derived(generateBrief(input));
   /** The card each item id sits on, for the brief log. */
   const itemKinds = $derived(briefItemKinds(input));
-  // One `shown` line per run, with the cards on the page.
-  let loggedRun: string | null | undefined;
+  // One `shown` line per run, with the cards on the page. A run shown again
+  // in the same page life (A, B, back to A) is not shown twice.
+  const loggedRuns = new Set<string | null>();
   $effect(() => {
     const runId = input.runId ?? null;
     const widgets = plan.widgets.map((w) => w.kind);
-    if (!log || loggedRun === runId) return;
-    loggedRun = runId;
+    if (!log || loggedRuns.has(runId)) return;
+    loggedRuns.add(runId);
     log.append({ event: "shown", run_id: runId, widgets });
   });
   const ctx = $derived(buildContext(input));

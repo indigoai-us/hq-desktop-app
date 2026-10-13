@@ -54,6 +54,69 @@ describe("adapterBriefLog", () => {
   });
 });
 
+describe("adapterBriefLog ordering", () => {
+  it("does not start the next append until the previous one settled", async () => {
+    let release: (() => void) | null = null;
+    const calls: string[] = [];
+    const files = {
+      appendBriefLogLine: vi.fn((line: string) => {
+        calls.push(JSON.parse(line).event);
+        return new Promise<{ ok: true; value: undefined }>((resolve) => {
+          if (calls.length === 1) release = () => resolve({ ok: true, value: undefined });
+          else resolve({ ok: true, value: undefined });
+        });
+      }),
+    };
+    const sink = adapterBriefLog(files)!;
+    sink.append({ event: "shown", run_id: "r1", widgets: [] });
+    sink.append({ event: "dismiss", run_id: "r1", item_id: "d1" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toEqual(["shown"]);
+    release!();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toEqual(["shown", "dismiss"]);
+  });
+});
+
+describe("DailyBrief shown line", () => {
+  it("logs one shown line per run with the cards on the page, never twice for the same run, and nothing without a sink", async () => {
+    const { mount, unmount, flushSync } = await import("svelte");
+    const { default: DailyBrief } = await import("./DailyBrief.svelte");
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const log = recorder();
+    const base = octoberEightBrief(new Date(2026, 9, 8, 7, 42));
+    let input = $state({ ...base, runId: "run-a" });
+    const app = mount(DailyBrief, {
+      target,
+      props: {
+        get input() {
+          return input;
+        },
+        log,
+      },
+    });
+    flushSync();
+    expect(log.events.map((e) => [e.event, e.run_id])).toEqual([["shown", "run-a"]]);
+    expect(log.events[0]!.widgets!.length).toBeGreaterThan(0);
+    input = { ...base, runId: "run-b" };
+    flushSync();
+    input = { ...base, runId: "run-a" };
+    flushSync();
+    expect(log.events.map((e) => e.run_id)).toEqual(["run-a", "run-b"]);
+    unmount(app);
+
+    const quiet = document.createElement("div");
+    document.body.appendChild(quiet);
+    const app2 = mount(DailyBrief, { target: quiet, props: { input: { ...base, runId: "run-c" } } });
+    flushSync();
+    unmount(app2);
+    target.remove();
+    quiet.remove();
+  });
+});
+
 describe("briefItemKinds", () => {
   it("names the card for decisions, risks, waiting, carry, handoffs and reminders", () => {
     const input = octoberEightBrief(new Date("2026-10-08T13:00:00Z"));
