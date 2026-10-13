@@ -159,7 +159,7 @@
         });
         complete();
       }}
-    ><RailIcon name="arrow-right" />Skip</button>
+    >Skip</button>
   </div>
 {:else if status === 'success'}
   <h2 class="h" id="onboarding-title-connector-import">Imported</h2>
@@ -172,7 +172,7 @@
       type="button"
       data-testid="connector-import-continue"
       onclick={() => complete()}
-    ><RailIcon name="arrow-right" />Continue</button>
+    >Continue</button>
   </div>
 {:else if status === 'failure'}
   <h2 class="h" id="onboarding-title-connector-import">Couldn’t import</h2>
@@ -200,7 +200,7 @@
         });
         complete();
       }}
-    ><RailIcon name="arrow-right" />Skip for now</button>
+    >Skip for now</button>
   </div>
 {/if}
 

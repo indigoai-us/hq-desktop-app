@@ -529,9 +529,9 @@ export type WorkforceCheckoutResult =
   | { ok: false; reason: string };
 
 export const CHECKOUT_DISABLED_REASON =
-  'Workforce sign-up is paused right now. You can start on Starter and upgrade later from #setup.';
+  'Workforce sign-up is paused right now. You can start on Starter and upgrade later in HQ Desktop.';
 export const CHECKOUT_FAILED_REASON =
-  'HQ could not open checkout. Try again, or start on Starter and upgrade later from #setup.';
+  'HQ could not open checkout. Try again, or start on Starter and upgrade later in HQ Desktop.';
 
 /** Mint the Workforce checkout for a company the person owns. */
 export async function startWorkforceCheckout(
