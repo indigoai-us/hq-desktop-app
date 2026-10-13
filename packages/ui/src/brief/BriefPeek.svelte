@@ -9,9 +9,13 @@
   import BriefLogo from "./BriefLogo.svelte";
   import BriefPeekDms from "./BriefPeekDms.svelte";
   import { ENGINES, copyBriefPrompt, useBrief } from "./brief-context.svelte.js";
+  import { peekTop } from "./brief-layout.js";
 
   const PEEK_MAX_LINES = 5;
   const brief = useBrief();
+  // Level with the hovered thing; moved up only as far as its measured height needs to stay on screen.
+  let peekH = $state(0);
+  const top = $derived(brief.peek ? peekTop(brief.peek.anchorTop, peekH, typeof window === "undefined" ? 900 : window.innerHeight) : 0);
   const engine = $derived(ENGINES.find((e) => e.id === brief.engine)!);
   let copied = $state(false);
 
@@ -30,9 +34,10 @@
     tabindex="-1"
     aria-label={p.content.title}
     data-testid="brief-peek"
+    bind:offsetHeight={peekH}
     style:left="{p.x}px"
-    style:top="{p.y}px"
-    style:max-height="calc(100vh - {p.y + 16}px)"
+    style:top="{top}px"
+    style:max-height="calc(100vh - 32px)"
     onmouseenter={() => brief.keepPeek()}
     onmouseleave={() => brief.hidePeekSoon()}
   >

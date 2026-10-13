@@ -4,6 +4,7 @@
  */
 
 import { getContext, setContext } from "svelte";
+import { placePeek } from "./brief-layout.js";
 import type { BriefLine } from "./brief-types.js";
 import { loadSenderDms, type BriefDmApi, type BriefDmLoad } from "./brief-dms.js";
 
@@ -75,7 +76,8 @@ export async function launchBriefPromptViaClipboard(engine: BriefEngine, prompt:
 }
 
 export class BriefState {
-  peek = $state<{ content: PeekContent; x: number; y: number; side: "r" | "l" } | null>(null);
+  /** `anchorTop` is the hovered thing's top; the peek measures itself and keeps on screen (peekTop). */
+  peek = $state<{ content: PeekContent; x: number; anchorTop: number; side: "r" | "l" } | null>(null);
   engine = $state<BriefEngine>("claude");
   cleared = $state<Record<string, boolean>>({});
   notes = $state<Record<string, string>>({});
@@ -159,11 +161,10 @@ export class BriefState {
     if (this.showTimer) clearTimeout(this.showTimer);
     this.showTimer = setTimeout(() => {
       const r = anchor.getBoundingClientRect();
-      const w = 340;
-      const right = r.right + 16 + w < window.innerWidth;
-      const x = right ? r.right + 14 : Math.max(8, r.left - 14 - w);
-      const y = Math.max(16, Math.min(window.innerHeight - 380, r.top + r.height / 2 - 150));
-      this.peek = { content, x, y, side: right ? "r" : "l" };
+      // The card or top-section panel the hovered thing sits in: its peeks share one column.
+      const zone = anchor.closest<HTMLElement>(".slot, .b-top > *")?.getBoundingClientRect() ?? null;
+      const at = placePeek(r, zone, { w: window.innerWidth, h: window.innerHeight });
+      this.peek = { content, ...at };
     }, 220);
   }
 

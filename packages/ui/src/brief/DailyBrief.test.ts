@@ -167,10 +167,11 @@ describe("DailyBrief", () => {
     render({ input: sunday });
     const plan = generateBrief(sunday);
     expect(plan.widgets[0]!.size).toBe("L");
-    // The page swaps the priorities card into the hero's area; the sunrise takes the smaller one.
+    // The page gives the priorities card the hero's size; the sunrise takes the smaller one and moves first.
     const style = q("main.b-grid")!.getAttribute("style")!;
     const firstRow = style.match(/grid-template-areas:\s*["']([^"']+)["']/)![1]!.split(/\s+/);
-    expect(firstRow.slice(0, 3)).toEqual(["needs", "needs", "needs"]);
+    // The sunrise reads first; the priorities card beside it takes the hero's three columns.
+    expect(firstRow.slice(0, 5)).toEqual(["sunrise", "sunrise", "needs", "needs", "needs"]);
     const first = q('[data-brief-row][data-priority="1"]')!;
     expect(first.textContent!.replace(/\s+/g, " ")).toContain("Close out the $20-cap SAFE allotment");
     expect(first.querySelector('[data-testid="brief-need-sub"]')?.textContent).toContain("Investors and the round close wait on it");

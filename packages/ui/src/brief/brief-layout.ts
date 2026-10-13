@@ -26,12 +26,45 @@ export function promoteMain(areas: readonly string[], widgets: readonly BriefWid
     return { areas: [...areas], widgets: [...widgets] };
   }
   const swap = (token: string) => (token === hero.kind ? main.kind : token === main.kind ? hero.kind : token);
-  const nextAreas = areas.map((row) => row.split(/\s+/).map(swap).join(" "));
+  const swapped = areas.map((row) => row.split(/\s+/).map(swap));
   const take = (w: BriefWidget, from: BriefWidget): BriefWidget => ({ ...w, size: from.size, cols: from.cols, rows: from.rows });
   const promoted = take(main, hero);
   const demoted = take(hero, main);
   const rest = widgets.filter((w) => w !== hero && w !== main);
-  return { areas: nextAreas, widgets: [promoted, demoted, ...rest] };
+  // The sunrise reads first: when the two cards share the same rows side by side, the sunrise
+  // moves to the left of the priorities card (each keeps its size).
+  const sunriseFirst = leadWith(swapped, String(hero.kind), String(main.kind));
+  return {
+    areas: (sunriseFirst ?? swapped).map((r) => r.join(" ")),
+    widgets: sunriseFirst ? [demoted, promoted, ...rest] : [promoted, demoted, ...rest],
+  };
+}
+
+/**
+ * Put `first`'s block left of `second`'s when, in every row either appears, the two
+ * are adjacent runs with `second` on the left. Null when the shapes do not allow it
+ * (different rows, not adjacent), so the grid never gets a broken area.
+ */
+function leadWith(rows: string[][], first: string, second: string): string[][] | null {
+  const out: string[][] = [];
+  let moved = false;
+  for (const row of rows) {
+    const hasA = row.includes(first);
+    const hasB = row.includes(second);
+    if (!hasA && !hasB) {
+      out.push(row);
+      continue;
+    }
+    if (hasA !== hasB) return null;
+    const b0 = row.indexOf(second);
+    const b1 = row.lastIndexOf(second);
+    const a0 = row.indexOf(first);
+    const a1 = row.lastIndexOf(first);
+    if (a0 !== b1 + 1) return null;
+    out.push([...row.slice(0, b0), ...row.slice(a0, a1 + 1), ...row.slice(b0, b1 + 1), ...row.slice(a1 + 1)]);
+    moved = true;
+  }
+  return moved ? out : null;
 }
 
 /** The call in progress or the next one today, with minutes until it starts (0 while it runs). Busy holds are skipped. */
@@ -91,3 +124,30 @@ export const FIELD: Record<string, "violet" | "dusk" | "pink" | "sunset" | "sky"
   agenda: "peri",
   runway: "peri",
 };
+
+type Box = { left: number; right: number; top: number; bottom: number };
+
+/**
+ * Where a hover card goes, by one rule so every peek lands predictably: beside
+ * the card (or top-section panel) the hovered thing sits in, not beside the
+ * thing itself, so every row in a card opens its peek in the same column.
+ * Right of the card when it fits, else left of it; when neither fits (a
+ * full-width card), beside the hovered thing; else kept inside the window.
+ * The top aligns with the hovered thing; `peekTop` then keeps it on screen
+ * once its real height is known.
+ */
+export function placePeek(anchor: Box, zone: Box | null, view: { w: number; h: number }, width = 340, gap = 12): { x: number; anchorTop: number; side: "r" | "l" } {
+  const fitsRight = (edge: number) => edge + gap + width <= view.w - 8;
+  const fitsLeft = (edge: number) => edge - gap - width >= 8;
+  const z = zone ?? anchor;
+  if (fitsRight(z.right)) return { x: z.right + gap, anchorTop: anchor.top, side: "r" };
+  if (fitsLeft(z.left)) return { x: z.left - gap - width, anchorTop: anchor.top, side: "l" };
+  if (fitsRight(anchor.right)) return { x: anchor.right + gap, anchorTop: anchor.top, side: "r" };
+  if (fitsLeft(anchor.left)) return { x: anchor.left - gap - width, anchorTop: anchor.top, side: "l" };
+  return { x: Math.max(8, Math.min(view.w - width - 8, anchor.right + gap)), anchorTop: anchor.top, side: "r" };
+}
+
+/** The peek's top: level with the hovered thing, moved up only as far as needed to stay 16px inside the window. */
+export function peekTop(anchorTop: number, height: number, viewH: number): number {
+  return Math.max(16, Math.min(anchorTop - 6, viewH - height - 16));
+}

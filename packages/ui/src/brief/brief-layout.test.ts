@@ -1,6 +1,6 @@
 // The priorities card takes the hero's slot; the sunrise takes the priorities card's slot.
 import { describe, expect, it } from "vitest";
-import { inLabel, nextCall, promoteMain } from "./brief-layout.js";
+import { inLabel, nextCall, peekTop, placePeek, promoteMain } from "./brief-layout.js";
 import type { BriefWidget } from "./brief-generate.js";
 
 const w = (kind: string, cols: number, rows: number, size = "M"): BriefWidget =>
@@ -10,22 +10,30 @@ describe("promoteMain", () => {
   const areas = ["sunrise sunrise sunrise needs needs incident", "sunrise sunrise sunrise needs needs waiting", "team team shipped shipped focus focus"];
   const widgets = [w("sunrise", 3, 2, "L"), w("needs", 2, 2, "M"), w("incident", 1, 1, "S"), w("waiting", 1, 1, "S"), w("team", 2, 1, "W")];
 
-  it("swaps the priorities card into the hero slot and the sunrise into its old one", () => {
+  it("gives the priorities card the hero's size and puts the sunrise first, to its left", () => {
     const out = promoteMain(areas, widgets);
     expect(out.areas).toEqual([
-      "needs needs needs sunrise sunrise incident",
-      "needs needs needs sunrise sunrise waiting",
+      "sunrise sunrise needs needs needs incident",
+      "sunrise sunrise needs needs needs waiting",
       "team team shipped shipped focus focus",
     ]);
     expect(out.widgets.map((x) => [x.kind, x.size, x.cols, x.rows])).toEqual([
-      ["needs", "L", 3, 2],
       ["sunrise", "M", 2, 2],
+      ["needs", "L", 3, 2],
       ["incident", "S", 1, 1],
       ["waiting", "S", 1, 1],
       ["team", "W", 2, 1],
     ]);
     // Reasons travel with their cards.
-    expect(out.widgets[0]!.reason).toBe("needs reason");
+    expect(out.widgets[1]!.reason).toBe("needs reason");
+  });
+
+  it("keeps the swap but not the reorder when the two cards do not share their rows", () => {
+    const tall = ["sunrise sunrise sunrise needs needs c", "sunrise sunrise sunrise needs needs d", "sunrise sunrise sunrise e e e"];
+    const ws = [w("sunrise", 3, 3, "XL"), w("needs", 2, 2), w("c", 1, 1), w("d", 1, 1), w("e", 3, 1)];
+    const out = promoteMain(tall, ws);
+    expect(out.areas).toEqual(["needs needs needs sunrise sunrise c", "needs needs needs sunrise sunrise d", "needs needs needs e e e"]);
+    expect(out.widgets[0]!.kind).toBe("needs");
   });
 
   it("leaves the inputs untouched", () => {
@@ -59,5 +67,28 @@ describe("nextCall", () => {
     expect(inLabel(45, false)).toBe("in 45 min");
     expect(inLabel(120, false)).toBe("in 2h");
     expect(inLabel(130, false)).toBe("in 2h 10m");
+  });
+});
+
+describe("placePeek / peekTop", () => {
+  const view = { w: 1440, h: 900 };
+  const box = (left: number, right: number, top = 100, bottom = 130) => ({ left, right, top, bottom });
+  it("opens beside the card, not the row, so every row in a card shares one column", () => {
+    const card = box(40, 709, 360, 816);
+    const rowA = box(60, 690, 400, 440);
+    const rowB = box(60, 300, 600, 640);
+    expect(placePeek(rowA, card, view)).toEqual({ x: 721, anchorTop: 400, side: "r" });
+    expect(placePeek(rowB, card, view).x).toBe(721);
+  });
+  it("goes left of a card at the right edge, beside the row for a full-width card, and stays inside the window", () => {
+    expect(placePeek(box(1180, 1380), box(1168, 1386), view)).toMatchObject({ x: 1168 - 12 - 340, side: "l" });
+    const full = box(40, 1400);
+    expect(placePeek(box(60, 400), full, view)).toMatchObject({ x: 412, side: "r" });
+    expect(placePeek(box(100, 1300), full, { w: 1440, h: 900 }).x).toBeLessThanOrEqual(1440 - 340 - 8);
+  });
+  it("sits level with the hovered thing and only moves up to stay on screen", () => {
+    expect(peekTop(300, 200, 900)).toBe(294);
+    expect(peekTop(800, 300, 900)).toBe(584);
+    expect(peekTop(4, 100, 900)).toBe(16);
   });
 });

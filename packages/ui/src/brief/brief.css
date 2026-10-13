@@ -86,6 +86,9 @@
   /* The highlight: HQ's terracotta orange (the "Most popular" plan tag), white ink on it. */
   --b-hot: #c9765a;
   --b-on-hot: #fff;
+  /* The timeline's active knob. */
+  --b-knob-hi: #3a3a40;
+  --b-knob-lo: #26262b;
   /* Inner glass tile fill; colour fields raise it. */
   --b-glass: rgb(var(--b-ink) / 0.04);
   /* Neutral glass panels in the top section. */
@@ -689,23 +692,34 @@
   }
 }
 
-/* SAMPLE marker: content with no real source yet. */
+/* The highlight label: one style for every orange label on the page (the first stat,
+   the Sample marker, review-mode tags). Fully rounded, terracotta, white 11px text. */
+.daily-brief .hot-label,
+.daily-brief .stat .pill.hot,
 .daily-brief .peek .sample,
-.daily-brief .sample-tag {
-  display: inline-block;
-  font-family: var(--b-mono);
+.daily-brief .sample-tag,
+.daily-brief .kind-tag {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--b-ui);
   font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
   letter-spacing: 0;
-  padding: 3px 7px;
-  border-radius: 6px;
-  color: #2a1408;
-  background: var(--b-sun);
-  margin-bottom: 8px;
+  text-transform: none;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--b-hot);
+  color: var(--b-on-hot);
+  white-space: nowrap;
+}
+/* SAMPLE marker: content with no real source yet. */
+.daily-brief .peek .sample {
+  margin-bottom: 10px;
 }
 .daily-brief .sample-tag {
   margin: 0 0 0 6px;
-  padding: 1px 5px;
-  font-size: 11px;
 }
 
 /* Shared recipes the catalogue cards build on. Inner tile: a flat faint fill and a hairline, no
@@ -768,6 +782,8 @@
   --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
   --b-panel: rgba(255, 255, 255, 0.55);
   --b-panel-line: rgba(255, 255, 255, 0.9);
+  --b-knob-hi: #ffffff;
+  --b-knob-lo: #ececef;
   --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
     background: radial-gradient(1100px 620px at 18% -12%, #ffffff 0%, var(--b-bg) 62%), var(--b-bg);
   }
@@ -802,6 +818,8 @@
   --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
   --b-panel: rgba(255, 255, 255, 0.55);
   --b-panel-line: rgba(255, 255, 255, 0.9);
+  --b-knob-hi: #ffffff;
+  --b-knob-lo: #ececef;
   --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
   background: radial-gradient(1100px 620px at 18% -12%, #ffffff 0%, var(--b-bg) 62%), var(--b-bg);
 }
@@ -993,6 +1011,21 @@
 }
 
 /* Header: wordmark left, pills right. */
+.daily-brief .b-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+/* Date and time under the title, in HQ's label style: mono, all caps, tracked. */
+.daily-brief .b-when {
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--b-t3);
+}
 .daily-brief .b-name {
   font-size: 13px;
   font-weight: 500;
@@ -1067,6 +1100,10 @@
   padding: 0;
   border-radius: 10px;
 }
+/* A little more air between the label pill and its number. */
+.daily-brief .stat > .pill {
+  margin-bottom: 6px;
+}
 /* Info pill (app standard): 11px / 400, fully rounded. */
 .daily-brief .stat .pill {
   font-size: 11px;
@@ -1075,10 +1112,7 @@
   background: rgb(var(--b-ink) / 0.07);
   color: var(--b-t2);
 }
-.daily-brief .stat .pill.hot {
-  background: var(--b-hot);
-  color: var(--b-on-hot);
-}
+
 .daily-brief .stat .num {
   font-size: var(--b-fs-num);
   font-weight: 400;
@@ -1109,12 +1143,30 @@
 }
 .daily-brief .b-next .nx-head {
   display: flex;
-  justify-content: space-between;
-  font-size: 13px;
-  color: var(--b-t2);
 }
-.daily-brief .b-next .arr {
-  color: var(--b-t3);
+/* The same label as on the cards (mono, all caps, Phosphor icon), in page ink on the glass panel. */
+.daily-brief .b-next .nx-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px 0 6px;
+  border-radius: 6px;
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--b-t2);
+  background: rgb(var(--b-ink) / 0.06);
+}
+.daily-brief .b-next .nx-tag svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: currentColor;
 }
 .daily-brief .b-next .nx-time {
   margin-top: 14px;
@@ -1181,4 +1233,15 @@
 }
 .daily-brief .slot[data-field] > .w.dawn > .over {
   padding-top: 44px;
+}
+
+/* The corner label names every card, so each card's own top line (its old
+   eyebrow: "Today's priorities", "Sunrise · decisions cleared", "Waiting on"...)
+   is hidden. The incident keeps its line: there it is the headline (what is red). */
+.daily-brief .slot[data-field]:not([data-widget="incident"]) > .w > .eyebrow:first-of-type,
+.daily-brief .slot[data-field] > .w > .over > .eyebrow:first-child,
+.daily-brief .slot[data-field] > .w > .top > div > .eyebrow:first-child,
+.daily-brief .slot[data-field] > .w > .hd > .hdt > .eyebrow:first-child,
+.daily-brief .slot[data-field] > .w > .hd > .eyebrow:first-child {
+  display: none;
 }

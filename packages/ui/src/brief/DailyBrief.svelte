@@ -56,7 +56,7 @@
   import { effortMinutes } from "./brief-hero.js";
   import { briefHover } from "./brief-hover.js";
   import { FIELD, inLabel, nextCall, promoteMain } from "./brief-layout.js";
-  import { cardTag } from "./brief-card-tags.js";
+  import { CARD_TAG, cardTag } from "./brief-card-tags.js";
   import { rangeText } from "./brief-strip.js";
   /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
   const REWARD_KINDS = new Set(["shipped", "firsts", "resolved"]);
@@ -306,10 +306,12 @@
       <div class="b-mark" aria-hidden="true">
         <svg class="ico" viewBox="0 0 24 24"><path d="M3 17h18M6 17a6 6 0 0 1 12 0M12 5v2M5.6 8.6l1.4 1.4M18.4 8.6 17 10" /></svg>
       </div>
-      <span class="b-name">Daily Brief</span>
+      <div class="b-title">
+        <span class="b-name">Daily Brief</span>
+        <span class="b-when" data-testid="brief-when">{dateLabel} · {timeLabel}</span>
+      </div>
     </div>
     <div class="b-tools">
-      <span class="pill date">{dateLabel}</span>
       <!-- The picker's reasoning is for the owner reviewing the catalogue: review mode (Shift+A) only. -->
       {#if allCards}<span class="leadchip pill" data-testid="brief-lead" role="group" aria-label="Why these cards" use:peek={{ state: briefState, content: whyPeek }}
           >Why these cards</span
@@ -320,7 +322,6 @@
 
   <section class="b-top">
     <div class="b-hello">
-      <div class="b-upd">Updated {timeLabel}</div>
       <h1 class="b-greet">Morning{input.userName ? `, ${input.userName}` : ""}.</h1>
       <div class="b-stats" title="What this brief was generated from">
         {#each plan.provenance as p, i (p.label)}
@@ -334,7 +335,7 @@
     </div>
     <BriefDayTimeline events={input.calendarToday} now={input.now} sample={input.calendarSample ?? false} {onopenmeetings} />
     <aside class="b-next" data-testid="brief-next" use:peek={{ state: briefState, content: nextPeek }}>
-      <div class="nx-head"><span>{next ? (next.live ? "On a call" : "Next call") : "Calls today"}</span><span class="arr" aria-hidden="true">↗</span></div>
+      <div class="nx-head"><span class="nx-tag"><svg viewBox="0 0 256 256" aria-hidden="true"><path d={CARD_TAG.meetings.d} /></svg>{next ? (next.live ? "On a call" : "Next call") : "Calls today"}</span></div>
       {#if next}
         <div class="nx-time">{nextTime.t}<span>{nextTime.ap}</span></div>
         <div class="nx-title">{next.event.title}</div>
@@ -549,12 +550,7 @@
     z-index: 3;
     top: -8px;
     left: 14px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    color: #1b1b1e;
-    background: var(--b-sun);
+    /* Look: the shared highlight label (brief.css). */
   }
   .b-runs {
     margin: -6px 0 14px;

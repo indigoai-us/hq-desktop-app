@@ -98,7 +98,7 @@
         >
           <span class="pt" aria-hidden="true"></span>
           <span class="tt">{s.e.title}</span>
-          <span class="tm">{at(s.e)}</span>
+          <span class="tm">{at(s.e)}{#if s.e.tentative} · Maybe{/if}</span>
           <span class="st">{STATE_LABEL[s.state]}</span>
           {#if s.state === "now" || s.state === "next"}<span class="mk" aria-hidden="true"></span>{/if}
         </li>
@@ -139,46 +139,53 @@
     margin: 10px 0 0;
     padding: 0 0 0 18px;
   }
-  /* The dotted rail. */
+  /* The rail: a fine dotted line, as in the reference. Only the active call gets a marker. */
   ol::before {
     content: "";
     position: absolute;
     left: 4px;
-    top: 12px;
-    bottom: 12px;
-    width: 1px;
-    background: repeating-linear-gradient(rgb(var(--b-ink) / 0.3) 0 1px, transparent 1px 4px);
+    top: 6px;
+    bottom: 6px;
+    width: 1.5px;
+    background: radial-gradient(circle, rgb(var(--b-ink) / 0.4) 0.75px, transparent 0.9px) center top / 1.5px 5px repeat-y;
   }
   li {
     position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto 48px;
+    grid-template-columns: minmax(0, 1fr) auto 52px;
     align-items: center;
     gap: 10px;
-    height: 30px;
+    height: 32px;
     padding: 0 8px;
     margin: 0 -8px 0 0;
     border-radius: 6px;
     font-size: 13px;
-    color: var(--b-t2);
+    color: var(--b-t3);
     cursor: default;
     transition: background 0.15s, color 0.15s;
   }
-  li:hover,
-  li:focus-visible {
-    background: rgb(var(--b-ink) / 0.05);
+  li:hover {
+    background: rgb(var(--b-ink) / 0.04);
     color: var(--b-t1);
-    outline: none;
   }
   .pt {
+    display: none;
+  }
+  /* The active call's knob: a soft raised disc on the rail with a small dark dot. */
+  li.now .pt,
+  li.next .pt {
+    display: block;
     position: absolute;
-    left: -17px;
+    left: -24px;
     top: 50%;
-    width: 5px;
-    height: 5px;
-    margin-top: -2.5px;
+    width: 22px;
+    height: 22px;
+    margin-top: -11px;
     border-radius: 50%;
-    background: rgb(var(--b-ink) / 0.3);
+    background:
+      radial-gradient(circle, rgb(var(--b-ink) / 0.85) 0 2px, transparent 2.5px),
+      linear-gradient(180deg, var(--b-knob-hi), var(--b-knob-lo));
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 4px 10px rgba(0, 0, 0, 0.08);
   }
   .tt {
     overflow: hidden;
@@ -191,36 +198,26 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  /* State: an info pill, filled dark for the active call. */
+  /* State: a soft frosted pill; the active call's is dark with a thin terracotta ring. */
   .st {
     justify-self: end;
     font-size: 11px;
     line-height: 1;
     padding: 5px 10px;
     border-radius: 999px;
-    border: 1px solid var(--b-line);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.06);
     color: var(--b-t3);
     white-space: nowrap;
   }
-  li.done {
-    color: var(--b-t3);
-  }
-  li.done .tt {
-    opacity: 0.75;
+  li.done .tt,
+  li.later .tt {
+    opacity: 0.8;
   }
   li.now,
   li.next {
     color: var(--b-t1);
     font-weight: 500;
-  }
-  li.now .pt,
-  li.next .pt {
-    width: 9px;
-    height: 9px;
-    left: -19px;
-    margin-top: -4.5px;
-    background: var(--b-bg);
-    box-shadow: 0 0 0 1.5px rgb(var(--b-ink) / 0.85);
   }
   li.now .st,
   li.next .st {
@@ -228,10 +225,7 @@
     border-color: transparent;
     color: var(--b-bg);
     font-weight: 400;
-  }
-  li.now .st {
-    background: var(--b-hot);
-    color: var(--b-on-hot);
+    box-shadow: 0 0 0 1.5px var(--b-hot);
   }
   /* The marker beside the active call, as in the reference. */
   .mk {
@@ -242,9 +236,6 @@
     border: 4px solid transparent;
     border-left: 6px solid rgb(var(--b-ink) / 0.85);
     border-right: 0;
-  }
-  li.tent .tt {
-    font-style: italic;
   }
   .more {
     margin: 4px 0 0 18px;
