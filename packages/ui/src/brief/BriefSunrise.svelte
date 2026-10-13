@@ -374,7 +374,7 @@
   }
   .tl-head {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
     white-space: nowrap;
@@ -384,17 +384,21 @@
     font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.08em;
+    line-height: 14.5px;
     text-transform: uppercase;
     color: rgba(255, 255, 255, 0.7);
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* Same label style and line as the header on its left, only dimmer. */
   .tl-meta {
     font-family: var(--b-code);
     font-size: 10px;
+    font-weight: 500;
+    line-height: 14.5px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.6);
+    color: rgba(255, 255, 255, 0.55);
   }
   /* Square cells on the mosaic's rhythm, sitting on a faint row of empty hours. */
   .cells {
