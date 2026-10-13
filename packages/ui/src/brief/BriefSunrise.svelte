@@ -367,10 +367,12 @@
     max-width: min(420px, calc(54% - 32px));
   }
   /* The timeline sits at the bottom with a guaranteed gap above it, so the lede never touches its label. */
+  /* The strip ends the card: no space under it beyond the card's own padding. */
   .tl {
     margin-top: auto;
     padding-top: 18px;
-    margin-bottom: 12px;
+    /* With the labels trimmed to their baseline, 18px + 2px matches the card's 20px sides. */
+    margin-bottom: 2px;
   }
   .tl-head {
     display: flex;
@@ -475,7 +477,6 @@
     display: grid;
     grid-template-columns: repeat(24, minmax(0, 1fr));
     column-gap: 3px;
-    height: 16px;
     margin-top: 8px;
     font-family: var(--b-code);
     font-size: 10px;
@@ -485,6 +486,7 @@
   }
   .tick {
     grid-row: 1;
+    text-box: trim-end cap alphabetic;
     justify-self: center;
     white-space: nowrap;
   }
