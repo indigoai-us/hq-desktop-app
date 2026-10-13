@@ -54,14 +54,14 @@
     <path d="M7 3h20M7 37h20M9 3c0 9 8 11 8 17S9 28 9 37M25 3c0 9-8 11-8 17s8 8 8 17" stroke="rgb(var(--b-ink) / .8)" stroke-width="1.6" stroke-linecap="round" />
     <path class="top" d="M11 7h12c-1 5-6 7-6 9 0-2-5-4-6-9z" fill="rgb(var(--b-ink) / .85)" />
     <path class="bot" d="M11 35h12c-1-4-5-6-6-6s-5 2-6 6z" fill="rgb(var(--b-ink) / .85)" />
-    <line class="stream" x1="17" y1="17" x2="17" y2="30" stroke="#fff" stroke-width="1.4" />
+    <line class="stream" x1="17" y1="17" x2="17" y2="30" stroke="currentColor" stroke-width="1.4" />
   </svg>
   <div class="eyebrow">Waiting on</div>
   <div class="big" style="margin-top:6px" use:countUp={rows.length}>0</div>
   {#each shown as w (w.id)}
     {@const age = waitingAge(w.ageHours)}
     <div class="row" role="group" aria-label={label(w)} data-testid="brief-waiting-row" use:peek={{ state: brief, content: () => content(w) }}>
-      <span class="bul" style="background:#fff"></span>
+      <span class="bul" style="background:var(--b-t1)"></span>
       <div class="tx">{w.who} <em>{w.what}</em></div>
       {#if age}<span class="age" class:old={age.old} data-testid="brief-waiting-age" title={age.old ? "Over a day" : "Under a day"}>{age.label}</span>{/if}
     </div>
@@ -142,8 +142,8 @@
   .age.old {
     padding: 0 6px;
     border-radius: 999px;
-    color: #ffe08a;
-    background: rgba(0, 0, 0, 0.28);
+    color: var(--b-warn);
+    background: color-mix(in srgb, var(--b-warn) 14%, transparent);
   }
   .more {
     justify-content: center;

@@ -223,7 +223,7 @@
     height: 46px;
     margin-top: 14px;
     border-radius: 14px;
-    background: rgba(0, 0, 0, 0.22);
+    background: rgb(var(--b-ink) / 0.05);
     border: 1px solid rgb(var(--b-ink) / 0.06);
   }
   .gp {
@@ -312,8 +312,8 @@
     top: -4px;
     bottom: -4px;
     width: 1px;
-    background: #fff;
-    box-shadow: 0 0 6px #fff;
+    background: var(--b-decision);
+    box-shadow: none;
     z-index: 2;
     pointer-events: none;
   }

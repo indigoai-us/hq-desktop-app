@@ -255,7 +255,7 @@
     vector-effect: non-scaling-stroke;
   }
   .ln {
-    stroke: #fff;
+    stroke: rgb(var(--b-ink) / 0.85);
     stroke-width: 1.5;
     stroke-dasharray: 100;
     animation: draw 1.2s 0.3s ease-out both;

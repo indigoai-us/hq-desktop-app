@@ -448,7 +448,7 @@
     transition: background 0.15s;
   }
   .prov:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: rgb(var(--b-ink) / 0.06);
   }
   .b-review {
     margin-top: 12px;
@@ -501,7 +501,7 @@
     min-height: clamp(360px, calc(100vh - 220px), 640px);
   }
   .placeholder {
-    border: 1px dashed rgba(255, 255, 255, 0.18);
+    border: 1px dashed rgb(var(--b-ink) / 0.18);
     background: transparent;
     box-shadow: none;
   }

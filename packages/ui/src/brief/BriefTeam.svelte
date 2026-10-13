@@ -222,7 +222,7 @@
     font-size: 10px;
   }
   .load[data-load="heavy"] {
-    color: #ffd37a;
+    color: var(--b-warn);
     border-color: rgba(255, 211, 122, 0.3);
   }
   .load[data-load="storm"] {

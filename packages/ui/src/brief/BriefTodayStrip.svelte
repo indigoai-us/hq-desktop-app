@@ -92,7 +92,7 @@
     min-height: 52px;
     border-radius: 16px;
     box-shadow: var(--b-well);
-    background: #1d1d20;
+    background: var(--b-well-bg);
     display: flex;
     align-items: center;
     padding: 0 16px;
@@ -102,14 +102,14 @@
     font-family: var(--b-mono);
     font-size: 10px;
     letter-spacing: 0.12em;
-    color: rgb(var(--b-ink) / 0.32);
+    color: var(--b-t3);
     white-space: nowrap;
     width: 140px;
     flex: none;
   }
   .lbl b {
     display: block;
-    color: rgb(var(--b-ink) / 0.56);
+    color: var(--b-t2);
     font-weight: 500;
     margin-top: 3px;
     letter-spacing: 0.04em;
@@ -125,7 +125,7 @@
     top: 4px;
     font-family: var(--b-mono);
     font-size: 9px;
-    color: rgb(var(--b-ink) / 0.22);
+    color: rgb(var(--b-ink) / 0.42);
     translate: -50% 0;
   }
   .hl {
@@ -156,7 +156,8 @@
     text-overflow: ellipsis;
   }
   .ev.team {
-    background: #3d3d3d;
+    background: var(--b-ev-team);
+    color: var(--b-ev-team-ink);
   }
   .ev.ext {
     background: #0f766e;
@@ -212,7 +213,7 @@
     bottom: 2px;
     width: 2px;
     border-radius: 2px;
-    background: #ff809f;
+    background: var(--b-sun-2);
     box-shadow: none;
     z-index: 4;
     pointer-events: none;
@@ -225,12 +226,12 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #ff809f;
+    background: var(--b-sun-2);
   }
   .sum {
     font-family: var(--b-mono);
     font-size: 10px;
-    color: rgb(var(--b-ink) / 0.32);
+    color: var(--b-t3);
     white-space: nowrap;
     text-align: right;
     width: 90px;

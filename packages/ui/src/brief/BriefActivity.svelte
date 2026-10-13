@@ -93,7 +93,7 @@
     flex: none;
     text-align: center;
     font-size: 11px;
-    color: #ffb580;
+    color: var(--b-sun);
   }
   li.skipped {
     color: rgb(var(--b-ink) / 0.4);
@@ -113,7 +113,7 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #ffb580;
+    background: var(--b-sun);
     animation: pulse 1.4s ease-in-out infinite;
   }
   @keyframes pulse {

@@ -155,7 +155,7 @@
   }
   .count b {
     font-weight: 500;
-    color: #fff;
+    color: var(--b-t1);
   }
   .sub {
     font-size: 11.5px;
@@ -167,13 +167,13 @@
     color: #34c759;
   }
   .tone-warn {
-    color: #facc15;
+    color: var(--b-warn);
   }
   .tone-red {
-    color: #ff6b5f;
+    color: var(--b-red);
   }
   .tone-sun {
-    color: #ffb580;
+    color: var(--b-sun);
   }
   .tone-neutral {
     color: rgb(var(--b-ink) / 0.6);

@@ -198,7 +198,7 @@
     color: var(--b-t3);
   }
   em.now {
-    color: #ff809f;
+    color: var(--b-sun-2);
   }
   .more {
     text-align: center;

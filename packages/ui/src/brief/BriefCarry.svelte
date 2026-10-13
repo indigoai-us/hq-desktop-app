@@ -46,7 +46,7 @@
   const shown = $derived(all.slice(0, tall ? CARRY_CAP : CARRY_CAP_SHORT));
   const rest = $derived(all.slice(shown.length));
 
-  const RING: Record<RingTone, string> = { white: "#fff", warn: "var(--b-warn)", red: "var(--b-red)", grey: "rgb(var(--b-ink) / .32)" };
+  const RING: Record<RingTone, string> = { white: "var(--b-t1)", warn: "var(--b-warn)", red: "var(--b-red)", grey: "rgb(var(--b-ink) / .32)" };
 </script>
 
 {#if all.length}

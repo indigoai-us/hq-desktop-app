@@ -54,6 +54,13 @@
   --b-line: rgb(var(--b-ink) / 0.09);
   --b-top-light: rgb(var(--b-ink) / 0.12);
   --b-bracket: rgba(255, 190, 160, 0.75);
+  --b-well-bg: #1d1d20;
+  --b-ev-team: #3d3d3d;
+  --b-ev-team-ink: #fff;
+  --b-hover-blend: screen;
+  --b-foil-blend: color-dodge;
+  --b-go-ring: 0 0 0 0 transparent;
+  --b-peek-shadow: 0 0 0 1px rgb(var(--b-ink) / 0.1), 0 22px 55px rgba(0, 0, 0, 0.5);
   --b-ok: var(--ok, #34c759);
   --b-warn: var(--warn, #facc15);
   --b-red: var(--red, #ff453a);
@@ -244,7 +251,7 @@
   pointer-events: none;
   opacity: var(--light, 0);
   /* Screen-blended over the card so it never needs to restack the card's content. */
-  mix-blend-mode: screen;
+  mix-blend-mode: var(--b-hover-blend);
   background:
     radial-gradient(260px 200px at var(--light-x, 50%) var(--light-y, 30%), var(--b-hover-light, rgba(255, 170, 130, 0.22)), transparent 70%),
     linear-gradient(var(--b-bracket), var(--b-bracket)) 8px 8px / 14px 1px no-repeat,
@@ -477,6 +484,7 @@
   border-radius: 999px;
   color: #2a1a5c;
   background: #fff;
+  box-shadow: var(--b-go-ring);
   white-space: nowrap;
   transition: background 0.15s;
 }
@@ -528,7 +536,7 @@
   stroke: none;
 }
 .daily-brief .launch .eng button:hover {
-  color: #fff;
+  color: var(--b-t1);
 }
 .daily-brief .launch .eng button:focus-visible {
   outline: 2px solid rgb(var(--b-ink) / 0.7);
@@ -536,7 +544,7 @@
 }
 .daily-brief .launch .eng button[aria-pressed="true"] {
   background: rgb(var(--b-ink) / 0.9);
-  color: #1b1b1e;
+  color: var(--b-card);
 }
 .daily-brief .launch .eng button[aria-pressed="true"] .mark.clay {
   fill: #d97757;
@@ -554,7 +562,7 @@
 }
 .daily-brief .launch .copy:hover {
   background: rgb(var(--b-ink) / 0.16);
-  color: #fff;
+  color: var(--b-t1);
 }
 .daily-brief .launch .copy.copied {
   color: var(--b-ok);
@@ -585,7 +593,7 @@
   border-radius: 12px;
   background: var(--b-card-hi);
   color: var(--b-t1);
-  box-shadow: 0 0 0 1px rgb(var(--b-ink) / 0.1), 0 22px 55px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--b-peek-shadow);
   animation: b-peek 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @keyframes b-peek {
@@ -641,7 +649,7 @@
   padding: 10px 12px;
   border-radius: 8px;
   box-shadow: var(--b-well);
-  background: rgba(0, 0, 0, 0.2);
+  background: rgb(var(--b-ink) / 0.05);
   white-space: pre-wrap;
   max-height: 180px;
   overflow: auto;
@@ -724,6 +732,19 @@
     --b-top-light: rgba(255, 255, 255, 0);
     --b-decision: #d9603a;
     --b-bracket: rgba(200, 90, 50, 0.7);
+  --b-ok: #1f8a3c;
+  --b-warn: #a16207;
+  --b-red: #d70015;
+  --b-sun: #c2541c;
+  --b-sun-2: #c43d5e;
+  --b-well-bg: rgb(17 17 17 / 0.04);
+  --b-ev-team: rgb(17 17 17 / 0.12);
+  --b-ev-team-ink: rgba(17, 17, 17, 0.85);
+  --b-hover-blend: multiply;
+  --b-hover-light: rgba(217, 96, 58, 0.1);
+  --b-foil-blend: multiply;
+  --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
+  --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
     background: radial-gradient(1200px 700px at 30% -10%, #ffffff 0%, var(--b-bg) 60%), var(--b-bg);
   }
 }
@@ -742,6 +763,19 @@
   --b-top-light: rgba(255, 255, 255, 0);
   --b-decision: #d9603a;
   --b-bracket: rgba(200, 90, 50, 0.7);
+  --b-ok: #1f8a3c;
+  --b-warn: #a16207;
+  --b-red: #d70015;
+  --b-sun: #c2541c;
+  --b-sun-2: #c43d5e;
+  --b-well-bg: rgb(17 17 17 / 0.04);
+  --b-ev-team: rgb(17 17 17 / 0.12);
+  --b-ev-team-ink: rgba(17, 17, 17, 0.85);
+  --b-hover-blend: multiply;
+  --b-hover-light: rgba(217, 96, 58, 0.1);
+  --b-foil-blend: multiply;
+  --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
+  --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
   background: radial-gradient(1200px 700px at 30% -10%, #ffffff 0%, var(--b-bg) 60%), var(--b-bg);
 }
 /* Dark islands keep white ink in both appearances. */
@@ -754,5 +788,12 @@
   --b-t3: rgba(255, 255, 255, 0.5);
   --b-line: rgba(255, 255, 255, 0.09);
   --b-decision: #ff9966;
+  --b-ok: #34c759;
+  --b-warn: #facc15;
+  --b-red: #ff453a;
+  --b-sun: #ffb580;
+  --b-sun-2: #ff809f;
+  --b-hover-blend: screen;
+  --b-hover-light: rgba(255, 255, 255, 0.2);
   color: var(--b-t1);
 }

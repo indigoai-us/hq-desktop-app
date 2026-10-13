@@ -325,7 +325,7 @@
   }
   .graph.focus .edge.on {
     opacity: 1;
-    stroke: #fff;
+    stroke: var(--b-t1);
   }
   .graph.focus .edge.late.on {
     stroke: var(--b-warn);

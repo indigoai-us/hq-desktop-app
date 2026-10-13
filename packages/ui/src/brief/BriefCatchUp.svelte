@@ -69,7 +69,7 @@
 
 <style>
   .greet .line {
-    color: #ffb580;
+    color: var(--b-sun);
   }
   .greet {
     font-size: var(--b-fs-display);

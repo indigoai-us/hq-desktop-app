@@ -28,7 +28,7 @@ export const BEAT_STYLE: Record<BeatKind, { word: string; name: string; color: s
   crisis: { word: "outage", name: "Crisis", color: "var(--b-red)", tone: "red" },
   resolution: { word: "recovery", name: "Resolution", color: "var(--b-ok)", tone: "ok" },
   push: { word: "record", name: "Push", color: "var(--b-decision)", tone: "decision" },
-  turn: { word: "turn", name: "Turn", color: "#ffffff", tone: "neutral" },
+  turn: { word: "turn", name: "Turn", color: "var(--b-t1)", tone: "neutral" },
 };
 const BEAT_WEIGHT: Record<BeatKind, number> = { crisis: 4, resolution: 3, push: 2, turn: 1 };
 

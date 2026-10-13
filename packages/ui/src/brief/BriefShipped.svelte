@@ -165,7 +165,7 @@
     font-family: var(--b-mono);
     font-size: 10px;
     letter-spacing: 0.04em;
-    color: rgb(var(--b-ink) / 0.32);
+    color: var(--b-t3);
   }
   .tot {
     display: flex;
@@ -289,7 +289,7 @@
     background: linear-gradient(115deg, transparent 20%, rgba(255, 120, 200, 0.22) 35%, rgba(120, 220, 255, 0.22) 50%, rgba(180, 255, 150, 0.2) 62%, transparent 78%);
     background-size: 250% 250%;
     background-position: var(--hx, 50%) var(--hy, 50%);
-    mix-blend-mode: color-dodge;
+    mix-blend-mode: var(--b-foil-blend, color-dodge);
   }
   .run::after {
     content: "";

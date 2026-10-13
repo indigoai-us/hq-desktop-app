@@ -220,7 +220,7 @@
   }
   .st:hover,
   .st:focus-visible {
-    color: #fff;
+    color: var(--b-t1);
   }
   .st.more {
     color: var(--b-t3);
