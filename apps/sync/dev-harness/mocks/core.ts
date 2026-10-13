@@ -1954,6 +1954,15 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   const url = typeof args?.url === 'string' ? args.url : '';
   const method = typeof args?.method === 'string' ? args.method : 'GET';
   const body = typeof args?.body === 'string' ? JSON.parse(args.body) : null;
+  if (url === '/v1/billing/portal' && method === 'POST') {
+    // hq-pro mints a short-lived Stripe portal session per company. `?portal=fail`
+    // previews the quiet retry hint; `?portal=forbidden` the owner handoff.
+    const mode = new URLSearchParams(window.location.search).get('portal');
+    if (mode === 'fail') return { status: 500, body: JSON.stringify({ error: 'Internal Server Error' }) };
+    if (mode === 'forbidden') return { status: 403, body: JSON.stringify({ error: 'Requires owner role on this company', code: 'FORBIDDEN' }) };
+    const uid = typeof body?.companyUid === 'string' ? body.companyUid : 'cmp_unknown';
+    return { status: 200, body: JSON.stringify({ url: `https://billing.stripe.com/p/session/test_harness_${uid}` }) };
+  }
   if (url === '/v1/flags/resolve') {
     return {
       status: 200,

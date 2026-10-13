@@ -14,7 +14,7 @@ import tempfile
 
 ICON_DIR = os.path.join(os.path.dirname(__file__), "..", "src-tauri", "icons")
 SOURCE_SVG = os.path.join(ICON_DIR, "source", "HQ.svg")
-STATE_NAMES = ("tray-idle", "tray-syncing", "tray-error", "tray-conflict")
+STATE_NAMES = ("tray-idle", "tray-syncing", "tray-error")
 CANVAS_1X = (38, 22)
 CANVAS_2X = (76, 44)
 

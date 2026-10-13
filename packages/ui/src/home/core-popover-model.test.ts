@@ -3,9 +3,6 @@ import {
   appVersionLabel,
   buildCorePopoverViewModel,
   CLOUD_PAUSED_NOTICE,
-  conflictCompanyPath,
-  conflictFileName,
-  conflictHeaderLabel,
   coreNeedsRestore,
   detectedCoreVersion,
   driftPillLabel,
@@ -23,52 +20,6 @@ describe("core-popover-model (US-016)", () => {
       expect(detectedCoreVersion({ core: "15.0.15", cli: "0.9.0" })).toBe(
         "15.0.15",
       );
-    });
-  });
-
-  describe("conflicts present / empty", () => {
-    it("builds rescue-card rows with filename + company path", () => {
-      const vm = buildCorePopoverViewModel({
-        conflicts: [
-          {
-            path: "companies/indigo/knowledge/notes.md",
-            status: "pending",
-          },
-          {
-            path: "personal/draft.txt",
-            status: "resolving",
-          },
-        ],
-      });
-      expect(vm.conflictCount).toBe(2);
-      expect(vm.conflictHeader).toBe("2 conflicts need you");
-      expect(vm.conflictRows[0]).toMatchObject({
-        fileName: "notes.md",
-        companyPath: "companies/indigo/knowledge",
-        actionsDisabled: false,
-      });
-      expect(vm.conflictRows[1].actionsDisabled).toBe(true);
-    });
-
-    it("singular header and empty card when no unresolved conflicts", () => {
-      expect(conflictHeaderLabel(1)).toBe("1 conflict needs you");
-      const empty = buildCorePopoverViewModel({ conflicts: [] });
-      expect(empty.conflictCount).toBe(0);
-      expect(empty.conflictHeader).toBe("");
-      expect(empty.conflictRows).toEqual([]);
-
-      // Resolved rows clear from the card.
-      const cleared = buildCorePopoverViewModel({
-        conflicts: [{ path: "a.md", status: "resolved" }],
-      });
-      expect(cleared.conflictCount).toBe(0);
-      expect(cleared.conflictRows).toEqual([]);
-    });
-
-    it("path helpers strip filename and handle root files", () => {
-      expect(conflictFileName("companies/x/file.md")).toBe("file.md");
-      expect(conflictCompanyPath("companies/x/file.md")).toBe("companies/x");
-      expect(conflictCompanyPath("solo.md")).toBe("HQ root");
     });
   });
 
@@ -244,9 +195,7 @@ describe("G6: undetected core never pairs with green NO DRIFT", () => {
 });
 
 describe("G7: core pill dot tone", () => {
-  it("is amber whenever a conflict/attention item is pending", () => {
-    expect(corePillDotTone({ conflictCount: 1 })).toBe("warn");
-    expect(corePillDotTone({ syncState: "conflict" })).toBe("warn");
+  it("is amber whenever an attention item is pending", () => {
     expect(corePillDotTone({ syncState: "error" })).toBe("warn");
     expect(corePillDotTone({ syncState: "auth-error" })).toBe("warn");
     expect(corePillDotTone({ driftCount: 2 })).toBe("warn");
@@ -255,7 +204,9 @@ describe("G7: core pill dot tone", () => {
 
   it("is green only when healthy and nothing is running", () => {
     expect(corePillDotTone({})).toBe("ok");
-    expect(corePillDotTone({ syncState: "idle", conflictCount: 0 })).toBe("ok");
+    expect(corePillDotTone({ syncState: "idle" })).toBe("ok");
+    // A parked sync conflict is not an attention item (owner decision 2026-10-13).
+    expect(corePillDotTone({ syncState: "conflict" })).toBe("ok");
   });
 
   // PL-01: a healthy run in flight used to read green, which made the pill

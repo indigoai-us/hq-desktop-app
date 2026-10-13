@@ -1405,6 +1405,10 @@ export function createSyncPlatformAdapter(
       getActivity: (slug) => call('get_company_activity', { slug }),
       getFirstWeekReturnNudge: (companyUid) =>
         hqProJson('GET', WEB_PATHS.firstWeekReturnNudge(companyUid)),
+      createBillingPortalSession: (companyUid) =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingPortal(), {
+          companyUid,
+        }),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,
@@ -1600,6 +1604,9 @@ export function createSyncPlatformAdapter(
       },
       beginReauth: () => call('begin_reauth'),
       listSyncableWorkspaces: () => call('list_syncable_workspaces'),
+      getCompanySyncMode: (slug) => call('get_sync_mode', { companySlug: slug }),
+      setCompanySyncMode: (slug, mode) =>
+        call('set_sync_mode', { companySlug: slug, mode }),
     },
 
     shell: {

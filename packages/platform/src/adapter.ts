@@ -1221,6 +1221,15 @@ export interface CompanyApi {
    * slug) since callers already have it from the workspace roster.
    */
   ensureHomeChannel(companyUid: string): AdapterPromise<{ homeChannelId: string }>;
+  /**
+   * Mint a Stripe customer-portal session for a company
+   * (`POST /v1/billing/portal`, body `{ companyUid }`). hq-pro owner-gates the
+   * call and verifies the Stripe customer belongs to that company before it
+   * mints; a non-owner gets 403 (`FORBIDDEN`), a mislinked customer 409
+   * (`BILLING_CUSTOMER_CONFLICT`). The `url` is short-lived: mint one per
+   * click and never cache it.
+   */
+  createBillingPortalSession(companyUid: string): AdapterPromise<{ url: string }>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }
@@ -1985,6 +1994,29 @@ export interface SyncApi {
   restoreFromUpstream(args: Json): AdapterPromise<void>;
   beginReauth(): AdapterPromise<Json>;
   listSyncableWorkspaces(): AdapterPromise<Json[]>;
+  /**
+   * Per-company download footprint (`get_sync_mode`; CLI `hq sync mode`).
+   * `isDefault: true` means no saved choice, so the effective mode is `all`.
+   * Footprint only: access is unchanged by either mode.
+   */
+  getCompanySyncMode?(slug: string): AdapterPromise<CompanySyncModeConfig>;
+  /** Set a company's footprint to `all` or `shared` (`set_sync_mode`). */
+  setCompanySyncMode?(
+    slug: string,
+    mode: CompanySyncMode,
+  ): AdapterPromise<CompanySyncModeConfig>;
+}
+
+/** Download footprint choices the desktop exposes; `custom` stays CLI-only. */
+export type CompanySyncMode = 'all' | 'shared';
+
+/** Wire shape of `get_sync_mode` / `set_sync_mode` (`MembershipSyncConfig`). */
+export interface CompanySyncModeConfig {
+  membershipId: string;
+  syncMode: 'all' | 'shared' | 'custom';
+  isDefault: boolean;
+  customPaths?: string[] | null;
+  updatedBy?: string | null;
 }
 
 /** One installed app, as `detect_work_apps` reports it. */

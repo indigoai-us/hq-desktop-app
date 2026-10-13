@@ -124,7 +124,7 @@ describe("the notice is a demo", () => {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) walk(path);
         else if (/\.(ts|svelte)$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) {
-          if (/\b(announceBadgeEarned|revealBadgeCard)\s*\(/.test(readFileSync(path, "utf8"))) callers.push(relative(src, path));
+          if (/\b(announceBadgesEarned|announceBadgeEarned|revealBadgeCards|revealBadgeCard)\s*\(/.test(readFileSync(path, "utf8"))) callers.push(relative(src, path));
         }
       }
     };

@@ -22,7 +22,7 @@ export { topBadge, topBadgeFor, highestTier, tierMarkPx, TIER_MARK_MIN_AVATAR } 
 export { default as TierMark } from "./TierMark.svelte";
 export { default as BadgeMark } from "./BadgeMark.svelte";
 export { default as ProfileBadges } from "./ProfileBadges.svelte";
-export { announceBadgeEarned, revealBadgeCard } from "./badge-announce.js";
+export { announceBadgeEarned, announceBadgesEarned, revealBadgeCard, revealBadgeCards } from "./badge-announce.js";
 export { default as BadgeCard } from "./BadgeCard.svelte";
 export { default as BadgeCardModal } from "./BadgeCardModal.svelte";
 export { default as BadgesPane } from "./BadgesPane.svelte";

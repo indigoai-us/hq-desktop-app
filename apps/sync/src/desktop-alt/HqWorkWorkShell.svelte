@@ -68,8 +68,6 @@
     withSignedIn,
     type PackInstallSheetState,
   } from '../lib/pack-install';
-  import ConflictParkedNotice from '../components/ConflictParkedNotice.svelte';
-  import { isConflictReviewRoute, mergeConflictNotices, removeConflictNotice, type ConflictParkedNotice as ConflictParkedNoticeRow } from '../lib/conflictNotices';
   import { lifecycleForAuthStatus } from './lib/auth-lifecycle';
   import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
@@ -255,41 +253,6 @@
   // plan-limit-notifications.ts), never as a banner in the shell.
   let planLimitNotices = $state<PlanLimitNotice[]>([]);
   let watcherLockNotice = $state<string | null>(null);
-  let conflictNotices = $state<ConflictParkedNoticeRow[]>([]);
-  let conflictNoticeBusyIds = $state<Set<string>>(new Set());
-  // A parked-conflict OS notification click arrives as the `conflicts` route;
-  // it opens the toast's Review list instead of changing screens.
-  let conflictReviewRequested = $state(false);
-
-  function setConflictNoticeBusy(id: string, busy: boolean): void {
-    const next = new Set(conflictNoticeBusyIds);
-    if (busy) next.add(id);
-    else next.delete(id);
-    conflictNoticeBusyIds = next;
-  }
-
-  async function showConflictBackup(notice: ConflictParkedNoticeRow): Promise<void> {
-    setConflictNoticeBusy(notice.id, true);
-    try {
-      await invokeFn('show_conflict_backup', { scope: notice.scope, companySlug: notice.companySlug, backupPath: notice.backupPath });
-    } catch (error) {
-      console.error('Could not reveal the parked conflict copy.', error);
-    } finally {
-      setConflictNoticeBusy(notice.id, false);
-    }
-  }
-
-  async function acknowledgeConflictBackup(notice: ConflictParkedNoticeRow): Promise<void> {
-    setConflictNoticeBusy(notice.id, true);
-    try {
-      await invokeFn('acknowledge_conflict_notice', { noticeId: notice.id });
-      conflictNotices = removeConflictNotice(conflictNotices, notice.id);
-    } catch (error) {
-      console.error('Could not acknowledge the parked conflict notice.', error);
-    } finally {
-      setConflictNoticeBusy(notice.id, false);
-    }
-  }
   let planLimitRows = $state<PlanLimitNotificationRow[]>([]);
   let planLimitRowsAccount = $state<string | null>(null);
 
@@ -1071,7 +1034,6 @@
   onMount(() => {
     postReadyActionReady = isPostReadyActionReady();
     let cancelled = false;
-    let receivedConflictNoticeStream = false;
     let latestLiveNavigation: 'meetings' | 'other' | null = null;
     let receivedLiveMeetingFocus = false;
     let revealed = false;
@@ -1095,31 +1057,11 @@
       return () => {};
     });
 
-    const unlistenConflictNoticesPromise = listen<ConflictParkedNoticeRow[]>(
-      'sync:conflict-notices',
-      (event) => {
-        if (!cancelled && Array.isArray(event.payload)) {
-          receivedConflictNoticeStream = true;
-          conflictNotices = mergeConflictNotices([], event.payload);
-        }
-      },
-    ).catch((error) => {
-      console.error('Could not subscribe to conflict notices.', error);
-      return () => {};
-    });
-    void invokeFn('get_pending_conflict_notices').then((rows) => {
-      if (!cancelled && !receivedConflictNoticeStream && Array.isArray(rows)) {
-        conflictNotices = mergeConflictNotices([], rows as ConflictParkedNoticeRow[]);
-      }
-    }).catch((error) => console.warn('Could not load pending conflict notices.', error));
-
     const restoreInitialNavigation = async () => {
       try {
         const pending = await invokeFn('desktop_alt_consume_pending_route');
         if (cancelled) return;
-        if (isConflictReviewRoute(pending)) {
-          conflictReviewRequested = true;
-        } else if (!latestLiveNavigation) {
+        if (!latestLiveNavigation) {
           applyDesktopAltRoute(
             typeof pending === 'string' ? pending : null,
             navigation,
@@ -1195,10 +1137,6 @@
     }).catch(() => () => {});
 
     const unlistenPromise = listen<string>('desktop:navigate', (event) => {
-      if (isConflictReviewRoute(event.payload)) {
-        conflictReviewRequested = true;
-        return;
-      }
       const target = applyDesktopAltRoute(event.payload, navigation);
       if (target) {
         latestLiveNavigation = target.kind === 'meetings' ? 'meetings' : 'other';
@@ -1426,7 +1364,6 @@
       void unlistenForcePromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenWatcherStatusPromise.then((unlisten) => safeUnlisten(unlisten)());
-      void unlistenConflictNoticesPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
@@ -1567,14 +1504,6 @@
       <button type="button" onclick={() => void hydrateSession()}><RailIcon name="refresh" />Retry</button>
     </section>
   {:else if capabilities}
-    <ConflictParkedNotice
-      notices={conflictNotices}
-      busyIds={conflictNoticeBusyIds}
-      onShowInFinder={showConflictBackup}
-      onAcknowledge={acknowledgeConflictBackup}
-      reviewRequested={conflictReviewRequested}
-      onReviewHandled={() => (conflictReviewRequested = false)}
-    />
     {#if workspaceError}
       <div class="workspace-warning" data-testid="hq-work-workspace-error" role="status">
         <span>Workspaces couldn’t refresh.</span>

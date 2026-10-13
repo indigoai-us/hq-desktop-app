@@ -46,12 +46,12 @@ describe('US-017: full-suite verification release guard', () => {
     expect(secretsSpec).toContain('desktop-alt secrets never leak');
     expect(secretsSpec).toContain('metadata only');
     // V4 safety flows are handled inline (NeedsYouCard) rather than by dedicated
-    // pages; the spec asserts the real conflict/drift wiring and the abort-only
-    // guard (hard policy hq-sync-bulk-asymmetry-breaker-means-abort).
-    expect(safetyFlows).toContain('resolve_conflict');
+    // pages; the spec asserts the real drift wiring and the abort-only guard
+    // (hard policy hq-sync-bulk-asymmetry-breaker-means-abort). Conflicts have
+    // no desktop surface (no-conflict-surfaces.spec.ts).
     expect(safetyFlows).toContain('restore_from_upstream');
     expect(safetyFlows).toContain('hq-sync-bulk-asymmetry-breaker-means-abort');
-    expect(safetyFlows).toContain('Sync stopped because a conflict needs attention.');
+    expect(safetyFlows).toContain('Sync stopped before it finished.');
   });
 
   it('keeps V4 styling isolated to desktop-alt while reusing popover tokens', () => {

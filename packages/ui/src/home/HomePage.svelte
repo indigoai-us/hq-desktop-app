@@ -20,8 +20,6 @@
   import ReadLoader from "../common/ReadLoader.svelte";
   import {
     formatClock,
-    getAggregateConflictCardModel,
-    getConflictCardModel,
     getDeleteRefusalCopy,
     getDriftCardModel,
     getHomeCompanyRows,
@@ -33,7 +31,6 @@
     getHomeTodayAgenda,
     getInviteCardModel,
     getNeedsYouCount,
-    type HomeConflict,
     type HomeCoreState,
     type HomeDeleteRefusal,
   } from "./home-model.js";
@@ -41,7 +38,7 @@
   /**
    * V4 Home — the exception-based surface (SPEC section 5,
    * home-healthy/syncing/error.png). Presentational: DesktopApp owns the sync
-   * event stream, the conflict queue, and the core-drift state; this page
+   * event stream and the core-drift state; this page
    * renders the meta line, the NEEDS YOU queue, the syncing progress card,
    * the error card, and the actor-grouped digest. Supersedes SyncPage
    * (US-003) — the sources-table mental model is gone.
@@ -72,10 +69,6 @@
     autoSyncOn?: boolean | null;
     /** Local hq-core version ("15.0.15"); null when unreadable. */
     hqVersion?: string | null;
-    conflicts: HomeConflict[];
-    /** Aggregate fallback from sync:complete when no per-file events exist. */
-    aggregateConflictCount?: number;
-    aggregateConflictCompany?: string | null;
     deleteRefusals?: HomeDeleteRefusal[];
     coreState?: HomeCoreState | null;
     driftDismissed?: boolean;
@@ -88,12 +81,6 @@
     companyNamesByUid?: Map<string, string>;
     /** Open a company workspace from the portfolio table. */
     onopencompany?: (slug: string) => void;
-    onresolveconflict?: (
-      path: string,
-      strategy: "keep-local" | "keep-remote",
-    ) => void | Promise<void>;
-    oncompareconflict?: (path: string) => void | Promise<void>;
-    onresolveaggregateconflicts?: () => void | Promise<void>;
     onrestoredrift?: () => void | Promise<void>;
     onkeepdrift?: () => void | Promise<void>;
     onviewdrift?: () => void | Promise<void>;
@@ -123,9 +110,6 @@
     syncStartedAt = null,
     autoSyncOn = null,
     hqVersion = null,
-    conflicts,
-    aggregateConflictCount = 0,
-    aggregateConflictCompany = null,
     deleteRefusals = [],
     coreState = null,
     driftDismissed = false,
@@ -134,9 +118,6 @@
     meetingEvents = [],
     companyNamesByUid = new Map(),
     onopencompany,
-    onresolveconflict,
-    oncompareconflict,
-    onresolveaggregateconflicts,
     onrestoredrift,
     onkeepdrift,
     onviewdrift,
@@ -181,17 +162,8 @@
       : null,
   );
   const inviteWorkspaces = $derived(pendingInviteWorkspaces(workspaces));
-  const showAggregateConflict = $derived(
-    syncState === "conflict" && conflicts.length === 0,
-  );
   const needsYouCount = $derived(
-    getNeedsYouCount(
-      conflicts,
-      coreState,
-      driftDismissed,
-      inviteWorkspaces.length,
-      showAggregateConflict,
-    ),
+    getNeedsYouCount(coreState, driftDismissed, inviteWorkspaces.length),
   );
   const progressModel = $derived(
     getHomeProgressModel({
@@ -216,21 +188,6 @@
   const todayAgenda = $derived(
     getHomeTodayAgenda({ events: meetingEvents, companyNamesByUid }),
   );
-
-  async function handleConflictAction(
-    path: string,
-    actionId: string,
-  ): Promise<void> {
-    if (actionId === "compare") await oncompareconflict?.(path);
-    else
-      await onresolveconflict?.(path, actionId as "keep-local" | "keep-remote");
-  }
-
-  async function handleAggregateConflictAction(
-    actionId: string,
-  ): Promise<void> {
-    if (actionId === "resolve-conflicts") await onresolveaggregateconflicts?.();
-  }
 
   async function handleDriftAction(actionId: string): Promise<void> {
     if (actionId === "restore") await onrestoredrift?.();
@@ -397,21 +354,6 @@
               acceptingInviteSlug === invite.slug,
             )}
             onaction={(id) => void handleInviteAction(invite.slug, id)}
-          />
-        {/each}
-        {#if showAggregateConflict}
-          <NeedsYouCard
-            card={getAggregateConflictCardModel(
-              aggregateConflictCount,
-              aggregateConflictCompany,
-            )}
-            onaction={handleAggregateConflictAction}
-          />
-        {/if}
-        {#each conflicts as conflict (conflict.path)}
-          <NeedsYouCard
-            card={getConflictCardModel(conflict)}
-            onaction={(id) => handleConflictAction(conflict.path, id)}
           />
         {/each}
         {#if driftCard}

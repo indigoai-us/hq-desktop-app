@@ -1,6 +1,7 @@
 //! System tray icon with state-driven icon swapping.
 //!
-//! Visual states: **idle**, **syncing**, **reauth**, **error**, **conflict**.
+//! Visual states: **idle**, **syncing**, **reauth**, **error**. A parked
+//! sync conflict has no tray state (owner decision 2026-10-13).
 //! Left-click opens the desktop workspace (setup still uses the installer card
 //! on `main` until HQ is installed).
 //! Right-click shows a context menu with "Sync Now",
@@ -35,7 +36,6 @@ pub enum TrayState {
     /// idle icon so auth expiry never paints the menu bar red.
     Reauth,
     Error,
-    Conflict,
     /// A meeting was detected and the user has not yet acted on it.
     /// Shown as a badge dot overlaid on the current sync state icon.
     /// Uses the idle icon bytes as a placeholder; a designer badge
@@ -51,7 +51,6 @@ impl TrayState {
             "syncing" => Some(Self::Syncing),
             "reauth" => Some(Self::Reauth),
             "error" => Some(Self::Error),
-            "conflict" => Some(Self::Conflict),
             "prompt" => Some(Self::Prompt),
             _ => None,
         }
@@ -64,7 +63,6 @@ impl TrayState {
             Self::Syncing => "HQ — Syncing…",
             Self::Reauth => "HQ — Sign in to keep syncing",
             Self::Error => "HQ — Error",
-            Self::Conflict => "HQ — Conflict",
             Self::Prompt => "HQ — Meeting Detected",
         }
     }
@@ -347,7 +345,6 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
     static ICON_IDLE: OnceLock<Image<'static>> = OnceLock::new();
     static ICON_SYNCING: OnceLock<Image<'static>> = OnceLock::new();
     static ICON_ERROR: OnceLock<Image<'static>> = OnceLock::new();
-    static ICON_CONFLICT: OnceLock<Image<'static>> = OnceLock::new();
 
     let decode = |bytes: &'static [u8]| -> Image<'static> {
         Image::from_bytes(bytes).expect("Failed to decode tray icon PNG")
@@ -362,9 +359,6 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
         }
         TrayState::Error => {
             ICON_ERROR.get_or_init(|| decode(include_bytes!("../icons/tray-error@2x.png")))
-        }
-        TrayState::Conflict => {
-            ICON_CONFLICT.get_or_init(|| decode(include_bytes!("../icons/tray-conflict@2x.png")))
         }
         // Reuse idle icon; designer badge composite is a follow-up.
         TrayState::Prompt => {
@@ -1408,9 +1402,7 @@ fn reassert_tray(app: &AppHandle) {
 
 /// Wire sync events to tray icon state changes.
 fn setup_sync_listeners(app: &AppHandle) {
-    use crate::events::{
-        EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_ERROR, EVENT_SYNC_PROGRESS,
-    };
+    use crate::events::{EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_PROGRESS};
 
     let app1 = app.clone();
     app.listen(EVENT_SYNC_PROGRESS, move |_event| {
@@ -1425,11 +1417,6 @@ fn setup_sync_listeners(app: &AppHandle) {
     let app3 = app.clone();
     app.listen(EVENT_SYNC_COMPLETE, move |_event| {
         update_tray_icon(&app3, TrayState::Idle);
-    });
-
-    let app4 = app.clone();
-    app.listen(EVENT_SYNC_CONFLICT, move |_event| {
-        update_tray_icon(&app4, TrayState::Conflict);
     });
 
     // hard-stop-readiness US-019: the menu bar says when a plan limit paused a
@@ -1558,12 +1545,12 @@ pub fn clear_session_badge(app: &AppHandle) {
 
 /// Tauri command: let the frontend explicitly set tray icon state.
 ///
-/// Accepts: "idle", "syncing", "reauth", "error", "conflict" (case-insensitive).
+/// Accepts: "idle", "syncing", "reauth", "error", "prompt" (case-insensitive).
 #[tauri::command]
 pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
     let tray_state = TrayState::from_str_loose(&state).ok_or_else(|| {
         format!(
-            "Invalid tray state: '{}'. Expected: idle, syncing, reauth, error, conflict, prompt",
+            "Invalid tray state: '{}'. Expected: idle, syncing, reauth, error, prompt",
             state
         )
     })?;
@@ -1761,10 +1748,8 @@ mod tests {
         );
         assert_eq!(TrayState::from_str_loose("Error"), Some(TrayState::Error));
         assert_eq!(TrayState::from_str_loose("reauth"), Some(TrayState::Reauth));
-        assert_eq!(
-            TrayState::from_str_loose("conflict"),
-            Some(TrayState::Conflict)
-        );
+        // Owner decision 2026-10-13: there is no conflict tray state.
+        assert_eq!(TrayState::from_str_loose("conflict"), None);
         assert_eq!(TrayState::from_str_loose("prompt"), Some(TrayState::Prompt));
         assert_eq!(TrayState::from_str_loose("PROMPT"), Some(TrayState::Prompt));
         assert_eq!(TrayState::from_str_loose("unknown"), None);
@@ -1777,7 +1762,6 @@ mod tests {
         assert_eq!(TrayState::Syncing.tooltip(), "HQ — Syncing…");
         assert_eq!(TrayState::Reauth.tooltip(), "HQ — Sign in to keep syncing");
         assert_eq!(TrayState::Error.tooltip(), "HQ — Error");
-        assert_eq!(TrayState::Conflict.tooltip(), "HQ — Conflict");
         assert_eq!(TrayState::Prompt.tooltip(), "HQ — Meeting Detected");
     }
 
@@ -1791,7 +1775,6 @@ mod tests {
             TrayState::Syncing,
             TrayState::Reauth,
             TrayState::Error,
-            TrayState::Conflict,
         ] {
             let bytes: &[u8] = match state {
                 TrayState::Idle | TrayState::Reauth | TrayState::Prompt => {
@@ -1799,7 +1782,6 @@ mod tests {
                 }
                 TrayState::Syncing => include_bytes!("../icons/tray-syncing@2x.png"),
                 TrayState::Error => include_bytes!("../icons/tray-error@2x.png"),
-                TrayState::Conflict => include_bytes!("../icons/tray-conflict@2x.png"),
             };
             assert!(
                 bytes.starts_with(&png_magic),
@@ -1839,7 +1821,6 @@ mod tests {
             | TrayState::Syncing
             | TrayState::Reauth
             | TrayState::Error
-            | TrayState::Conflict
             | TrayState::Prompt => {}
         }
     }

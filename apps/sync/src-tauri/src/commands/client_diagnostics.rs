@@ -385,11 +385,10 @@ async fn probe_sync() -> ClientHealthCheckResult {
     }
 }
 
+/// Parked conflicts are not a fault: the runner keeps the cloud copy live and
+/// sets the local copy aside, so this check passes whenever the snapshot reads.
 async fn probe_conflicts() -> ClientHealthCheckResult {
     match crate::commands::client_health::diagnostics_sync_snapshot() {
-        Ok((_, _, conflict_count)) if conflict_count > 0 => {
-            fail(ClientHealthDiagnosticCheck::Conflicts, ClientHealthFailureReason::ConflictBlocked)
-        }
         Ok(_) => pass(ClientHealthDiagnosticCheck::Conflicts),
         Err(_) => fail(ClientHealthDiagnosticCheck::Conflicts, probe_error_reason(ProbeErrorKind::Other)),
     }
@@ -1616,10 +1615,11 @@ mod tests {
             .collect()
     }
 
-    /// Conflict-blocked RETRY_SYNC must NEVER force a sync: it fails closed with
-    /// CONFLICT_BLOCKED and (in production) surfaces the user-owned workflow.
+    /// Parked conflicts never block RETRY_SYNC: the runner keeps the cloud copy
+    /// live and sets the local copy aside, so the retry takes the normal sync
+    /// path even when an older snapshot still reads CONFLICT_BLOCKED.
     #[tokio::test]
-    async fn retry_sync_conflict_blocked_fails_closed_and_never_force_syncs() {
+    async fn retry_sync_with_parked_conflicts_still_syncs() {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let server = MockServer::start().await;
         mount_repair_command(&server, "cmd-retry-conflict", "RETRY_SYNC", None).await;
@@ -1627,20 +1627,17 @@ mod tests {
 
         let _home = prepare_home("inst-retry-conflict-01");
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
-        // Inject a conflict-blocked snapshot with outstanding conflicts.
+        // Inject a legacy conflict-blocked snapshot with parked conflicts.
         std::env::set_var("HQ_TEST_REPAIR_SYNC", "conflict_blocked:3");
-        // If the code ever tried to sync, this would force it — the test proves
-        // it does NOT (the terminal outcome is CONFLICT_BLOCKED).
         std::env::set_var("HQ_TEST_REPAIR_SYNC_RESULT", "ok");
 
         poll_once_inner().await.expect("poll succeeds");
 
         let requests = server.received_requests().await.unwrap();
-        assert_eq!(receipt_states(&requests), vec!["acknowledged", "running", "failed"]);
+        assert_eq!(receipt_states(&requests), vec!["acknowledged", "running", "succeeded"]);
         let terminal = terminal_receipt_body(&requests);
         assert_eq!(terminal["kind"], "RETRY_SYNC");
-        assert_eq!(terminal["failureReason"], "CONFLICT_BLOCKED");
-        assert!(terminal.get("postcondition").is_none(), "a fail-closed conflict must carry no success proof");
+        assert!(terminal.get("failureReason").map_or(true, |v| v.is_null()));
 
         std::env::remove_var("HQ_TEST_REPAIR_SYNC");
         std::env::remove_var("HQ_TEST_REPAIR_SYNC_RESULT");

@@ -131,10 +131,6 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   openCompanyIntegrations: "push",
   toggleAccountMenu: "none",
   toggleMoreCompanies: "none",
-  // Core popover "Resolve conflicts" → Settings › Sync, through navigate().
-  openConflictResolution: "push",
-  // Hands the file to the OS editor; the shell stays where it is.
-  openConflictInEditor: "none",
   // A connection card in a cloud bot's DM: opens a console page in the system
   // browser or changes the card's state. The shell stays in the conversation.
   handleConnectionAction: "none",

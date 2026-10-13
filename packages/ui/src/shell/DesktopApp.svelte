@@ -505,7 +505,6 @@
     type NativeNotificationRecovery,
   } from "./notification-recovery.js";
   import type { SyncEventHost } from "./sync-events.js";
-  import type { HomeConflict } from "../home/home-model.js";
   import {
     emptySyncStatus,
     reduceSyncEvent,
@@ -1141,8 +1140,8 @@
     /** Contacts + agents for @ mention completion. */
     mentionCandidates?: MentionTarget[];
     /**
-     * Inject the D-08 designed fixtures into the titlebar Core popover (conflict
-     * card / packs / update). MUST stay false on real-data paths.
+     * Inject the D-08 designed fixtures into the titlebar Core popover (packs /
+     * update). MUST stay false on real-data paths.
      */
     coreFixtures?: boolean;
     /**
@@ -1934,9 +1933,9 @@
   });
 
   /**
-   * Per-file conflict rows for the Core popover. Separate from the reducer
-   * above because that one only needs the phase; this one needs the path so
-   * the row's Keep local / Keep cloud buttons have something to resolve.
+   * Sync events that need a re-read of the journal-backed status. A parked
+   * sync conflict has no desktop surface (owner decision 2026-10-13), so the
+   * per-file `sync:conflict` stream is not listened to here.
    */
   $effect(() => {
     const host = syncEvents;
@@ -1951,38 +1950,11 @@
           else handles.push(un);
         },
         (err) => {
-          console.error("conflicts: event subscribe failed:", err);
+          console.error("sync status: event subscribe failed:", err);
         },
       );
     };
 
-    track(
-      host.listen("sync:conflict", (event) => {
-        const payload = (event?.payload ?? {}) as Record<string, unknown>;
-        const path =
-          typeof payload.path === "string" && payload.path.trim()
-            ? payload.path.trim()
-            : null;
-        if (!path) return;
-        if (conflictFiles.some((c) => c.path === path)) return;
-        conflictFiles = [
-          ...conflictFiles,
-          {
-            path,
-            canAutoResolve: payload.canAutoResolve === true,
-            status: "pending",
-            at: Date.now(),
-          },
-        ];
-      }),
-    );
-    // A fresh run re-reports whatever is still conflicted, so a stale row from
-    // the previous run must not linger with a path that may no longer exist.
-    track(
-      host.listen("sync:all-complete", () => {
-        conflictFiles = [];
-      }),
-    );
     // hard-stop US-019: the native registry announces every change to the
     // plan-limit upload pause; re-read the journal-backed status so the Core
     // header stops saying "All synced" without waiting for the 30s poll.
@@ -5096,93 +5068,6 @@
   let lastReplyRowId = $state<string | null>(null);
   let unreadCount = $state(initialUnreadCount);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
-  /**
-   * Per-file conflicts the Core popover lists. Since #913 the runner's
-   * per-file `sync:conflict` event is forwarded from both manual Sync Now and
-   * the watch daemon, carrying the conflicted path, so these rows reflect the
-   * real conflict set; the `sync:complete` aggregate still drives the notice
-   * count and the recovery card. This state exists so a row's Keep local /
-   * Keep cloud buttons reach `resolve_conflict` instead of doing nothing,
-   * which is what they did in the desktop window before (the handlers had
-   * stayed behind in the menubar popover).
-   */
-  let conflictFiles = $state<HomeConflict[]>([]);
-
-  function setConflictStatus(
-    path: string,
-    status: HomeConflict["status"],
-    error?: string,
-  ): void {
-    conflictFiles = conflictFiles.map((c) =>
-      c.path === path ? { ...c, status, error } : c,
-    );
-  }
-
-  /**
-   * Keep local / Keep cloud on a Core-popover conflict row.
-   *
-   * Runs the same `resolve_conflict` command the menubar popover used (the
-   * adapter forwards it to `hq sync resolve`), then re-reads the journal so
-   * the conflict count and the sync state settle on the real outcome rather
-   * than an optimistic guess.
-   */
-  async function resolveConflictFile(
-    path: string,
-    strategy: "keep-local" | "keep-remote" | "discard",
-  ): Promise<void> {
-    if (!adapter.isAvailable("canSync")) return;
-    if (typeof adapter.sync?.resolveConflict !== "function") return;
-    const current = conflictFiles.find((c) => c.path === path);
-    if (current && current.status === "resolving") return;
-    setConflictStatus(path, "resolving");
-    let result;
-    try {
-      result = await adapter.sync.resolveConflict(path, strategy);
-    } catch (err) {
-      console.error("resolve_conflict threw:", err);
-      setConflictStatus(path, "error", "Could not resolve this file. Try again.");
-      return;
-    }
-    if (!result.ok) {
-      console.error("resolve_conflict failed:", result.reason, result.message);
-      setConflictStatus(path, "error", "Could not resolve this file. Try again.");
-      return;
-    }
-    // Resolved files leave the list; the row disappearing IS the confirmation.
-    conflictFiles = conflictFiles.filter((c) => c.path !== path);
-    liveSync = await readLiveSyncStatus(adapter);
-  }
-
-  /**
-   * "Open in editor" on a conflict row — same `open_in_editor` command the
-   * popover called. It lives on the shell slice (canLaunchApps), not sync.
-   */
-  async function openConflictInEditor(path: string): Promise<void> {
-    if (!adapter.isAvailable("canLaunchApps")) return;
-    if (typeof adapter.shell?.openInEditor !== "function") return;
-    try {
-      const result = await adapter.shell.openInEditor(path);
-      if (!result.ok) {
-        console.error("open_in_editor failed:", result.reason, result.message);
-      }
-    } catch (err) {
-      console.error("open_in_editor threw:", err);
-    }
-  }
-
-  /**
-   * The title bar's "Resolve conflicts" recovery action.
-   *
-   * Resolve-all deliberately does NOT pick a strategy on the user's behalf —
-   * keep-local and keep-remote each discard one side of every file at once.
-   * When per-file rows exist the popover already offers the choice per file;
-   * otherwise (the aggregate-only path the runner actually produces) this
-   * opens Settings › Sync, which is where the conflict is worked through. The
-   * button's own "Opening…" label is written for this.
-   */
-  function openConflictResolution(): void {
-    openSettings("sync");
-  }
   /**
    * PL-02 — sync trouble the Core popover reports, read from the SAME
    * `list_syncable_workspaces` envelope the menubar used. The command never
@@ -13056,7 +12941,7 @@
   // company's membership roster (GET /membership/company/{uid}); the contacts
   // read used before carries no role and leaves the caller out, so every row
   // was a dash. Owner rows first, then by name.
-  const profileOpen = $derived(view === "settings" && (settingsSection == null || settingsSection === "profile"));
+  const profileOpen = $derived(view === "settings" && (settingsSection == null || settingsSection === "profile" || settingsSection === "companies"));
   $effect(() => {
     if (!profileOpen) return;
     for (const company of railCompanyRoster) {
@@ -14088,16 +13973,7 @@
     })()}
     syncState={liveSyncState}
     {lastSyncLabel}
-    conflictCount={liveSync.conflicts}
     uploadsPaused={liveSync.uploadsPaused ?? []}
-    conflicts={conflictFiles}
-    onresolveconflict={(path, strategy) =>
-      resolveConflictFile(
-        path,
-        strategy as "keep-local" | "keep-remote" | "discard",
-      )}
-    onopenconflict={(path) => openConflictInEditor(path)}
-    onresolveconflicts={openConflictResolution}
     {manifestError}
     {cloudReachable}
     {cloudError}
@@ -14398,6 +14274,7 @@
           onsectionchange={(section) => openSettings(section)}
           openExternal={onopenurl}
           {profileCompanies}
+          selectedCompanyUid={tenantCompanyId}
           oncompany={(uid) => {
             companyPaneOpen = true;
             changeTenantCompany(uid);

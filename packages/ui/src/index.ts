@@ -357,4 +357,4 @@ export type { EarnedBadge } from "./badges/badge-catalog.js";
 // hq-pro's badges by; the design harness's ?earn= switch follows it too.
 export { BADGE_BY_ID, earnedTier } from "./badges/badge-catalog.js";
 // The "You earned" notice and the Gold / Legendary card reveal. No earning events call it yet.
-export { announceBadgeEarned } from "./badges/badge-announce.js";
+export { announceBadgeEarned, announceBadgesEarned } from "./badges/badge-announce.js";
