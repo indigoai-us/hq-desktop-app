@@ -372,8 +372,13 @@ pub fn daemon_mode_active() -> bool {
     current_phase() == HostPhase::Daemon
 }
 
-pub fn daemon_sync_now_args() -> Vec<&'static str> {
-    vec!["daemon", "sync", "now", "--json"]
+pub fn daemon_sync_now_args(company_slug: Option<&str>) -> Vec<&str> {
+    let mut args = vec!["daemon", "sync", "now"];
+    if let Some(company_slug) = company_slug {
+        args.extend(["--company", company_slug]);
+    }
+    args.push("--json");
+    args
 }
 
 pub(crate) fn daemon_sync_now_for_phase<F>(
@@ -382,17 +387,12 @@ pub(crate) fn daemon_sync_now_for_phase<F>(
     request: F,
 ) -> Option<Result<String, String>>
 where
-    F: FnOnce() -> Result<(), String>,
+    F: FnOnce(Option<&str>) -> Result<(), String>,
 {
     if phase != HostPhase::Daemon {
         return None;
     }
-    if company_slug.is_some() {
-        return Some(Err(
-            "Company-specific Sync Now is unavailable while HQ daemon owns sync.".to_string(),
-        ));
-    }
-    Some(request().map(|_| "hq-daemon-sync".to_string()))
+    Some(request(company_slug).map(|_| "hq-daemon-sync".to_string()))
 }
 
 pub fn daemon_sync_pause_args(pause: bool) -> Vec<&'static str> {
@@ -514,6 +514,13 @@ pub(crate) fn request_daemon_instant_sync_enabled(enabled: bool) -> Result<(), S
 
 /// Run one daemon control and keep transport details in the local log.
 pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
+    run_daemon_sync_command_with_pass_request_source(args, None)
+}
+
+fn run_daemon_sync_command_with_pass_request_source(
+    args: &[&str],
+    pass_request_source: Option<&str>,
+) -> Result<String, String> {
     #[cfg(test)]
     if TEST_DAEMON_COMMANDS_ENABLED.load(Ordering::Acquire) {
         TEST_DAEMON_COMMANDS
@@ -550,10 +557,15 @@ pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
         return Ok("Services enabled".to_string());
     }
     let hq = local_hq().ok_or_else(|| HQ_CLI_MISSING_MESSAGE.to_string())?;
-    let output = hq_desktop_core::paths::spawn_command(&hq, args)
+    let mut command = hq_desktop_core::paths::spawn_command(&hq, args);
+    command
         .env("PATH", hq_desktop_core::paths::child_path())
         .env("HQ_NO_UPDATE_CHECK", "1")
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    if let Some(pass_request_source) = pass_request_source {
+        command.env("HQ_SYNC_PASS_REQUEST_SOURCE", pass_request_source);
+    }
+    let output = command
         .output()
         .map_err(|error| {
             log(
@@ -575,6 +587,12 @@ pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
     }
     let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
     log(LOG_TAG, &format!("daemon sync control failed: {detail}"));
+    // The caller needs this specific CLI parse error to make one backwards-
+    // compatible unscoped retry. All other command errors remain normalized
+    // before they can reach the UI.
+    if is_unknown_company_option(&detail) {
+        return Err(detail);
+    }
     Err(daemon_sync_command_error(&detail).to_string())
 }
 
@@ -1580,12 +1598,33 @@ pub fn set_daemon_sync(enable: bool) -> Result<(), String> {
     Ok(())
 }
 
-pub fn request_daemon_sync_now() -> Result<(), String> {
-    let output = run_daemon_sync_command(&daemon_sync_now_args())?;
+fn is_unknown_company_option(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("unknown option") && error.contains("--company")
+}
+
+fn request_daemon_sync_now_with<F>(company_slug: Option<&str>, mut request: F) -> Result<(), String>
+where
+    F: FnMut(&[&str]) -> Result<String, String>,
+{
+    let args = daemon_sync_now_args(company_slug);
+    let output = match request(&args) {
+        Err(error) if company_slug.is_some() && is_unknown_company_option(&error) => {
+            let unscoped_args = daemon_sync_now_args(None);
+            request(&unscoped_args)?
+        }
+        result => result?,
+    };
     if let Some(message) = daemon_sync_action_error(&output) {
         return Err(message.to_string());
     }
     Ok(())
+}
+
+pub fn request_daemon_sync_now(company_slug: Option<&str>) -> Result<(), String> {
+    request_daemon_sync_now_with(company_slug, |args| {
+        run_daemon_sync_command_with_pass_request_source(args, Some("desktop"))
+    })
 }
 
 /// `start_daemon` / `stop_daemon` in daemon mode.
@@ -2067,8 +2106,12 @@ mod tests {
     #[test]
     fn desktop_sync_controls_use_daemon_sync_commands() {
         assert_eq!(
-            daemon_sync_now_args(),
+            daemon_sync_now_args(None),
             vec!["daemon", "sync", "now", "--json"]
+        );
+        assert_eq!(
+            daemon_sync_now_args(Some("acme")),
+            vec!["daemon", "sync", "now", "--company", "acme", "--json"]
         );
         assert_eq!(
             daemon_sync_pause_args(true),
@@ -2271,20 +2314,46 @@ mod tests {
     }
 
     #[test]
-    fn daemon_sync_now_rejects_company_scope_instead_of_syncing_every_company() {
-        let mut request_called = false;
-        let result = daemon_sync_now_for_phase(HostPhase::Daemon, Some("acme"), || {
-            request_called = true;
-            request_daemon_sync_now()
+    fn daemon_sync_now_passes_company_scope_to_the_daemon_command() {
+        let mut requested_scope = None;
+        let result = daemon_sync_now_for_phase(HostPhase::Daemon, Some("acme"), |scope| {
+            requested_scope = scope.map(str::to_string);
+            Ok(())
         });
 
-        assert_eq!(
-            result,
-            Some(Err(
-                "Company-specific Sync Now is unavailable while HQ daemon owns sync.".to_string()
-            ))
-        );
-        assert!(!request_called);
+        assert_eq!(result, Some(Ok("hq-daemon-sync".to_string())));
+        assert_eq!(requested_scope.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn scoped_daemon_sync_retries_once_without_company_for_an_older_cli() {
+        let mut calls = Vec::new();
+        let result = request_daemon_sync_now_with(Some("acme"), |args| {
+            calls.push(args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>());
+            if calls.len() == 1 {
+                Err("error: unknown option '--company'".to_string())
+            } else {
+                Ok(r#"{"accepted":true,"action":"restart-sync-runner","daemonRunning":true}"#.to_string())
+            }
+        });
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, vec![
+            vec!["daemon", "sync", "now", "--company", "acme", "--json"],
+            vec!["daemon", "sync", "now", "--json"],
+        ]);
+    }
+
+    #[test]
+    fn unscoped_daemon_sync_uses_one_unchanged_command() {
+        let mut calls = Vec::new();
+        let result = request_daemon_sync_now_with(None, |args| {
+            calls.push(args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>());
+            Ok(r#"{"accepted":true,"action":"restart-sync-runner","daemonRunning":true}"#.to_string())
+        });
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, vec![vec!["daemon", "sync", "now", "--json"]]);
     }
 
     #[test]
@@ -2435,9 +2504,9 @@ mod tests {
         let handle = app.handle().clone();
         let mut sync_now_called = false;
         assert_eq!(
-            daemon_sync_now_for_phase(HostPhase::Daemon, None, || {
+            daemon_sync_now_for_phase(HostPhase::Daemon, None, |_| {
                 sync_now_called = true;
-                request_daemon_sync_now()
+                request_daemon_sync_now(None)
             }),
             Some(Ok("hq-daemon-sync".to_string()))
         );

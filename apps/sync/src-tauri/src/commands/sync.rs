@@ -2633,7 +2633,7 @@ async fn start_sync_inner(
     if let Some(result) = crate::commands::hq_daemon_host::daemon_sync_now_for_phase(
         host_phase,
         company_slug.as_deref(),
-        crate::commands::hq_daemon_host::request_daemon_sync_now,
+        |company_slug| crate::commands::hq_daemon_host::request_daemon_sync_now(company_slug),
     ) {
         return result;
     }
