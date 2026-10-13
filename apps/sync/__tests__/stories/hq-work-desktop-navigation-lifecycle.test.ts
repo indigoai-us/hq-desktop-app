@@ -1307,9 +1307,8 @@ describe('embedded Work navigation and lifecycle', () => {
     await flush();
     expect(openExternal).toHaveBeenLastCalledWith('https://hq.computer/');
 
-    // Settings no longer lists companies; they are reached from the rail
-    // tiles and the More companies popover.
-    expect(host.querySelector('[data-testid="settings-nav-companies"]')).toBeNull();
+    // Owner-approved 2026-10-11: Settings has a Companies screen again.
+    expect(host.querySelector('[data-testid="settings-nav-companies"]')).not.toBeNull();
 
     warmRoute('meetings');
     await flush();

@@ -17,6 +17,7 @@
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
   import CompanyStepPreview from './CompanyStepPreview.svelte';
   import YourAppsPreview from './YourAppsPreview.svelte';
+  import MarketplaceDetailPreview from './MarketplaceDetailPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
@@ -305,6 +306,9 @@
     mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
     onfinish={() => {}}
   />
+{:else if view === 'marketplace'}
+  <!-- The Marketplace tab with the detail panel open on one listing. -->
+  <MarketplaceDetailPreview />
 {:else if view === 'your-apps'}
   <!-- The first-run "Your apps" step on its own (integration auto-detect MVP):
        ?state=auto|connect|connecting|failed|docs|member|empty|many. Size the

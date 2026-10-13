@@ -12941,7 +12941,7 @@
   // company's membership roster (GET /membership/company/{uid}); the contacts
   // read used before carries no role and leaves the caller out, so every row
   // was a dash. Owner rows first, then by name.
-  const profileOpen = $derived(view === "settings" && (settingsSection == null || settingsSection === "profile"));
+  const profileOpen = $derived(view === "settings" && (settingsSection == null || settingsSection === "profile" || settingsSection === "companies"));
   $effect(() => {
     if (!profileOpen) return;
     for (const company of railCompanyRoster) {
