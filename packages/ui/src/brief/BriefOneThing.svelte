@@ -101,7 +101,7 @@
   }
   .because {
     margin-top: 8px;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.4;
     color: rgb(var(--b-ink) / 0.76);
     max-width: 62ch;
@@ -116,7 +116,7 @@
   }
   .tag {
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     padding: 5px 8px;
     border-radius: 8px;
     background: rgb(var(--b-ink) / 0.14);
@@ -129,7 +129,7 @@
     margin-left: auto;
   }
   .donechip {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     padding: 6px 12px;
     border-radius: 999px;

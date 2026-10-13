@@ -293,8 +293,8 @@
     position: absolute;
     translate: 3px 0;
     font-family: var(--b-mono);
-    font-size: 9px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.55);
     white-space: nowrap;
     cursor: default;
@@ -308,8 +308,8 @@
     height: 12px;
     margin-top: 4px;
     font-family: var(--b-mono);
-    font-size: 8.5px;
-    letter-spacing: 0.06em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
   }
   .axis span {
@@ -341,8 +341,8 @@
     align-items: center;
     gap: 8px;
     padding: 6px 9px;
-    border-radius: 11px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     line-height: 1.25;
     color: var(--b-t1);
     min-width: 0;
@@ -390,7 +390,7 @@
     flex: 1;
     min-width: 0;
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--b-t2);
     white-space: nowrap;
     overflow: hidden;
@@ -399,13 +399,13 @@
   .sn {
     flex: none;
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     color: var(--b-t3);
   }
   .more {
     justify-content: center;
     color: var(--b-t2);
-    font-size: 11.5px;
+    font-size: 11px;
   }
   .more .dot {
     width: 6px;
@@ -413,7 +413,7 @@
     opacity: 0.7;
   }
   .none {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-t2);
     padding: 6px 0;
   }

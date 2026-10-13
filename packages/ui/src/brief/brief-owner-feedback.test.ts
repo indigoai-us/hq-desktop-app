@@ -147,7 +147,8 @@ describe("session strip (10) and session peek (15)", () => {
 
 describe("Needs you (8, 11, 16, 17)", () => {
   it("shows five rows and a '+N more' row whose peek lists the rest", async () => {
-    render(base({ decisions: Array.from({ length: 7 }, (_, i) => decision(i + 1)) }));
+    // Calls only (no priorities, no incident), so every row is a call.
+    render(base({ decisions: Array.from({ length: 7 }, (_, i) => decision(i + 1)), priorities: undefined, risks: [] }));
     expect(qa("brief-need")).toHaveLength(5);
     const more = q("brief-need-more")!;
     expect(more.textContent!.trim()).toBe("+2 more");
@@ -298,8 +299,8 @@ describe("Yesterday card (14, 19)", () => {
   });
 });
 
-describe("Today's priorities (18)", () => {
-  it("renders the writer's priorities, at most five, before the grid", () => {
+describe("Today's priorities (18), folded into the main card", () => {
+  it("renders the writer's priorities, at most five, each with its because, as the main card's first rows", () => {
     const text = JSON.stringify({
       priorities: Array.from({ length: 6 }, (_, i) => ({ n: i + 1, text: `Priority ${i + 1}`, because: `because ${i + 1}`, item_id: i === 0 ? "d1" : null })),
       items: {},
@@ -308,12 +309,20 @@ describe("Today's priorities (18)", () => {
     expect(items.priorities).toHaveLength(5);
     expect(items.priorities[0]).toEqual({ n: 1, text: "Priority 1", because: "because 1", itemId: "d1" });
     render(base({ priorities: items.priorities, decisions: [decision(1)] }));
-    const card = q("brief-priorities")!;
-    expect(qa("brief-priority")).toHaveLength(5);
-    expect(card.textContent).toContain("Today's priorities");
-    expect(qa("brief-priority")[0]!.textContent).toContain("Priority 1 · because 1");
-    // Before the grid.
-    expect(card.compareDocumentPosition(target.querySelector("main.b-grid")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const card = q("brief-needs")!;
+    expect(q("brief-priorities")!.textContent).toContain("Today's priorities");
+    const rows = [...card.querySelectorAll<HTMLElement>("[data-priority]")];
+    expect(rows).toHaveLength(5);
+    expect(rows.map((r) => r.getAttribute("data-priority"))).toEqual(["1", "2", "3", "4", "5"]);
+    // Priority 1 opens d1, so it is that call's row, titled in the writer's words with its because.
+    expect(rows[0]!.getAttribute("data-testid")).toBe("brief-need");
+    expect(rows[0]!.textContent).toContain("Priority 1");
+    expect(rows[0]!.textContent).toContain("because 1");
+    // The others open no item: plain rows with their because.
+    expect(rows[1]!.getAttribute("data-testid")).toBe("brief-need-priority");
+    expect(rows[1]!.textContent).toContain("because 2");
+    // There is no separate priorities strip any more.
+    expect(target.querySelector("section.prio")).toBeNull();
   });
 
   it("older briefs derive priorities from the top three decisions, then the live incident by product, never by repo slug", () => {
@@ -349,8 +358,9 @@ describe("Today's priorities (18)", () => {
       { n: 2, text: "Decision number 2", because: null, itemId: "d2" },
     ];
     render(base({ priorities, decisions: [d1, decision(2)] }));
-    const rows = qa("brief-priority");
-    expect(rows[0]!.querySelector('[data-testid="brief-priority-logo"]')).not.toBeNull();
+    const rows = [...target.querySelectorAll<HTMLElement>("[data-priority]")];
+    // The row carries its company logo (the call's origin chip).
+    expect(rows[0]!.querySelector('[data-testid="brief-origin"] [data-testid="brief-logo"]')).not.toBeNull();
     await hover(rows[0]!);
     expect(q("brief-peek")!.textContent).toContain("unblocks 3 people and revenue · 44h old");
     await hover(rows[1]!);
@@ -361,7 +371,7 @@ describe("Today's priorities (18)", () => {
   it("hovering a priority opens its item's peek, and a cleared item is struck through", async () => {
     const onlaunch = vi.fn(async () => null);
     render(base({ priorities: undefined, decisions: [decision(1)] }), { onlaunch });
-    const row = qa("brief-priority")[0]!;
+    const row = target.querySelector<HTMLElement>('[data-priority="1"]')!;
     await hover(row);
     expect(q("brief-peek")!.textContent).toContain("Decision number 1");
     (q("brief-need")!.querySelector('[data-testid="brief-start"]') as HTMLButtonElement).click();

@@ -282,7 +282,7 @@
     justify-content: center;
     gap: 1px;
     padding: 8px 11px;
-    border-radius: 12px;
+    border-radius: 6px;
     min-width: 0;
     background: rgb(var(--b-ink) / 0.04);
     border: 1px solid var(--b-line);
@@ -295,17 +295,17 @@
   .engine {
     flex: none;
     padding-right: 26px;
-    border-radius: 14px;
+    border-radius: 6px;
   }
   .engine b {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1.25;
     white-space: nowrap;
   }
   .engine small {
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     color: var(--b-t3);
     white-space: nowrap;
   }
@@ -356,7 +356,7 @@
   }
   .car b {
     font-family: var(--b-mono);
-    font-size: 10.5px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--b-t1);
     white-space: nowrap;
@@ -368,7 +368,7 @@
   }
   .car em {
     font-style: normal;
-    font-size: 10px;
+    font-size: 11px;
     color: var(--b-t3);
     white-space: nowrap;
     overflow: hidden;
@@ -377,7 +377,7 @@
   .car.more {
     justify-content: center;
     align-items: center;
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--b-t2);
     cursor: default;
     flex: 0 0 auto;
@@ -429,7 +429,7 @@
     flex-direction: column;
     gap: 1px;
     padding: 6px 10px;
-    border-radius: 10px;
+    border-radius: 6px;
     border: 1px dashed rgb(var(--b-ink) / 0.32);
     min-width: 0;
     max-width: 220px;
@@ -449,7 +449,7 @@
   }
   .held b {
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--b-t2);
     white-space: nowrap;
@@ -458,7 +458,7 @@
   }
   .held small {
     font-family: var(--b-mono);
-    font-size: 8.5px;
+    font-size: 11px;
     color: var(--b-t3);
     white-space: nowrap;
   }
@@ -478,7 +478,7 @@
   }
   .fl {
     font-family: var(--b-mono);
-    font-size: 10.5px;
+    font-size: 11px;
     color: var(--b-t2);
     min-width: 0;
     overflow: hidden;
@@ -496,7 +496,7 @@
     all: unset;
     cursor: default;
     font-family: var(--b-ui);
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 500;
     padding: 5px 11px;
     border-radius: 999px;
@@ -516,7 +516,7 @@
   }
   .cutlbl {
     font-family: var(--b-ui);
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--b-t2);
     white-space: nowrap;
   }

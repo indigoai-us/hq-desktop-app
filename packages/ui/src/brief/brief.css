@@ -2,7 +2,7 @@
   font-family: "Brief Fraunces";
   src: url("../chat/create-bot/assets/new-bot-wallpapers/fraunces-variable-latin.woff2") format("woff2");
   font-style: italic;
-  font-weight: 300 700;
+  font-weight: 400 700;
   font-display: swap;
 }
 /*
@@ -41,7 +41,7 @@
 */
 .daily-brief {
   /* Black stage; cards are the brand's 4% white fill, solid so cutout rings match. */
-  --b-bg: #111113;
+  --b-bg: #0d0d0f;
   /* Solid so cutout rings match the card. */
   --b-card: #1a1a1d;
   --b-card-hi: #232327;
@@ -71,17 +71,28 @@
   --b-ice: #c9d6e4;
   --b-sun: #ffb580;
   --b-sun-2: #ff809f;
-  --b-r: 22px;
-  --b-gap: 14px;
+  /* App standard (docs/design-standard-console-rail.md): 8px cards, 6px inner tiles. */
+  --b-r: 8px;
+  --b-gap: 8px;
+  /* The one hot pill (the first stat), after the reference's pink tag. */
+  --b-hot: #ff6f98;
+  /* Inner glass tile fill; colour fields raise it. */
+  --b-glass: rgb(var(--b-ink) / 0.04);
+  /* Neutral glass panels in the top section. */
+  --b-panel: rgb(var(--b-ink) / 0.035);
+  --b-panel-line: rgb(var(--b-ink) / 0.08);
+  --b-field-drop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 18px 36px -16px rgba(0, 0, 0, 0.7);
   /* One padding and one type scale for every card. */
   --b-pad: 18px 20px;
-  --b-fs-display: 44px; /* hero greeting at large sizes */
-  --b-fs-display-sm: 34px; /* hero greeting at small sizes */
+  /* App type scale: 20px/500 titles, 13px body, 11px meta, weight 500 at most.
+     The one exception is a card's measured number (--b-fs-num), the brief's data. */
+  --b-fs-display: var(--type-title, 20px);
+  --b-fs-display-sm: var(--type-title, 20px);
   --b-display-track: -0.035em;
-  --b-serif: "Brief Fraunces", "Fraunces", Georgia, serif;
-  --b-fs-num: 44px; /* the one measured number a card leads with */
-  --b-fs-title-lg: 20px; /* a card's headline when it leads at a large size */
-  --b-fs-title: 15px; /* every other card headline */
+  --b-serif: var(--b-ui);
+  --b-fs-num: 32px; /* the one measured number a card leads with */
+  --b-fs-title-lg: var(--type-title, 20px); /* a card's headline when it leads at a large size */
+  --b-fs-title: 13px; /* every other card headline */
   /* Flat material: a hairline instead of raised/sunken depth. */
   --b-raise: 0 0 0 1px var(--b-line);
   --b-well: 0 0 0 1px var(--b-line);
@@ -89,7 +100,9 @@
   --b-ink: 255 255 255;
   color-scheme: dark;
   --b-ui: var(--font-ui, "Geist", -apple-system, system-ui, sans-serif);
-  --b-mono: var(--font-mono, "Geist Mono", ui-monospace, monospace);
+  /* Mono only for code (prompts); labels, ages and counts are sans, as in the app. */
+  --b-mono: var(--b-ui);
+  --b-code: var(--font-mono, "Geist Mono", ui-monospace, monospace);
 
   position: relative;
   height: 100%;
@@ -99,7 +112,7 @@
   /* Content caps at 1360px and centers; the background still fills the window. */
   padding: 22px max(28px, calc((100% - 1360px) / 2)) 28px;
   /* The page is lit from the top left, as in the approved mockup. */
-  background: radial-gradient(1200px 700px at 30% -10%, #1f1f23 0%, var(--b-bg) 60%), var(--b-bg);
+  background: radial-gradient(1100px 620px at 18% -12%, #1c1c21 0%, var(--b-bg) 62%), var(--b-bg);
   color: var(--b-t1);
   font-family: var(--b-ui);
   font-size: 13px;
@@ -115,12 +128,13 @@
 .daily-brief button {
   font-family: inherit;
 }
+/* Section label, app standard: 13px / 500 / t2, sentence case, no tracking. */
 .daily-brief .eyebrow {
-  font-family: var(--b-mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--b-t3);
+  font-family: var(--b-ui);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--b-t2);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -152,7 +166,7 @@
 .daily-brief .b-mark {
   width: 38px;
   height: 38px;
-  border-radius: 12px;
+  border-radius: 6px;
   background: var(--b-card);
   box-shadow: var(--b-raise);
   display: grid;
@@ -185,7 +199,7 @@
 }
 .daily-brief .leadchip {
   font-family: var(--b-ui);
-  font-size: 12px;
+  font-size: 13px;
   padding: 4px 10px;
   border-radius: 6px;
   box-shadow: var(--b-well);
@@ -290,12 +304,12 @@
 }
 .daily-brief .big {
   font-size: var(--b-fs-num);
-  font-weight: 300;
+  font-weight: 400;
   letter-spacing: -0.04em;
   line-height: 0.95;
 }
 .daily-brief .sub {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--b-t2);
   line-height: 1.4;
 }
@@ -306,11 +320,10 @@
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  font-family: var(--b-mono);
-  font-size: 10px;
-  letter-spacing: 0.06em;
+  font-family: var(--b-ui);
+  font-size: 11px;
+  letter-spacing: 0;
   color: var(--b-t3);
-  text-transform: uppercase;
 }
 
 /* Earned colour. Two fields, never more: the decision card (dusk) and a live
@@ -367,10 +380,9 @@
 }
 /* One italic accent word, as on hqforwork.com. */
 .daily-brief .accent-word {
-  font-family: var(--b-serif);
-  font-style: italic;
-  font-weight: 300;
-  letter-spacing: -0.02em;
+  font-family: inherit;
+  font-style: normal;
+  font-weight: inherit;
   background: var(--b-accent-grad);
   -webkit-background-clip: text;
   background-clip: text;
@@ -384,8 +396,8 @@
   align-items: center;
   gap: 6px;
   font-family: var(--b-mono);
-  font-size: 10px;
-  letter-spacing: 0.02em;
+  font-size: 11px;
+  letter-spacing: 0;
   color: var(--b-t3);
   white-space: nowrap;
   min-width: 0;
@@ -400,7 +412,7 @@
   place-items: center;
   color: #fff;
   font-family: var(--b-ui);
-  font-size: 7.5px;
+  font-size: 11px;
   font-weight: 500;
   background: linear-gradient(145deg, #5b5bf7, #3730a3);
 }
@@ -416,7 +428,7 @@
   align-items: center;
   gap: 6px;
   font-family: var(--b-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   padding: 4px 8px;
   border-radius: 6px;
   background: rgb(var(--b-ink) / 0.06);
@@ -429,7 +441,7 @@
   gap: 10px;
   align-items: flex-start;
   margin-top: 8px;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.35;
 }
 .daily-brief .row .bul {
@@ -478,7 +490,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   padding: 7px 12px;
   border-radius: 999px;
@@ -590,7 +602,7 @@
   max-height: min(520px, calc(100vh - 32px));
   overflow: auto;
   padding: 18px 18px 16px;
-  border-radius: 12px;
+  border-radius: 6px;
   background: var(--b-card-hi);
   color: var(--b-t1);
   box-shadow: var(--b-peek-shadow);
@@ -603,12 +615,12 @@
   }
 }
 .daily-brief .peek .ttl {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 500;
   letter-spacing: -0.01em;
 }
 .daily-brief .peek .st {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--b-t2);
   margin-top: 2px;
 }
@@ -620,7 +632,7 @@
 }
 .daily-brief .peek p {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.45;
   color: var(--b-t2);
 }
@@ -628,21 +640,21 @@
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.35;
   padding: 7px 10px;
-  border-radius: 10px;
+  border-radius: 6px;
   background: rgb(var(--b-ink) / 0.035);
   margin-top: 4px;
 }
 .daily-brief .peek .li span {
   font-family: var(--b-mono);
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
   align-self: center;
 }
 .daily-brief .peek .prompt {
-  font-family: var(--b-mono);
+  font-family: var(--b-code);
   font-size: 11px;
   line-height: 1.5;
   color: var(--b-t1);
@@ -672,9 +684,8 @@
 .daily-brief .sample-tag {
   display: inline-block;
   font-family: var(--b-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0;
   padding: 3px 7px;
   border-radius: 6px;
   color: #2a1408;
@@ -684,7 +695,7 @@
 .daily-brief .sample-tag {
   margin: 0 0 0 6px;
   padding: 1px 5px;
-  font-size: 8.5px;
+  font-size: 11px;
 }
 
 /* Shared recipes the catalogue cards build on. Inner tile: a flat faint fill and a hairline, no
@@ -693,7 +704,7 @@
 .daily-brief .b-glass {
   position: relative;
   border-radius: 8px;
-  background: rgb(var(--b-ink) / 0.04);
+  background: var(--b-glass);
   border: 1px solid var(--b-line);
   min-width: 0;
 }
@@ -703,8 +714,8 @@
   justify-content: center;
   padding: 6px 12px;
   font-family: var(--b-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
+  font-size: 11px;
+  letter-spacing: 0;
   color: var(--b-t2);
   cursor: default;
 }
@@ -720,7 +731,7 @@
   :root:not([data-force-theme="dark"]) .daily-brief {
     --b-ink: 17 17 17;
     color-scheme: light;
-    --b-bg: #f1efeb;
+    --b-bg: #ebebee;
     --b-card: #ffffff;
     --b-card-hi: #ffffff;
     --b-card-grad: linear-gradient(155deg, #ffffff, #faf9f6);
@@ -745,13 +756,17 @@
   --b-foil-blend: multiply;
   --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
   --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
-    background: radial-gradient(1200px 700px at 30% -10%, #ffffff 0%, var(--b-bg) 60%), var(--b-bg);
+  --b-hot: #ec4f80;
+  --b-panel: rgba(255, 255, 255, 0.55);
+  --b-panel-line: rgba(255, 255, 255, 0.9);
+  --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
+    background: radial-gradient(1100px 620px at 18% -12%, #ffffff 0%, var(--b-bg) 62%), var(--b-bg);
   }
 }
 :root[data-force-theme="light"] .daily-brief {
   --b-ink: 17 17 17;
   color-scheme: light;
-  --b-bg: #f1efeb;
+  --b-bg: #ebebee;
   --b-card: #ffffff;
   --b-card-hi: #ffffff;
   --b-card-grad: linear-gradient(155deg, #ffffff, #faf9f6);
@@ -776,10 +791,15 @@
   --b-foil-blend: multiply;
   --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
   --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
-  background: radial-gradient(1200px 700px at 30% -10%, #ffffff 0%, var(--b-bg) 60%), var(--b-bg);
+  --b-hot: #ec4f80;
+  --b-panel: rgba(255, 255, 255, 0.55);
+  --b-panel-line: rgba(255, 255, 255, 0.9);
+  --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
+  background: radial-gradient(1100px 620px at 18% -12%, #ffffff 0%, var(--b-bg) 62%), var(--b-bg);
 }
 /* Dark islands keep white ink in both appearances. */
 .daily-brief :is(.c-violet, .c-red, .dawn, .w.dawn),
+.daily-brief .slot[data-field] > .w,
 .daily-brief-dawn-page,
 .masthead-wrap {
   --b-ink: 255 255 255;
@@ -796,4 +816,293 @@
   --b-hover-blend: screen;
   --b-hover-light: rgba(255, 255, 255, 0.2);
   color: var(--b-t1);
+}
+
+/* ------------------------------------------------------------------------
+   GRADIENT BENTO (design, local; after Lizzie's reference, 2026-10-13).
+   An airy top (greeting, thin numbers on pill labels, a glass "next call"
+   panel) over a tight grid of luminous colour fields. Every grid card wears
+   one field for its kind (FIELD in brief-layout.ts) with white ink, a soft
+   highlight in one corner, a hairline light rim and a faint line drawing in
+   the empty corner. No grain, no inner shadows, no backdrop-filter.
+   ------------------------------------------------------------------------ */
+.daily-brief .slot[data-field] > .w {
+  --b-t1: #fff;
+  --b-t2: rgba(255, 255, 255, 0.86);
+  --b-t3: rgba(255, 255, 255, 0.72);
+  --b-line: rgba(255, 255, 255, 0.2);
+  --b-top-light: rgba(255, 255, 255, 0.4);
+  --b-glass: rgba(255, 255, 255, 0.14);
+  --b-ok: #d4ffe0;
+  --b-warn: #fff1a8;
+  --b-red: #ffe0e4;
+  --b-decision: #fff;
+  --b-accent-grad: linear-gradient(90deg, #ffffff, #ffe3d3);
+  --b-bracket: rgba(255, 255, 255, 0.85);
+  --b-well-bg: rgba(255, 255, 255, 0.12);
+  box-shadow: var(--b-field-drop);
+  background-repeat: no-repeat;
+  text-shadow: 0 1px 2px rgba(20, 0, 40, 0.12);
+}
+.daily-brief .slot[data-field] > .w::after {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+.daily-brief .slot[data-field] > .w .eyebrow {
+  color: rgba(255, 255, 255, 0.82);
+}
+.daily-brief .slot[data-field] > .w .foot {
+  border-color: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.daily-brief .slot[data-field="violet"] > .w {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='200'%3E%3Cg fill='none' stroke='white' stroke-opacity='.38'%3E%3Cpath d='M60 210 A150 150 0 0 1 300 70' stroke-dasharray='3 6'/%3E%3Cpath d='M150 210 A110 110 0 0 1 300 120'/%3E%3C/g%3E%3Cg fill='white' fill-opacity='.7'%3E%3Ccircle cx='190' cy='96' r='3.5'/%3E%3Ccircle cx='268' cy='128' r='4.5'/%3E%3C/g%3E%3C/svg%3E") right bottom / 300px 200px,
+    radial-gradient(120% 90% at 100% 0%, #eaa9f2 0%, rgba(234, 169, 242, 0) 58%),
+    linear-gradient(150deg, #b05de0 0%, #8a3dcc 58%, #6c2db6 100%);
+}
+.daily-brief .slot[data-field="dusk"] > .w {
+  background: linear-gradient(180deg, #5a2aa6 0%, #a63b93 46%, #e7627a 76%, #f4935e 100%);
+}
+.daily-brief .slot[data-field="pink"] > .w {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='160'%3E%3Cg fill='none' stroke='white' stroke-opacity='.45'%3E%3Cpath d='M30 170 A90 90 0 0 1 210 170'/%3E%3Cpath d='M70 170 A50 50 0 0 1 170 170' stroke-dasharray='2 5'/%3E%3C/g%3E%3Cg fill='white' fill-opacity='.75'%3E%3Ccircle cx='120' cy='80' r='3'/%3E%3Ccircle cx='170' cy='104' r='3'/%3E%3C/g%3E%3C/svg%3E") right bottom / 220px 160px,
+    radial-gradient(110% 80% at 85% 0%, #ffa8cb 0%, rgba(255, 168, 203, 0) 58%),
+    linear-gradient(160deg, #f2448d 0%, #d62a74 100%);
+}
+.daily-brief .slot[data-field="sunset"] > .w {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='150'%3E%3Cg fill='none' stroke='white' stroke-opacity='.45' stroke-dasharray='2 5'%3E%3Cpath d='M0 150 C30 150 30 70 60 70 S90 150 120 150'/%3E%3Cpath d='M110 150 C140 150 140 40 170 40 S200 150 230 150'/%3E%3C/g%3E%3Cg fill='white' fill-opacity='.75'%3E%3Ccircle cx='60' cy='70' r='3'/%3E%3Ccircle cx='170' cy='40' r='3'/%3E%3C/g%3E%3C/svg%3E") right bottom / 240px 150px,
+    radial-gradient(100% 90% at 0% 0%, #f06aa8 0%, rgba(240, 106, 168, 0) 60%),
+    linear-gradient(135deg, #e04f8c 0%, #ec6f6c 55%, #ef8a48 100%);
+}
+.daily-brief .slot[data-field="sky"] > .w {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='120'%3E%3Cdefs%3E%3Cpattern id='d' width='9' height='9' patternUnits='userSpaceOnUse'%3E%3Ccircle cx='4.5' cy='4.5' r='1.6' fill='white'/%3E%3C/pattern%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='white' stop-opacity='0'/%3E%3Cstop offset='1' stop-color='white' stop-opacity='.55'/%3E%3C/linearGradient%3E%3Cmask id='m'%3E%3Crect width='180' height='120' fill='url(%23g)'/%3E%3C/mask%3E%3C/defs%3E%3Crect width='180' height='120' fill='url(%23d)' mask='url(%23m)'/%3E%3C/svg%3E") right bottom / 180px 120px,
+    radial-gradient(110% 90% at 100% 0%, #86dbff 0%, rgba(134, 219, 255, 0) 60%),
+    linear-gradient(155deg, #2f9ae4 0%, #2a6fd2 100%);
+}
+.daily-brief .slot[data-field="teal"] > .w {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='140'%3E%3Cg fill='none' stroke='white' stroke-opacity='.3'%3E%3Cellipse cx='60' cy='90' rx='60' ry='44'/%3E%3Cellipse cx='100' cy='90' rx='60' ry='44'/%3E%3Cellipse cx='140' cy='90' rx='60' ry='44'/%3E%3Cellipse cx='180' cy='90' rx='60' ry='44'/%3E%3Cellipse cx='220' cy='90' rx='60' ry='44'/%3E%3C/g%3E%3Cg fill='white' fill-opacity='.8'%3E%3Ccircle cx='80' cy='60' r='2.5'/%3E%3Ccircle cx='150' cy='104' r='2.5'/%3E%3Ccircle cx='210' cy='70' r='2.5'/%3E%3C/g%3E%3C/svg%3E") right bottom / 260px 140px,
+    radial-gradient(110% 90% at 100% 0%, #a9dfdf 0%, rgba(169, 223, 223, 0) 60%),
+    linear-gradient(160deg, #57a1aa 0%, #3c7f8a 100%);
+}
+.daily-brief .slot[data-field="peri"] > .w {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='120'%3E%3Cg fill='none' stroke='white' stroke-opacity='.32'%3E%3Cpath d='M0 90 Q60 40 120 90 T240 90'/%3E%3Cpath d='M0 104 Q60 54 120 104 T240 104'/%3E%3Cpath d='M0 118 Q60 68 120 118 T240 118'/%3E%3C/g%3E%3C/svg%3E") right bottom / 240px 120px,
+    radial-gradient(110% 90% at 100% 0%, #b7bcff 0%, rgba(183, 188, 255, 0) 60%),
+    linear-gradient(155deg, #6e77ee 0%, #4d53d2 100%);
+}
+/* Inner glass on a field: white, a little brighter on hover. */
+.daily-brief .slot[data-field] > .w .b-glass {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.daily-brief .slot[data-field] > .w .chip {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* The corner arrow: why this card is on the page today (hover for the reason). */
+.daily-brief .slot {
+  position: relative;
+}
+.daily-brief .slot > .why {
+  position: absolute;
+  z-index: 4;
+  top: 12px;
+  right: 14px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: default;
+  transition: background 0.15s, color 0.15s;
+}
+.daily-brief .slot > .why:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+/* Header: wordmark left, pills right. */
+.daily-brief .b-name {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.daily-brief .b-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.daily-brief .pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--b-ui);
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--b-line);
+  background: var(--b-panel);
+  color: var(--b-t2);
+  white-space: nowrap;
+}
+.daily-brief .b-tools .leadchip {
+  background: rgb(var(--b-ink) / 0.92);
+  color: var(--b-bg);
+  border-color: transparent;
+  box-shadow: none;
+}
+.daily-brief .b-tools .leadchip:hover {
+  background: rgb(var(--b-ink) / 1);
+  color: var(--b-bg);
+}
+.daily-brief .b-mark {
+  border-radius: 999px;
+}
+
+/* The airy top: greeting and numbers on the left, the next call on the right. */
+.daily-brief .b-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 24px;
+  align-items: stretch;
+  min-width: 1180px;
+  margin: 8px 0 18px;
+}
+.daily-brief .b-upd {
+  font-size: 11px;
+  color: var(--b-t3);
+}
+/* The page title, as on every app page: 20px / 500. */
+.daily-brief .b-greet {
+  margin: 4px 0 0;
+  font-size: var(--type-title, 20px);
+  font-weight: var(--type-title-weight, 500);
+  line-height: var(--type-title-line, 1.25);
+  letter-spacing: 0;
+}
+.daily-brief .b-stats {
+  display: flex;
+  gap: 44px;
+  margin-top: 26px;
+}
+.daily-brief .stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border-radius: 10px;
+}
+/* Info pill (app standard): 11px / 400, fully rounded. */
+.daily-brief .stat .pill {
+  font-size: 11px;
+  padding: 2px 7px;
+  border: 0;
+  background: rgb(var(--b-ink) / 0.07);
+  color: var(--b-t2);
+}
+.daily-brief .stat .pill.hot {
+  background: var(--b-hot);
+  color: #fff;
+}
+.daily-brief .stat .num {
+  font-size: var(--b-fs-num);
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--b-t1);
+}
+.daily-brief .stat .cap {
+  font-size: 11px;
+  color: var(--b-t3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.daily-brief .b-next {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 20px;
+  border-radius: var(--b-r);
+  background: var(--b-panel);
+  border: 1px solid var(--b-panel-line);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 18px 40px -24px rgba(40, 40, 70, 0.35);
+  cursor: default;
+  min-height: 190px;
+}
+.daily-brief .b-next .nx-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--b-t2);
+}
+.daily-brief .b-next .arr {
+  color: var(--b-t3);
+}
+.daily-brief .b-next .nx-time {
+  margin-top: 14px;
+  font-size: var(--b-fs-num);
+  font-weight: 400;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+.daily-brief .b-next .nx-time span {
+  font-size: 11px;
+  letter-spacing: 0;
+  margin-left: 4px;
+  color: var(--b-t3);
+}
+.daily-brief .b-next .nx-title {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.daily-brief .b-next .nx-in {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--b-t3);
+  max-width: 58%;
+}
+.daily-brief .b-next .orbit {
+  position: absolute;
+  right: -18px;
+  bottom: 14px;
+  width: 200px;
+  height: 110px;
+  fill: none;
+  stroke: rgb(var(--b-ink) / 0.16);
+  stroke-width: 0.8;
+  pointer-events: none;
+}
+.daily-brief .b-next .orbit .dot {
+  fill: rgb(var(--b-ink) / 0.8);
+  stroke: none;
+}
+.daily-brief .b-next .orbit .hot {
+  fill: var(--b-hot);
+  stroke: none;
+}
+.daily-brief .b-next .orbit .ring {
+  fill: var(--b-bg);
+  stroke: rgb(var(--b-ink) / 0.4);
+}
+/* Keep each card's top row clear of the corner arrow. */
+.daily-brief .slot[data-field] > .w > :first-child:not(canvas),
+.daily-brief .slot[data-field] > .w .over > .eyebrow:first-child,
+.daily-brief .slot[data-field] > .w > .eyebrow {
+  padding-right: 26px;
 }

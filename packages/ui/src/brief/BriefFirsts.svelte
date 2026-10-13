@@ -118,8 +118,8 @@
     flex: none;
     margin-top: 2px;
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
+    font-size: 11px;
+    letter-spacing: 0;
     padding: 4px 8px;
     border-radius: 8px;
     color: var(--b-t2);
@@ -150,7 +150,7 @@
     align-items: center;
     text-align: center;
     min-width: 0;
-    border-radius: 16px;
+    border-radius: 6px;
     padding: 12px 10px 11px;
     /* Glass: lit from the top, hairline rim, soft drop. No inset shadow and no
        backdrop-filter (WKWebView draws it as a square that ignores the radius). */
@@ -211,13 +211,13 @@
   }
   .fig {
     font-family: var(--b-mono);
-    font-size: 15px;
+    font-size: 13px;
     letter-spacing: -0.02em;
     color: var(--b-t1);
   }
   .cap {
     margin-top: 8px;
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1.25;
     overflow-wrap: anywhere;

@@ -134,10 +134,9 @@
   }
   .name {
     font-family: var(--b-mono, ui-monospace, monospace);
-    font-size: 10px;
+    font-size: 11px;
     line-height: 1.3;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    letter-spacing: 0;
     overflow-wrap: anywhere;
     color: rgb(var(--b-ink) / 0.55);
   }
@@ -158,7 +157,7 @@
     color: var(--b-t1);
   }
   .sub {
-    font-size: 11.5px;
+    font-size: 11px;
   }
   .tone-decision {
     color: var(--b-decision, #ff9966);
@@ -191,18 +190,17 @@
     gap: 8px;
     min-width: 0;
     padding: 5px 9px;
-    border-radius: 10px;
+    border-radius: 6px;
     background: rgb(var(--b-ink) / 0.04);
     /* Hairline rim as a real border, never an inset shadow (the glass-tile rule). */
     border: 1px solid rgb(var(--b-ink) / 0.06);
-    font-size: 12.5px;
+    font-size: 13px;
   }
   .kind {
     flex: none;
     font-family: var(--b-mono, ui-monospace, monospace);
-    font-size: 9.5px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
   }
   .title {
     flex: 1;
@@ -216,7 +214,7 @@
     flex: none;
     padding: 1px 7px;
     border-radius: 999px;
-    font-size: 10.5px;
+    font-size: 11px;
     color: rgb(var(--b-ink) / 0.6);
     box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.14);
   }

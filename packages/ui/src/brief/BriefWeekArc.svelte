@@ -144,8 +144,8 @@
   }
   .rng {
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
     white-space: nowrap;
   }
@@ -177,7 +177,7 @@
     flex-direction: column;
     justify-content: flex-end;
     align-items: center;
-    border-radius: 10px;
+    border-radius: 6px;
     cursor: default;
     transition: background 0.2s;
   }
@@ -309,7 +309,7 @@
     min-width: 0;
     text-align: center;
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     color: var(--b-t3);
     white-space: nowrap;
     overflow: hidden;
@@ -330,8 +330,8 @@
     gap: 9px;
     padding: 5px 8px;
     margin: 0 -8px;
-    border-radius: 10px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     line-height: 1.3;
     cursor: default;
     transition: background 0.2s;
@@ -357,15 +357,14 @@
   }
   .bt span {
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
     white-space: nowrap;
   }
   .bt.more b {
     font-family: var(--b-mono);
-    font-size: 10.5px;
+    font-size: 11px;
     color: var(--b-t3);
   }
   .key {
@@ -375,9 +374,8 @@
     align-items: center;
     gap: 7px;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
     white-space: nowrap;
   }
@@ -398,8 +396,8 @@
     padding: 2px 7px;
     border-radius: 6px;
     text-transform: none;
-    letter-spacing: 0.02em;
-    font-size: 10px;
+    letter-spacing: 0;
+    font-size: 11px;
     color: var(--b-t2);
     box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.12);
     cursor: default;

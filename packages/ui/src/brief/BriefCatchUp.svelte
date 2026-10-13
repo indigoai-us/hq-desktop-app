@@ -40,7 +40,7 @@
 </script>
 
 <div class="w" data-testid="brief-catchup">
-  <div class="eyebrow" style="color:var(--b-sun)">Welcome back · {away}</div>
+  <div class="eyebrow">Welcome back · {away}</div>
   <div class="greet">Morning{input.userName ? `, ${input.userName}` : ""}.<br /><span class="line" data-testid="brief-catchup-greet">{greet}</span></div>
   {#if because}<div class="first" data-testid="brief-catchup-first">{because}</div>{/if}
   {#if cells}
@@ -82,7 +82,7 @@
   .first {
     margin-top: 10px;
     max-width: 560px;
-    font-size: 13.5px;
+    font-size: 13px;
     line-height: 1.35;
     color: rgb(var(--b-ink) / 0.86);
   }
@@ -102,7 +102,7 @@
     gap: 3px;
     min-width: 0;
     padding: 11px 12px 10px;
-    border-radius: 14px;
+    border-radius: 6px;
     background: rgb(var(--b-ink) / 0.04);
     border: 1px solid rgb(var(--b-ink) / 0.09);
     box-shadow: none;
@@ -117,9 +117,8 @@
   .tag {
     display: block;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     margin-bottom: 3px;
     white-space: nowrap;
     overflow: hidden;
@@ -129,7 +128,7 @@
     color: var(--b-t2);
   }
   .tx {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1.3;
     display: -webkit-box;
@@ -158,13 +157,13 @@
     padding-top: 6px;
   }
   .orgs :global(.org.product b) {
-    font-size: 10.5px;
+    font-size: 11px;
     color: var(--b-t2);
   }
   .more {
     justify-content: center;
     align-items: center;
-    font-size: 12px;
+    font-size: 13px;
     color: rgb(var(--b-ink) / 0.78);
     cursor: default;
   }

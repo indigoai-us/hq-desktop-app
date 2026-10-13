@@ -133,8 +133,8 @@
     gap: 10px;
     align-items: center;
     padding: 7px 10px;
-    border-radius: 12px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     min-width: 0;
     background: rgb(var(--b-ink) / 0.04);
     border: 1px solid rgb(var(--b-ink) / 0.09);
@@ -166,7 +166,7 @@
   }
   .t {
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--b-t3);
     width: 52px;
     flex: none;
@@ -193,8 +193,8 @@
     margin-left: auto;
     flex: none;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
   }
   em.now {
@@ -203,8 +203,8 @@
   .more {
     text-align: center;
     padding: 5px 10px;
-    border-radius: 10px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     color: var(--b-t2);
     background: rgb(var(--b-ink) / 0.05);
     border: 1px solid rgb(var(--b-ink) / 0.08);

@@ -163,8 +163,8 @@
   .win {
     margin-top: 4px;
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
   }
   .tot {
@@ -179,7 +179,7 @@
     color: rgb(var(--b-ink) / 0.56);
   }
   .tot small {
-    font-size: 12px;
+    font-size: 13px;
     color: rgb(var(--b-ink) / 0.56);
     margin-left: 6px;
   }
@@ -190,10 +190,9 @@
     gap: 3px;
     margin-left: 8px;
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     font-weight: 500;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    letter-spacing: 0;
     color: var(--b-sun);
     vertical-align: middle;
   }
@@ -230,7 +229,7 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    border-radius: 14px;
+    border-radius: 6px;
     padding: 10px 12px;
     container-type: inline-size;
     /* Glass: lit from the top, hairline rim, soft drop. No inner shadow and no
@@ -263,8 +262,8 @@
     display: inline-flex;
     align-items: center;
     font-family: var(--b-mono);
-    font-size: 8px;
-    letter-spacing: 0.08em;
+    font-size: 11px;
+    letter-spacing: 0;
     padding: 2px 6px;
     border-radius: 99px;
     color: #2a1408;
@@ -313,7 +312,7 @@
     opacity: 0.95;
   }
   .v {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1.25;
   }
@@ -329,7 +328,7 @@
   .run.more {
     justify-content: center;
     align-items: center;
-    font-size: 12px;
+    font-size: 13px;
     color: rgb(var(--b-ink) / 0.78);
     cursor: default;
   }

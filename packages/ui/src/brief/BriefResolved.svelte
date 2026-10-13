@@ -136,15 +136,15 @@
     min-width: 0;
   }
   .src b {
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 500;
     color: rgb(var(--b-ink) / 0.9);
     white-space: nowrap;
   }
   .when {
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.65);
     white-space: nowrap;
   }
@@ -155,7 +155,7 @@
     display: grid;
     gap: 5px;
     margin-top: 12px;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.35;
     color: rgb(var(--b-ink) / 0.92);
   }
@@ -168,9 +168,8 @@
     flex: none;
     min-width: 86px;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.6);
   }
   /* Timeline, as in the approved masthead: white dots on a faint rail, mono UTC clock above each line. */
@@ -193,7 +192,7 @@
   .te {
     display: flex;
     gap: 14px;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.3;
     position: relative;
     min-width: 0;
@@ -217,15 +216,15 @@
   }
   .te span {
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     color: rgb(var(--b-ink) / 0.65);
     display: block;
     margin-bottom: 1px;
   }
   .more-tl p {
     font-family: var(--b-mono);
-    font-size: 10.5px;
-    letter-spacing: 0.06em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.8);
     align-self: center;
   }
@@ -239,9 +238,8 @@
   }
   .hint {
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.6);
   }
   /* Several recoveries: glass rows (gradient and hairline rim, no inner shadow, no backdrop-filter). */
@@ -257,7 +255,7 @@
     gap: 10px;
     align-items: flex-start;
     padding: 8px 10px;
-    border-radius: 12px;
+    border-radius: 6px;
     min-width: 0;
     background: rgb(var(--b-ink) / 0.07);
     border: 1px solid rgb(var(--b-ink) / 0.14);
@@ -271,7 +269,7 @@
     min-width: 0;
   }
   .t {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1.25;
     overflow: hidden;
@@ -283,7 +281,7 @@
     gap: 8px;
     align-items: baseline;
     margin-top: 2px;
-    font-size: 11.5px;
+    font-size: 11px;
     color: rgb(var(--b-ink) / 0.76);
     min-width: 0;
   }
@@ -302,8 +300,8 @@
     justify-content: center;
     padding: 6px 10px;
     font-family: var(--b-mono);
-    font-size: 10.5px;
-    letter-spacing: 0.06em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.8);
   }
 </style>

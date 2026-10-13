@@ -82,7 +82,7 @@
     width: 100%;
     box-sizing: border-box;
     padding: 8px 10px;
-    border-radius: 10px;
+    border-radius: 6px;
     box-shadow: var(--b-well);
   }
   .meta {
@@ -90,7 +90,7 @@
     align-items: center;
     gap: 6px;
     font-family: var(--b-mono);
-    font-size: 10.5px;
+    font-size: 11px;
     color: var(--b-t3);
   }
   .dot {
@@ -106,7 +106,7 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
     margin-top: 3px;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.4;
     color: var(--b-t1);
     white-space: pre-wrap;
@@ -121,13 +121,13 @@
     all: unset;
     cursor: pointer;
     margin-top: 6px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-sun);
   }
   .primary {
     all: unset;
     cursor: pointer;
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     padding: 6px 14px;
     border-radius: 999px;

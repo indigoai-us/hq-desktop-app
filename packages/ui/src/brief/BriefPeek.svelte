@@ -106,13 +106,13 @@
 <style>
   .more {
     margin-top: 6px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-t3);
   }
   .peek-act {
     all: unset;
     cursor: pointer;
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     padding: 6px 14px;
     border-radius: 999px;
@@ -134,12 +134,12 @@
     align-items: center;
     gap: 6px;
     min-width: 0;
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--b-t2);
     white-space: nowrap;
   }
   .compact :global(.ttl) {
-    font-size: 19px;
+    font-size: 20px;
   }
   .pills {
     display: flex;
@@ -149,7 +149,7 @@
   .pill {
     all: unset;
     cursor: pointer;
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     padding: 7px 14px;
     border-radius: 999px;
@@ -169,7 +169,7 @@
     margin: 4px 0 6px;
   }
   .pills.small .pill {
-    font-size: 11.5px;
+    font-size: 11px;
     padding: 4px 11px;
   }
   .tag {
@@ -177,15 +177,15 @@
     padding: 0 6px;
     border-radius: 999px;
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     font-style: normal;
-    letter-spacing: 0.06em;
+    letter-spacing: 0;
     color: #1b1b1e;
     background: var(--b-sun, #ffb580);
   }
   .note {
     margin-top: 8px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-t2);
   }
 </style>

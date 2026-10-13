@@ -50,7 +50,7 @@
 </script>
 
 <div class="cal" data-testid="brief-today" style="height:{height}px">
-  <div class="lbl">TODAY{#if sample}<span class="sample-tag" title="No live calendar in this preview">Sample</span>{/if}<b>{dateLabel}</b></div>
+  <div class="lbl">Today{#if sample}<span class="sample-tag" title="No live calendar in this preview">Sample</span>{/if}<b>{dateLabel}</b></div>
   <div class="trk" data-h0={layout.h0} data-h1={layout.h1}>
     {#each layout.ticks as h (h)}
       <div class="hr" style="left:{X(h)}%">{hourLabel(h)}</div>
@@ -84,35 +84,38 @@
     {/if}
     {#if layout.nowX != null}<div class="now" style="left:{layout.nowX}%"></div>{/if}
   </div>
-  <div class="sum">{named ? `${named} CALL${named === 1 ? "" : "S"}` : "NO CALLS"}{#if projected}<br />PROJECTED{/if}</div>
+  <div class="sum">{named ? `${named} call${named === 1 ? "" : "s"}` : "No calls"}{#if projected}<br />Projected{/if}</div>
 </div>
 
 <style>
+  /* A glass panel like the next-call card: the day as a row of pills. */
   .cal {
     min-height: 52px;
-    border-radius: 16px;
-    box-shadow: var(--b-well);
-    background: var(--b-well-bg);
+    border-radius: var(--b-r);
+    border: 1px solid var(--b-panel-line);
+    background: var(--b-panel);
     display: flex;
     align-items: center;
     padding: 0 16px;
     gap: 16px;
   }
   .lbl {
-    font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    color: var(--b-t3);
+    font-family: var(--b-ui);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0;
+    color: var(--b-t2);
     white-space: nowrap;
     width: 140px;
     flex: none;
   }
   .lbl b {
     display: block;
-    color: var(--b-t2);
-    font-weight: 500;
+    color: var(--b-t3);
+    font-size: 11px;
+    font-weight: 400;
     margin-top: 3px;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
   }
   .trk {
     position: relative;
@@ -124,7 +127,7 @@
     position: absolute;
     top: 4px;
     font-family: var(--b-mono);
-    font-size: 9px;
+    font-size: 11px;
     color: rgb(var(--b-ink) / 0.42);
     translate: -50% 0;
   }
@@ -139,9 +142,9 @@
     position: absolute;
     box-sizing: border-box;
     height: 15px;
-    border-radius: 6px;
-    padding: 0 6px;
-    font-size: 10.5px;
+    border-radius: 999px;
+    padding: 0 7px;
+    font-size: 11px;
     line-height: 15px;
     color: #fff;
     cursor: default;
@@ -200,7 +203,7 @@
     padding: 0 6px;
     border-radius: 6px;
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     line-height: 15px;
     color: rgb(var(--b-ink) / 0.75);
     background: #2a2a2f;
@@ -230,7 +233,7 @@
   }
   .sum {
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--b-t3);
     white-space: nowrap;
     text-align: right;

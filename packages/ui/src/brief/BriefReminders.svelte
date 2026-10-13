@@ -131,7 +131,7 @@
     align-items: center;
     gap: 12px;
     padding: 9px 10px 9px 12px;
-    border-radius: 14px;
+    border-radius: 6px;
     background: rgb(var(--b-ink) / 0.04);
     border: 1px solid rgb(var(--b-ink) / 0.09);
     box-shadow: none;
@@ -175,8 +175,8 @@
   .said {
     margin-top: 3px;
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
     white-space: nowrap;
     overflow: hidden;
@@ -214,9 +214,8 @@
     all: unset;
     cursor: pointer;
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t2);
     padding: 6px 9px;
     border-radius: 999px;
@@ -230,7 +229,7 @@
     outline: none;
   }
   .donechip {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     padding: 6px 12px;
     border-radius: 999px;
@@ -240,7 +239,7 @@
   .more-row {
     justify-content: center;
     padding: 6px 12px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-t2);
     cursor: default;
   }

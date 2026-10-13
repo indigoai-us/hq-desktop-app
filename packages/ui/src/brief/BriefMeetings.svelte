@@ -115,7 +115,7 @@
     padding: 2px 6px;
     margin-left: -6px;
     margin-right: -6px;
-    border-radius: 10px;
+    border-radius: 6px;
     transition: background 0.25s;
   }
   .row:hover {
@@ -132,7 +132,7 @@
   }
   .first {
     margin-top: 1px;
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--b-t3);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -159,7 +159,7 @@
     margin-left: 0;
     margin-right: 0;
     padding: 4px 10px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-t2);
     background: rgb(var(--b-ink) / 0.05);
     border: 1px solid rgb(var(--b-ink) / 0.08);

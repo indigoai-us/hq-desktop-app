@@ -139,7 +139,7 @@
     flex-direction: column;
     gap: 3px;
     min-width: 0;
-    border-radius: 14px;
+    border-radius: 6px;
     padding: 9px 11px 10px;
     /* Glass: lit from the top, hairline rim, soft drop. No inner shadow and no
        backdrop-filter (WKWebView draws it as a square that ignores the radius). */
@@ -165,7 +165,7 @@
     min-width: 0;
   }
   .id b {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     letter-spacing: -0.01em;
     white-space: nowrap;
@@ -174,9 +174,8 @@
   }
   .n {
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
     transition: opacity 0.3s;
   }
@@ -210,7 +209,7 @@
     all: unset;
     display: block;
     max-width: 100%;
-    font-size: 10.5px;
+    font-size: 11px;
     line-height: 1.35;
     color: var(--b-t2);
     white-space: nowrap;
@@ -239,7 +238,7 @@
     cursor: default;
   }
   .rest b {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--b-t2);
   }

@@ -131,7 +131,7 @@
     align-items: center;
     padding: 5px 8px;
     margin: 0 -8px;
-    border-radius: 12px;
+    border-radius: 6px;
     border: 1px solid transparent;
     transition: background 0.2s, border-color 0.2s, opacity 0.5s;
   }
@@ -155,7 +155,7 @@
   .t {
     flex: 1;
     min-width: 0;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.25;
     overflow: hidden;
     white-space: normal;
@@ -180,7 +180,7 @@
   }
   .mt {
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     color: var(--b-t3);
     white-space: nowrap;
   }
@@ -245,7 +245,7 @@
     display: flex;
     justify-content: center;
     padding: 5px 12px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-t2);
     cursor: default;
   }

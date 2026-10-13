@@ -157,7 +157,7 @@
     gap: 7px;
     padding: 5px 8px;
     margin: 0 -8px;
-    border-radius: 12px;
+    border-radius: 6px;
     transition: background 0.2s, opacity 0.4s;
   }
   .hr:hover,
@@ -175,10 +175,10 @@
     width: 20px;
     height: 20px;
     flex: none;
-    border-radius: 7px;
+    border-radius: 6px;
     display: grid;
     place-items: center;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 500;
     color: #fff;
     background: hsl(var(--h) 45% 42%);
@@ -240,7 +240,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 12px;
+    font-size: 13px;
     container-type: inline-size;
   }
   .ob .name {
@@ -286,7 +286,7 @@
     display: grid;
     place-items: center;
     font-family: var(--b-mono);
-    font-size: 7px;
+    font-size: 11px;
     line-height: 1;
     color: var(--b-t3);
   }
@@ -300,7 +300,7 @@
     align-items: center;
     gap: 6px;
     padding: 2px 2px 2px 10px;
-    border-radius: 10px;
+    border-radius: 6px;
     background: var(--b-card-hi);
     opacity: 0;
     pointer-events: none;
@@ -314,9 +314,8 @@
   }
   .verb {
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-warn);
     white-space: nowrap;
   }
@@ -324,12 +323,11 @@
     all: unset;
     cursor: pointer;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t2);
     padding: 4px 8px;
-    border-radius: 7px;
+    border-radius: 6px;
     box-shadow: var(--b-well);
     white-space: nowrap;
     transition: color 0.2s, box-shadow 0.2s;
@@ -349,7 +347,7 @@
   .more {
     justify-content: center;
     padding: 4px 8px;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-t2);
     cursor: default;
   }

@@ -99,7 +99,7 @@ describe("DailyBrief", () => {
       const card = slot!.querySelector(".w");
       expect(card, `${kind} renders its card`).not.toBeNull();
       expect(card!.textContent!.trim().length, `${kind} has content`).toBeGreaterThan(10);
-      expect(slot!.getAttribute("title")).toMatch(/^(Always first|Shown)\b.*\.$/);
+      expect(slot!.querySelector('[data-testid="brief-why"]')!.getAttribute("title")).toMatch(/^(Always first|Shown)\b.*\.$/);
     }
     // Owner rules on the page: no repo slug, PR number or conventional prefix on any card face.
     const faces = qa("[data-widget] .w").map((el) => el.textContent ?? "").join("\n");
@@ -137,15 +137,16 @@ describe("DailyBrief", () => {
     expect(q('[data-testid="brief-other-work"]')).toBeNull();
   });
 
-  it("every slot carries its reason as title and data-reason; the hero names priority 1", () => {
+  it("every slot carries its reason on its corner arrow and as data-reason; the hero names priority 1", () => {
     render({});
     const plan = generateBrief(day());
+    const why = (slot: Element) => slot.querySelector('[data-testid="brief-why"]')!.getAttribute("title");
     for (const w of plan.widgets) {
       const slot = q(`[data-widget="${w.kind}"]`)!;
-      expect(slot.getAttribute("title")).toBe(w.reason);
+      expect(why(slot)).toBe(w.reason);
       expect(slot.getAttribute("data-reason")).toBe(w.reason);
     }
-    expect(q('[data-widget="needs"]')!.getAttribute("title")).toBe('Shown for priority 1, "Cut the hq-core release": it and 3 more calls wait on you.');
+    expect(why(q('[data-widget="needs"]')!)).toBe('Shown for priority 1, "Cut the hq-core release": it and 3 more calls wait on you.');
     // Template 8 puts the hero at M, where the "First:" line is hidden by design.
     expect(plan.widgets[0]).toMatchObject({ kind: "sunrise", size: "M" });
     expect(q('[data-testid="brief-sunrise-first"]')).toBeNull();
@@ -161,14 +162,20 @@ describe("DailyBrief", () => {
     expect(q('[data-testid="brief-need-time"]')?.textContent).toMatch(/^~\d+ min$/);
   });
 
-  it("the hero names priority 1 at L: the Oct 11 Sunday reads First: ... with its because", () => {
+  it("the priorities card takes the hero's L slot: on the Oct 11 Sunday it opens with priority 1 and its because", () => {
     const sunday = octoberEleven();
     render({ input: sunday });
     const plan = generateBrief(sunday);
     expect(plan.widgets[0]!.size).toBe("L");
-    expect(q('[data-testid="brief-sunrise-first"]')!.textContent!.replace(/\s+/g, " ").trim()).toBe(
-      "First: Close out the $20-cap SAFE allotment. Investors and the round close wait on it.",
-    );
+    // The page swaps the priorities card into the hero's area; the sunrise takes the smaller one.
+    const style = q("main.b-grid")!.getAttribute("style")!;
+    const firstRow = style.match(/grid-template-areas:\s*["']([^"']+)["']/)![1]!.split(/\s+/);
+    expect(firstRow.slice(0, 3)).toEqual(["needs", "needs", "needs"]);
+    const first = q('[data-brief-row][data-priority="1"]')!;
+    expect(first.textContent!.replace(/\s+/g, " ")).toContain("Close out the $20-cap SAFE allotment");
+    expect(first.querySelector('[data-testid="brief-need-sub"]')?.textContent).toContain("Investors and the round close wait on it");
+    // Priority 1 lives in the main card now, so the sunrise no longer repeats it as "First: ...".
+    expect(q('[data-testid="brief-sunrise-first"]')).toBeNull();
   });
 
   it("the lead chip's peek explains every card and lists what is not shown by card name; the live page has no strip", async () => {

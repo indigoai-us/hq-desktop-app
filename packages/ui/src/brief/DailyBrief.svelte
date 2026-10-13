@@ -51,11 +51,12 @@
   import { peek, type PeekContent } from "./brief-context.svelte.js";
   import { generateBrief, gridStyle, leadLabel, type BriefWidget } from "./brief-generate.js";
   import { CATALOGUE, SPAN, buildContext, entryOf, rankDecisions, reasonFor, type Scored, type WidgetGroup } from "./brief-catalogue.js";
-  import BriefPriorities from "./BriefPriorities.svelte";
   import { briefPriorities, watchTitle } from "./brief-peeks.js";
   import type { BriefInput, BriefRisk as BriefRiskRow } from "./brief-types.js";
   import { effortMinutes } from "./brief-hero.js";
   import { briefHover } from "./brief-hover.js";
+  import { FIELD, inLabel, nextCall, promoteMain } from "./brief-layout.js";
+  import { rangeText } from "./brief-strip.js";
   /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
   const REWARD_KINDS = new Set(["shipped", "firsts", "resolved"]);
   const NO_HOVER_KINDS = new Set(["sunrise", "catchup"]);
@@ -87,6 +88,8 @@
   provideBrief(briefState);
 
   const plan = $derived(generateBrief(input));
+  // The priorities card is the main card: it takes the hero's slot (brief-layout.ts).
+  const placed = $derived(promoteMain(plan.areas, plan.widgets));
   const ctx = $derived(buildContext(input));
   const priorities = $derived(briefPriorities(input));
   // Needs rows: the ones a priority points at first, then by what they unblock.
@@ -173,6 +176,41 @@
     };
   }
 
+  const STAT_NAME: Record<string, string> = { session: "Sessions", sessions: "Sessions", DM: "DMs", DMs: "DMs", signals: "Signals", meeting: "Meetings", meetings: "Meetings" };
+  const statName = (label: string) => STAT_NAME[label] ?? label;
+  /** One plain caption under each number, from what it is made of. */
+  function statCaption(label: string): string {
+    if (label.startsWith("session")) return plan.sessions.byWorkstream[0] ? `most in ${plan.sessions.byWorkstream[0].name}` : "worked in";
+    if (label.startsWith("DM")) {
+      const top = [...input.team].filter((t) => t.dmCount).sort((a, b) => (b.dmCount ?? 0) - (a.dmCount ?? 0))[0];
+      return top ? `most from ${top.name}` : "to read";
+    }
+    if (label.startsWith("signal")) return `${input.decisions.length} to decide · ${input.risks.length} risk${input.risks.length === 1 ? "" : "s"}`;
+    return "yesterday";
+  }
+  const next = $derived(nextCall(input.calendarToday, input.now));
+  const callsLeft = $derived(input.calendarToday.filter((e) => !e.busy && Date.parse(e.start) >= (next ? Date.parse(next.event.start) : Infinity)).length);
+  const nextTime = $derived.by(() => {
+    if (!next) return { t: "", ap: "" };
+    const d = new Date(next.event.start);
+    const m = d.getMinutes();
+    return { t: `${d.getHours() % 12 || 12}${m ? `:${String(m).padStart(2, "0")}` : ""}`, ap: d.getHours() >= 12 ? "PM" : "AM" };
+  });
+  function nextPeek(): PeekContent {
+    if (!next) return { title: "No more calls today", sections: [] };
+    const e = next.event;
+    const sections: PeekContent["sections"] = [];
+    if (e.attendees?.length) sections.push({ label: "With", lines: e.attendees.slice(0, 5).map((a) => ({ label: a, state: "" })) });
+    if (e.joinUrl) sections.push({ label: "Join", text: e.joinUrl });
+    return {
+      sample: input.calendarSample || e.projected,
+      title: e.title,
+      status: `${rangeText(e)} · ${inLabel(next.inMin, next.live)}`,
+      sections,
+      actions: onopenmeetings ? [{ label: "Open in Meetings", run: onopenmeetings }] : [],
+    };
+  }
+
   /** A dropped kind by its card name ("Team"), a priority row by its rank; never a camelCase id. */
   function kindName(kind: string): string {
     const m = kind.match(/^priority-(\d+)$/);
@@ -229,7 +267,7 @@
     }
     return tiles;
   });
-  const liveTiles = $derived.by((): Tile[] => plan.widgets.map((w) => ({ type: "card", key: w.kind, w, scored: plan.scored.find((s) => s.kind === w.kind)! })));
+  const liveTiles = $derived.by((): Tile[] => placed.widgets.map((w) => ({ type: "card", key: w.kind, w, scored: plan.scored.find((s) => s.kind === w.kind)! })));
   const tiles = $derived(allCards ? reviewTiles : liveTiles);
   // When the Handoffs card is on the page, the Waiting card leaves handoff rows to it.
   const handoffsPlaced = $derived(tiles.some((t) => t.type === "card" && t.w.kind === "handoffs"));
@@ -267,29 +305,61 @@
       <div class="b-mark" aria-hidden="true">
         <svg class="ico" viewBox="0 0 24 24"><path d="M3 17h18M6 17a6 6 0 0 1 12 0M12 5v2M5.6 8.6l1.4 1.4M18.4 8.6 17 10" /></svg>
       </div>
-      <div>
-        <h1>Daily Brief</h1>
-        <div class="eyebrow" style="margin-top:4px">{dateLabel} · {timeLabel}</div>
-      </div>
+      <span class="b-name">Daily Brief</span>
     </div>
-    <div class="b-prov" title="What this brief was generated from">
-      <span class="leadchip" data-testid="brief-lead" role="group" aria-label="Why these cards" use:peek={{ state: briefState, content: whyPeek }}
+    <div class="b-tools">
+      <span class="pill date">{dateLabel}</span>
+      <span class="leadchip pill" data-testid="brief-lead" role="group" aria-label="Why these cards" use:peek={{ state: briefState, content: whyPeek }}
         >Why these cards</span
       >
-      {#each plan.provenance as p (p.label)}<span class="prov" role="group" aria-label="{p.n} {p.label}" use:peek={{ state: briefState, content: () => provPeek(p.label) }}><b>{p.n}</b> {p.label}</span>{/each}
     </div>
   </header>
   {#if header}<div class="b-runs">{@render header()}</div>{/if}
 
-  <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} {onopenmeetings} />
+  <section class="b-top">
+    <div class="b-hello">
+      <div class="b-upd">Updated {timeLabel}</div>
+      <h1 class="b-greet">Morning{input.userName ? `, ${input.userName}` : ""}.</h1>
+      <div class="b-stats" title="What this brief was generated from">
+        {#each plan.provenance as p, i (p.label)}
+          <div class="stat prov" role="group" aria-label="{p.n} {p.label}" use:peek={{ state: briefState, content: () => provPeek(p.label) }}>
+            <span class="pill" class:hot={i === 0}>{statName(p.label)}</span>
+            <b class="num">{p.n}</b>
+            <span class="cap">{statCaption(p.label)}</span>
+          </div>
+        {/each}
+      </div>
+    </div>
+    <aside class="b-next" data-testid="brief-next" use:peek={{ state: briefState, content: nextPeek }}>
+      <div class="nx-head"><span>{next ? (next.live ? "On a call" : "Next call") : "Calls today"}</span><span class="arr" aria-hidden="true">↗</span></div>
+      {#if next}
+        <div class="nx-time">{nextTime.t}<span>{nextTime.ap}</span></div>
+        <div class="nx-title">{next.event.title}</div>
+        <div class="nx-in">{inLabel(next.inMin, next.live)}{#if callsLeft > 1} · {callsLeft - 1} more after{/if}</div>
+      {:else}
+        <div class="nx-time">Free</div>
+        <div class="nx-title">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</div>
+      {/if}
+      <svg class="orbit" viewBox="0 0 220 120" aria-hidden="true">
+        {#each [0, 1, 2, 3, 4, 5, 6] as k (k)}
+          <ellipse cx="80" cy="60" rx={52 - k * 7.5} ry="52" />
+          <ellipse cx="140" cy="60" rx={52 - k * 7.5} ry="52" />
+        {/each}
+        <circle class="dot" cx="28" cy="60" r="3" />
+        <circle class="hot" cx={next ? 110 : 192} cy="60" r="5" />
+        <circle class="ring" cx="110" cy="9" r="3" />
+        <circle class="ring" cx="192" cy="60" r="3" />
+      </svg>
+    </aside>
+  </section>
 
-  {#if priorities.length}<BriefPriorities {priorities} decisions={input.decisions} risks={input.risks} prompts={plan.prompts} now={input.now} />{/if}
+  <BriefTodayStrip events={input.calendarToday} now={input.now} {dateLabel} sample={input.calendarSample ?? false} {onopenmeetings} />
 
   {#if allCards}<div class="b-review" data-testid="brief-review">Review mode · every card with evidence, by group · Shift+A to go back</div>{/if}
   <main
     class="b-grid"
     class:review={allCards}
-    style={gridStyle(plan.areas, allCards)}
+    style={gridStyle(allCards ? plan.areas : placed.areas, allCards)}
   >
     {#each tiles as t, i (t.key)}
       {#if t.type === "label"}
@@ -302,12 +372,13 @@
           class="slot"
           class:short={w.rows === 1}
           class:lit={!NO_HOVER_KINDS.has(String(w.kind))}
+          data-field={FIELD[String(w.kind)] ?? "teal"}
           use:briefHover={{ tilt: REWARD_KINDS.has(String(w.kind)) }}
           style="{allCards ? `grid-column:span ${w.cols};grid-row:span ${w.rows}` : `grid-area:${w.kind}`};animation-delay:{i * 70}ms"
           data-widget={w.kind}
           data-reason={w.reason}
-          title={w.reason}
         >
+          <span class="why" role="note" aria-label="Why this card: {w.reason}" title={w.reason} data-testid="brief-why" use:peek={{ state: briefState, content: () => ({ title: entry.name, status: "Why it is here today", sections: [{ label: "Reason", text: w.reason }] }) }}>↗</span>
           {#if allCards}<span class="kind-tag">{w.kind} · {w.size} · T{w.tier} · {w.score}</span>{/if}
           {#if !entry.ready}
             <div class="w placeholder" data-testid="brief-placeholder">
@@ -320,6 +391,7 @@
               total={input.decisions.length}
               {cleared}
               userName={input.userName}
+              greet={false}
               sub={sunSub}
               {quietLine}
               big={w.cols >= 3}
@@ -332,7 +404,7 @@
           {:else if w.kind === "catchup"}
             <BriefCatchUp {input} daysAway={plan.daysAway ?? 0} lead={leadForHero} decisions={needsRows} prompts={plan.prompts} />
           {:else if w.kind === "needs"}
-            <BriefNeedsYou decisions={needsRows} prompts={plan.prompts} rows={w.rows} timeToClearMin={input.timeToClearMin ?? null} />
+            <BriefNeedsYou decisions={needsRows} prompts={plan.prompts} rows={w.rows} timeToClearMin={input.timeToClearMin ?? null} {priorities} risks={input.risks} now={input.now} />
           {:else if w.kind === "oneThing"}
             <!-- The call the entry picked (argmax of what it unblocks); null on a lead-hint-only day. -->
             {@const one = input.decisions.find((d) => d.id === t.scored.ev.items[0]) ?? null}
@@ -453,9 +525,8 @@
   .b-review {
     margin-top: 12px;
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-sun);
   }
   .review .slot {
@@ -480,7 +551,7 @@
     padding: 2px 8px;
     border-radius: 999px;
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     color: #1b1b1e;
     background: var(--b-sun);
   }
@@ -515,7 +586,7 @@
     gap: 8px 14px;
     margin-top: 14px;
     font-family: var(--b-mono);
-    font-size: 10.5px;
+    font-size: 11px;
     color: var(--b-t3);
   }
   .b-dropped .drop {

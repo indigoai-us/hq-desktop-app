@@ -37,7 +37,7 @@
     max-width: none;
     overflow: visible;
     font-family: var(--b-ui, system-ui);
-    font-size: 11.5px;
+    font-size: 11px;
     letter-spacing: 0;
   }
 </style>

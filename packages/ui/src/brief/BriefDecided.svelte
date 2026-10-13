@@ -88,8 +88,8 @@
     align-items: flex-start;
     padding: 5px 8px;
     margin: 0 -8px;
-    border-radius: 12px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     line-height: 1.3;
     transition: background 0.25s;
   }
@@ -130,8 +130,8 @@
     gap: 6px;
     min-width: 0;
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.02em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
   }
   .src span {

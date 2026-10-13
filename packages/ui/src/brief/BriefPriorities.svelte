@@ -103,8 +103,8 @@
     flex: none;
     width: 14px;
     font-family: var(--b-mono);
-    font-size: 12px;
-    font-weight: 300;
+    font-size: 13px;
+    font-weight: 400;
     color: var(--b-t3);
     font-variant-numeric: tabular-nums;
   }

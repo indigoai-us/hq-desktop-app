@@ -145,7 +145,7 @@ describe("Today strip render", () => {
     const jordan = blocks.find((b) => b.getAttribute("aria-label")!.startsWith("Jordan"))!;
     expect(jordan.classList.contains("tent")).toBe(true);
     expect(jordan.textContent).toBe("");
-    expect(strip.textContent).toContain("8 CALLS");
+    expect(strip.textContent).toContain("8 calls");
     const rachel = blocks.find((b) => b.getAttribute("aria-label")!.includes("Rachel"))!;
     rachel.dispatchEvent(new MouseEvent("mouseenter"));
     await new Promise((r) => setTimeout(r, 260));

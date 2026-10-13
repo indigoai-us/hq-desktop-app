@@ -58,7 +58,21 @@
   <nav class="days" aria-label="Fixture day">
     <span class="seg" role="group" aria-label="Appearance">
       {#each THEMES as t (t)}
-        <button class:on={theme === t} onclick={() => (theme = t)}>{t === 'dark' ? 'Dark' : t === 'light' ? 'Light' : 'System'}</button>
+        {@const name = t === 'dark' ? 'Dark' : t === 'light' ? 'Light' : 'System'}
+        <button class="icon" class:on={theme === t} onclick={() => (theme = t)} aria-label={name} aria-pressed={theme === t} title={name}>
+          <!-- Phosphor icons (regular weight, MIT), inlined: Moon, Sun, Monitor. -->
+          <svg viewBox="0 0 256 256" aria-hidden="true">
+            {#if t === 'dark'}
+              <path d="M108.11,28.11A96.09,96.09,0,0,0,227.89,147.89,96,96,0,1,1,108.11,28.11Z" />
+            {:else if t === 'light'}
+              <circle cx="128" cy="128" r="56" />
+              <path d="M128 16v24M128 216v24M16 128h24M216 128h24M48.8 48.8l17 17M190.2 190.2l17 17M48.8 207.2l17-17M190.2 65.8l17-17" />
+            {:else}
+              <rect x="32" y="48" width="192" height="144" rx="16" />
+              <path d="M96 224h64" />
+            {/if}
+          </svg>
+        </button>
       {/each}
     </span>
     <span class="sep"></span>
@@ -79,45 +93,102 @@
     inset: 0;
     overflow: hidden;
   }
+  /* Room under the last row so the floating bar never covers a card. */
+  .brief-stage :global(.daily-brief) {
+    padding-bottom: 84px;
+  }
   .seg {
     display: inline-flex;
     gap: 2px;
+  }
+  .days button.icon {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 999px;
+  }
+  .icon svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 16;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   .sep {
     width: 1px;
     height: 16px;
     margin: 0 4px;
-    background: rgba(255, 255, 255, 0.15);
+    background: var(--bar-line);
   }
+  /* A floating control for the preview, not part of the brief: centred at the
+     bottom, lifted by a clear drop shadow, and coloured against the mode in
+     use (dark bar on the dark brief, light bar on the light one). */
   .days {
+    --bar-bg: rgba(28, 28, 31, 0.94);
+    --bar-line: rgba(255, 255, 255, 0.14);
+    --bar-ink: rgba(255, 255, 255, 0.62);
+    --bar-ink-on: #fff;
+    --bar-on: rgba(255, 255, 255, 0.14);
+    --bar-hint: rgba(255, 255, 255, 0.4);
     position: fixed;
-    right: 12px;
-    bottom: 12px;
+    left: 50%;
+    bottom: 18px;
+    translate: -50% 0;
     z-index: 1000;
     display: flex;
-    gap: 4px;
+    gap: 2px;
     align-items: center;
     padding: 4px;
-    border-radius: 10px;
-    background: rgba(20, 20, 22, 0.85);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    background: var(--bar-bg);
+    border: 1px solid var(--bar-line);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18), 0 14px 36px rgba(0, 0, 0, 0.32);
     font: 500 11px/1 system-ui, sans-serif;
+    white-space: nowrap;
+  }
+  @media (prefers-color-scheme: light) {
+    :global(:root:not([data-force-theme='dark'])) .days {
+      --bar-bg: rgba(255, 255, 255, 0.96);
+      --bar-line: rgba(0, 0, 0, 0.1);
+      --bar-ink: rgba(0, 0, 0, 0.55);
+      --bar-ink-on: #111;
+      --bar-on: rgba(0, 0, 0, 0.07);
+      --bar-hint: rgba(0, 0, 0, 0.38);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08), 0 14px 36px rgba(0, 0, 0, 0.18);
+    }
+  }
+  :global(:root[data-force-theme='light']) .days {
+    --bar-bg: rgba(255, 255, 255, 0.96);
+    --bar-line: rgba(0, 0, 0, 0.1);
+    --bar-ink: rgba(0, 0, 0, 0.55);
+    --bar-ink-on: #111;
+    --bar-on: rgba(0, 0, 0, 0.07);
+    --bar-hint: rgba(0, 0, 0, 0.38);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08), 0 14px 36px rgba(0, 0, 0, 0.18);
   }
   .days button {
     font: inherit;
-    color: rgba(255, 255, 255, 0.65);
+    color: var(--bar-ink);
     background: transparent;
     border: 0;
-    padding: 6px 8px;
-    border-radius: 6px;
+    padding: 8px 11px;
+    border-radius: 999px;
     cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+  .days button:hover {
+    color: var(--bar-ink-on);
   }
   .days button.on {
-    color: #fff;
-    background: rgba(255, 255, 255, 0.12);
+    color: var(--bar-ink-on);
+    background: var(--bar-on);
   }
   .hint {
-    color: rgba(255, 255, 255, 0.4);
-    padding: 0 6px;
+    color: var(--bar-hint);
+    padding: 0 10px 0 6px;
   }
 </style>

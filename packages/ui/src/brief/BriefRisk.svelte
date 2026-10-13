@@ -90,7 +90,7 @@
     gap: 9px;
     min-width: 0;
     padding: 6px 9px;
-    border-radius: 11px;
+    border-radius: 6px;
     background: rgb(var(--b-ink) / 0.04);
     border: 1px solid rgb(var(--b-ink) / 0.07);
     transition: background 0.2s;
@@ -129,7 +129,7 @@
     min-width: 0;
   }
   .t {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1.3;
     color: var(--b-t1);
@@ -143,7 +143,7 @@
   }
   .y {
     margin-top: 1px;
-    font-size: 11.5px;
+    font-size: 11px;
     line-height: 1.35;
     color: var(--b-t2);
     overflow: hidden;
@@ -153,9 +153,8 @@
   .red {
     flex: none;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     line-height: 16px;
     padding: 0 6px;
     border-radius: 999px;
@@ -165,7 +164,7 @@
   }
   .rk.more {
     justify-content: center;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--b-t2);
     cursor: default;
   }

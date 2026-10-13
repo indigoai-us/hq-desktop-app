@@ -207,8 +207,8 @@
   .tag {
     flex: none;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     padding: 3px 7px;
     border-radius: 6px;
     border: 1px solid var(--b-line);
@@ -222,7 +222,7 @@
     position: relative;
     height: 46px;
     margin-top: 14px;
-    border-radius: 14px;
+    border-radius: 6px;
     background: rgb(var(--b-ink) / 0.05);
     border: 1px solid rgb(var(--b-ink) / 0.06);
   }
@@ -230,7 +230,7 @@
     position: absolute;
     top: 5px;
     bottom: 5px;
-    border-radius: 10px;
+    border-radius: 6px;
     border: 1px solid rgb(var(--b-ink) / 0.07);
     cursor: default;
     transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
@@ -270,7 +270,7 @@
     border: 1px solid rgb(var(--b-ink) / 0.14);
     box-shadow: none;
     font-family: var(--b-mono);
-    font-size: 9px;
+    font-size: 11px;
     color: var(--b-t2);
     display: grid;
     place-items: center;
@@ -322,7 +322,7 @@
     height: 14px;
     margin-top: 4px;
     font-family: var(--b-mono);
-    font-size: 9px;
+    font-size: 11px;
     color: var(--b-t3);
   }
   .rul span {
@@ -347,8 +347,8 @@
     position: relative;
     min-width: 0;
     padding: 8px 10px;
-    border-radius: 12px;
-    font-size: 11.5px;
+    border-radius: 6px;
+    font-size: 11px;
     line-height: 1.3;
     background: rgb(var(--b-ink) / 0.04);
     border: 1px solid rgb(var(--b-ink) / 0.09);
@@ -370,16 +370,15 @@
     gap: 6px;
     font-weight: 500;
     font-family: var(--b-mono);
-    font-size: 10.5px;
-    letter-spacing: 0.02em;
+    font-size: 11px;
+    letter-spacing: 0;
     white-space: nowrap;
     overflow: hidden;
   }
   .pr {
     font-style: normal;
-    font-size: 8.5px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-ok);
   }
   .tk {
@@ -395,7 +394,7 @@
   }
   .fit {
     color: var(--b-t2);
-    font-size: 10.5px;
+    font-size: 11px;
     margin-top: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -403,15 +402,15 @@
   }
   .note {
     margin-top: 3px;
-    font-size: 10.5px;
+    font-size: 11px;
     color: var(--b-ok);
   }
   .more {
     margin-top: 8px;
     text-align: center;
     padding: 5px 12px;
-    border-radius: 10px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     color: rgb(var(--b-ink) / 0.78);
     cursor: default;
   }

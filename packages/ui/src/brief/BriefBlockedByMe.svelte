@@ -206,7 +206,7 @@
 
 <style>
   h3 {
-    font-size: 15px;
+    font-size: 13px;
   }
 
   /* Glass tile: lit from the top, hairline rim, soft drop. No backdrop-filter, no well. */
@@ -235,7 +235,7 @@
   .pill {
     height: 48px;
     padding: 7px 10px;
-    border-radius: 14px;
+    border-radius: 6px;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
@@ -257,12 +257,12 @@
     height: 28px;
     justify-content: center;
     align-items: center;
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--b-t2);
     cursor: default;
   }
   .pt {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1.2;
     white-space: nowrap;
@@ -282,7 +282,7 @@
     gap: 5px;
     min-width: 0;
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     color: var(--b-t3);
   }
   .po b {
@@ -295,8 +295,8 @@
   .age {
     flex: none;
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
   }
   .age.amber {
@@ -343,7 +343,7 @@
     align-items: center;
     gap: 8px;
     padding: 0 8px;
-    border-radius: 10px;
+    border-radius: 6px;
     min-width: 0;
     transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background 0.2s, opacity 0.3s;
   }
@@ -360,16 +360,16 @@
   }
   .party.more .pn {
     font-weight: 400;
-    font-size: 11.5px;
+    font-size: 11px;
   }
   .ava {
     width: 22px;
     height: 22px;
     flex: none;
-    border-radius: 7px;
+    border-radius: 6px;
     display: grid;
     place-items: center;
-    font-size: 9.5px;
+    font-size: 11px;
     font-weight: 500;
     letter-spacing: 0;
     color: #fff;
@@ -380,7 +380,7 @@
     width: 22px;
     height: 22px;
     flex: none;
-    border-radius: 7px;
+    border-radius: 6px;
     display: grid;
     place-items: center;
     color: var(--b-t2);
@@ -392,7 +392,7 @@
   .pn {
     flex: none;
     max-width: 62%;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
@@ -401,7 +401,7 @@
   .pw {
     min-width: 0;
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     color: var(--b-t3);
     white-space: nowrap;
     overflow: hidden;
@@ -421,8 +421,8 @@
     flex: 1 1 0;
     min-width: 0;
     padding: 8px 11px;
-    border-radius: 12px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     line-height: 1.25;
     transition: opacity 0.3s;
   }
@@ -439,8 +439,8 @@
   .node small {
     display: block;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: var(--b-t3);
     margin-top: 3px;
     white-space: nowrap;

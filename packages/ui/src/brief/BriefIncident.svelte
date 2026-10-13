@@ -64,7 +64,7 @@
     {/if}
   </div>
   {#if m}
-    <div class="big" style="margin-top:{tall ? 12 : 6}px;font-size:{tall ? 60 : 44}px" use:countUp={stuck}>0</div>
+    <div class="big" style="margin-top:{tall ? 12 : 6}px;font-size:var(--b-fs-num)" use:countUp={stuck}>0</div>
     <div class="sub" data-testid="brief-incident-sub">{m.unit} stuck · {m.cause}<br />{risk.summary}</div>
   {:else if ci}
     <h3 data-testid="brief-incident-title">{ci.workflow ?? risk.title}</h3>
@@ -88,7 +88,7 @@
           <span class="chip fix more" role="group" aria-label="More fixes" data-testid="brief-incident-fixes-more" use:peek={{ state: brief, content: () => moreFixesPeek(restFixes) }}>+{restFixes.length} more</span>
         {/if}
       </div>
-      <div class="sub" style="font-size:11.5px;margin-top:6px">{risk.links.length} fix{risk.links.length === 1 ? "" : "es"} in review</div>
+      <div class="sub" style="font-size:11px;margin-top:6px">{risk.links.length} fix{risk.links.length === 1 ? "" : "es"} in review</div>
     {/if}
     {#if prompt}<div class="start">{#if brief.notes[risk.id]}<span class="launch-note">{brief.notes[risk.id]}</span>{:else}<BriefLaunch id={risk.id} {prompt} compact />{/if}</div>{/if}
     {#if m}<div class="probe">{probe || "HOVER ONE TO INSPECT"}</div>{/if}
@@ -171,7 +171,7 @@
     display: grid;
     gap: 4px;
     margin-top: 8px;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.35;
     color: rgb(var(--b-ink) / 0.92);
   }
@@ -179,9 +179,8 @@
     display: inline-block;
     min-width: 52px;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.6);
   }
   .facts .note {
@@ -196,7 +195,7 @@
   /* A fix chip: the product's logo and name, then the plain title; never a slug or a PR number. */
   .chip.fix {
     font-family: var(--b-ui, system-ui);
-    font-size: 11.5px;
+    font-size: 11px;
     letter-spacing: 0;
     max-width: 100%;
   }
@@ -208,7 +207,7 @@
   }
   .chip.fix.more {
     font-family: var(--b-mono);
-    font-size: 10.5px;
+    font-size: 11px;
     cursor: default;
   }
   .start {
@@ -216,8 +215,8 @@
   }
   .probe {
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.85);
     min-height: 14px;
     margin-top: 8px;
@@ -231,9 +230,8 @@
   }
   .also-l {
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.6);
     margin-bottom: 2px;
   }
@@ -243,8 +241,8 @@
     gap: 8px;
     min-width: 0;
     padding: 5px 8px;
-    border-radius: 10px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     line-height: 1.3;
     color: rgb(var(--b-ink) / 0.92);
     background: rgb(var(--b-ink) / 0.1);
@@ -270,8 +268,8 @@
   .arow .st {
     flex: none;
     font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.72);
     white-space: nowrap;
   }

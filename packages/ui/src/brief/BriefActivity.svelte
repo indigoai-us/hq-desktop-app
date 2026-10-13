@@ -84,7 +84,7 @@
     display: flex;
     align-items: baseline;
     gap: 8px;
-    font-size: 12.5px;
+    font-size: 13px;
     color: rgb(var(--b-ink) / 0.82);
     transition: opacity 0.4s ease;
   }
@@ -130,7 +130,7 @@
   .still,
   .time {
     margin: 0;
-    font-size: 12px;
+    font-size: 13px;
     color: rgb(var(--b-ink) / 0.55);
   }
   .time {

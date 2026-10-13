@@ -67,7 +67,7 @@
     align-items: center;
     gap: 12px;
     padding: 10px 12px;
-    border-radius: 12px;
+    border-radius: 6px;
     box-shadow: var(--b-well);
   }
   .txt {

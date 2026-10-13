@@ -39,7 +39,7 @@
     border-radius: 6px;
     font-family: var(--b-ui, system-ui);
     font-size: calc(var(--s) * 0.45);
-    font-weight: 600;
+    font-weight: 500;
     letter-spacing: 0;
     color: #fff;
     background: linear-gradient(145deg, hsl(var(--h) 60% 56%), hsl(var(--h) 55% 36%));

@@ -72,10 +72,11 @@
 </div>
 
 <style>
+  /* Below the corner arrow. */
   .glass {
     position: absolute;
-    top: 16px;
-    right: 16px;
+    top: 42px;
+    right: 18px;
     width: 30px;
     height: 36px;
   }
@@ -134,8 +135,8 @@
     flex: none;
     margin-left: auto;
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     line-height: 16px;
     color: rgb(var(--b-ink) / 0.72);
   }
@@ -149,8 +150,8 @@
     justify-content: center;
     margin-top: 10px;
     padding: 4px 10px;
-    border-radius: 10px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     color: rgb(var(--b-ink) / 0.82);
     background: rgb(var(--b-ink) / 0.08);
     border: 1px solid rgb(var(--b-ink) / 0.12);

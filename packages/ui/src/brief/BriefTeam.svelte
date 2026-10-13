@@ -153,7 +153,7 @@
     align-items: center;
     padding: 6px 8px;
     margin: -6px -8px;
-    border-radius: 12px;
+    border-radius: 6px;
     transition: background 0.25s;
   }
   .p:hover {
@@ -164,11 +164,11 @@
     width: 36px;
     height: 36px;
     flex: none;
-    border-radius: 12px;
+    border-radius: 6px;
     display: grid;
     place-items: center;
     font-weight: 500;
-    font-size: 14px;
+    font-size: 13px;
     color: #fff;
     box-shadow: none;
   }
@@ -206,10 +206,9 @@
   .load {
     flex: none;
     font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-size: 11px;
     font-weight: 400;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    letter-spacing: 0;
     padding: 0 6px;
     border-radius: 999px;
     line-height: 16px;
@@ -219,7 +218,7 @@
   }
   .cnt {
     text-transform: none;
-    font-size: 10px;
+    font-size: 11px;
   }
   .load[data-load="heavy"] {
     color: var(--b-warn);
@@ -246,7 +245,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 11.5px;
+    font-size: 11px;
     color: rgb(var(--b-ink) / 0.56);
     line-height: 1.3;
   }
@@ -273,8 +272,8 @@
     all: unset;
     cursor: pointer;
     font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.08em;
+    font-size: 11px;
+    letter-spacing: 0;
     color: rgb(var(--b-ink) / 0.7);
     padding: 5px 8px;
     border-radius: 8px;
@@ -295,8 +294,8 @@
     align-self: stretch;
     text-align: center;
     padding: 5px 10px;
-    border-radius: 10px;
-    font-size: 12px;
+    border-radius: 6px;
+    font-size: 13px;
     color: var(--b-t2);
     background: rgb(var(--b-ink) / 0.05);
     border: 1px solid rgb(var(--b-ink) / 0.08);

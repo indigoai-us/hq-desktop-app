@@ -32,6 +32,8 @@
     lead?: HeroLead | null;
     /** Minutes to clear every open decision (writer's sum of effort sizes); shown beside the meter as "~N min". */
     timeToClearMin?: number | null;
+    /** Say "Morning, name." above the line; off when the page greets in its own header. */
+    greet?: boolean;
   }
   let {
     total,
@@ -45,6 +47,7 @@
     now = new Date().toISOString(),
     lead = null,
     timeToClearMin = null,
+    greet = true,
   }: Props = $props();
   const leadLine = $derived(firstLine(lead));
   const end = $derived(Date.parse(now));
@@ -98,11 +101,12 @@
   });
 
   const hex = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
-  const SUN_A = hex("#FFB580");
-  const SUN_B = hex("#FF809F");
-  const HALO = hex("#FFA88C");
-  const HOR = hex("#FFBEA0");
-  const WATER = hex("#FF9696");
+  // Drawn in light over the card's dusk field: a cream sun, white halo and horizon.
+  const SUN_A = hex("#FFFBF2");
+  const SUN_B = hex("#FFD6C2");
+  const HALO = hex("#FFFFFF");
+  const HOR = hex("#FFFFFF");
+  const WATER = hex("#FFE9DE");
   const mix = (a: number[], b: number[], t: number) => a.map((v, i) => Math.round(v + (b[i]! - v) * t));
 
   function tx(t: number): number {
@@ -149,11 +153,12 @@
       const breathe = left > 0 && !still ? 0.5 + 0.5 * Math.sin(1.4 * clock) : 1;
       ctx!.clearRect(0, 0, width, height);
       const sky = ctx!.createLinearGradient(0, 0, 0, hz * DAWN_PITCH);
-      sky.addColorStop(0, "rgba(20,20,30,1)");
-      sky.addColorStop(1, `rgba(${60 + e * 60},${30 + e * 25},${45 + e * 10},1)`);
+      // The sky is the card's own gradient; clearing decisions only warms the horizon.
+      sky.addColorStop(0, "rgba(255,255,255,0)");
+      sky.addColorStop(1, `rgba(255,236,220,${0.06 + e * 0.16})`);
       ctx!.fillStyle = sky;
       ctx!.fillRect(0, 0, width, hz * DAWN_PITCH);
-      ctx!.fillStyle = "#121216";
+      ctx!.fillStyle = "rgba(40,14,60,0.22)";
       ctx!.fillRect(0, hz * DAWN_PITCH, width, height);
       for (let y = 0; y < rows; y += 1) {
         for (let x = 0; x < cols; x += 1) {
@@ -200,13 +205,13 @@
       }
       if (hover && total) {
         const gy = hz + R * 0.55 - hz * 0.55;
-        ctx!.strokeStyle = "rgba(255,190,160,.6)";
+        ctx!.strokeStyle = "rgba(255,255,255,.7)";
         ctx!.setLineDash([3, 4]);
         ctx!.beginPath();
         ctx!.arc(cx * DAWN_PITCH + 4, gy * DAWN_PITCH + 4, R * DAWN_PITCH, 0, Math.PI * 2);
         ctx!.stroke();
         ctx!.setLineDash([]);
-        ctx!.fillStyle = "rgba(255,190,160,.85)";
+        ctx!.fillStyle = "rgba(255,255,255,.9)";
         ctx!.font = "500 10px 'Geist Mono', ui-monospace, monospace";
         ctx!.textAlign = "center";
         ctx!.fillText("ALL CLEAR", cx * DAWN_PITCH + 4, gy * DAWN_PITCH - R * DAWN_PITCH - 6);
@@ -242,16 +247,16 @@
 >
   <canvas bind:this={canvas} aria-hidden="true"></canvas>
   <div class="over">
-    <div class="eyebrow" style="color:rgba(255,190,160,.7)">Sunrise · {total ? "decisions cleared" : "nothing owed"}</div>
+    <div class="eyebrow" style="color:rgba(255,255,255,.8)">Sunrise · {total ? "decisions cleared" : "nothing owed"}</div>
     <div class="greet" class:big>
-      Morning{userName ? `, ${userName}` : ""}.<br /><span class="line" aria-label={line}>{lineParts.pre}{#if lineParts.em}<em class="accent-word">{lineParts.em}</em>{/if}{lineParts.post}</span>
+      {#if greet}Morning{userName ? `, ${userName}` : ""}.<br />{/if}<span class="line" aria-label={line}>{lineParts.pre}{#if lineParts.em}<em class="accent-word">{lineParts.em}</em>{/if}{lineParts.post}</span>
     </div>
     {#if big && leadLine}<div class="first" data-testid="brief-sunrise-first">{leadLine}</div>{/if}
     <div class="sub lede" class:big>{sub}</div>
     <div class="tl">
       <div
         class="eyebrow tl-head"
-        style="color:rgba(255,190,160,.6)"
+        style="color:rgba(255,255,255,.72)"
         data-testid="brief-timeline-head"
         title={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}
       >
@@ -289,7 +294,6 @@
 <style>
   .dawn {
     padding: 0;
-    background: #141418;
   }
   canvas {
     position: absolute;
@@ -315,7 +319,7 @@
     font-size: var(--b-fs-display);
   }
   .greet .line {
-    color: #ffb580;
+    color: #fff;
   }
   .greet :global(.accent-word) {
     font-weight: 400;
@@ -324,13 +328,13 @@
   .first {
     margin-top: 10px;
     max-width: min(440px, calc(54% - 32px));
-    font-size: 13.5px;
+    font-size: 13px;
     line-height: 1.35;
     color: rgb(var(--b-ink) / 0.86);
   }
   .lede {
     margin-top: 12px;
-    text-shadow: 0 1px 3px rgba(10, 6, 16, 0.7);
+    text-shadow: 0 1px 3px rgba(40, 10, 50, 0.35);
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;
@@ -364,7 +368,7 @@
     right: 0;
     top: 50%;
     height: 1px;
-    background: rgba(255, 190, 160, 0.35);
+    background: rgba(255, 255, 255, 0.4);
   }
   .dot {
     position: absolute;
@@ -375,8 +379,8 @@
     padding: 0;
     border: 0;
     border-radius: 50%;
-    background: #ffb580;
-    filter: drop-shadow(0 0 4px rgba(255, 160, 130, 0.8));
+    background: #fff;
+    filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.7));
     translate: 0 var(--lift, 0);
     cursor: pointer;
     opacity: 0;
@@ -384,14 +388,14 @@
     transition: box-shadow 0.15s;
   }
   .dot.last {
-    background: #ff809f;
+    background: #ffd6c2;
   }
   .dot:hover,
   .dot:focus-visible {
     z-index: 2;
     background: #fff;
     scale: 1.5;
-    box-shadow: 0 0 0 4px rgba(255, 181, 128, 0.25);
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.3);
     outline: none;
   }
   /* The hovered dot's time and title, above the strip. */
@@ -404,7 +408,7 @@
     transform-origin: bottom center;
     padding: 0;
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     white-space: nowrap;
     color: #fff;
     opacity: 0;
@@ -432,7 +436,7 @@
     height: 16px;
     margin-top: 4px;
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     color: rgb(var(--b-ink) / 0.4);
   }
   .tick {
@@ -473,34 +477,33 @@
     flex: 1;
     height: 8px;
     border-radius: 99px;
-    background: rgba(0, 0, 0, 0.35);
-    box-shadow: inset 2px 2px 5px rgba(0, 0, 0, 0.6);
+    background: rgba(255, 255, 255, 0.22);
   }
   .track i {
     display: block;
     height: 100%;
     border-radius: inherit;
-    background: linear-gradient(90deg, #ffb580, #ff809f);
-    box-shadow: 0 0 14px rgba(255, 150, 140, 0.55);
+    background: #fff;
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.6);
     transition: width 1.1s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .meter b {
     font-family: var(--b-mono);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
-    color: rgb(var(--b-ink) / 0.56);
+    color: rgb(var(--b-ink) / 0.8);
   }
   /* The estimate sits after the count in the same mono, dimmer, with its own chip. */
   .eta {
     flex: none;
     font-family: var(--b-mono);
-    font-size: 10.5px;
-    letter-spacing: 0.04em;
+    font-size: 11px;
+    letter-spacing: 0;
     padding: 3px 8px;
     border-radius: 999px;
-    color: rgba(255, 190, 160, 0.9);
-    border: 1px solid rgba(255, 190, 160, 0.3);
-    background: rgba(255, 181, 128, 0.08);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.12);
     white-space: nowrap;
   }
 </style>
