@@ -1,5 +1,6 @@
 <script lang="ts">
   import RailIcon from '@hq/ui/rail-icon';
+  import { BRAND_ICONS } from '@hq/ui/rail-icons';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
@@ -13,6 +14,7 @@
   import {
     HQ_MARK_H,
     HQ_MARK_Q,
+    createCompanyEngine,
     createConsentEngine,
     createFolderEngine,
     createKeyboardEngine,
@@ -181,6 +183,7 @@
   } from '../../lib/command-line-tools-gate';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import CompanyStep, { type CompanyStepEvent, type CompanyStepResult } from './CompanyStep.svelte';
+  import hqAppIcon from '../../assets/onboarding/hq-app-icon.png';
   import {
     companyUidFromMissingBucket,
     isMissingBucketMessage,
@@ -496,8 +499,14 @@
   /** The company lookup has answered with a usable route (or none needed). */
   let companyRouteResolved = $state(false);
   /** Leaving the explainers waits this long at most for the company lookup. */
-  const COMPANY_ROUTE_WAIT_MS = 3_000;
-  let leavingExplainers = false;
+  /**
+   * How long leaving the explainers waits for the company lookup. Long enough
+   * that the person goes straight to the right screen rather than seeing the
+   * ready screen and being pulled back from it.
+   */
+  const COMPANY_ROUTE_WAIT_MS = 12_000;
+  /** Leaving the explainers waits on the company lookup; the forward button says so. */
+  let leavingExplainers = $state(false);
   let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
   let inviteStepHiddenTelemetryRecorded = false;
@@ -809,7 +818,16 @@
   // ─── Welcome flow: chrome, install card, ready gate ─────────────────────
   /** An install this flow started is still running. */
   const installPending = $derived(setupStarted && !setupCompleted);
-  const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
+  /** The company step's current screen offers Back (within the step, or out to the shortcut screen). */
+  let companyBack = $state(false);
+  let companyStepRef = $state<{ back: () => boolean } | null>(null);
+  /** This run has a company step (a person with no company yet). */
+  const companyInRun = $derived(
+    !consentOnly && !replay && Boolean(companyPath && companyPath.kind !== 'skip'),
+  );
+  const chrome = $derived(
+    welcomeChrome({ scene, replay, setupCompleted, companyInRun, companyBack: companyBack && !leavingExplainers }),
+  );
   const installCard = $derived(
     installCardModel({
       percent: overallPercent,
@@ -3015,8 +3033,10 @@
   /**
    * Leave the setup explainers. The company step comes first when this
    * person needs one, then the ready ("Open HQ Desktop") screen. A lookup
-   * that has not answered yet gets a short wait; if it answers later, the
-   * ready screen hands over to the company step then.
+   * that has not answered yet is waited for (COMPANY_ROUTE_WAIT_MS, the
+   * forward button reads "One moment…"); only one slower than that lets the
+   * ready screen show, and the company step is then offered once the install
+   * is done, with the other follow-ons.
    */
   async function leaveExplainers(): Promise<void> {
     if (leavingExplainers) return;
@@ -3693,6 +3713,11 @@
 
   function goBack(): void {
     if (!chrome.back) return;
+    // The company step goes back through its own screens first.
+    if (scene === 'company' && companyStepRef?.back()) return;
+    // Leaving the company step by Back means it has not been done: the next
+    // Next comes back to it.
+    if (scene === 'company') companyStepVisited = false;
     const target = previousScene(scene, replay);
     if (!target) return;
     if (target === 'welcome') enterSettled = true;
@@ -3797,10 +3822,8 @@
   function startWelcome(): () => void {
     const controller = createWelcomeController({
       reducedMotion: () => reducedMotion,
-      onTick: (progress) => {
-        const fill = tickFills[chrome.currentTick];
-        if (fill) fill.style.width = `${(progress * 100).toFixed(1)}%`;
-      },
+      // No onTick: the progress ticks do not count down a screen's hold; the
+      // current tick is simply on (design review, 2026-10-12).
       // The motion is decoration in front of setup; it must never block it.
       onError: () => {
         motionFailed = true;
@@ -3910,7 +3933,15 @@
         ),
       );
     }
-    for (const id of ['company', 'first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
+    if (refs['panel:company'] && refs.companyCanvas) {
+      controller.register(
+        'company',
+        createCompanyEngine(refs['panel:company'], refs.companyCanvas as HTMLCanvasElement, {
+          reveal: revealNav,
+        }),
+      );
+    }
+    for (const id of ['first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
       const block = refs[`panel:${id}`];
       if (block) controller.register(id, createPanelEngine(block, { reveal: revealNav }));
     }
@@ -3946,9 +3977,10 @@
     const settled = enterSettled;
     enterSettled = false;
     if (motionFailed) navRevealed = true;
-    const index = storyOrder.indexOf(next as never);
+    // Ticks up to and including this screen's are full; the rest are empty.
+    const current = chrome.currentTick;
     for (const [tick, fill] of tickFills.entries()) {
-      if (fill) fill.style.width = tick + 1 < index ? '100%' : '0';
+      if (fill) fill.style.width = tick <= current ? '100%' : '0';
     }
     void tick().then(() => {
       controller.show(next, {
@@ -4030,16 +4062,10 @@
   // the teammate invite (flag-gated, sole active member only), then the
   // connector import, which only shows itself if it has something to offer.
   // Each hands back to the ready screen, which picks the next one up here.
-  // The company step comes before the ready screen. When the lookup answers
-  // only after the person reached ready (a quick Skip intro), hand over then;
-  // this does not wait for the install.
-  $effect(() => {
-    if (consentOnly || replay || !companyRouteResolved) return;
-    if (currentStep !== READY_STEP_INDEX) return;
-    if (companyPath && companyPath.kind !== 'skip' && !companyStepVisited) {
-      advanceTo(COMPANY_STEP_INDEX, null);
-    }
-  });
+  // The company step comes before the ready screen: leaving the explainers
+  // waits for the lookup (COMPANY_ROUTE_WAIT_MS), so a person is not shown the
+  // ready screen and then pulled away from it. Only a lookup slower than that
+  // hands over later, once the install is done, with the other follow-ons.
 
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
@@ -4162,6 +4188,8 @@
     if (result.outcome === 'created') {
       connectorImportCompany = result.companyUid;
       recordWorkspaceSelected(result.companyUid);
+      // The company step asked about invites itself: never ask twice.
+      inviteTeammateVisited = true;
     } else if (result.outcome === 'joined') {
       details.decision = 'joined_invite';
       const joinedInvite =
@@ -4289,7 +4317,7 @@
                     type="submit"
                     data-testid="microsoft-email-continue"
                     disabled={loadingProvider !== null || microsoftEmail.trim() === ''}
-                  ><RailIcon name="arrow-right" />Continue</button>
+                  >Continue</button>
                 </form>
               {/if}
             {/if}
@@ -4316,7 +4344,7 @@
     </div>
     {#if replay}
       <div class="nav" class:on={scene === 'welcome' && navRevealed} bind:this={refs.navWelcome}>
-        <button class="btn btn-primary" type="button" onclick={forward}><RailIcon name="arrow-right" />Next</button>
+        <button class="btn btn-primary" type="button" onclick={forward}>Next</button>
       </div>
     {/if}
   </section>
@@ -4425,7 +4453,7 @@
       {/each}
     </ul>
     <div class="nav" class:on={scene === 'cloud' && navRevealed} bind:this={refs.navCloud}>
-      <button class="btn btn-primary" type="button" onclick={forward}><RailIcon name="arrow-right" />Next</button>
+      <button class="btn btn-primary" type="button" onclick={forward}>Next</button>
     </div>
   </section>
 
@@ -4465,7 +4493,13 @@
       <span class="chordcap">Open the HQ desktop view</span>
     </p>
     <div class="nav" class:on={scene === 'shortcut' && navRevealed} bind:this={refs.navShortcut}>
-      <button class="btn btn-primary" type="button" onclick={forward}>{replay ? 'Done' : 'Next'}</button>
+      <button
+        class="btn btn-primary"
+        type="button"
+        disabled={leavingExplainers}
+        aria-busy={leavingExplainers}
+        onclick={forward}
+      >{replay ? 'Done' : leavingExplainers ? 'One moment…' : 'Next'}</button>
     </div>
   </section>
 
@@ -4645,9 +4679,11 @@
       data-scene="company"
       aria-labelledby="onboarding-title-company"
     >
+      <canvas class="company-art" aria-hidden="true" bind:this={refs.companyCanvas}></canvas>
       <div class="panel-block" bind:this={refs['panel:company']}>
         {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'skip'}
           <CompanyStep
+            bind:this={companyStepRef}
             path={companyPath}
             priorPlan={companyPriorPlan}
             namePrefillEnabled={companyNamePrefillEnabled}
@@ -4658,6 +4694,7 @@
             listen={(event, handler) => listen(event, (message) => handler(message.payload))}
             onTelemetry={recordCompanyStep}
             oncomplete={leaveCompanyStep}
+            onbackchange={(canGoBack) => (companyBack = canGoBack)}
           />
         {/if}
       </div>
@@ -4702,7 +4739,7 @@
                 type="button"
                 data-testid="onboarding-first-folder-sync-skip"
                 onclick={() => advanceTo(nextAfterFirstFolderSync(), 'skipped')}
-              ><RailIcon name="arrow-right" />Skip for now</button>
+              >Skip for now</button>
             </div>
           </div>
         {/if}
@@ -4772,7 +4809,7 @@
                   type="button"
                   data-testid="onboarding-invite-skip"
                   onclick={leaveInviteTeammate}
-                >{inviteSent ? 'Continue' : 'Skip'}</button>
+                >{inviteSent ? 'Continue' : 'Skip for now'}</button>
               </div>
             </form>
           </div>
@@ -4854,11 +4891,9 @@
           aria-busy={finishing || installPending}
           onclick={() => void handleFinish()}
         >
-          <span class="tc-icon" aria-hidden="true">{@render ToolIcon('desktop')}</span>
-          <span class="tc-text">
-            <span class="tc-name">HQ Desktop</span>
-            <span class="tc-line">{openDesktop.label === 'Open HQ Desktop' ? 'Use HQ’s own app' : openDesktop.label}</span>
-          </span>
+          <span class="tc-icon" aria-hidden="true"><img src={hqAppIcon} alt="" width="32" height="32" /></span>
+          <span class="tc-name">{openDesktop.label}</span>
+          {#if !openDesktop.enabled}<span class="tc-spin" aria-hidden="true"></span>{/if}
         </button>
         {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
           <div
@@ -5000,9 +5035,8 @@
             aria-busy={privacyOpening}
             onclick={() => void handleOpenPrivacy()}
           >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
-          <span class="rc-sep" aria-hidden="true">·</span>
           {#if hqAnywhereRuntimeEnabled}
-            <label class="rc-check">
+            <label class="rc-check rc-check-next">
               <input
                 type="checkbox"
                 data-testid="ready-hq-anywhere"
@@ -5085,7 +5119,7 @@
         <div class="graphic" aria-hidden="true">{@render TrustMock()}</div>
         <h2 class="h h-md" id="onboarding-title-trust" tabindex="-1" data-scene-heading>Trust your workspace</h2>
         <p class="body">Claude Code will open with your hq folder selected and /setup ready to run. Choose “Yes, trust this workspace.” Just check that hq is still the folder it’s pointing at.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(READY_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(SETTINGS_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(READY_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(SETTINGS_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -5094,7 +5128,7 @@
         <div class="graphic" aria-hidden="true">{@render SettingsMock()}</div>
         <h2 class="h h-md" id="onboarding-title-settings" tabindex="-1" data-scene-heading>Dial in your settings</h2>
         <p class="body">For the best results, use the latest models (Opus 4.8 or GPT-5.5), set thinking to “High” or above, and turn on auto mode (bypass permissions). You might need to flip that last one on in settings.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(TRUST_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(RUN_SETUP_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(TRUST_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(RUN_SETUP_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -5103,7 +5137,7 @@
         <div class="graphic" aria-hidden="true">{@render SetupPromptMock()}</div>
         <h2 class="h h-md" id="onboarding-title-run-setup" tabindex="-1" data-scene-heading>Press enter to run /setup</h2>
         <p class="body">Hit ⏎ in the message box to start setup.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(SETTINGS_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(HANDOFF_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(SETTINGS_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(HANDOFF_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -5112,7 +5146,7 @@
         <div class="graphic" aria-hidden="true">{@render HandoffMock()}</div>
         <h2 class="h h-md" id="onboarding-title-handoff" tabindex="-1" data-scene-heading>Answer, then run /handoff</h2>
         <p class="body">Work through every question until it says setup is finished, then send “/handoff” to save everything to HQ’s memory. You’ll do this at the end of every session.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(RUN_SETUP_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(BUILD_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(RUN_SETUP_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(BUILD_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -5145,7 +5179,7 @@
         <span class="sr-only">Screen {chrome.currentTick + 2} of {chrome.tickCount + 1}</span>
       {/if}
       {#if chrome.skip}
-        <button class="btn btn-ghost skip" type="button" data-testid="welcome-skip" onclick={skipIntro}><RailIcon name="arrow-right" />Skip intro</button>
+        <button class="btn btn-ghost skip" type="button" data-testid="welcome-skip" disabled={leavingExplainers} onclick={skipIntro}>Skip intro</button>
       {/if}
     </div>
     <button
@@ -5269,17 +5303,12 @@
   <svg viewBox="0 0 120 120" aria-hidden="true"><g fill="currentColor"><path d="M117.6,61.36c0-4.25-.38-8.35-1.09-12.27H60v23.21h32.29c-1.39,7.5-5.62,13.85-11.97,18.11v15.06h19.39c11.35-10.45,17.89-25.83,17.89-44.1Z" /><path d="M60,120c16.2,0,29.78-5.37,39.71-14.54l-19.39-15.05c-5.37,3.6-12.25,5.73-20.32,5.73-15.63,0-28.85-10.55-33.57-24.74H6.38v15.55C16.25,106.55,36.55,120,60,120Z" /><path d="M26.43,71.4c-1.2-3.6-1.88-7.45-1.88-11.4s.68-7.8,1.88-11.4V33.05H6.38C2.32,41.15,0,50.32,0,60s2.32,18.85,6.38,26.95l20.05-15.55Z" /><path d="M60,23.86c8.81,0,16.72,3.03,22.94,8.98l17.21-17.21C89.75,5.95,76.17,0,60,0,36.55,0,16.25,13.45,6.38,33.05l20.05,15.55C31.15,34.42,44.37,23.86,60,23.86Z" /></g></svg>
 {/snippet}
 
-{#snippet ToolIcon(kind: LaunchKind | 'desktop')}
-  {#if kind === 'desktop'}
-    <!-- a window -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="M3.5 9.5h17" /></svg>
-  {:else if kind === 'codex'}
-    <!-- a terminal prompt -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5 9.5 12 5 16.5" /><path d="M12.5 16.5H19" /></svg>
-  {:else}
-    <!-- an eight-ray spark -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6 6 18" /></svg>
-  {/if}
+{#snippet ToolIcon(kind: LaunchKind)}
+  <!-- The vendors' published marks in single-colour white (Claude Spark,
+       OpenAI Blossom), the same path data as the app's brand icons
+       (packages/ui rail-icons BRAND_ICONS; sources in docs/brand-marks.md). -->
+  {@const brand = BRAND_ICONS[kind === 'codex' ? 'codex' : 'claude-code']}
+  <svg viewBox={brand.viewBox} aria-hidden="true"><path d={brand.d} fill="currentColor" fill-rule="evenodd" /></svg>
 {/snippet}
 
 {#snippet MicrosoftMark()}

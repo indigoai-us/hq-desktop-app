@@ -255,7 +255,9 @@
   transition: opacity 0.15s, transform 0.1s;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  /* The app's one icon-to-label gap (button-standard.css). */
+  gap: var(--hq-btn-gap, 6px);
   white-space: nowrap;
 }
 .hq-welcome .btn:active:not(:disabled) {
@@ -322,11 +324,11 @@
 }
 .hq-welcome .ticks {
   display: flex;
-  gap: 5px;
+  gap: 3px;
   align-items: center;
 }
 .hq-welcome .tick {
-  width: 14px;
+  width: 8px;
   height: 2px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.22);
@@ -335,7 +337,7 @@
   transition: width 0.5s var(--w-ease-out), background 0.4s;
 }
 .hq-welcome .tick.cur {
-  width: 34px;
+  width: 20px;
 }
 .hq-welcome .tick .fill {
   position: absolute;
@@ -1087,13 +1089,16 @@
   font-family: var(--w-font-sans);
   font-size: 12px;
   line-height: 16px;
-  min-width: 26px;
-  text-align: center;
-  padding: 3px 7px;
+  box-sizing: border-box;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border-radius: 6px;
   color: #fff;
   background: rgba(255, 255, 255, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
 }
 .hq-welcome .chordline .chordcap {
   margin-left: 8px;
@@ -1516,17 +1521,18 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   width: min(600px, 92vw);
 }
+/* The big button spans the row of tool buttons under it (2 x 148 + 12). */
 .hq-welcome .ready-options .tool-card-desktop {
-  width: min(320px, 100%);
+  width: min(308px, 100%);
 }
 .hq-welcome .tool-pills {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 10px;
+  gap: 12px;
 }
 .hq-welcome .tool-pills.tool-pills-status.ai-tools-status-stack {
   flex-direction: column;
@@ -1569,27 +1575,30 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  width: 170px;
-  height: 38px;
+  min-width: 148px;
+  height: 40px;
   margin: 0;
-  padding: 0 14px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  padding: 0 18px;
+  border: none;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
-  font-size: 13.5px;
-  line-height: 18px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
   cursor: pointer;
   transition:
     background-color 0.15s,
-    border-color 0.15s;
+    transform 0.15s var(--w-ease-out);
 }
 .hq-welcome .tool-pill:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.13);
-  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.17);
+}
+.hq-welcome .tool-pill:active:not(:disabled) {
+  transform: scale(0.97);
 }
 .hq-welcome .tool-pill:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: default;
 }
 .hq-welcome .tool-pill:focus-visible {
@@ -1603,90 +1612,75 @@
   width: 16px;
   height: 16px;
 }
+/* Open HQ Desktop: the one big, bright call to action on the ready screen.
+   The app's own icon, one label, a soft glow that lifts on hover. */
 .hq-welcome .tool-card {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
+  justify-content: center;
+  gap: 8px;
   min-width: 0;
-  min-height: 76px;
+  height: 56px;
   margin: 0;
-  padding: 14px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 0 20px;
+  border: none;
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-  text-align: left;
+  background: var(--w-btn-bg);
+  color: var(--w-btn-fg);
+  font-family: inherit;
   cursor: pointer;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 14px 44px -14px rgba(255, 255, 255, 0.55);
   transition:
-    background-color 0.15s,
-    border-color 0.15s,
-    opacity 0.15s,
-    transform 0.15s var(--w-ease-out);
+    box-shadow 0.25s var(--w-ease-out),
+    opacity 0.2s,
+    transform 0.25s var(--w-ease-out);
 }
 .hq-welcome .tool-card:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.13);
-  border-color: rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.3),
+    0 20px 56px -12px rgba(255, 255, 255, 0.7);
 }
 .hq-welcome .tool-card:active:not(:disabled) {
-  transform: scale(0.99);
+  transform: scale(0.98);
 }
 .hq-welcome .tool-card:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: default;
+  box-shadow: none;
 }
 .hq-welcome .tool-card:focus-visible {
   outline: 1.5px solid #fff;
-  outline-offset: 3px;
+  outline-offset: 4px;
 }
 .hq-welcome .tool-card .tc-icon {
-  display: grid;
-  place-items: center;
+  display: block;
   flex-shrink: 0;
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.12);
+  width: 32px;
+  height: 32px;
 }
-.hq-welcome .tool-card .tc-icon svg {
-  width: 20px;
-  height: 20px;
-}
-.hq-welcome .tool-card .tc-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+.hq-welcome .tool-card .tc-icon img {
+  display: block;
+  width: 32px;
+  height: 32px;
 }
 .hq-welcome .tool-card .tc-name {
   font-size: 16px;
-  line-height: 21px;
+  line-height: 22px;
   font-weight: 500;
-  color: #fff;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
 }
-.hq-welcome .tool-card .tc-line {
-  font-size: 12.5px;
-  line-height: 17px;
-  color: var(--w-muted);
-}
-/* HQ Desktop: the primary option, white fill and dark text */
-.hq-welcome .tool-card.tool-card-desktop {
-  border-color: transparent;
-  background: var(--w-btn-bg);
-  color: var(--w-btn-fg);
-}
-.hq-welcome .tool-card.tool-card-desktop:hover:not(:disabled) {
-  border-color: transparent;
-  background: var(--w-btn-bg);
-  opacity: 0.9;
-}
-.hq-welcome .tool-card.tool-card-desktop .tc-icon {
-  background: rgba(0, 0, 0, 0.08);
-}
-.hq-welcome .tool-card.tool-card-desktop .tc-name {
-  color: var(--w-btn-fg);
-}
-.hq-welcome .tool-card.tool-card-desktop .tc-line {
-  color: rgba(0, 0, 0, 0.6);
+.hq-welcome .tool-card .tc-spin {
+  width: 12px;
+  height: 12px;
+  margin-left: -2px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(0, 0, 0, 0.18);
+  border-top-color: rgba(0, 0, 0, 0.7);
+  animation: hq-ai-tools-spin 0.8s linear infinite;
 }
 /* usage data: one quiet line */
 .hq-welcome .ready-consent {
@@ -1698,7 +1692,7 @@
   margin-top: 14px;
   font-size: 12px;
   line-height: 16px;
-  color: var(--w-faint);
+  color: rgba(255, 255, 255, 0.55);
 }
 .hq-welcome .ready-consent .rc-check {
   display: inline-flex;
@@ -1706,25 +1700,59 @@
   gap: 6px;
   cursor: pointer;
 }
+/* A second setting on the line stands apart by space, not a dot. */
+.hq-welcome .ready-consent .rc-check-next {
+  margin-left: 18px;
+}
+/* Checkboxes: a soft square at rest, white with a dark Phosphor check when on. */
 .hq-welcome .ready-consent input[type='checkbox'] {
-  width: 12px;
-  height: 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 14px;
+  height: 14px;
   margin: 0;
-  accent-color: rgba(255, 255, 255, 0.85);
+  border: none;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.16);
   cursor: pointer;
+  transition: background-color 0.15s;
+}
+.hq-welcome .ready-consent input[type='checkbox']:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.26);
+}
+.hq-welcome .ready-consent input[type='checkbox']:checked {
+  background: rgba(255, 255, 255, 0.9)
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'><path fill='%23000' d='M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z'/></svg>")
+    center / 10px no-repeat;
+}
+.hq-welcome .ready-consent input[type='checkbox']:checked:hover:not(:disabled) {
+  background-color: #fff;
+}
+.hq-welcome .ready-consent input[type='checkbox']:focus-visible {
+  outline: 1.5px solid #fff;
+  outline-offset: 2px;
 }
 .hq-welcome .ready-consent input[type='checkbox']:disabled {
   cursor: default;
+  opacity: 0.6;
+}
+.hq-welcome .ready-consent .rc-check:hover {
+  color: var(--w-muted);
 }
 .hq-welcome .ready-consent .consent-link {
   margin-top: 0;
   font-size: 12px;
   line-height: 16px;
-  color: var(--w-faint);
-  text-decoration-color: rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.62);
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+  transition:
+    color 0.15s,
+    text-decoration-color 0.15s;
 }
-.hq-welcome .ready-consent .consent-link:hover {
-  color: var(--w-muted);
+.hq-welcome .ready-consent .consent-link:hover:not(:disabled) {
+  color: #fff;
+  text-decoration-color: #fff;
 }
 .hq-welcome .ready-setting-error {
   display: flex;
@@ -1788,6 +1816,23 @@
 .hq-welcome .s-follow-on .note {
   text-align: center;
 }
+/* The company step's flowering trees, behind the content. */
+.hq-welcome .s-company .company-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+}
+/* The company step: the welcome flow's 56px titles and room for the two plan
+   cards side by side (CompanyStep.svelte owns the inside). */
+.hq-welcome .s-company .panel-block {
+  width: min(860px, 92vw);
+}
+.hq-welcome .s-company .h {
+  font-size: clamp(40px, 5.4vw, 56px);
+}
 .hq-welcome .invite-form {
   display: flex;
   flex-direction: column;
@@ -1796,24 +1841,36 @@
   margin: 24px auto 0;
   text-align: left;
 }
-.hq-welcome .invite-form label {
+.hq-welcome .invite-form label,
+.hq-welcome .field-label {
   color: var(--w-muted);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
+/* Fields: no border at rest, a light one on hover, a bright one in focus. */
 .hq-welcome .invite-form input,
-.hq-welcome .invite-form textarea {
+.hq-welcome .invite-form textarea,
+.hq-welcome .field {
   box-sizing: border-box;
   width: 100%;
   min-height: 40px;
   padding: 9px 11px;
-  border: 1px solid var(--w-choose-border);
+  border: 1px solid transparent;
   border-radius: var(--w-radius-button);
   background: var(--w-choose-bg);
   color: var(--w-text);
   font: inherit;
   font-size: 14px;
   line-height: 20px;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.hq-welcome .invite-form input:hover:not(:disabled),
+.hq-welcome .invite-form textarea:hover:not(:disabled),
+.hq-welcome .field:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.2);
 }
 .hq-welcome .invite-form textarea {
   resize: vertical;
@@ -1823,10 +1880,16 @@
   color: var(--w-muted);
   opacity: 1;
 }
-.hq-welcome .invite-form input:focus-visible,
-.hq-welcome .invite-form textarea:focus-visible {
-  outline: 1.5px solid var(--w-text);
-  outline-offset: 2px;
+.hq-welcome .invite-form input:focus,
+.hq-welcome .invite-form input:focus:hover,
+.hq-welcome .invite-form textarea:focus,
+.hq-welcome .invite-form textarea:focus:hover,
+.hq-welcome .field:focus,
+.hq-welcome .field:focus:hover,
+.hq-welcome .field:focus-within,
+.hq-welcome .field:focus-within:hover {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.72);
 }
 .hq-welcome .invite-form input:disabled,
 .hq-welcome .invite-form textarea:disabled {

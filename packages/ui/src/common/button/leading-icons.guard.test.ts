@@ -41,7 +41,7 @@ describe("labelled buttons carry a leading icon", () => {
  * and "←" in labels are real icons.
  */
 describe("remaining action buttons (second sweep)", () => {
-  it("adds the new icons to the line set in the same 16px style", async () => {
+  it("adds the new icons to the line set in the same Phosphor regular style", async () => {
     const { LINE_ICONS } = await import("./rail-icons.js");
     for (const name of ["archive", "ban", "check-circle", "bell", "door", "sliders"] as const) {
       expect(LINE_ICONS[name], name).toMatch(/^M[\d.\s,a-zA-Z-]+$/u);
