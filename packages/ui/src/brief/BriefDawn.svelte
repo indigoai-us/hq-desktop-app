@@ -138,7 +138,15 @@
     }
   }
 
+  /**
+   * Set on destroy. The bloom callback can unmount this component from inside
+   * a frame (the page swaps the sunrise for the brief), so the frame that fired
+   * it must not read its props again or schedule another one.
+   */
+  let destroyed = false;
+
   function frame(now: number): void {
+    if (destroyed) return;
     const el = canvas;
     const box = host;
     if (!el || !box) return;
@@ -152,25 +160,30 @@
     const ctx = el.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Read the props once: `onbloomdone` below may unmount this component and
+    // the host's prop getters are not safe to call after that.
+    const ph = phase;
+    const pr = progress;
     const dt = last ? Math.min(0.05, (now - last) / 1000) : 0;
     last = now;
     time += dt;
-    const target = phase === "ready" ? 1 : phase === "idle" ? 0 : progress;
+    const target = ph === "ready" ? 1 : ph === "idle" ? 0 : pr;
     // Failed: the sun holds where the run stopped.
-    if (phase !== "failed") shown = easeDawn(shown, target, dt, time, reduced);
-    else if (reduced) shown = clamp01(progress);
-    failedFade = phase === "failed" ? (reduced ? 1 : Math.min(1, failedFade + dt * 1.2)) : 0;
+    if (ph !== "failed") shown = easeDawn(shown, target, dt, time, reduced);
+    else if (reduced) shown = clamp01(pr);
+    failedFade = ph === "failed" ? (reduced ? 1 : Math.min(1, failedFade + dt * 1.2)) : 0;
     let bloom = 0;
-    if (phase === "ready" && (reduced || shown > 0.97)) {
+    if (ph === "ready" && (reduced || shown > 0.97)) {
       bloomStart ??= now;
       bloom = reduced ? 0 : bloomAt(now - bloomStart);
       if (!bloomFired && (reduced || now - bloomStart >= 900)) {
         bloomFired = true;
         onbloomdone?.();
+        if (destroyed) return;
       }
     }
-    draw(ctx, W, H, bloom, phase === "failed" ? shown : dawnDisplay(shown, target, time, reduced));
-    if (!reduced) raf = requestAnimationFrame(frame);
+    draw(ctx, W, H, bloom, ph === "failed" ? shown : dawnDisplay(shown, target, time, reduced));
+    if (!reduced && !destroyed) raf = requestAnimationFrame(frame);
   }
 
   onMount(() => {
@@ -193,7 +206,10 @@
     return () => clearTimeout(t);
   });
 
-  onDestroy(() => cancelAnimationFrame(raf));
+  onDestroy(() => {
+    destroyed = true;
+    cancelAnimationFrame(raf);
+  });
 </script>
 
 <div
