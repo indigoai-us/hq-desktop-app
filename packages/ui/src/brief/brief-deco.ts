@@ -12,7 +12,7 @@ const DEFS =
   "<radialGradient id='o' cx='.34' cy='.22' r='.85'><stop offset='0' stop-color='white' stop-opacity='.18'/><stop offset='.45' stop-color='white' stop-opacity='.07'/><stop offset='1' stop-color='white' stop-opacity='.02'/></radialGradient>" +
   "<linearGradient id='r' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='white' stop-opacity='.45'/><stop offset='.6' stop-color='white' stop-opacity='.06'/></linearGradient>" +
   // Fades a motif out from the bottom-right corner (used by the priorities grid).
-  "<radialGradient id='fg' cx='1' cy='1' r='1'><stop offset='0' stop-color='white'/><stop offset='.55' stop-color='white' stop-opacity='.5'/><stop offset='1' stop-color='white' stop-opacity='0'/></radialGradient>" +
+  "<radialGradient id='fg' cx='1' cy='1' r='.8'><stop offset='0' stop-color='white'/><stop offset='.4' stop-color='white' stop-opacity='.55'/><stop offset='1' stop-color='white' stop-opacity='0'/></radialGradient>" +
   "<mask id='fade' maskUnits='userSpaceOnUse' x='0' y='0' width='200' height='200'><rect width='200' height='200' fill='url(#fg)'/></mask>" +
   "</defs>";
 
@@ -51,8 +51,8 @@ function grid(x: number, y: number, w: number, h: number, step: number): string 
 const ORB = `<circle cx='176' cy='212' r='90' ${G}/><circle cx='176' cy='212' r='114' ${D}/>`;
 
 export const DECO: Record<string, string> = {
-  // Priorities: just a fine grid fading out from the corner, quiet under a list of rows.
-  needs: `<path d='${grid(96, 96, 104, 104, 16)}' fill='none' stroke='white' stroke-opacity='.2' stroke-width='.6' mask='url(#fade)'/>`,
+  // Priorities: just a fine grid in the corner, fading to nothing before it has any edge.
+  needs: `<path d='${grid(0, 8, 200, 192, 16)}' fill='none' stroke='white' stroke-opacity='.22' stroke-width='.6' mask='url(#fade)'/>`,
   // No motif: the card's bottom row is its action buttons, so there is no free corner.
   oneThing: "",
   // A flame, with dotted heat rising around it.
