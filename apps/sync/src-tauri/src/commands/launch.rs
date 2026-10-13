@@ -553,11 +553,60 @@ fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(
     Ok(())
 }
 
-/// Open a new Terminal window at `path` and auto-run `claude`.
+/// Claude Code permission modes a launch may ask for (`claude --permission-mode`).
+const CLAUDE_PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "bypassPermissions"];
+
+/// POSIX shell single-quoting: the whole value is literal, `'` becomes `'\''`.
+fn sh_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// PowerShell single-quoting: the whole value is literal, `'` becomes `''`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ps_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// The arguments after `claude` for a launch: `--permission-mode <mode>` when
+/// the caller asked for one of the allowed modes (the Daily Brief asks for
+/// `bypassPermissions`), then the initial prompt as one quoted positional
+/// argument. The mode is allowlisted; the prompt is free text, so it is
+/// flattened to one line (control characters become spaces) and quoted by
+/// `quote` for the target shell. Empty input adds nothing.
+fn claude_args(permission_mode: Option<&str>, prompt: Option<&str>, quote: fn(&str) -> String) -> Result<String, String> {
+    let mut args: Vec<String> = Vec::new();
+    match permission_mode.map(str::trim).filter(|m| !m.is_empty()) {
+        None => {}
+        Some(mode) if CLAUDE_PERMISSION_MODES.contains(&mode) => args.push(format!("--permission-mode {mode}")),
+        Some(mode) => return Err(format!("unknown Claude permission mode: {mode}")),
+    }
+    let line = prompt
+        .unwrap_or("")
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !line.is_empty() {
+        args.push(quote(&line));
+    }
+    Ok(args.join(" "))
+}
+
+/// The macOS `claude` command line: `claude [--permission-mode <mode>] ['<prompt>']`.
+fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
+    let args = claude_args(permission_mode, prompt, sh_single_quote)?;
+    Ok(if args.is_empty() { "claude".to_string() } else { format!("claude {args}") })
+}
+
+/// Open a new Terminal window at `path` and auto-run `claude`, optionally in
+/// a permission mode and with an initial prompt (`permissionMode` and
+/// `prompt` from the renderer; both absent = the plain launch).
 #[cfg(not(windows))]
 #[tauri::command]
-pub fn launch_claude_code(path: String) -> Result<(), String> {
-    let result = spawn_cli_terminal_unix(&path, "claude");
+pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {
+    let result = claude_command(permission_mode.as_deref(), prompt.as_deref()).and_then(|cmd| spawn_cli_terminal_unix(&path, &cmd));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -611,11 +660,13 @@ fn spawn_cli_terminal_unix_with_prompt(
     Ok(())
 }
 
-/// Open a Windows Terminal window at `path` and auto-run `claude`.
+/// Open a Windows Terminal window at `path` and auto-run `claude`, optionally
+/// in a permission mode.
 #[cfg(windows)]
 #[tauri::command]
-pub fn launch_claude_code(path: String) -> Result<(), String> {
-    let result = spawn_cli_terminal_windows(&path, "claude");
+pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {
+    let result = claude_args(permission_mode.as_deref(), prompt.as_deref(), ps_single_quote)
+        .and_then(|args| spawn_cli_terminal_windows_args(&path, "claude", &args));
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }
@@ -692,7 +743,15 @@ fn executable_candidate(candidate: &std::path::Path) -> Option<PathBuf> {
 /// command to run in the new console.
 #[cfg(windows)]
 fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
-    spawn_cli_terminal_windows_with_prompt(path, binary, None)
+    spawn_cli_terminal_windows_command(path, binary, binary, None)
+}
+
+/// As `spawn_cli_terminal_windows`, with trusted arguments after the binary
+/// (`args` must come from an allowlist, never the renderer's free text).
+#[cfg(windows)]
+fn spawn_cli_terminal_windows_args(path: &str, binary: &str, args: &str) -> Result<(), String> {
+    let command = if args.is_empty() { binary.to_string() } else { format!("{binary} {args}") };
+    spawn_cli_terminal_windows_command(path, binary, &command, None)
 }
 
 /// `spawn_cli_terminal_windows` with an optional prompt that has already been
@@ -702,6 +761,19 @@ fn spawn_cli_terminal_windows(path: &str, binary: &str) -> Result<(), String> {
 fn spawn_cli_terminal_windows_with_prompt(
     path: &str,
     binary: &str,
+    prompt: Option<&str>,
+) -> Result<(), String> {
+    spawn_cli_terminal_windows_command(path, binary, binary, prompt)
+}
+
+/// The one Windows spawn. `binary` is what is looked up on PATH; `command` is
+/// the trusted command line to run (the binary alone, or the binary plus
+/// allowlisted arguments); a `prompt` travels as an encoded script instead.
+#[cfg(windows)]
+fn spawn_cli_terminal_windows_command(
+    path: &str,
+    binary: &str,
+    command: &str,
     prompt: Option<&str>,
 ) -> Result<(), String> {
     let escaped = powershell_single_quote_escape(path);
@@ -756,7 +828,7 @@ fn spawn_cli_terminal_windows_with_prompt(
                 "-NoProfile",
                 "-NoExit",
                 "-Command",
-                binary,
+                command,
             ])
             .env("PATH", &search_path)
             .creation_flags(CREATE_NEW_CONSOLE)
@@ -764,7 +836,7 @@ fn spawn_cli_terminal_windows_with_prompt(
             .map(|_| ())
             .map_err(|e| format!("Failed to spawn Windows Terminal: {e}"))?;
     } else {
-        let ps_cmd = format!("Set-Location -LiteralPath '{escaped}'; {binary}");
+        let ps_cmd = format!("Set-Location -LiteralPath '{escaped}'; {command}");
         Command::new("powershell.exe")
             .args(["-NoProfile", "-NoExit", "-Command", &ps_cmd])
             .env("PATH", &search_path)
@@ -819,6 +891,38 @@ pub fn reveal_folder(path: String) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::util::test_support::ENV_MUTEX;
+
+    #[test]
+    fn claude_command_adds_only_an_allowed_permission_mode() {
+        assert_eq!(claude_command(None, None).unwrap(), "claude");
+        assert_eq!(claude_command(Some("  "), Some("  ")).unwrap(), "claude");
+        assert_eq!(
+            claude_command(Some("bypassPermissions"), None).unwrap(),
+            "claude --permission-mode bypassPermissions"
+        );
+        assert!(claude_command(Some("bypassPermissions; rm -rf ~"), None).is_err());
+        assert!(claude_command(Some("yolo"), Some("hi")).is_err());
+    }
+
+    #[test]
+    fn claude_command_passes_the_prompt_as_one_quoted_argument() {
+        let cmd = claude_command(
+            Some("bypassPermissions"),
+            Some("Pick up my session \"Daily brief\" (Corey's) $(rm -rf ~) `x`\nthen continue"),
+        )
+        .unwrap();
+        assert_eq!(
+            cmd,
+            "claude --permission-mode bypassPermissions 'Pick up my session \"Daily brief\" (Corey'\\''s) $(rm -rf ~) `x` then continue'"
+        );
+        // Prompt only, no mode.
+        assert_eq!(claude_command(None, Some("hello")).unwrap(), "claude 'hello'");
+        // Windows (PowerShell) quoting doubles the single quote.
+        assert_eq!(
+            claude_args(Some("bypassPermissions"), Some("Corey's brief"), ps_single_quote).unwrap(),
+            "--permission-mode bypassPermissions 'Corey''s brief'"
+        );
+    }
 
     #[test]
     fn deep_link_accepts_a_well_formed_url() {

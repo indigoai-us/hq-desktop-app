@@ -38,6 +38,7 @@ describe("app rail model (console-rail US-003)", () => {
     );
     expect(items.map((item) => item.id)).toEqual([
       "home",
+      "brief",
       "meetings",
       "company:co_a",
       "company:co_b",
@@ -63,7 +64,8 @@ describe("app rail model (console-rail US-003)", () => {
     for (const item of railItems([{ uid: "co_a", label: "Indigo" }], "You")) {
       expect(() => canonicalizeDestination(railDestination(item))).not.toThrow();
     }
-    expect(railDestination(railItems([], "You")[1]!)).toEqual({ kind: "meetings" });
+    expect(railDestination(railItems([], "You")[1]!)).toEqual({ kind: "extra", page: "rail-brief" });
+    expect(railDestination(railItems([], "You")[2]!)).toEqual({ kind: "meetings" });
     const library = railItems([], "You").find((item) => item.kind === "library")!;
     expect(railDestination(library)).toEqual({
       kind: "extra",
@@ -94,7 +96,8 @@ describe("app rail model (console-rail US-003)", () => {
 
   it("names the story that builds each placeholder page", () => {
     for (const placeholder of Object.values(RAIL_PLACEHOLDERS)) {
-      expect(placeholder.story).toMatch(/^US-\d{3}$/);
+      // The Daily Brief is a built page, not a placeholder for a later story.
+      expect(placeholder.story).toMatch(placeholder.id === "brief" ? /^daily-brief$/ : /^US-\d{3}$/);
       expect(railPlaceholderForPage(railPlaceholderPage(placeholder.id))).toBe(placeholder);
     }
     expect(railPlaceholderForPage("rail-unknown")).toBeNull();

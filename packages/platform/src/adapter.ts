@@ -2054,6 +2054,15 @@ export interface FoundWorkApps {
 }
 
 /** Desktop-only group (capability: canLaunchApps). */
+/** Claude Code permission modes a launch may ask for. */
+export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
+
+export interface ClaudeLaunchOptions {
+  permissionMode?: ClaudePermissionMode;
+  /** Initial prompt, passed to `claude` as its positional prompt argument. */
+  prompt?: string;
+}
+
 export interface ShellApi {
   openInEditor(path: string): AdapterPromise<void>;
   openClaudeCodeLink(url: string): AdapterPromise<void>;
@@ -2067,7 +2076,12 @@ export interface ShellApi {
    */
   openCodexDeepLink(url: string): AdapterPromise<void>;
   openFileInClaude(path: string): AdapterPromise<void>;
-  launchClaudeCode(path: string): AdapterPromise<void>;
+  /**
+   * Open a terminal at `path` running `claude`. `permissionMode` adds
+   * `--permission-mode <mode>` (the Daily Brief asks for bypassPermissions);
+   * omitted, the launch is unchanged.
+   */
+  launchClaudeCode(path: string, opts?: ClaudeLaunchOptions): AdapterPromise<void>;
   /** Open the Codex desktop app (the ChatGPT app's Codex surface) with the
    *  folder loaded as the workspace and an optional pre-typed composer prompt.
    *  Backed by the `launch_codex_workspace` command (ChatGPT-bundled CLI's

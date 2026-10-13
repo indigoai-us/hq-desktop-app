@@ -1,0 +1,54 @@
+{
+  "_comment": "Synthetic BriefInput for a quiet Saturday: no decisions, 2 merged in one product, one watch row unchanged since Friday (the previous run carries its hash), two own sessions. Invented names. Not read in production.",
+  "now": "2026-10-17T14:00:00.000Z",
+  "today": "2026-10-17",
+  "userName": "Sam",
+  "companies": ["cmp_northwind", "northwind"],
+  "lastBriefAt": "2026-10-16T14:00:00.000Z",
+  "catchUp": false,
+  "prefs": { "density": "auto", "pinned": [], "hidden": [], "weights": {} },
+  "calendarToday": [],
+  "meetingsYesterday": [],
+  "decisions": [],
+  "actionItems": [],
+  "waitingOn": [],
+  "team": [],
+  "priorities": [],
+  "risks": [
+    {
+      "id": "w1",
+      "title": "One release gate check is not marked required",
+      "summary": "A red check can be merged around.",
+      "severity": "watch",
+      "links": [],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/compass", "product": "Compass" }
+    }
+  ],
+  "shipped": [
+    {
+      "id": "ship:forge",
+      "title": "Forge",
+      "status": "2 merged",
+      "note": "nothing open",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/forge", "product": "Forge" },
+      "lines": [
+        { "label": "Fix the installer icon", "state": "MERGED", "tone": "ok" },
+        { "label": "Bump the build tools", "state": "MERGED", "tone": "ok" }
+      ]
+    }
+  ],
+  "merged": 2,
+  "opened": 0,
+  "sessions": [
+    { "id": "s1", "title": "Weekend fix for the installer", "startedAt": "2026-10-17T11:00:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s2", "title": "Reading the pilot notes", "startedAt": "2026-10-17T08:00:00.000Z", "workstream": "Work", "company": "cmp_northwind" }
+  ],
+  "recentSessions": [
+    { "id": "s1", "title": "Weekend fix for the installer", "startedAt": "2026-10-17T11:00:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s2", "title": "Reading the pilot notes", "startedAt": "2026-10-17T08:00:00.000Z", "workstream": "Work", "company": "cmp_northwind" }
+  ],
+  "dmCount": 0,
+  "runId": "brief-20261017-070000",
+  "previousRunId": "brief-20261016-070000",
+  "previous": { "runId": "brief-20261016-070000", "hashes": { "sunrise": "sunrise", "risk": "w1" } }
+}
