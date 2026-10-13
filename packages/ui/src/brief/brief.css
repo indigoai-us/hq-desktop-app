@@ -49,7 +49,8 @@
   --b-raise: -1px -1px 0 rgba(255, 255, 255, 0.035), -12px -12px 28px rgba(255, 255, 255, 0.022),
     2px 3px 4px rgba(0, 0, 0, 0.35), 16px 22px 44px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.07),
     inset 0 -1px 0 rgba(0, 0, 0, 0.35);
-  --b-well: inset 4px 4px 10px rgba(0, 0, 0, 0.55), inset -3px -3px 8px rgba(255, 255, 255, 0.035);
+  /* Recessed strips and bars: a flat hairline rim, no inner shadow (the glass-tile rule). */
+  --b-well: 0 0 0 1px rgba(255, 255, 255, 0.05);
   --b-ui: var(--font-ui, "Geist", -apple-system, system-ui, sans-serif);
   --b-mono: var(--font-mono, "Geist Mono", ui-monospace, monospace);
 
@@ -288,7 +289,7 @@
   font-size: 7.5px;
   font-weight: 500;
   background: linear-gradient(145deg, #5b5bf7, #3730a3);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 2px 5px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
 }
 .daily-brief .org b {
   font-weight: 500;
@@ -377,7 +378,7 @@
   color: #2a1a5c;
   background: #fff;
   white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), inset 0 -2px 0 rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   transition: transform 0.15s, box-shadow 0.2s, background 0.2s;
 }
 .daily-brief .launch .go svg {
@@ -401,14 +402,13 @@
 }
 .daily-brief .launch .go:active {
   transform: translateY(1px) scale(0.97);
-  box-shadow: inset 2px 2px 5px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 .daily-brief .launch .eng {
   display: inline-flex;
   padding: 2px;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.28);
-  box-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.4);
 }
 /* Engine marks: the rail's brand marks at 14px. Muted until chosen; the
    chosen one sits on the light chip in full contrast (Claude in its clay). */

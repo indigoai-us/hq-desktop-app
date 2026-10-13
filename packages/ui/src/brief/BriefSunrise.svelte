@@ -435,7 +435,6 @@
     height: 8px;
     border-radius: 99px;
     background: rgba(0, 0, 0, 0.35);
-    box-shadow: inset 2px 2px 5px rgba(0, 0, 0, 0.6);
   }
   .track i {
     display: block;

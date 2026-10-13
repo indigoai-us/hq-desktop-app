@@ -182,7 +182,7 @@
     font-weight: 500;
     color: #fff;
     background: linear-gradient(145deg, hsl(var(--h) 70% 58%), hsl(var(--h) 60% 38%));
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 2px 6px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   }
   .ar {
     width: 42px;

@@ -146,8 +146,8 @@
     color: #fff;
     cursor: default;
     overflow: hidden;
-    box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.35);
-    transition: filter 0.2s, box-shadow 0.2s, opacity 0.2s;
+    border-right: 1px solid rgba(0, 0, 0, 0.35);
+    transition: filter 0.2s, opacity 0.2s;
   }
   .ev span {
     display: block;
