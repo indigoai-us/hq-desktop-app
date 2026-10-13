@@ -115,6 +115,30 @@ describe("BriefCreateRun", () => {
     expect(h.creator.notify).not.toHaveBeenCalled();
   });
 
+  it("the waiting phase names the bot the job went to", async () => {
+    const h = harness();
+    await h.run.start();
+    expect(h.run.phase).toEqual({ kind: "waiting", runId: RUN, sentAt: expect.any(Number), bot: "pickles" });
+    const named = harness({ check: vi.fn(async () => ({ ok: true as const, bot: { ...BOT, displayName: "Jellybean" } as LocalBotRow })) });
+    await named.run.start();
+    expect(named.run.phase).toMatchObject({ kind: "waiting", bot: "Jellybean" });
+  });
+
+  it("a failure written with `status:` and a `message` still ends the run, on a rehydrate too", async () => {
+    const written = JSON.stringify({ run_id: RUN, status: "failed", error: "skill_not_found", message: "No daily-brief skill is installed in this HQ." });
+    const h = harness();
+    await h.run.start();
+    h.files[`workspace/brief/${RUN}/status.json`] = written;
+    await h.tick();
+    expect(h.run.phase).toEqual({ kind: "failed", runId: RUN, message: "No daily-brief skill is installed in this HQ." });
+
+    const again = harness({}, { [`workspace/brief/${RUN}/status.json`]: written });
+    again.storage.setItem(ACTIVE_RUN_KEY, RUN);
+    expect(await again.run.rehydrate()).toBe(true);
+    expect(again.run.phase).toEqual({ kind: "failed", runId: RUN, message: "No daily-brief skill is installed in this HQ." });
+    expect(again.creator.notify).not.toHaveBeenCalled();
+  });
+
   it("ignores a second start while a run is in flight", async () => {
     const h = harness();
     await h.run.start();

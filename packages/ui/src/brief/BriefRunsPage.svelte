@@ -14,7 +14,7 @@
   import BriefFindings from "./BriefFindings.svelte";
   import { parseFindings, parseSamples } from "./brief-findings.js";
   import { parseActivity } from "./brief-runs.js";
-  import { BRIEF_IDLE_MS, elapsedLabel, estimateLabel, stillWorkingLine } from "./brief-runs.js";
+  import { BRIEF_IDLE_MS, elapsedLabel, estimateLabel, stillWorkingLine, waitingStep } from "./brief-runs.js";
   import { briefDemoFromUrl } from "./brief-demo.js";
   import type { DawnPhase } from "./brief-dawn.js";
   import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
@@ -161,7 +161,7 @@
       case "dispatching":
         return { phase: "running", progress: 0, step: "Waking your bot…" };
       case "waiting":
-        return { phase: "running", progress: 0, step: "Waiting for your bot to start" };
+        return { phase: "running", progress: 0, step: waitingStep(cp.bot) };
       case "running":
         return { phase: "running", progress: cp.progress, step: cp.step };
       case "ready":

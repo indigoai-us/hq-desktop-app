@@ -16,6 +16,7 @@ import {
   type BriefRunFiles,
   BRIEF_STALL_TIMEOUT_MS,
   BRIEF_START_TIMEOUT_MS,
+  failedMessage,
   isBriefRunId,
   parseBriefStatus,
   runIdTime,
@@ -172,7 +173,8 @@ export class BriefCreateRun {
     }
     this.company = company;
     this.remember(runId);
-    this.phase = { kind: "waiting", runId, sentAt: this.now().getTime() };
+    const bot = check.bot.displayName?.trim() || check.bot.name;
+    this.phase = { kind: "waiting", runId, sentAt: this.now().getTime(), ...(bot ? { bot } : {}) };
     this.schedule();
   }
 
@@ -202,8 +204,8 @@ export class BriefCreateRun {
           this.finish({ kind: "ready", runId });
           return true;
         }
-        if (status.state === "failed") {
-          this.finish({ kind: "failed", runId, message: status.error ?? "The brief stopped before it finished." });
+        if (status.state === "failed" || status.state === "cancelled") {
+          this.finish({ kind: "failed", runId, message: failedMessage(status) });
           return true;
         }
         const updated = status.updatedAt ? Date.parse(status.updatedAt) : NaN;
@@ -372,9 +374,9 @@ export class BriefCreateRun {
       this.finish({ kind: "ready", runId: w.runId });
       return;
     }
-    if (status && status.runId === w.runId && status.state === "failed") {
+    if (status && status.runId === w.runId && (status.state === "failed" || status.state === "cancelled")) {
       this.endWatch();
-      if (!this.busy) this.finish({ kind: "failed", runId: w.runId, message: status.error ?? "The brief stopped before it finished." });
+      if (!this.busy) this.finish({ kind: "failed", runId: w.runId, message: failedMessage(status) });
       else this.forget();
       return;
     }
