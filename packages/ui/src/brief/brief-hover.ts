@@ -1,7 +1,7 @@
 /**
  * The brief's hover layer (Sunrise Terminal, phase 2), after the badge card
- * (badges/card-hover.ts): cards stay flat at rest; under the pointer a soft
- * coral light follows it and corner brackets show only where the light falls.
+ * (badges/card-hover.ts): cards stay flat at rest; under the pointer a
+ * soft light follows it.
  * Reward cards (shipped, firsts, resolved) also tilt a little toward the
  * pointer, the badge card's camera at a third of its angle. Decision titles
  * decode from ASCII glyphs when you reach for them.
@@ -173,7 +173,17 @@ export function asciiDecode(node: HTMLElement) {
     overlay = document.createElement("span");
     overlay.className = "decode-overlay";
     overlay.setAttribute("aria-hidden", "true");
-    overlay.style.color = getComputedStyle(node).color;
+    const style = getComputedStyle(node);
+    overlay.style.color = style.color;
+    // The overlay carries the title's shadow; the hidden title underneath drops its own (see .decoding),
+    // so the shadow is drawn once rather than twice.
+    overlay.style.textShadow = style.textShadow;
+    // Resolved letters in the title's own face, so the line does not jump when the decode ends;
+    // the scrambling tail in mono, a little dimmer.
+    const done = document.createElement("span");
+    const rest = document.createElement("span");
+    rest.className = "decode-rest";
+    overlay.append(done, rest);
     node.classList.add("decoding");
     node.append(overlay);
     const began = performance.now();
@@ -186,7 +196,12 @@ export function asciiDecode(node: HTMLElement) {
         return;
       }
       frame += 1;
-      overlay.textContent = decodeFrame(text, t, frame >> 1);
+      // Ease out: the front moves quickly, then settles on the last letters.
+      const eased = 1 - Math.pow(1 - t, 3);
+      const out = decodeFrame(text, eased, frame >> 1);
+      const front = Math.min(text.length, Math.floor(eased * (text.length + 1)));
+      overlay.firstChild!.textContent = out.slice(0, front);
+      overlay.lastChild!.textContent = out.slice(front);
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

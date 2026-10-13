@@ -4,7 +4,7 @@
  */
 
 import { getContext, setContext } from "svelte";
-import { contentBox, placePeek } from "./brief-layout.js";
+import { contentBox, placePeek, placePeekBelow } from "./brief-layout.js";
 import type { BriefLine } from "./brief-types.js";
 import { loadSenderDms, type BriefDmApi, type BriefDmLoad } from "./brief-dms.js";
 
@@ -77,7 +77,7 @@ export async function launchBriefPromptViaClipboard(engine: BriefEngine, prompt:
 
 export class BriefState {
   /** `anchorTop` is the hovered thing's top; the peek measures itself and keeps on screen (peekTop). */
-  peek = $state<{ content: PeekContent; x: number; anchorTop: number; side: "r" | "l" } | null>(null);
+  peek = $state<{ content: PeekContent; x: number; anchorTop: number; side: "r" | "l" | "b" } | null>(null);
   engine = $state<BriefEngine>("claude");
   cleared = $state<Record<string, boolean>>({});
   notes = $state<Record<string, string>>({});
@@ -156,14 +156,18 @@ export class BriefState {
     if (!error || error.startsWith("Prompt copied")) this.clear(id);
   }
 
-  showPeek(anchor: HTMLElement, content: PeekContent): void {
+  showPeek(anchor: HTMLElement, content: PeekContent, place: "side" | "below" = "side"): void {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.showTimer) clearTimeout(this.showTimer);
-    this.showTimer = setTimeout(() => {
-      // Beside what the hovered thing shows (its text), level with it.
-      const at = placePeek(contentBox(anchor), { w: window.innerWidth, h: window.innerHeight });
+    const open = () => {
+      const view = { w: window.innerWidth, h: window.innerHeight };
+      // Beside what the hovered thing shows (its text), level with it; or under it for a row of neighbours.
+      const at = place === "below" ? placePeekBelow(contentBox(anchor), view) : placePeek(contentBox(anchor), view);
       this.peek = { content, ...at };
-    }, 220);
+    };
+    // A peek already open follows the pointer straight to the next thing; a fresh one waits a beat.
+    if (this.peek) open();
+    else this.showTimer = setTimeout(open, 220);
   }
 
   hidePeekSoon(): void {
@@ -186,9 +190,9 @@ export function useBrief(): BriefState {
 }
 
 /** `use:peek` for anything with more behind it. */
-export function peek(node: HTMLElement, args: { state: BriefState; content: () => PeekContent }) {
+export function peek(node: HTMLElement, args: { state: BriefState; content: () => PeekContent; place?: "side" | "below" }) {
   let current = args;
-  const enter = () => current.state.showPeek(node, current.content());
+  const enter = () => current.state.showPeek(node, current.content(), current.place);
   const leave = () => current.state.hidePeekSoon();
   node.addEventListener("mouseenter", enter);
   node.addEventListener("mouseleave", leave);

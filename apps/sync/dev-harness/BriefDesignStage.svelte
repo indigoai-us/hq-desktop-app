@@ -15,7 +15,7 @@
   } from '../../../packages/ui/src/brief/brief-catalogue-fixtures';
 
   const DAYS = {
-    oct8: { label: 'Oct 8 · real sweep', make: () => octoberEightBrief(pinnedNow()) },
+    oct8: { label: 'Oct 8 · real sweep', make: () => withRecentSessions(octoberEightBrief(pinnedNow())) },
     oct11: { label: 'Oct 11', make: octoberEleven },
     quiet: { label: 'Quiet Saturday', make: quietSaturday },
     catchup: { label: 'Catch-up Thursday', make: catchUpThursday },
@@ -31,6 +31,37 @@
     const d = new Date();
     d.setHours(Number(m[1]), Number(m[2]), 0, 0);
     return d;
+  }
+  /**
+   * The sweep's sessions are from its own day, so against today's clock the
+   * Sunrise strip would read "no sessions". A believable last 24 hours instead:
+   * an evening push, a late night, a quiet early morning, a busy start today.
+   */
+  const SAMPLE_SESSIONS: [hoursAgo: number, title: string, project: string | null][] = [
+    [22.5, 'Planning merge follow-ups', 'hq-core'],
+    [21.8, 'Review indigo-docs PR 64', 'indigo-docs'],
+    [19.4, 'Daily Brief stat peeks', 'hq-desktop-app'],
+    [18.9, 'Fix sync safety cap', 'hq-desktop-app'],
+    [18.2, 'Draft release notes for v16', 'hq-core'],
+    [15.6, 'Triage X mentions dry run', null],
+    [9.3, 'Nightly fleet recovery check', 'hq-core'],
+    [4.1, 'Desktop CI red on main', 'hq-desktop-app'],
+    [3.6, 'Bisect the failing workflow', 'hq-desktop-app'],
+    [2.2, 'Cut the hq-core release', 'hq-core'],
+    [1.4, 'Advisory call prep with Lizzie', null],
+    [0.6, 'Reply to Rachel Bell intro', null],
+  ];
+  function withRecentSessions<T extends { now: string }>(input: T): T {
+    const end = Date.parse(input.now);
+    const recent = SAMPLE_SESSIONS.map(([ago, title, project], i) => ({
+      id: `sample-s${i + 1}`,
+      title,
+      startedAt: new Date(end - ago * 3600_000).toISOString(),
+      workstream: 'Work',
+      company: 'cmp_indigo',
+      project,
+    }));
+    return { ...input, recentSessions: recent };
   }
   const initial = params.get('day');
   let day = $state<Day>(initial && initial in DAYS ? (initial as Day) : 'oct8');

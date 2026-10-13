@@ -61,7 +61,6 @@
   --b-t3: rgb(var(--b-ink) / 0.5);
   --b-line: rgb(var(--b-ink) / 0.09);
   --b-top-light: rgb(var(--b-ink) / 0.12);
-  --b-bracket: rgba(255, 190, 160, 0.75);
   --b-well-bg: #1d1d20;
   --b-ev-team: #3d3d3d;
   --b-ev-team-ink: #fff;
@@ -267,8 +266,7 @@
   /* A 1px top light: a line, not a shadow. */
   background: linear-gradient(var(--b-top-light), var(--b-top-light)) top / 100% 1px no-repeat;
 }
-/* Hover light (brief-hover.ts): a soft coral light under the pointer and corner
-   brackets only where it falls, after the badge card. Flat and dark at rest. */
+/* Hover light (brief-hover.ts): a soft light under the pointer, no corner brackets. Flat at rest. */
 .daily-brief .slot.lit > .w::before {
   content: "";
   position: absolute;
@@ -279,15 +277,7 @@
   /* Screen-blended over the card so it never needs to restack the card's content. */
   mix-blend-mode: var(--b-hover-blend);
   background:
-    radial-gradient(260px 200px at var(--light-x, 50%) var(--light-y, 30%), var(--b-hover-light, rgba(255, 170, 130, 0.22)), transparent 70%),
-    linear-gradient(var(--b-bracket), var(--b-bracket)) 8px 8px / 14px 1px no-repeat,
-    linear-gradient(var(--b-bracket), var(--b-bracket)) 8px 8px / 1px 14px no-repeat,
-    linear-gradient(var(--b-bracket), var(--b-bracket)) calc(100% - 8px) 8px / 14px 1px no-repeat,
-    linear-gradient(var(--b-bracket), var(--b-bracket)) calc(100% - 8px) 8px / 1px 14px no-repeat,
-    linear-gradient(var(--b-bracket), var(--b-bracket)) 8px calc(100% - 8px) / 14px 1px no-repeat,
-    linear-gradient(var(--b-bracket), var(--b-bracket)) 8px calc(100% - 8px) / 1px 14px no-repeat,
-    linear-gradient(var(--b-bracket), var(--b-bracket)) calc(100% - 8px) calc(100% - 8px) / 14px 1px no-repeat,
-    linear-gradient(var(--b-bracket), var(--b-bracket)) calc(100% - 8px) calc(100% - 8px) / 1px 14px no-repeat;
+    radial-gradient(260px 200px at var(--light-x, 50%) var(--light-y, 30%), var(--b-hover-light, rgba(255, 170, 130, 0.22)), transparent 70%);
   -webkit-mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.5) 55%, transparent 85%);
   mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.5) 55%, transparent 85%);
 }
@@ -298,14 +288,19 @@
 .daily-brief .decoding {
   position: relative;
   color: transparent !important;
+  /* Transparent text still casts its shadow; the overlay draws the one shadow instead. */
+  text-shadow: none !important;
 }
 .daily-brief .decode-overlay {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  font-family: var(--b-mono);
-  letter-spacing: -0.02em;
   pointer-events: none;
+}
+.daily-brief .decode-overlay .decode-rest {
+  font-family: var(--b-code);
+  letter-spacing: -0.02em;
+  opacity: 0.6;
 }
 .daily-brief .w h3 {
   margin: 8px 0 0;
@@ -615,7 +610,7 @@
   width: 320px;
   max-height: min(460px, calc(100vh - 32px));
   overflow: auto;
-  padding: 16px 16px 14px;
+  padding: 16px;
   border-radius: var(--b-r);
   background: linear-gradient(180deg, rgb(var(--b-ink) / 0.015), transparent 40px), var(--b-card-hi);
   color: var(--b-t1);
@@ -646,8 +641,9 @@
   padding-top: 12px;
   border-top: 1px solid rgb(var(--b-ink) / 0.06);
 }
+/* One gap under every section label (6px), whether a list or a line of text follows. */
 .daily-brief .peek .sec .eyebrow {
-  margin-bottom: 0;
+  margin-bottom: 6px;
   line-height: 1.3;
   font-family: var(--b-code);
   font-size: 10px;
@@ -674,11 +670,13 @@
   margin-top: 0;
 }
 /* The first line sits close under its section label; the row padding only separates lines from each other. */
-.daily-brief .peek .sec .eyebrow + .li {
-  padding-top: 6px;
-}
+.daily-brief .peek .sec .eyebrow + .li,
 .daily-brief .peek .sec > .li:first-child {
   padding-top: 0;
+}
+/* The last line ends on the card's padding, so the bottom matches the sides. */
+.daily-brief .peek .sec > .li:last-child {
+  padding-bottom: 0;
 }
 .daily-brief .peek .li + .li {
   border-top: 1px solid rgb(var(--b-ink) / 0.05);
@@ -694,9 +692,10 @@
 .daily-brief .peek .li span[class^="tone-"]:not(.tone-neutral) {
   color: inherit;
 }
+/* Prompt text reads as prose, so it is in the UI face (mono is kept for all-caps labels). */
 .daily-brief .peek .prompt {
-  font-family: var(--b-code);
-  font-size: 11px;
+  font-family: var(--b-ui);
+  font-size: 12px;
   line-height: 1.5;
   color: var(--b-t1);
   padding: 10px 12px;
@@ -795,7 +794,6 @@
     --b-line: rgba(17, 17, 17, 0.09);
     --b-top-light: rgba(255, 255, 255, 0);
     --b-decision: #d9603a;
-    --b-bracket: rgba(200, 90, 50, 0.7);
   --b-ok: #1f8a3c;
   --b-warn: #a16207;
   --b-red: #d70015;
@@ -830,7 +828,6 @@
   --b-line: rgba(17, 17, 17, 0.09);
   --b-top-light: rgba(255, 255, 255, 0);
   --b-decision: #d9603a;
-  --b-bracket: rgba(200, 90, 50, 0.7);
   --b-ok: #1f8a3c;
   --b-warn: #a16207;
   --b-red: #d70015;
@@ -891,7 +888,6 @@
   --b-red: #ffe0e4;
   --b-decision: #fff;
   --b-accent-grad: linear-gradient(90deg, #ffffff, #ffe3d3);
-  --b-bracket: rgba(255, 255, 255, 0.85);
   --b-well-bg: rgba(255, 255, 255, 0.12);
   box-shadow: 0 1px 2px rgba(30, 20, 60, 0.06), 0 14px 28px -20px var(--b-field-glow, rgba(60, 30, 110, 0.4));
   background-repeat: no-repeat;

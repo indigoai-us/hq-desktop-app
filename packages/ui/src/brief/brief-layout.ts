@@ -134,10 +134,18 @@ type Box = { left: number; right: number; top: number; bottom: number };
  * left, else kept inside the window. The top aligns with the hovered thing;
  * `peekTop` then keeps it on screen once its real height is known.
  */
-export function placePeek(anchor: Box, view: { w: number; h: number }, width = 340, gap = 10): { x: number; anchorTop: number; side: "r" | "l" } {
+export function placePeek(anchor: Box, view: { w: number; h: number }, width = 340, gap = 10): { x: number; anchorTop: number; side: "r" | "l" | "b" } {
   if (anchor.right + gap + width <= view.w - 8) return { x: anchor.right + gap, anchorTop: anchor.top, side: "r" };
   if (anchor.left - gap - width >= 8) return { x: anchor.left - gap - width, anchorTop: anchor.top, side: "l" };
   return { x: Math.max(8, Math.min(view.w - width - 8, anchor.right + gap)), anchorTop: anchor.top, side: "r" };
+}
+
+/**
+ * Below the hovered thing, left edges aligned: for a row of neighbours (the
+ * stats) where a peek on the side would cover the next one.
+ */
+export function placePeekBelow(anchor: Box, view: { w: number; h: number }, width = 340, gap = 12): { x: number; anchorTop: number; side: "b" } {
+  return { x: Math.max(8, Math.min(view.w - width - 8, anchor.left)), anchorTop: anchor.bottom + gap + 6, side: "b" };
 }
 
 /** The box of what an element actually shows (its text and inline content), within the element; the element's own box when empty. */
@@ -146,9 +154,12 @@ export function contentBox(el: Element): Box {
   if (typeof document === "undefined" || !document.createRange) return own;
   const r = document.createRange();
   r.selectNodeContents(el);
-  const c = r.getBoundingClientRect();
-  if (!c.width || !c.height) return own;
-  return { left: Math.max(own.left, c.left), right: Math.min(own.right, c.right), top: own.top, bottom: own.bottom };
+  // Decorations hung outside the element (the timeline's active-call arrow) do not count as content.
+  const rects = [...r.getClientRects()].filter((c) => c.width && c.height && c.right > own.left && c.left < own.right);
+  if (!rects.length) return own;
+  const left = Math.min(...rects.map((c) => c.left));
+  const right = Math.max(...rects.map((c) => c.right));
+  return { left: Math.max(own.left, left), right: Math.min(own.right, right), top: own.top, bottom: own.bottom };
 }
 
 /** The peek's top: level with the hovered thing, moved up only as far as needed to stay 16px inside the window. */

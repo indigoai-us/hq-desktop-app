@@ -60,9 +60,27 @@
     [24, 18, 12, 6, 0].map((back) => {
       const t = end - back * 3600_000;
       const d = new Date(t);
-      return { x: tx(t), label: back === 0 ? "now" : `${d.getHours()}:00` };
+      return { pct: ((24 - back) / 24) * 100, label: back === 0 ? "now" : `${d.getHours() % 12 || 12} ${d.getHours() >= 12 ? "PM" : "AM"}` };
     }),
   );
+  // The strip: one column per hour of the window, each session a lit cell stacked in its hour.
+  const hours = $derived.by(() => {
+    const cols: { s: TimelineSession; i: number }[][] = Array.from({ length: 24 }, () => []);
+    tl.items.forEach((s, i) => {
+      const h = Math.floor((Date.parse(s.at) - (end - 24 * 3600_000)) / 3600_000);
+      cols[Math.max(0, Math.min(23, h))]!.push({ s, i });
+    });
+    return cols;
+  });
+  const busiest = $derived.by(() => {
+    let best = -1;
+    hours.forEach((c, h) => {
+      if (c.length > 1 && (best < 0 || c.length > hours[best]!.length)) best = h;
+    });
+    if (best < 0) return "";
+    const d = new Date(end - (24 - best) * 3600_000);
+    return `busiest ${d.toLocaleTimeString([], { hour: "numeric" }).replace(/\s/g, " ")}`;
+  });
   const brief = useBrief();
 
   const left = $derived(total - cleared);
@@ -109,11 +127,6 @@
   const WATER = hex("#FFE9DE");
   const mix = (a: number[], b: number[], t: number) => a.map((v, i) => Math.round(v + (b[i]! - v) * t));
 
-  function tx(t: number): number {
-    const f = (t - (end - 24 * 3600_000)) / (24 * 3600_000);
-    return 8 + Math.min(1, Math.max(0, f)) * 344;
-  }
-  const timeX = (iso: string) => tx(Date.parse(iso));
 
   onMount(() => {
     const el = canvas;
@@ -123,6 +136,8 @@
     lastRipple = brief.ripple;
     const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     let shown = still ? target : 0.1;
+    // 0..1: how far the "all clear" glow has faded in under the pointer.
+    let ghost = 0;
     let raf = 0;
     let last = performance.now();
     let width = 0;
@@ -143,6 +158,8 @@
       last = now;
       clock += dt;
       shown = still ? target : shown + (target - shown) * (1 - Math.exp(-dt * 2.4));
+      const want = hover && total && cleared < total ? 1 : 0;
+      ghost = still ? want : ghost + (want - ghost) * (1 - Math.exp(-dt * 6));
       const cols = Math.floor(width / DAWN_PITCH);
       const rows = Math.floor(height / DAWN_PITCH);
       const hz = Math.floor(rows * 0.64);
@@ -151,6 +168,8 @@
       const e = 1 - Math.pow(1 - shown, 2.2);
       const sy = hz + R * 0.55 - e * (hz * 0.55);
       const breathe = left > 0 && !still ? 0.5 + 0.5 * Math.sin(1.4 * clock) : 1;
+      // Where the sun sits once every decision is cleared.
+      const gy = hz + R * 0.55 - hz * 0.55;
       ctx!.clearRect(0, 0, width, height);
       const sky = ctx!.createLinearGradient(0, 0, 0, hz * DAWN_PITCH);
       // The sky is the card's own gradient; clearing decisions only warms the horizon.
@@ -175,6 +194,14 @@
             } else {
               const n = dawnNoise(x, y);
               a = n < 0.07 && y < hz * 0.7 && x > cols * 0.6 ? (1 - e) * (0.12 + 0.16 * Math.sin(clock * 1.3 + n * 80) ** 2) : 0.022;
+            }
+            // Hover: the mosaic brightens a little where the sun ends up when all is clear.
+            if (ghost > 0.01) {
+              const g = Math.hypot(x - cx, (y - gy) * 1.05);
+              if (g < R + 1.5 && d >= R) {
+                const edge = Math.max(0, Math.min(1, (R + 1.5 - g) / 1.5));
+                a = Math.max(a, ghost * (0.07 + 0.09 * (1 - g / (R + 1.5))) * edge);
+              }
             }
             for (const t0 of ripples) {
               const rr = (clock - t0) * 15;
@@ -203,18 +230,13 @@
           }
         }
       }
-      if (hover && total) {
-        const gy = hz + R * 0.55 - hz * 0.55;
-        ctx!.strokeStyle = "rgba(255,255,255,.7)";
-        ctx!.setLineDash([3, 4]);
-        ctx!.beginPath();
-        ctx!.arc(cx * DAWN_PITCH + 4, gy * DAWN_PITCH + 4, R * DAWN_PITCH, 0, Math.PI * 2);
-        ctx!.stroke();
-        ctx!.setLineDash([]);
-        ctx!.fillStyle = "rgba(255,255,255,.9)";
+      if (ghost > 0.01) {
+        ctx!.fillStyle = `rgba(255,255,255,${0.85 * ghost})`;
         ctx!.font = "500 10px 'Geist Mono', ui-monospace, monospace";
         ctx!.textAlign = "center";
-        ctx!.fillText("ALL CLEAR", cx * DAWN_PITCH + 4, gy * DAWN_PITCH - R * DAWN_PITCH - 6);
+        ctx!.textBaseline = "middle";
+        // In the middle of the glow, where the sun lands once everything is cleared.
+        ctx!.fillText("ALL CLEAR", cx * DAWN_PITCH + 4, gy * DAWN_PITCH + 4);
       }
       ripples = ripples.filter((t0) => clock - t0 < 4);
       if (!still) raf = requestAnimationFrame(draw);
@@ -254,32 +276,32 @@
     {#if big && leadLine}<div class="first" data-testid="brief-sunrise-first">{leadLine}</div>{/if}
     <div class="sub lede" class:big>{sub}</div>
     <div class="tl">
-      <div
-        class="eyebrow tl-head"
-        style="color:rgba(255,255,255,.85)"
-        data-testid="brief-timeline-head"
-        data-hidden={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}
-      >
-        Last 24h · {tl.work ? `${tl.work} session${tl.work === 1 ? "" : "s"}` : "no sessions"}
+      <div class="tl-head" data-testid="brief-timeline-head" data-hidden={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}>
+        <span class="eyebrow">Last 24h · {tl.work ? `${tl.work} session${tl.work === 1 ? "" : "s"}` : "no sessions"}</span>
+        {#if busiest}<span class="tl-meta">{busiest}</span>{/if}
       </div>
-      <div class="dots">
-        <span class="rule"></span>
-        {#each tl.items as it, i (it.id ?? `${it.at}-${i}`)}
-          {@const lift = i > 0 && tx(Date.parse(it.at)) - tx(Date.parse(tl.items[i - 1]!.at)) < 7 ? 1 : 0}
-          <button
-            type="button"
-            class="dot"
-            class:last={i === tl.items.length - 1}
-            style="left:{((tx(Date.parse(it.at)) - 8) / 344) * 100}%;--lift:{lift * -9}px;animation-delay:{0.8 + i * 0.08}s"
-            aria-label="{hhmm(it.at)} {sessionTitle(it.title)}"
-            data-testid="brief-session-dot"
-            use:peek={{ state: brief, content: () => dotPeek(it, i) }}
-          ><span class="tip" class:end={tx(Date.parse(it.at)) > 260} class:start={tx(Date.parse(it.at)) < 100}>{hhmm(it.at)} {sessionTitle(it.title)}</span></button>
+      <!-- A pixel strip in the card's mosaic: 24 hour columns, each session a lit cell; the latest is warm. -->
+      <div class="cells">
+        {#each hours as col, h (h)}
+          <div class="hour" class:now={h === 23}>
+            <span class="base" aria-hidden="true"></span>
+            {#each col as { s: it, i } (it.id ?? `${it.at}-${i}`)}
+              <button
+                type="button"
+                class="dot"
+                class:last={i === tl.items.length - 1}
+                style="animation-delay:{0.6 + i * 0.05}s"
+                aria-label="{hhmm(it.at)} {sessionTitle(it.title)}"
+                data-testid="brief-session-dot"
+                use:peek={{ state: brief, content: () => dotPeek(it, i) }}
+              ><span class="tip" class:end={h > 17} class:start={h < 6}>{hhmm(it.at)} {sessionTitle(it.title)}</span></button>
+            {/each}
+          </div>
         {/each}
       </div>
       <div class="ticks" aria-hidden="true">
         {#each ticks as t (t.label)}
-          <span class="tick" class:end={t.label === "now"} style="left:{(t.x / 360) * 100}%">{t.label}</span>
+          <span class="tick" class:start={t.pct === 0} class:end={t.label === "now"} style="left:{t.pct}%">{t.label}</span>
         {/each}
       </div>
     </div>
@@ -332,6 +354,10 @@
     line-height: 1.35;
     color: rgb(var(--b-ink) / 0.86);
   }
+  /* Muted under the headline. */
+  .over .lede {
+    color: rgba(255, 255, 255, 0.72);
+  }
   .lede {
     margin-top: 12px;
     text-shadow: 0 1px 3px rgba(40, 10, 50, 0.35);
@@ -352,63 +378,89 @@
     margin-bottom: 12px;
   }
   .tl-head {
-    overflow: hidden;
-    text-overflow: ellipsis;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
     white-space: nowrap;
   }
-  /* Room above the rule for lifted dots, so they never reach the eyebrow. */
-  .dots {
-    position: relative;
-    height: 22px;
-    margin: 16px 8px 0;
+  .tl-head .eyebrow {
+    color: rgba(255, 255, 255, 0.85);
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .dots .rule {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 50%;
-    height: 1px;
+  .tl-meta {
+    font-family: var(--b-code);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.6);
+  }
+  /* Square cells on the mosaic's rhythm, sitting on a faint row of empty hours. */
+  .cells {
+    display: grid;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    align-items: end;
+    gap: 3px;
+    height: 44px;
+    margin-top: 12px;
+  }
+  .hour {
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: center;
+    gap: 3px;
+  }
+  .hour > * {
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 1.5px;
+  }
+  .base {
+    display: block;
+    background: rgba(255, 255, 255, 0.16);
+  }
+  .hour:has(.dot) .base {
+    display: none;
+  }
+  .hour.now .base {
     background: rgba(255, 255, 255, 0.4);
   }
   .dot {
-    position: absolute;
-    top: 50%;
-    width: 9px;
-    height: 9px;
-    margin: -4.5px 0 0 -4.5px;
+    position: relative;
+    display: block;
     padding: 0;
     border: 0;
-    border-radius: 50%;
-    background: #fff;
-    filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.7));
-    translate: 0 var(--lift, 0);
+    background: rgba(255, 255, 255, 0.92);
     cursor: pointer;
     opacity: 0;
-    animation: pop 0.4s cubic-bezier(0.3, 1.6, 0.5, 1) forwards;
-    transition: box-shadow 0.15s;
+    animation: pop 0.35s cubic-bezier(0.3, 1.4, 0.5, 1) forwards;
+    transition: scale 0.15s, background 0.15s;
   }
   .dot.last {
     background: #ffd6c2;
+    box-shadow: 0 0 8px rgba(255, 214, 194, 0.8);
   }
   .dot:hover,
   .dot:focus-visible {
     z-index: 2;
     background: #fff;
-    scale: 1.5;
-    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.3);
+    scale: 1.35;
     outline: none;
   }
-  /* The hovered dot's time and title, above the strip. */
+  /* The hovered session's time and title, just above the strip (counter-scaled against the cell's hover zoom). */
   .tip {
     position: absolute;
     bottom: calc(100% + 6px);
     left: 50%;
     translate: -50% 0;
-    scale: 0.667;
+    scale: 0.74;
     transform-origin: bottom center;
-    padding: 0;
-    font-family: var(--b-mono);
+    font-family: var(--b-code);
     font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
     white-space: nowrap;
     color: #fff;
     opacity: 0;
@@ -434,16 +486,21 @@
   .ticks {
     position: relative;
     height: 16px;
-    margin-top: 4px;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    color: rgb(var(--b-ink) / 0.8);
+    margin-top: 8px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.62);
   }
   .tick {
     position: absolute;
     top: 0;
     translate: -50% 0;
     white-space: nowrap;
+  }
+  .tick.start {
+    translate: 0 0;
   }
   .tick.end {
     translate: -100% 0;

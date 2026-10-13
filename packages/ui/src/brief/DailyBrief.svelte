@@ -291,7 +291,7 @@
       <h1 class="b-greet">Morning{input.userName ? `, ${input.userName}` : ""}.</h1>
       <div class="b-stats">
         {#each stats as st, i (st.key)}
-          <div class="stat prov" role="group" aria-label="{st.n} {st.label}, {st.caption}" data-testid="brief-stat" data-stat={st.key} use:peek={{ state: briefState, content: () => statPeek(st.key) }}>
+          <div class="stat prov" role="group" aria-label="{st.n} {st.label}, {st.caption}" data-testid="brief-stat" data-stat={st.key} use:peek={{ state: briefState, content: () => statPeek(st.key), place: "below" }}>
             <span class="pill" class:hot={i === 0}>{st.label}</span>
             <b class="num">{st.n}</b>
             <span class="cap">{st.caption}</span>

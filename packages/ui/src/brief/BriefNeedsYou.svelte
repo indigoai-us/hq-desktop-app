@@ -315,7 +315,7 @@
     align-items: center;
     gap: 12px;
     padding: 9px 10px 9px 12px;
-    border-radius: 6px;
+    border-radius: var(--b-r, 12px);
     background: linear-gradient(180deg, rgb(var(--b-ink) / 0.11), rgb(var(--b-ink) / 0.06));
     border: 1px solid rgb(var(--b-ink) / 0.1);
     border-top-color: rgb(var(--b-ink) / 0.18);
@@ -481,12 +481,10 @@
     z-index: 2;
     top: 50%;
     right: 0;
-    padding: 0 10px 0 28px;
+    padding: 0 12px 0 0;
     height: 100%;
     display: flex;
     align-items: center;
-    background: linear-gradient(90deg, transparent, rgba(110, 36, 82, 0.6) 26px);
-    border-radius: 0 14px 14px 0;
     opacity: 0;
     translate: 8px -50%;
     pointer-events: none;
@@ -497,6 +495,61 @@
     opacity: 1;
     translate: 0 -50%;
     pointer-events: auto;
+  }
+  /* No panel behind the buttons: the row's own text fades out under them instead, so they sit on the row's glass. */
+  .it .tx,
+  .it .meta {
+    transition: opacity 0.2s;
+  }
+  .it:not(.done):is(:hover, :focus-within):has(.acts :global(.launch)) .meta {
+    opacity: 0;
+  }
+  .it:not(.done):is(:hover, :focus-within):has(.acts :global(.launch)) .tx {
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - var(--acts-w) - 40px), transparent calc(100% - var(--acts-w) - 8px));
+    mask-image: linear-gradient(90deg, #000 calc(100% - var(--acts-w) - 40px), transparent calc(100% - var(--acts-w) - 8px));
+  }
+  .it {
+    --acts-w: 150px;
+  }
+  .it:has(.acts:is(:hover, :focus-within)) {
+    --acts-w: 290px;
+  }
+  /* One height for every control on the row (28px), light glass chips, no ring or drop. */
+  .acts :global(.launch) {
+    gap: 6px;
+  }
+  .acts :global(.launch .go) {
+    height: 28px;
+    padding: 0 12px;
+    box-sizing: border-box;
+    box-shadow: none;
+  }
+  .acts :global(.launch .eng) {
+    height: 28px;
+    box-sizing: border-box;
+    align-items: center;
+    padding: 2px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.16);
+  }
+  .acts :global(.launch .eng button) {
+    height: 24px;
+    padding: 0 7px;
+    box-sizing: border-box;
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.7);
+  }
+  .acts :global(.launch .eng button[aria-pressed="true"]) {
+    background: rgba(255, 255, 255, 0.95);
+    color: #2a1a5c;
+  }
+  .acts :global(.launch .copy) {
+    background: rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.85);
+  }
+  .acts :global(.launch .copy:hover) {
+    background: rgba(255, 255, 255, 0.26);
+    color: #fff;
   }
   /* Only the primary pill shows on the row; the engine switch and copy appear when you reach for it. */
   .acts :global(.eng),
