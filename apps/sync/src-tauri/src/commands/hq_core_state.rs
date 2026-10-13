@@ -5527,6 +5527,7 @@ where
         candidate,
         auto_updates,
         sync_in_progress,
+        crate::commands::hq_daemon_host::daemon_mode_active(),
         now,
         injected_path,
         || false,
@@ -5547,6 +5548,7 @@ async fn execute_native_core_auto_update_with_clock_and_preinstall_and_target_ch
     candidate: CoreAutoUpdateCandidate<'_>,
     auto_updates: bool,
     sync_in_progress: bool,
+    daemon_mode: bool,
     now: Now,
     injected_path: Option<&std::path::Path>,
     target_already_installed_after_guard: TargetAlreadyInstalled,
@@ -5565,7 +5567,7 @@ where
         automatic_target_baseline_refresh_pending_with_path(candidate.channel, injected_path);
     let mut sync_deferral = (sync_in_progress
         && auto_updates
-        && !crate::commands::hq_daemon_host::daemon_mode_active()
+        && !daemon_mode
         && (candidate.version_behind || baseline_refresh_pending))
         .then(|| record_core_update_sync_deferral(now()));
     let mut sync_deferral_cap_reached = sync_deferral.is_some_and(|(_, _, capped)| capped);
@@ -5604,7 +5606,7 @@ where
                     return NativeCoreAutoUpdateOutcome::DeferredForPrewarm;
                 }
                 AutomaticCoreUpdatePreinstall::DeferForSync => {
-                    if crate::commands::hq_daemon_host::daemon_mode_active() {
+                    if daemon_mode {
                         return defer_automatic_core_update_for_sync(candidate, None);
                     }
                     let checked_at = now();
@@ -5989,6 +5991,7 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
         CoreAutoUpdateCandidate::from(state),
         hq_desktop_core::hq_cli_update::auto_update_enabled(),
         crate::updater::sync_in_progress(),
+        crate::commands::hq_daemon_host::daemon_mode_active(),
         Instant::now,
         None,
         || automatic_core_update_target_already_installed(state),
@@ -6123,6 +6126,61 @@ mod tests {
         assert!(by_age.ready(start + CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP));
         by_age.reset();
         assert!(!by_age.ready(start + CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP));
+    }
+
+    // The HQ daemon syncs continuously, so its progress snapshot reads
+    // "syncing" at almost every check. Unbounded deferral there meant a new
+    // Core release never installed on daemon-hosted machines. The automatic
+    // rescue takes the exclusive sync operation lock (15-minute wait), so the
+    // same bounded deferral the desktop-hosted runner uses is safe here too.
+    #[tokio::test]
+    async fn daemon_mode_sync_deferrals_are_bounded_and_then_install() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        reset_core_update_sync_deferral_streak();
+        let home = TempDir::new().unwrap();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("16.0.13"),
+            target_version: "16.0.14-daemon-sync-deferral-cap",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let installs = Arc::new(AtomicUsize::new(0));
+        let start = Instant::now();
+        let mut outcomes = Vec::new();
+        for attempt in 0..CORE_UPDATE_SYNC_DEFERRAL_CAP {
+            let installs_for_call = Arc::clone(&installs);
+            let at = start + Duration::from_secs(60 * u64::from(attempt));
+            let outcome = execute_native_core_auto_update_with_clock_and_preinstall_and_target_check(
+                candidate,
+                true,
+                true,
+                true,
+                move || at,
+                Some(home.path()),
+                || false,
+                || async { AutomaticCoreUpdatePreinstall::DeferForSync },
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    installs_for_call.fetch_add(1, Ordering::AcqRel);
+                    Ok(CoreUpdateAutoInstall::new(0, true))
+                },
+            )
+            .await;
+            outcomes.push(outcome);
+        }
+        reset_core_update_sync_deferral_streak();
+
+        let cap = CORE_UPDATE_SYNC_DEFERRAL_CAP as usize;
+        assert!(
+            outcomes[..cap - 1]
+                .iter()
+                .all(|outcome| *outcome == NativeCoreAutoUpdateOutcome::DeferredForSync),
+            "{outcomes:?}"
+        );
+        assert_ne!(outcomes[cap - 1], NativeCoreAutoUpdateOutcome::DeferredForSync, "{outcomes:?}");
+        assert_eq!(installs.load(Ordering::Acquire), 1);
     }
 
     // Snapshot of the hq-pro entries that can admit `core_update_failed`
@@ -6712,6 +6770,7 @@ mod tests {
             execute_native_core_auto_update_with_clock_and_preinstall_and_target_check(
                 candidate,
                 true,
+                false,
                 false,
                 Instant::now,
                 None,
