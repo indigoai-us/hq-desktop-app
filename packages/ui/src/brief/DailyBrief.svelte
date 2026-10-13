@@ -55,9 +55,8 @@
   import type { BriefInput, BriefRisk as BriefRiskRow } from "./brief-types.js";
   import { effortMinutes } from "./brief-hero.js";
   import { briefHover } from "./brief-hover.js";
-  import { FIELD, inLabel, nextCall, promoteMain } from "./brief-layout.js";
+  import { FIELD, inLabel, nextCall, promoteMain, withLine } from "./brief-layout.js";
   import { CARD_TAG, cardTag, tagIconWidth, tagViewBox } from "./brief-card-tags.js";
-  import { rangeText } from "./brief-strip.js";
   /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
   const REWARD_KINDS = new Set(["shipped", "firsts", "resolved"]);
   const NO_HOVER_KINDS = new Set(["sunrise", "catchup"]);
@@ -197,20 +196,7 @@
     const m = d.getMinutes();
     return { t: `${d.getHours() % 12 || 12}${m ? `:${String(m).padStart(2, "0")}` : ""}`, ap: d.getHours() >= 12 ? "PM" : "AM" };
   });
-  function nextPeek(): PeekContent {
-    if (!next) return { title: "No more calls today", sections: [] };
-    const e = next.event;
-    const sections: PeekContent["sections"] = [];
-    if (e.attendees?.length) sections.push({ label: "With", lines: e.attendees.slice(0, 5).map((a) => ({ label: a, state: "" })) });
-    if (e.joinUrl) sections.push({ label: "Join", text: e.joinUrl });
-    return {
-      sample: input.calendarSample || e.projected,
-      title: e.title,
-      status: `${rangeText(e)} · ${inLabel(next.inMin, next.live)}`,
-      sections,
-      actions: onopenmeetings ? [{ label: "Open in Meetings", run: onopenmeetings }] : [],
-    };
-  }
+
 
   /** A dropped kind by its card name ("Team"), a priority row by its rank; never a camelCase id. */
   function kindName(kind: string): string {
@@ -334,12 +320,20 @@
       </div>
     </div>
     <BriefDayTimeline events={input.calendarToday} now={input.now} sample={input.calendarSample ?? false} {onopenmeetings} />
-    <aside class="b-next" data-testid="brief-next" use:peek={{ state: briefState, content: nextPeek }}>
+    <aside class="b-next" data-testid="brief-next">
       <div class="nx-head"><span class="nx-tag"><svg viewBox={tagViewBox(CARD_TAG.meetings)} style:width="{tagIconWidth(CARD_TAG.meetings)}px" aria-hidden="true"><path d={CARD_TAG.meetings.d} /></svg>{next ? (next.live ? "On a call" : "Next call") : "Calls today"}</span></div>
       {#if next}
-        <div class="nx-time">{nextTime.t}<span>{nextTime.ap}</span></div>
+        <div class="nx-time">{nextTime.t}<span>{nextTime.ap}{next.live ? "" : ` · ${inLabel(next.inMin, false)}`}</span></div>
         <div class="nx-title">{next.event.title}</div>
-        <div class="nx-in">{inLabel(next.inMin, next.live)}{callsLeft > 1 ? ` · ${callsLeft - 1} more after` : ""}</div>
+        {#if next.event.attendees?.length}
+          {@const people = next.event.attendees}
+          <!-- Who is on it, in a few words. -->
+          <div class="nx-who" data-testid="brief-next-who">
+            <span class="names">{withLine(people)}</span>
+          </div>
+        {:else}
+          <div class="nx-in">{inLabel(next.inMin, next.live)}{callsLeft > 1 ? ` · ${callsLeft - 1} more after` : ""}</div>
+        {/if}
       {:else}
         <div class="nx-time">Free</div>
         <div class="nx-title">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</div>

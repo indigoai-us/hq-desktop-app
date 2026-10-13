@@ -58,7 +58,7 @@
     {#if p.content.status}<div class="st">{p.content.status}</div>{/if}
     {#each p.content.sections as s, i (i)}
       <div class="sec">
-        <div class="eyebrow {s.tone ? `tone-${s.tone}` : ''}">{s.label}</div>
+        {#if s.label}<div class="eyebrow {s.tone ? `tone-${s.tone}` : ''}">{s.label}</div>{/if}
         {#if s.text}<p>{s.text}</p>{/if}
         <!-- Never more than five lines: past that a list stops being readable. -->
         {#each (s.lines ?? []).slice(0, PEEK_MAX_LINES) as line, j (j)}
@@ -157,7 +157,7 @@
     font-size: 13px;
     font-weight: 500;
     padding: 7px 14px;
-    border-radius: 999px;
+    border-radius: 8px;
     color: var(--b-t1, #fff);
     box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.18);
   }
@@ -177,16 +177,17 @@
     font-size: 11px;
     padding: 4px 11px;
   }
+  /* The shared highlight label (terracotta, white, fully rounded). */
   .tag {
     margin-left: 6px;
-    padding: 0 6px;
+    padding: 2px 8px;
     border-radius: 999px;
-    font-family: var(--b-mono);
+    font-family: var(--b-ui);
     font-size: 11px;
     font-style: normal;
     letter-spacing: 0;
-    color: #1b1b1e;
-    background: var(--b-sun, #ffb580);
+    color: var(--b-on-hot, #fff);
+    background: var(--b-hot, #c9765a);
   }
   .note {
     margin-top: 8px;

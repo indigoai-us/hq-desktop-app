@@ -68,7 +68,7 @@
   --b-hover-blend: screen;
   --b-foil-blend: color-dodge;
   --b-go-ring: 0 0 0 0 transparent;
-  --b-peek-shadow: 0 0 0 1px rgb(var(--b-ink) / 0.1), 0 22px 55px rgba(0, 0, 0, 0.5);
+  --b-peek-shadow: 0 2px 6px rgba(0, 0, 0, 0.25), 0 18px 44px -8px rgba(0, 0, 0, 0.55);
   --b-ok: var(--ok, #34c759);
   --b-warn: var(--warn, #facc15);
   --b-red: var(--red, #ff453a);
@@ -606,41 +606,54 @@
   margin-top: 6px;
 }
 
-/* peek card */
+/* Hover card: the same 12px corners as the cards; a clean sheet with a hairline,
+   a soft two-step shadow, a light top sheen, mono section labels (HQ's label style)
+   and list rows separated by hairlines instead of grey tiles. */
 .daily-brief .peek {
   position: fixed;
   z-index: 50;
-  width: 340px;
+  width: 320px;
   max-height: min(460px, calc(100vh - 32px));
   overflow: auto;
-  padding: 18px 18px 16px;
-  border-radius: 8px;
-  background: var(--b-card-hi);
+  padding: 16px 16px 14px;
+  border-radius: var(--b-r);
+  background: linear-gradient(180deg, rgb(var(--b-ink) / 0.015), transparent 40px), var(--b-card-hi);
   color: var(--b-t1);
+  border: 1px solid rgb(var(--b-ink) / 0.07);
   box-shadow: var(--b-peek-shadow);
-  animation: b-peek 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: b-peek 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @keyframes b-peek {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.96);
+    transform: translateY(4px) scale(0.98);
   }
 }
 .daily-brief .peek .ttl {
   font-size: 13px;
   font-weight: 500;
-  letter-spacing: -0.01em;
+  line-height: 1.35;
+  letter-spacing: 0;
 }
 .daily-brief .peek .st {
-  font-size: 13px;
-  color: var(--b-t2);
-  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--b-t3);
+  margin-top: 3px;
 }
 .daily-brief .peek .sec {
   margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgb(var(--b-ink) / 0.06);
 }
 .daily-brief .peek .sec .eyebrow {
-  margin-bottom: 7px;
+  margin-bottom: 6px;
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--b-t3);
 }
 .daily-brief .peek p {
   margin: 0;
@@ -651,19 +664,27 @@
 .daily-brief .peek .li {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   font-size: 13px;
   line-height: 1.35;
-  padding: 7px 10px;
-  border-radius: 6px;
-  background: rgb(var(--b-ink) / 0.035);
-  margin-top: 4px;
+  padding: 7px 0;
+  border-radius: 0;
+  background: none;
+  margin-top: 0;
+}
+.daily-brief .peek .li + .li {
+  border-top: 1px solid rgb(var(--b-ink) / 0.05);
 }
 .daily-brief .peek .li span {
-  font-family: var(--b-mono);
+  font-family: var(--b-ui);
   font-size: 11px;
+  color: var(--b-t3);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   align-self: center;
+}
+.daily-brief .peek .li span[class^="tone-"]:not(.tone-neutral) {
+  color: inherit;
 }
 .daily-brief .peek .prompt {
   font-family: var(--b-code);
@@ -672,8 +693,9 @@
   color: var(--b-t1);
   padding: 10px 12px;
   border-radius: 8px;
-  box-shadow: var(--b-well);
-  background: rgb(var(--b-ink) / 0.05);
+  box-shadow: none;
+  border: 1px solid rgb(var(--b-ink) / 0.06);
+  background: rgb(var(--b-ink) / 0.03);
   white-space: pre-wrap;
   max-height: 180px;
   overflow: auto;
@@ -778,7 +800,7 @@
   --b-hover-light: rgba(217, 96, 58, 0.1);
   --b-foil-blend: multiply;
   --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
-  --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
+  --b-peek-shadow: 0 1px 3px rgba(20, 20, 40, 0.06), 0 16px 40px -10px rgba(20, 20, 40, 0.2);
   --b-panel: rgba(255, 255, 255, 0.55);
   --b-panel-line: rgba(255, 255, 255, 0.9);
   --b-knob: rgba(255, 255, 255, 0.75);
@@ -813,7 +835,7 @@
   --b-hover-light: rgba(217, 96, 58, 0.1);
   --b-foil-blend: multiply;
   --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
-  --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
+  --b-peek-shadow: 0 1px 3px rgba(20, 20, 40, 0.06), 0 16px 40px -10px rgba(20, 20, 40, 0.2);
   --b-panel: rgba(255, 255, 255, 0.55);
   --b-panel-line: rgba(255, 255, 255, 0.9);
   --b-knob: rgba(255, 255, 255, 0.75);
@@ -1078,7 +1100,7 @@
   margin: 0;
   font-family: var(--b-serif);
   font-size: 44px;
-  font-weight: 400;
+  font-weight: 300;
   line-height: 1.08;
   letter-spacing: -0.02em;
 }
@@ -1186,18 +1208,35 @@
   /* The whole title, wrapped; kept clear of the orbit in the corner. */
   max-width: calc(100% - 104px);
 }
+.daily-brief .b-next .nx-who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  max-width: calc(100% - 104px);
+  min-width: 0;
+}
+.daily-brief .b-next .names {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--b-t2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .daily-brief .b-next .nx-in {
   margin-top: 4px;
   font-size: 11px;
   color: var(--b-t3);
   max-width: calc(100% - 104px);
 }
+/* Bleeds off the bottom-right corner: only its upper-left arc and the node show. */
 .daily-brief .b-next .orbit {
   position: absolute;
-  right: 14px;
-  bottom: 14px;
-  width: 96px;
-  height: 96px;
+  right: -48px;
+  bottom: -56px;
+  width: 150px;
+  height: 150px;
   color: rgb(var(--b-ink));
   pointer-events: none;
 }

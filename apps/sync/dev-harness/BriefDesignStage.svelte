@@ -25,7 +25,21 @@
   const params = new URLSearchParams(location.search);
   const initial = params.get('day');
   let day = $state<Day>(initial && initial in DAYS ? (initial as Day) : 'oct8');
-  const input = $derived(DAYS[day].make());
+  /**
+   * Preview the page as production shows it with live sources: the fixtures mark their
+   * made-up rows `sample` (and the calendar `calendarSample`), which the brief labels
+   * "Sample". Strip those flags here so the design stage shows no dev-only markers.
+   */
+  function asProduction<T>(value: T): T {
+    if (Array.isArray(value)) return value.map(asProduction) as T;
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value)) if (k !== 'sample' && k !== 'calendarSample') out[k] = asProduction(v);
+      return out as T;
+    }
+    return value;
+  }
+  const input = $derived(asProduction(DAYS[day].make()));
   // The fixtures' companies, as a signed-in host would pass them (real icons resolve by slug).
   const companies = [
     { uid: 'cmp_indigo', slug: 'indigo', label: 'Indigo' },

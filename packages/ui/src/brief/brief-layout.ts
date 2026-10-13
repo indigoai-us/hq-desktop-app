@@ -155,3 +155,12 @@ export function contentBox(el: Element): Box {
 export function peekTop(anchorTop: number, height: number, viewH: number): number {
   return Math.max(16, Math.min(anchorTop - 6, viewH - height - 16));
 }
+
+/** Who is on a call, in a few words: "with Lizzie", "with Jacob and Corey", "with Jacob, Corey +2". */
+export function withLine(people: readonly string[]): string {
+  const names = people.map((p) => p.trim()).filter(Boolean);
+  if (!names.length) return "";
+  if (names.length === 1) return `with ${names[0]}`;
+  if (names.length === 2) return `with ${names[0]} and ${names[1]}`;
+  return `with ${names[0]}, ${names[1]} +${names.length - 2}`;
+}

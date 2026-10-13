@@ -1,6 +1,6 @@
 // The priorities card takes the hero's slot; the sunrise takes the priorities card's slot.
 import { describe, expect, it } from "vitest";
-import { inLabel, nextCall, peekTop, placePeek, promoteMain } from "./brief-layout.js";
+import { inLabel, nextCall, peekTop, placePeek, promoteMain, withLine } from "./brief-layout.js";
 import type { BriefWidget } from "./brief-generate.js";
 
 const w = (kind: string, cols: number, rows: number, size = "M"): BriefWidget =>
@@ -87,5 +87,14 @@ describe("placePeek / peekTop", () => {
     expect(peekTop(300, 200, 900)).toBe(294);
     expect(peekTop(800, 300, 900)).toBe(584);
     expect(peekTop(4, 100, 900)).toBe(16);
+  });
+});
+
+describe("participants on the Next call panel", () => {
+  it("names them in a few words", () => {
+    expect(withLine([])).toBe("");
+    expect(withLine(["Lizzie"])).toBe("with Lizzie");
+    expect(withLine(["Jacob", "Corey"])).toBe("with Jacob and Corey");
+    expect(withLine(["Jacob", "Corey", "Izzy", "Hassaan"])).toBe("with Jacob, Corey +2");
   });
 });

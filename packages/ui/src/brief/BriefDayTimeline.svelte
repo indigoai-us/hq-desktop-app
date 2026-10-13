@@ -76,8 +76,8 @@
   }
   function moreContent(): PeekContent {
     return {
-      title: `${plan.hidden.length} more`,
-      sections: [{ label: "Also today", lines: plan.hidden.map((e) => ({ label: e.title, state: rangeText(e) })) }],
+      title: "Also today",
+      sections: [{ label: "", lines: plan.hidden.map((e) => ({ label: e.title, state: rangeText(e) })) }],
       actions: onopenmeetings ? [{ label: "Open in Meetings", run: onopenmeetings }] : [],
     };
   }
