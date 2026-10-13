@@ -175,6 +175,37 @@ describe("parsers", () => {
 });
 
 describe("mergePastMeetings", () => {
+  it("puts only the signed-in person's own recordings on the Today row, never a teammate's", async () => {
+    // hq-pro's recorded list is ACL-filtered: an owner or admin reads every
+    // member's recordings. Owner report: the Today row listed teammates' calls.
+    const a = fakeAdapter();
+    a.meetings!.listUpcoming = () => ok([]);
+    a.meetings!.listScheduledBots = () => ok([{ botId: "m_mine" }]);
+    a.meetings!.listRecorded = (companyId) =>
+      companyId === "cmp_indigo"
+        ? ok({
+            meetings: [
+              { meetingId: "m_mine", title: "My 1:1", startTime: at(8, 6), hasSignals: false, companyId: "cmp_indigo" },
+              { meetingId: "m_team1", title: "HQ GTM Sync", startTime: at(8, 6, 30), hasSignals: false, companyId: "cmp_indigo" },
+              { meetingId: "m_team2", title: "Jake Estep", startTime: at(8, 7), hasSignals: false, companyId: "cmp_indigo" },
+            ],
+          })
+        : ok({ meetings: [] });
+    const { input } = await gatherBriefInput(a, { companies, now: NOW, log: () => {} });
+    expect(input.calendarToday.map((e) => e.title)).toEqual(["My 1:1"]);
+  });
+
+  it("shows an empty Today row when no calendar is connected and no own recording exists", async () => {
+    const a = fakeAdapter();
+    a.meetings!.listUpcoming = () => err("not-connected");
+    a.meetings!.listScheduledBots = () => ok([]);
+    a.meetings!.listRecorded = () =>
+      ok({ meetings: [{ meetingId: "m_team", title: "HQ Dev Standup", startTime: at(8, 6), hasSignals: false, companyId: "cmp_indigo" }] });
+    const { input, failures } = await gatherBriefInput(a, { companies, now: NOW, log: () => {} });
+    expect(input.calendarToday).toEqual([]);
+    expect(failures).toContain("calendar");
+  });
+
   it("adds today's earlier recorded calls the calendar feed no longer lists, once", async () => {
     const { mergePastMeetings } = await import("./brief-data.js");
     const now = new Date("2026-10-09T21:00:00Z");
