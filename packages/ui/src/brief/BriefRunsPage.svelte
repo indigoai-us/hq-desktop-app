@@ -42,8 +42,10 @@
     onopenmeetings?: () => void;
     /** Test seam; defaults to the adapter's HQ file read. */
     source?: BriefSweepSource | null;
+    /** Open this run first instead of the latest ready one (the design harness's ?briefRun). */
+    initialRunId?: string | null;
   }
-  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp, initialRunId = null }: Props = $props();
 
   const LAST_KEY = "hq.brief.lastOpenedAt";
   // Fixed for the page's life; the host remounts the page for a new adapter.
@@ -239,7 +241,8 @@
       if (!alive) return;
       // Resume a run already in flight (a reload, or one started elsewhere).
       if (run && !run.busy) void run.rehydrate(entries.filter((e) => e.state === "running").map((e) => e.runId));
-      await show(latestReadyRun(entries)?.runId ?? null);
+      const wanted = initialRunId && entries.some((e) => e.runId === initialRunId) ? initialRunId : null;
+      await show(wanted ?? latestReadyRun(entries)?.runId ?? null);
     })();
   });
   onDestroy(() => {

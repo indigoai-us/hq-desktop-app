@@ -57,6 +57,9 @@ test.describe('daily brief: user path', () => {
   });
 
   test('Create brief runs to a ready brief from the empty state', async ({ page }) => {
+    // The simulated run takes about twenty seconds on a quiet machine; give
+    // the whole test room beyond the default so the 60s wait below is real.
+    test.setTimeout(120_000);
     const errors = await openBrief(page, `${BRIEF}&briefDemo=1`);
     const create = page.getByTestId('brief-create').first();
     await expect(create).toBeVisible({ timeout: 30_000 });

@@ -435,14 +435,16 @@
     height: 8px;
     border-radius: 99px;
     background: rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+    box-shadow: 0 0 14px rgba(255, 150, 140, 0.35);
   }
   .track i {
     display: block;
     width: 100%;
     height: 100%;
-    border-radius: inherit;
+    /* The track clips the rounded ends; a radius here would squash under scaleX. */
+    border-radius: 0;
     background: linear-gradient(90deg, #ffb580, #ff809f);
-    box-shadow: 0 0 14px rgba(255, 150, 140, 0.55);
     /* Fill ratio via --fill (0..1) + scaleX so the transition stays on the compositor. */
     transform: scaleX(var(--fill, 0));
     transform-origin: left;

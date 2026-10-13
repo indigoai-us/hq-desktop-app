@@ -319,7 +319,6 @@
     display: block;
     width: 100%;
     height: 100%;
-    border-radius: 2px;
     background: #ffb580;
     /* Fill ratio via --fill (0..1) + scaleX so the transition stays on the compositor. */
     transform: scaleX(var(--fill, 0));

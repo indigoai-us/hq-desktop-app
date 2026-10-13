@@ -4,8 +4,8 @@
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import pkg from './package.json' with { type: 'json' };
-import { join, normalize, resolve } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { join, normalize, resolve, sep } from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 
 const mock = (f: string) => resolve(__dirname, 'dev-harness/mocks', f);
@@ -16,24 +16,40 @@ const mock = (f: string) => resolve(__dirname, 'dev-harness/mocks', f);
  * through the app's own loader. Read-only, brief runs only; anything else 403s.
  */
 type Res = { statusCode: number; setHeader(k: string, v: string): void; end(b?: string): void };
-const hqBriefRuns = (req: { url?: string }, res: Res, next: () => void) => {
+/** Only a browser on this machine may read brief runs: the Host header must be a loopback name. */
+const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+const hqBriefRuns = (req: { url?: string; headers: { host?: string } }, res: Res, next: () => void) => {
   const url = req.url ?? '';
   if (!url.startsWith('/__hq/')) return next();
+  // This runs ahead of Vite's own host check, so it gates the Host header
+  // itself: a DNS-rebinding page cannot read brief runs through it.
+  if (!LOOPBACK_HOST.test(req.headers.host ?? '')) {
+    res.statusCode = 403;
+    return res.end();
+  }
   const rel = normalize(decodeURIComponent(url.slice('/__hq/'.length).split('?')[0]!));
   if (!rel.startsWith('workspace/brief/') || rel.includes('..')) {
     res.statusCode = 403;
     return res.end();
   }
-  readFile(join(process.env.HQ_ROOT ?? join(homedir(), 'hq'), rel), 'utf8').then(
-    (text) => {
+  const root = process.env.HQ_ROOT ?? join(homedir(), 'hq');
+  void (async () => {
+    try {
+      // A symlink inside a run folder must not lead outside the brief runs.
+      const runs = await realpath(join(root, 'workspace', 'brief'));
+      const file = await realpath(join(root, rel));
+      if (!file.startsWith(runs + sep)) {
+        res.statusCode = 403;
+        return res.end();
+      }
+      const text = await readFile(file, 'utf8');
       res.setHeader('content-type', 'text/plain; charset=utf-8');
       res.end(text);
-    },
-    () => {
+    } catch {
       res.statusCode = 404;
       res.end();
-    },
-  );
+    }
+  })();
 };
 
 /** `/` and `/?…` open the design harness, in dev and in `vite preview` alike. */
@@ -52,6 +68,8 @@ export default defineConfig({
       name: 'serve-design-harness',
       configureServer(server) {
         server.middlewares.use(harnessRoot);
+        // Must run before Vite's internals (its SPA fallback would answer the
+        // page for /__hq/ otherwise), so it carries its own loopback Host gate.
         server.middlewares.use(hqBriefRuns);
       },
       configurePreviewServer(server) {

@@ -264,7 +264,7 @@
   {#await loadBrief() then mod}
     <div style="height:100vh;overflow:auto">
       {#if briefRun}
-        <mod.BriefRunsPage adapter={{}} companies={briefCompanies} source={briefRunSource} />
+        <mod.BriefRunsPage adapter={{}} companies={briefCompanies} source={briefRunSource} initialRunId={briefRun} />
       {:else}
         <mod.BriefRunsPage adapter={{}} companies={[]} source={null} />
       {/if}
