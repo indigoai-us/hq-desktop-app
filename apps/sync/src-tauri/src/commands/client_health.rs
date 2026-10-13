@@ -260,11 +260,13 @@ pub(crate) fn record_sync_attempt_started() {
     notify_client_health_state_changed();
 }
 
-/// Genuine success = the runner exited cleanly with zero error events, zero
-/// auth errors, and zero conflicts. A no-change run satisfies this; an
-/// aborted, partial, conflicted, or failed run never does (AC).
+/// Genuine success = the runner exited cleanly with zero error events and
+/// zero auth errors. A no-change run satisfies this; an aborted, partial, or
+/// failed run never does (AC). Conflicts do not count against a run: the
+/// runner keeps the cloud copy live and parks the local copy, so a run that
+/// only parked conflicts finished its work (owner decision 2026-10-13).
 fn run_was_genuine_success(exit_success: bool, totals: &RunTotals) -> bool {
-    exit_success && !totals.saw_error && !totals.saw_auth_error && totals.conflicts == 0
+    exit_success && !totals.saw_error && !totals.saw_auth_error
 }
 
 /// Map a non-successful run to ONE closed reason code — class tokens only,
@@ -273,8 +275,6 @@ fn run_was_genuine_success(exit_success: bool, totals: &RunTotals) -> bool {
 fn failure_reason_for_run(totals: &RunTotals) -> ClientHealthFailureReason {
     if totals.saw_auth_error {
         ClientHealthFailureReason::AuthExpired
-    } else if totals.conflicts > 0 {
-        ClientHealthFailureReason::ConflictBlocked
     } else if totals.runner_error_rollup.is_exclusively_disk_full() {
         ClientHealthFailureReason::DiskFull
     } else if totals.runner_error_rollup.has_permission_error() {
@@ -298,7 +298,8 @@ fn apply_run_outcome(state: &mut ClientHealthState, success: bool, totals: &RunT
     if success {
         state.last_sync_success_at = Some(now.to_string());
         state.consecutive_failures = 0;
-        state.conflict_count = 0;
+        // Parked conflicts never block sync; the count stays for diagnostics.
+        state.conflict_count = u64::from(totals.conflicts);
         state.sync_run_failed = false;
         state.last_failure_reason = None;
     } else {
@@ -562,8 +563,6 @@ fn derive_sync_state_with_watcher(
         ClientHealthSyncState::Paused
     } else if syncing {
         ClientHealthSyncState::Syncing
-    } else if state.conflict_count > 0 {
-        ClientHealthSyncState::ConflictBlocked
     } else if state.sync_run_failed {
         ClientHealthSyncState::Error
     } else if state.last_sync_attempt_at.is_none() && state.last_sync_success_at.is_none() {
@@ -1318,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn aborted_partial_conflicted_and_failed_runs_are_never_success() {
+    fn aborted_partial_and_failed_runs_are_never_success() {
         // Aborted / crashed: non-success exit.
         assert!(!run_was_genuine_success(false, &RunTotals::default()));
 
@@ -1331,11 +1330,6 @@ mod tests {
         let mut auth = RunTotals::default();
         auth.record_auth_error();
         assert!(!run_was_genuine_success(true, &auth));
-
-        // Conflicted.
-        let mut conflicted = RunTotals::default();
-        conflicted.conflicts = 2;
-        assert!(!run_was_genuine_success(true, &conflicted));
     }
 
     // ── Closed reason codes (AC: no paths, no raw logs) ──────────────────────
@@ -1364,11 +1358,18 @@ mod tests {
             ClientHealthFailureReason::AuthExpired
         );
 
-        let mut conflicted = RunTotals::default();
-        conflicted.conflicts = 3;
+        // Parked conflicts (owner decision 2026-10-13: the cloud copy stays
+        // live and the local copy is set aside) are handled outcomes. They
+        // never turn a clean run into a failure, and they never become the
+        // failure reason of a run that failed for another cause.
+        let mut parked = RunTotals::default();
+        parked.conflicts = 3;
+        assert!(run_was_genuine_success(true, &parked));
+        let mut parked_with_error = error_totals("something exploded");
+        parked_with_error.conflicts = 3;
         assert_eq!(
-            failure_reason_for_run(&conflicted),
-            ClientHealthFailureReason::ConflictBlocked
+            failure_reason_for_run(&parked_with_error),
+            ClientHealthFailureReason::RunnerFailed
         );
 
         assert_eq!(
@@ -1430,16 +1431,33 @@ mod tests {
     }
 
     #[test]
-    fn conflict_blocked_is_first_class_and_derived_from_conflict_count() {
+    fn parked_conflicts_never_block_sync_state() {
         let mut state = state_with_id(1);
         state.conflict_count = 3;
-        state.sync_run_failed = true;
-        state.last_failure_reason = Some("CONFLICT_BLOCKED".to_string());
+        state.last_sync_attempt_at = Some("2026-10-13T01:00:00.000Z".to_string());
+        state.last_sync_success_at = Some("2026-10-13T01:00:00.000Z".to_string());
         let sync_state = derive_sync_state(false, false, &state);
-        assert_eq!(sync_state, ClientHealthSyncState::ConflictBlocked);
+        assert_eq!(sync_state, ClientHealthSyncState::Idle);
+        assert_eq!(derive_failure_reason(sync_state, &state), None);
+    }
+
+    #[test]
+    fn a_run_that_only_parked_conflicts_is_recorded_as_success() {
+        let mut state = state_with_id(1);
+        let mut parked = RunTotals::default();
+        parked.conflicts = 2;
+        let success = run_was_genuine_success(true, &parked);
+        apply_run_outcome(&mut state, success, &parked, "2026-10-13T01:00:00.000Z");
+        assert_eq!(state.conflict_count, 2, "the parked count stays visible to support");
         assert_eq!(
-            derive_failure_reason(sync_state, &state),
-            Some(ClientHealthFailureReason::ConflictBlocked)
+            state.last_sync_success_at.as_deref(),
+            Some("2026-10-13T01:00:00.000Z")
+        );
+        assert!(!state.sync_run_failed);
+        assert_eq!(state.last_failure_reason, None);
+        assert_eq!(
+            derive_sync_state(false, false, &state),
+            ClientHealthSyncState::Idle
         );
     }
 
@@ -1778,29 +1796,27 @@ mod tests {
         assert!(!SYNC_RUNNING.load(Ordering::SeqCst));
         let success_stamp = after_success.last_sync_success_at.clone();
 
-        // A conflicted run must NOT advance it, and records the blocker.
+        // A run that only parked conflicts is a success: the cloud copy stays
+        // live and the local copy is set aside, so nothing is blocked. The
+        // count is kept for diagnostics only.
         record_sync_attempt_started();
-        let mut conflicted = RunTotals::default();
-        conflicted.conflicts = 3;
-        record_sync_run_ended(true, &conflicted);
-        let after_conflict = with_state(|s| s.clone()).unwrap();
-        assert_eq!(
-            after_conflict.last_sync_success_at, success_stamp,
-            "conflicted run must not advance lastSyncSuccessAt"
-        );
-        assert_eq!(after_conflict.conflict_count, 3);
-        assert_eq!(after_conflict.consecutive_failures, 1);
-        assert_eq!(
-            after_conflict.last_failure_reason.as_deref(),
-            Some("CONFLICT_BLOCKED")
-        );
+        let mut parked = RunTotals::default();
+        parked.conflicts = 3;
+        record_sync_run_ended(true, &parked);
+        let after_parked = with_state(|s| s.clone()).unwrap();
+        assert!(after_parked.last_sync_success_at.is_some());
+        assert_eq!(after_parked.conflict_count, 3);
+        assert_eq!(after_parked.consecutive_failures, 0);
+        assert!(!after_parked.sync_run_failed);
+        assert_eq!(after_parked.last_failure_reason, None);
+        let success_stamp = after_parked.last_sync_success_at.clone();
 
-        // A crashed run does not advance it either.
+        // A crashed run does not advance it.
         record_sync_attempt_started();
         record_sync_run_ended(false, &RunTotals::default());
         let after_crash = with_state(|s| s.clone()).unwrap();
         assert_eq!(after_crash.last_sync_success_at, success_stamp);
-        assert_eq!(after_crash.consecutive_failures, 2);
+        assert_eq!(after_crash.consecutive_failures, 1);
         assert_eq!(
             after_crash.last_failure_reason.as_deref(),
             Some("RUNNER_FAILED")
@@ -1952,18 +1968,17 @@ mod tests {
             ClientHealthSyncState::Error
         );
 
-        // A conflicted auto pass maps to CONFLICT_BLOCKED, same as manual.
-        let mut conflicted = RunTotals::default();
-        conflicted.conflicts = 2;
-        record_auto_sync_pass_completed(&conflicted);
-        let after_conflict = with_state(|s| s.clone()).unwrap();
-        assert_eq!(after_conflict.last_sync_success_at, success_stamp);
-        assert_eq!(after_conflict.conflict_count, 2);
-        assert_eq!(after_conflict.consecutive_failures, 2);
-
-        // Recovery: the next clean pass advances success and clears failure.
-        record_auto_sync_pass_completed(&RunTotals::default());
+        // Recovery: an auto pass that only parked conflicts is a clean pass,
+        // same as manual. It advances success and clears the failure.
+        let mut parked = RunTotals::default();
+        parked.conflicts = 2;
+        record_auto_sync_pass_completed(&parked);
         let recovered = with_state(|s| s.clone()).unwrap();
+        assert_eq!(recovered.conflict_count, 2);
+        assert_eq!(
+            derive_sync_state(false, false, &recovered),
+            ClientHealthSyncState::Idle
+        );
         assert_ne!(recovered.last_sync_success_at, None);
         assert!(!recovered.sync_run_failed);
         assert_eq!(recovered.consecutive_failures, 0);

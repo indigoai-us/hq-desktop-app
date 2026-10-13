@@ -54,7 +54,6 @@ pub mod client_info;
 pub mod coalesced_poll;
 pub mod cognito;
 pub mod config;
-pub mod conflict_notify;
 pub mod conflicts;
 pub mod continuation_custody;
 pub mod continuation_endpoints;

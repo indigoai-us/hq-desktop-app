@@ -2,31 +2,22 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-// Conflict dead-end fix: when a sync is conflict-aborted, this window reads
-// conflicts in aggregate only (`sync:complete {conflicts, aborted}`) — it does
-// not subscribe to the runner's per-file `sync:conflict` stream, so the
-// per-file ConflictModal never populates here. Previously the conflict state was a silent dead-end: the
-// tray went red and the UI showed NOTHING actionable.
-//
-// PL-07 moved the actionable half of this out of the tray window. The tray
-// window still turns the aborted run into the conflict tray state; the
-// resolve-in-Claude-Code / Copy-prompt notice lives in the desktop window's
-// Core popover and is covered by packages/ui/src/home/CorePopover.sync-notices.test.ts
-// ("renders the conflict notice with Resolve and Copy prompt") and
-// core-popover-sync.test.ts ("reads Sync paused when conflicts exist").
+// Sync conflicts have no desktop surface (owner decision 2026-10-13). The
+// cloud copy stays live and the local copy is parked by the runner, so an
+// aborted run must not turn into a conflict tray icon, a conflict sync state,
+// or a resolve prompt. The journal's conflict count stays diagnostic only.
 
 const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
 const normalize = (s: string) => s.replace(/\s+/g, ' ');
 
 const app = read('src/App.svelte');
 
-describe('conflict dead-end: the aborted run still reaches the user', () => {
-  it('App turns an aborted sync:complete into the conflict state and the conflict tray icon', () => {
+describe('parked conflicts: the aborted run has no conflict surface', () => {
+  it('App never turns an aborted sync:complete into a conflict state or tray icon', () => {
     const a = normalize(app);
-    expect(a).toContain('if (event.payload.aborted) {');
-    expect(a).toMatch(
-      /if \(event\.payload\.aborted\) \{[^}]*syncState = 'conflict'; await invoke\('set_tray_state', \{ state: 'conflict' \}\);/,
-    );
+    expect(a).not.toContain("syncState = 'conflict'");
+    expect(a).not.toContain("state: 'conflict'");
+    expect(a).not.toContain('if (event.payload.aborted) {');
   });
 
   it('App no longer keeps a second copy of the conflict accounting', () => {

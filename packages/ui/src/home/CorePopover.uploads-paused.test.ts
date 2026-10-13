@@ -58,17 +58,13 @@ describe("uploads-paused status model", () => {
     expect(buildCoreSyncHeader({ syncState: "idle" }).stateWord).toBe("All synced");
   });
 
-  it("a run in flight, an error, or a conflict still wins", () => {
+  it("a run in flight or an error still wins", () => {
     expect(buildCoreSyncHeader({ syncState: "syncing", uploadsPausedCount: 1 }).stateWord).toBe(
       "Syncing",
     );
     expect(buildCoreSyncHeader({ syncState: "error", uploadsPausedCount: 1 }).stateWord).toBe(
       "Needs attention",
     );
-    expect(
-      buildCoreSyncHeader({ syncState: "idle", conflictCount: 2, uploadsPausedCount: 1 })
-        .stateWord,
-    ).toBe("Sync paused");
   });
 
   it("lights the Core pill amber while uploads are paused", () => {
