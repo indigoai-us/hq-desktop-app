@@ -439,13 +439,4 @@ describe("US-001 V4 title bar model", () => {
     expect(auth.tone).toBe("idle");
     expect(auth.sentence).toBe("Ready to reconnect");
   });
-
-  it("flags conflicts as a warn state with a direct resolution action", () => {
-    const model = getV4TitleBarModel({
-      syncState: "conflict",
-      watchedCount: 3,
-    });
-    expect(model.tone).toBe("warn");
-    expect(model.action).toEqual({ id: "resolve", label: "Resolve" });
-  });
 });

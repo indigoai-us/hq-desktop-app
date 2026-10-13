@@ -49,11 +49,11 @@ describe('version and updates surface (US-017)', () => {
     expect(popover).toContain('Restore');
   });
 
-  it('keeps the conflict rescue path on the same surface', () => {
-    // A conflict must remain reachable from the chrome rather than only from
-    // Home — this is the rescue route when the board is not in front of you.
-    expect(popover).toContain('data-testid="core-popover-conflict-row"');
-    expect(popover).toContain('data-testid="core-popover-keep-local"');
-    expect(popover).toContain('data-testid="core-popover-keep-cloud"');
+  it('has no conflict surface', () => {
+    // Sync conflicts have no desktop surface (owner decision 2026-10-13):
+    // the cloud copy stays live and the local copy is parked.
+    expect(popover).not.toContain('data-testid="core-popover-conflict-row"');
+    expect(popover).not.toContain('data-testid="core-popover-keep-local"');
+    expect(popover).not.toContain('data-testid="core-popover-keep-cloud"');
   });
 });

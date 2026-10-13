@@ -10,8 +10,6 @@ import type { Project } from "../projects/projects-model.js";
 import type { MeetingEvent } from "../meetings/meetings-model.js";
 import {
   activityFileVerb,
-  getAggregateConflictCardModel,
-  getConflictCardModel,
   getDeleteRefusalCopy,
   getDriftCardModel,
   getInviteCardModel,
@@ -23,7 +21,6 @@ import {
   getHomeProgressModel,
   getHomeTodayAgenda,
   getNeedsYouCount,
-  type HomeConflict,
   type HomeCoreState,
 } from "./home-model";
 
@@ -46,16 +43,6 @@ const baseWorkspace: Workspace = {
 
 function workspace(overrides: Partial<Workspace>): Workspace {
   return { ...baseWorkspace, ...overrides };
-}
-
-function conflict(overrides: Partial<HomeConflict> = {}): HomeConflict {
-  return {
-    path: "policies/slack-channel.md",
-    canAutoResolve: false,
-    status: "pending",
-    at: Date.now() - 15 * 60_000,
-    ...overrides,
-  };
 }
 
 function coreState(
@@ -150,40 +137,6 @@ describe("US-003 Home meta line", () => {
 });
 
 describe("US-003 NEEDS YOU queue", () => {
-  it("turns aggregate runner conflicts into one actionable recovery card", () => {
-    const card = getAggregateConflictCardModel(3, "indigo");
-    expect(card.title).toBe("3 file conflicts need review");
-    expect(card.sub).toContain("indigo");
-    expect(card.sub).toContain("local files were preserved");
-    expect(card.tone).toBe("warn");
-    expect(card.actions.map((action) => [action.id, action.label])).toEqual([
-      ["resolve-conflicts", "Resolve conflicts"],
-    ]);
-  });
-
-  it("conflict card offers Keep mine / Take theirs / Compare", () => {
-    const card = getConflictCardModel(conflict());
-    expect(card.title).toContain("policies/slack-channel.md");
-    expect(card.sub).toContain("auto-resolve not possible");
-    expect(card.tone).toBe("warn");
-    expect(card.actions.map((action) => [action.id, action.label])).toEqual([
-      ["keep-local", "Keep mine"],
-      ["keep-remote", "Take theirs"],
-      ["compare", "Compare"],
-    ]);
-  });
-
-  it("resolving conflicts disable the resolution actions", () => {
-    const card = getConflictCardModel(conflict({ status: "resolving" }));
-    expect(card.sub).toContain("resolving…");
-    expect(
-      card.actions.find((action) => action.id === "keep-local")?.disabled,
-    ).toBe(true);
-    expect(
-      card.actions.find((action) => action.id === "keep-remote")?.disabled,
-    ).toBe(true);
-  });
-
   it("drift card names the drifted file and offers Restore / Keep edit / View diff", () => {
     const card = getDriftCardModel(coreState());
     expect(card?.title).toBe(
@@ -232,20 +185,15 @@ describe("US-003 NEEDS YOU queue", () => {
     expect(getDriftCardModel(coreState({ count: 0, modified: [] }))).toBeNull();
   });
 
-  it("counts pending conflicts plus the drift card; Keep edit dismisses drift", () => {
-    expect(getNeedsYouCount([conflict()], coreState(), false)).toBe(2);
-    expect(getNeedsYouCount([conflict()], coreState(), true)).toBe(1);
-    expect(getNeedsYouCount([], null, false)).toBe(0);
+  it("counts the drift card; Keep edit dismisses drift", () => {
+    expect(getNeedsYouCount(coreState(), false)).toBe(1);
+    expect(getNeedsYouCount(coreState(), true)).toBe(0);
+    expect(getNeedsYouCount(null, false)).toBe(0);
   });
 
   it("counts pending company invites in the NEEDS YOU total", () => {
-    expect(getNeedsYouCount([], null, false, 2)).toBe(2);
-    expect(getNeedsYouCount([conflict()], coreState(), false, 1)).toBe(3);
-  });
-
-  it("counts one aggregate recovery workflow when detailed conflict rows are unavailable", () => {
-    expect(getNeedsYouCount([], null, false, 0, true)).toBe(1);
-    expect(getNeedsYouCount([conflict()], null, false, 0, false)).toBe(1);
+    expect(getNeedsYouCount(null, false, 2)).toBe(2);
+    expect(getNeedsYouCount(coreState(), false, 1)).toBe(2);
   });
 
   it("invite card offers Accept for a pending company membership", () => {
