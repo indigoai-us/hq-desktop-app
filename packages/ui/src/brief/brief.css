@@ -647,7 +647,7 @@
   border-top: 1px solid rgb(var(--b-ink) / 0.06);
 }
 .daily-brief .peek .sec .eyebrow {
-  margin-bottom: 6px;
+  margin-bottom: 0;
   font-family: var(--b-code);
   font-size: 10px;
   font-weight: 500;
@@ -667,7 +667,7 @@
   gap: 12px;
   font-size: 13px;
   line-height: 1.35;
-  padding: 7px 0;
+  padding: 6px 0;
   border-radius: 0;
   background: none;
   margin-top: 0;
@@ -1244,8 +1244,7 @@
 }
 .daily-brief .b-next .orbit .orb {
   opacity: 0.6;
-  stroke: rgb(var(--b-ink) / 0.07);
-  stroke-width: 1;
+  stroke: none;
 }
 .daily-brief .b-next .orbit .path {
   fill: none;

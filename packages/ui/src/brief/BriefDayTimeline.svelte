@@ -267,10 +267,15 @@
   /* Lines up with the call titles above (rail gutter 18px + row padding 8px). */
   .more {
     margin: 4px 0 0 26px;
-    font-size: 11px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--b-t3);
     cursor: default;
   }
+
   .more:hover {
     color: var(--b-t1);
   }
