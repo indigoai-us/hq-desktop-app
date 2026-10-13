@@ -3645,6 +3645,11 @@
     const nextScene =
       targetScene ?? (next === CONNECTOR_IMPORT_STEP_INDEX ? scene : sceneForStep(next));
     if (next === currentStep) {
+      // Back from the company step can leave the router on it (a finished
+      // install closes the way back into setup), so coming forward again does
+      // not change step. Showing the company step still counts as visiting it,
+      // or the ready screen would send the person through it a second time.
+      if (next === COMPANY_STEP_INDEX && nextScene === 'company') companyStepVisited = true;
       scene = nextScene;
       return;
     }

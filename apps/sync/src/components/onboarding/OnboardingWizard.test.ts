@@ -4910,6 +4910,43 @@ describe('company onboarding step', () => {
     expect(ticks()).toEqual({ count: 5, current: 3 });
   });
 
+  it('finishes on ready, not a second company form, after Back to the shortcut screen and Next', async () => {
+    let finishInstall!: () => void;
+    const installHold = new Promise<void>((resolve) => {
+      finishInstall = resolve;
+    });
+    await reachCompanyScenario({ installHold });
+    await nextOnScreen();
+    await nextOnScreen();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    // The install finishes while the company form is on show, which closes
+    // the router's way back into the setup step.
+    finishInstall();
+    await flushUntil(() => tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'));
+    host.querySelector<HTMLButtonElement>('[data-testid="welcome-back"]')!.click();
+    await settle();
+    expect(onScreen('shortcut')).toBe(true);
+    await nextOnScreen();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
+    click('onboarding-plan-choose-starter');
+    await skipInvitesAndFinish('Acme');
+    for (let i = 0; i < 3; i += 1) await settle();
+
+    expect(onScreen('ready')).toBe(true);
+    expect(onScreen('company')).toBe(false);
+    expect(host.querySelector('[data-testid="onboarding-company-field-name"]')).toBeNull();
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) => command === 'run_card_action' && (args as { cardId?: string }).cardId === 'card_create_company',
+      ),
+    ).toHaveLength(1);
+  });
+
   it('still owes the company step once the install is done: Skip intro after Back lands on it, not on ready', async () => {
     let finishInstall!: () => void;
     const installHold = new Promise<void>((resolve) => {
