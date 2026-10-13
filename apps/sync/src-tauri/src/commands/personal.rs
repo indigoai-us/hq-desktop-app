@@ -1692,6 +1692,13 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
         return Ok(PersonalFirstPushOutcome::EngineOwnsSteadyState);
     }
 
+    // ── Cloud switch gate (usage-only-pricing US-016) ──────────────────────
+    // With Cloud off nothing may upload. The handoff check below treats a
+    // paused daemon as "not owning the upload" and would fall through to this
+    // function's own walk, so the walk itself must refuse. Covers the install
+    // stage, its background safety net, and the start_sync caller.
+    hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;
+
     // ── Install-stage handoff gate ─────────────────────────────────────────
     // On a fresh install the runner's journal does not exist yet, so the gate
     // above stays open, but the sync daemon started seconds earlier is about

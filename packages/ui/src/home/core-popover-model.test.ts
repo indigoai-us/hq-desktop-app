@@ -134,6 +134,23 @@ describe("core-popover-model (US-016)", () => {
       expect(active.syncNowAllowed).toBe(true);
       expect(isSyncNowAllowed(false)).toBe(true);
     });
+
+    // usage-only-pricing US-016: with the Settings Cloud switch off the header
+    // must not claim "All synced" or "Syncing".
+    it("the sync header reads Cloud off while the switch is off", () => {
+      for (const syncState of ["idle", "syncing", "conflict", "error"]) {
+        const vm = buildCorePopoverViewModel({
+          cloudPaused: true,
+          syncState,
+          conflicts: [{ path: "companies/a/x.md", status: "pending" }],
+        });
+        expect(vm.syncHeader.stateWord).toBe("Cloud off");
+        expect(vm.syncHeader.tone).toBe("warn");
+        expect(vm.syncHeader.syncing).toBe(false);
+      }
+      const on = buildCorePopoverViewModel({ cloudPaused: false, syncState: "idle" });
+      expect(on.syncHeader.stateWord).toBe("All synced");
+    });
   });
 
   describe("packs section", () => {

@@ -11,6 +11,7 @@ import {
   type AdapterPromise,
   type AgentProvisionOptionsView,
   type ChannelSummary,
+  type CloudSwitchOutcome,
   type Json,
   type NotifyPrefsResponse,
   type PlatformAdapter,
@@ -1585,6 +1586,9 @@ export function createSyncPlatformAdapter(
         return result;
       },
       cancelSync: () => call('cancel_sync'),
+      getCloudEnabled: () => call<boolean>('get_cloud_enabled'),
+      setCloudEnabled: (enabled) =>
+        call<CloudSwitchOutcome>('set_cloud_enabled', { enabled }),
       getSyncStatus: () => call('get_sync_status'),
       getActivityLog: () => call('get_activity_log'),
       resolveConflict: (path, strategy) =>

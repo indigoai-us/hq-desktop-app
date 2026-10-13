@@ -836,6 +836,8 @@ pub async fn preview_storage_offload() -> Result<OffloadResult, String> {
 #[tauri::command]
 pub async fn run_storage_offload() -> Result<OffloadResult, String> {
     log("storage", "offload requested");
+    // Cloud switch off (usage-only-pricing US-016): "Move to cloud" uploads.
+    hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;
     let res = run_hq(offload_args(false)).await;
     note_write();
     parse_offload(&res?)

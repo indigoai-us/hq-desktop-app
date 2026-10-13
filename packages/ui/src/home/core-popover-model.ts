@@ -429,6 +429,7 @@ export function buildCorePopoverViewModel(
         input.notices?.conflictCount ?? 0,
       ),
       uploadsPausedCount: uploadsPaused.length,
+      cloudPaused,
     }),
     uploadsPaused,
     notices: buildCoreNoticeRows({
@@ -520,6 +521,8 @@ export function syncStateWord(phase: string | null | undefined): string {
       return "Needs attention";
     case "uploads-paused":
       return "Uploads paused";
+    case "cloud-off":
+      return "Cloud off";
     default:
       return "All synced";
   }
@@ -533,6 +536,7 @@ export function syncStateTone(phase: string | null | undefined): CoreSyncTone {
     case "conflict":
     case "error":
     case "uploads-paused":
+    case "cloud-off":
       return "warn";
     default:
       return "ok";
@@ -577,6 +581,9 @@ export interface BuildCoreSyncHeaderInput {
    *  skipped refused files is not "All synced". A run in flight, an error, or
    *  a conflict still wins — each is more urgent. */
   uploadsPausedCount?: number;
+  /** Cloud switch is off (US-016). Wins over every other phase: nothing
+   *  uploads or downloads, so "All synced" or "Syncing" would be false. */
+  cloudPaused?: boolean;
 }
 
 export function buildCoreSyncHeader(
@@ -585,8 +592,9 @@ export function buildCoreSyncHeader(
   const raw = (input.syncState ?? "idle").toLowerCase();
   const conflicts = Math.max(0, Math.floor(input.conflictCount ?? 0));
   const paused = Math.max(0, Math.floor(input.uploadsPausedCount ?? 0));
-  const phase =
-    raw === "syncing" || raw === "auth-error" || raw === "error"
+  const phase = input.cloudPaused
+    ? "cloud-off"
+    : raw === "syncing" || raw === "auth-error" || raw === "error"
       ? raw
       : conflicts > 0
         ? "conflict"

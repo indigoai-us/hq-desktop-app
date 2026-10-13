@@ -1178,6 +1178,15 @@ fn initial_sync_handoff_enabled(configured: Option<bool>) -> bool {
 /// previous sequential first-push unchanged.
 #[tauri::command]
 pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), String> {
+    // Cloud switch off (usage-only-pricing US-016): setup finishes without the
+    // first upload. Turning Cloud on later runs it through the normal sync.
+    if hq_desktop_core::daemon::is_cloud_paused() {
+        crate::util::logfile::log(
+            "install",
+            "initial cloud sync skipped: Cloud is off on this computer",
+        );
+        return Ok(());
+    }
     let jwt = resolve_jwt()
         .await
         .map_err(|_| initial_cloud_sync_failure_message(None))?;

@@ -822,6 +822,15 @@
         await invoke('set_tray_state', { state: 'syncing' });
         return;
       }
+      // The Settings Cloud switch is off (US-016). That is the person's own
+      // choice, not a failure: leave the tray idle instead of red.
+      if (msg.includes('Cloud is off')) {
+        manualSyncActive = false;
+        manualSyncTelemetryPending = false;
+        syncState = 'idle';
+        await invoke('set_tray_state', { state: 'idle' });
+        return;
+      }
       manualSyncTelemetryPending = false;
       console.error('start_sync failed:', err);
       syncState = 'error';

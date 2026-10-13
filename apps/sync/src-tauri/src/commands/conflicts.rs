@@ -193,6 +193,9 @@ async fn revalidate_authorized_conflict_target(
 #[tauri::command]
 pub async fn resolve_conflict(path: String, strategy: String) -> Result<(), String> {
     validate_strategy(&strategy)?;
+    // Cloud switch off (usage-only-pricing US-016): keep-local uploads and
+    // keep-remote downloads, so both wait until Cloud is back on.
+    hq_desktop_core::daemon::ensure_cloud_sync_allowed()?;
 
     let target = resolve_authorized_conflict_target(&path).await?;
     let target = revalidate_authorized_conflict_target(&target).await?;

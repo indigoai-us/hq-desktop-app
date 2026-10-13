@@ -13,6 +13,10 @@ import { storageAnswer } from '../storage-mocks';
 
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
+  // Cloud switch (US-016). Preview the off state with `&cloud=off`.
+  cloudPaused:
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('cloud') === 'off',
   syncOnLaunch: false,
   notifications: true,
   startAtLogin: true,
@@ -1533,6 +1537,11 @@ This final paragraph verifies spacing after a thematic break.
   run_replace_from_staging: () => runHarnessCoreInstall(),
   start_daemon: () => null,
   stop_daemon: () => null,
+  get_cloud_enabled: () => !settings.cloudPaused,
+  set_cloud_enabled: (args) => {
+    settings.cloudPaused = args?.enabled !== true;
+    return { cloudEnabled: !settings.cloudPaused, notice: null };
+  },
   daemon_status: () => ({ running: true }),
   open_activity_log: () => null,
   open_meetings_window: () => null,

@@ -112,6 +112,8 @@
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
     onopenMarketplace?: () => void;
+    /** Opens Settings › Sync, where the Cloud switch lives (US-016). */
+    onopenCloudSettings?: () => void;
     /**
      * Companies whose uploads are paused by a plan limit (hard-stop US-019),
      * from the sync journal. Each renders a row with its upgrade link.
@@ -155,6 +157,7 @@
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
+    onopenCloudSettings,
     uploadsPaused = null,
     onopenurl,
   }: Props = $props();
@@ -574,7 +577,7 @@
         {model.syncHeader.caption}
       </span>
     {/if}
-    {#if returnNudge}
+    {#if returnNudge && model.syncNowAllowed}
       <span class="core-return-nudge" data-testid="core-popover-return-nudge">
         Run a sync today to keep your company up to date.
       </span>
@@ -651,8 +654,21 @@
     >
       <span class="core-paused-title">Cloud is off</span>
       <span class="core-paused-body"
-        >Sync is paused on this device. Turn Cloud on to resume.</span
+        >Nothing uploads or downloads on this computer. Turn Cloud on in
+        Settings › Sync to sync again.</span
       >
+      {#if onopenCloudSettings}
+        <div class="core-uploads-paused-actions">
+          <button
+            type="button"
+            class="core-btn primary"
+            data-testid="core-popover-cloud-settings"
+            onclick={() => onopenCloudSettings?.()}
+          ><RailIcon name="arrow-right" />
+            Open Sync settings
+          </button>
+        </div>
+      {/if}
     </div>
   {/if}
 

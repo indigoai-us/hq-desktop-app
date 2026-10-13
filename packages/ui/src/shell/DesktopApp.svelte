@@ -635,6 +635,11 @@
     syncStateFromLive,
     type LiveSyncStatus,
   } from "../settings/live-sync-status.js";
+  import {
+    loadCloudEnabled,
+    onCloudSwitchChanged,
+    readCachedCloudEnabled,
+  } from "../settings/cloud-switch.js";
   import type { SyncState } from "../common/sync-model.js";
   import {
     buildChannelStatusModel,
@@ -5096,6 +5101,17 @@
   let lastReplyRowId = $state<string | null>(null);
   let unreadCount = $state(initialUnreadCount);
   let liveSync = $state<LiveSyncStatus>({ ...EMPTY_LIVE_SYNC });
+  /**
+   * Settings Cloud switch (US-016). Painted from the last-known value, then
+   * read from the host with the sync poll and on every switch change, so the
+   * title bar's Core pill shows "Cloud off" instead of "All synced".
+   */
+  let cloudEnabled = $state<boolean>(readCachedCloudEnabled() ?? true);
+  function refreshCloudSwitch(): Promise<void> {
+    return loadCloudEnabled(adapter).then((value) => {
+      if (value !== null) cloudEnabled = value;
+    });
+  }
   /**
    * Per-file conflicts the Core popover lists. Since #913 the runner's
    * per-file `sync:conflict` event is forwarded from both manual Sync Now and
@@ -13869,16 +13885,24 @@
 
     let stopSyncPoll: (() => void) | undefined;
     let stopHealthPoll: (() => void) | undefined;
+    let stopCloudSwitch: (() => void) | undefined;
     if (adapter.isAvailable("canSync")) {
       void readLiveSyncStatus(adapter).then((next) => {
         liveSync = next;
       });
+      void refreshCloudSwitch();
+      stopCloudSwitch = onCloudSwitchChanged((enabled) => {
+        cloudEnabled = enabled;
+      });
       stopSyncPoll = startJitteredPoll({
         intervalMs: 30_000,
         tick: () =>
-          readLiveSyncStatus(adapter).then((next) => {
-            liveSync = next;
-          }),
+          Promise.all([
+            readLiveSyncStatus(adapter).then((next) => {
+              liveSync = next;
+            }),
+            refreshCloudSwitch(),
+          ]).then(() => undefined),
       });
       // Workspace health hits the cloud, so it runs on a slower beat than the
       // local journal read above.
@@ -14010,6 +14034,7 @@
       if (focusCardTimer !== undefined) clearTimeout(focusCardTimer);
       overlayQuery.removeEventListener("change", syncOverlay);
       stopSyncPoll?.();
+      stopCloudSwitch?.();
       stopHealthPoll?.();
       window.removeEventListener("keydown", onKey);
       unregisterShortcuts();
@@ -14090,6 +14115,7 @@
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
     uploadsPaused={liveSync.uploadsPaused ?? []}
+    cloudPaused={!cloudEnabled}
     conflicts={conflictFiles}
     onresolveconflict={(path, strategy) =>
       resolveConflictFile(
