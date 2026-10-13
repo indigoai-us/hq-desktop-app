@@ -83,7 +83,6 @@
 <section class="day" data-testid="brief-today" aria-label="Today's calls">
   <div class="hd">
     <span>Today</span>
-    {#if sample}<span class="sample-tag" title="No live calendar in this preview">Sample</span>{/if}
     <span class="ct">{named ? `${named} call${named === 1 ? "" : "s"}` : "No calls"}</span>
   </div>
   {#if plan.steps.length}
@@ -127,9 +126,6 @@
     font-size: 13px;
     font-weight: 500;
     color: var(--b-t2);
-  }
-  .hd .sample-tag {
-    margin: 0;
   }
   .ct {
     margin-left: auto;

@@ -56,6 +56,7 @@
   import { effortMinutes } from "./brief-hero.js";
   import { briefHover } from "./brief-hover.js";
   import { FIELD, inLabel, nextCall, promoteMain } from "./brief-layout.js";
+  import { cardTag } from "./brief-card-tags.js";
   import { rangeText } from "./brief-strip.js";
   /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
   const REWARD_KINDS = new Set(["shipped", "firsts", "resolved"]);
@@ -309,9 +310,10 @@
     </div>
     <div class="b-tools">
       <span class="pill date">{dateLabel}</span>
-      <span class="leadchip pill" data-testid="brief-lead" role="group" aria-label="Why these cards" use:peek={{ state: briefState, content: whyPeek }}
-        >Why these cards</span
-      >
+      <!-- The picker's reasoning is for the owner reviewing the catalogue: review mode (Shift+A) only. -->
+      {#if allCards}<span class="leadchip pill" data-testid="brief-lead" role="group" aria-label="Why these cards" use:peek={{ state: briefState, content: whyPeek }}
+          >Why these cards</span
+        >{/if}
     </div>
   </header>
   {#if header}<div class="b-runs">{@render header()}</div>{/if}
@@ -362,6 +364,7 @@
       {:else}
         {@const w = t.w}
         {@const entry = entryOf(w.kind)}
+        {@const tag = cardTag(String(w.kind), entry.name)}
         <!-- Every card fills its grid area, so a short card never leaves a hole under it; its footer pins to the bottom. -->
         <div
           class="slot"
@@ -373,7 +376,10 @@
           data-widget={w.kind}
           data-reason={w.reason}
         >
-          <span class="why" role="note" aria-label="Why this card: {w.reason}" title={w.reason} data-testid="brief-why" use:peek={{ state: briefState, content: () => ({ title: entry.name, status: "Why it is here today", sections: [{ label: "Reason", text: w.reason }] }) }}>↗</span>
+          <!-- The card's label: mono, all caps, a Phosphor icon on its left. Hover says why the card is here today. -->
+          <span class="why" role="note" aria-label="{tag.label}. Why this card: {w.reason}" title={w.reason} data-testid="brief-why" use:peek={{ state: briefState, content: () => ({ title: entry.name, status: "Why it is here today", sections: [{ label: "Reason", text: w.reason }] }) }}
+            >{#if tag.d}<svg viewBox="0 0 256 256" aria-hidden="true"><path d={tag.d} /></svg>{/if}{tag.label}</span
+          >
           {#if allCards}<span class="kind-tag">{w.kind} · {w.size} · T{w.tier} · {w.score}</span>{/if}
           {#if !entry.ready}
             <div class="w placeholder" data-testid="brief-placeholder">

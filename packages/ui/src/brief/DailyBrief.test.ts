@@ -111,7 +111,7 @@ describe("DailyBrief", () => {
     expect(q('[data-widget="waiting"]')!.textContent).toContain("Jacob");
   });
 
-  it("renders the generated plan: lead chip with priority 1, eight widgets in template 8, today strip, logos and repos", () => {
+  it("renders the generated plan: no lead chip on the live page, eight widgets in template 8, today strip, logos and repos", () => {
     render({ companies: [{ uid: "cmp_indigo", label: "Indigo", iconUrl: null }] });
     const root = q('[data-testid="daily-brief"]')!;
     expect(root.getAttribute("data-lead")).toBe("decisions");
@@ -127,8 +127,8 @@ describe("DailyBrief", () => {
       "shipped",
       "runway",
     ]);
-    const chip = q('[data-testid="brief-lead"]')!;
-    expect(chip.textContent!.replace(/\s+/g, " ").trim()).toBe("Why these cards");
+    // The picker's "Why these cards" lives in review mode only.
+    expect(q('[data-testid="brief-lead"]')).toBeNull();
     expect(q('[data-testid="brief-today"]')?.textContent).toContain("HQ Founder Office Hours");
     expect(qa('[data-testid="brief-need"]')).toHaveLength(4);
     const origins = qa('[data-testid="brief-origin"]').map((el) => el.textContent?.trim());
@@ -178,8 +178,10 @@ describe("DailyBrief", () => {
     expect(q('[data-testid="brief-sunrise-first"]')).toBeNull();
   });
 
-  it("the lead chip's peek explains every card and lists what is not shown by card name; the live page has no strip", async () => {
+  it("in review mode the lead chip's peek explains every card and lists what is not shown by card name; the live page has neither", async () => {
     render({});
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    flushSync();
     await hover(q('[data-testid="brief-lead"]')!);
     const peek = q('[data-testid="brief-peek"]')!;
     expect(peek.textContent).toContain("Why these cards");
@@ -195,7 +197,10 @@ describe("DailyBrief", () => {
     expect(plan.dropped.map((d) => d.kind)).toContain("team");
     expect(peek.textContent).toContain("Team:");
     expect(peek.textContent).not.toMatch(/\b(blockedByMe|oneThing|fleetRecovery|releaseTrain|weekArc)\b/);
-    // The live CEO page ends with the grid: the picker's reasoning stays behind the hover.
+    // Back on the live page: no chip and no dropped strip; the page ends with the grid.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    flushSync();
+    expect(q('[data-testid="brief-lead"]')).toBeNull();
     expect(q('[data-testid="brief-dropped"]')).toBeNull();
   });
 

@@ -79,9 +79,9 @@
   --b-ice: #c9d6e4;
   --b-sun: #ffb580;
   --b-sun-2: #ff809f;
-  /* App standard: 10px cards (as the Messages composer and settings cards), 6px inner tiles,
+  /* Cards 12px (Lizzie, 2026-10-13); 6px inner tiles,
      8px buttons and pop-ups; full rounding only on informational pills. */
-  --b-r: 10px;
+  --b-r: 12px;
   --b-gap: 8px;
   /* The highlight: HQ's terracotta orange (the "Most popular" plan tag), white ink on it. */
   --b-hot: #c9765a;
@@ -953,28 +953,42 @@
   background: rgba(255, 255, 255, 0.18);
 }
 
-/* The corner arrow: why this card is on the page today (hover for the reason). */
+/* The card label, top left: HQ's standard label (mono, all caps, tracked) with a
+   Phosphor icon on its left. Hover it for why the card is on the page today. */
 .daily-brief .slot {
   position: relative;
 }
 .daily-brief .slot > .why {
   position: absolute;
   z-index: 4;
-  top: 12px;
-  right: 14px;
-  width: 22px;
-  height: 22px;
-  display: grid;
-  place-items: center;
+  top: 14px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px 0 6px;
   border-radius: 6px;
-  font-size: 13px;
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 500;
   line-height: 1;
-  color: rgba(255, 255, 255, 0.85);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.14);
   cursor: default;
   transition: background 0.15s, color 0.15s;
 }
+.daily-brief .slot > .why svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: currentColor;
+}
 .daily-brief .slot > .why:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.24);
   color: #fff;
 }
 
@@ -1158,8 +1172,13 @@
   fill: var(--b-hot);
 }
 /* Keep each card's top row clear of the corner arrow. */
-.daily-brief .slot[data-field] > .w > :first-child:not(canvas),
-.daily-brief .slot[data-field] > .w .over > .eyebrow:first-child,
-.daily-brief .slot[data-field] > .w > .eyebrow {
-  padding-right: 26px;
+/* Each card's own content starts under its label. */
+.daily-brief .slot[data-field] > .w {
+  padding-top: 44px;
+}
+.daily-brief .slot[data-field] > .w.dawn {
+  padding-top: 0;
+}
+.daily-brief .slot[data-field] > .w.dawn > .over {
+  padding-top: 44px;
 }
