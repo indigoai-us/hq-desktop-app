@@ -56,24 +56,25 @@
   aria-label={risk.title}
   use:peek={{ state: brief, content: () => riskPeek(risk, prompt, now) }}
 >
-  <div class="eyebrow inc-eyebrow">
-    <span class="live"></span>
-    <span class="eb" data-testid="brief-incident-eyebrow">{eyebrow} · live</span>
+  <!-- The headline is what is on fire, in plain words, with a pulsing LIVE tag; the company sits at its right. -->
+  <div class="inc-head">
+    <span class="eb" data-testid="brief-incident-eyebrow">{eyebrow}<span class="livetag"><span class="vh">{" · "}</span><span class="live" aria-hidden="true"></span>live</span></span>
     {#if risk.origin.companyUid}
-      <span class="lgo" data-testid="brief-incident-logo"><BriefLogo company={brief.company(risk.origin.companyUid)} fallback={risk.origin.companyUid} size={16} /></span>
+      <span class="lgo" data-testid="brief-incident-logo"><BriefLogo company={brief.company(risk.origin.companyUid)} fallback={risk.origin.companyUid} size={20} /></span>
     {/if}
   </div>
   {#if m}
     <div class="big" style="margin-top:{tall ? 12 : 6}px;font-size:var(--b-fs-num)" use:countUp={stuck}>0</div>
     <div class="sub" data-testid="brief-incident-sub">{m.unit} stuck · {m.cause}<br />{risk.summary}</div>
   {:else if ci}
-    <h3 data-testid="brief-incident-title">{ci.workflow ?? risk.title}</h3>
+    {#if ci.note && ci.note !== ci.workflow}<p class="lede">{ci.note}</p>{/if}
+    <!-- The details as label / value rows at the card's foot. -->
     <div class="facts" data-testid="brief-incident-facts">
-      {#if ci.job}<div><span>Job</span>{ci.job}</div>{/if}
-      {#if age}<div><span>Since</span>{age}</div>{/if}
-      {#if onTop}<div><span>Main</span>{onTop}</div>{/if}
-      {#if ci.note && ci.note !== ci.workflow}<div class="note">{ci.note}</div>{/if}
-      {#if !tall && risk.links.length}<div><span>Fixes</span>{risk.links.length} in review</div>{/if}
+      <div><span>Workflow</span><b data-testid="brief-incident-title">{ci.workflow ?? risk.title}</b></div>
+      {#if ci.job}<div><span>Job</span><b>{ci.job}</b></div>{/if}
+      {#if age}<div><span>Since</span><b>{age}</b></div>{/if}
+      {#if onTop}<div><span>Main</span><b>{onTop}</b></div>{/if}
+      {#if !tall && risk.links.length}<div><span>Fixes</span><b>{risk.links.length} in review</b></div>{/if}
     </div>
   {:else}
     <h3>{risk.summary}</h3>
@@ -124,67 +125,121 @@
 </div>
 
 <style>
-  .live {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #fff;
-    animation: pulse 1.8s infinite;
-  }
-  @keyframes pulse {
-    0% {
-      box-shadow: 0 0 0 0 rgb(var(--b-ink) / 0.7);
-    }
-    70% {
-      box-shadow: 0 0 0 9px rgb(var(--b-ink) / 0);
-    }
-    100% {
-      box-shadow: 0 0 0 0 rgb(var(--b-ink) / 0);
-    }
-  }
-  .inc-eyebrow {
+  .inc-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
     min-width: 0;
   }
+  /* What is on fire, as the card's title. */
   .eb {
     flex: 1;
     min-width: 0;
+    font-size: var(--b-fs-title-lg);
+    font-weight: 500;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    color: #fff;
     overflow: hidden;
-    white-space: normal;
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
     overflow-wrap: anywhere;
   }
+  /* LIVE: the shared mono label as a glass pill, its dot pulsing. */
+  .livetag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 18px;
+    margin-left: 8px;
+    padding: 0 7px;
+    vertical-align: 3px;
+    border-radius: 999px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.2);
+  }
+  .vh {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .live {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #fff;
+    animation: pulse 1.8s infinite;
+  }
+  @keyframes pulse {
+    0% {
+      box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7);
+    }
+    70% {
+      box-shadow: 0 0 0 6px rgba(255, 255, 255, 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+    }
+  }
   .lgo {
     flex: none;
-    margin-left: auto;
+    margin-top: 2px;
     display: inline-grid;
     place-items: center;
-    width: 16px;
-    height: 16px;
-    border-radius: 5px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
     overflow: hidden;
   }
+  .lede {
+    margin: 8px 0 0;
+    font-size: 13px;
+    line-height: 1.4;
+    color: rgba(255, 255, 255, 0.85);
+  }
+  /* Label / value rows at the foot, over a hairline: labels in the mono caps style. */
   .facts {
     display: grid;
-    gap: 4px;
-    margin-top: 8px;
+    gap: 6px;
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
     font-size: 13px;
-    line-height: 1.35;
-    color: rgb(var(--b-ink) / 0.92);
+    line-height: 1.3;
+  }
+  .facts > div {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
   }
   .facts span {
-    display: inline-block;
-    min-width: 52px;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    color: rgb(var(--b-ink) / 0.6);
+    flex: none;
+    width: 64px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.62);
   }
-  .facts .note {
-    color: rgb(var(--b-ink) / 0.76);
+  .facts b {
+    min-width: 0;
+    font-weight: 500;
+    color: #fff;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .prs {
     display: flex;

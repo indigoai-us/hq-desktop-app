@@ -458,25 +458,37 @@
       display: none;
     }
   }
+  /* Info pill (app standard): fully rounded glass, 11px. An age past a day gets a small tone dot rather than coloured text. */
   .chip-m {
     flex: none;
-    font-family: var(--b-mono);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 20px;
+    box-sizing: border-box;
+    font-family: var(--b-ui);
     font-size: 11px;
-    font-weight: 400;
+    font-weight: 500;
     letter-spacing: 0;
     line-height: 1;
-    padding: 3px 6px;
-    border-radius: 6px;
-    color: rgb(var(--b-ink) / 0.72);
-    background: rgba(0, 0, 0, 0.22);
+    padding: 0 8px;
+    border-radius: 999px;
+    color: rgba(255, 255, 255, 0.88);
+    background: rgba(255, 255, 255, 0.16);
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .age.warn {
-    color: var(--b-warn);
+  .age.warn::before,
+  .age.red::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ffd27a;
   }
-  .age.red {
-    color: #ffc1bb;
-    background: rgba(255, 69, 58, 0.42);
+  .age.red::before {
+    background: #ff8a80;
+    box-shadow: 0 0 6px rgba(255, 138, 128, 0.8);
   }
   .more-row {
     justify-content: center;
