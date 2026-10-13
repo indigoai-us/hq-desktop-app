@@ -35,6 +35,7 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 import { flushSync, mount, tick, unmount } from 'svelte';
 
 import OnboardingWizard from './OnboardingWizard.svelte';
+import { BRAND_ICONS } from '@hq/ui/rail-icons';
 import {
   READY_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
@@ -314,7 +315,10 @@ describe('welcome flow: the install runs in the background', () => {
     const open = () => byId('onboarding-open-desktop')!;
     const title = () => host.querySelector('#onboarding-title-ready')?.textContent?.trim();
     expect(open().disabled).toBe(true);
-    expect(open().querySelector('.tc-line')?.textContent?.trim()).toBe('Getting ready…');
+    // One label, and it says why the button waits; a spinner beside it.
+    expect(open().querySelector('.tc-name')?.textContent?.trim()).toBe('Getting ready…');
+    expect(open().querySelector('.tc-spin')).not.toBeNull();
+    expect(open().querySelector('.tc-line')).toBeNull();
     expect(title()).toBe('Almost ready.');
     // The Claude Code and Codex options wait with it.
     expect(byId('onboarding-launch-claude')!.disabled).toBe(true);
@@ -322,7 +326,10 @@ describe('welcome flow: the install runs in the background', () => {
 
     template.resolve();
     await flushUntil(() => !open().disabled, 'Open HQ Desktop');
-    expect(open().querySelector('.tc-line')?.textContent?.trim()).toBe('Use HQ’s own app');
+    expect(open().querySelector('.tc-name')?.textContent?.trim()).toBe('Open HQ Desktop');
+    expect(open().querySelector('.tc-spin')).toBeNull();
+    expect(open().querySelector('.tc-line')).toBeNull();
+    expect(open().textContent).not.toContain('Use HQ’s own app');
     expect(title()).toBe('HQ is ready.');
     expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
     expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
@@ -438,15 +445,27 @@ describe('welcome flow: Claude Code and Codex on the ready screen', () => {
     const launchers = byId<HTMLElement>('onboarding-launchers')!;
     const desktop = launchers.querySelector<HTMLButtonElement>('.tool-card-desktop')!;
     expect(desktop.dataset.testid).toBe('onboarding-open-desktop');
-    expect(desktop.querySelector('.tc-icon svg')).not.toBeNull();
-    expect(desktop.querySelector('.tc-name')?.textContent?.trim()).toBe('HQ Desktop');
-    expect(desktop.querySelector('.tc-line')?.textContent?.trim()).toBe('Use HQ’s own app');
+    // The HQ app icon, and one call to action as its only label.
+    expect(desktop.querySelector('.tc-icon img')).not.toBeNull();
+    expect(desktop.querySelector('.tc-icon svg')).toBeNull();
+    expect(desktop.querySelector('.tc-name')?.textContent?.trim()).toBe('Open HQ Desktop');
+    expect(desktop.textContent?.trim()).toBe('Open HQ Desktop');
+    expect(desktop.querySelector('.tc-line')).toBeNull();
+    expect(desktop.querySelector('.tc-spin')).toBeNull();
     const pills = Array.from(launchers.querySelectorAll<HTMLButtonElement>('.tool-pill'));
     expect(pills.map((pill) => pill.textContent?.trim())).toEqual(['Claude Code', 'Codex']);
-    for (const pill of pills) {
+    // Each tool wears its vendor's mark in single-colour white.
+    const brands = [BRAND_ICONS['claude-code'], BRAND_ICONS.codex];
+    pills.forEach((pill, index) => {
       expect(pill.classList.contains('tool-card')).toBe(false);
-      expect(pill.querySelector('svg')).not.toBeNull();
-    }
+      const svg = pill.querySelector('.tp-icon svg')!;
+      expect(svg).not.toBeNull();
+      expect(svg.getAttribute('viewBox')).toBe(brands[index]!.viewBox);
+      const paths = svg.querySelectorAll('path');
+      expect(paths).toHaveLength(1);
+      expect(paths[0]!.getAttribute('fill')).toBe('currentColor');
+      expect(paths[0]!.getAttribute('d')).toBe(brands[index]!.d);
+    });
     expect(forwardIn('ready')!.getAttribute('aria-label')).toBe('Open HQ Desktop');
 
     // Product decision (2026-09-27): no Advanced section and no manual tools.
