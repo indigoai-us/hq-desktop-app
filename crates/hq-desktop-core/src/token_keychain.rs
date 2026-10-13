@@ -52,9 +52,27 @@ pub trait SecretStore: Send + Sync {
 struct MacLoginKeychain;
 
 #[cfg(target_os = "macos")]
+impl MacLoginKeychain {
+    /// Fail fast instead of prompting. With no default keychain (an isolated
+    /// HOME, as in the release artifact smoke) a write makes macOS show the
+    /// modal "Keychain Not Found" dialog and block until someone answers it,
+    /// which stalled v0.11.8-beta.1 before its window opened. The returned
+    /// guard turns any other prompt (locked keychain, ACL) into an error.
+    fn non_interactive(
+    ) -> Result<security_framework::os::macos::keychain::KeychainUserInteractionLock, String> {
+        use security_framework::os::macos::keychain::SecKeychain;
+        SecKeychain::default()
+            .map_err(|err| format!("no default keychain: OSStatus {}", err.code()))?;
+        SecKeychain::disable_user_interaction()
+            .map_err(|err| format!("Keychain interaction lock failed: OSStatus {}", err.code()))
+    }
+}
+
+#[cfg(target_os = "macos")]
 impl SecretStore for MacLoginKeychain {
     fn get(&self) -> Result<Option<String>, String> {
         use security_framework::passwords::get_generic_password;
+        let _no_prompt = Self::non_interactive()?;
         match get_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT) {
             Ok(bytes) => String::from_utf8(bytes)
                 .map(Some)
@@ -65,6 +83,7 @@ impl SecretStore for MacLoginKeychain {
     }
 
     fn set(&self, value: &str) -> Result<(), String> {
+        let _no_prompt = Self::non_interactive()?;
         security_framework::passwords::set_generic_password(
             KEYCHAIN_SERVICE,
             KEYCHAIN_ACCOUNT,
@@ -74,6 +93,7 @@ impl SecretStore for MacLoginKeychain {
     }
 
     fn delete(&self) -> Result<(), String> {
+        let _no_prompt = Self::non_interactive()?;
         match security_framework::passwords::delete_generic_password(
             KEYCHAIN_SERVICE,
             KEYCHAIN_ACCOUNT,
@@ -118,10 +138,58 @@ fn real_keychain_enabled() -> bool {
     {
         return false;
     }
-    match env_flag("HQ_TOKEN_KEYCHAIN") {
+    let wanted = match env_flag("HQ_TOKEN_KEYCHAIN") {
         Some(explicit) => explicit,
         None => !cfg!(debug_assertions),
+    };
+    wanted && real_login_keychain_reachable()
+}
+
+/// The user's own login keychain is reachable only when HOME is the account's
+/// real home and that home has a login keychain. An isolated HOME (release
+/// smoke, sandboxed launches) has no default keychain, and touching the
+/// Keychain there prompts and blocks.
+fn real_login_keychain_reachable() -> bool {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let account_home = account_home_dir();
+    login_keychain_reachable(home.as_deref(), account_home.as_deref(), |path| path.exists())
+}
+
+/// Pure rule behind [`real_login_keychain_reachable`].
+pub(crate) fn login_keychain_reachable(
+    home: Option<&std::path::Path>,
+    account_home: Option<&std::path::Path>,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> bool {
+    let (Some(home), Some(account_home)) = (home, account_home) else {
+        return false;
+    };
+    if home != account_home {
+        return false;
     }
+    let keychains = home.join("Library").join("Keychains");
+    exists(&keychains.join("login.keychain-db")) || exists(&keychains.join("login.keychain"))
+}
+
+#[cfg(unix)]
+fn account_home_dir() -> Option<std::path::PathBuf> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: getpwuid returns a pointer into static storage or null; the
+    // directory string is copied out before any other passwd call.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_dir.is_null() {
+            return None;
+        }
+        let dir = CStr::from_ptr((*pw).pw_dir);
+        Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
+    }
+}
+
+#[cfg(not(unix))]
+fn account_home_dir() -> Option<std::path::PathBuf> {
+    None
 }
 
 /// The active store, or `None` when the Keychain mirror is off.
@@ -185,24 +253,76 @@ pub fn reconcile<T: PartialEq + Clone>(
 /// signed-out reads do not hit the Keychain each time.
 static KNOWN_EMPTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Best-effort mirror write. Failures are logged without values and never
-/// fail the file write that the other tools depend on.
-pub fn mirror_write(json: &str) {
-    if let Some(store) = active_store() {
-        KNOWN_EMPTY.store(false, std::sync::atomic::Ordering::SeqCst);
-        if let Err(err) = store.set(json) {
-            eprintln!("[token-keychain] mirror write skipped: {err}");
-        }
+/// One queued Keychain mutation. Writes and deletes run on a background
+/// thread, in order, so no token write (boot refresh, sign-in, sign-out) ever
+/// waits on the Keychain. Reads tolerate the lag: the file decides conflicts.
+enum MirrorOp {
+    Set(Arc<dyn SecretStore>, String),
+    Delete(Arc<dyn SecretStore>),
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+fn mirror_queue() -> &'static Mutex<std::sync::mpsc::Sender<MirrorOp>> {
+    static QUEUE: OnceLock<Mutex<std::sync::mpsc::Sender<MirrorOp>>> = OnceLock::new();
+    QUEUE.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<MirrorOp>();
+        std::thread::Builder::new()
+            .name("token-keychain".into())
+            .spawn(move || {
+                for op in rx {
+                    match op {
+                        MirrorOp::Set(store, json) => {
+                            if let Err(err) = store.set(&json) {
+                                eprintln!("[token-keychain] mirror write skipped: {err}");
+                            }
+                        }
+                        MirrorOp::Delete(store) => match store.delete() {
+                            Ok(()) => KNOWN_EMPTY.store(true, std::sync::atomic::Ordering::SeqCst),
+                            Err(err) => eprintln!("[token-keychain] mirror delete skipped: {err}"),
+                        },
+                        MirrorOp::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            })
+            .expect("spawn token-keychain thread");
+        Mutex::new(tx)
+    })
+}
+
+fn enqueue(op: MirrorOp) {
+    let sent = mirror_queue()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .send(op);
+    if sent.is_err() {
+        eprintln!("[token-keychain] mirror queue closed; skipped");
     }
 }
 
-/// Best-effort mirror delete (sign-out).
+/// Wait until every queued mirror operation has run (tests).
+#[cfg(any(test, feature = "test-support"))]
+pub fn flush_for_tests() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    enqueue(MirrorOp::Flush(tx));
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+}
+
+/// Best-effort mirror write. Queued in the background; failures are logged
+/// without values and never fail or delay the file write that the other
+/// tools depend on.
+pub fn mirror_write(json: &str) {
+    if let Some(store) = active_store() {
+        KNOWN_EMPTY.store(false, std::sync::atomic::Ordering::SeqCst);
+        enqueue(MirrorOp::Set(store, json.to_string()));
+    }
+}
+
+/// Best-effort mirror delete (sign-out). Queued in the background.
 pub fn mirror_delete() {
     if let Some(store) = active_store() {
-        match store.delete() {
-            Ok(()) => KNOWN_EMPTY.store(true, std::sync::atomic::Ordering::SeqCst),
-            Err(err) => eprintln!("[token-keychain] mirror delete skipped: {err}"),
-        }
+        enqueue(MirrorOp::Delete(store));
     }
 }
 
@@ -250,6 +370,8 @@ impl MemoryStore {
         }
     }
     pub fn current(&self) -> Option<String> {
+        // Mirror writes are queued; observe the value after they have run.
+        flush_for_tests();
         self.value.lock().unwrap().clone()
     }
 }
@@ -342,6 +464,55 @@ mod tests {
         if std::env::var_os("HQ_TOKEN_KEYCHAIN").is_none() {
             assert!(!real_keychain_enabled());
         }
+    }
+
+    #[test]
+    fn login_keychain_needs_the_account_home_and_a_login_keychain() {
+        use std::path::Path;
+        let real = Path::new("/Users/someone");
+        let db = Path::new("/Users/someone/Library/Keychains/login.keychain-db");
+        let has_db = |p: &Path| p == db;
+        assert!(login_keychain_reachable(Some(real), Some(real), has_db));
+        // Isolated HOME (release artifact smoke): never touch the Keychain.
+        let sandbox = Path::new("/private/tmp/hq-smoke-home");
+        assert!(!login_keychain_reachable(Some(sandbox), Some(real), |_| true));
+        // Real home without a login keychain.
+        assert!(!login_keychain_reachable(Some(real), Some(real), |_| false));
+        assert!(!login_keychain_reachable(None, Some(real), has_db));
+        assert!(!login_keychain_reachable(Some(real), None, has_db));
+    }
+
+    #[test]
+    fn mirror_writes_never_block_the_caller() {
+        struct SlowStore(std::sync::atomic::AtomicBool);
+        impl SecretStore for SlowStore {
+            fn get(&self) -> Result<Option<String>, String> {
+                Ok(None)
+            }
+            fn set(&self, _value: &str) -> Result<(), String> {
+                // Stands in for a Keychain call stuck on a modal prompt.
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+            fn delete(&self) -> Result<(), String> {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                Ok(())
+            }
+        }
+        let _lock = crate::cognito::HQ_TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let store = Arc::new(SlowStore(std::sync::atomic::AtomicBool::new(false)));
+        set_store_for_tests(Some(store.clone()));
+        let started = std::time::Instant::now();
+        mirror_write("{}");
+        mirror_delete();
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+        flush_for_tests();
+        assert!(store.0.load(std::sync::atomic::Ordering::SeqCst));
+        set_store_for_tests(None);
+        reset_known_empty_for_tests();
     }
 
     #[test]
