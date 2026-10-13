@@ -1268,7 +1268,7 @@
   transform: rotate(-40deg);
 }
 .daily-brief .b-next .orbit.live .spin {
-  animation: b-orbit 14s linear infinite;
+  animation: b-orbit 9s linear infinite;
 }
 .daily-brief .b-next .orbit .pulse {
   fill: none;
@@ -1277,12 +1277,17 @@
   transform-origin: 60px 60px;
   animation: b-pulse 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
 }
+/* One full circle, but unhurried only where the card shows the ring (about -100 to 20 deg):
+   two thirds of the loop crossing the visible arc, the hidden rest in the last third. */
 @keyframes b-orbit {
-  from {
-    transform: rotate(-40deg);
+  0% {
+    transform: rotate(-100deg);
   }
-  to {
-    transform: rotate(320deg);
+  66% {
+    transform: rotate(20deg);
+  }
+  100% {
+    transform: rotate(260deg);
   }
 }
 @keyframes b-pulse {
