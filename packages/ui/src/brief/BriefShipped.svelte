@@ -268,7 +268,9 @@
     padding: 2px 6px;
     border-radius: 99px;
     color: #2a1408;
-    background: var(--b-sun);
+    background: linear-gradient(110deg, #ffb580, #ffe2c4 40%, #ff809f 60%, #ffb580);
+    background-size: 220% 100%;
+    animation: foil 3.5s ease-in-out infinite;
   }
   @keyframes foil {
     50% {
@@ -278,7 +280,6 @@
   /* Holographic foil, only on shipped work. */
   .run::before {
     content: "";
-    display: none; /* calm pass: holographic foil off */
     position: absolute;
     inset: -1px;
     border-radius: inherit;
@@ -292,7 +293,6 @@
   }
   .run::after {
     content: "";
-    display: none; /* calm pass: holographic foil off */
     position: absolute;
     inset: 0;
     border-radius: inherit;

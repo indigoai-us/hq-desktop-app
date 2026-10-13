@@ -70,7 +70,7 @@
 <style>
   .greet {
     font-size: var(--b-fs-display);
-    font-weight: 400;
+    font-weight: 500;
     letter-spacing: var(--b-display-track);
     line-height: 1;
     margin-top: 12px;

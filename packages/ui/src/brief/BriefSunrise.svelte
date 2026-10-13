@@ -306,16 +306,19 @@
   }
   .greet {
     font-size: var(--b-fs-display-sm);
-    font-weight: 400;
+    font-weight: 500;
     letter-spacing: var(--b-display-track);
-    line-height: 1;
+    line-height: 1.04;
     margin-top: 12px;
   }
   .greet.big {
     font-size: var(--b-fs-display);
   }
   .greet .line {
-    color: var(--b-t2);
+    color: #ffb580;
+  }
+  .greet :global(.accent-word) {
+    font-weight: 400;
   }
   /* Text stays left of the sun (drawn at 68% of the width, radius up to 14%), so it never runs over it. */
   .first {
@@ -367,6 +370,7 @@
     border: 0;
     border-radius: 50%;
     background: #ffb580;
+    filter: drop-shadow(0 0 4px rgba(255, 160, 130, 0.8));
     translate: 0 var(--lift, 0);
     cursor: pointer;
     opacity: 0;
@@ -460,7 +464,7 @@
     height: 100%;
     border-radius: inherit;
     background: linear-gradient(90deg, #ffb580, #ff809f);
-    box-shadow: none;
+    box-shadow: 0 0 14px rgba(255, 150, 140, 0.55);
     transition: width 1.1s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .meter b {

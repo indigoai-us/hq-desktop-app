@@ -8,12 +8,13 @@
 /*
   Daily Brief surface. Everything is scoped under .daily-brief.
 
-  SUNRISE TERMINAL (design, local; visual-direction-proposal.md): the HQ brand.
-  Black stage, white ink in four tiers, 12% hairlines with a faint top light,
-  flat cards (no raise, no wells, no gloss). One warm accent, the coral-to-peach
-  of hqforwork.com, spent on what matters most today: decisions, the sun, and
-  one Fraunces italic word in the greeting. Incident (red), waiting and risk
-  (amber) and shipped (green) shrink to a 6px dot on the card's eyebrow.
+  SUNRISE TERMINAL, MIDDLE PATH (design, local; visual-direction-proposal.md):
+  Corey's living-masthead richness, placed with restraint. A near-black stage
+  lit from the top left; cards are lifted objects (soft gradient, one soft drop
+  shadow, hairline rim, film grain) without the neumorphic halo. Colour fields
+  are earned and rare: the decision card is always a dusk gradient (HQ's anime
+  sky: coral, magenta, plum) and the incident card is red. Waiting, risk and
+  shipped stay neutral with a 6px dot. The greeting's second line is warm.
   The few extra colours are the scoped variables below, mapped to the house
   --ok / --warn / --red where those exist. No backdrop-filter anywhere
   (WKWebView renders it square on rounded cards). Max font weight 500.
@@ -40,14 +41,18 @@
 */
 .daily-brief {
   /* Black stage; cards are the brand's 4% white fill, solid so cutout rings match. */
-  --b-bg: #000;
-  --b-card: #0a0a0a;
-  --b-card-hi: #151515;
+  --b-bg: #111113;
+  /* Solid so cutout rings match the card. */
+  --b-card: #1a1a1d;
+  --b-card-hi: #232327;
+  --b-card-grad: linear-gradient(155deg, #1f1f23, #19191c);
+  --b-drop: 0 2px 4px rgba(0, 0, 0, 0.3), 0 18px 40px rgba(0, 0, 0, 0.5);
+  --b-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.06'/%3E%3C/svg%3E");
   --b-t1: rgba(255, 255, 255, 0.92);
   --b-t2: rgba(255, 255, 255, 0.7);
   --b-t3: rgba(255, 255, 255, 0.5);
-  --b-line: rgba(255, 255, 255, 0.12);
-  --b-top-light: rgba(255, 255, 255, 0.07);
+  --b-line: rgba(255, 255, 255, 0.09);
+  --b-top-light: rgba(255, 255, 255, 0.08);
   --b-bracket: rgba(255, 190, 160, 0.75);
   --b-ok: var(--ok, #34c759);
   --b-warn: var(--warn, #facc15);
@@ -59,13 +64,13 @@
   --b-ice: #c9d6e4;
   --b-sun: #ffb580;
   --b-sun-2: #ff809f;
-  --b-r: 12px;
+  --b-r: 20px;
   --b-gap: 14px;
   /* One padding and one type scale for every card. */
   --b-pad: 18px 20px;
-  --b-fs-display: 48px; /* hero greeting at large sizes */
+  --b-fs-display: 44px; /* hero greeting at large sizes */
   --b-fs-display-sm: 34px; /* hero greeting at small sizes */
-  --b-display-track: -0.05em;
+  --b-display-track: -0.035em;
   --b-serif: "Brief Fraunces", "Fraunces", Georgia, serif;
   --b-fs-num: 44px; /* the one measured number a card leads with */
   --b-fs-title-lg: 20px; /* a card's headline when it leads at a large size */
@@ -83,7 +88,8 @@
   box-sizing: border-box;
   /* Content caps at 1360px and centers; the background still fills the window. */
   padding: 22px max(28px, calc((100% - 1360px) / 2)) 28px;
-  background: var(--b-bg);
+  /* The page is lit from the top left, as in the approved mockup. */
+  background: radial-gradient(1200px 700px at 30% -10%, #1f1f23 0%, var(--b-bg) 60%), var(--b-bg);
   color: var(--b-t1);
   font-family: var(--b-ui);
   font-size: 13px;
@@ -198,7 +204,8 @@
 .daily-brief .w {
   position: relative;
   border-radius: var(--b-r);
-  background: var(--b-card);
+  background: var(--b-card-grad);
+  box-shadow: var(--b-drop);
   overflow: hidden;
   padding: var(--b-pad);
   display: flex;
@@ -220,8 +227,11 @@
   border-radius: inherit;
   pointer-events: none;
   box-shadow: inset 0 0 0 1px var(--b-line);
-  /* The brand's faint top light: a 1px line, not a shadow. */
-  background: linear-gradient(var(--b-top-light), var(--b-top-light)) top / 100% 1px no-repeat;
+  /* A 1px top light (a line, not a shadow) and film grain over the whole card. */
+  background:
+    linear-gradient(var(--b-top-light), var(--b-top-light)) top / 100% 1px no-repeat,
+    var(--b-grain);
+  mix-blend-mode: overlay;
 }
 /* Hover light (brief-hover.ts): a soft coral light under the pointer and corner
    brackets only where it falls, after the badge card. Flat and dark at rest. */
@@ -235,7 +245,7 @@
   /* Screen-blended over the card so it never needs to restack the card's content. */
   mix-blend-mode: screen;
   background:
-    radial-gradient(260px 200px at var(--light-x, 50%) var(--light-y, 30%), rgba(255, 153, 102, 0.09), transparent 70%),
+    radial-gradient(260px 200px at var(--light-x, 50%) var(--light-y, 30%), var(--b-hover-light, rgba(255, 170, 130, 0.16)), transparent 70%),
     linear-gradient(var(--b-bracket), var(--b-bracket)) 8px 8px / 14px 1px no-repeat,
     linear-gradient(var(--b-bracket), var(--b-bracket)) 8px 8px / 1px 14px no-repeat,
     linear-gradient(var(--b-bracket), var(--b-bracket)) calc(100% - 8px) 8px / 14px 1px no-repeat,
@@ -246,6 +256,9 @@
     linear-gradient(var(--b-bracket), var(--b-bracket)) calc(100% - 8px) calc(100% - 8px) / 1px 14px no-repeat;
   -webkit-mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.35) 55%, transparent 85%);
   mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.35) 55%, transparent 85%);
+}
+.daily-brief .slot.lit > :is(.c-violet, .c-red)::before {
+  --b-hover-light: rgba(255, 255, 255, 0.2);
 }
 /* ASCII decode overlay (asciiDecode): drawn over the real title, which goes clear meanwhile. */
 .daily-brief .decoding {
@@ -292,13 +305,20 @@
   text-transform: uppercase;
 }
 
-/* earned colour: the card stays neutral. Decisions colour their eyebrow coral;
-   status cards (incident, waiting, risk, shipped) get a 6px dot instead. */
+/* Earned colour. Two fields, never more: the decision card (dusk) and a live
+   incident (red). Each carries a soft gloss at the top. Waiting/risk (amber) and
+   shipped (green) stay neutral cards with a 6px dot on the eyebrow. */
 .daily-brief .c-violet {
   --b-accent: var(--b-decision);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 38%),
+    radial-gradient(125% 95% at 0% 0%, #ff8a6b 0%, #c2416b 42%, #4a1a4f 78%, #2a1233 100%);
 }
 .daily-brief .c-red {
   --b-accent: var(--b-red);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 38%),
+    radial-gradient(130% 100% at 100% 0%, #ff5a4e 0%, #c1271d 42%, #5e0f0b 100%);
 }
 .daily-brief .c-amber {
   --b-accent: var(--b-warn);
@@ -306,8 +326,24 @@
 .daily-brief .c-green {
   --b-accent: var(--b-ok);
 }
-.daily-brief [class*="c-"] > .eyebrow::before,
-.daily-brief [class*="c-"] > * > .eyebrow:first-child::before {
+.daily-brief :is(.c-violet, .c-red) .eyebrow {
+  color: rgba(255, 255, 255, 0.66);
+}
+.daily-brief :is(.c-violet, .c-red) .sub {
+  color: rgba(255, 255, 255, 0.78);
+}
+.daily-brief :is(.c-violet, .c-red) .org {
+  color: rgba(255, 255, 255, 0.62);
+}
+.daily-brief :is(.c-violet, .c-red) .org b {
+  color: rgba(255, 255, 255, 0.92);
+}
+.daily-brief :is(.c-violet, .c-red) .foot {
+  border-color: rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.62);
+}
+.daily-brief :is(.c-amber, .c-green) > .eyebrow::before,
+.daily-brief :is(.c-amber, .c-green) > * > .eyebrow:first-child::before {
   content: "";
   display: inline-block;
   flex: none;
@@ -317,13 +353,6 @@
   border-radius: 50%;
   vertical-align: 1px;
   background: var(--b-accent);
-}
-.daily-brief .c-violet .eyebrow {
-  color: var(--b-decision);
-}
-.daily-brief .c-violet > .eyebrow::before,
-.daily-brief .c-violet > * > .eyebrow:first-child::before {
-  display: none;
 }
 /* One italic accent word, as on hqforwork.com. */
 .daily-brief .accent-word {
@@ -362,7 +391,7 @@
   font-family: var(--b-ui);
   font-size: 7.5px;
   font-weight: 500;
-  background: #4f46e5;
+  background: linear-gradient(145deg, #5b5bf7, #3730a3);
 }
 .daily-brief .org b {
   font-weight: 500;

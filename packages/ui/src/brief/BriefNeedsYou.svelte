@@ -213,7 +213,7 @@
     margin-top: 14px;
     min-height: 0;
   }
-  /* Flat row: faint fill and a hairline. No backdrop-filter, no well. */
+  /* Glass row: lit from the top, hairline rim, soft drop. No backdrop-filter, no well. */
   .it {
     flex: 1 1 auto;
     max-height: 132px;
@@ -223,18 +223,19 @@
     align-items: center;
     gap: 12px;
     padding: 9px 10px 9px 12px;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--b-line);
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.06));
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-top-color: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 6px 14px rgba(30, 6, 30, 0.25);
     transition: background 0.25s, opacity 0.5s;
   }
   .it:hover {
-    background: rgba(255, 255, 255, 0.07);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.09));
   }
   /* Iridescent sheen = the decision under your cursor. */
   .it::before {
     content: "";
-    display: none; /* calm pass: iridescent sheen off */
     position: absolute;
     inset: 0;
     pointer-events: none;
@@ -358,22 +359,38 @@
     color: #fff;
   }
   /* Actions appear only on the row that has your attention. */
+  /* Actions float over the row's end on hover, so the title keeps its full width. */
   .acts {
     flex: none;
+    position: absolute;
+    z-index: 2;
+    top: 50%;
+    right: 0;
+    padding: 0 10px 0 36px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    background: linear-gradient(90deg, transparent, rgba(58, 20, 52, 0.94) 32px);
+    border-radius: 0 14px 14px 0;
     opacity: 0;
-    translate: 8px 0;
+    translate: 8px -50%;
+    pointer-events: none;
     transition: opacity 0.3s, translate 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .it:hover .acts,
-  .it:focus-within .acts,
+  .it:focus-within .acts {
+    opacity: 1;
+    translate: 0 -50%;
+    pointer-events: auto;
+  }
   .it.done .acts {
+    position: static;
+    height: auto;
+    padding: 0;
+    background: none;
     opacity: 1;
     translate: 0 0;
-  }
-  .it:not(:hover):not(:focus-within):not(.done) .acts {
-    position: absolute;
-    right: 10px;
-    pointer-events: none;
+    pointer-events: auto;
   }
   .donechip {
     font-size: 12px;

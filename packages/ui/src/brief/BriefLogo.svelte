@@ -42,7 +42,7 @@
     font-weight: 600;
     letter-spacing: 0;
     color: #fff;
-    background: hsl(var(--h) 45% 42%);
+    background: linear-gradient(145deg, hsl(var(--h) 60% 56%), hsl(var(--h) 55% 36%));
     box-shadow: none;
   }
 </style>

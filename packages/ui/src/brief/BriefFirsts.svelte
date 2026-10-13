@@ -161,7 +161,6 @@
   /* Holographic foil: only on a true first. Follows the pointer; glints once on load. */
   .med::before {
     content: "";
-    display: none; /* calm pass: holographic foil off */
     position: absolute;
     inset: -1px;
     border-radius: inherit;
@@ -175,7 +174,6 @@
   }
   .med::after {
     content: "";
-    display: none; /* calm pass: holographic foil off */
     position: absolute;
     inset: 0;
     border-radius: inherit;
