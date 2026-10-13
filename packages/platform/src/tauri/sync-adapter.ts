@@ -68,6 +68,7 @@ import {
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
+import { claudeLaunchArgs } from './claude-launch.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
 import { withCreateAgentsAdmins } from './provision-refusal.js';
 import { createCallsApi } from '../calls/api.js';
@@ -1615,8 +1616,11 @@ export function createSyncPlatformAdapter(
       openCodexDeepLink: (url) => call('open_codex_deep_link', { url }),
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
-      launchClaudeCode: async (path) => {
-        const result = await call<void>('launch_claude_code', { path });
+      launchClaudeCode: async (path, opts) => {
+        const result = await call<void>(
+          'launch_claude_code',
+          claudeLaunchArgs(path, opts),
+        );
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },

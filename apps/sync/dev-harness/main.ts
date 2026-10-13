@@ -1,6 +1,6 @@
 import { mount } from 'svelte';
 import Harness from './Harness.svelte';
-import { announceBadgesEarned, setBadgeProgressSource, setBadgeSource } from '@hq/ui';
+import { announceBadgesEarned, configureBriefSeed, octoberEightBrief, setBadgeProgressSource, setBadgeSource } from '@hq/ui';
 import { earnedFromUrl, sampleBadges, sampleProgress } from './badge-fixtures';
 // Load the base design tokens (the --pop-* / --c-* primitives + light/dark
 // blocks) the same way the real app entry (src/main.ts) does, then the popover
@@ -11,6 +11,14 @@ import '../src/styles/popover.css';
 // The desktop shell loads Geist Mono (src/desktop-alt/main.ts); the knowledge
 // tree's ASCII grid, the first-run kickers and the badge marks are drawn in it.
 import '@fontsource-variable/geist-mono/wght.css';
+
+// The Daily Brief serves the approved mockup's Oct 8 day here: several of its
+// sources (shipped PRs, fleet health) have no adapter route the mocks cover.
+// `?briefRun=<run_id>` renders a real run from the HQ root instead, through the
+// app's own loader (served by vite.preview.config.ts under /__hq/).
+if (!new URLSearchParams(window.location.search).get('briefRun')) {
+  configureBriefSeed(() => octoberEightBrief(new Date()));
+}
 
 // Sample badges on profile panes. Installed before the shell mounts, so the
 // production loader (hq-pro GET /v1/badges) stays out of the harness.

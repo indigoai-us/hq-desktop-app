@@ -68,6 +68,9 @@
   import type { LocalOnlyCompany } from "../company/company-display-map.js";
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
+  import BriefRailHost from "./BriefRailHost.svelte";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot } from "../brief/brief-runs.js";
+  import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
     RAIL_ATLAS_FLAG,
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
@@ -124,6 +127,7 @@
   import { entryCompanyUidForCommit, paneForEntry } from "./destination-pane.js";
   import {
     RAIL_SHORTCUT_COUNT,
+    railShortcutItems,
     activeRailItemId,
     railDestination,
     railItems,
@@ -5714,7 +5718,134 @@
   /** The company `/startwork` orients on after setup: the first company in the roster. */
   const startworkCompany = $derived(setupCompanies(companies).find((c) => c.kind === "company")?.slug ?? null);
   const startworkPrompt = $derived(startworkCompany ? `/startwork ${startworkCompany}` : "/startwork");
+  /**
+   * Daily Brief actions: open a Claude, Codex or Grok session in the HQ folder
+   * with the item's prompt pre-filled, through the same launch cascade as the
+   * setup finish buttons. Grok's terminal launch takes no prompt argument, so
+   * the prompt is copied first and the person pastes it.
+   */
+  async function launchBriefPrompt(engine: "claude" | "codex" | "grok", prompt: string): Promise<string | null> {
+    const res = await adapter.settings.getSetupStatus();
+    const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+    if (!folder) return "HQ folder is not ready yet.";
+    // Brief launches open Claude in bypassPermissions mode (owner preset).
+    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt, permissionMode: BRIEF_CLAUDE_PERMISSION_MODE });
+    if (engine === "claude") return actions.launchClaude();
+    if (engine === "codex") return actions.launchCodex();
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(prompt);
+      copied = true;
+    } catch (err) {
+      console.warn("[daily-brief] copy before Grok launch failed", err);
+    }
+    const error = await actions.launchGrok();
+    return error ?? (copied ? "Prompt copied. Paste it into Grok." : null);
+  }
+  /**
+   * Create brief: the daily-brief job runs on the main local bot (the setup
+   * bot, else the first personal bot). The job goes to the bot as an
+   * agent-only DM (no notification, hidden from the conversation), keyed by
+   * the run id so a repeated send reaches the bot once.
+   */
+  const briefCreator: BriefCreator | null = adapter.bots
+    ? {
+        async company() {
+          const open = railCompanyRoster.find((c) => c.uid === tenantCompanyId)?.slug;
+          if (open) return open;
+          const bound = await adapter.appShell.getActiveCompany?.();
+          if (bound?.ok && bound.value) return bound.value;
+          const recent = readSettingsPrefs().companyRecentIds ?? [];
+          for (const uid of recent) {
+            const slug = railCompanyRoster.find((c) => c.uid === uid)?.slug;
+            if (slug) return slug;
+          }
+          return railCompanyRoster.length === 1 ? (railCompanyRoster[0]!.slug ?? null) : null;
+        },
+        async check() {
+          await refreshLocalBots();
+          await loadLocalBotRuntimeReady(true);
+          return checkBriefBot(localBots, localBotRuntimeReady);
+        },
+        async dispatch(bot, body, idempotencyKey) {
+          const res = await adapter.messaging.sendDm(bot.agentUid, body, { audience: "agent", idempotencyKey });
+          if (res.ok) return null;
+          console.warn("[daily-brief] job send failed", res.reason, res.code ?? "", res.message ?? "");
+          return `Could not send the brief job to ${bot.displayName?.trim() || bot.name}. Try again in a moment.`;
+        },
+        async fix(fix, bot) {
+          if (fix === "create-bot") {
+            const started = await startSetupBot();
+            return started.ok ? null : started.reason;
+          }
+          if (!bot) return null;
+          if (fix === "start-bot") {
+            const started = await startBotByName(bot.name, bot.agentUid);
+            return started.ok ? null : started.reason;
+          }
+          // Sign-in and model setup live in the bot's conversation.
+          openSetupBotDm({ agentUid: bot.agentUid, handle: bot.name });
+          return null;
+        },
+        notify(title, body) {
+          pushToast({ title, detail: body, tone: "ok" });
+          void adapter.appShell
+            .showOsNotification({ title, body, route: "brief" })
+            .then((res) => {
+              if (!res.ok) console.warn("[daily-brief] OS notification not shown", res.reason);
+            });
+        },
+      }
+    : null;
   /** The finish buttons: open the HQ folder in a coding tool with `/startwork` ready to go. */
+  /**
+   * The shell's one brief run. It lives as long as the shell, so a run keeps
+   * polling while the person is on another page, the rail shows its progress,
+   * and ready still notifies. A reload resumes the remembered run.
+   */
+  const briefRun: BriefCreateRun | null = briefCreator
+    ? new BriefCreateRun({
+        creator: briefCreator,
+        read: async (path) => {
+          const res = await adapter.files.getFileContent(path);
+          if (res.ok) return res.value;
+          const why = res.message ?? res.reason;
+          if (!/not found/i.test(why)) console.warn("[daily-brief] could not read", path, why);
+          return null;
+        },
+      })
+    : null;
+  onMount(() => {
+    void briefRun?.rehydrate();
+    return () => briefRun?.stop();
+  });
+  /** The Brief's "Open thread": the DM with that person or agent, in Messages. */
+  function openBriefDm(uid: string): void {
+    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === uid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${uid}`,
+        kind: "dm",
+        title: localBots.find((b) => b.agentUid === uid)?.name ?? "Message",
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: uid,
+      },
+    );
+  }
+  const briefRailRun = $derived.by(() => {
+    const p = briefRun?.phase;
+    if (!p) return null;
+    if (p.kind === "dispatching") return { progress: 0, step: "Waking your bot…" };
+    if (p.kind === "waiting") return { progress: 0, step: "Waiting for your bot to start" };
+    if (p.kind === "running") {
+      const latest = p.activity?.at(-1)?.label;
+      return { progress: p.progress, step: latest ?? p.step };
+    }
+    return null;
+  });
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
     setupLaunchError = null;
     const res = await adapter.settings.getSetupStatus();
@@ -12923,6 +13054,7 @@
       (extraPageId === "rail-library" ||
         extraPageId === "rail-deployments" ||
         accountPlaceholderForPage(extraPageId) != null ||
+        railPlaceholder?.id === "brief" ||
         railPlaceholder?.id === "telemetry" ||
         railPlaceholder?.id === "secrets" ||
         railPlaceholder?.id === "connections" ||
@@ -12933,6 +13065,7 @@
   const pageHasNoSidepane = $derived(
     view === "extra" &&
       (extraPageId === "rail-deployments" ||
+        railPlaceholder?.id === "brief" ||
         railPlaceholder?.id === "telemetry" ||
         railPlaceholder?.id === "secrets" ||
         railPlaceholder?.id === "connections"),
@@ -13225,7 +13358,7 @@
   }
 
   function selectRailIndex(index: number): void {
-    const item = railItemList[index];
+    const item = railShortcutItems(railItemList)[index];
     if (item) selectRailItem(item);
   }
 
@@ -14037,6 +14170,7 @@
       onyou={toggleAccountMenu}
       youExpanded={accountMenuOpen}
       youLive={youPresence.live}
+      briefRun={briefRailRun}
       {youBadges}
       onyoubadges={() => void openSelfProfile({ view: "badges" })}
       onyoubadge={(badge: ResolvedBadge) => void openSelfProfile({ view: "profile", badgeId: badge.def.id })}
@@ -14723,6 +14857,16 @@
               </div>
             {/snippet}
           </LazyDoor>
+        {:else if railPlaceholder?.id === "brief"}
+          <BriefRailHost
+            {adapter}
+            companies={railCompanyRoster.map((company) => ({ uid: company.uid, slug: company.slug, label: company.label, iconUrl: company.iconUrl }))}
+            onlaunch={launchBriefPrompt}
+            creator={briefCreator}
+            run={briefRun}
+            onopenthread={openBriefDm}
+            onopenmeetings={() => void navigate({ kind: "meetings" })}
+          />
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}
             <TelemetryRailHost

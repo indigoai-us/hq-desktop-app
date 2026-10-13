@@ -141,6 +141,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   closeConnectionModal: "none",
   // #welcome / Home setup card → the setup bot's DM (handleSelect).
   openSetupBotDm: "push",
+  // Daily Brief Team peek, Open thread: that person's DM (handleSelect).
+  openBriefDm: "push",
   applyChannelWake: "none",
   applyDmWake: "none",
   openAttachmentTray: "none",
