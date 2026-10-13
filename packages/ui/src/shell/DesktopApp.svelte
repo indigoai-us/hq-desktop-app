@@ -69,7 +69,7 @@
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
-  import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot } from "../brief/brief-runs.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
     RAIL_ATLAS_FLAG,
@@ -5839,7 +5839,7 @@
     const p = briefRun?.phase;
     if (!p) return null;
     if (p.kind === "dispatching") return { progress: 0, step: "Waking your bot…" };
-    if (p.kind === "waiting") return { progress: 0, step: "Waiting for your bot to start" };
+    if (p.kind === "waiting") return { progress: 0, step: waitingStep(p.bot) };
     if (p.kind === "running") {
       const latest = p.activity?.at(-1)?.label;
       return { progress: p.progress, step: latest ?? p.step };
