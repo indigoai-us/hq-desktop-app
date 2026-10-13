@@ -92,8 +92,6 @@
         <li
           class={s.state}
           class:tent={s.e.tentative}
-          role="button"
-          tabindex="0"
           aria-label="{s.e.title}, {rangeText(s.e)}, {STATE_LABEL[s.state]}"
           data-testid="brief-day-step"
           data-state={s.state}
