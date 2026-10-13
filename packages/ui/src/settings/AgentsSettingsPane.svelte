@@ -4,6 +4,8 @@
   import { hostComputerNoun } from "@hq/platform";
   import "./settings-chrome.css";
   import { announceRuntimeSignedIn } from "../chat/messaging/runtime-repair.svelte.js";
+  import { CONNECTOR_APPS, INDIGO_MCP_URL, CLAUDE_CODE_CONNECT_PROMPT } from "./hq-connector-setup.js";
+  import { buildClaudeCodeUrl } from "./claude-code-link";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -195,6 +197,48 @@
     await load();
   }
 
+  // Connect-AI-apps copy buttons. On a denied clipboard the setup text is
+  // revealed inline so the person can select it by hand, and the button stays
+  // live to retry.
+  let copiedId = $state<string | null>(null);
+  let copyFailedId = $state<string | null>(null);
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function copySetup(app: { id: string; copyText: string }) {
+    clearTimeout(copyTimer);
+    copiedId = null;
+    copyFailedId = null;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API is unavailable");
+      await navigator.clipboard.writeText(app.copyText);
+      copiedId = app.id;
+      copyTimer = setTimeout(() => (copiedId = null), 1500);
+    } catch (err) {
+      console.warn("[agents-settings] copy connector setup failed", err);
+      copyFailedId = app.id;
+    }
+  }
+
+  // Claude Code is the one app here with a deep link that carries a prompt
+  // (claude://code/new?q=…), so its row opens Claude Code with the setup
+  // prompt ready to send instead of asking the person to paste it.
+  let openingClaude = $state(false);
+  let openClaudeFailed = $state(false);
+
+  async function openInClaudeCode() {
+    if (openingClaude || !adapter?.shell?.openClaudeCodeLink) return;
+    openingClaude = true;
+    openClaudeFailed = false;
+    const result = await adapter.shell.openClaudeCodeLink(
+      buildClaudeCodeUrl({ folder: "", prompt: CLAUDE_CODE_CONNECT_PROMPT }),
+    );
+    openingClaude = false;
+    if (!result.ok) {
+      console.warn("[agents-settings] open Claude Code link failed", result.message);
+      openClaudeFailed = true;
+    }
+  }
+
   $effect(() => {
     void adapter;
     void load();
@@ -254,4 +298,50 @@
       <p class="ss-lede" aria-live="polite">{line}</p>
     {/if}
   </div>
+
+  <div class="ss-section" data-testid="settings-hq-connector">
+    <p class="ss-section-label">Connect AI apps to HQ</p>
+    <p class="ss-lede">
+      Let Grok Bot, Claude, ChatGPT, Codex, or the Grok CLI read and write your HQ files and use your secrets and connected apps. Copy the setup for your app, paste it there, and sign in to HQ when the browser opens. One sign-in covers every company you belong to.
+    </p>
+    {#each [{ id: "url", name: "Connector URL", help: INDIGO_MCP_URL, copyText: INDIGO_MCP_URL }, ...CONNECTOR_APPS] as app (app.id)}
+      <div class="ss-field" data-testid={`settings-hq-connector-${app.id}`}>
+        <div class="ss-field-text">
+          <div class="ss-field-label">{app.name}</div>
+          <div class="ss-field-help">{app.help}</div>
+          {#if copyFailedId === app.id}
+            <pre class="ss-field-help hq-connector-manual" data-testid={`settings-hq-connector-${app.id}-manual`}>{app.copyText}</pre>
+            <div class="ss-field-help" role="status">Copy didn't work. Select the text above, or tap Copy to try again.</div>
+          {/if}
+          {#if app.id === "claude-code" && openClaudeFailed}
+            <div class="ss-field-help" role="status" data-testid="settings-hq-connector-claude-code-open-failed">Couldn't open Claude Code. Copy the setup and paste it into a session, or tap Open to try again.</div>
+          {/if}
+        </div>
+        {#if app.id === "claude-code" && adapter?.shell?.openClaudeCodeLink}
+          <button
+            type="button"
+            class="ss-btn"
+            data-testid="settings-hq-connector-claude-code-open"
+            disabled={openingClaude}
+            onclick={() => void openInClaudeCode()}
+          >{openingClaude ? "Opening…" : "Open"}</button>
+        {/if}
+        <button
+          type="button"
+          class="ss-btn"
+          data-testid={`settings-hq-connector-${app.id}-copy`}
+          onclick={() => void copySetup(app)}
+        >{copiedId === app.id ? "Copied" : "Copy"}</button>
+      </div>
+    {/each}
+  </div>
 </div>
+
+<style>
+  .hq-connector-manual {
+    margin: 6px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+  }
+</style>
