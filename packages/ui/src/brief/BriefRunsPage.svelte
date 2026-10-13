@@ -350,13 +350,13 @@
     font-weight: 500;
   }
   .ghost {
-    color: rgba(255, 255, 255, 0.7);
+    color: rgb(var(--b-ink) / 0.7);
     background: transparent;
   }
   .blocked {
     margin: 0;
     font-size: 13px;
-    color: rgba(255, 255, 255, 0.75);
+    color: rgb(var(--b-ink) / 0.75);
   }
   .loading {
     padding: 8px;

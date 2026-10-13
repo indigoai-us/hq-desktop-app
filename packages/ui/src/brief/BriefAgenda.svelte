@@ -136,15 +136,15 @@
     border-radius: 12px;
     font-size: 12px;
     min-width: 0;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.09);
     box-shadow: none;
     cursor: default;
     transition: border-color 0.2s, background 0.2s, opacity 0.2s;
   }
   .run:hover,
   .run:focus-visible {
-    border-color: rgba(255, 255, 255, 0.22);
+    border-color: rgb(var(--b-ink) / 0.22);
     outline: none;
   }
   .run.past {
@@ -178,8 +178,8 @@
     flex: none;
   }
   .k.hold {
-    background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 4px);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: repeating-linear-gradient(135deg, rgb(var(--b-ink) / 0.35) 0 2px, transparent 2px 4px);
+    border: 1px solid rgb(var(--b-ink) / 0.18);
   }
   b {
     font-weight: 400;
@@ -206,13 +206,13 @@
     border-radius: 10px;
     font-size: 12px;
     color: var(--b-t2);
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgb(var(--b-ink) / 0.05);
+    border: 1px solid rgb(var(--b-ink) / 0.08);
     cursor: default;
   }
   .more:hover,
   .more:focus-visible {
-    background: rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.09);
     outline: none;
   }
 </style>

@@ -224,30 +224,30 @@
     margin-top: 14px;
     border-radius: 14px;
     background: rgba(0, 0, 0, 0.22);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid rgb(var(--b-ink) / 0.06);
   }
   .gp {
     position: absolute;
     top: 5px;
     bottom: 5px;
     border-radius: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.07);
+    border: 1px solid rgb(var(--b-ink) / 0.07);
     cursor: default;
     transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
   }
   .gp.deep {
-    background: rgba(255, 255, 255, 0.06);
+    background: rgb(var(--b-ink) / 0.06);
   }
   .gp.solid {
-    background: rgba(255, 255, 255, 0.035);
+    background: rgb(var(--b-ink) / 0.035);
   }
   .gp.shallow {
     background: transparent;
-    border-color: rgba(255, 255, 255, 0.05);
+    border-color: rgb(var(--b-ink) / 0.05);
   }
   .gp:hover,
   .gp:focus-visible {
-    border-color: rgba(255, 255, 255, 0.3);
+    border-color: rgb(var(--b-ink) / 0.3);
     outline: none;
   }
   /* The one to protect: a green edge. */
@@ -266,8 +266,8 @@
     top: 9px;
     bottom: 9px;
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.07);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.07);
+    border: 1px solid rgb(var(--b-ink) / 0.14);
     box-shadow: none;
     font-family: var(--b-mono);
     font-size: 9px;
@@ -295,8 +295,8 @@
     }
   }
   .mt.proj {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px dashed rgba(255, 255, 255, 0.35);
+    background: rgb(var(--b-ink) / 0.03);
+    border: 1px dashed rgb(var(--b-ink) / 0.35);
     box-shadow: none;
     color: var(--b-t3);
   }
@@ -304,7 +304,7 @@
     border-style: dashed;
   }
   .mt.busy {
-    background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0 3px, transparent 3px 7px);
+    background: repeating-linear-gradient(135deg, rgb(var(--b-ink) / 0.1) 0 3px, transparent 3px 7px);
     box-shadow: none;
   }
   .ndl {
@@ -350,15 +350,15 @@
     border-radius: 12px;
     font-size: 11.5px;
     line-height: 1.3;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.09);
     box-shadow: none;
     cursor: default;
     transition: border-color 0.2s, background 0.2s;
   }
   .g:hover,
   .g:focus-visible {
-    border-color: rgba(255, 255, 255, 0.22);
+    border-color: rgb(var(--b-ink) / 0.22);
     outline: none;
   }
   .g.pro {
@@ -412,12 +412,12 @@
     padding: 5px 12px;
     border-radius: 10px;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.78);
+    color: rgb(var(--b-ink) / 0.78);
     cursor: default;
   }
   .more:hover,
   .more:focus-visible {
-    background: rgba(255, 255, 255, 0.045);
+    background: rgb(var(--b-ink) / 0.045);
     outline: none;
   }
 </style>

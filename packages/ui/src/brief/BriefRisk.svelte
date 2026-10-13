@@ -91,13 +91,13 @@
     min-width: 0;
     padding: 6px 9px;
     border-radius: 11px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.07);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.07);
     transition: background 0.2s;
   }
   .rk:hover,
   .rk:focus-visible {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgb(var(--b-ink) / 0.08);
     outline: none;
   }
   .rows.tall .rk {

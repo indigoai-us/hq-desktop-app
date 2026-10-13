@@ -48,11 +48,11 @@
   --b-card-grad: linear-gradient(155deg, #1f1f23, #19191c);
   --b-drop: 0 2px 4px rgba(0, 0, 0, 0.3), 0 18px 40px rgba(0, 0, 0, 0.5);
   --b-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.06'/%3E%3C/svg%3E");
-  --b-t1: rgba(255, 255, 255, 0.92);
-  --b-t2: rgba(255, 255, 255, 0.7);
-  --b-t3: rgba(255, 255, 255, 0.5);
-  --b-line: rgba(255, 255, 255, 0.09);
-  --b-top-light: rgba(255, 255, 255, 0.12);
+  --b-t1: rgb(var(--b-ink) / 0.92);
+  --b-t2: rgb(var(--b-ink) / 0.7);
+  --b-t3: rgb(var(--b-ink) / 0.5);
+  --b-line: rgb(var(--b-ink) / 0.09);
+  --b-top-light: rgb(var(--b-ink) / 0.12);
   --b-bracket: rgba(255, 190, 160, 0.75);
   --b-ok: var(--ok, #34c759);
   --b-warn: var(--warn, #facc15);
@@ -78,6 +78,9 @@
   /* Flat material: a hairline instead of raised/sunken depth. */
   --b-raise: 0 0 0 1px var(--b-line);
   --b-well: 0 0 0 1px var(--b-line);
+  /* Ink: every white-alpha in the brief is this colour at an alpha, so light mode flips it. */
+  --b-ink: 255 255 255;
+  color-scheme: dark;
   --b-ui: var(--font-ui, "Geist", -apple-system, system-ui, sans-serif);
   --b-mono: var(--font-mono, "Geist Mono", ui-monospace, monospace);
 
@@ -185,7 +188,7 @@
 }
 .daily-brief .leadchip:hover {
   color: var(--b-t1);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgb(var(--b-ink) / 0.05);
 }
 .daily-brief .leadchip b {
   color: var(--b-sun);
@@ -256,7 +259,7 @@
   mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.5) 55%, transparent 85%);
 }
 .daily-brief .slot.lit > :is(.c-violet, .c-red)::before {
-  --b-hover-light: rgba(255, 255, 255, 0.2);
+  --b-hover-light: rgb(var(--b-ink) / 0.2);
 }
 /* ASCII decode overlay (asciiDecode): drawn over the real title, which goes clear meanwhile. */
 .daily-brief .decoding {
@@ -309,14 +312,14 @@
 .daily-brief .c-violet {
   --b-accent: var(--b-decision);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 38%),
+    linear-gradient(180deg, rgb(var(--b-ink) / 0.12), transparent 38%),
     radial-gradient(125% 95% at 0% 0%, #e0705a 0%, #a83466 38%, #4a1a4f 75%, #2a1233 100%),
     var(--b-grain);
 }
 .daily-brief .c-red {
   --b-accent: var(--b-red);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 38%),
+    linear-gradient(180deg, rgb(var(--b-ink) / 0.12), transparent 38%),
     radial-gradient(130% 100% at 100% 0%, #ff5a4e 0%, #c1271d 42%, #5e0f0b 100%),
     var(--b-grain);
 }
@@ -327,20 +330,20 @@
   --b-accent: var(--b-ok);
 }
 .daily-brief :is(.c-violet, .c-red) .eyebrow {
-  color: rgba(255, 255, 255, 0.85);
+  color: rgb(var(--b-ink) / 0.85);
 }
 .daily-brief :is(.c-violet, .c-red) .sub {
-  color: rgba(255, 255, 255, 0.85);
+  color: rgb(var(--b-ink) / 0.85);
 }
 .daily-brief :is(.c-violet, .c-red) .org {
-  color: rgba(255, 255, 255, 0.62);
+  color: rgb(var(--b-ink) / 0.62);
 }
 .daily-brief :is(.c-violet, .c-red) .org b {
-  color: rgba(255, 255, 255, 0.92);
+  color: rgb(var(--b-ink) / 0.92);
 }
 .daily-brief :is(.c-violet, .c-red) .foot {
-  border-color: rgba(255, 255, 255, 0.16);
-  color: rgba(255, 255, 255, 0.62);
+  border-color: rgb(var(--b-ink) / 0.16);
+  color: rgb(var(--b-ink) / 0.62);
 }
 .daily-brief :is(.c-amber, .c-green) > .eyebrow::before,
 .daily-brief :is(.c-amber, .c-green) > * > .eyebrow::before,
@@ -409,7 +412,7 @@
   font-size: 10.5px;
   padding: 4px 8px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgb(var(--b-ink) / 0.06);
   color: var(--b-t2);
 }
 
@@ -502,7 +505,7 @@
   display: inline-flex;
   padding: 2px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgb(var(--b-ink) / 0.06);
 }
 /* Engine marks: the rail's brand marks at 14px. Muted until chosen; the
    chosen one sits on the light chip in full contrast (Claude in its clay). */
@@ -514,7 +517,7 @@
   height: 14px;
   padding: 3px 6px;
   border-radius: 999px;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgb(var(--b-ink) / 0.55);
   transition: background 0.2s, color 0.2s;
 }
 .daily-brief .launch .eng .mark {
@@ -528,11 +531,11 @@
   color: #fff;
 }
 .daily-brief .launch .eng button:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.7);
+  outline: 2px solid rgb(var(--b-ink) / 0.7);
   outline-offset: 1px;
 }
 .daily-brief .launch .eng button[aria-pressed="true"] {
-  background: rgba(255, 255, 255, 0.9);
+  background: rgb(var(--b-ink) / 0.9);
   color: #1b1b1e;
 }
 .daily-brief .launch .eng button[aria-pressed="true"] .mark.clay {
@@ -546,11 +549,11 @@
   display: grid;
   place-items: center;
   border-radius: 999px;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgb(var(--b-ink) / 0.75);
   transition: background 0.2s, color 0.2s;
 }
 .daily-brief .launch .copy:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgb(var(--b-ink) / 0.16);
   color: #fff;
 }
 .daily-brief .launch .copy.copied {
@@ -567,7 +570,7 @@
 }
 .daily-brief .launch-note {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgb(var(--b-ink) / 0.8);
   margin-top: 6px;
 }
 
@@ -582,7 +585,7 @@
   border-radius: 12px;
   background: var(--b-card-hi);
   color: var(--b-t1);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 22px 55px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 0 1px rgb(var(--b-ink) / 0.1), 0 22px 55px rgba(0, 0, 0, 0.5);
   animation: b-peek 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @keyframes b-peek {
@@ -621,7 +624,7 @@
   line-height: 1.35;
   padding: 7px 10px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.035);
+  background: rgb(var(--b-ink) / 0.035);
   margin-top: 4px;
 }
 .daily-brief .peek .li span {
@@ -682,7 +685,7 @@
 .daily-brief .b-glass {
   position: relative;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgb(var(--b-ink) / 0.04);
   border: 1px solid var(--b-line);
   min-width: 0;
 }
@@ -698,5 +701,58 @@
   cursor: default;
 }
 .daily-brief .b-more:hover {
+  color: var(--b-t1);
+}
+
+/* Light appearance: follows the app (prefers-color-scheme), or the QA override
+   data-force-theme on <html>. Ink flips to near-black; the stage is warm paper;
+   cards are white with a soft shadow. Colour fields and the sunrise hero stay
+   dark islands with white ink in both appearances. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-force-theme="dark"]) .daily-brief {
+    --b-ink: 17 17 17;
+    color-scheme: light;
+    --b-bg: #f1efeb;
+    --b-card: #ffffff;
+    --b-card-hi: #ffffff;
+    --b-card-grad: linear-gradient(155deg, #ffffff, #faf9f6);
+    --b-drop: 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.08);
+    --b-t1: rgba(17, 17, 17, 0.92);
+    --b-t2: rgba(17, 17, 17, 0.66);
+    --b-t3: rgba(17, 17, 17, 0.5);
+    --b-line: rgba(17, 17, 17, 0.09);
+    --b-top-light: rgba(255, 255, 255, 0);
+    --b-decision: #d9603a;
+    --b-bracket: rgba(200, 90, 50, 0.7);
+    background: radial-gradient(1200px 700px at 30% -10%, #ffffff 0%, var(--b-bg) 60%), var(--b-bg);
+  }
+}
+:root[data-force-theme="light"] .daily-brief {
+  --b-ink: 17 17 17;
+  color-scheme: light;
+  --b-bg: #f1efeb;
+  --b-card: #ffffff;
+  --b-card-hi: #ffffff;
+  --b-card-grad: linear-gradient(155deg, #ffffff, #faf9f6);
+  --b-drop: 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.08);
+  --b-t1: rgba(17, 17, 17, 0.92);
+  --b-t2: rgba(17, 17, 17, 0.66);
+  --b-t3: rgba(17, 17, 17, 0.5);
+  --b-line: rgba(17, 17, 17, 0.09);
+  --b-top-light: rgba(255, 255, 255, 0);
+  --b-decision: #d9603a;
+  --b-bracket: rgba(200, 90, 50, 0.7);
+  background: radial-gradient(1200px 700px at 30% -10%, #ffffff 0%, var(--b-bg) 60%), var(--b-bg);
+}
+/* Dark islands keep white ink in both appearances. */
+.daily-brief :is(.c-violet, .c-red, .dawn, .w.dawn),
+.daily-brief-dawn-page,
+.masthead-wrap {
+  --b-ink: 255 255 255;
+  --b-t1: rgba(255, 255, 255, 0.92);
+  --b-t2: rgba(255, 255, 255, 0.7);
+  --b-t3: rgba(255, 255, 255, 0.5);
+  --b-line: rgba(255, 255, 255, 0.09);
+  --b-decision: #ff9966;
   color: var(--b-t1);
 }

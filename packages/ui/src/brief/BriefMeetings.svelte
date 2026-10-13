@@ -119,7 +119,7 @@
     transition: background 0.25s;
   }
   .row:hover {
-    background: rgba(255, 255, 255, 0.045);
+    background: rgb(var(--b-ink) / 0.045);
   }
   .mt {
     min-width: 0;
@@ -161,13 +161,13 @@
     padding: 4px 10px;
     font-size: 12px;
     color: var(--b-t2);
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgb(var(--b-ink) / 0.05);
+    border: 1px solid rgb(var(--b-ink) / 0.08);
     cursor: default;
   }
   .more:hover,
   .more:focus-visible {
-    background: rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.09);
     outline: none;
   }
 </style>

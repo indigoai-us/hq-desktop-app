@@ -117,7 +117,7 @@
     padding: 6px 14px;
     border-radius: 999px;
     color: #1b1b1e;
-    background: rgba(255, 255, 255, 0.92);
+    background: rgb(var(--b-ink) / 0.92);
   }
   .head {
     display: flex;
@@ -154,11 +154,11 @@
     padding: 7px 14px;
     border-radius: 999px;
     color: var(--b-t1, #fff);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.18);
   }
   .pill.go {
     color: #1b1b1e;
-    background: rgba(255, 255, 255, 0.92);
+    background: rgb(var(--b-ink) / 0.92);
     box-shadow: none;
   }
   .pill:focus-visible {

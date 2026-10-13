@@ -284,13 +284,13 @@
     padding: 8px 11px;
     border-radius: 12px;
     min-width: 0;
-    background: rgba(255, 255, 255, 0.04);
+    background: rgb(var(--b-ink) / 0.04);
     border: 1px solid var(--b-line);
     box-shadow: none;
     transition: border-color 0.2s, background 0.2s;
   }
   .tile:hover {
-    border-color: rgba(255, 255, 255, 0.3);
+    border-color: rgb(var(--b-ink) / 0.3);
   }
   .engine {
     flex: none;
@@ -430,7 +430,7 @@
     gap: 1px;
     padding: 6px 10px;
     border-radius: 10px;
-    border: 1px dashed rgba(255, 255, 255, 0.32);
+    border: 1px dashed rgb(var(--b-ink) / 0.32);
     min-width: 0;
     max-width: 220px;
     transition: border-color 0.2s;
@@ -445,7 +445,7 @@
     background: var(--b-line);
   }
   .held:hover {
-    border-color: rgba(255, 255, 255, 0.7);
+    border-color: rgb(var(--b-ink) / 0.7);
   }
   .held b {
     font-family: var(--b-mono);
@@ -501,13 +501,13 @@
     padding: 5px 11px;
     border-radius: 999px;
     color: var(--b-t2);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.14);
     transition: color 0.2s, box-shadow 0.2s;
   }
   .why:hover,
   .why:focus-visible {
     color: var(--b-t1);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.3);
   }
   .cut {
     display: inline-flex;

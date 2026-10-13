@@ -97,7 +97,7 @@
     transition: background 0.15s;
   }
   li:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgb(var(--b-ink) / 0.05);
   }
   .n {
     flex: none;
@@ -135,7 +135,7 @@
   }
   li.done .tx {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.35);
+    text-decoration-color: rgb(var(--b-ink) / 0.35);
     opacity: 0.5;
   }
 </style>

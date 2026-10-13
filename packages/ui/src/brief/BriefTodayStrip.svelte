@@ -102,14 +102,14 @@
     font-family: var(--b-mono);
     font-size: 10px;
     letter-spacing: 0.12em;
-    color: rgba(255, 255, 255, 0.32);
+    color: rgb(var(--b-ink) / 0.32);
     white-space: nowrap;
     width: 140px;
     flex: none;
   }
   .lbl b {
     display: block;
-    color: rgba(255, 255, 255, 0.56);
+    color: rgb(var(--b-ink) / 0.56);
     font-weight: 500;
     margin-top: 3px;
     letter-spacing: 0.04em;
@@ -125,7 +125,7 @@
     top: 4px;
     font-family: var(--b-mono);
     font-size: 9px;
-    color: rgba(255, 255, 255, 0.22);
+    color: rgb(var(--b-ink) / 0.22);
     translate: -50% 0;
   }
   .hl {
@@ -133,7 +133,7 @@
     top: 18px;
     bottom: 6px;
     width: 1px;
-    background: rgba(255, 255, 255, 0.05);
+    background: rgb(var(--b-ink) / 0.05);
   }
   .ev {
     position: absolute;
@@ -166,20 +166,20 @@
     color: #2a1408;
   }
   .ev.busy {
-    background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0 3px, transparent 3px 7px);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    background: repeating-linear-gradient(135deg, rgb(var(--b-ink) / 0.08) 0 3px, transparent 3px 7px);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.08);
   }
   .ev.tent {
     background: transparent;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
-    border: 1px dashed rgba(255, 255, 255, 0.55);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.5);
+    border: 1px dashed rgb(var(--b-ink) / 0.55);
     line-height: 13px;
-    color: rgba(255, 255, 255, 0.8);
+    color: rgb(var(--b-ink) / 0.8);
   }
   .ev.proj {
     background: transparent;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
-    color: rgba(255, 255, 255, 0.56);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.35);
+    color: rgb(var(--b-ink) / 0.56);
   }
   .ev.past {
     opacity: 0.42;
@@ -188,7 +188,7 @@
   .ev:focus-visible {
     filter: brightness(1.2);
     opacity: 1;
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+    box-shadow: 0 0 0 2px rgb(var(--b-ink) / 0.25);
     z-index: 2;
     outline: none;
   }
@@ -201,7 +201,7 @@
     font-family: var(--b-mono);
     font-size: 10px;
     line-height: 15px;
-    color: rgba(255, 255, 255, 0.75);
+    color: rgb(var(--b-ink) / 0.75);
     background: #2a2a2f;
     box-shadow: var(--b-well);
     z-index: 3;
@@ -230,7 +230,7 @@
   .sum {
     font-family: var(--b-mono);
     font-size: 10px;
-    color: rgba(255, 255, 255, 0.32);
+    color: rgb(var(--b-ink) / 0.32);
     white-space: nowrap;
     text-align: right;
     width: 90px;

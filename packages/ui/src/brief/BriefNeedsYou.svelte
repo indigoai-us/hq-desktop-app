@@ -224,14 +224,14 @@
     gap: 12px;
     padding: 9px 10px 9px 12px;
     border-radius: 14px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.06));
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-top-color: rgba(255, 255, 255, 0.18);
+    background: linear-gradient(180deg, rgb(var(--b-ink) / 0.11), rgb(var(--b-ink) / 0.06));
+    border: 1px solid rgb(var(--b-ink) / 0.1);
+    border-top-color: rgb(var(--b-ink) / 0.18);
     box-shadow: 0 6px 14px rgba(30, 6, 30, 0.25);
     transition: background 0.25s, opacity 0.5s;
   }
   .it:hover {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.09));
+    background: linear-gradient(180deg, rgb(var(--b-ink) / 0.17), rgb(var(--b-ink) / 0.09));
   }
   /* Iridescent sheen = the decision under your cursor. */
   .it::before {
@@ -242,7 +242,7 @@
     opacity: 0;
     transition: opacity 0.35s;
     mix-blend-mode: overlay;
-    background: radial-gradient(180px 90px at var(--ix, 50%) var(--iy, 50%), rgba(255, 255, 255, 0.55), transparent 70%),
+    background: radial-gradient(180px 90px at var(--ix, 50%) var(--iy, 50%), rgb(var(--b-ink) / 0.55), transparent 70%),
       linear-gradient(100deg, transparent 10%, rgba(255, 140, 220, 0.35) 35%, rgba(140, 220, 255, 0.35) 55%, rgba(190, 255, 170, 0.3) 70%, transparent 90%);
   }
   .it:hover::before {
@@ -256,7 +256,7 @@
   }
   .it.done .t {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
+    text-decoration-color: rgb(var(--b-ink) / 0.4);
   }
   .ic {
     width: 30px;
@@ -265,8 +265,8 @@
     border-radius: 10px;
     display: grid;
     place-items: center;
-    background: rgba(255, 255, 255, 0.13);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.13);
+    border: 1px solid rgb(var(--b-ink) / 0.14);
     box-shadow: none;
   }
   .ic svg {
@@ -329,7 +329,7 @@
     line-height: 1;
     padding: 3px 6px;
     border-radius: 6px;
-    color: rgba(255, 255, 255, 0.72);
+    color: rgb(var(--b-ink) / 0.72);
     background: rgba(0, 0, 0, 0.22);
     white-space: nowrap;
   }
@@ -344,12 +344,12 @@
     justify-content: center;
     padding: 6px 12px;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.78);
+    color: rgb(var(--b-ink) / 0.78);
     cursor: default;
   }
   .ts {
     font-size: 11.5px;
-    color: rgba(255, 255, 255, 0.8);
+    color: rgb(var(--b-ink) / 0.8);
     margin-top: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -412,6 +412,6 @@
     font-weight: 500;
     padding: 6px 12px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.18);
+    background: rgb(var(--b-ink) / 0.18);
   }
 </style>

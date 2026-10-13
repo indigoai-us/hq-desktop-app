@@ -96,14 +96,14 @@
   }
   .q.cleared {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
+    text-decoration-color: rgb(var(--b-ink) / 0.4);
     opacity: 0.6;
   }
   .because {
     margin-top: 8px;
     font-size: 12.5px;
     line-height: 1.4;
-    color: rgba(255, 255, 255, 0.76);
+    color: rgb(var(--b-ink) / 0.76);
     max-width: 62ch;
   }
   .why {
@@ -119,7 +119,7 @@
     font-size: 10px;
     padding: 5px 8px;
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.14);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -133,7 +133,7 @@
     font-weight: 500;
     padding: 6px 12px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.18);
+    background: rgb(var(--b-ink) / 0.18);
   }
   .note {
     margin-top: 6px;

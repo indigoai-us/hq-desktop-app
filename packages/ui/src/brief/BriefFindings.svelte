@@ -139,7 +139,7 @@
     letter-spacing: 0.12em;
     text-transform: uppercase;
     overflow-wrap: anywhere;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgb(var(--b-ink) / 0.55);
   }
   .count {
     font-size: 13px;
@@ -148,10 +148,10 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: rgba(255, 255, 255, 0.5);
+    color: rgb(var(--b-ink) / 0.5);
   }
   .pending .count b {
-    color: rgba(255, 255, 255, 0.35);
+    color: rgb(var(--b-ink) / 0.35);
   }
   .count b {
     font-weight: 500;
@@ -176,7 +176,7 @@
     color: #ffb580;
   }
   .tone-neutral {
-    color: rgba(255, 255, 255, 0.6);
+    color: rgb(var(--b-ink) / 0.6);
   }
   .cards {
     list-style: none;
@@ -192,9 +192,9 @@
     min-width: 0;
     padding: 5px 9px;
     border-radius: 10px;
-    background: rgba(255, 255, 255, 0.04);
+    background: rgb(var(--b-ink) / 0.04);
     /* Hairline rim as a real border, never an inset shadow (the glass-tile rule). */
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid rgb(var(--b-ink) / 0.06);
     font-size: 12.5px;
   }
   .kind {
@@ -210,14 +210,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: rgba(255, 255, 255, 0.88);
+    color: rgb(var(--b-ink) / 0.88);
   }
   .co {
     flex: none;
     padding: 1px 7px;
     border-radius: 999px;
     font-size: 10.5px;
-    color: rgba(255, 255, 255, 0.6);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+    color: rgb(var(--b-ink) / 0.6);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.14);
   }
 </style>

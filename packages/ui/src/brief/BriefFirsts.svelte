@@ -123,7 +123,7 @@
     padding: 4px 8px;
     border-radius: 8px;
     color: var(--b-t2);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    border: 1px solid rgb(var(--b-ink) / 0.09);
     white-space: nowrap;
     cursor: default;
     transition: color 0.2s, border-color 0.2s;
@@ -131,7 +131,7 @@
   .more:hover,
   .more:focus-visible {
     color: var(--b-t1);
-    border-color: rgba(255, 255, 255, 0.18);
+    border-color: rgb(var(--b-ink) / 0.18);
     outline: none;
   }
   .meds {
@@ -154,8 +154,8 @@
     padding: 12px 10px 11px;
     /* Glass: lit from the top, hairline rim, soft drop. No inset shadow and no
        backdrop-filter (WKWebView draws it as a square that ignores the radius). */
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.09);
     box-shadow: none;
   }
   /* Holographic foil: only on a true first. Follows the pointer; glints once on load. */

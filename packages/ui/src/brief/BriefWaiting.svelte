@@ -51,9 +51,9 @@
 
 <div class="w c-amber" data-testid="brief-waiting">
   <svg class="glass" viewBox="0 0 34 40" fill="none" aria-hidden="true">
-    <path d="M7 3h20M7 37h20M9 3c0 9 8 11 8 17S9 28 9 37M25 3c0 9-8 11-8 17s8 8 8 17" stroke="rgba(255,255,255,.8)" stroke-width="1.6" stroke-linecap="round" />
-    <path class="top" d="M11 7h12c-1 5-6 7-6 9 0-2-5-4-6-9z" fill="rgba(255,255,255,.85)" />
-    <path class="bot" d="M11 35h12c-1-4-5-6-6-6s-5 2-6 6z" fill="rgba(255,255,255,.85)" />
+    <path d="M7 3h20M7 37h20M9 3c0 9 8 11 8 17S9 28 9 37M25 3c0 9-8 11-8 17s8 8 8 17" stroke="rgb(var(--b-ink) / .8)" stroke-width="1.6" stroke-linecap="round" />
+    <path class="top" d="M11 7h12c-1 5-6 7-6 9 0-2-5-4-6-9z" fill="rgb(var(--b-ink) / .85)" />
+    <path class="bot" d="M11 35h12c-1-4-5-6-6-6s-5 2-6 6z" fill="rgb(var(--b-ink) / .85)" />
     <line class="stream" x1="17" y1="17" x2="17" y2="30" stroke="#fff" stroke-width="1.4" />
   </svg>
   <div class="eyebrow">Waiting on</div>
@@ -127,7 +127,7 @@
     overflow-wrap: anywhere;
   }
   .row em {
-    color: rgba(255, 255, 255, 0.76) !important;
+    color: rgb(var(--b-ink) / 0.76) !important;
   }
   /* Age in mono at the row end; past a day it sits on a darker pill in warm amber. */
   .age {
@@ -137,7 +137,7 @@
     font-size: 10px;
     letter-spacing: 0.04em;
     line-height: 16px;
-    color: rgba(255, 255, 255, 0.72);
+    color: rgb(var(--b-ink) / 0.72);
   }
   .age.old {
     padding: 0 6px;
@@ -151,14 +151,14 @@
     padding: 4px 10px;
     border-radius: 10px;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.82);
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: rgb(var(--b-ink) / 0.82);
+    background: rgb(var(--b-ink) / 0.08);
+    border: 1px solid rgb(var(--b-ink) / 0.12);
     cursor: default;
   }
   .more:hover,
   .more:focus-visible {
-    background: rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.14);
     outline: none;
   }
 </style>

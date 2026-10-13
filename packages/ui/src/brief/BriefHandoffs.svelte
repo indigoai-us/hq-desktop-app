@@ -162,14 +162,14 @@
   }
   .hr:hover,
   .hr:focus-within {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgb(var(--b-ink) / 0.05);
   }
   .hr.landed {
     opacity: 0.72;
   }
   .hr.done .name {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
+    text-decoration-color: rgb(var(--b-ink) / 0.4);
   }
   .ini {
     width: 20px;
@@ -270,7 +270,7 @@
     width: 9px;
     height: 9px;
     border-radius: 50%;
-    box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.18);
+    box-shadow: inset 0 0 0 1.5px rgb(var(--b-ink) / 0.18);
   }
   .rd.done {
     background: var(--b-ok);
@@ -337,14 +337,14 @@
   .nudge:hover,
   .nudge:focus-visible {
     color: var(--b-t1);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.3);
   }
   .donechip {
     font-size: 11px;
     font-weight: 500;
     padding: 4px 10px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.14);
   }
   .more {
     justify-content: center;

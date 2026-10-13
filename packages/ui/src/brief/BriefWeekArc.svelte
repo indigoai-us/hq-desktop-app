@@ -182,7 +182,7 @@
     transition: background 0.2s;
   }
   .day:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: rgb(var(--b-ink) / 0.04);
   }
   .bar {
     width: 100%;
@@ -205,7 +205,7 @@
     flex: var(--n) 0 0;
     min-height: 3px;
     border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgb(var(--b-ink) / 0.1);
     background: var(--c);
   }
   .sessions {
@@ -223,12 +223,12 @@
     max-width: 38px;
     height: 2px;
     border-radius: 2px;
-    background: rgba(255, 255, 255, 0.12);
+    background: rgb(var(--b-ink) / 0.12);
   }
   /* Today: still running, so dashed and breathing. */
   .today .seg {
     border-style: dashed;
-    border-color: rgba(255, 255, 255, 0.55);
+    border-color: rgb(var(--b-ink) / 0.55);
   }
   .today .bar {
     animation:
@@ -266,7 +266,7 @@
     }
   }
   .proj {
-    stroke: rgba(255, 255, 255, 0.55);
+    stroke: rgb(var(--b-ink) / 0.55);
     stroke-width: 1.4;
     stroke-dasharray: 2 2;
     animation: breathe 3s 1.5s ease-in-out infinite;
@@ -291,7 +291,7 @@
     transform: scale(1.35);
   }
   .disc:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.7);
+    outline: 2px solid rgb(var(--b-ink) / 0.7);
     outline-offset: 2px;
   }
   @keyframes pop {
@@ -337,14 +337,14 @@
     transition: background 0.2s;
   }
   .bt:hover {
-    background: rgba(255, 255, 255, 0.045);
+    background: rgb(var(--b-ink) / 0.045);
   }
   .bt i {
     flex: none;
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--c, rgba(255, 255, 255, 0.2));
+    background: var(--c, rgb(var(--b-ink) / 0.2));
     box-shadow: none;
   }
   .bt b {
@@ -401,7 +401,7 @@
     letter-spacing: 0.02em;
     font-size: 10px;
     color: var(--b-t2);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.12);
     cursor: default;
   }
 </style>

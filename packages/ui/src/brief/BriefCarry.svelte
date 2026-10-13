@@ -46,7 +46,7 @@
   const shown = $derived(all.slice(0, tall ? CARRY_CAP : CARRY_CAP_SHORT));
   const rest = $derived(all.slice(shown.length));
 
-  const RING: Record<RingTone, string> = { white: "#fff", warn: "var(--b-warn)", red: "var(--b-red)", grey: "rgba(255,255,255,.32)" };
+  const RING: Record<RingTone, string> = { white: "#fff", warn: "var(--b-warn)", red: "var(--b-red)", grey: "rgb(var(--b-ink) / .32)" };
 </script>
 
 {#if all.length}
@@ -137,8 +137,8 @@
   }
   .orow:hover,
   .orow:focus-within {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.06);
+    background: rgb(var(--b-ink) / 0.05);
+    border-color: rgb(var(--b-ink) / 0.06);
   }
   .ring {
     width: 14px;
@@ -232,14 +232,14 @@
   }
   .orow.done .t {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
+    text-decoration-color: rgb(var(--b-ink) / 0.4);
   }
   .donechip {
     font-size: 11px;
     font-weight: 500;
     padding: 4px 10px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.14);
   }
   .more-row {
     display: flex;
@@ -250,7 +250,7 @@
     cursor: default;
   }
   .more-row:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.5);
+    outline: 2px solid rgb(var(--b-ink) / 0.5);
     outline-offset: 1px;
   }
 </style>

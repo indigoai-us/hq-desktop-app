@@ -138,14 +138,14 @@
   .src b {
     font-size: 11.5px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.9);
+    color: rgb(var(--b-ink) / 0.9);
     white-space: nowrap;
   }
   .when {
     font-family: var(--b-mono);
     font-size: 10px;
     letter-spacing: 0.04em;
-    color: rgba(255, 255, 255, 0.65);
+    color: rgb(var(--b-ink) / 0.65);
     white-space: nowrap;
   }
   .what {
@@ -157,7 +157,7 @@
     margin-top: 12px;
     font-size: 12.5px;
     line-height: 1.35;
-    color: rgba(255, 255, 255, 0.92);
+    color: rgb(var(--b-ink) / 0.92);
   }
   .pi div {
     display: flex;
@@ -171,7 +171,7 @@
     font-size: 9.5px;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.6);
+    color: rgb(var(--b-ink) / 0.6);
   }
   /* Timeline, as in the approved masthead: white dots on a faint rail, mono UTC clock above each line. */
   .tlv {
@@ -188,7 +188,7 @@
     top: 6px;
     bottom: 6px;
     width: 2px;
-    background: rgba(255, 255, 255, 0.25);
+    background: rgb(var(--b-ink) / 0.25);
   }
   .te {
     display: flex;
@@ -205,10 +205,10 @@
     background: #fff;
     flex: none;
     margin-top: 2px;
-    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.2);
+    box-shadow: 0 0 0 3px rgb(var(--b-ink) / 0.2);
   }
   .te i.hollow {
-    background: rgba(255, 255, 255, 0.3);
+    background: rgb(var(--b-ink) / 0.3);
     box-shadow: none;
   }
   .te p {
@@ -218,7 +218,7 @@
   .te span {
     font-family: var(--b-mono);
     font-size: 10px;
-    color: rgba(255, 255, 255, 0.65);
+    color: rgb(var(--b-ink) / 0.65);
     display: block;
     margin-bottom: 1px;
   }
@@ -226,7 +226,7 @@
     font-family: var(--b-mono);
     font-size: 10.5px;
     letter-spacing: 0.06em;
-    color: rgba(255, 255, 255, 0.8);
+    color: rgb(var(--b-ink) / 0.8);
     align-self: center;
   }
   .start {
@@ -242,7 +242,7 @@
     font-size: 10px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.6);
+    color: rgb(var(--b-ink) / 0.6);
   }
   /* Several recoveries: glass rows (gradient and hairline rim, no inner shadow, no backdrop-filter). */
   .list {
@@ -259,12 +259,12 @@
     padding: 8px 10px;
     border-radius: 12px;
     min-width: 0;
-    background: rgba(255, 255, 255, 0.07);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.07);
+    border: 1px solid rgb(var(--b-ink) / 0.14);
     transition: background 0.2s;
   }
   .rec:hover {
-    background: rgba(255, 255, 255, 0.07);
+    background: rgb(var(--b-ink) / 0.07);
   }
   .txt {
     flex: 1;
@@ -284,12 +284,12 @@
     align-items: baseline;
     margin-top: 2px;
     font-size: 11.5px;
-    color: rgba(255, 255, 255, 0.76);
+    color: rgb(var(--b-ink) / 0.76);
     min-width: 0;
   }
   .d b {
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.9);
+    color: rgb(var(--b-ink) / 0.9);
     white-space: nowrap;
   }
   .d em {
@@ -304,6 +304,6 @@
     font-family: var(--b-mono);
     font-size: 10.5px;
     letter-spacing: 0.06em;
-    color: rgba(255, 255, 255, 0.8);
+    color: rgb(var(--b-ink) / 0.8);
   }
 </style>

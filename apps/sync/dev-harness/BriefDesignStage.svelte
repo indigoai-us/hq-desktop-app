@@ -3,6 +3,7 @@
   // days so card and layout work can iterate with hot reload, no bot or Tauri.
   //   ?view=brief-design&day=oct8|oct11|quiet|catchup|everything
   // Shift+A on the page toggles review mode (every card in the catalogue).
+  //   &theme=dark|light|system  appearance (sets data-force-theme on <html>, as the QA override does).
   import DailyBrief from '../../../packages/ui/src/brief/DailyBrief.svelte';
   import { octoberEightBrief } from '../../../packages/ui/src/brief/brief-fixture';
   import {
@@ -31,6 +32,19 @@
     { uid: 'cmp_liverecover', slug: 'liverecover', label: 'LiveRecover' },
   ];
 
+  type Theme = 'dark' | 'light' | 'system';
+  const THEMES: Theme[] = ['dark', 'light', 'system'];
+  const t0 = params.get('theme');
+  let theme = $state<Theme>(t0 === 'light' || t0 === 'system' ? t0 : 'dark');
+  $effect(() => {
+    const root = document.documentElement;
+    if (theme === 'system') delete root.dataset.forceTheme;
+    else root.dataset.forceTheme = theme;
+    const url = new URL(location.href);
+    url.searchParams.set('theme', theme);
+    history.replaceState(null, '', url);
+  });
+
   function pick(next: Day) {
     day = next;
     const url = new URL(location.href);
@@ -39,8 +53,14 @@
   }
 </script>
 
-<div class="stage">
+<div class="brief-stage">
   <nav class="days" aria-label="Fixture day">
+    <span class="seg" role="group" aria-label="Appearance">
+      {#each THEMES as t (t)}
+        <button class:on={theme === t} onclick={() => (theme = t)}>{t === 'dark' ? 'Dark' : t === 'light' ? 'Light' : 'System'}</button>
+      {/each}
+    </span>
+    <span class="sep"></span>
     {#each Object.entries(DAYS) as [key, d] (key)}
       <button class:on={day === key} onclick={() => pick(key as Day)}>{d.label}</button>
     {/each}
@@ -52,9 +72,21 @@
 </div>
 
 <style>
-  .stage {
-    height: 100vh;
-    overflow: auto;
+  /* The brief scrolls itself; the stage is just the window, edge to edge. */
+  .brief-stage {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+  }
+  .seg {
+    display: inline-flex;
+    gap: 2px;
+  }
+  .sep {
+    width: 1px;
+    height: 16px;
+    margin: 0 4px;
+    background: rgba(255, 255, 255, 0.15);
   }
   .days {
     position: fixed;

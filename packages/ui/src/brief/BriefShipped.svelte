@@ -165,7 +165,7 @@
     font-family: var(--b-mono);
     font-size: 10px;
     letter-spacing: 0.04em;
-    color: rgba(255, 255, 255, 0.32);
+    color: rgb(var(--b-ink) / 0.32);
   }
   .tot {
     display: flex;
@@ -176,11 +176,11 @@
     font-size: var(--b-fs-num);
   }
   .tot .dim {
-    color: rgba(255, 255, 255, 0.56);
+    color: rgb(var(--b-ink) / 0.56);
   }
   .tot small {
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.56);
+    color: rgb(var(--b-ink) / 0.56);
     margin-left: 6px;
   }
   /* Streak flame: consecutive landing days, only when earned (two or more). */
@@ -235,8 +235,8 @@
     container-type: inline-size;
     /* Glass: lit from the top, hairline rim, soft drop. No inner shadow and no
        backdrop-filter (WKWebView draws it as a square that ignores the radius). */
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.09);
     box-shadow: none;
     min-width: 0;
   }
@@ -319,7 +319,7 @@
   }
   .s {
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.56);
+    color: rgb(var(--b-ink) / 0.56);
     margin-top: 3px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -330,7 +330,7 @@
     justify-content: center;
     align-items: center;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.78);
+    color: rgb(var(--b-ink) / 0.78);
     cursor: default;
   }
   .run.more::before,
@@ -339,7 +339,7 @@
   }
   .run.more:hover,
   .run.more:focus-visible {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgb(var(--b-ink) / 0.08);
     outline: none;
   }
 </style>

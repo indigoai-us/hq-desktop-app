@@ -134,13 +134,13 @@
   }
   @keyframes pulse {
     0% {
-      box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7);
+      box-shadow: 0 0 0 0 rgb(var(--b-ink) / 0.7);
     }
     70% {
-      box-shadow: 0 0 0 9px rgba(255, 255, 255, 0);
+      box-shadow: 0 0 0 9px rgb(var(--b-ink) / 0);
     }
     100% {
-      box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+      box-shadow: 0 0 0 0 rgb(var(--b-ink) / 0);
     }
   }
   .inc-eyebrow {
@@ -173,7 +173,7 @@
     margin-top: 8px;
     font-size: 12.5px;
     line-height: 1.35;
-    color: rgba(255, 255, 255, 0.92);
+    color: rgb(var(--b-ink) / 0.92);
   }
   .facts span {
     display: inline-block;
@@ -182,10 +182,10 @@
     font-size: 9.5px;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.6);
+    color: rgb(var(--b-ink) / 0.6);
   }
   .facts .note {
-    color: rgba(255, 255, 255, 0.76);
+    color: rgb(var(--b-ink) / 0.76);
   }
   .prs {
     display: flex;
@@ -218,7 +218,7 @@
     font-family: var(--b-mono);
     font-size: 10px;
     letter-spacing: 0.06em;
-    color: rgba(255, 255, 255, 0.85);
+    color: rgb(var(--b-ink) / 0.85);
     min-height: 14px;
     margin-top: 8px;
   }
@@ -234,7 +234,7 @@
     font-size: 9.5px;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.6);
+    color: rgb(var(--b-ink) / 0.6);
     margin-bottom: 2px;
   }
   .arow {
@@ -246,14 +246,14 @@
     border-radius: 10px;
     font-size: 12px;
     line-height: 1.3;
-    color: rgba(255, 255, 255, 0.92);
-    background: rgba(255, 255, 255, 0.1);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: rgb(var(--b-ink) / 0.92);
+    background: rgb(var(--b-ink) / 0.1);
+    border: 1px solid rgb(var(--b-ink) / 0.12);
     transition: background 0.2s;
   }
   .arow:hover,
   .arow:focus-visible {
-    background: rgba(255, 255, 255, 0.16);
+    background: rgb(var(--b-ink) / 0.16);
     outline: none;
   }
   .arow .tx {
@@ -272,7 +272,7 @@
     font-family: var(--b-mono);
     font-size: 9.5px;
     letter-spacing: 0.04em;
-    color: rgba(255, 255, 255, 0.72);
+    color: rgb(var(--b-ink) / 0.72);
     white-space: nowrap;
   }
   .arow.more {
@@ -304,7 +304,7 @@
     height: 10px;
     border-radius: 2px;
     background: rgba(0, 0, 0, 0.3);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.28);
     cursor: crosshair;
     transition: transform 0.2s, box-shadow 0.2s;
   }

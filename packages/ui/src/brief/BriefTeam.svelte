@@ -24,7 +24,7 @@
   let { team, rows, cols = 2 }: Props = $props();
   const brief = useBrief();
   const GRAD = ["#a855f7,#6d28d9", "#38bdf8,#1d4ed8", "#34d399,#047857", "#fb923c,#c2410c", "#f472b6,#be185d", "#a3e635,#4d7c0f"];
-  const DOT: Record<string, string> = { ok: "var(--b-ok)", warn: "var(--b-warn)", decision: "var(--b-decision)", red: "var(--b-red)", neutral: "rgba(255,255,255,.32)" };
+  const DOT: Record<string, string> = { ok: "var(--b-ok)", warn: "var(--b-warn)", decision: "var(--b-decision)", red: "var(--b-red)", neutral: "rgb(var(--b-ink) / .32)" };
   const shown = $derived(team.slice(0, teamLimit(rows, cols)));
   const rest = $derived(team.slice(shown.length));
   const foot = $derived(teamFooter(team));
@@ -157,7 +157,7 @@
     transition: background 0.25s;
   }
   .p:hover {
-    background: rgba(255, 255, 255, 0.045);
+    background: rgb(var(--b-ink) / 0.045);
   }
   .mono {
     position: relative;
@@ -214,8 +214,8 @@
     border-radius: 999px;
     line-height: 16px;
     color: var(--b-t2);
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgb(var(--b-ink) / 0.06);
+    border: 1px solid rgb(var(--b-ink) / 0.1);
   }
   .cnt {
     text-transform: none;
@@ -240,14 +240,14 @@
     stroke-linejoin: round;
   }
   .ago {
-    color: rgba(255, 255, 255, 0.4);
+    color: rgb(var(--b-ink) / 0.4);
   }
   .d {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     font-size: 11.5px;
-    color: rgba(255, 255, 255, 0.56);
+    color: rgb(var(--b-ink) / 0.56);
     line-height: 1.3;
   }
   .d.note {
@@ -275,11 +275,11 @@
     font-family: var(--b-mono);
     font-size: 10px;
     letter-spacing: 0.08em;
-    color: rgba(255, 255, 255, 0.7);
+    color: rgb(var(--b-ink) / 0.7);
     padding: 5px 8px;
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.07);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgb(var(--b-ink) / 0.07);
+    border: 1px solid rgb(var(--b-ink) / 0.1);
     transition: background 0.2s, color 0.2s;
   }
   /* Each action takes on its own colour: the teammate's for DM, green for thanks. */
@@ -298,13 +298,13 @@
     border-radius: 10px;
     font-size: 12px;
     color: var(--b-t2);
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgb(var(--b-ink) / 0.05);
+    border: 1px solid rgb(var(--b-ink) / 0.08);
     cursor: default;
   }
   .more:hover,
   .more:focus-visible {
-    background: rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.09);
     outline: none;
   }
 </style>

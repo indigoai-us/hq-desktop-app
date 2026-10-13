@@ -326,7 +326,7 @@
     max-width: min(440px, calc(54% - 32px));
     font-size: 13.5px;
     line-height: 1.35;
-    color: rgba(255, 255, 255, 0.86);
+    color: rgb(var(--b-ink) / 0.86);
   }
   .lede {
     margin-top: 12px;
@@ -433,7 +433,7 @@
     margin-top: 4px;
     font-family: var(--b-mono);
     font-size: 10px;
-    color: rgba(255, 255, 255, 0.4);
+    color: rgb(var(--b-ink) / 0.4);
   }
   .tick {
     position: absolute;
@@ -488,7 +488,7 @@
     font-family: var(--b-mono);
     font-size: 12px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.56);
+    color: rgb(var(--b-ink) / 0.56);
   }
   /* The estimate sits after the count in the same mono, dimmer, with its own chip. */
   .eta {

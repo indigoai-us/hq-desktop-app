@@ -132,20 +132,20 @@
     gap: 12px;
     padding: 9px 10px 9px 12px;
     border-radius: 14px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.09);
     box-shadow: none;
     transition: background 0.25s, opacity 0.5s;
   }
   .it:hover {
-    background: rgba(255, 255, 255, 0.07);
+    background: rgb(var(--b-ink) / 0.07);
   }
   .it.done {
     opacity: 0.45;
   }
   .it.done .q {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
+    text-decoration-color: rgb(var(--b-ink) / 0.4);
   }
   .tx {
     flex: 1;
@@ -220,13 +220,13 @@
     color: var(--b-t2);
     padding: 6px 9px;
     border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border: 1px solid rgb(var(--b-ink) / 0.14);
     transition: background 0.2s, color 0.2s;
   }
   .mark:hover,
   .mark:focus-visible {
     color: var(--b-t1);
-    background: rgba(255, 255, 255, 0.1);
+    background: rgb(var(--b-ink) / 0.1);
     outline: none;
   }
   .donechip {
@@ -235,7 +235,7 @@
     padding: 6px 12px;
     border-radius: 999px;
     color: var(--b-t2);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border: 1px solid rgb(var(--b-ink) / 0.14);
   }
   .more-row {
     justify-content: center;

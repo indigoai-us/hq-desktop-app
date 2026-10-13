@@ -95,7 +95,7 @@
   }
   .r:hover,
   .r:focus-visible {
-    background: rgba(255, 255, 255, 0.045);
+    background: rgb(var(--b-ink) / 0.045);
     outline: none;
   }
   /* The mockup's 14 px violet tick: settled, not pending. */

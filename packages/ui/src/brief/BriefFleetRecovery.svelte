@@ -260,19 +260,19 @@
     fill-opacity: 0.22;
   }
   .chart .base {
-    stroke: rgba(255, 255, 255, 0.08);
+    stroke: rgb(var(--b-ink) / 0.08);
     stroke-width: 1;
     vector-effect: non-scaling-stroke;
   }
   .chart .pin {
-    stroke: rgba(255, 255, 255, 0.4);
+    stroke: rgb(var(--b-ink) / 0.4);
     stroke-width: 1;
     stroke-dasharray: 2 2;
     vector-effect: non-scaling-stroke;
   }
   .chart .line {
     fill: none;
-    stroke: rgba(255, 255, 255, 0.6);
+    stroke: rgb(var(--b-ink) / 0.6);
     stroke-width: 1.3;
     stroke-linejoin: round;
     stroke-linecap: round;
@@ -295,7 +295,7 @@
     font-family: var(--b-mono);
     font-size: 9px;
     letter-spacing: 0.04em;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgb(var(--b-ink) / 0.55);
     white-space: nowrap;
     cursor: default;
     line-height: 12px;
@@ -348,14 +348,14 @@
     min-width: 0;
     cursor: default;
     /* Glass: lit from the top, hairline rim. No inner shadow, no backdrop-filter. */
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.08);
     transition: background 0.2s, border-color 0.2s;
   }
   .ag:hover,
   .ag:focus-visible {
-    background: rgba(255, 255, 255, 0.07);
-    border-color: rgba(255, 255, 255, 0.18);
+    background: rgb(var(--b-ink) / 0.07);
+    border-color: rgb(var(--b-ink) / 0.18);
     outline: none;
   }
   .dot {

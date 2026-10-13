@@ -213,8 +213,8 @@
   .pill,
   .node,
   .tile {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.09);
     box-shadow: none;
   }
 
@@ -243,14 +243,14 @@
     transition: background 0.2s, opacity 0.3s;
   }
   .pill:hover {
-    background: rgba(255, 255, 255, 0.07);
+    background: rgb(var(--b-ink) / 0.07);
   }
   .pill.dim {
     opacity: 0.45;
   }
   .pill.done .pt {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
+    text-decoration-color: rgb(var(--b-ink) / 0.4);
     color: var(--b-t2);
   }
   .pill.more {
@@ -311,7 +311,7 @@
   }
   .edge {
     fill: none;
-    stroke: rgba(255, 255, 255, 0.3);
+    stroke: rgb(var(--b-ink) / 0.3);
     transition: stroke 0.25s, opacity 0.25s;
   }
   .edge.late {
@@ -349,7 +349,7 @@
   }
   .party.lift {
     transform: translateX(-4px);
-    background: rgba(255, 255, 255, 0.06);
+    background: rgb(var(--b-ink) / 0.06);
   }
   .party.dim {
     opacity: 0.45;
@@ -454,14 +454,14 @@
     background: rgba(255, 153, 102, 0.08);
   }
   .node.you small {
-    color: rgba(255, 255, 255, 0.7);
+    color: rgb(var(--b-ink) / 0.7);
   }
   .node.you.done {
     opacity: 0.55;
   }
   .node.you.done .t {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
+    text-decoration-color: rgb(var(--b-ink) / 0.4);
   }
   .node.more {
     flex: 0.8 1 0;
@@ -476,7 +476,7 @@
     flex: 0 0 22px;
     min-width: 14px;
     height: 2px;
-    background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.35) 0 5px, transparent 5px 10px);
+    background: repeating-linear-gradient(90deg, rgb(var(--b-ink) / 0.35) 0 5px, transparent 5px 10px);
     background-size: 20px 2px;
     animation: flow 1s linear infinite;
   }

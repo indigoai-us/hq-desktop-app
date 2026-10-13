@@ -263,7 +263,7 @@
     font-size: 20px;
     font-weight: 500;
     letter-spacing: -0.01em;
-    color: rgba(255, 255, 255, 0.95);
+    color: rgb(var(--b-ink) / 0.95);
   }
   .step {
     margin: 0;
@@ -272,7 +272,7 @@
     color: rgba(255, 210, 190, 0.8);
   }
   .failed .step {
-    color: rgba(255, 255, 255, 0.6);
+    color: rgb(var(--b-ink) / 0.6);
   }
   .actions {
     display: flex;

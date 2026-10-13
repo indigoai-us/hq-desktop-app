@@ -85,7 +85,7 @@
     align-items: baseline;
     gap: 8px;
     font-size: 12.5px;
-    color: rgba(255, 255, 255, 0.82);
+    color: rgb(var(--b-ink) / 0.82);
     transition: opacity 0.4s ease;
   }
   .mark {
@@ -96,17 +96,17 @@
     color: #ffb580;
   }
   li.skipped {
-    color: rgba(255, 255, 255, 0.4);
+    color: rgb(var(--b-ink) / 0.4);
   }
   li.skipped .mark {
-    color: rgba(255, 255, 255, 0.4);
+    color: rgb(var(--b-ink) / 0.4);
   }
   li.failed,
   li.failed .mark {
     color: #fbbf24;
   }
   .det {
-    color: rgba(255, 255, 255, 0.45);
+    color: rgb(var(--b-ink) / 0.45);
   }
   .pulse {
     display: inline-block;
@@ -131,11 +131,11 @@
   .time {
     margin: 0;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgb(var(--b-ink) / 0.55);
   }
   .time {
     font-family: var(--b-mono, ui-monospace, monospace);
     font-size: 11px;
-    color: rgba(255, 255, 255, 0.4);
+    color: rgb(var(--b-ink) / 0.4);
   }
 </style>

@@ -84,7 +84,7 @@
     max-width: 560px;
     font-size: 13.5px;
     line-height: 1.35;
-    color: rgba(255, 255, 255, 0.86);
+    color: rgb(var(--b-ink) / 0.86);
   }
   .cu {
     display: grid;
@@ -103,15 +103,15 @@
     min-width: 0;
     padding: 11px 12px 10px;
     border-radius: 14px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-ink) / 0.04);
+    border: 1px solid rgb(var(--b-ink) / 0.09);
     box-shadow: none;
     transition: background 0.3s, border-color 0.3s;
   }
   .tile:hover,
   .tile:focus-visible {
-    background: rgba(255, 255, 255, 0.07);
-    border-color: rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.07);
+    border-color: rgb(var(--b-ink) / 0.14);
     outline: none;
   }
   .tag {
@@ -165,7 +165,7 @@
     justify-content: center;
     align-items: center;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.78);
+    color: rgb(var(--b-ink) / 0.78);
     cursor: default;
   }
   .quiet {

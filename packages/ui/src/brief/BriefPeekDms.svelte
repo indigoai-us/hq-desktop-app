@@ -132,6 +132,6 @@
     padding: 6px 14px;
     border-radius: 999px;
     color: #1b1b1e;
-    background: rgba(255, 255, 255, 0.92);
+    background: rgb(var(--b-ink) / 0.92);
   }
 </style>
