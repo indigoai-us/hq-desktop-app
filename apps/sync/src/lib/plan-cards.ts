@@ -64,19 +64,21 @@ export interface StarterAllowances {
   secrets: number;
   storageBytes: number;
   integrations: number;
-  deployments: number;
+  /** Null means unlimited: deploys have no limit (owner decision 2026-10-12). */
+  deployments: number | null;
 }
 
 /**
  * hq-pro PLAN_LIMITS.free at the time of writing (integrations raised from 1
- * to 3 on 2026-10-08). Shown only when GET /v1/pricing cannot be read.
+ * to 3 on 2026-10-08; deploys unlimited from 2026-10-12). Shown only when
+ * GET /v1/pricing cannot be read.
  */
 export const STARTER_FALLBACK: StarterAllowances = {
   users: 5,
   secrets: 10,
   storageBytes: 10 * 1024 ** 3,
   integrations: 3,
-  deployments: 500,
+  deployments: null,
 };
 
 export const PRICING_PATH = '/v1/pricing';
@@ -87,6 +89,10 @@ function count(n: number, one: string, many: string): string {
 
 function gigabytes(bytes: number): string {
   return `${Math.round(bytes / 1024 ** 3)} GB`;
+}
+
+function deploysLabel(deployments: number | null): string {
+  return deployments === null ? 'Unlimited deploys' : `${deployments} lifetime deploys`;
 }
 
 function starterCard(limits: StarterAllowances): PlanCardCopy {
@@ -108,7 +114,7 @@ function starterCard(limits: StarterAllowances): PlanCardCopy {
       {
         label: 'Limits',
         value: `${count(limits.secrets, 'secret', 'secrets')} · ${gigabytes(limits.storageBytes)} · ${count(limits.integrations, 'integration', 'integrations')}, no MCP or Atlas`,
-        detail: `${limits.deployments} lifetime deploys. Over a limit, new files and new secrets stop until you are back under`,
+        detail: `${deploysLabel(limits.deployments)}. Over a limit, new files and new secrets stop until you are back under`,
         state: 'capped',
       },
     ],
@@ -127,7 +133,8 @@ function positiveInt(value: unknown): number | null {
 
 /**
  * Starter's ceilings from a GET /v1/pricing body, or null when the body does
- * not carry a complete, finite Starter ("free") plan.
+ * not carry a complete Starter ("free") plan. Every ceiling must be finite
+ * except deploys, where null means unlimited.
  */
 export function starterAllowancesFromPricing(body: unknown): StarterAllowances | null {
   if (!isRecord(body) || !Array.isArray(body.plans)) return null;
@@ -138,8 +145,9 @@ export function starterAllowancesFromPricing(body: unknown): StarterAllowances |
   const secrets = positiveInt(included.secrets);
   const storageBytes = positiveInt(included.storageBytes);
   const integrations = positiveInt(included.integrations);
-  const deployments = positiveInt(included.deployments);
-  if (!users || !secrets || !storageBytes || !integrations || !deployments) return null;
+  const deployments = included.deployments === null ? null : positiveInt(included.deployments);
+  if (!users || !secrets || !storageBytes || !integrations) return null;
+  if (deployments === null && included.deployments !== null) return null;
   return { users, secrets, storageBytes, integrations, deployments };
 }
 

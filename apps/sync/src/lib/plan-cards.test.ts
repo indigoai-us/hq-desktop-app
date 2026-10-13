@@ -51,7 +51,7 @@ describe('plan card copy', () => {
       [
         'capped',
         '10 secrets · 10 GB · 3 integrations, no MCP or Atlas',
-        '500 lifetime deploys. Over a limit, new files and new secrets stop until you are back under',
+        'Unlimited deploys. Over a limit, new files and new secrets stop until you are back under',
       ],
     ]);
     expect(rows(1)).toEqual([
@@ -64,13 +64,14 @@ describe('plan card copy', () => {
 });
 
 // The shape hq-pro's GET /v1/pricing answers with (src/billing/pricing-statement.ts).
+// Deploys have no limit, so the statement publishes null for them on every plan.
 const PRICING = {
   version: 1,
   plans: [
     {
       id: 'free',
       displayName: 'Starter',
-      included: { users: 5, secrets: 10, deployments: 500, storageBytes: 10737418240, integrations: 3, agents: 0 },
+      included: { users: 5, secrets: 10, deployments: null, storageBytes: 10737418240, integrations: 3, agents: 0 },
     },
     {
       id: 'paid-500',
@@ -87,7 +88,7 @@ describe('Starter ceilings from GET /v1/pricing', () => {
       secrets: 10,
       storageBytes: 10737418240,
       integrations: 3,
-      deployments: 500,
+      deployments: null,
     });
     expect(STARTER_FALLBACK).toEqual(starterAllowancesFromPricing(PRICING));
   });
@@ -98,6 +99,35 @@ describe('Starter ceilings from GET /v1/pricing', () => {
     const unlimited = structuredClone(PRICING);
     unlimited.plans[0]!.included.integrations = null as unknown as number;
     expect(starterAllowancesFromPricing(unlimited)).toBeNull();
+    for (const deployments of [undefined, 0, -1, 1.5, '500']) {
+      const bad = structuredClone(PRICING);
+      (bad.plans[0]!.included as Record<string, unknown>).deployments = deployments;
+      expect(starterAllowancesFromPricing(bad), `deployments: ${String(deployments)}`).toBeNull();
+    }
+  });
+
+  it('reads a null deploy limit as unlimited and keeps the live ceilings', () => {
+    const live = structuredClone(PRICING);
+    Object.assign(live.plans[0]!.included, { users: 8, integrations: 4 });
+    const starter = starterAllowancesFromPricing(live);
+    expect(starter).toEqual({ ...STARTER_FALLBACK, users: 8, integrations: 4, deployments: null });
+    const card = planCardsFor(starter!)[0]!;
+    expect(card.rows[0]!.value).toBe('Up to 8 members, no seat fees');
+    expect(card.rows[3]!.detail).toMatch(/^Unlimited deploys\./);
+  });
+
+  it('still reads a finite deploy limit from a server that publishes one', () => {
+    const capped = structuredClone(PRICING);
+    (capped.plans[0]!.included as Record<string, unknown>).deployments = 500;
+    expect(starterAllowancesFromPricing(capped)?.deployments).toBe(500);
+  });
+
+  it('has no built-in deploy number on any card', () => {
+    for (const card of PLAN_CARDS) {
+      for (const row of card.rows) {
+        expect(`${row.value} ${row.detail ?? ''}`).not.toMatch(/\d+ (lifetime )?deploys/);
+      }
+    }
   });
 
   it('builds the Starter card from whatever the server says', () => {
