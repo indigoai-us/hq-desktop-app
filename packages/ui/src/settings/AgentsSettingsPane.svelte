@@ -295,7 +295,7 @@
           {/if}
           {#if copyFailedId === app.id}
             <pre class="ss-field-help hq-connector-manual" data-testid={`settings-hq-connector-${app.id}-manual`}>{app.copyText}</pre>
-            <div class="ss-field-help" role="status">Copy didn't work. Select the text above, or tap Copy to try again.</div>
+            <div class="ss-field-help" role="status">Copy didn't work. Select the text above, or tap the button to try again.</div>
           {/if}
         </div>
         <button
@@ -303,7 +303,7 @@
           class="ss-btn"
           data-testid={`settings-hq-connector-${app.id}-copy`}
           onclick={() => void copySetup(app)}
-        >{copiedId === app.id ? "Copied" : "Copy"}</button>
+        >{copiedId === app.id ? "Copied" : ("copyLabel" in app && app.copyLabel) || "Copy"}</button>
       </div>
     {/each}
   </div>

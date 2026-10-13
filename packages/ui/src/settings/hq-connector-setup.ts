@@ -21,6 +21,8 @@ export interface ConnectorApp {
   help: string;
   /** What the Copy button puts on the clipboard. */
   copyText: string;
+  /** Copy button label. Defaults to "Copy". */
+  copyLabel?: string;
   /** Step-by-step setup, for apps added through their own settings screens. */
   steps?: readonly string[];
 }
@@ -28,11 +30,20 @@ export interface ConnectorApp {
 /**
  * Grok Bot runs its bots on xAI's cloud and adds custom MCP servers from
  * chat. Saying "custom" keeps it from installing a catalog plugin instead.
+ * Grok Bot keeps per-server custom instructions, so the copied text also
+ * saves how to use HQ across companies on the indigo server.
  */
 export const GROK_BOT_CONNECT_PROMPT = [
-  `Add a custom MCP server called "indigo" at ${INDIGO_MCP_URL}.`,
-  "It uses OAuth, so show me the connect card and let me sign in.",
-  "Once it is connected, call hq_companies_list and tell me which companies I can work in.",
+  `Add a custom MCP server called "indigo" at ${INDIGO_MCP_URL}. It uses OAuth, so show me the connect card and let me sign in to HQ.`,
+  "",
+  "Once it is connected, save the following as the custom instructions for the indigo server:",
+  "- HQ holds my companies' files, knowledge, secrets and connected apps. Before any HQ work, call hq_companies_list and work in the company I name. If I belong to more than one company and did not name one, ask me which.",
+  "- Pass that company on every HQ call. Never copy one company's files or data into another company.",
+  "- Use search, hq_files_list and hq_files_read to find and read files. Use hq_files_write to save work back to HQ.",
+  "- Never ask me to paste a secret. Use hq_secrets_list to see which secrets exist and hq_secrets_sandbox to run a command that needs one.",
+  "- Use hq_integrations_list and hq_integrations_call for the company's connected apps.",
+  "",
+  "Then tell me which companies I can work in.",
 ].join("\n");
 
 export const CLAUDE_CODE_CONNECT_PROMPT = [
@@ -61,7 +72,8 @@ export const CONNECTOR_APPS: readonly ConnectorApp[] = [
   {
     id: "grok-bot",
     name: "Grok Bot",
-    help: "Copy this prompt and paste it into a Grok Bot chat. It adds HQ and asks you to sign in.",
+    help: "Copy these instructions and paste them into a Grok Bot chat. They add HQ, ask you to sign in, and teach Grok Bot how to work across your companies.",
+    copyLabel: "Copy instructions",
     copyText: GROK_BOT_CONNECT_PROMPT,
   },
   {

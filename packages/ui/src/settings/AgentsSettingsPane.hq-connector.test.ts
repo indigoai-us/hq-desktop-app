@@ -75,10 +75,21 @@ describe("Settings → AI tools: Connect AI apps to HQ", () => {
     expect(GROK_BOT_CONNECT_PROMPT).toContain("OAuth");
   });
 
-  it("copies the Grok Bot prompt and confirms with Copied", async () => {
+  it("Grok Bot copies full instructions for working across companies", () => {
+    expect(GROK_BOT_CONNECT_PROMPT).toContain("custom instructions for the indigo server");
+    expect(GROK_BOT_CONNECT_PROMPT).toContain("hq_companies_list");
+    expect(GROK_BOT_CONNECT_PROMPT).toContain("Pass that company on every HQ call");
+    expect(GROK_BOT_CONNECT_PROMPT).toContain("hq_secrets_sandbox");
+    expect(GROK_BOT_CONNECT_PROMPT).toContain("hq_integrations_call");
+    expect(GROK_BOT_CONNECT_PROMPT).not.toContain("—");
+  });
+
+  it("copies the Grok Bot instructions and confirms with Copied", async () => {
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     await render();
+    expect(q("settings-hq-connector-grok-bot-copy")?.textContent).toBe("Copy instructions");
+    expect(q("settings-hq-connector-claude-copy")?.textContent).toBe("Copy");
     q("settings-hq-connector-grok-bot-copy")?.click();
     await settle();
     expect(writeText).toHaveBeenCalledWith(GROK_BOT_CONNECT_PROMPT);
