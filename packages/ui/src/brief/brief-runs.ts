@@ -194,14 +194,23 @@ export function parseActivity(raw: unknown): BriefActivity[] {
   return out.slice(-12);
 }
 
+/** A run the person stopped: terminal like failed, but not the bot's fault. */
+export type BriefStatusState = BriefRunState | "cancelled";
+
+function statusState(v: unknown): BriefStatusState | null {
+  return v === "cancelled" ? v : runState(v);
+}
+
 export interface BriefRunStatus {
   runId: string;
-  state: BriefRunState;
+  state: BriefStatusState;
   step: string;
   progress: number;
   startedAt: string | null;
   updatedAt: string | null;
   error: string | null;
+  /** The skill's plain sentence for a failed or cancelled run, when it wrote one. */
+  message: string | null;
   sources: Record<string, unknown>;
   housekeeping: Record<string, unknown> | null;
   /** Empty when the skill that wrote it predates the activity list. */
@@ -222,7 +231,9 @@ export function parseBriefStatus(text: string): BriefRunStatus | null {
     return null;
   }
   const r = rec(raw);
-  const state = runState(r.state);
+  // The skill writes `state`; a failure written by hand as `status` (seen
+  // 2026-10-13, skill_not_found) must still end the run instead of timing out.
+  const state = statusState(r.state) ?? (r.state === undefined ? statusState(r.status) : null);
   const runId = str(r.run_id);
   if (!state || !runId) return null;
   return {
@@ -233,6 +244,7 @@ export function parseBriefStatus(text: string): BriefRunStatus | null {
     startedAt: str(r.started_at) || null,
     updatedAt: str(r.updated_at) || null,
     error: str(r.error) || null,
+    message: str(r.message) || null,
     sources: rec(r.sources),
     housekeeping: r.housekeeping && typeof r.housekeeping === "object" ? rec(r.housekeeping) : null,
     activity: parseActivity(r.activity),
@@ -240,6 +252,27 @@ export function parseBriefStatus(text: string): BriefRunStatus | null {
     samples: r.samples ?? null,
     company: str(r.company) || null,
   };
+}
+
+const DEFAULT_FAILED_MESSAGE = "The brief stopped before it finished.";
+const CANCELLED_MESSAGE = "You cancelled this brief.";
+
+/**
+ * The sentence shown for a run that ended without a brief: the skill's own
+ * `message` first, then its `error` (older skills put the sentence there),
+ * then a plain default. Codes like `skill_not_found` are not sentences and
+ * never shown on their own.
+ */
+export function failedMessage(status: Pick<BriefRunStatus, "state" | "error" | "message">): string {
+  const said = status.message ?? (status.error && /\s/.test(status.error) ? status.error : null);
+  if (status.state === "cancelled") return said ?? CANCELLED_MESSAGE;
+  return said ?? DEFAULT_FAILED_MESSAGE;
+}
+
+/** "Sent to Jellybean, waiting for it to start". Shown while the bot has not written status.json. */
+export function waitingStep(bot: string | null | undefined): string {
+  const name = bot?.trim();
+  return name ? `Sent to ${name}, waiting for it to start` : "Sent to your bot, waiting for it to start";
 }
 
 /**
@@ -250,7 +283,13 @@ export type BriefCreatePhase =
   | { kind: "idle" }
   | { kind: "blocked"; message: string; fix: BriefBotFix }
   | { kind: "dispatching"; runId: string }
-  | { kind: "waiting"; runId: string; sentAt: number }
+  | {
+      kind: "waiting";
+      runId: string;
+      sentAt: number;
+      /** The bot the job went to, for the waiting line and the timeout; unknown after a reload. */
+      bot?: string;
+    }
   | {
       kind: "running";
       runId: string;
@@ -272,8 +311,14 @@ export type BriefCreatePhase =
       stalled?: true;
     };
 
-/** No status file this long after sending: the bot never picked the job up. */
-export const BRIEF_START_TIMEOUT_MS = 3 * 60_000;
+/**
+ * No status file this long after sending: the bot never picked the job up.
+ * The skill writes status.json as its first command, so an idle bot reports
+ * within seconds; the margin covers a bot mid-turn or mid-restart (measured
+ * 2026-10-13: 96 s to pickup under a restart, then a 134 s warm-up on the old
+ * skill, which the 3-minute limit called a failure one minute early).
+ */
+export const BRIEF_START_TIMEOUT_MS = 5 * 60_000;
 /**
  * Nothing in the run folder has changed this long: a soft "stalled" verdict.
  * Older skills write status.json only at start and end, and a full sweep can
@@ -302,8 +347,8 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
   const status = "text" in reading && reading.text != null ? parseBriefStatus(reading.text) : null;
   if (status && status.runId === runId) {
     if (status.state === "ready") return { kind: "ready", runId };
-    if (status.state === "failed") {
-      return { kind: "failed", runId, message: status.error ?? "The brief stopped before it finished." };
+    if (status.state === "failed" || status.state === "cancelled") {
+      return { kind: "failed", runId, message: failedMessage(status) };
     }
     const changed =
       phase.kind !== "running" ||
@@ -335,7 +380,9 @@ export function advanceBriefRun(phase: BriefCreatePhase, reading: BriefPollReadi
     return phase;
   }
   if (now - sentAt > BRIEF_START_TIMEOUT_MS) {
-    return { kind: "failed", runId, message: "Your bot did not start the brief. Check that it is running, then try again." };
+    const who = phase.bot?.trim() || "Your bot";
+    const minutes = Math.round(BRIEF_START_TIMEOUT_MS / 60_000);
+    return { kind: "failed", runId, message: `${who} has not started the brief after ${minutes} minutes. Check that it is running, then try again.` };
   }
   return phase;
 }
@@ -432,7 +479,8 @@ export function stillWorkingLine(
   const since = phase.kind === "running" ? phase.lastChangeAt : phase.sentAt;
   if (now - since < BRIEF_QUIET_MS) return null;
   const running = phase.kind === "running" ? [...(phase.activity ?? [])].reverse().find((a) => a.state === "running") : undefined;
-  const what = running?.label ?? phaseFromFiles(files, phase.kind === "running" ? phase.step : "Waiting for your bot to start");
+  if (phase.kind === "waiting") return `Still waiting for ${phase.bot?.trim() || "your bot"} to start…`;
+  const what = running?.label ?? phaseFromFiles(files, phase.step);
   return `Still working on ${what.charAt(0).toLowerCase()}${what.slice(1)}…`;
 }
 

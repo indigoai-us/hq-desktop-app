@@ -60,6 +60,7 @@ import {
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   VISUAL_FIRST_RUN_FLAG,
+  FIRST_RUN_FOUND_APPS_FLAG,
   createHqProFlagFetch,
   createHqProRestFetch,
   createScopedFeatureFlagGates,
@@ -263,6 +264,12 @@ export function createSyncPlatformAdapter(
     if (flag === VISUAL_FIRST_RUN_FLAG) {
       // Visual first-run setup is a rollout: off until the hq-flags registry
       // holds an explicit enabled value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === FIRST_RUN_FOUND_APPS_FLAG) {
+      // The first-run "Your apps" step is a rollout: off until the hq-flags
+      // registry holds an explicit enabled value. GET /v1/identity/features
+      // does not exist on hq-pro, so never fall through to it.
       return Promise.resolve(ok(false));
     }
     if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
@@ -1476,6 +1483,7 @@ export function createSyncPlatformAdapter(
         readFrontmatter: (path) => call('read_vault_note_frontmatter', { path }),
       },
       getFileContent: (path) => call('get_company_file_content', { path }),
+      appendBriefLog: (line) => call('append_brief_log', { line }),
       createFile: (path, contents) => call('create_project_file', { path, contents }),
       listVaultPrefix: (companyUid, prefix, cursor) =>
         hqProJson(
