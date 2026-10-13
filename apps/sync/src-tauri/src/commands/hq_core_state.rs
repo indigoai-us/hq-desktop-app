@@ -5581,7 +5581,13 @@ where
         candidate.version_behind || baseline_refresh_pending,
         sync_in_progress && !sync_deferral_cap_reached,
     ) {
-        CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
+        CoreAutoUpdateDecision::Ignore => {
+            // Nothing to install, for example because sync delivered the
+            // release from another computer. The next release starts a fresh
+            // deferral streak.
+            reset_core_update_sync_deferral_streak();
+            NativeCoreAutoUpdateOutcome::Ignored
+        }
         CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled => {
             skip_automatic_core_update_for_disabled_updates(candidate)
         }
@@ -6185,6 +6191,68 @@ mod tests {
         );
         assert_ne!(outcomes[cap - 1], NativeCoreAutoUpdateOutcome::DeferredForSync, "{outcomes:?}");
         assert_eq!(installs.load(Ordering::Acquire), 1);
+    }
+
+    // A daemon-hosted machine can defer release A and then receive A through
+    // sync from another computer. The next check is up to date, so the
+    // deferral count for A must not carry over and cut short the grace that
+    // the next release B gets while sync is busy.
+    #[tokio::test]
+    async fn deferral_streak_resets_when_core_is_up_to_date() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        reset_core_update_sync_deferral_streak();
+        let home = TempDir::new().unwrap();
+        let release_a = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("16.0.13"),
+            target_version: "16.0.14-streak-reset-a",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let up_to_date = CoreAutoUpdateCandidate {
+            local_version: Some("16.0.14-streak-reset-a"),
+            version_behind: false,
+            ..release_a
+        };
+        let release_b = CoreAutoUpdateCandidate {
+            local_version: Some("16.0.14-streak-reset-a"),
+            target_version: "16.0.15-streak-reset-b",
+            ..release_a
+        };
+        let installs = Arc::new(AtomicUsize::new(0));
+        let start = Instant::now();
+        let mut checks = vec![release_a; CORE_UPDATE_SYNC_DEFERRAL_CAP as usize - 1];
+        checks.push(up_to_date);
+        checks.push(release_b);
+        let mut outcomes = Vec::new();
+        for (attempt, candidate) in checks.into_iter().enumerate() {
+            let installs_for_call = Arc::clone(&installs);
+            let at = start + Duration::from_secs(60 * attempt as u64);
+            let outcome = execute_native_core_auto_update_with_clock_and_preinstall_and_target_check(
+                candidate,
+                true,
+                true,
+                true,
+                move || at,
+                Some(home.path()),
+                || false,
+                || async { AutomaticCoreUpdatePreinstall::DeferForSync },
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    installs_for_call.fetch_add(1, Ordering::AcqRel);
+                    Ok(CoreUpdateAutoInstall::new(0, true))
+                },
+            )
+            .await;
+            outcomes.push(outcome);
+        }
+        reset_core_update_sync_deferral_streak();
+
+        let last = outcomes.len() - 1;
+        assert_eq!(outcomes[last - 1], NativeCoreAutoUpdateOutcome::Ignored, "{outcomes:?}");
+        assert_eq!(outcomes[last], NativeCoreAutoUpdateOutcome::DeferredForSync, "{outcomes:?}");
+        assert_eq!(installs.load(Ordering::Acquire), 0);
     }
 
     // Snapshot of the hq-pro entries that can admit `core_update_failed`
