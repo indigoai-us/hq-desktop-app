@@ -89,7 +89,7 @@
     font: inherit;
     font-size: 13px;
     padding: 6px 12px;
-    border-radius: 999px;
+    border-radius: 8px;
     border: 0;
     color: var(--b-t1);
     background: var(--b-card-hi);

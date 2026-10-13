@@ -114,12 +114,12 @@
     font-weight: 500;
     color: inherit;
     padding: 1px 9px;
-    border-radius: 999px;
+    border-radius: 6px 0 0 6px;
     transition: background 0.2s, color 0.2s;
   }
   .alt button + button {
     border-left: 1px solid rgba(42, 26, 92, 0.2);
-    border-radius: 0 999px 999px 0;
+    border-radius: 0 6px 6px 0;
   }
   .alt button:hover,
   .alt button:focus-visible {

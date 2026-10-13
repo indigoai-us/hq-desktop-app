@@ -138,7 +138,7 @@
     font: inherit;
     font-size: 13px;
     border: 0;
-    border-radius: 999px;
+    border-radius: 8px;
     color: var(--b-t1);
     background: var(--b-card-hi);
     box-shadow: var(--b-raise);
@@ -166,7 +166,7 @@
     align-items: center;
     gap: 8px;
     padding: 4px 10px;
-    border-radius: 999px;
+    border-radius: 8px;
     box-shadow: var(--b-well);
     color: var(--b-sun);
   }

@@ -340,7 +340,7 @@
     font: inherit;
     font-size: 13px;
     border: 0;
-    border-radius: 999px;
+    border-radius: 8px;
     padding: 8px 18px;
     cursor: pointer;
   }

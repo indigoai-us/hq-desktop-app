@@ -71,8 +71,9 @@
   --b-ice: #c9d6e4;
   --b-sun: #ffb580;
   --b-sun-2: #ff809f;
-  /* App standard (docs/design-standard-console-rail.md): 8px cards, 6px inner tiles. */
-  --b-r: 8px;
+  /* App standard: 10px cards (as the Messages composer and settings cards), 6px inner tiles,
+     8px buttons and pop-ups; full rounding only on informational pills. */
+  --b-r: 10px;
   --b-gap: 8px;
   /* The one hot pill (the first stat), after the reference's pink tag. */
   --b-hot: #ff6f98;
@@ -493,7 +494,7 @@
   font-size: 13px;
   font-weight: 500;
   padding: 7px 12px;
-  border-radius: 999px;
+  border-radius: 8px;
   color: #2a1a5c;
   background: #fff;
   box-shadow: var(--b-go-ring);
@@ -524,7 +525,7 @@
 .daily-brief .launch .eng {
   display: inline-flex;
   padding: 2px;
-  border-radius: 999px;
+  border-radius: 6px;
   background: rgb(var(--b-ink) / 0.06);
 }
 /* Engine marks: the rail's brand marks at 14px. Muted until chosen; the
@@ -536,7 +537,7 @@
   place-items: center;
   height: 14px;
   padding: 3px 6px;
-  border-radius: 999px;
+  border-radius: 4px;
   color: rgb(var(--b-ink) / 0.55);
   transition: background 0.2s, color 0.2s;
 }
@@ -568,7 +569,7 @@
   height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 999px;
+  border-radius: 8px;
   color: rgb(var(--b-ink) / 0.75);
   transition: background 0.2s, color 0.2s;
 }
@@ -602,7 +603,7 @@
   max-height: min(520px, calc(100vh - 32px));
   overflow: auto;
   padding: 18px 18px 16px;
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--b-card-hi);
   color: var(--b-t1);
   box-shadow: var(--b-peek-shadow);
