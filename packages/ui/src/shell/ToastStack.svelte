@@ -143,6 +143,7 @@
         if (!heldIds.includes(toast.id)) resumeToast(toast.id);
       }}
     >
+      {#if toast.look === "holo"}<span class="ts-holo-edge" aria-hidden="true"></span>{/if}
       {#if toast.lead}
         <div class="ts-lead" data-testid="toast-lead"><toast.lead.component {...toast.lead.props ?? {}} /></div>
       {/if}
@@ -427,24 +428,32 @@
   .ts-toast.has-lead { grid-template-columns: auto minmax(0, 1fr) 24px; gap: 10px; }
   .ts-lead { display: flex; align-items: center; min-height: 38px; }
 
-  /* Holographic: the badge cards' shimmer, drawn in CSS. A thin iridescent
-     edge (a gradient border box behind a solid padding box, no blur
-     behind it) and a sheen that sweeps across twice as the notice comes
-     in and again while it is hovered. The surface stays the overlay colour, so
-     the text keeps its contrast in both themes. */
+  /* Holographic: the badge cards' shimmer, drawn in CSS. The toast keeps the
+     neutral overlay surface (raised-surface guard); the colour is two
+     decorations over it: a thin iridescent edge laid on the border (its own
+     layer, masked to a 1px ring) and a sheen that sweeps across twice as the
+     notice comes in and again while it is hovered. No blur behind it. */
   @property --ts-holo-a {
     syntax: "<angle>";
     inherits: false;
     initial-value: 0deg;
   }
+  /* No overflow clip: the edge layer sits on the border, outside the padding box. */
   .ts-toast.holo {
     position: relative;
-    overflow: hidden;
-    border-color: transparent;
-    background:
-      linear-gradient(var(--overlay-bg), var(--overlay-bg)) padding-box,
-      conic-gradient(from var(--ts-holo-a), #6ee7f9, #a78bfa, #f472b6, #fbbf24, #86efac, #6ee7f9) border-box;
-    animation: ts-in 160ms ease-out both, ts-holo-turn 3.2s linear 2;
+  }
+  .ts-holo-edge {
+    position: absolute;
+    inset: -1px;
+    padding: 1px;
+    border-radius: inherit;
+    pointer-events: none;
+    background: conic-gradient(from var(--ts-holo-a), #6ee7f9, #a78bfa, #f472b6, #fbbf24, #86efac, #6ee7f9);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    animation: ts-holo-turn 3.2s linear 2;
   }
   .ts-toast.holo::after {
     content: "";
@@ -465,9 +474,9 @@
     background-position: 130% 0;
     animation: ts-holo-sweep 1.6s ease-in-out 200ms 2 both;
   }
-  .ts-toast.holo:hover { animation: ts-holo-turn 3.2s linear infinite; }
+  .ts-toast.holo:hover .ts-holo-edge { animation: ts-holo-turn 3.2s linear infinite; }
   .ts-toast.holo:hover::after { animation: ts-holo-sweep 1.6s ease-in-out infinite; }
-  .ts-toast.holo > * { position: relative; z-index: 1; }
+  .ts-toast.holo > :not(.ts-holo-edge) { position: relative; z-index: 1; }
   /* The badge names wrap to a second line rather than trail off. */
   .ts-toast.holo .ts-m { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
   @keyframes ts-holo-turn {
@@ -478,10 +487,10 @@
     to { background-position: -30% 0; }
   }
   /* Reduced motion: the iridescent edge holds still and nothing sweeps. */
-  .reduced .ts-toast.holo, .reduced .ts-toast.holo:hover { animation: none; }
+  .reduced .ts-holo-edge, .reduced .ts-toast.holo:hover .ts-holo-edge { animation: none; }
   .reduced .ts-toast.holo::after, .reduced .ts-toast.holo:hover::after { animation: none; opacity: 0; }
   @media (prefers-reduced-motion: reduce) {
-    .ts-toast.holo, .ts-toast.holo:hover { animation: none; }
+    .ts-holo-edge, .ts-toast.holo:hover .ts-holo-edge { animation: none; }
     .ts-toast.holo::after, .ts-toast.holo:hover::after { animation: none; opacity: 0; }
   }
 </style>

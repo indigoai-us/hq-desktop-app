@@ -64,6 +64,7 @@ describe("one badge", () => {
     const toast = document.querySelector('[data-testid="badge-earned-toast"]') as HTMLElement;
     expect(toast.dataset.look).toBe("holo");
     expect(toast.classList.contains("holo")).toBe(true);
+    expect(toast.querySelector(".ts-holo-edge")?.getAttribute("aria-hidden")).toBe("true");
     const marks = [...toast.querySelectorAll('[data-testid="badge-notice-mark"]')];
     expect(marks.map((m) => m.getAttribute("data-badge-id"))).toEqual(["poweruser"]);
     expect(marks[0].classList.contains("t3")).toBe(true);
@@ -171,18 +172,21 @@ describe("the holographic look", () => {
   const css = read("../shell/ToastStack.svelte");
 
   it("draws an iridescent edge and a sweeping sheen without backdrop-filter", () => {
-    expect(css).toMatch(/\.ts-toast\.holo \{[^}]*conic-gradient\(from var\(--ts-holo-a\)/);
+    // The colour is on the edge layer, not the toast: the surface stays the neutral overlay.
+    expect(css).toMatch(/\.ts-holo-edge \{[^}]*conic-gradient\(from var\(--ts-holo-a\)/);
+    expect(css).not.toMatch(/\.ts-toast\.holo \{[^}]*gradient/);
     expect(css).toMatch(/\.ts-toast\.holo::after \{[^}]*animation: ts-holo-sweep/);
     expect(css.slice(css.indexOf("<style>"))).not.toMatch(/backdrop-filter/);
   });
 
   it("sweeps twice as it comes in, and keeps going only while hovered", () => {
-    expect(css).toMatch(/\.ts-toast\.holo \{[^}]*animation: ts-in 160ms ease-out both, ts-holo-turn 3\.2s linear 2;/);
+    expect(css).toMatch(/\.ts-holo-edge \{[^}]*animation: ts-holo-turn 3\.2s linear 2;/);
+    expect(css).toContain(".ts-toast.holo:hover .ts-holo-edge { animation: ts-holo-turn 3.2s linear infinite; }");
     expect(css).toMatch(/\.ts-toast\.holo:hover::after \{ animation: ts-holo-sweep 1\.6s ease-in-out infinite; \}/);
   });
 
   it("holds still with reduced motion", () => {
-    expect(css).toContain(".reduced .ts-toast.holo, .reduced .ts-toast.holo:hover { animation: none; }");
+    expect(css).toContain(".reduced .ts-holo-edge, .reduced .ts-toast.holo:hover .ts-holo-edge { animation: none; }");
     const media = css.slice(css.lastIndexOf("@media (prefers-reduced-motion: reduce)"));
     expect(media).toContain(".ts-toast.holo::after, .ts-toast.holo:hover::after { animation: none; opacity: 0; }");
   });
