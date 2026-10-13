@@ -496,12 +496,14 @@
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  /* No gap while the arrow is hidden, so the label sits centred with even 12px sides. */
+  gap: 0;
   font-size: 13px;
   font-weight: 500;
+  letter-spacing: -0.005em;
   padding: 7px 12px;
   border-radius: 8px;
-  color: #2a1a5c;
+  color: #18181b;
   background: #fff;
   box-shadow: var(--b-go-ring);
   white-space: nowrap;
@@ -510,19 +512,21 @@
 .daily-brief .launch .go svg {
   width: 0;
   height: 12px;
+  margin-left: 0;
   opacity: 0;
   stroke: currentColor;
   fill: none;
   stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
-  transition: width 0.3s, opacity 0.3s;
+  transition: width 0.3s, margin-left 0.3s, opacity 0.3s;
 }
 .daily-brief .launch .go:hover {
   background: #e6e6e6;
 }
 .daily-brief .launch .go:hover svg {
   width: 12px;
+  margin-left: 6px;
   opacity: 1;
 }
 .daily-brief .launch .go:active {
@@ -618,6 +622,39 @@
   border: 1px solid rgb(var(--b-ink) / 0.07);
   box-shadow: var(--b-peek-shadow);
   animation: b-peek 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* Scrollbars in hover cards and their prompt box: a thin, rounded thumb in faint ink, no track,
+   inset from the card's rounded corners; it darkens a little only while you use it. */
+.daily-brief .peek::-webkit-scrollbar,
+.daily-brief .peek .prompt::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.daily-brief .peek::-webkit-scrollbar-track,
+.daily-brief .peek .prompt::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 10px 0;
+}
+.daily-brief .peek::-webkit-scrollbar-thumb,
+.daily-brief .peek .prompt::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 99px;
+  background: rgb(var(--b-ink) / 0.14) padding-box;
+}
+.daily-brief .peek::-webkit-scrollbar-thumb:hover,
+.daily-brief .peek .prompt::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--b-ink) / 0.28);
+}
+.daily-brief .peek::-webkit-scrollbar-corner,
+.daily-brief .peek .prompt::-webkit-scrollbar-corner {
+  background: transparent;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .daily-brief .peek,
+  .daily-brief .peek .prompt {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--b-ink) / 0.16) transparent;
+  }
 }
 @keyframes b-peek {
   from {

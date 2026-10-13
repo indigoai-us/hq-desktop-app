@@ -75,7 +75,6 @@
    * and the full prompt.
    */
   import BriefLaunch from "./BriefLaunch.svelte";
-  import BriefLogo from "./BriefLogo.svelte";
   import BriefOrigin from "./BriefOrigin.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import { decisionPeek, priorityScoreWords, riskPeek, riskProduct } from "./brief-peeks.js";
@@ -256,7 +255,8 @@
             <div class="tt">
               <span class="t" use:asciiDecode>{p.text}</span>
               {#if tall && risk?.origin.companyUid}
-                <span class="meta"><span class="lg"><BriefLogo company={brief.company(risk.origin.companyUid)} fallback={risk.origin.companyUid} size={14} /></span></span>
+                <!-- Same logo and product name as the decision rows (the CI repo names the product when the origin does not). -->
+                <span class="meta"><BriefOrigin origin={{ ...risk.origin, repo: risk.origin.repo ?? risk.ci?.repo ?? null }} product /></span>
               {/if}
             </div>
             {#if tall && p.because}<div class="ts">{p.because}</div>{/if}
