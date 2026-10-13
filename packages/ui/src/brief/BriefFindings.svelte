@@ -12,6 +12,7 @@
   import { fly } from "svelte/transition";
   import { countValue, type CountSample } from "../chat/first-run/knowledge-tree/scene-model.js";
   import { findingRows, sampleTone, type BriefFindings, type BriefSample } from "./brief-findings.js";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
 
   interface Props {
     findings: BriefFindings;
@@ -92,7 +93,7 @@
         <li class="card" data-testid="brief-sample" in:fly={{ y: reduced ? 0 : 14, duration: reduced ? 0 : 420, opacity: reduced ? 1 : 0 }}>
           <span class="kind tone-{sampleTone(s.kind)}">{s.kind.replace(/[_-]+/g, " ")}</span>
           <span class="title" title={s.title}>{s.title}</span>
-          <span class="co">{s.company}</span>
+          <span class="co"><CompanyLabel name={s.company} size={10} /></span>
         </li>
       {/each}
     </ul>
