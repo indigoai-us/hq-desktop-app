@@ -64,6 +64,9 @@ test.describe('daily brief: user path', () => {
     const create = page.getByTestId('brief-create').first();
     await expect(create).toBeVisible({ timeout: 30_000 });
     await create.click();
+    // Until the bot writes its first status, the sunrise says where the job
+    // went and that it is waiting, by the bot's name.
+    await expect(page.getByTestId('brief-dawn-step')).toContainText('Sent to demo, waiting for it to start', { timeout: 2_000 });
     // The sunrise loader shows the run's progress while the simulated bot works.
     await expect(page.getByTestId('brief-loader')).toBeVisible({ timeout: 10_000 });
     // The simulated run takes about twenty seconds, then the brief renders.
@@ -71,6 +74,20 @@ test.describe('daily brief: user path', () => {
     const widths = await cardWidths(page);
     expect(widths.length).toBeGreaterThanOrEqual(1);
     for (const w of widths) expect(w).toBeGreaterThanOrEqual(MIN_CARD_PX - 1);
+    expect(errors).toEqual([]);
+  });
+
+  test('a run that fails shows the bot\'s own sentence and offers Try again', async ({ page }) => {
+    test.setTimeout(60_000);
+    const errors = await openBrief(page, `${BRIEF}&briefDemo=fail`);
+    const create = page.getByTestId('brief-create').first();
+    await expect(create).toBeVisible({ timeout: 30_000 });
+    await create.click();
+    // The simulated bot fails partway through the sweep with a plain sentence.
+    const step = page.getByTestId('brief-dawn-step');
+    await expect(step).toContainText('The sweep could not reach GitHub', { timeout: 30_000 });
+    await expect(step).not.toContainText('skill_not_found');
+    await expect(page.getByTestId('brief-retry')).toBeVisible();
     expect(errors).toEqual([]);
   });
 });

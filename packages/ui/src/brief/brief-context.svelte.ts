@@ -17,6 +17,9 @@ export const ENGINES: { id: BriefEngine; label: string; short: string }[] = [
 /** Opens a session in the engine with the prompt pre-filled; resolves to an error message or null. */
 export type BriefLaunch = (engine: BriefEngine, prompt: string) => Promise<string | null>;
 
+/** What the person did with one item of the brief on screen (brief-log.ts adds the run). */
+export type BriefItemEvent = { event: "dismiss"; itemId: string } | { event: "launch"; itemId: string; engine: BriefEngine };
+
 export interface PeekContent {
   title: string;
   status?: string;
@@ -92,6 +95,8 @@ export class BriefState {
     readonly links: {
       dmApi?: () => BriefDmApi | null | undefined;
       openThread?: () => ((uid: string) => void) | undefined;
+      /** Records dismissals and launches in the brief log, when the host keeps one. */
+      log?: () => ((event: BriefItemEvent) => void) | undefined;
     } = {},
   ) {
     try {
@@ -141,17 +146,30 @@ export class BriefState {
     );
   }
 
-  /** Mark an item done in this brief only. Nothing is sent anywhere. */
+  /**
+   * Mark an item done in this brief: it leaves the page and the brief log
+   * records a dismissal so the writer can learn from it. Nothing else is sent.
+   */
   clear(id: string): void {
-    if (this.cleared[id]) return;
+    if (!this.markCleared(id)) return;
+    this.links.log?.()?.({ event: "dismiss", itemId: id });
+  }
+
+  private markCleared(id: string): boolean {
+    if (this.cleared[id]) return false;
     this.cleared = { ...this.cleared, [id]: true };
     this.ripple += 1;
+    return true;
   }
 
   async start(id: string, prompt: string): Promise<void> {
-    const error = await this.launch(this.engine, prompt);
-    this.notes = { ...this.notes, [id]: error ?? `Started in ${ENGINES.find((e) => e.id === this.engine)!.label}.` };
-    if (!error || error.startsWith("Prompt copied")) this.clear(id);
+    const engine = this.engine;
+    const error = await this.launch(engine, prompt);
+    this.notes = { ...this.notes, [id]: error ?? `Started in ${ENGINES.find((e) => e.id === engine)!.label}.` };
+    if (!error || error.startsWith("Prompt copied")) {
+      this.links.log?.()?.({ event: "launch", itemId: id, engine });
+      this.markCleared(id);
+    }
   }
 
   showPeek(anchor: HTMLElement, content: PeekContent): void {

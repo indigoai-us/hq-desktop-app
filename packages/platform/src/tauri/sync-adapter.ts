@@ -1488,6 +1488,7 @@ export function createSyncPlatformAdapter(
         readFrontmatter: (path) => call('read_vault_note_frontmatter', { path }),
       },
       getFileContent: (path) => call('get_company_file_content', { path }),
+      appendBriefLog: (line) => call('append_brief_log', { line }),
       createFile: (path, contents) => call('create_project_file', { path, contents }),
       listVaultPrefix: (companyUid, prefix, cursor) =>
         hqProJson(

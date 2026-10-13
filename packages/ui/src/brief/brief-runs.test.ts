@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import {
+  BRIEF_QUIET_MS,
   BRIEF_START_TIMEOUT_MS,
   BRIEF_STALL_TIMEOUT_MS,
   advanceBriefRun,
   briefJobMessage,
+  failedMessage,
+  stillWorkingLine,
+  waitingStep,
   briefRunFolder,
   briefRunId,
   briefRunPath,
@@ -205,6 +209,45 @@ describe("status polling state machine", () => {
       message: "GitHub is not signed in.",
     });
     expect(advanceBriefRun(waiting, status({ state: "failed" }), 5_000)).toMatchObject({ kind: "failed", message: expect.any(String) });
+  });
+
+  it("a failure written as `status:` (the 2026-10-13 skill_not_found run) still ends the run with the bot's sentence", () => {
+    const written = {
+      text: JSON.stringify({
+        run_id: RUN,
+        status: "failed",
+        error: "skill_not_found",
+        message: "No daily-brief skill is installed in this HQ.",
+      }),
+    };
+    expect(parseBriefStatus(written.text)).toMatchObject({ state: "failed", error: "skill_not_found", message: "No daily-brief skill is installed in this HQ." });
+    expect(advanceBriefRun(waiting, written, 5_000)).toEqual({ kind: "failed", runId: RUN, message: "No daily-brief skill is installed in this HQ." });
+    // `state` wins when both are present, and a bare code is never shown as the message.
+    expect(advanceBriefRun(waiting, status({ state: "running", status: "failed", step: "Sweeping" }), 5_000)).toMatchObject({ kind: "running" });
+    expect(failedMessage({ state: "failed", error: "skill_not_found", message: null })).toBe("The brief stopped before it finished.");
+    expect(failedMessage({ state: "failed", error: "The sweep could not read GitHub.", message: null })).toBe("The sweep could not read GitHub.");
+  });
+
+  it("a cancelled run ends like a failure, with the person's own reason", () => {
+    expect(advanceBriefRun(waiting, status({ state: "cancelled", step: "Sweeping your day" }), 5_000)).toEqual({
+      kind: "failed",
+      runId: RUN,
+      message: "You cancelled this brief.",
+    });
+    expect(parseBriefStatus(JSON.stringify({ run_id: RUN, state: "cancelled", error: "Stopped at Sweeping your day." }))?.state).toBe("cancelled");
+  });
+
+  it("names the bot while waiting and in the start timeout", () => {
+    const named: BriefCreatePhase = { kind: "waiting", runId: RUN, sentAt: 1_000, bot: "Jellybean" };
+    expect(waitingStep("Jellybean")).toBe("Sent to Jellybean, waiting for it to start");
+    expect(waitingStep(null)).toBe("Sent to your bot, waiting for it to start");
+    expect(stillWorkingLine(named, 1_000 + BRIEF_QUIET_MS)).toBe("Still waiting for Jellybean to start…");
+    expect(stillWorkingLine(named, 1_000 + BRIEF_QUIET_MS - 1)).toBeNull();
+    const late = advanceBriefRun(named, { text: null }, 1_000 + BRIEF_START_TIMEOUT_MS + 1);
+    expect(late).toEqual({ kind: "failed", runId: RUN, message: "Jellybean has not started the brief after 5 minutes. Check that it is running, then try again." });
+    expect(advanceBriefRun(waiting, { text: null }, 1_000 + BRIEF_START_TIMEOUT_MS + 1)).toMatchObject({ message: expect.stringMatching(/^Your bot has not started/) });
+    // A late start still wins over the clock: status arriving at the limit moves to running.
+    expect(advanceBriefRun(named, status({ state: "running", step: "Starting", progress: 0.02 }), 1_000 + BRIEF_START_TIMEOUT_MS + 1)).toMatchObject({ kind: "running", step: "Starting" });
   });
 
   it("ignores a status written for another run and never moves terminal phases", () => {

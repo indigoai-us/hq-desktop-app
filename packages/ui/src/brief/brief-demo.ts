@@ -126,8 +126,10 @@ export function briefDemoFromUrl(search: string): BriefDemo | null {
     async readHqFile(path) {
       if (!runId || !path.endsWith(`${runId}/status.json`)) return null;
       const s = (Date.now() - started) / 1000;
-      if (s < 1.5) return null;
-      const progress = Math.min(1, (s - 1.5) / 18);
+      // Quiet for the first two polls, so the "Sent to demo, waiting for it
+      // to start" frame is on screen long enough to be seen and checked.
+      if (s < 2.5) return null;
+      const progress = Math.min(1, (s - 2.5) / 18);
       if (fails && progress > 0.45) {
         return JSON.stringify({ run_id: runId, state: "failed", step: "Sweeping your day", progress: 0.45, error: "The sweep could not reach GitHub. Sign in with gh auth login, then try again." });
       }
