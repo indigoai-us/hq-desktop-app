@@ -72,6 +72,7 @@ pub mod feature_gate;
 pub mod first_push;
 pub mod first_run;
 pub mod git_mirror;
+pub mod hq_cli_staged_swap;
 pub mod hq_cli_update;
 pub mod hq_cloud;
 pub mod hq_daemon;
