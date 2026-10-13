@@ -51,6 +51,7 @@ import {
   DESKTOP_AGENT_CREATION_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
+  FIRST_RUN_FOUND_APPS_FLAG,
   type ScopedFeatureFlagGates,
 } from "../flags.js";
 import {
@@ -533,7 +534,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       flag === "agents.claude-provider" ||
       flag === DESKTOP_AGENT_CREATION_FLAG ||
       flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
-      flag === PERSONAL_TRANSCRIPTS_FLAG
+      flag === PERSONAL_TRANSCRIPTS_FLAG ||
+      flag === FIRST_RUN_FOUND_APPS_FLAG
     ) {
       return Promise.resolve(ok(false));
     }
