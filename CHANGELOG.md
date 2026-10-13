@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Linux: the `.deb` package now includes the app's screens. Before, the installed app opened to a blank window because every page came back "not found"; the screens were only present in the macOS and Windows installers. The app now finds them under the package's own library folder.
+- Linux: HQ's managed toolchain (Node, Git, the HQ command line tool) now installs under `~/.local/share/IndigoHQ/toolchain`, or under `$XDG_DATA_HOME/IndigoHQ/toolchain` when that variable is set to a full path, which is where the HQ installer puts it on Linux. Before, it used the macOS "Library/Application Support" folder on Linux too. macOS is unchanged.
+- Linux: the app no longer checks for its own updates, because there is no Linux update feed yet. Before, it tried every few hours and logged a failed download each time. Settings › Updates says updates are turned off for this build. macOS and Windows are unchanged.
 - Badges: the "You earned" notice now has the cards' holographic shimmer: an iridescent edge and a sheen that sweeps across as it comes in and while you hover it, with the badge's mark beside the words. When several badges arrive at once, such as everything since your last visit, they come as one notice ("You earned 4 badges") with their marks in a row, and Reveal cards shows each card in turn. Reduced motion keeps the edge still.
 - Marketplace: a pack's details panel now has a "View public page" link that opens the pack's page on hqforwork.com in your browser, and a "Copy link" button that copies that page's address so you can share it.
 - Badge cards no longer show their front mirrored for a moment when you flip them over. Each side now hides as the card turns edge-on.
