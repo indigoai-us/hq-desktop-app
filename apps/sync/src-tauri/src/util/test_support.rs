@@ -44,7 +44,7 @@ pub(crate) fn scoped_home(path: &Path) -> ScopedHome {
 pub(crate) fn write_usable_managed_git(home: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
-    let git = home.join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
+    let git = hq_desktop_core::paths::managed_toolchain_dir_in(home).join("git/bin/git");
     std::fs::create_dir_all(git.parent().expect("managed Git parent")).unwrap();
     std::fs::write(&git, "#!/bin/sh\nprintf 'git version fixture'\n").unwrap();
     std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();

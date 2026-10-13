@@ -9425,9 +9425,7 @@ mod install_deps_tests {
     fn test_managed_git_env_set_when_installed() {
         let home = tempfile::TempDir::new().unwrap();
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
-        let git_bin_dir = home
-            .path()
-            .join("Library/Application Support/Indigo HQ/toolchain/git/bin");
+        let git_bin_dir = managed_toolchain_dir_in(home.path()).join("git/bin");
         make_fake_bin_at(&git_bin_dir, "git");
         ensure_managed_git_shim_in(home.path()).expect("managed git shim");
         let _home = scoped_home(home.path());
@@ -9448,9 +9446,8 @@ mod install_deps_tests {
     #[test]
     fn test_composed_settings_env_path_orders_and_dedupes_sources() {
         let home = tempfile::TempDir::new().unwrap();
-        let managed_node = home
-            .path()
-            .join("Library/Application Support/Indigo HQ/toolchain/node/bin")
+        let managed_node = managed_toolchain_dir_in(home.path())
+            .join("node/bin")
             .to_string_lossy()
             .into_owned();
 
@@ -11375,7 +11372,7 @@ mod foreign_copy_rejection_tests {
         assert!(!dep_status_satisfies(hq, &foreign));
         #[cfg(not(windows))]
         {
-            let managed = dirs::home_dir().unwrap().join("Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq");
+            let managed = managed_toolchain_dir_in(&dirs::home_dir().unwrap()).join("npm-global/bin/hq");
             let ok = DepStatus { installed: true, version: Some("5.107.1".into()), path: Some(managed) };
             assert!(dep_status_satisfies(hq, &ok));
         }
