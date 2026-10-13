@@ -21,6 +21,7 @@ import {
   OUTPOST_PATHS,
   PERSONAL_INTEGRATION_PATHS,
   COMPANY_INTEGRATION_PATHS,
+  REDACTION_PATHS,
   SLACK_ATTACH_BODY,
   INTEGRATION_PATHS,
   integrationAppRefBody,
@@ -1368,6 +1369,10 @@ export function createSyncPlatformAdapter(
       getDeployments: (slug) => call('get_company_deployments', { slug }),
       listIntegrations: (companyUid) =>
         hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid), undefined, COMPANY_INTEGRATIONS_TIMEOUT_SECS),
+      getRedaction: (companyUid, connectionId) =>
+        hqProRequestWithStatus('GET', REDACTION_PATHS.read(companyUid, connectionId)),
+      putRedaction: (companyUid, connectionId, presets) =>
+        hqProRequestWithStatus('PUT', REDACTION_PATHS.write, { companyUid, connectionId, presets: [...presets] }),
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
       deployAppPreview: (appId, url, deployedAt, refresh) =>
         call('deploy_app_preview', { appId, url, deployedAt, refresh }),
