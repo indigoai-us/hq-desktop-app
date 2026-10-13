@@ -5,6 +5,7 @@ import { createSyncPlatformAdapter } from "./sync-adapter.js";
 import {
   COMPANY_NAME_PREFILL_FLAG,
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
+  FIRST_RUN_FOUND_APPS_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
   registryKeyFor,
 } from "../flags.js";
@@ -282,6 +283,73 @@ describe("createSyncPlatformAdapter hasFeature", () => {
       ok: true,
       value: false,
     });
+  });
+
+  it("first-run found-apps flag reads true from the registry snapshot", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { [FIRST_RUN_FOUND_APPS_FLAG]: true },
+            }),
+          };
+        }
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+
+    expect(registryKeyFor(FIRST_RUN_FOUND_APPS_FLAG)).toBe(FIRST_RUN_FOUND_APPS_FLAG);
+    await expect(adapter.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
+  });
+
+  it("first-run found-apps flag fails closed without calling the identity features route", async () => {
+    const calls: Invocation[] = [];
+    const absent = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") {
+          const url = String((args as { url?: unknown } | undefined)?.url ?? "");
+          if (url.startsWith("/v1/flags/resolve")) {
+            return { status: 200, body: JSON.stringify({ version: 1, flags: {} }) };
+          }
+          return { status: 404, body: "not found" };
+        }
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(absent.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+
+    const unavailable = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") {
+          const url = String((args as { url?: unknown } | undefined)?.url ?? "");
+          if (url.startsWith("/v1/flags/resolve")) throw new Error("offline");
+          return { status: 404, body: "not found" };
+        }
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(unavailable.identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+
+    const urls = calls.map((call) => String((call.args as { url?: unknown } | undefined)?.url ?? ""));
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.some((url) => url.includes("/v1/identity/features/"))).toBe(false);
   });
 
   it("personal transcript subscription emits the updated registry snapshot", async () => {
