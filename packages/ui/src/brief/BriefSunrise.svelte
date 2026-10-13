@@ -271,7 +271,7 @@
       </svg>
     </div>
     <div class="meter">
-      <div class="track"><i style="width:{total ? (cleared / total) * 100 : 100}%"></i></div>
+      <div class="track"><i style="--fill:{total ? cleared / total : 1}"></i></div>
       <b>{total ? `${cleared} / ${total}` : "CLEAR"}</b>
       {#if eta}<span class="eta" data-testid="brief-sunrise-eta" title="Time to clear what is left, from the size of each decision">{eta}</span>{/if}
     </div>
@@ -439,11 +439,15 @@
   }
   .track i {
     display: block;
+    width: 100%;
     height: 100%;
     border-radius: inherit;
     background: linear-gradient(90deg, #ffb580, #ff809f);
     box-shadow: 0 0 14px rgba(255, 150, 140, 0.55);
-    transition: width 1.1s cubic-bezier(0.2, 0.8, 0.2, 1);
+    /* Fill ratio via --fill (0..1) + scaleX so the transition stays on the compositor. */
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left;
+    transition: transform 1.1s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .meter b {
     font-family: var(--b-mono);

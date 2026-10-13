@@ -215,17 +215,29 @@
     height: 7px;
     border-radius: 50%;
     background: var(--b-red);
+    position: relative;
+  }
+  /* The pulse is a ring that scales and fades, so it stays on the compositor. */
+  .live::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(255, 69, 58, 0.6);
     animation: pulse 1.8s infinite;
   }
   @keyframes pulse {
     0% {
-      box-shadow: 0 0 0 0 rgba(255, 69, 58, 0.6);
+      transform: scale(1);
+      opacity: 1;
     }
     70% {
-      box-shadow: 0 0 0 8px rgba(255, 69, 58, 0);
+      transform: scale(3.4);
+      opacity: 0;
     }
     100% {
-      box-shadow: 0 0 0 0 rgba(255, 69, 58, 0);
+      transform: scale(3.4);
+      opacity: 0;
     }
   }
   .body {

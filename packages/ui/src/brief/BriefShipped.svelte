@@ -280,13 +280,24 @@
     padding: 2px 6px;
     border-radius: 99px;
     color: #2a1408;
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    background: #ffb580;
+  }
+  /* The foil is a wide gradient overlay slid with a transform, so the shimmer stays on the compositor. */
+  .first::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 220%;
+    z-index: -1;
     background: linear-gradient(110deg, #ffb580, #ffe2c4 40%, #ff809f 60%, #ffb580);
-    background-size: 220% 100%;
     animation: foil 3.5s ease-in-out infinite;
   }
   @keyframes foil {
     50% {
-      background-position: 100% 0;
+      transform: translateX(-54.5%);
     }
   }
   /* Holographic foil, only on shipped work. */

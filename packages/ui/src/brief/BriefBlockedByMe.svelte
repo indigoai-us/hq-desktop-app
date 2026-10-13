@@ -478,23 +478,33 @@
   }
   /* The dashed flow moves toward the node that is waiting; it stops once the call is made. */
   .link {
+    position: relative;
     flex: 0 0 22px;
     min-width: 14px;
     height: 2px;
+    overflow: hidden;
+  }
+  /* The dash strip is wider than the link and slides one period with a transform, so the animation stays on the compositor. */
+  .link::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 -20px;
+    width: calc(100% + 20px);
     background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.35) 0 5px, transparent 5px 10px);
-    background-size: 20px 2px;
     animation: flow 1s linear infinite;
   }
   .link.stop {
-    animation: none;
     opacity: 0.35;
+  }
+  .link.stop::before {
+    animation: none;
   }
   @keyframes flow {
     from {
-      background-position: -20px 0;
+      transform: translateX(0);
     }
     to {
-      background-position: 0 0;
+      transform: translateX(20px);
     }
   }
 </style>

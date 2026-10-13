@@ -176,7 +176,7 @@
               aria-valuemax={100}
               aria-valuenow={Math.round(briefRun.progress * 100)}
               data-testid="rail-brief-progress"
-            ><span style="width:{Math.max(6, Math.round(briefRun.progress * 100))}%"></span></span>
+            ><span style="--fill:{Math.max(0.06, briefRun.progress)}"></span></span>
           {/if}
         {:else if item.kind === "meetings"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="13" height="10" rx="2" /><path d="m16 11 5-3v8l-5-3" /></svg>
@@ -317,10 +317,14 @@
   }
   .run-bar > span {
     display: block;
+    width: 100%;
     height: 100%;
     border-radius: 2px;
     background: #ffb580;
-    transition: width 0.6s ease;
+    /* Fill ratio via --fill (0..1) + scaleX so the transition stays on the compositor. */
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left;
+    transition: transform 0.6s ease;
   }
   .badge {
     position: absolute;
