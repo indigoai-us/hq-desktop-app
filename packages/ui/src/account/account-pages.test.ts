@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   deleteConfirmed,
-  invoicePdfUrl,
-  invoiceStripeUrl,
-  managePaymentUrl,
   metadata,
   paintAccount,
+  readAccountCache,
   recordShortcut,
   updateReady,
   aboutUpdateLine,
@@ -14,11 +12,17 @@ import {
 } from "./account-pages.js";
 
 describe("account pages (US-035)", () => {
-  it("opens invoices and payment on the Stripe host", () => {
-    expect(new URL(invoicePdfUrl("IN-2026-0009")).hostname).toBe("billing.stripe.com");
-    expect(invoicePdfUrl("IN-2026-0009")).toContain(".pdf");
-    expect(new URL(invoiceStripeUrl("IN-2026-0009")).hostname).toBe("billing.stripe.com");
-    expect(new URL(managePaymentUrl()).hostname).toBe("billing.stripe.com");
+  it("never paints sample invoices, and drops them from an older cache", () => {
+    const painted = paintAccount(null, { name: "Ada", email: "ada@example.com", companies: [] });
+    expect(painted).not.toHaveProperty("invoices");
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(
+        "hq.account.pages.v1",
+        JSON.stringify({ displayName: "Ada", invoices: [{ id: "IN-2026-0009" }], companies: [], shortcuts: [] }),
+      );
+      expect(readAccountCache()).not.toHaveProperty("invoices");
+      localStorage.clear();
+    }
   });
 
   it("requires the delete phrase before sign-in", () => {
@@ -43,7 +47,6 @@ describe("account pages (US-035)", () => {
       companies: [{ uid: "co", label: "Indigo", role: "Owner", plan: "HQ Workforce", since: "" }],
     });
     expect(painted.displayName).toBe("Ada Lovelace");
-    expect(painted.invoices.length).toBeGreaterThan(0);
     expect(metadata.performanceBudget.scrollDroppedFramesPct).toBe(0.01);
   });
 

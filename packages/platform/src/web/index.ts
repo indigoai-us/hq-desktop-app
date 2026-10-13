@@ -234,6 +234,8 @@ export const WEB_PATHS = {
     `/companies/${encodeURIComponent(slug)}/activity`,
   companyHomeChannel: (companyUid: string) =>
     `/v1/companies/${encodeURIComponent(companyUid)}/home-channel`,
+  /** POST, body `{ companyUid }`: hq-pro's owner-gated Stripe portal mint. */
+  companyBillingPortal: () => `/v1/billing/portal`,
   firstWeekReturnNudge: (companyUid: string) =>
     `/membership/first-week-return-nudge?companyUid=${encodeURIComponent(companyUid)}`,
 
@@ -1134,6 +1136,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.post(INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    getConnectionAccess: ({ companyUid, connectionId }) =>
+      this.get(INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+    revokeConnectionAccess: (input) =>
+      this.post(INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
     // No redirectUri: the server's default lands on the console's callback.
@@ -1171,6 +1177,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.get(WEB_PATHS.companyActivity(slug)),
     ensureHomeChannel: (companyUid) =>
       this.post(WEB_PATHS.companyHomeChannel(companyUid)),
+    createBillingPortalSession: (companyUid) =>
+      this.post(WEB_PATHS.companyBillingPortal(), { companyUid }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };

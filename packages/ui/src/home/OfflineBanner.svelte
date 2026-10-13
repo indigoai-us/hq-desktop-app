@@ -1,24 +1,17 @@
 <script lang="ts">
-  import RailIcon from "../common/button/RailIcon.svelte";
   /** 36 px offline strip (console-rail US-016, scene home-offline). */
   interface Props {
     lastSynced?: string | null;
-    conflictCount?: number;
-    onresolve?: () => void;
     ondismiss?: () => void;
   }
-  let { lastSynced = null, conflictCount = 0, onresolve, ondismiss }: Props = $props();
-  const conflicts = $derived(
-    conflictCount > 0 ? `${conflictCount} conflict${conflictCount === 1 ? "" : "s"}` : "no conflicts",
-  );
+  let { lastSynced = null, ondismiss }: Props = $props();
 </script>
 
 <div class="offl" data-testid="home-offline-banner" role="status">
   <i class="dot" aria-hidden="true"></i>
-  <span class="t"><b>Offline</b> · last synced {lastSynced || "just now"} · {conflicts}</span>
+  <span class="t"><b>Offline</b> · last synced {lastSynced || "just now"}</span>
   <span class="s">Messages you send stay on this Mac and go out in order when the connection returns.</span>
   <span class="grow"></span>
-  <button type="button" data-testid="offline-resolve" onclick={() => onresolve?.()}><RailIcon name="check" />Resolve</button>
   <button type="button" data-testid="offline-dismiss" aria-label="Dismiss offline banner" onclick={() => ondismiss?.()}>✕</button>
 </div>
 

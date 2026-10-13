@@ -14,6 +14,39 @@ const read = (file: string) => readFileSync(join(here, file), "utf8");
 
 const fleet: ResolvedBadge = { def: BADGE_BY_ID.fleet, tier: 2, earnedAt: "2026-07-30T17:28:59.454Z" };
 
+describe("the card's turn", () => {
+  /** Time fraction at which a cubic-bezier easing reaches progress 0.5. */
+  function halfway(x1: number, y1: number, x2: number, y2: number): number {
+    const at = (t: number, a: number, b: number) => 3 * (1 - t) ** 2 * t * a + 3 * (1 - t) * t * t * b + t ** 3;
+    let lo = 0;
+    let hi = 1;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (at(mid, y1, y2) < 0.5) lo = mid;
+      else hi = mid;
+    }
+    return at(lo, x1, x2);
+  }
+
+  it("hides each side as the card passes edge-on, so the face never shows mirrored", () => {
+    const src = read("BadgeCardModal.svelte");
+    const turn = src.match(/\.bc-flip \{[^}]*transition: transform (\d+)ms cubic-bezier\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)/);
+    expect(turn).not.toBeNull();
+    const [ms, x1, y1, x2, y2] = turn!.slice(1).map(Number);
+    const edgeOn = Math.round(ms * halfway(x1, y1, x2, y2));
+    expect(src).toContain(`[data-phase="done"] .bc-face { transition: visibility 0s linear ${edgeOn}ms; }`);
+    expect(src).toContain('[data-phase="done"] .bc-flip.flipped .bc-face { visibility: hidden; }');
+    expect(src).toContain(`[data-phase="done"] .bc-back { visibility: hidden; transition: visibility 0s linear ${edgeOn}ms; }`);
+    expect(src).toContain('[data-phase="done"] .bc-flip.flipped .bc-back { visibility: visible; }');
+  });
+
+  it("swaps the sides at once with reduced motion", () => {
+    const src = read("BadgeCardModal.svelte");
+    const reduced = src.slice(src.lastIndexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toContain('[data-phase="done"] .bc-face, [data-phase="done"] .bc-back { transition: none; }');
+  });
+});
+
 describe("card dates", () => {
   it("shows the calendar date for hq-pro's full timestamps and for a bare date", () => {
     expect(cardDate("2026-07-30T17:28:59.454Z")).toBe("Jul 30, 2026");

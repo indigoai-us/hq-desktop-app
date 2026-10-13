@@ -899,7 +899,15 @@ pub(crate) async fn clear_notification_credentials<R: Runtime>(
         .ok_or_else(|| "Notification session state is unavailable".to_string())?;
     invalidate_notification_session(app).await;
     let _credential_write = state.credential_write_gate.lock().await;
-    let cleared = cognito::clear_tokens().await;
+    // Revoke the refresh token at Cognito (bounded), then always clear the
+    // local copy. A failed revocation is logged by tag only and never blocks
+    // the local sign-out.
+    let cleared = cognito::revoke_and_clear_tokens().await.map(|revocation| {
+        eprintln!(
+            "[auth] sign-out refresh revocation: {}",
+            revocation.as_tag()
+        );
+    });
     // Client health (US-002): sign-out is an auth state change.
     crate::commands::client_health::notify_client_health_state_changed();
     cleared

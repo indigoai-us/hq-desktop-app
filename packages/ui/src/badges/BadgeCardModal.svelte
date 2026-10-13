@@ -30,7 +30,7 @@
   import BadgeCard from "./BadgeCard.svelte";
   import BadgeCardBack from "./BadgeCardBack.svelte";
   import BadgeShareMenu from "./BadgeShareMenu.svelte";
-  import { TIER_NAME, type ResolvedBadge } from "./badge-catalog.js";
+  import { TIER_NAME, isAwarded, type ResolvedBadge } from "./badge-catalog.js";
   import { REVEAL_FLIP_MS, REVEAL_GLOW_MS, prefersReducedMotion } from "./badge-card.js";
   import { canFly, fly } from "./card-flight.js";
 
@@ -194,7 +194,7 @@
         </div>
       </div>
       <div class="bc-foot">
-        {#if owner}<p class="bc-owner" data-testid="badge-card-owner">Earned by {owner}</p>{/if}
+        {#if owner}<p class="bc-owner" data-testid="badge-card-owner">{isAwarded(badge.def) ? "Awarded to" : "Earned by"} {owner}</p>{/if}
         <div class="bc-actions">
           <button type="button" class="bc-flip-btn" data-testid="badge-card-flip" aria-pressed={flipped} disabled={!canFlip} onclick={flip}>
             <RailIcon name="arrows-clockwise" size={14} />Flip card
@@ -250,6 +250,14 @@
   .bc-flip { position: relative; transform-style: preserve-3d; transition: transform 640ms cubic-bezier(0.45, 0, 0.2, 1); }
   .bc-flip.flipped { transform: rotateY(180deg); }
   .bc-face { backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  /* WebKit still paints a side's composited insides (the foil canvas, the
+     tilt layer) when that side faces away, so the face showed mirrored for a
+     moment as the card turned. Each side also hides itself as the card passes
+     edge-on: with this easing the turn reaches 90 degrees at 236ms of 640ms. */
+  [data-phase="done"] .bc-face { transition: visibility 0s linear 236ms; }
+  [data-phase="done"] .bc-flip.flipped .bc-face { visibility: hidden; }
+  [data-phase="done"] .bc-back { visibility: hidden; transition: visibility 0s linear 236ms; }
+  [data-phase="done"] .bc-flip.flipped .bc-back { visibility: visible; }
   .bc-foot { display: flex; flex-direction: column; align-items: center; gap: 6px; }
   .bc-actions { display: flex; align-items: center; gap: 12px; }
   .bc-owner { margin: 0; color: rgba(250, 250, 250, 0.56); }
@@ -313,5 +321,6 @@
     .bc-back { transform: none; visibility: hidden; }
     .bc-flip.flipped .bc-back { visibility: visible; }
     .bc-flip.flipped .bc-face { visibility: hidden; }
+    [data-phase="done"] .bc-face, [data-phase="done"] .bc-back { transition: none; }
   }
 </style>

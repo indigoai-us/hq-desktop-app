@@ -63,6 +63,7 @@ mod ui_protocol;
 mod tray_helper;
 mod updater;
 mod scratch_build;
+mod toolchain;
 mod updater_outcome;
 mod util;
 #[cfg(target_os = "macos")]
@@ -621,6 +622,7 @@ fn main() {
         .manage(commands::dm_notify::WatchedSharesState::new())
         .manage(commands::messages::PendingMessagesTarget::new())
         .manage(crate::deep_link::PendingSetupTarget::new())
+        .manage(crate::deep_link::PendingPackTarget::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         .manage(commands::banner::PendingBannerActions::default())
         .manage(commands::banner::BannerActionRouterReadiness::default())
@@ -766,9 +768,6 @@ fn main() {
             commands::hq_work::get_hq_work_handoff_card_shown,
             commands::hq_work::mark_hq_work_handoff_card_shown,
             commands::status::get_sync_status,
-            commands::hq_daemon_host::get_pending_conflict_notices,
-            commands::hq_daemon_host::acknowledge_conflict_notice,
-            commands::hq_daemon_host::show_conflict_backup,
             commands::git_mirror::register_mirror_quarantine_move_not_deletion_generation,
             commands::git_mirror::unregister_mirror_quarantine_move_not_deletion_generation,
             commands::git_mirror::set_mirror_quarantine_move_not_deletion,
@@ -957,6 +956,8 @@ fn main() {
             commands::packages::uninstall_package,
             commands::packages::open_packages_window,
             commands::packages::packages_window_ready,
+            commands::packages::pack_deep_link_catalog_name,
+            commands::packages::install_pack_from_deep_link,
             commands::activity::open_activity_log,
             commands::activity::activity_window_ready,
             commands::activity::get_activity_log,
@@ -1137,6 +1138,8 @@ fn main() {
             commands::messages::get_company_tab,
             commands::messages::run_company_tab_action,
             crate::deep_link::take_pending_setup_target,
+            crate::deep_link::peek_pending_pack_target,
+            crate::deep_link::take_pending_pack_target,
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
             commands::messages::delete_channel,

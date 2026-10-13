@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 // Title-bar sync chip: live progress beside the bell. Progress ONLY — the Core
-// pill's dot already owns auth-error / conflict / error, and two warning lights
+// pill's dot already owns auth-error / error, and two warning lights
 // in one bar makes it ambiguous which to act on.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -83,7 +83,7 @@ describe("titlebar sync chip", () => {
 
   it("does not draw a second warning light for attention states", async () => {
     // The Core pill's dot tone and its popover sentence already carry these.
-    for (const event of ["sync:auth-error", "sync:conflict", "sync:error"]) {
+    for (const event of ["sync:auth-error", "sync:error"]) {
       let s = reduceSyncEvent(emptySyncStatus(), "sync:plan", {
         company: "acme",
         filesToDownload: 9,

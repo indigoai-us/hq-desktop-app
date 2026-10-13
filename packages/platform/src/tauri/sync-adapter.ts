@@ -68,6 +68,7 @@ import {
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
+import { claudeLaunchArgs } from './claude-launch.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
 import { withCreateAgentsAdmins } from './provision-refusal.js';
 import { createCallsApi } from '../calls/api.js';
@@ -1334,6 +1335,10 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', INTEGRATION_PATHS.connections(companyUid)),
       grantConnectionAccess: (input) =>
         hqProJson('POST', INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+      getConnectionAccess: ({ companyUid, connectionId }) =>
+        hqProJson('GET', INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+      revokeConnectionAccess: (input) =>
+        hqProJson('POST', INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
       catalogSearch: (companyUid, query, limit) =>
         hqProRequestWithStatus('GET', INTEGRATION_PATHS.catalog(companyUid, query, limit)),
       // No redirectUri: the server's default lands on the console's callback.
@@ -1401,6 +1406,10 @@ export function createSyncPlatformAdapter(
       getActivity: (slug) => call('get_company_activity', { slug }),
       getFirstWeekReturnNudge: (companyUid) =>
         hqProJson('GET', WEB_PATHS.firstWeekReturnNudge(companyUid)),
+      createBillingPortalSession: (companyUid) =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingPortal(), {
+          companyUid,
+        }),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,
@@ -1596,6 +1605,9 @@ export function createSyncPlatformAdapter(
       },
       beginReauth: () => call('begin_reauth'),
       listSyncableWorkspaces: () => call('list_syncable_workspaces'),
+      getCompanySyncMode: (slug) => call('get_sync_mode', { companySlug: slug }),
+      setCompanySyncMode: (slug, mode) =>
+        call('set_sync_mode', { companySlug: slug, mode }),
     },
 
     shell: {
@@ -1604,8 +1616,11 @@ export function createSyncPlatformAdapter(
       openCodexDeepLink: (url) => call('open_codex_deep_link', { url }),
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
-      launchClaudeCode: async (path) => {
-        const result = await call<void>('launch_claude_code', { path });
+      launchClaudeCode: async (path, opts) => {
+        const result = await call<void>(
+          'launch_claude_code',
+          claudeLaunchArgs(path, opts),
+        );
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },

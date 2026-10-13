@@ -34,6 +34,7 @@ import {
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
+import { claudeLaunchArgs } from "./claude-launch.js";
 import { parseBadgesPayload } from "../badges.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { withCreateAgentsAdmins } from "./provision-refusal.js";
@@ -658,6 +659,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("GET", INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.hqProJson("POST", INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    getConnectionAccess: ({ companyUid, connectionId }) =>
+      this.hqProJson("GET", INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+    revokeConnectionAccess: (input) =>
+      this.hqProJson("POST", INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.hqProRequestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
     // No redirectUri: the server's default lands on the console's callback.
@@ -688,6 +693,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.call("get_activity", { slug }),
     ensureHomeChannel: (companyUid) =>
       this.hqProJson("POST", `/v1/companies/${companyUid}/home-channel`),
+    createBillingPortalSession: (companyUid) =>
+      this.hqProJson("POST", WEB_PATHS.companyBillingPortal(), { companyUid }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
@@ -779,7 +786,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     openClaudeCodeLink: (url) => this.call("open_claude_code_link", { url }),
     openCodexDeepLink: (url) => this.call("open_codex_deep_link", { url }),
     openFileInClaude: (path) => this.call("open_file_in_claude", { path }),
-    launchClaudeCode: (path) => this.call("launch_claude_code", { path }),
+    launchClaudeCode: (path, opts) =>
+      this.call("launch_claude_code", claudeLaunchArgs(path, opts)),
     launchCodexWorkspace: (path, prompt) =>
       this.call("launch_codex_workspace", { path, prompt: prompt ?? null }),
     launchCliInTerminal: (args) =>

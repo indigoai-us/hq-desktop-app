@@ -1,0 +1,118 @@
+{
+  "_comment": "Synthetic BriefInput for a catch-up Thursday after four days away: two calls with priorities, nine attended meetings inside the widened window (two to-dos yours), one orphan carry row, four days of the week with two turning points, a live incident, a recovered row, a stale production handoff and 45 merged in one product (the last four fold into the Welcome back tiles). Invented names. Not read in production.",
+  "now": "2026-10-15T13:00:00.000Z",
+  "today": "2026-10-15",
+  "userName": "Sam",
+  "companies": ["cmp_northwind", "northwind"],
+  "lastBriefAt": "2026-10-11T13:00:00.000Z",
+  "catchUp": false,
+  "prefs": { "density": "auto", "pinned": [], "hidden": [], "weights": {} },
+  "calendarToday": [],
+  "actionItems": [],
+  "waitingOn": [],
+  "team": [],
+  "decisions": [
+    {
+      "id": "d1",
+      "title": "Approve the fourth-quarter plan",
+      "summary": "The team plans the quarter around it",
+      "action": "go",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/ledger", "product": "Ledger" }
+    },
+    {
+      "id": "d2",
+      "title": "Pick the launch date",
+      "summary": "Marketing waits on the date",
+      "action": "decide",
+      "choices": ["Nov 3", "Nov 10"],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/beacon", "product": "Beacon" }
+    }
+  ],
+  "priorities": [
+    { "n": 1, "text": "Approve the fourth-quarter plan", "because": "The team plans the quarter around it", "itemId": "d1" },
+    { "n": 2, "text": "Pick the launch date", "because": "Marketing waits on the date", "itemId": "d2" }
+  ],
+  "risks": [
+    {
+      "id": "p1",
+      "title": "Checkout webhooks are failing",
+      "summary": "The webhook relay has been red since Tuesday.",
+      "severity": "incident",
+      "links": [],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/compass", "product": "Compass" },
+      "ci": { "repo": "compass", "workflow": "webhook relay", "job": null, "since": null, "ageHours": 30, "note": "Red since Tuesday." }
+    }
+  ],
+  "meetingsYesterday": [
+    { "id": "m0", "title": "Monday planning", "startTime": "2026-10-15T03:00:00.000Z", "companyUid": "cmp_northwind", "decisions": 1, "actions": 1, "risks": 0, "questions": 0, "decided": ["Freeze the roadmap for the quarter"], "todo": [{ "text": "Write the quarter memo", "owner": "Sam", "mine": true }], "attended": true },
+    { "id": "m1", "title": "Design review", "startTime": "2026-10-14T19:00:00.000Z", "companyUid": "cmp_northwind", "decisions": 1, "actions": 1, "risks": 0, "questions": 0, "decided": ["Keep the two-column layout"], "todo": [{ "text": "Send the layout notes to Avery", "owner": "Sam", "mine": true }], "attended": true },
+    { "id": "m2", "title": "Avery and Sam weekly", "startTime": "2026-10-14T11:00:00.000Z", "companyUid": "cmp_northwind", "decisions": 1, "actions": 1, "risks": 0, "questions": 0, "decided": ["Avery writes the launch post"], "attended": true },
+    { "id": "m3", "title": "Partner check-in", "startTime": "2026-10-14T03:00:00.000Z", "companyUid": "cmp_northwind", "decisions": 1, "actions": 1, "risks": 0, "questions": 0, "decided": ["Pilot extends to a second region"], "attended": true },
+    { "id": "m4", "title": "Support review", "startTime": "2026-10-13T19:00:00.000Z", "companyUid": "cmp_northwind", "decisions": 1, "actions": 1, "risks": 0, "questions": 0, "decided": ["Add a second support shift"], "attended": true },
+    { "id": "m5", "title": "Hiring sync", "startTime": "2026-10-13T11:00:00.000Z", "companyUid": "cmp_northwind", "decisions": 1, "actions": 1, "risks": 0, "questions": 0, "decided": ["Open the designer role"], "attended": true },
+    { "id": "m6", "title": "Weekly product review", "startTime": "2026-10-13T03:00:00.000Z", "companyUid": "cmp_northwind", "decisions": 1, "actions": 1, "risks": 0, "questions": 0, "decided": ["Ship the pricing page before launch"], "attended": true },
+    { "id": "m7", "title": "Blake and Sam weekly", "startTime": "2026-10-12T19:00:00.000Z", "companyUid": "cmp_northwind", "decisions": 1, "actions": 1, "risks": 0, "questions": 0, "decided": ["Blake owns onboarding"], "attended": true },
+    { "id": "m8", "title": "Finance check-in", "startTime": "2026-10-12T11:00:00.000Z", "companyUid": "cmp_northwind", "decisions": 1, "actions": 1, "risks": 0, "questions": 0, "decided": ["Move billing to monthly"], "attended": true }
+  ],
+  "carry": [
+    {
+      "id": "c1",
+      "title": "Reply to the auditor",
+      "why": "Still open after two briefs",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/ledger", "product": "Ledger" },
+      "carriedFrom": "brief-20261010-090000",
+      "carriedSince": "2026-10-10",
+      "briefs": 2,
+      "itemId": null
+    }
+  ],
+  "handoffs": [
+    {
+      "id": "h1",
+      "object": "the billing fix",
+      "from": "Sam",
+      "to": "Blake",
+      "me": true,
+      "production": true,
+      "since": "2026-10-14T07:00:00.000Z",
+      "receipts": { "access": true, "ack": null, "active": null },
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/ledger", "product": "Ledger" }
+    }
+  ],
+  "recovered": [
+    {
+      "id": "r1",
+      "title": "The build gate is green again",
+      "what": "The release gate passed on its own after the retry fix",
+      "at": "2026-10-15T08:00:00.000Z",
+      "source": "main_health",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/compass", "product": "Compass" }
+    }
+  ],
+  "days": [
+    { "date": "2026-10-11", "sessions": 6, "meetings": 0, "merged": 23, "opened": 9, "beat": { "kind": "push", "label": "Sunday push" } },
+    { "date": "2026-10-12", "sessions": 4, "meetings": 3, "merged": 10, "opened": 4 },
+    { "date": "2026-10-13", "sessions": 5, "meetings": 2, "merged": 8, "opened": 3, "beat": { "kind": "turn", "label": "Pricing turn" } },
+    { "date": "2026-10-14", "sessions": 3, "meetings": 4, "merged": 4, "opened": 2 }
+  ],
+  "shipped": [
+    {
+      "id": "ship:ledger",
+      "title": "Ledger",
+      "status": "45 merged",
+      "note": "nothing open",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/ledger", "product": "Ledger" },
+      "lines": []
+    }
+  ],
+  "merged": 45,
+  "opened": 18,
+  "sessions": [],
+  "recentSessions": [
+    { "id": "s1", "title": "Catch up on the inbox", "startedAt": "2026-10-15T11:00:00.000Z", "workstream": "Work", "company": "cmp_northwind" }
+  ],
+  "dmCount": 12,
+  "runId": "brief-20261015-060000",
+  "previousRunId": "brief-20261011-085400",
+  "previous": null
+}

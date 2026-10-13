@@ -21,6 +21,7 @@ import {
   cardNumber,
   cardTierLabel,
   cardTilt,
+  tierNumeral,
   pointerOnCard,
 } from "./badge-card.js";
 import { FOIL_WGSL, foilUsers } from "./foil-gpu.js";
@@ -85,9 +86,32 @@ describe("card words", () => {
     expect(cardNumber("og")).toBe("No. 016 / 019");
     expect(cardNumber("corebuilder")).toBe("No. 019 / 019");
     expect(cardNumber("nope")).toBe("");
-    expect(cardTierLabel(2)).toBe("Tier II · Silver");
-    expect(cardTierLabel("L")).toBe("Legendary");
+    expect(cardTierLabel(BADGE_BY_ID.liftoff, 2)).toBe("Tier II · Silver");
+    expect(cardTierLabel(BADGE_BY_ID.og, "L")).toBe("Legendary");
     expect(cardAccessibleLabel(liftoff)).toBe("Liftoff card, Silver. Deploys that went live. Earned Oct 6, 2026.");
+  });
+
+  // Owner review 2026-10-12: Core Builder climbs 1 → 2 → 3 → L, so its
+  // Legendary is the fourth tier; OG, Captain and Patient Zero have one level.
+  it("labels Core Builder's Legendary as Tier IV, and the single-level honors plain Legendary", () => {
+    expect(([1, 2, 3, "L"] as const).map((t) => cardTierLabel(BADGE_BY_ID.corebuilder, t))).toEqual([
+      "Tier I · Bronze",
+      "Tier II · Silver",
+      "Tier III · Gold",
+      "Tier IV · Legendary",
+    ]);
+    for (const id of ["og", "captain", "patientzero"]) expect(cardTierLabel(BADGE_BY_ID[id], "L")).toBe("Legendary");
+    expect(cardTierLabel(BADGE_BY_ID.founding, 3)).toBe("Tier III · Gold");
+    expect(tierNumeral(BADGE_BY_ID.corebuilder, "L")).toBe("IV");
+    expect(tierNumeral(BADGE_BY_ID.og, "L")).toBeNull();
+  });
+
+  it("says Awarded, not Earned, for OG, Captain and Patient Zero; Core Builder is still earned", () => {
+    const at = (id: string, tier: ResolvedBadge["tier"]): ResolvedBadge => ({ def: BADGE_BY_ID[id], tier, earnedAt: "2026-10-11" });
+    expect(cardAccessibleLabel(at("og", "L"))).toBe("OG card, Legendary. On the team that built HQ from day one. Awarded Oct 11, 2026.");
+    expect(cardAccessibleLabel(at("captain", "L"))).toMatch(/\. Awarded Oct 11, 2026\.$/u);
+    expect(cardAccessibleLabel(at("patientzero", "L"))).toMatch(/\. Awarded Oct 11, 2026\.$/u);
+    expect(cardAccessibleLabel(at("corebuilder", "L"))).toMatch(/\. Earned Oct 11, 2026\.$/u);
   });
 
   it("tilts toward the pointer, eased in across the approach and capped", () => {

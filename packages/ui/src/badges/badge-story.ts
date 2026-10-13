@@ -8,7 +8,7 @@
  * Pure words. Nothing here touches the DOM.
  */
 
-import type { BadgeTier, ResolvedBadge } from "./badge-catalog.js";
+import { isAwarded, type BadgeTier, type ResolvedBadge } from "./badge-catalog.js";
 import { cardDate } from "./badge-card.js";
 
 /** The words a story needs for the person it is about. */
@@ -199,7 +199,7 @@ export interface BadgeStory {
   did: string;
   /** Why it matters. */
   why: string;
-  /** "Earned Oct 6, 2026". */
+  /** "Earned Oct 6, 2026", or "Awarded Oct 6, 2026" for OG, Captain and Patient Zero. */
   earned: string;
 }
 
@@ -209,7 +209,7 @@ export function badgeStory(badge: ResolvedBadge, owner?: string | null, person: 
   if (!def) return null;
   const voice = storyVoice(owner, person);
   const at = def.did.length === 1 ? 0 : Math.min(LEVEL_INDEX[String(badge.tier as BadgeTier)] ?? 0, def.did.length - 1);
-  return { did: def.did[at](voice), why: def.why(voice), earned: `Earned ${cardDate(badge.earnedAt)}` };
+  return { did: def.did[at](voice), why: def.why(voice), earned: `${isAwarded(badge.def) ? "Awarded" : "Earned"} ${cardDate(badge.earnedAt)}` };
 }
 
 /** Every badge id that has a story; the catalog test checks this covers them all. */

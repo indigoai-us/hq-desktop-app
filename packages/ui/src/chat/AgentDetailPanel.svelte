@@ -9,6 +9,7 @@
    */
   import type { AgentsApi, LocalBotRow, PlatformAdapter } from "@hq/platform";
   import IdentityMark from "./messaging/IdentityMark.svelte";
+  import BotIntegrationsSection from "./messaging/BotIntegrationsSection.svelte";
   import BotKindChip from "./BotKindChip.svelte";
   import { botKindFor } from "./bot-kind.js";
   import AvatarPickerSlot from "./AvatarPickerSlot.svelte";
@@ -71,7 +72,10 @@
     companyNames?: Map<string, string> | Record<string, string>;
     self?: SelfIdentity | null;
     isAdmin?: boolean | null;
-    adapter: Pick<PlatformAdapter, "agents"> | { agents: AgentsApi };
+    adapter:
+      | (Pick<PlatformAdapter, "agents"> &
+          Partial<Pick<PlatformAdapter, "integrations" | "identity">>)
+      | { agents: AgentsApi };
     packs?: AvatarPack[] | null;
     loadPacks?: () => Promise<AvatarPack[]>;
     avatarSaving?: boolean;
@@ -637,6 +641,15 @@
           {/if}
         {/if}
       </section>
+
+      {#if "integrations" in adapter && "identity" in adapter && adapter.integrations && adapter.identity}
+        <BotIntegrationsSection
+          companyUid={companyUid ?? null}
+          botUid={agentUid}
+          botRole={view.role ?? null}
+          adapter={{ integrations: adapter.integrations, identity: adapter.identity }}
+        />
+      {/if}
 
       <section class="ad-section" data-testid="agent-detail-routines">
         <h3 class="ad-kicker">Routines ({routines.length})</h3>
