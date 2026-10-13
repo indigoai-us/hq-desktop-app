@@ -1,0 +1,357 @@
+{
+  "_comment": "Synthetic BriefInput shaped like the real 2026-10-11 run (a Sunday): same counts and field presence, invented people, products and titles. 5 decisions (unlocks, people waiting, ages, two revenue), 2 incidents, 4 watch rows, 23 merged across 7 products with 3 firsts, 3 meetings two days old, team of 3 with two needing you, no waits, 2 carry rows linked to today's items, 6 own sessions with no product. Not read in production.",
+  "now": "2026-10-11T14:54:00.000Z",
+  "today": "2026-10-11",
+  "userName": "Sam",
+  "companies": ["cmp_northwind", "northwind"],
+  "lastBriefAt": "2026-10-10T14:54:00.000Z",
+  "leadHint": "Approve the vendor contract renewal first; finance and the renewal date wait on it.",
+  "catchUp": false,
+  "prefs": { "density": "auto", "pinned": [], "hidden": [], "weights": {} },
+  "calendarToday": [],
+  "actionItems": [],
+  "waitingOn": [],
+  "decisions": [
+    {
+      "id": "d1",
+      "title": "Approve the vendor contract renewal",
+      "summary": "The renewal expires Monday and finance needs your signature",
+      "action": "go",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/ledger", "product": "Ledger" },
+      "detail": {
+        "why": "The renewal expires Monday and finance needs your signature.",
+        "unlocks": [{ "label": "Finance closes the quarter", "state": "" }, { "label": "The renewal discount holds", "state": "" }],
+        "risk": "Past Monday the discount lapses.",
+        "source": "meeting_signals"
+      },
+      "ageHours": 44,
+      "effort": "quick",
+      "peopleWaiting": 3,
+      "revenue": true,
+      "source": "meeting_signals"
+    },
+    {
+      "id": "d2",
+      "title": "Answer Avery on the pricing page",
+      "summary": "Avery asked twice which tier goes first",
+      "action": "reply",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/beacon", "product": "Beacon" },
+      "detail": {
+        "why": "Avery asked twice which tier goes first.",
+        "unlocks": [{ "label": "The pricing page ships", "state": "" }],
+        "source": "dms"
+      },
+      "ageHours": 20,
+      "effort": "quick",
+      "peopleWaiting": 1,
+      "revenue": false,
+      "source": "dms"
+    },
+    {
+      "id": "d3",
+      "title": "Clear the red release gate",
+      "summary": "The release gate has been red since Friday and blocks the next cut",
+      "action": "decide",
+      "choices": ["Fix it", "Skip the check"],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/compass", "product": "Compass" },
+      "detail": {
+        "why": "The release gate has been red since Friday and blocks the next cut.",
+        "unlocks": [{ "label": "The next Compass release can cut", "state": "" }],
+        "source": "main_health"
+      },
+      "ageHours": 8,
+      "effort": "medium",
+      "peopleWaiting": 0,
+      "revenue": false,
+      "source": "main_health",
+      "carriedBriefs": 2
+    },
+    {
+      "id": "d4",
+      "title": "Pick which onboarding fixes ship this week",
+      "summary": "Blake has four fixes ready and room for two",
+      "action": "decide",
+      "choices": ["Signup first", "Billing first"],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/beacon", "product": "Beacon" },
+      "detail": {
+        "why": "Blake has four fixes ready and room for two.",
+        "unlocks": [{ "label": "Blake starts the week with a plan", "state": "" }, { "label": "Trial signups stop dropping", "state": "" }],
+        "source": "dms"
+      },
+      "ageHours": 30,
+      "effort": "quick",
+      "peopleWaiting": 2,
+      "revenue": true,
+      "source": "dms"
+    },
+    {
+      "id": "d5",
+      "title": "Approve the pilot proposal for Harbor Foods",
+      "summary": "The pilot starts when you say go",
+      "action": "go",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/ledger", "product": "Ledger" },
+      "detail": {
+        "why": "The pilot starts when you say go.",
+        "unlocks": [{ "label": "The pilot kicks off Tuesday", "state": "" }],
+        "source": "meeting_signals"
+      },
+      "ageHours": 5,
+      "effort": "quick",
+      "peopleWaiting": 1,
+      "revenue": false,
+      "source": "meeting_signals"
+    }
+  ],
+  "risks": [
+    {
+      "id": "p1",
+      "title": "Nightly sync is red",
+      "summary": "The nightly sync workflow has failed two nights running.",
+      "severity": "incident",
+      "links": [],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/beacon-sync", "product": "Beacon" },
+      "ci": { "repo": "beacon-sync", "workflow": "nightly sync", "job": null, "since": null, "ageHours": 48, "note": "Two nights red." }
+    },
+    {
+      "id": "p2",
+      "title": "Restart the four stalled worker agents",
+      "summary": "Four worker agents have sat in setup for three days.",
+      "severity": "incident",
+      "measure": { "healthy": 44, "total": 48, "unit": "agents", "cause": "setup phase" },
+      "links": [],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/dispatch", "product": "Dispatch" }
+    },
+    {
+      "id": "w1",
+      "title": "Two of your open changes have waited since Thursday",
+      "summary": "Nobody has reviewed them.",
+      "severity": "watch",
+      "links": [],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/ledger", "product": "Ledger" }
+    },
+    {
+      "id": "w2",
+      "title": "The docs build prints a warning on every run",
+      "summary": "Harmless today, noisy tomorrow.",
+      "severity": "watch",
+      "links": [],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/grove", "product": "Grove" }
+    },
+    {
+      "id": "w3",
+      "title": "Sync retries doubled overnight",
+      "summary": "The retry count went from 40 to 85.",
+      "severity": "watch",
+      "links": [],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/beacon-sync", "product": "Beacon" }
+    },
+    {
+      "id": "w4",
+      "title": "One release gate check is not marked required",
+      "summary": "A red check can be merged around.",
+      "severity": "watch",
+      "links": [],
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/compass", "product": "Compass" }
+    }
+  ],
+  "shipped": [
+    {
+      "id": "ship:ledger",
+      "title": "Ledger",
+      "status": "11 merged",
+      "note": "nothing open",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/ledger", "product": "Ledger" },
+      "first": true,
+      "why": "The first invoices went out to real customers.",
+      "lines": [
+        { "label": "Send the first invoice batch", "state": "MERGED", "tone": "ok" },
+        { "label": "Add the overdue reminder", "state": "MERGED", "tone": "ok" },
+        { "label": "Show the balance on the home page", "state": "MERGED", "tone": "ok" },
+        { "label": "Round totals to cents", "state": "MERGED", "tone": "ok" },
+        { "label": "Export statements as PDF", "state": "MERGED", "tone": "ok" },
+        { "label": "Fix the date picker on Safari", "state": "MERGED", "tone": "ok" },
+        { "label": "Speed up the ledger search", "state": "MERGED", "tone": "ok" },
+        { "label": "Keep drafts when the tab closes", "state": "MERGED", "tone": "ok" },
+        { "label": "Add the tax line to receipts", "state": "MERGED", "tone": "ok" },
+        { "label": "Let admins void an invoice", "state": "MERGED", "tone": "ok" },
+        { "label": "Log every payout", "state": "MERGED", "tone": "ok" }
+      ]
+    },
+    {
+      "id": "ship:beacon",
+      "title": "Beacon",
+      "status": "2 merged",
+      "note": "1 open",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/beacon", "product": "Beacon" },
+      "first": true,
+      "why": "Trial signups now land on the new welcome page.",
+      "lines": [
+        { "label": "Launch the welcome page", "state": "MERGED", "tone": "ok" },
+        { "label": "Track where signups come from", "state": "MERGED", "tone": "ok" }
+      ]
+    },
+    {
+      "id": "ship:compass",
+      "title": "Compass",
+      "status": "2 merged",
+      "note": "nothing open",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/compass", "product": "Compass" },
+      "lines": [
+        { "label": "Retry the gate once before failing", "state": "MERGED", "tone": "ok" },
+        { "label": "Name the failing step in the summary", "state": "MERGED", "tone": "ok" }
+      ]
+    },
+    {
+      "id": "ship:dispatch",
+      "title": "Dispatch",
+      "status": "2 merged",
+      "note": "nothing open",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/dispatch", "product": "Dispatch" },
+      "first": true,
+      "why": "Agents can now restart themselves after a stall.",
+      "lines": [
+        { "label": "Let agents restart after a stall", "state": "MERGED", "tone": "ok" },
+        { "label": "Show the setup phase per agent", "state": "MERGED", "tone": "ok" }
+      ]
+    },
+    {
+      "id": "ship:ember",
+      "title": "Ember",
+      "status": "2 merged",
+      "note": "nothing open",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/ember", "product": "Ember" },
+      "lines": [
+        { "label": "Warm the cache on deploy", "state": "MERGED", "tone": "ok" },
+        { "label": "Drop the old theme toggle", "state": "MERGED", "tone": "ok" }
+      ]
+    },
+    {
+      "id": "ship:forge",
+      "title": "Forge",
+      "status": "2 merged",
+      "note": "2 open",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/forge", "product": "Forge" },
+      "lines": [
+        { "label": "Build the installer on every tag", "state": "MERGED", "tone": "ok" },
+        { "label": "Sign the installer", "state": "MERGED", "tone": "ok" }
+      ]
+    },
+    {
+      "id": "ship:grove",
+      "title": "Grove",
+      "status": "2 merged",
+      "note": "nothing open",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/grove", "product": "Grove" },
+      "lines": [
+        { "label": "Publish the getting started guide", "state": "MERGED", "tone": "ok" },
+        { "label": "Fix the broken sidebar links", "state": "MERGED", "tone": "ok" }
+      ]
+    }
+  ],
+  "merged": 23,
+  "opened": 9,
+  "prWindow": {
+    "from": "2026-10-09",
+    "to": "2026-10-10",
+    "total": 32,
+    "merged": 23,
+    "byRepo": [
+      { "repo": "ledger", "total": 14, "merged": 11 },
+      { "repo": "beacon", "total": 4, "merged": 2 },
+      { "repo": "compass", "total": 3, "merged": 2 },
+      { "repo": "dispatch", "total": 3, "merged": 2 },
+      { "repo": "ember", "total": 2, "merged": 2 },
+      { "repo": "forge", "total": 4, "merged": 2 },
+      { "repo": "grove", "total": 2, "merged": 2 }
+    ]
+  },
+  "team": [
+    { "id": "prs_avery", "name": "Avery", "doing": "Needs your call on the pricing page", "tone": "decision", "isAgent": false, "dmCount": 2 },
+    { "id": "prs_blake", "name": "Blake", "doing": "Waiting on the onboarding fixes", "tone": "decision", "isAgent": false, "dmCount": 1 },
+    { "id": "agt_scout", "name": "Scout", "doing": "Agent", "tone": "neutral", "isAgent": true, "dmCount": 3 }
+  ],
+  "meetingsYesterday": [
+    {
+      "id": "m1",
+      "title": "Weekly product review",
+      "startTime": "2026-10-09T15:00:00.000Z",
+      "companyUid": "cmp_northwind",
+      "decisions": 2,
+      "actions": 1,
+      "risks": 0,
+      "questions": 0,
+      "decided": ["Ship the welcome page this week", "Hold the pricing change"],
+      "todo": [{ "text": "Send the pricing draft to Avery", "owner": "Sam", "mine": true }]
+    },
+    {
+      "id": "m2",
+      "title": "Avery and Sam weekly",
+      "startTime": "2026-10-09T16:30:00.000Z",
+      "companyUid": "cmp_northwind",
+      "decisions": 1,
+      "actions": 3,
+      "risks": 0,
+      "questions": 0,
+      "decided": ["Avery owns the pricing page"]
+    },
+    {
+      "id": "m3",
+      "title": "Partner check-in",
+      "startTime": "2026-10-09T19:00:00.000Z",
+      "companyUid": "cmp_northwind",
+      "decisions": 0,
+      "actions": 2,
+      "risks": 1,
+      "questions": 0
+    }
+  ],
+  "sessions": [
+    { "id": "s1", "title": "Draft the pricing page copy", "startedAt": "2026-10-10T21:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s2", "title": "Review the invoice batch", "startedAt": "2026-10-11T00:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s3", "title": "Look at the red release gate", "startedAt": "2026-10-11T03:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s4", "title": "Plan the onboarding fixes", "startedAt": "2026-10-11T06:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s5", "title": "Check the stalled agents", "startedAt": "2026-10-11T09:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s6", "title": "Read the pilot proposal", "startedAt": "2026-10-11T12:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" }
+  ],
+  "recentSessions": [
+    { "id": "s1", "title": "Draft the pricing page copy", "startedAt": "2026-10-10T21:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s2", "title": "Review the invoice batch", "startedAt": "2026-10-11T00:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s3", "title": "Look at the red release gate", "startedAt": "2026-10-11T03:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s4", "title": "Plan the onboarding fixes", "startedAt": "2026-10-11T06:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s5", "title": "Check the stalled agents", "startedAt": "2026-10-11T09:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" },
+    { "id": "s6", "title": "Read the pilot proposal", "startedAt": "2026-10-11T12:54:00.000Z", "workstream": "Work", "company": "cmp_northwind" }
+  ],
+  "dmCount": 6,
+  "carry": [
+    {
+      "id": "c1",
+      "title": "Clear the red release gate",
+      "why": "Still red; carried from Saturday's brief",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/compass", "product": "Compass" },
+      "carriedFrom": "brief-20261010-090000",
+      "carriedSince": "2026-10-10",
+      "briefs": 2,
+      "itemId": "d3"
+    },
+    {
+      "id": "c2",
+      "title": "Restart the four stalled worker agents",
+      "why": "Still stuck; carried from Saturday's brief",
+      "origin": { "companyUid": "cmp_northwind", "repo": "northwind/dispatch", "product": "Dispatch" },
+      "carriedFrom": "brief-20261010-090000",
+      "carriedSince": "2026-10-10",
+      "briefs": 2,
+      "itemId": "p2"
+    }
+  ],
+  "priorities": [
+    { "n": 1, "text": "Approve the vendor contract renewal", "because": "Finance and the renewal date wait on it", "itemId": "d1", "score": 7 },
+    { "n": 2, "text": "Pick which onboarding fixes ship this week", "because": "Blake and Avery are waiting on you", "itemId": "d4", "score": 6 },
+    { "n": 3, "text": "Approve the pilot proposal for Harbor Foods", "because": "The pilot starts when you say go", "itemId": "d5", "score": 4 },
+    { "n": 4, "text": "Answer Avery on the pricing page", "because": "Avery asked twice", "itemId": "d2", "score": 3 },
+    { "n": 5, "text": "Restart the four stalled worker agents", "because": "They have sat in setup for three days", "itemId": "p2", "score": 3 }
+  ],
+  "runId": "brief-20261011-085400",
+  "previousRunId": null,
+  "previous": null
+}
