@@ -140,14 +140,17 @@
     padding: 0 0 0 18px;
   }
   /* The rail: a fine dotted line, as in the reference. Only the active call gets a marker. */
+  /* Sparse dots that fade out at both ends. */
   ol::before {
     content: "";
     position: absolute;
     left: 4px;
-    top: 6px;
-    bottom: 6px;
-    width: 1.5px;
-    background: radial-gradient(circle, rgb(var(--b-ink) / 0.4) 0.75px, transparent 0.9px) center top / 1.5px 5px repeat-y;
+    top: -10px;
+    bottom: -10px;
+    width: 2px;
+    background: radial-gradient(circle, rgb(var(--b-ink) / 0.5) 0.8px, transparent 1px) center top / 2px 8px repeat-y;
+    -webkit-mask: linear-gradient(180deg, transparent, #000 22%, #000 78%, transparent);
+    mask: linear-gradient(180deg, transparent, #000 22%, #000 78%, transparent);
   }
   li {
     position: relative;
@@ -171,7 +174,7 @@
   .pt {
     display: none;
   }
-  /* The active call's knob: a soft raised disc on the rail with a small dark dot. */
+  /* The active call's marker: a flat, soft disc on the rail with a small dark dot. */
   li.now .pt,
   li.next .pt {
     display: block;
@@ -183,9 +186,9 @@
     margin-top: -11px;
     border-radius: 50%;
     background:
-      radial-gradient(circle, rgb(var(--b-ink) / 0.85) 0 2px, transparent 2.5px),
-      linear-gradient(180deg, var(--b-knob-hi), var(--b-knob-lo));
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 4px 10px rgba(0, 0, 0, 0.08);
+      radial-gradient(circle, rgb(var(--b-ink) / 0.85) 0 1.75px, transparent 2.25px),
+      var(--b-knob);
+    box-shadow: 0 0 0 1px rgb(var(--b-ink) / 0.05);
   }
   .tt {
     overflow: hidden;

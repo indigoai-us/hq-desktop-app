@@ -86,9 +86,8 @@
   /* The highlight: HQ's terracotta orange (the "Most popular" plan tag), white ink on it. */
   --b-hot: #c9765a;
   --b-on-hot: #fff;
-  /* The timeline's active knob. */
-  --b-knob-hi: #3a3a40;
-  --b-knob-lo: #26262b;
+  /* The timeline's active marker. */
+  --b-knob: rgba(255, 255, 255, 0.07);
   /* Inner glass tile fill; colour fields raise it. */
   --b-glass: rgb(var(--b-ink) / 0.04);
   /* Neutral glass panels in the top section. */
@@ -782,8 +781,7 @@
   --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
   --b-panel: rgba(255, 255, 255, 0.55);
   --b-panel-line: rgba(255, 255, 255, 0.9);
-  --b-knob-hi: #ffffff;
-  --b-knob-lo: #ececef;
+  --b-knob: rgba(255, 255, 255, 0.75);
   --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
     background: radial-gradient(1100px 620px at 18% -12%, #ffffff 0%, var(--b-bg) 62%), var(--b-bg);
   }
@@ -818,8 +816,7 @@
   --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
   --b-panel: rgba(255, 255, 255, 0.55);
   --b-panel-line: rgba(255, 255, 255, 0.9);
-  --b-knob-hi: #ffffff;
-  --b-knob-lo: #ececef;
+  --b-knob: rgba(255, 255, 255, 0.75);
   --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
   background: radial-gradient(1100px 620px at 18% -12%, #ffffff 0%, var(--b-bg) 62%), var(--b-bg);
 }
