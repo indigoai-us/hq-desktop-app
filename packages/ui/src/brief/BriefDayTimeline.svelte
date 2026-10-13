@@ -213,6 +213,13 @@
     color: var(--b-t3);
     white-space: nowrap;
   }
+  /* Done: outline only. Later: fill only. */
+  li.done .st {
+    background: transparent;
+  }
+  li.later .st {
+    border-color: transparent;
+  }
   li.done .tt,
   li.later .tt {
     opacity: 0.8;
