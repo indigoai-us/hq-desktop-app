@@ -1769,6 +1769,29 @@
     font-size: 13px;
     line-height: 18px;
   }
+  /* Short windows (800x600): tighten the vertical spacing in and around the
+     plan cards so the plan screen fits, centred, under the progress strip.
+     Type and content are unchanged. */
+  @media (max-height: 640px) {
+    .plan-cards {
+      margin-top: 20px;
+    }
+    .plan-card {
+      padding-top: 16px;
+      padding-bottom: 16px;
+    }
+    .plan-rows {
+      margin-top: 10px;
+      padding-top: 8px;
+      gap: 6px;
+    }
+    .plan-spacer {
+      min-height: 8px;
+    }
+    .plan-custom {
+      margin-top: 14px;
+    }
+  }
   .link {
     background: none;
     border: 0;
