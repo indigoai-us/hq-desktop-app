@@ -41,7 +41,8 @@ describe('badge harness switches', () => {
   it('raises the notice from the harness entry only', () => {
     const main = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../dev-harness/main.ts'), 'utf8');
     expect(main).toContain('earnedFromUrl(window.location.search)');
-    expect(main).toContain('announceBadgeEarned(badge)');
+    // Several badges at once raise one notice, as after a stretch away.
+    expect(main).toContain('announceBadgesEarned(earned)');
   });
 
   it('gives sample progress toward first levels for the Badges page', () => {

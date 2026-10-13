@@ -1,6 +1,6 @@
 import { mount } from 'svelte';
 import Harness from './Harness.svelte';
-import { announceBadgeEarned, setBadgeProgressSource, setBadgeSource } from '@hq/ui';
+import { announceBadgesEarned, setBadgeProgressSource, setBadgeSource } from '@hq/ui';
 import { earnedFromUrl, sampleBadges, sampleProgress } from './badge-fixtures';
 // Load the base design tokens (the --pop-* / --c-* primitives + light/dark
 // blocks) the same way the real app entry (src/main.ts) does, then the popover
@@ -20,6 +20,7 @@ setBadgeProgressSource(sampleProgress);
 mount(Harness, { target: document.getElementById('app')! });
 
 // ?earn=<badge>[:<tier>]: the "You earned" notice with its card reveal
-// (dev-harness/badge-fixtures.ts).
+// (dev-harness/badge-fixtures.ts). Several badges (`earn=og,poweruser:3`)
+// raise the one notice for everything since your last visit.
 const earned = earnedFromUrl(window.location.search);
-if (earned.length) setTimeout(() => earned.forEach((badge) => announceBadgeEarned(badge)), 1500);
+if (earned.length) setTimeout(() => announceBadgesEarned(earned), 1500);
