@@ -292,8 +292,10 @@
 </div>
 
 <style>
+  /* The progress bar is the divider here, so the footer drops its hairline. */
   .foot {
     align-items: center;
+    border-top: 0;
   }
   .bar {
     flex: 1;
