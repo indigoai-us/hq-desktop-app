@@ -164,3 +164,56 @@ export function withLine(people: readonly string[]): string {
   if (names.length === 2) return `with ${names[0]} and ${names[1]}`;
   return `with ${names[0]}, ${names[1]} +${names.length - 2}`;
 }
+
+/** A clock time in the brief's short form: "2 PM", "2:30 PM". */
+export function clockLabel(iso: string): string {
+  const d = new Date(iso);
+  const m = d.getMinutes();
+  return `${d.getHours() % 12 || 12}${m ? `:${String(m).padStart(2, "0")}` : ""} ${d.getHours() >= 12 ? "PM" : "AM"}`;
+}
+
+export type TodayStatKey = "decide" | "calls" | "dms" | "risks";
+export interface TodayStat {
+  key: TodayStatKey;
+  label: string;
+  n: number;
+  caption: string;
+}
+
+/**
+ * The counts under the greeting, all about today: what to decide, the calls on
+ * the calendar, the DMs to read and the risks to watch. A count of zero is left
+ * out rather than shown as an empty stat.
+ */
+export function todayStats(input: {
+  now: string;
+  decisions: readonly unknown[];
+  calendarToday: readonly { start: string; end?: string | null; busy?: boolean }[];
+  dmCount?: number | null;
+  team: readonly { name: string; dmCount?: number }[];
+  risks: readonly { severity: "incident" | "watch" }[];
+  timeToClearMin?: number | null;
+}): TodayStat[] {
+  const calls = input.calendarToday.filter((e) => !e.busy);
+  const next = nextCall(calls, input.now);
+  const clear = input.timeToClearMin ?? 0;
+  const topDm = [...input.team].filter((t) => t.dmCount).sort((a, b) => (b.dmCount ?? 0) - (a.dmCount ?? 0))[0];
+  const live = input.risks.filter((r) => r.severity === "incident").length;
+  const stats: TodayStat[] = [
+    {
+      key: "decide",
+      label: "To decide",
+      n: input.decisions.length,
+      caption: clear > 0 ? `about ${clear < 60 ? `${clear} min` : `${Math.floor(clear / 60)}h${clear % 60 ? ` ${clear % 60}m` : ""}`} to clear` : "for today",
+    },
+    {
+      key: "calls",
+      label: "Calls",
+      n: calls.length,
+      caption: next ? (next.live ? "on one now" : `next at ${clockLabel(next.event.start)}`) : "all done",
+    },
+    { key: "dms", label: "DMs", n: input.dmCount ?? 0, caption: topDm ? `most from ${topDm.name}` : "to read" },
+    { key: "risks", label: "Risks", n: input.risks.length, caption: live ? `${live} live incident${live === 1 ? "" : "s"}` : "to watch" },
+  ];
+  return stats.filter((s) => s.n > 0);
+}

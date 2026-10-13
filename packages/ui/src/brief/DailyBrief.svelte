@@ -55,7 +55,7 @@
   import type { BriefInput, BriefRisk as BriefRiskRow } from "./brief-types.js";
   import { effortMinutes } from "./brief-hero.js";
   import { briefHover } from "./brief-hover.js";
-  import { FIELD, inLabel, nextCall, promoteMain, withLine } from "./brief-layout.js";
+  import { FIELD, clockLabel, inLabel, nextCall, promoteMain, todayStats, withLine, type TodayStatKey } from "./brief-layout.js";
   import { CARD_TAG, cardTag, tagIconWidth, tagViewBox } from "./brief-card-tags.js";
   /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
   const REWARD_KINDS = new Set(["shipped", "firsts", "resolved"]);
@@ -147,46 +147,26 @@
   // The writer's total minutes to clear every call, else summed from each call's effort size.
   const timeToClear = $derived(input.timeToClearMin ?? effortMinutes(input.decisions));
 
-  // Hover detail for the header counts: what each number is made of, five lines at most.
-  function provPeek(label: string): PeekContent {
+  // The counts under the greeting, all about today.
+  const stats = $derived(todayStats({ ...input, timeToClearMin: timeToClear }));
+  // Hover detail for each count: the full list behind the number.
+  function statPeek(key: TodayStatKey): PeekContent {
     const line = (l: string, st: string | number = "") => ({ label: l, state: String(st) });
-    if (label.startsWith("session")) {
-      return {
-        title: `${plan.sessions.count} sessions`,
-        status: "By workstream",
-        sections: [{ label: "Most active", lines: plan.sessions.byWorkstream.slice(0, 5).map((w) => line(w.name, w.count)) }],
-      };
+    if (key === "decide") {
+      return { title: `${input.decisions.length} to decide today`, sections: [{ label: "", lines: input.decisions.map((d) => line(d.title)) }] };
     }
-    if (label.startsWith("DM")) {
+    if (key === "calls") {
+      const calls = input.calendarToday.filter((e) => !e.busy);
+      return { title: `${calls.length} call${calls.length === 1 ? "" : "s"} today`, sections: [{ label: "", lines: calls.map((e) => line(e.title, clockLabel(e.start))) }] };
+    }
+    if (key === "dms") {
       const people = input.team.filter((t) => t.dmCount).sort((a, b) => (b.dmCount ?? 0) - (a.dmCount ?? 0));
-      return { title: `${input.dmCount ?? 0} DMs`, status: "Who wrote", sections: [{ label: "From", lines: people.slice(0, 5).map((t) => line(t.name, t.dmCount ?? "")) }] };
-    }
-    if (label.startsWith("signal")) {
-      return {
-        title: "Signals from meetings",
-        sections: [
-          { label: "Mix", lines: [line("Decisions to make", input.decisions.length), line("Action items", input.actionItems.length), line("Risks", input.risks.length)] },
-          ...(input.decisions.length ? [{ label: "Latest", lines: input.decisions.slice(0, 3).map((d) => line(d.title)) }] : []),
-        ],
-      };
+      return { title: `${input.dmCount ?? 0} DMs to read`, sections: [{ label: "From", lines: people.map((t) => line(t.name, t.dmCount ?? "")) }] };
     }
     return {
-      title: `${input.meetingsYesterday.length} meetings yesterday`,
-      sections: [{ label: "Meetings", lines: input.meetingsYesterday.map((m) => line(m.title, m.decisions ? `${m.decisions} decided` : "")) }],
+      title: `${input.risks.length} risk${input.risks.length === 1 ? "" : "s"} to watch`,
+      sections: [{ label: "", lines: input.risks.map((r) => line(r.title, r.severity === "incident" ? "Incident" : "Watch")) }],
     };
-  }
-
-  const STAT_NAME: Record<string, string> = { session: "Sessions", sessions: "Sessions", DM: "DMs", DMs: "DMs", signals: "Signals", meeting: "Meetings", meetings: "Meetings" };
-  const statName = (label: string) => STAT_NAME[label] ?? label;
-  /** One plain caption under each number, from what it is made of. */
-  function statCaption(label: string): string {
-    if (label.startsWith("session")) return plan.sessions.byWorkstream[0] ? `most in ${plan.sessions.byWorkstream[0].name}` : "worked in";
-    if (label.startsWith("DM")) {
-      const top = [...input.team].filter((t) => t.dmCount).sort((a, b) => (b.dmCount ?? 0) - (a.dmCount ?? 0))[0];
-      return top ? `most from ${top.name}` : "to read";
-    }
-    if (label.startsWith("signal")) return `${input.decisions.length} to decide · ${input.risks.length} risk${input.risks.length === 1 ? "" : "s"}`;
-    return "yesterday";
   }
   const next = $derived(nextCall(input.calendarToday, input.now));
   const callsLeft = $derived(input.calendarToday.filter((e) => !e.busy && Date.parse(e.start) >= (next ? Date.parse(next.event.start) : Infinity)).length);
@@ -310,11 +290,11 @@
     <div class="b-hello">
       <h1 class="b-greet">Morning{input.userName ? `, ${input.userName}` : ""}.</h1>
       <div class="b-stats">
-        {#each plan.provenance as p, i (p.label)}
-          <div class="stat prov" role="group" aria-label="{p.n} {p.label}" use:peek={{ state: briefState, content: () => provPeek(p.label) }}>
-            <span class="pill" class:hot={i === 0}>{statName(p.label)}</span>
-            <b class="num">{p.n}</b>
-            <span class="cap">{statCaption(p.label)}</span>
+        {#each stats as st, i (st.key)}
+          <div class="stat prov" role="group" aria-label="{st.n} {st.label}, {st.caption}" data-testid="brief-stat" data-stat={st.key} use:peek={{ state: briefState, content: () => statPeek(st.key) }}>
+            <span class="pill" class:hot={i === 0}>{st.label}</span>
+            <b class="num">{st.n}</b>
+            <span class="cap">{st.caption}</span>
           </div>
         {/each}
       </div>

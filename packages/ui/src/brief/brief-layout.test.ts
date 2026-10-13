@@ -1,6 +1,6 @@
 // The priorities card takes the hero's slot; the sunrise takes the priorities card's slot.
 import { describe, expect, it } from "vitest";
-import { inLabel, nextCall, peekTop, placePeek, promoteMain, withLine } from "./brief-layout.js";
+import { clockLabel, inLabel, nextCall, peekTop, placePeek, promoteMain, todayStats, withLine } from "./brief-layout.js";
 import type { BriefWidget } from "./brief-generate.js";
 
 const w = (kind: string, cols: number, rows: number, size = "M"): BriefWidget =>
@@ -96,5 +96,46 @@ describe("participants on the Next call panel", () => {
     expect(withLine(["Lizzie"])).toBe("with Lizzie");
     expect(withLine(["Jacob", "Corey"])).toBe("with Jacob and Corey");
     expect(withLine(["Jacob", "Corey", "Izzy", "Hassaan"])).toBe("with Jacob, Corey +2");
+  });
+});
+
+describe("todayStats", () => {
+  const at = (h: number, m = 0) => new Date(2026, 9, 8, h, m).toISOString();
+  const base = {
+    now: at(13, 30),
+    decisions: [1, 2, 3, 4],
+    calendarToday: [
+      { start: at(9), end: at(9, 30) },
+      { start: at(12), end: at(13), busy: true },
+      { start: at(14), end: at(14, 30) },
+      { start: at(16), end: at(16, 30) },
+    ],
+    dmCount: 40,
+    team: [{ name: "Izzy", dmCount: 12 }, { name: "Geoff", dmCount: 3 }],
+    risks: [{ severity: "watch" as const }, { severity: "incident" as const }],
+    timeToClearMin: 95,
+  };
+
+  it("counts today only: decisions, today's calls (busy holds out), DMs and risks", () => {
+    expect(todayStats(base)).toEqual([
+      { key: "decide", label: "To decide", n: 4, caption: "about 1h 35m to clear" },
+      { key: "calls", label: "Calls", n: 3, caption: "next at 2 PM" },
+      { key: "dms", label: "DMs", n: 40, caption: "most from Izzy" },
+      { key: "risks", label: "Risks", n: 2, caption: "1 live incident" },
+    ]);
+  });
+
+  it("says when a call is on now or the day's calls are done, and drops zero counts", () => {
+    expect(todayStats({ ...base, now: at(14, 10) }).find((s) => s.key === "calls")!.caption).toBe("on one now");
+    expect(todayStats({ ...base, now: at(17) }).find((s) => s.key === "calls")!.caption).toBe("all done");
+    const quiet = todayStats({ ...base, decisions: [], dmCount: 0, risks: [], timeToClearMin: null });
+    expect(quiet.map((s) => s.key)).toEqual(["calls"]);
+  });
+
+  it("formats short clears in minutes and clock times without :00", () => {
+    expect(todayStats({ ...base, timeToClearMin: 45 })[0]!.caption).toBe("about 45 min to clear");
+    expect(todayStats({ ...base, timeToClearMin: null })[0]!.caption).toBe("for today");
+    expect(clockLabel(at(9, 5))).toBe("9:05 AM");
+    expect(clockLabel(at(12))).toBe("12 PM");
   });
 });
