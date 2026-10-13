@@ -1506,14 +1506,9 @@
       <div>
         <div class="sn">Sync history</div>
         <div class="sd">
-          {#if liveSync.conflicts > 0}
-            {liveSync.conflicts} conflict{liveSync.conflicts === 1 ? "" : "s"} need
-            a keep-local / keep-cloud choice
-          {:else}
-            {liveSync.source === "none"
-              ? "Nothing synced on this computer yet"
-              : "Changes synced on this computer"}
-          {/if}
+          {liveSync.source === "none"
+            ? "Nothing synced on this computer yet"
+            : "Changes synced on this computer"}
         </div>
       </div>
       <span class="val">{lastSyncLabelFromLive(liveSync) ?? "Never"}</span>

@@ -3,7 +3,7 @@
   /**
    * Core popover (US-016) — opened from the titlebar "● Core ⌄" pill.
    *
-   * Contains: conflict rescue card, HQ core version/drift row, desktop app
+   * Contains: HQ core version/drift row, desktop app
    * update row, Marketplace row, expandable PACKS list + marketplace, and a
    * cloud-paused notice. Model logic lives in core-popover-model.ts.
    */
@@ -13,15 +13,12 @@
   import type { Issue } from "./copy-prompts.js";
   import { sanitizeVisibleIdentifiers } from "../chat/visible-labels.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
-  import type { HomeConflict } from "./home-model.js";
   import {
     buildCorePopoverViewModel,
     coreNeedsRestore,
     parseInstalledPacks,
     CORE_POPOVER_FIXTURE_PACKS,
     CORE_POPOVER_FIXTURE_CORE,
-    CORE_POPOVER_FIXTURE_CONFLICTS,
-    type CorePopoverConflict,
     type CorePopoverPack,
     type CoreUploadsPausedInput,
   } from "./core-popover-model.js";
@@ -44,7 +41,6 @@
     type UpdateStoreAdapter,
   } from "../settings/update-store.svelte";
   import "./tokens.css";
-  import ResolveConflictsDoor from "./overlays/resolve-conflicts-door.svelte";
   import BrowsePacksDoor from "./overlays/browse-packs-door.svelte";
 
   interface Props {
@@ -54,8 +50,6 @@
     adapter: PlatformAdapter;
     /** Desktop app version string (from __APP_VERSION__). */
     appVersion: string;
-    /** Live conflict list from DesktopApp (sync:conflict stream). */
-    conflicts?: HomeConflict[];
     /** Settings-backed Cloud Off flag. */
     cloudPaused?: boolean;
     /**
@@ -67,11 +61,6 @@
     lastSyncLabel?: string | null;
     /** Live caption while a run is in flight (`syncStatusLabel(...).detail`). */
     syncCaption?: string | null;
-    /** Unresolved conflict count from the journal read (drives "Sync paused"
-     *  and the conflict notice payload). Falls back to `conflicts.length`. */
-    conflictCount?: number;
-    /** Company whose files conflicted — copy-prompt payload only. */
-    conflictCompany?: string | null;
     /**
      * PL-02 — sync trouble inputs.
      * `errorMessage` is the message behind an `error` phase; empty suppresses
@@ -90,9 +79,9 @@
     /** Absolute HQ root for the Claude Code hand-off. Empty → no open button. */
     hqFolderPath?: string | null;
     /**
-     * Visual-QA only (D-08): inject fixture conflicts/packs/update when live
-     * sources are empty. MUST stay false on real-data paths — defaulting true
-     * put a fake conflict card and a phantom "4 packs" header in production.
+     * Visual-QA only (D-08): inject fixture packs/update when live sources
+     * are empty. MUST stay false on real-data paths — defaulting true put a
+     * phantom "4 packs" header in production.
      */
     useFixtures?: boolean;
     /** Sync/hydration recovery card from the titlebar status model (D-04). */
@@ -104,11 +93,6 @@
     } | null;
     onrecovery?: () => void | Promise<void>;
     onclose?: () => void;
-    onresolve?: (
-      path: string,
-      strategy: "keep-local" | "keep-remote" | "discard",
-    ) => void | Promise<void>;
-    onopeneditor?: (path: string) => void | Promise<void>;
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
     onopenMarketplace?: () => void;
@@ -132,13 +116,10 @@
   let {
     adapter,
     appVersion,
-    conflicts = [],
     cloudPaused = false,
     syncState = null,
     lastSyncLabel = null,
     syncCaption = null,
-    conflictCount,
-    conflictCompany = null,
     errorMessage = null,
     errorCompany = null,
     manifestError = null,
@@ -150,8 +131,6 @@
     recovery = null,
     onrecovery,
     onclose,
-    onresolve,
-    onopeneditor,
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
@@ -160,7 +139,6 @@
   }: Props = $props();
 
   let packsExpanded = $state(true);
-  let resolveSheetOpen = $state(false);
   let browsePacksOpen = $state(false);
   let coreRestoring = $state(false);
   let packs = $state<CorePopoverPack[]>([]);
@@ -172,25 +150,6 @@
   let loadGeneration = 0;
   let returnNudge = $state<{ companyUid: string; slug?: string; dayIndex: number } | null>(null);
   let returnNudgeBusy = $state(false);
-  /** Fixture conflict timestamp for "· Nm ago" header. */
-  const fixtureConflictAt = Date.now() - 3 * 60_000;
-
-  const modelConflicts = $derived.by((): CorePopoverConflict[] => {
-    const live = conflicts.map((c) => ({
-      path: c.path,
-      status: (c.status === "error"
-        ? "error"
-        : c.status === "resolving"
-          ? "resolving"
-          : "pending") as CorePopoverConflict["status"],
-      error: c.error,
-    }));
-    if (live.length > 0) return live;
-    // D-08: demo conflict card when live stream is empty.
-    if (useFixtures) return CORE_POPOVER_FIXTURE_CONFLICTS;
-    return [];
-  });
-
   const modelPacks = $derived.by((): CorePopoverPack[] => {
     if (packs.length > 0) return packs;
     return useFixtures ? CORE_POPOVER_FIXTURE_PACKS : [];
@@ -261,15 +220,8 @@
     }),
   );
 
-  /** Journal count wins; the live conflict stream is the fallback. */
-  const effectiveConflictCount = $derived(
-    conflictCount ?? modelConflicts.length,
-  );
-
   const model = $derived(
     buildCorePopoverViewModel({
-      conflicts: modelConflicts,
-      conflictUpdatedAtMs: modelConflicts.length > 0 ? fixtureConflictAt : null,
       core: modelCore,
       appVersion,
       coreChecking,
@@ -285,8 +237,6 @@
       syncCaption,
       uploadsPaused: uploadsPaused ?? [],
       notices: {
-        conflictCount: effectiveConflictCount,
-        conflictCompany,
         errorMessage,
         errorCompany,
         manifestError,
@@ -656,77 +606,6 @@
     </div>
   {/if}
 
-  {#if model.conflictCount > 0}
-    <section
-      class="core-conflicts"
-      data-testid="core-popover-rescue-card"
-      aria-label="Conflicts"
-    >
-      <header
-        class="core-section-header"
-        data-testid="core-popover-conflict-header"
-      >
-        <span>{model.conflictHeader}</span>
-        <button
-          type="button"
-          class="core-link"
-          data-testid="core-popover-resolve-conflicts"
-          onclick={() => (resolveSheetOpen = true)}
-        ><RailIcon name="check" />
-          Resolve conflicts
-        </button>
-      </header>
-      <ul class="core-conflict-list">
-        {#each model.conflictRows as row (row.path)}
-          <li class="core-conflict-row" data-testid="core-popover-conflict-row">
-            <div class="core-conflict-meta">
-              <span class="core-conflict-name">{row.fileName}</span>
-              <span
-                class="core-conflict-path"
-                data-testid="conflict-row-path"
-                title={row.path}
-              >
-                {row.companyPath}
-              </span>
-              {#if row.error}
-                <span class="core-conflict-error">{row.error}</span>
-              {/if}
-            </div>
-            <div class="core-conflict-actions">
-              <button
-                type="button"
-                class="core-btn primary"
-                data-testid="core-popover-keep-local"
-                disabled={row.actionsDisabled}
-                onclick={() => void onresolve?.(row.path, "keep-local")}
-              ><RailIcon name="check" />
-                Keep local
-              </button>
-              <button
-                type="button"
-                class="core-btn primary"
-                data-testid="core-popover-keep-cloud"
-                disabled={row.actionsDisabled}
-                onclick={() => void onresolve?.(row.path, "keep-remote")}
-              ><RailIcon name="check" />
-                Keep cloud
-              </button>
-              <button
-                type="button"
-                class="core-btn secondary"
-                data-testid="core-popover-open-editor"
-                disabled={row.actionsDisabled}
-                onclick={() => void onopeneditor?.(row.path)}
-              ><RailIcon name="external" />
-                Open in editor
-              </button>
-            </div>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
   {#if model.notices.length > 0}
     <ul class="core-notices" data-testid="core-popover-notices">
       {#each model.notices as notice (notice.kind)}
@@ -966,13 +845,6 @@
   {/if}
 </div>
 
-{#if resolveSheetOpen}
-  <ResolveConflictsDoor
-    conflicts={conflicts}
-    onresolve={onresolve}
-    onclose={() => (resolveSheetOpen = false)}
-  />
-{/if}
 {#if browsePacksOpen}
   <BrowsePacksDoor
     installed={modelPacks}
@@ -1177,16 +1049,6 @@
     line-height: 1.2;
   }
 
-  .core-conflicts {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin: 2px 0 6px;
-    padding: 8px 10px;
-    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--warn) 8%, transparent);
-  }
 
   .core-section-header {
     display: flex;
@@ -1219,57 +1081,12 @@
     margin-top: 8px;
   }
 
-  .core-conflict-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
 
-  .core-conflict-row {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
 
-  .core-conflict-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
 
-  .core-conflict-name {
-    overflow: hidden;
-    font-size: 13px;
-    line-height: 1.35;
-    color: var(--warn-ink);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
-  .core-conflict-path {
-    overflow: hidden;
-    color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
-  .core-conflict-error {
-    color: var(--warn-ink);
-    font-size: 13px;
-  }
 
-  .core-conflict-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
 
   .core-rows {
     display: grid;

@@ -378,10 +378,6 @@ pub const EVENT_SYNC_NEW_FILES: &str = "sync:new-files";
 pub const EVENT_SYNC_ALL_COMPLETE: &str = "sync:all-complete";
 /// Additive watch-runner status (`waiting-for-lock`, pass start, etc.).
 pub const EVENT_SYNC_WATCHER_STATUS: &str = "sync:watcher-status";
-/// One per conflicted path, carrying `path` (+ `company`, `direction`,
-/// `resolution`). The shell builds its per-file conflict rows from this
-/// stream and clears them on `sync:all-complete`.
-pub const EVENT_SYNC_CONFLICT: &str = "sync:conflict";
 /// Emitted once per newly-provisioned company after `provision_missing_companies` succeeds.
 pub const EVENT_SYNC_COMPANY_PROVISIONED: &str = "sync:company-provisioned";
 
