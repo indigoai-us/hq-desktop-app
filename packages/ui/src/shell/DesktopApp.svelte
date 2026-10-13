@@ -14398,6 +14398,7 @@
           onsectionchange={(section) => openSettings(section)}
           openExternal={onopenurl}
           {profileCompanies}
+          selectedCompanyUid={tenantCompanyId}
           oncompany={(uid) => {
             companyPaneOpen = true;
             changeTenantCompany(uid);

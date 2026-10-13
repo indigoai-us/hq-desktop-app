@@ -39,13 +39,34 @@ describe("one Settings list (OWNER-R21)", () => {
     expect(nav.slice(0, 9)).toEqual(["profile", "public-profile", "billing", "general", "appearance", "notifications", "sync", "meetings", "updates"]);
   });
 
-  it("Billing renders inside Settings with Manage payment", () => {
+  it("Billing renders inside Settings and Manage payment opens the API-minted portal", async () => {
     const openExternal = vi.fn();
-    mountSettings({ initialSection: "billing", openExternal });
-    const pane = host.querySelector('[data-testid="settings-billing-pane"]');
-    expect(pane).not.toBeNull();
+    const portal = "https://billing.stripe.com/p/session/test_x";
+    const createBillingPortalSession = vi.fn(async () => ({ ok: true, value: { url: portal } }));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const adapter = {
+      isAvailable: () => true,
+      identity: { getProfile: async () => ({ ok: true, value: { profile: { displayName: "Ada", email: "ada@example.com" } } }) },
+      sessions: {},
+      company: { createBillingPortalSession },
+    } as unknown as PlatformAdapter;
+    component = mount(ShellSettings, {
+      target: host,
+      props: {
+        profile: null,
+        adapter,
+        initialSection: "billing",
+        openExternal,
+        profileCompanies: [{ uid: "cmp_a", label: "Acme", role: "Owner" }],
+        selectedCompanyUid: "cmp_a",
+      } as never,
+    });
+    flushSync();
+    expect(host.querySelector('[data-testid="settings-billing-pane"]')).not.toBeNull();
     host.querySelector<HTMLButtonElement>('[data-testid="manage-payment"]')!.click();
-    expect(openExternal).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(openExternal).toHaveBeenCalledWith(portal));
+    expect(createBillingPortalSession).toHaveBeenCalledWith("cmp_a");
   });
 
   it("old Profile, Billing and account Settings routes redirect into Settings", () => {

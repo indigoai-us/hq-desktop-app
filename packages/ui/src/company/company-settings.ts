@@ -38,11 +38,11 @@ export const GRANT_LEVELS = ["read", "write"] as const;
 export type GrantLevel = (typeof GRANT_LEVELS)[number];
 
 export const WORKFORCE_CHECKOUT_URL = "https://checkout.stripe.com/c/pay/hq-workforce";
-export const STRIPE_PORTAL_URL = "https://billing.stripe.com/p/login/hq";
+// The customer portal has no fixed URL: hq-pro mints a session per company
+// (see ../account/billing-portal.ts). A constant portal link 404'd for everyone.
 
-const STRIPE_HOSTS: Record<"upgrade" | "portal", string> = {
+const STRIPE_HOSTS: Record<"upgrade", string> = {
   upgrade: "checkout.stripe.com",
-  portal: "billing.stripe.com",
 };
 
 /** Only Stripe-hosted https pages are opened in the system browser. */
@@ -59,9 +59,9 @@ export function approvedStripeUrl(raw: unknown): string | null {
   }
 }
 
-/** Checkout for plan changes. Portal for managing payment. */
-export function stripeDestination(action: "upgrade" | "portal"): string {
-  const url = action === "upgrade" ? WORKFORCE_CHECKOUT_URL : STRIPE_PORTAL_URL;
+/** Checkout for plan changes. Manage payment goes through openBillingPortal. */
+export function stripeDestination(action: "upgrade"): string {
+  const url = WORKFORCE_CHECKOUT_URL;
   const approved = approvedStripeUrl(url);
   if (!approved || new URL(approved).hostname !== STRIPE_HOSTS[action]) {
     throw new Error(`Stripe ${action} URL is not on the allowed host`);
