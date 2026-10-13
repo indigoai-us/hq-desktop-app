@@ -7,6 +7,7 @@
 
 import type { LocalBotRow } from "@hq/platform";
 import {
+  briefBotLabel,
   BRIEF_LIVENESS_FILES,
   BRIEF_POLL_MS,
   BRIEF_QUIET_MS,
@@ -173,7 +174,8 @@ export class BriefCreateRun {
     }
     this.company = company;
     this.remember(runId);
-    const bot = check.bot.displayName?.trim() || check.bot.name;
+    const label = briefBotLabel(check.bot);
+    const bot = label === "Your assistant" ? "your assistant" : label;
     this.phase = { kind: "waiting", runId, sentAt: this.now().getTime(), ...(bot ? { bot } : {}) };
     this.schedule();
   }

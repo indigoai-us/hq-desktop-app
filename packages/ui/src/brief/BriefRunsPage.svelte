@@ -307,6 +307,7 @@
       {#if cp.kind === "blocked"}
         <p class="blocked" data-testid="brief-blocked">{cp.message}</p>
         <button type="button" class="cta" onclick={() => void run?.fix()} data-testid="brief-fix">{BRIEF_FIX_LABEL[cp.fix]}</button>
+        <button type="button" class="ghost" onclick={createBrief} data-testid="brief-create">Create brief</button>
       {:else}
         <button type="button" class="cta" onclick={createBrief} data-testid="brief-create">Create brief</button>
       {/if}

@@ -9,6 +9,7 @@
  */
 
 import type { LocalBotRow } from "@hq/platform";
+import { ASSISTANT_ROLE, isAssistantRecord } from "../chat/setup-bot.js";
 import { parseFindings, type BriefFindings } from "./brief-findings.js";
 
 export const BRIEF_ROOT = "workspace/brief";
@@ -492,21 +493,37 @@ export type BriefBotCheck =
   | { ok: true; bot: LocalBotRow }
   | { ok: false; message: string; fix: BriefBotFix; bot: LocalBotRow | null };
 
-const isSetup = (b: LocalBotRow) => b.workerId === "setup" || b.name === "setup";
+/** The cloud's assistant marker on a local bot row (`hq bot list` reports it as `role`). */
+const hasAssistantRole = (b: LocalBotRow) => (b.role ?? "").trim().toLowerCase() === ASSISTANT_ROLE;
 
 /**
- * The main local bot: the setup bot when there is one, else the first
- * personal bot hosted on this computer.
+ * The bot that builds the brief: the person's assistant. Matched by the
+ * assistant role marker first, then by the reserved handle an assistant made
+ * before the marker existed, else the first personal bot hosted here.
  */
 export function pickBriefBot(bots: readonly LocalBotRow[]): LocalBotRow | null {
   const local = bots.filter((b) => (b.hosting ?? "local") === "local");
-  return local.find(isSetup) ?? local.find((b) => (b.kind ?? "personal") === "personal") ?? null;
+  return (
+    local.find(hasAssistantRole) ??
+    local.find((b) => isAssistantRecord(b) || b.workerId === "setup") ??
+    local.find((b) => (b.kind ?? "personal") === "personal") ??
+    null
+  );
+}
+
+/** What the brief calls the bot: "Your assistant" for the assistant, never its reserved handle. */
+export function briefBotLabel(bot: LocalBotRow): string {
+  const shown = bot.displayName?.trim();
+  if (shown) return shown;
+  return isAssistantRecord(bot) || bot.workerId === "setup" ? "Your assistant" : bot.name;
 }
 
 /**
- * Can the main bot take the job now? `runtimeReady` is the coding-tool
+ * Can the assistant take the job now? `runtimeReady` is the coding-tool
  * preflight (`{ claude: true, ... }`), null when not read yet; then only the
- * bot's own report counts.
+ * bot's own report counts. A fresh preflight that reads the bot's coding tool
+ * as signed in outranks the bot's older "signed out" marker, which a stopped
+ * bot cannot clear.
  */
 export function checkBriefBot(
   bots: readonly LocalBotRow[],
@@ -518,12 +535,13 @@ export function checkBriefBot(
       ok: false,
       bot: null,
       fix: "create-bot",
-      message: "Create brief runs on your setup bot, and this computer does not have one yet.",
+      message: "Create brief runs on your assistant, and this computer does not have one yet.",
     };
   }
-  const label = bot.displayName?.trim() || bot.name;
-  if (bot.runtimeSignIn?.state === "expired") {
-    return { ok: false, bot, fix: "sign-in", message: `${label}'s coding tool needs you to sign in again before it can build a brief.` };
+  const label = briefBotLabel(bot);
+  const signedInNow = runtimeReady?.[bot.runtime] === true;
+  if (bot.runtimeSignIn?.state === "expired" && !signedInNow) {
+    return { ok: false, bot, fix: "sign-in", message: `${label} needs you to sign in to ${bot.runtime === "claude" ? "Claude" : bot.runtime === "codex" ? "Codex" : "Grok"} again before it can build a brief.` };
   }
   if (runtimeReady && bot.runtime in runtimeReady && runtimeReady[bot.runtime] !== true) {
     return { ok: false, bot, fix: "connect-model", message: `${label} has no model connected on this computer.` };
@@ -536,7 +554,7 @@ export function checkBriefBot(
 
 /** Button label for each fix. */
 export const BRIEF_FIX_LABEL: Record<BriefBotFix, string> = {
-  "create-bot": "Create your setup bot",
+  "create-bot": "Create your assistant",
   "start-bot": "Start it",
   "sign-in": "Sign in again",
   "connect-model": "Connect a model",

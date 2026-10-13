@@ -304,6 +304,29 @@ describe("the bot that runs the job", () => {
     expect(checkBriefBot([bot({})], null)).toMatchObject({ ok: true });
   });
 
+  it("picks the assistant by its role marker over a leftover setup-named bot, and names it as the assistant", () => {
+    const leftover = bot({ name: "setup", agentUid: "agt_old", role: undefined });
+    const assistant = bot({ name: "ada", agentUid: "agt_a", role: "assistant" });
+    expect(pickBriefBot([leftover, assistant])?.agentUid).toBe("agt_a");
+    // An assistant with the reserved handle and no display name is never called "setup".
+    const expired = bot({ name: "setup", role: "assistant", runtimeSignIn: { state: "expired" } as LocalBotRow["runtimeSignIn"] });
+    const check = checkBriefBot([expired], null);
+    expect(check).toMatchObject({ ok: false, fix: "sign-in" });
+    expect(!check.ok && check.message).toBe("Your assistant needs you to sign in to Claude again before it can build a brief.");
+    expect(!check.ok && check.message).not.toMatch(/setup/);
+  });
+
+  it("shows sign in again only while the assistant's own coding tool is signed out", () => {
+    const expired = bot({ name: "setup", role: "assistant", state: "stopped", processAlive: false, runtimeSignIn: { state: "expired" } as LocalBotRow["runtimeSignIn"] });
+    // A fresh preflight reads Claude as signed in: the stopped bot's old marker is stale.
+    expect(checkBriefBot([expired], { claude: true })).toMatchObject({ ok: false, fix: "start-bot", message: "Your assistant is not running." });
+    expect(checkBriefBot([expired], { claude: false })).toMatchObject({ ok: false, fix: "sign-in" });
+    // Another bot's expired sign-in never blocks the assistant.
+    const other = bot({ name: "pip", agentUid: "agt_p", kind: "personal", runtimeSignIn: { state: "expired" } as LocalBotRow["runtimeSignIn"] });
+    const assistant = bot({ name: "setup", agentUid: "agt_a", role: "assistant" });
+    expect(checkBriefBot([other, assistant], { claude: true })).toMatchObject({ ok: true, bot: { agentUid: "agt_a" } });
+  });
+
   it("the job message starts with the skill invocation and names the run and company", () => {
     const msg = briefJobMessage("brief-20261008-090000", "indigo");
     expect(msg.startsWith("/daily-brief indigo --run-id brief-20261008-090000")).toBe(true);
