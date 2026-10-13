@@ -203,7 +203,7 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  /* State: a soft frosted pill; the active call's is dark with a thin terracotta ring. */
+  /* State: a soft frosted pill; the active call's is dark. */
   .st {
     justify-self: end;
     font-size: 11px;
@@ -239,7 +239,6 @@
     border-color: transparent;
     color: var(--b-bg);
     font-weight: 400;
-    box-shadow: 0 0 0 1.5px var(--b-hot);
   }
   /* The marker beside the active call, as in the reference. */
   /* Even air on both sides: 22px from the pill, 22px to the Next call panel. */
