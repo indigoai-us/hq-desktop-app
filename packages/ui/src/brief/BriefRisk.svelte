@@ -43,8 +43,8 @@
   }
 </script>
 
-<div class="w" data-testid="brief-risk" role="group" aria-label="Watch" data-cols={cols}>
-  <div class="eyebrow" style="color:var(--b-warn)">
+<div class="w c-amber" data-testid="brief-risk" role="group" aria-label="Watch" data-cols={cols}>
+  <div class="eyebrow">
     <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.8 19.5h18.4z" /><path d="M12 10v4M12 17v.01" /></svg>
     <span data-testid="brief-risk-eyebrow">Watch{all.length > 1 ? ` · ${all.length}` : ""}{red ? ` · ${red} red on main` : ""}</span>
   </div>

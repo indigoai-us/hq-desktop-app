@@ -349,7 +349,7 @@
   }
   .ts {
     font-size: 11.5px;
-    color: rgba(255, 255, 255, 0.62);
+    color: rgba(255, 255, 255, 0.8);
     margin-top: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -366,11 +366,11 @@
     z-index: 2;
     top: 50%;
     right: 0;
-    padding: 0 10px 0 36px;
+    padding: 0 10px 0 28px;
     height: 100%;
     display: flex;
     align-items: center;
-    background: linear-gradient(90deg, transparent, rgba(58, 20, 52, 0.94) 32px);
+    background: linear-gradient(90deg, transparent, rgba(110, 36, 82, 0.6) 26px);
     border-radius: 0 14px 14px 0;
     opacity: 0;
     translate: 8px -50%;
@@ -382,6 +382,21 @@
     opacity: 1;
     translate: 0 -50%;
     pointer-events: auto;
+  }
+  /* Only the primary pill shows on the row; the engine switch and copy appear when you reach for it. */
+  .acts :global(.eng),
+  .acts :global(.copy) {
+    display: none;
+  }
+  .acts:hover :global(.eng),
+  .acts:focus-within :global(.eng),
+  .acts:hover :global(.copy),
+  .acts:focus-within :global(.copy) {
+    display: inline-flex;
+  }
+  /* Row text stays readable on the dusk gradient's bright corner. */
+  .it .t {
+    text-shadow: 0 1px 2px rgba(60, 10, 40, 0.35);
   }
   .it.done .acts {
     position: static;

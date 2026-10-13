@@ -52,7 +52,7 @@
   --b-t2: rgba(255, 255, 255, 0.7);
   --b-t3: rgba(255, 255, 255, 0.5);
   --b-line: rgba(255, 255, 255, 0.09);
-  --b-top-light: rgba(255, 255, 255, 0.08);
+  --b-top-light: rgba(255, 255, 255, 0.12);
   --b-bracket: rgba(255, 190, 160, 0.75);
   --b-ok: var(--ok, #34c759);
   --b-warn: var(--warn, #facc15);
@@ -64,7 +64,7 @@
   --b-ice: #c9d6e4;
   --b-sun: #ffb580;
   --b-sun-2: #ff809f;
-  --b-r: 20px;
+  --b-r: 22px;
   --b-gap: 14px;
   /* One padding and one type scale for every card. */
   --b-pad: 18px 20px;
@@ -204,7 +204,8 @@
 .daily-brief .w {
   position: relative;
   border-radius: var(--b-r);
-  background: var(--b-card-grad);
+  /* Grain sits in the card's own background, so the rim and top light below stay crisp. */
+  background: var(--b-grain), var(--b-card-grad);
   box-shadow: var(--b-drop);
   overflow: hidden;
   padding: var(--b-pad);
@@ -227,11 +228,8 @@
   border-radius: inherit;
   pointer-events: none;
   box-shadow: inset 0 0 0 1px var(--b-line);
-  /* A 1px top light (a line, not a shadow) and film grain over the whole card. */
-  background:
-    linear-gradient(var(--b-top-light), var(--b-top-light)) top / 100% 1px no-repeat,
-    var(--b-grain);
-  mix-blend-mode: overlay;
+  /* A 1px top light: a line, not a shadow. */
+  background: linear-gradient(var(--b-top-light), var(--b-top-light)) top / 100% 1px no-repeat;
 }
 /* Hover light (brief-hover.ts): a soft coral light under the pointer and corner
    brackets only where it falls, after the badge card. Flat and dark at rest. */
@@ -245,7 +243,7 @@
   /* Screen-blended over the card so it never needs to restack the card's content. */
   mix-blend-mode: screen;
   background:
-    radial-gradient(260px 200px at var(--light-x, 50%) var(--light-y, 30%), var(--b-hover-light, rgba(255, 170, 130, 0.16)), transparent 70%),
+    radial-gradient(260px 200px at var(--light-x, 50%) var(--light-y, 30%), var(--b-hover-light, rgba(255, 170, 130, 0.22)), transparent 70%),
     linear-gradient(var(--b-bracket), var(--b-bracket)) 8px 8px / 14px 1px no-repeat,
     linear-gradient(var(--b-bracket), var(--b-bracket)) 8px 8px / 1px 14px no-repeat,
     linear-gradient(var(--b-bracket), var(--b-bracket)) calc(100% - 8px) 8px / 14px 1px no-repeat,
@@ -254,8 +252,8 @@
     linear-gradient(var(--b-bracket), var(--b-bracket)) 8px calc(100% - 8px) / 1px 14px no-repeat,
     linear-gradient(var(--b-bracket), var(--b-bracket)) calc(100% - 8px) calc(100% - 8px) / 14px 1px no-repeat,
     linear-gradient(var(--b-bracket), var(--b-bracket)) calc(100% - 8px) calc(100% - 8px) / 1px 14px no-repeat;
-  -webkit-mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.35) 55%, transparent 85%);
-  mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.35) 55%, transparent 85%);
+  -webkit-mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.5) 55%, transparent 85%);
+  mask: radial-gradient(420px 320px at var(--light-x, 50%) var(--light-y, 30%), #000 0%, rgba(0, 0, 0, 0.5) 55%, transparent 85%);
 }
 .daily-brief .slot.lit > :is(.c-violet, .c-red)::before {
   --b-hover-light: rgba(255, 255, 255, 0.2);
@@ -312,13 +310,15 @@
   --b-accent: var(--b-decision);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 38%),
-    radial-gradient(125% 95% at 0% 0%, #ff8a6b 0%, #c2416b 42%, #4a1a4f 78%, #2a1233 100%);
+    radial-gradient(125% 95% at 0% 0%, #e0705a 0%, #a83466 38%, #4a1a4f 75%, #2a1233 100%),
+    var(--b-grain);
 }
 .daily-brief .c-red {
   --b-accent: var(--b-red);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 38%),
-    radial-gradient(130% 100% at 100% 0%, #ff5a4e 0%, #c1271d 42%, #5e0f0b 100%);
+    radial-gradient(130% 100% at 100% 0%, #ff5a4e 0%, #c1271d 42%, #5e0f0b 100%),
+    var(--b-grain);
 }
 .daily-brief .c-amber {
   --b-accent: var(--b-warn);
@@ -327,10 +327,10 @@
   --b-accent: var(--b-ok);
 }
 .daily-brief :is(.c-violet, .c-red) .eyebrow {
-  color: rgba(255, 255, 255, 0.66);
+  color: rgba(255, 255, 255, 0.85);
 }
 .daily-brief :is(.c-violet, .c-red) .sub {
-  color: rgba(255, 255, 255, 0.78);
+  color: rgba(255, 255, 255, 0.85);
 }
 .daily-brief :is(.c-violet, .c-red) .org {
   color: rgba(255, 255, 255, 0.62);
@@ -343,6 +343,7 @@
   color: rgba(255, 255, 255, 0.62);
 }
 .daily-brief :is(.c-amber, .c-green) > .eyebrow::before,
+.daily-brief :is(.c-amber, .c-green) > * > .eyebrow::before,
 .daily-brief :is(.c-amber, .c-green) > * > .eyebrow:first-child::before {
   content: "";
   display: inline-block;

@@ -272,11 +272,11 @@
           ><span class="tip" class:end={tx(Date.parse(it.at)) > 260} class:start={tx(Date.parse(it.at)) < 100}>{hhmm(it.at)} {sessionTitle(it.title)}</span></button>
         {/each}
       </div>
-      <svg viewBox="0 0 360 14" aria-hidden="true">
+      <div class="ticks" aria-hidden="true">
         {#each ticks as t (t.label)}
-          <text x={t.x} y="11" fill="rgba(255,255,255,.3)" font-size="8.5" text-anchor={t.label === "now" ? "end" : "middle"}>{t.label}</text>
+          <span class="tick" class:end={t.label === "now"} style="left:{(t.x / 360) * 100}%">{t.label}</span>
         {/each}
-      </svg>
+      </div>
     </div>
     <div class="meter">
       <div class="track"><i style="width:{total ? (cleared / total) * 100 : 100}%"></i></div>
@@ -330,6 +330,12 @@
   }
   .lede {
     margin-top: 12px;
+    text-shadow: 0 1px 3px rgba(10, 6, 16, 0.7);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
     max-width: min(330px, calc(54% - 32px));
   }
   .lede.big {
@@ -420,12 +426,23 @@
   .dot:focus-visible .tip {
     opacity: 1;
   }
-  .tl svg {
-    display: block;
-    width: 100%;
-    height: 44px;
-    overflow: visible;
+  /* Axis labels at a fixed 10px, whatever the card's width. */
+  .ticks {
+    position: relative;
+    height: 16px;
+    margin-top: 4px;
     font-family: var(--b-mono);
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.4);
+  }
+  .tick {
+    position: absolute;
+    top: 0;
+    translate: -50% 0;
+    white-space: nowrap;
+  }
+  .tick.end {
+    translate: -100% 0;
   }
   @keyframes pop {
     from {

@@ -88,10 +88,10 @@
   }
 </script>
 
-<div class="w" data-testid="brief-shipped">
+<div class="w c-green" data-testid="brief-shipped">
   <div class="top">
     <div>
-      <div class="eyebrow" style="color:var(--b-ok)">
+      <div class="eyebrow">
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4.5 4.5L19 7" /></svg> Run complete · yesterday
       </div>
       <h3>
@@ -252,7 +252,7 @@
     min-width: 0;
   }
   /* Too narrow for the product name: keep the logo, hide the text. */
-  @container (max-width: 150px) {
+  @container (max-width: 110px) {
     .hd :global(.org b) {
       display: none;
     }

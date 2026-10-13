@@ -41,7 +41,7 @@
 
 <div class="w" data-testid="brief-catchup">
   <div class="eyebrow" style="color:var(--b-sun)">Welcome back · {away}</div>
-  <div class="greet">Morning{input.userName ? `, ${input.userName}` : ""}.<br /><span class="accent-word" data-testid="brief-catchup-greet">{greet}</span></div>
+  <div class="greet">Morning{input.userName ? `, ${input.userName}` : ""}.<br /><span class="line" data-testid="brief-catchup-greet">{greet}</span></div>
   {#if because}<div class="first" data-testid="brief-catchup-first">{because}</div>{/if}
   {#if cells}
     <div class="cu" style="--cols:{cells > 4 ? 3 : 2}">
@@ -68,6 +68,9 @@
 </div>
 
 <style>
+  .greet .line {
+    color: #ffb580;
+  }
   .greet {
     font-size: var(--b-fs-display);
     font-weight: 500;
