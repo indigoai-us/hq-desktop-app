@@ -10,7 +10,7 @@
  * story that turned the assertion on. Do not skip or loosen a
  * passing test to make one of these pass.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -254,5 +254,13 @@ describe("US-002 pending console-rail contracts", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     const shell = readFileSync(join(REPO_ROOT, "packages/ui/src/shell/DesktopApp.svelte"), "utf8");
     expect(shell).toMatch(/onyou=\{toggleAccountMenu\}/);
+  });
+
+  it("US-010: account-menu Sign out uses the in-app confirm, not window.confirm", () => {
+    const menu = readFileSync(join(REPO_ROOT, "packages/ui/src/shell/AccountMenu.svelte"), "utf8");
+    expect(menu).toContain("ConfirmDialog");
+    expect(menu).not.toContain("confirm-sign-out");
+    expect(menu).not.toMatch(/confirmSignOut\(\)/);
+    expect(menu).not.toMatch(/\.signout\s*\{[^}]*--v4-text-3/);
   });
 });

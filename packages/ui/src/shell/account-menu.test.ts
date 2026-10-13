@@ -94,27 +94,14 @@ describe("account menu (US-010)", () => {
     expect(selfRoleFromRoster(rows, "")).toBeNull();
   });
 
-  it("reads the signed-in person's live work from a PresenceStore snapshot", () => {
-    const snapshot = new Map([
-      ["co_other", new Map([["prs_else", { status: "online" as const, actorType: "human" as const, at: "" }]])],
-      ["co_indigo", new Map([["prs_me", { status: "online" as const, actorType: "human" as const, at: "" }]])],
-    ]);
-    expect(ownLiveWork(snapshot, "prs_me", { co_indigo: "Indigo" })).toEqual({
-      live: true,
-      work: "Working in Indigo",
-    });
-    expect(ownLiveWork(snapshot, "prs_away").live).toBe(false);
-  });
-
-  it("names the company open in the main pane over the first online company (QA-073)", () => {
+  it("reads the signed-in person's live dot from a PresenceStore snapshot", () => {
     const online = { status: "online" as const, actorType: "human" as const, at: "" };
-    const snapshot = new Map([["co_golden", new Map([["prs_me", online]])]]);
-    const labels = { co_golden: "Golden Thread", co_hpo: "hpo" };
-    expect(ownLiveWork(snapshot, "prs_me", labels, "co_hpo")).toEqual({
-      live: true,
-      work: "Working in hpo",
-    });
-    expect(ownLiveWork(snapshot, "prs_me", labels, null).work).toBe("Working in Golden Thread");
-    expect(ownLiveWork(snapshot, "prs_away", labels, "co_hpo")).toEqual({ live: false, work: "" });
+    const snapshot = new Map([
+      ["co_other", new Map([["prs_else", online]])],
+      ["co_indigo", new Map([["prs_me", online]])],
+    ]);
+    expect(ownLiveWork(snapshot, "prs_me")).toEqual({ live: true });
+    expect(ownLiveWork(snapshot, "prs_away")).toEqual({ live: false });
+    expect(ownLiveWork(snapshot, "")).toEqual({ live: false });
   });
 });

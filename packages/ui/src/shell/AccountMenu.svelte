@@ -3,18 +3,21 @@
    * Account menu (console-rail US-010). 300 px popover on the You avatar.
    * Paints from the cached identity. Companies are reached from the rail
    * tiles and the More companies popover, so this menu lists none. Sign out
-   * confirms through confirm-sign-out.ts before the host ends the session.
+   * uses the in-app confirm. window.confirm is a silent no-op in WKWebView.
    */
   import { focusReturn } from "./focus-return.js";
-  import { confirmSignOut } from "../settings/confirm-sign-out.js";
+  import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import type { AccountPageId } from "./account-menu.js";
+  import TierMark from "../badges/TierMark.svelte";
+  import type { ResolvedBadge } from "../badges/badge-catalog.js";
 
   interface Props {
     name: string;
     email?: string;
     initials?: string;
     live?: boolean;
-    work?: string;
+    /** The badge behind your tier mark on the picture (badges/TierMark). */
+    topBadge?: ResolvedBadge | null;
     anchorLeft?: number;
     anchorBottom?: number;
     onclose?: () => void;
@@ -27,13 +30,15 @@
     email = "",
     initials = "",
     live = false,
-    work = "",
+    topBadge = null,
     anchorLeft = 64,
     anchorBottom = 16,
     onclose,
     onpage,
     onsignout,
   }: Props = $props();
+
+  let signOutConfirmOpen = $state(false);
 
   function mark(): string {
     if (initials.trim()) return initials.trim().slice(0, 2).toUpperCase();
@@ -48,7 +53,11 @@
   }
 
   function signOut(): void {
-    if (!confirmSignOut()) return;
+    signOutConfirmOpen = true;
+  }
+
+  function acceptSignOut(): void {
+    signOutConfirmOpen = false;
     onsignout?.();
   }
 
@@ -84,14 +93,12 @@
     <span class="avatar" aria-hidden="true">
       {mark()}
       {#if live}<span class="live" data-testid="account-menu-live"></span>{/if}
+      {#if topBadge}<TierMark tier={topBadge.tier} avatar={32} badge={topBadge} />{/if}
     </span>
     <span class="copy">
       <span class="name">{name}</span>
       {#if email}<span class="meta">{email}</span>{/if}
     </span>
-    {#if live}
-      <span class="chip" data-testid="account-menu-live-chip" title={work || undefined}><i aria-hidden="true"></i>{work || "Live"}</span>
-    {/if}
   </button>
   <button type="button" class="row" role="menuitem" data-testid="account-settings" onclick={() => choose("settings")}>
     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
@@ -103,6 +110,16 @@
     </button>
   </div>
 </div>
+
+<ConfirmDialog
+  open={signOutConfirmOpen}
+  title="Sign out"
+  message="Sign out of HQ Work on this machine?"
+  confirmLabel="Sign out"
+  danger
+  oncancel={() => (signOutConfirmOpen = false)}
+  onconfirm={acceptSignOut}
+/>
 
 <style>
   .scrim {
@@ -148,6 +165,7 @@
   }
 
   .avatar {
+    --tier-cutout: var(--overlay-bg);
     position: relative;
     width: 32px;
     height: 32px;
@@ -160,10 +178,11 @@
     color: var(--v4-text-1);
   }
 
+  /* Top right: the bottom right holds the tier mark (badges/TierMark). */
   .live {
     position: absolute;
     right: -1px;
-    bottom: -1px;
+    top: -1px;
     width: 8px;
     height: 8px;
     border-radius: 50%;
@@ -191,29 +210,6 @@
     text-overflow: ellipsis;
   }
 
-  .chip {
-    margin-left: auto;
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 140px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0;
-    font: 400 13px/1.2 var(--font-ui);
-    color: var(--v4-text-2);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .chip i {
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--v4-ok);
-  }
 
   .row svg {
     flex: 0 0 auto;
@@ -244,7 +240,7 @@
     color: var(--v4-text-1);
     font: 400 13px/1.2 var(--font-ui);
     text-align: left;
-    cursor: default;
+    cursor: pointer;
   }
 
   .row:hover,
@@ -267,6 +263,6 @@
   }
 
   .signout {
-    color: var(--v4-text-3);
+    color: var(--v4-text-1);
   }
 </style>

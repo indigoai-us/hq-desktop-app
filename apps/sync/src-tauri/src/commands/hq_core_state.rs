@@ -6057,8 +6057,7 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
 /// staging-drift) with one and owns automatic Core installation natively.
 /// First check 30s after launch, then every 6h.
 pub fn setup_core_state_checker(app: &AppHandle) {
-    if crate::scratch_build::active() {
-        crate::scratch_build::skip("HQ Core state checker and auto update");
+    if !crate::scratch_build::launch_side_effect_allowed("HQ Core state checker and auto update") {
         return;
     }
     let post_sync_handle = app.clone();

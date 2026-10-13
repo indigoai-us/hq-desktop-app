@@ -13,6 +13,7 @@
    */
   import { untrack } from "svelte";
   import { startNowTicker } from "../common/now-ticker.js";
+  import { startVisibleInterval } from "../common/visible-interval.js";
   import "../home/tokens.css";
   import "../common/button/rail-type.css";
   import "../chat/chat-tokens.css";
@@ -105,16 +106,12 @@
     };
     void run();
     retry = () => void run();
-    const timer = setInterval(() => void run(true), OUTPOST_REFRESH_MS);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void run(true);
-    };
-    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
+    // Paused while hidden; refreshes at once when the window is shown.
+    const stopRefresh = startVisibleInterval(() => void run(true), OUTPOST_REFRESH_MS);
     const stopTick = startNowTicker((t) => (now = t));
     return () => {
       live = false;
-      clearInterval(timer);
-      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
+      stopRefresh();
       stopTick();
     };
   });

@@ -2,7 +2,7 @@
 //!
 //! ## `hq-desktop://` (US-009)
 //!
-//! Two targets, and only two:
+//! Three targets, and only three:
 //!
 //! - `hq-desktop://setup?checkout=done&company={uid}` — Stripe checkout return.
 //!   Focuses Messages on `#setup` and refreshes the channel. Cold start stashes
@@ -11,6 +11,14 @@
 //!   token, no challenge, no callback override, no company. Any query string at
 //!   all is a refusal, so nobody can begin smuggling one parameter at a time.
 //!   It is a doorbell, not a key; it does exactly what clicking Sign in does.
+//! - `hq-desktop://pack/{slug}` (US-005) — the pack page's "Add to HQ" button.
+//!   One validated slug (`^[a-z0-9-]{2,64}$`), nothing else; a query, fragment
+//!   or extra path segment is refused and logged as an ignore. The desktop
+//!   window shows a confirmation sheet; only the person's Add runs
+//!   `hq packages install {slug} --start-bot` through the managed CLI
+//!   (`commands::packages::install_pack_from_deep_link`). The target is stashed
+//!   until the webview takes it, so a cold start or a signed-out window keeps
+//!   it until the person has signed in.
 //!
 //! ## `hq://` (US-004)
 //!
@@ -32,8 +40,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
 
 pub use hq_desktop_core::deep_link::{
-    hq_desktop_url_from_argv, is_valid_company_uid, parse_hq_desktop_target, parse_hq_desktop_url,
-    HqDesktopTarget, SetupDeepLinkTarget,
+    hq_desktop_url_from_argv, is_valid_company_uid, is_valid_pack_slug, parse_hq_desktop_target,
+    parse_hq_desktop_url, HqDesktopTarget, PackDeepLinkTarget, SetupDeepLinkTarget,
 };
 
 use crate::commands::desktop_alt::{self, DesktopDestination};
@@ -42,6 +50,7 @@ use crate::util::logfile::log;
 const LOG_TAG: &str = "deep-link";
 const EVENT_OPEN_SETUP: &str = "messages:open-setup";
 const EVENT_OPEN_SIGNIN: &str = "auth:open-signin";
+const EVENT_OPEN_PACK: &str = "pack:open-install";
 
 /// Stashed until the desktop webview has listeners (cold-start path).
 pub struct PendingSetupTarget(pub std::sync::Mutex<Option<SetupDeepLinkTarget>>);
@@ -49,6 +58,24 @@ pub struct PendingSetupTarget(pub std::sync::Mutex<Option<SetupDeepLinkTarget>>)
 impl PendingSetupTarget {
     pub fn new() -> Self {
         PendingSetupTarget(std::sync::Mutex::new(None))
+    }
+}
+
+/// Stashed `hq-desktop://pack/{slug}` target. Unlike the setup stash this is
+/// only cleared when the webview takes it (`take_pending_pack_target`): a
+/// signed-out window peeks at it to say "sign in first" and takes it once the
+/// person is signed in, so the target survives the sign-in.
+pub struct PendingPackTarget(pub std::sync::Mutex<Option<PackDeepLinkTarget>>);
+
+impl PendingPackTarget {
+    pub fn new() -> Self {
+        PendingPackTarget(std::sync::Mutex::new(None))
+    }
+}
+
+fn stash_pack_target(app: &AppHandle, target: PackDeepLinkTarget) {
+    if let Some(state) = app.try_state::<PendingPackTarget>() {
+        *state.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(target);
     }
 }
 
@@ -99,6 +126,14 @@ pub fn spawn_open_hq_desktop_url(app: &AppHandle, url: String) {
         Some(HqDesktopTarget::SignIn) => {
             open_signin_deep_link(app);
         }
+        Some(HqDesktopTarget::Pack(target)) => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = open_pack_deep_link(handle, target).await {
+                    log(LOG_TAG, &format!("HQ_DESKTOP_PACK_OPEN_FAILED {error}"));
+                }
+            });
+        }
         None => {
             // Never the URL itself. See the module header: this line lands in a
             // support log that gets pasted into tickets.
@@ -133,6 +168,35 @@ fn open_signin_deep_link(app: &AppHandle) {
 #[tauri::command]
 pub fn take_pending_setup_target(app: AppHandle) -> Option<SetupDeepLinkTarget> {
     let state = app.try_state::<PendingSetupTarget>()?;
+    let target = state.0.lock().unwrap_or_else(|p| p.into_inner()).take();
+    target
+}
+
+/// Stash the pack target, front the desktop window on Messages and tell a
+/// mounted shell to show the confirmation sheet. The stash is kept until the
+/// webview takes it (see [`PendingPackTarget`]). The slug is validated by the
+/// parser, so logging it does not log attacker-controlled content.
+pub async fn open_pack_deep_link(app: AppHandle, target: PackDeepLinkTarget) -> Result<(), String> {
+    stash_pack_target(&app, target.clone());
+    log(LOG_TAG, &format!("HQ_DESKTOP_PACK slug={}", target.slug));
+    desktop_alt::open_destination(app.clone(), DesktopDestination::Messages).await?;
+    let _ = app.emit_to(desktop_alt::WINDOW_LABEL, EVENT_OPEN_PACK, &target);
+    Ok(())
+}
+
+/// Read the stashed pack target without draining it. A signed-out shell uses
+/// this to say "sign in first" while the target waits for the sign-in.
+#[tauri::command]
+pub fn peek_pending_pack_target(app: AppHandle) -> Option<PackDeepLinkTarget> {
+    let state = app.try_state::<PendingPackTarget>()?;
+    let target = state.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    target
+}
+
+/// Drain the stashed pack target once the shell is ready to show the sheet.
+#[tauri::command]
+pub fn take_pending_pack_target(app: AppHandle) -> Option<PackDeepLinkTarget> {
+    let state = app.try_state::<PendingPackTarget>()?;
     let target = state.0.lock().unwrap_or_else(|p| p.into_inner()).take();
     target
 }

@@ -9,6 +9,7 @@ import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
 import { commandLineToolsAnswer } from '../clt-mocks';
+import { storageAnswer } from '../storage-mocks';
 
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
@@ -754,6 +755,16 @@ const previewLocalBots: Array<Record<string, unknown>> = botsTablePreviewEnabled
 const handlers: Record<string, Handler> = {
   local_bots_list: () => ({ bots: previewLocalBots }),
   local_bots_workers: () => ({ workers: [] }),
+  // The readiness check before a local bot is saved passes by default;
+  // `?probe=` (audit-switches.ts) shows each failure.
+  local_bots_probe: (args) => ({
+    ok: true,
+    class: null,
+    detail: 'It answered.',
+    runtime: args?.runtime ?? 'codex',
+    model: args?.model ?? null,
+    durationMs: 900,
+  }),
   local_bots_create: (args) => {
     const name = String(args?.name ?? 'bot');
     const agentUid = `agt_PREVIEW${name.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
@@ -1650,6 +1661,9 @@ This final paragraph verifies spacing after a thematic break.
     replayed: false,
   }),
   take_pending_setup_target: () => null,
+  peek_pending_pack_target: () => null,
+  take_pending_pack_target: () => null,
+  pack_deep_link_catalog_name: () => null,
   list_company_members: () => ({
     members: [
       { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', companyName: 'Indigo' },
@@ -1940,6 +1954,15 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   const url = typeof args?.url === 'string' ? args.url : '';
   const method = typeof args?.method === 'string' ? args.method : 'GET';
   const body = typeof args?.body === 'string' ? JSON.parse(args.body) : null;
+  if (url === '/v1/billing/portal' && method === 'POST') {
+    // hq-pro mints a short-lived Stripe portal session per company. `?portal=fail`
+    // previews the quiet retry hint; `?portal=forbidden` the owner handoff.
+    const mode = new URLSearchParams(window.location.search).get('portal');
+    if (mode === 'fail') return { status: 500, body: JSON.stringify({ error: 'Internal Server Error' }) };
+    if (mode === 'forbidden') return { status: 403, body: JSON.stringify({ error: 'Requires owner role on this company', code: 'FORBIDDEN' }) };
+    const uid = typeof body?.companyUid === 'string' ? body.companyUid : 'cmp_unknown';
+    return { status: 200, body: JSON.stringify({ url: `https://billing.stripe.com/p/session/test_harness_${uid}` }) };
+  }
   if (url === '/v1/flags/resolve') {
     return {
       status: 200,
@@ -1992,6 +2015,8 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   }
   const clt = commandLineToolsAnswer(cmd);
   if (clt !== NOT_HANDLED) return clt as T;
+  const storage = storageAnswer(cmd);
+  if (storage !== NOT_HANDLED) return storage as T;
   if (companyFlowEnabled()) {
     const answer = await companyFlowAnswer(cmd, args);
     if (answer !== NOT_HANDLED) return answer as T;

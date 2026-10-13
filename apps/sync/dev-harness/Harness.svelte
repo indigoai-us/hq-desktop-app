@@ -12,14 +12,19 @@
   import MeetingsShot from './MeetingsShot.svelte';
   import AccessShot from './AccessShot.svelte';
   import ActivityShot from './ActivityShot.svelte';
+  import RepairCardsShot from './RepairCardsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
   import CompanyStepPreview from './CompanyStepPreview.svelte';
+  import YourAppsPreview from './YourAppsPreview.svelte';
+  import MarketplaceDetailPreview from './MarketplaceDetailPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
+  import ClaudeCodePreview from './ClaudeCodePreview.svelte';
+  import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
@@ -265,6 +270,15 @@
       {/if}
     </div>
   {/await}
+{:else if view === 'bot-integrations'}
+  <!-- Per-bot integration control section (BotIntegrationsSection) rendered in
+       both Agent profile and Local bot card contexts. Flag
+       desktop.bot-integration-control-v1 is forced on via the flagEnabled
+       prop. Size the preview viewport to ~1180x760. -->
+  <BotIntegrationsPreview />
+{:else if view === 'claude-code'}
+  <!-- New Bot waking screen at the Claude code paste-back (?claude= variants in ClaudeCodePreview.svelte). -->
+  <ClaudeCodePreview />
 {:else if view === 'forward'}
   <!-- The Forward message dialog with fictional destinations. ~900x760 viewport. -->
   <ForwardPickerPreview />
@@ -289,6 +303,9 @@
   <AccessShot />
 {:else if view === 'activity-shot'}
   <ActivityShot />
+{:else if view === 'repair-cards'}
+  <!-- Bot runtime repair cards. &state=signed-out|update|model|transient|signing-in|updating|fixed &live=1 -->
+  <RepairCardsShot />
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />
@@ -319,6 +336,14 @@
     mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
     onfinish={() => {}}
   />
+{:else if view === 'marketplace'}
+  <!-- The Marketplace tab with the detail panel open on one listing. -->
+  <MarketplaceDetailPreview />
+{:else if view === 'your-apps'}
+  <!-- The first-run "Your apps" step on its own (integration auto-detect MVP):
+       ?state=auto|connect|connecting|failed|docs|member|empty|many. Size the
+       viewport to ~1200x800 or ~960x600. In-page answers only. -->
+  <YourAppsPreview />
 {:else if view === 'onboarding-company'}
   <!-- The first-run company step on its own: ?scenario=create|join|paused.
        Size the viewport to ~800x900 like the welcome window. -->

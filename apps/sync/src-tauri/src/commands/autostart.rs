@@ -121,8 +121,7 @@ fn apply_reconcile_notice(report: &hq_platform::launchagent::ReconcileReport) {
 /// non-macOS and when this process is not the shipped `/Applications` app
 /// (so `cargo tauri dev` cannot rewrite the user's login agent).
 pub fn reconcile_launch_agent_on_launch() {
-    if crate::scratch_build::active() {
-        crate::scratch_build::skip("LaunchAgent reconcile");
+    if !crate::scratch_build::launch_side_effect_allowed("LaunchAgent reconcile") {
         return;
     }
     #[cfg(target_os = "macos")]
@@ -175,7 +174,7 @@ fn restart_preferring_launch_agent_with_update_version(
         );
     }
     #[cfg(target_os = "macos")]
-    if !crate::scratch_build::active() {
+    if crate::scratch_build::production_bundle() {
         if hq_platform::launchagent::schedule_handoff_after_exit() {
             log(
                 "updater",
@@ -237,13 +236,11 @@ pub fn ensure_autostart_on_launch() {
 
         // Only the installed production bundle may write the login item at
         // launch. A scratch build shares ~/Library/LaunchAgents and would
-        // otherwise repoint the owner's login item at itself.
-        #[cfg(target_os = "macos")]
-        let bundle_identifier = hq_platform::autostart::running_bundle_identifier();
-        // Windows has no bundle identifier; only the env switch applies.
-        #[cfg(target_os = "windows")]
-        let bundle_identifier =
-            Some(hq_platform::autostart::PRODUCTION_BUNDLE_IDENTIFIER.to_string());
+        // otherwise repoint the owner's login item at itself. The bundle
+        // identifier comes from the same source as every other launch-time
+        // gate (scratch_build::LaunchIdentity); Windows has none to read and
+        // counts as production, so only the env switch applies there.
+        let bundle_identifier = crate::scratch_build::running_bundle_identifier();
         // A scratch build counts as HQ_UPDATER_DISABLED=1 (scratch_build.rs).
         let updater_disabled = if crate::scratch_build::active() {
             Some("1".to_string())
@@ -251,7 +248,7 @@ pub fn ensure_autostart_on_launch() {
             std::env::var(hq_platform::autostart::UPDATER_DISABLED_ENV).ok()
         };
         match hq_platform::autostart::launch_ensure_gate(
-            bundle_identifier.as_deref(),
+            bundle_identifier,
             updater_disabled.as_deref(),
         ) {
             LaunchEnsureGate::Proceed => {}

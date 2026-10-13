@@ -31,12 +31,15 @@
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
     VISUAL_FIRST_RUN_FLAG,
+    FIRST_RUN_FOUND_APPS_FLAG,
     dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
     startJitteredPoll,
     type PlatformAdapter,
     type UpdateGateStatus,
+    CLOUD_FILE_EVENT,
+    type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
@@ -89,6 +92,10 @@
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
+  import { badgesFor } from "../badges/badge-source.js";
+  import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
+  import { topBadge } from "../badges/badge-tier.js";
+  import type { ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
   import {
     atlasLiveActors,
@@ -152,6 +159,7 @@
     atlasShortcutTarget,
   } from "./advertised-shortcuts.js";
   import { dismissToastByKey, pushToast } from "./toast-stack.svelte.js";
+  import { cloudFileToast, cloudFileToastKey } from "../settings/storage-model.js";
   import { updateToastCopy } from "./update-toast.js";
   import {
     isSyncToastDismissed,
@@ -221,6 +229,7 @@
   } from "../chat/messaging/richMessageContent.js";
   import {
     CONNECTING_TIMEOUT_MS,
+    botReplyKeepsCardsInMain,
     connectMoreAnswerIds,
     companyUidFromStatus,
     connectionActionKey,
@@ -289,27 +298,29 @@
   import FirstRunTakeover from "../chat/first-run/FirstRunTakeover.svelte";
   import {
     assistantNameIssue,
-    createFirstRunAssistantStarter,
     firstRunHandoffNotice,
-    firstRunImportNotice,
     firstRunIntro,
-    firstRunKickoffCarry,
     firstRunRoute,
-    firstRunSettledNotice,
-    firstRunSettledParts,
-    firstRunSettledSince,
-    type FirstRunSettledSent,
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+    FIRST_RUN_LISTINGS_WAIT_MS,
     markVisualFirstRunFinished,
-    type FirstRunAssistantResult,
     type FirstRunCreation,
+    type FirstRunHandoff,
     type FirstRunImportHandoff,
   } from "../chat/first-run/visual-first-run.js";
+  import {
+    checkedReadiness,
+    createSignInChecker,
+    TOOL_SIGNIN_CHECK_TIMEOUT_SECS,
+    type SignInTool,
+    type ToolSignInChecks,
+  } from "../chat/first-run/tools-signin.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
-  import { teamOptionsFrom } from "../chat/first-run/team-step.js";
+  import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
+  import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
   import {
     createFirstRunAppsHost,
     createFirstRunTeamHost,
@@ -346,12 +357,12 @@
     type SetupOfferTool,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
-    SETUP_BOT_MODE,
     SETUP_BOT_NAME,
     SETUP_BOT_WORKER,
     SETUP_BOT_UNAVAILABLE,
     SETUP_BOT_RUNTIME_ORDER,
-    singleFlightStart,
+    isAssistantRecord,
+    isAssistantSlug,
     type SetupBotLauncher,
     type SetupBotRef,
     type SetupBotStart,
@@ -539,6 +550,7 @@
     nextTourState,
     readTourSeenLocally,
     shouldAutoStartTour,
+    tourSetupBlocked,
     skipTourState,
     startTourState,
     tourSteps,
@@ -550,7 +562,6 @@
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
-  import BotSignInBanner from "../chat/BotSignInBanner.svelte";
   import BotRestoreBanner from "../chat/BotRestoreBanner.svelte";
   import { avatarBase64FromFile } from "../settings/avatar-image.js";
   import { canEditAgentProfile } from "../avatars/can-edit.js";
@@ -728,12 +739,14 @@
     busyLocalBotUids,
     isAlreadyExistsFailure,
     LOCAL_BOT_BUSY_POLL_MS,
+    LOCAL_BOT_STARTUP_GRACE_MS,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
     localBotInCompany,
     localBotNeedsOfflineNotice,
     localBotOfflineNotice,
     localBotPresence,
+    thinkingAgentName,
     type LocalBotEntryResult,
     locallyHostedBots,
     plainBotFailure,
@@ -744,6 +757,16 @@
     rememberBotDisplayName,
     type BotDisplayNames,
   } from "../chat/bot-display-names.js";
+  import {
+    ASSISTANT_FALLBACK_NAME,
+    assistantName,
+    assistantStatus,
+    cliOwnsAssistantCreate,
+    createAssistantOwner,
+    personFacingAgentName,
+    withAssistantNames,
+    type AssistantAttempt,
+  } from "../chat/assistant-owner.js";
   import {
     adoptFallbackNotice,
     BOT_RESTORE_ALL,
@@ -783,6 +806,8 @@
   import {
     AUTO_RESTORE_RUNNING,
     AUTO_RESTORE_STARTING_THIS_BOT,
+    AUTO_RESTORE_MAX_ATTEMPTS,
+    AUTO_RESTORE_RETRY_MS,
     autoRestoreAllowed,
     autoRestoreCandidates,
     autoRestoreCoversAll,
@@ -791,6 +816,7 @@
     autoRestoreExhausted,
     autoRestoreFailedLine,
     autoRestoreHeldBack,
+    assistantToRecover,
     countAutoRestoreAttempt,
     noteAutoRestoreAttempt,
     type AutoRestoreAttempts,
@@ -798,9 +824,22 @@
   } from "../chat/bot-auto-restore.js";
   import {
     botNeedsSignIn,
+    expiredRuntimeOf,
     restartBotsNeedingSignIn,
     runtimesNeedingSignIn,
+    signInAgain,
   } from "../chat/runtime-sign-in-again.js";
+  import {
+    RUNTIME_SIGNED_IN_EVENT,
+    RuntimeRepairController,
+    signedInRuntimeOf,
+  } from "../chat/messaging/runtime-repair.svelte.js";
+  import {
+    repairCardView,
+    repairPayloadForMessage,
+    type RepairPayload,
+  } from "../chat/messaging/runtime-repair-model.js";
+  import RuntimeRepairCard from "../chat/messaging/RuntimeRepairCard.svelte";
   import type {
     BotRestoreResult,
     LocalBotCreateInput,
@@ -811,6 +850,7 @@
   } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import { PROBE_EFFORT, PROBE_TIMEOUT_SECS } from "../chat/create-bot/runtime-probe.js";
   import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
@@ -885,7 +925,7 @@
     resolveConversationTitle,
   } from "../chat/conversation-title.js";
   import {
-    inlineReplyRows,
+    botDmRows,
     mergeFetchedTimeline,
     mergeTimelineMessages,
     messagesForDisplay,
@@ -893,6 +933,7 @@
     sentMessageFromResult,
     sinceForChannelWake,
     timelineHasEvent,
+    withThreadAnswers,
     type TimelineDisplayOptions,
     timelinePageFromPayload,
     HUMAN_HISTORY_VIEW,
@@ -973,6 +1014,7 @@
   import "../chat/messaging/messaging-tokens.css";
   import "../home/tokens.css";
   import Caret from "../common/Caret.svelte";
+  import { startVisibleInterval } from "../common/visible-interval.js";
 
   interface Props {
     /** Platform seam — forwarded to the title-bar Core popover. */
@@ -1555,11 +1597,10 @@
     }
   }
 
-  // Query on mount; re-query every 30 s.
+  // Query on mount; re-query every 30 s while the window is visible.
   $effect(() => {
     void queryUpdateGate();
-    const id = setInterval(() => void queryUpdateGate(), 30_000);
-    return () => clearInterval(id);
+    return startVisibleInterval(() => void queryUpdateGate(), 30_000);
   });
 
   async function handleUpdateInstall(): Promise<void> {
@@ -1844,6 +1885,57 @@
     });
   });
   $effect(() => () => dismissToastByKey(SYNC_TOAST_KEY));
+
+  // Double-clicking a `.hqcloud` placeholder: the native side downloads the
+  // original and opens it (cloud_file.rs); this shows each step as a toast.
+  // Steps that happened before this window listened (a cold start from
+  // Finder) are held natively and handed over by `cloudFileUiReady`.
+  function showCloudFileStep(raw: unknown): void {
+    const payload = (raw ?? {}) as Partial<CloudFileEventPayload>;
+    if (typeof payload.name !== "string" || !payload.phase) return;
+    const ev = payload as CloudFileEventPayload;
+    const copy = cloudFileToast(ev);
+    pushToast({
+      key: cloudFileToastKey(ev),
+      kind: copy.sticky ? "sticky" : "quiet",
+      tone: copy.tone,
+      testId: "cloud-file-toast",
+      title: copy.title,
+      detail: copy.detail,
+      progress: copy.progress,
+    });
+  }
+
+  $effect(() => {
+    const host = syncEvents;
+    if (!host) return;
+    const storage = adapter?.storage;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void host
+      .listen(CLOUD_FILE_EVENT, (event) => showCloudFileStep(event?.payload))
+      .then(
+        async (un) => {
+          if (disposed) {
+            un();
+            return;
+          }
+          unlisten = un;
+          const held = await storage?.cloudFileUiReady?.();
+          if (disposed || !held) return;
+          if (held.ok) {
+            for (const ev of Array.isArray(held.value) ? held.value : []) showCloudFileStep(ev);
+          } else {
+            console.error("cloud file: held events failed:", held.message);
+          }
+        },
+        (err) => console.error("cloud file: event subscribe failed:", err),
+      );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
 
   /**
    * Per-file conflict rows for the Core popover. Separate from the reducer
@@ -2478,10 +2570,22 @@
    * nothing left to run it.
    */
   let localBotTrace = $state<LocalBotTrace>(readLocalBotTrace(botMachineMemory));
+  /**
+   * The first answer (or failure) from each bot listing. The first run picks
+   * the name its name step opens with only after both, so an account that
+   * already has an assistant is offered that assistant's name.
+   */
+  let localBotsRead = $state(false);
+  let remoteBotsRead = $state(false);
   async function refreshLocalBots(): Promise<void> {
     const api = adapter.bots;
     if (!api) return;
-    const result = await api.list();
+    let result: Awaited<ReturnType<typeof api.list>>;
+    try {
+      result = await api.list();
+    } finally {
+      localBotsRead = true;
+    }
     if (!result.ok) return;
     const bots = result.value?.bots ?? [];
     // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
@@ -2529,7 +2633,10 @@
   let remoteBotPollBusy = false;
   async function refreshRemoteBots(force = false): Promise<void> {
     const listRemote = adapter.bots?.listRemote;
-    if (!listRemote) return;
+    if (!listRemote) {
+      remoteBotsRead = true;
+      return;
+    }
     if (remoteBotPollBusy && !force) return;
     remoteBotPollBusy = true;
     try {
@@ -2563,6 +2670,7 @@
       remoteBotListing = remoteBotListingFailed(remoteBotListing, "network");
     } finally {
       remoteBotPollBusy = false;
+      remoteBotsRead = true;
     }
   }
   /**
@@ -2589,7 +2697,7 @@
     if (!canStartBot(botStartGate, name)) {
       return { ok: false, reason: `${botStartFallbackNotice(name)} ${BOT_START_NO_MORE_RETRIES}` };
     }
-    const result = await api.start(name);
+    const result = isAssistantRecord({ name }) ? await assistantOwner.exclusive(() => api.start(name)) : await api.start(name);
     if (result.ok) {
       noteBotStarted(name, agentUid);
       return { ok: true, reason: null };
@@ -2766,7 +2874,18 @@
     // A cached reading is enough unless the person asked to check again.
     if (localBotRuntimeReady && !force) return;
     const result = await preflight();
-    if (!result.ok) return;
+    if (!result.ok) {
+      // The check itself failed (lookup timed out, HQ folder not found). Say
+      // so per runtime, so every screen offers its Try again instead of
+      // sitting on "Checking…" with nothing to press. A runtime already read
+      // as signed in keeps that reading.
+      const failed: Record<string, RuntimeStatus> = { ...(localBotRuntimeStatus ?? {}) };
+      for (const id of ["claude", "codex", "grok"]) {
+        if (localBotRuntimeReady?.[id] !== true) failed[id] = { state: "probeFailed", reason: "" };
+      }
+      localBotRuntimeStatus = failed;
+      return;
+    }
     const rec = result.value as Record<string, unknown>;
     const next: Record<string, boolean> = {};
     const statuses: Record<string, RuntimeStatus> = {};
@@ -2789,6 +2908,9 @@
    * ready, and Next would blink enabled on a runtime that cannot host a bot.
    */
   async function recheckLocalBotRuntimes(): Promise<void> {
+    // A login the first run's check found dead may have been replaced since
+    // (a terminal sign-in): check the stored login again on this read.
+    firstRunSignInChecker.recheck();
     await loadLocalBotRuntimeReady(true);
   }
   async function loadLocalBotWorkers(): Promise<void> {
@@ -2844,7 +2966,7 @@
   async function createBotEntry(
     input: LocalBotCreateInput,
     extras: CreateBotExtras = {},
-    options: { select?: boolean } = {},
+    options: { select?: boolean; cliNamed?: boolean } = {},
   ): Promise<LocalBotEntryResult> {
     const api = adapter.bots;
     if (!api) return { ok: false, reason: "Bots are only available in the HQ desktop app." };
@@ -2861,8 +2983,13 @@
     }
     const value = (result.value ?? {}) as Record<string, unknown>;
     const agentUid = typeof value.agentUid === "string" ? value.agentUid.trim() : "";
+    // A new enough hq-cli says what `create setup` did (contract section 3).
+    const outcome =
+      value.outcome === "created" || value.outcome === "adopted" || value.outcome === "existing"
+        ? value.outcome
+        : undefined;
     await refreshLocalBots();
-    if (!agentUid) return { ok: true, agentUid: "", name: input.name };
+    if (!agentUid) return { ok: true, agentUid: "", name: input.name, outcome };
     // The label is remembered before the PATCH so the sidebar shows the name
     // the person typed even if the profile write fails or the app is offline.
     const label = extras.displayName?.trim() || input.name;
@@ -2870,8 +2997,11 @@
       botDisplayNames = rememberBotDisplayName(botDisplayNames, agentUid, extras.displayName);
     }
     // A kickoff turn starts with no message from the person, so nothing else
-    // would show "is thinking…" while the bot works on it.
-    if (input.kickoff?.trim()) kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: input.name };
+    // would show "is thinking…" while the bot works on it. A bot that was
+    // already here runs no kickoff; one the CLI adopted runs this one.
+    if (input.kickoff?.trim() && outcome !== "existing") {
+      kickoffPendingByUid = { ...kickoffPendingByUid, [agentUid]: label };
+    }
     // Identity exists (the CLI returned a uid); the launch agent is installing.
     botProgressByUid = {
       ...botProgressByUid,
@@ -2896,8 +3026,9 @@
     // that lands behind the takeover, or after the person left it for
     // #welcome, does not move them.
     if (options.select !== false) handleSelect(row);
-    void saveNewBotProfile(agentUid, extras);
-    return { ok: true, agentUid, name: input.name };
+    // A new enough hq-cli wrote the name to every cloud field itself.
+    void saveNewBotProfile(agentUid, options.cliNamed ? { ...extras, displayName: undefined } : extras);
+    return { ok: true, agentUid, name: input.name, outcome };
   }
   /**
    * The parts of the create flow neither create path has a field for — the
@@ -2949,26 +3080,156 @@
    */
   /** Set once the setup bot was started this session, automatically or by Run Setup. */
   let setupBotAutoStarted = false;
-  /** True while startSetupBot is creating the bot, so #welcome can say so. */
-  let setupBotStarting = $state(false);
-  let setupBotStartError = $state<string | null>(null);
   // Every hosting kind counts as "already here": a setup bot promoted to the
   // cloud is filtered out of `localBots`, but it is still the person's bot and
   // must be opened, never re-created.
   const existingSetupBot = $derived(findSetupBot(localBotRecords));
-  const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
+  const setupBotRuntimeReady = $derived.by(() => Boolean(firstSignedInRuntime(botRuntimeReadiness)));
+  /**
+   * THE ASSISTANT'S OWNER (chat/assistant-owner.ts). The only code that
+   * creates, adopts or recovers the assistant (the setup bot): the visual
+   * first run, #welcome's start and Retry, the legacy automatic start and the
+   * recovery after a reinstall all go through it, one operation at a time.
+   * Automatic restore never takes the assistant.
+   */
+  let assistantAttempt = $state<AssistantAttempt>({ state: "idle" });
+  /** An operation on the assistant is running or waiting its turn. */
+  let assistantQueued = $state(false);
+  /** True once the installed hq-cli is known to create and adopt the assistant itself. */
+  let assistantCliOwns = $state(false);
+  /**
+   * The installed hq-cli version, read once in the background at start so no
+   * start of the assistant waits on `hq --version`. Unreadable counts as older.
+   */
+  let assistantCliRead: Promise<boolean> | null = null;
+  function readAssistantCliOwns(): Promise<boolean> {
+    assistantCliRead ??= (async () => {
+      let version: string | null = null;
+      try {
+        const versions = await adapter.updates?.getVersions?.();
+        version = versions?.ok ? (versions.value?.cli ?? null) : null;
+      } catch {
+        version = null;
+      }
+      assistantCliOwns = cliOwnsAssistantCreate(version);
+      return assistantCliOwns;
+    })();
+    return assistantCliRead;
+  }
+  onMount(() => {
+    if (adapter.bots) void readAssistantCliOwns();
+  });
+  const assistantOwner = createAssistantOwner({
+    refreshLocal: async () => {
+      await refreshLocalBots();
+      return localBotRecords;
+    },
+    runtime: async () => {
+      // The first run asks again: a sign-in can be newer than the reading on
+      // screen (#welcome's start has just asked). The old reading stays on
+      // screen while it runs.
+      if (visualFirstRunOpen) {
+        await loadLocalBotRuntimeReady(true);
+        firstRunSignInChecker.sync(localBotRuntimeReady);
+      }
+      const ready = currentBotRuntimeReadiness();
+      const picked = firstRunRuntime;
+      return picked && ready?.[picked] === true ? picked : firstSignedInRuntime(ready);
+    },
+    cliOwnsCreate: readAssistantCliOwns,
+    create: (name, runtime) => createAssistantEntry(name, runtime),
+    adopt: adapter.bots?.adopt
+      ? async (handle) => {
+          const result = await adapter.bots!.adopt!(handle);
+          if (result.ok) {
+            noteBotStarted(handle, assistantUid ?? "");
+            return { ok: true };
+          }
+          return { ok: false, raw: result.message ?? "" };
+        }
+      : undefined,
+    cloudAssistant: () => {
+      const row = remoteAssistantRow;
+      if (!row || row.here || botRunsHere(localBotRecords, row.agentUid)) return null;
+      const uid = row.agentUid.trim();
+      // Adoptable only when the account's listing says it is not running on
+      // another computer and could run here (`assistantToRecover`).
+      return {
+        ref: { agentUid: uid, handle: row.name.trim() || SETUP_BOT_NAME },
+        // ...and only where the app may bring bots back by itself at all.
+        adoptable: autoRestoreReady && assistantMissingHere?.agentUid.trim() === uid,
+      };
+    },
+    onbusy: (busy) => {
+      assistantQueued = busy;
+    },
+    rename: renameAssistantHere,
+    findCloud: findCloudAssistant,
+    copy: {
+      noRuntime: () => setupBotNoRuntime({ noun: hostComputerNoun() }),
+      unavailable: SETUP_BOT_UNAVAILABLE,
+      alreadyElsewhere: SETUP_BOT_ALREADY_ELSEWHERE,
+      couldNotStart: (name) => (name ? `Couldn't start ${name}. Try again in a moment.` : SETUP_BOT_GENERIC_FAILURE),
+    },
+    onchange: (attempt) => {
+      assistantAttempt = attempt;
+    },
+  });
+  /** Starting, ready or could not start: from the bot list and the last attempt, never stored. */
+  const assistantNow = $derived(assistantStatus(assistantAttempt, existingSetupBot));
+  /** The assistant on the account's own listing (its cloud name and role, on a new enough hq-cli). */
+  const remoteAssistantRow = $derived(
+    remoteBotListing.failure ? null : ((remoteBotListing.rows ?? []).find((row) => isAssistantRecord(row)) ?? null),
+  );
+  /** The assistant's uid wherever the app knows it from. */
+  const assistantUid = $derived(
+    existingSetupBot?.agentUid ??
+      (assistantNow.state === "ready" ? assistantNow.bot.agentUid : null) ??
+      (remoteAssistantRow?.agentUid.trim() || null),
+  );
+  /**
+   * THE assistant's name, for every person-facing surface (assistant-owner.ts
+   * `assistantName`). Never its handle or slug; "Your assistant" when no name
+   * is known.
+   */
+  const assistantLabel = $derived.by(() => {
+    const uid = assistantUid ?? "";
+    const local = uid ? localBotRecords.find((row) => row.agentUid.trim() === uid) : undefined;
+    return assistantName({
+      confirmed: firstRunDev.dry ? null : firstRunConfirmedName,
+      listed: local?.displayName ?? null,
+      cloud: remoteAssistantRow?.displayName ?? null,
+      cached: uid ? (botDisplayNames[uid] ?? null) : null,
+      listIsCloudName: assistantCliOwns,
+    });
+  });
+  /** The assistant as the sidebar and the conversation rows name it. */
+  const assistantNameOverride = $derived(assistantUid ? { agentUid: assistantUid, name: assistantLabel } : null);
+  /** What to call a bot in a sentence: the assistant by its name, any other bot by its label. */
+  function botLabel(bot: { name: string; agentUid: string; displayName?: string; role?: string }): string {
+    const uid = bot.agentUid.trim();
+    if (isAssistantRecord(bot) || (uid && uid === assistantUid)) return assistantLabel;
+    return personFacingAgentName(bot.displayName?.trim() || botDisplayNames[uid]?.trim() || bot.name);
+  }
+  /** The name an agent goes by in a sentence, given the name a row or wake carried. */
+  function agentLabel(agentUid: string | null | undefined, carried: string | null | undefined): string {
+    const uid = (agentUid ?? "").trim();
+    if (uid && uid === assistantUid) return assistantLabel;
+    return personFacingAgentName(carried);
+  }
   const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
-    adapter.bots && SETUP_BOT_MODE
+    adapter.bots
       ? {
           existing: Boolean(existingSetupBot),
           ready: setupBotRuntimeReady,
-          starting: setupBotStarting,
-          error: setupBotStartError,
+          starting: assistantNow.state === "starting" || (assistantQueued && !existingSetupBot),
+          // Worked out from the bot list: never set while the assistant is here.
+          error: assistantNow.state === "failed" ? assistantNow.reason : null,
           // Known and empty: #welcome shows the install guide before the bot runs.
-          needsCodingTool: setupNeedsCodingTool(localBotRuntimeReady),
+          needsCodingTool: setupNeedsCodingTool(botRuntimeReadiness),
           start: startSetupBot,
           // The first-run create does not open its conversation by itself.
-          ...(firstRunCreateRunning && firstRunConfirmedName
+          ...(firstRunStart.state === "running" && firstRunConfirmedName
             ? { startingBody: `${firstRunConfirmedName} is starting on this ${hostComputerNoun()}. Open it here once it's ready.` }
             : {}),
         }
@@ -2995,7 +3256,7 @@
       existing ?? {
         id: `dm:${bot.agentUid}`,
         kind: "dm",
-        title: bot.name,
+        title: assistantLabel,
         companyUid: null,
         unreadDot: false,
         lastActivityAt: Date.now(),
@@ -3006,97 +3267,52 @@
     recordWelcomeSetupRun();
   }
   /**
-   * Create the setup bot, or open the one that already exists — on this Mac
-   * OR in the cloud account. Never creates a second one: `singleFlightStart`
-   * hands a caller that arrives mid-start the running start's own result,
-   * because each surface only disables its own button (the owner's log caught
-   * two `hq bot create setup` calls 1.3 s apart).
+   * #welcome's start (its button, Retry and the legacy automatic start):
+   * open the assistant, or bring it here through the owner. A first-run
+   * create in flight is waited for, never repeated: the owner runs one
+   * operation at a time and re-reads the list first.
    */
-  const setupBotStartGate = singleFlightStart(async (): Promise<SetupBotStart> => {
-    setupBotStarting = true;
-    setupBotStartError = null;
-    try {
-      // The visual first run may be creating the setup bot right now (the
-      // person left its takeover for #welcome mid-create). Its bot is not on
-      // any list yet, so a second create would make a second setup bot: wait
-      // for it and open that one instead.
-      // A bot it already made this session is used too: the local list can
-      // lag behind a create that just answered.
-      // A dry walk (dev-switches.ts) made no bot: start for real from here.
-      const firstRun = firstRunDev.dry
-        ? null
-        : (firstRunCreateInFlight ??
-          (firstRunCreatedBot ? Promise.resolve<FirstRunAssistantResult>({ ok: true, bot: firstRunCreatedBot }) : null));
-      if (firstRun) {
-        const created = await firstRun;
-        if (created.ok) {
-          setupBotAutoStarted = true;
-          openSetupBotDm(created.bot);
-          return { ok: true, existing: true };
-        }
-      }
-      const result = await runSetupBotStart();
-      if (!result.ok) setupBotStartError = result.reason;
-      return result;
-    } catch (err) {
-      // A sentence, never a stack: the surfaces render this verbatim.
-      console.warn("[hq-desktop] setup bot start threw:", err);
-      setupBotStartError = SETUP_BOT_GENERIC_FAILURE;
-      return { ok: false, reason: SETUP_BOT_GENERIC_FAILURE };
-    } finally {
-      setupBotStarting = false;
-    }
-  });
-  function startSetupBot(): Promise<SetupBotStart> {
-    return setupBotStartGate();
-  }
-  /**
-   * The setup bot this account already owns, wherever it lives. `hq bot list`
-   * only knows this Mac, so after a reinstall — or on a second Mac — the local
-   * list is empty while the cloud account still owns the agent entity, and a
-   * create 409s. The DM roster is the desktop's one cloud-side view of the
-   * person's own bots, so it is asked before anything is created.
-   */
-  async function findExistingSetupBot(): Promise<SetupBotRef | null> {
-    const local = findSetupBot(localBotRecords);
-    if (local) return local;
-    try {
-      const contacts = await adapter.messaging?.listContacts?.();
-      if (contacts?.ok) return findSetupBotContact(contacts.value);
-    } catch (err) {
-      // A roster we cannot read only costs us the early adoption: a create
-      // that then 409s is adopted below.
-      console.warn("[hq-desktop] could not check the cloud roster for a setup bot:", err);
-    }
-    return null;
-  }
-  async function runSetupBotStart(): Promise<SetupBotStart> {
+  async function startSetupBot(): Promise<SetupBotStart> {
     // Any start (the automatic one or a click) settles the automatic start.
     setupBotAutoStarted = true;
     if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
-    await refreshLocalBots();
     // Re-read sign-in state: the Connect step signs in through the setup run's
     // own API, so a readiness answer cached at boot can be a click out of date.
-    localBotRuntimeReady = null;
-    await loadLocalBotRuntimeReady();
-    const runtime = firstSignedInRuntime(localBotRuntimeReady);
+    await loadLocalBotRuntimeReady(true);
     // No coding tool signed in: say so (the install guide renders under this
     // sentence) before opening OR creating the setup bot. An existing setup
-    // bot with no tool behind it answers every message with a failure, which
-    // is what a freshly wiped Mac showed when it opened one straight away.
-    if (!runtime) return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
-    const existing = await findExistingSetupBot();
-    if (existing) {
-      openSetupBotDm(existing);
-      return { ok: true, existing: true };
+    // bot with no tool behind it answers every message with a failure.
+    if (!firstSignedInRuntime(currentBotRuntimeReadiness())) {
+      return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
     }
-    // `intro` is sent by the runtime on start, so the first message is
-    // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
-    // one turn by itself so the bot starts step one without waiting for the
-    // person to type.
-    // A friendly name no bot on the person's roster already has, so two bots
-    // in one company never share one. The roster is read again here: an
-    // unreadable one only makes a clash possible, never blocks setup.
+    // A name the person confirmed in the visual first run (then left it for
+    // chat) is kept; otherwise a friendly free one, for a new assistant only.
+    // A dry walk's name created nothing and names nothing.
+    const confirmed = firstRunDev.dry ? null : firstRunConfirmedName;
+    // Without a chosen name, the account's own listing decides whether an
+    // assistant already exists to bring back as it is, so ask it now rather
+    // than give a returning person's assistant a picked name.
+    if (!confirmed && !existingSetupBot) await refreshRemoteBots(true);
+    const result = await assistantOwner.start(
+      confirmed ? { name: confirmed } : { nameIfNew: existingSetupBot ? null : await pickAssistantName() },
+    );
+    if (!result.ok) return { ok: false, reason: result.reason };
+    // The person confirmed this name in the takeover and then left for chat:
+    // the assistant gets the takeover's handoff note, as from Done.
+    if (confirmed) adoptFirstRunAssistant(result.bot, result.outcome, confirmed);
+    if (result.outcome === "created") {
+      recordWelcomeSetupRun();
+      return { ok: true, existing: false };
+    }
+    openSetupBotDm(result.bot);
+    return { ok: true, existing: true };
+  }
+  /**
+   * A friendly name no bot on the person's roster already has, so two bots in
+   * one company never share one. An unreadable roster only makes a clash
+   * possible, never blocks setup.
+   */
+  async function pickAssistantName(): Promise<string> {
     let rosterContacts: unknown = null;
     try {
       const contacts = await adapter.messaging?.listContacts?.();
@@ -3104,43 +3320,103 @@
     } catch (err) {
       console.warn("[hq-desktop] could not read the roster to name the setup bot:", err);
     }
-    // A name the person confirmed in the visual first run (then left it for
-    // chat) is kept; otherwise a friendly free one.
-    const displayName =
-      firstRunConfirmedName ?? pickSetupBotName(takenBotNames(rosterContacts, Object.values(botDisplayNames)));
-    const created = await createBotEntry(
-      {
+    return pickSetupBotName(takenBotNames(rosterContacts, Object.values(botDisplayNames)));
+  }
+  /**
+   * Older hq-cli only: the account's assistant in the DM roster, for a create
+   * that answered "already exists" while this computer's list has none.
+   */
+  async function findCloudAssistant(): Promise<SetupBotRef | null> {
+    try {
+      const contacts = await adapter.messaging?.listContacts?.();
+      if (contacts?.ok) return findSetupBotContact(contacts.value);
+    } catch (err) {
+      console.warn("[hq-desktop] could not check the cloud roster for a setup bot:", err);
+    }
+    return null;
+  }
+  /**
+   * Older hq-cli only: put the person's name on an assistant that was already
+   * there (its profile and this computer's copy). A new enough hq-cli applies
+   * the name in `hq bot create setup` itself.
+   */
+  async function renameAssistantHere(bot: SetupBotRef, displayName: string): Promise<void> {
+    if (firstRunDev.dry) return;
+    if ((botDisplayNames[bot.agentUid] ?? "").trim() === displayName) return;
+    botDisplayNames = rememberBotDisplayName(botDisplayNames, bot.agentUid, displayName);
+    try {
+      await adapter.identity.updateAgentProfile(bot.agentUid, { displayName });
+    } catch (err) {
+      console.warn("[hq-desktop] could not rename the setup bot:", err);
+    }
+  }
+  /**
+   * The owner's create: `hq bot create setup --display-name <name>`. For the
+   * visual first run (the takeover is open, or the person confirmed a name
+   * there and then left for chat) it carries the first run's intro and NO
+   * kickoff: the assistant runs no turn until the takeover has closed and the
+   * app has sent it everything the takeover settled, in one handoff note
+   * (`deliverFirstRunHandoff`). Otherwise #welcome's intro and kickoff. The
+   * progress card, the DM row and the saved name come from `createBotEntry`,
+   * once.
+   */
+  async function createAssistantEntry(
+    displayName: string,
+    runtime: LocalBotRow["runtime"],
+  ): Promise<import("../chat/assistant-owner.js").AssistantCreateResult> {
+    const noun = hostComputerNoun();
+    const fromFirstRun = firstRunHandoffOwed();
+    let input: LocalBotCreateInput;
+    if (fromFirstRun) {
+      const ready = currentBotRuntimeReadiness();
+      const checks = firstRunSignInChecker.current();
+      const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
+      // The hello and the handoff say "signed in" only when a real turn worked.
+      // A runtime the first run does not check (not Claude Code or Codex) keeps today's words.
+      const signInChecked = !(runtime in checks) || checks[runtime as SignInTool] === "passed";
+      firstRunCreateFactsPending = { runtime, toolsReady, signInChecked };
+      input = {
         name: SETUP_BOT_NAME,
         displayName,
         worker: SETUP_BOT_WORKER,
         runtime,
-        intro: setupBotIntro({ noun: hostComputerNoun(), displayName }),
-        kickoff: setupBotKickoff({ noun: hostComputerNoun() }),
-        // Setup is a personal bot (bot-kinds) — the CLI default, so nothing to pass.
-      },
+        intro: firstRunIntro({ name: displayName, runtime, signInChecked }, { noun }),
+      };
+    } else {
+      // `intro` is sent by the runtime on start, so the first message is
+      // instant; `kickoff` then runs one turn by itself so the bot starts
+      // step one without waiting for the person to type.
+      input = {
+        name: SETUP_BOT_NAME,
+        displayName,
+        worker: SETUP_BOT_WORKER,
+        runtime,
+        intro: setupBotIntro({ noun, displayName }),
+        kickoff: setupBotKickoff({ noun }),
+      };
+    }
+    const created = await createBotEntry(
+      input,
+      // The progress card and the DM row carry the person's name for it.
+      { displayName },
+      // The takeover selects on Done ("Talk to <Name>"); #welcome opens it now.
+      { select: !visualFirstRunOpen, cliNamed: assistantCliOwns },
     );
-    // The CLI already gave HQ this name; remembering it here labels the DM on
-    // this Mac even with an older hq that could not take --display-name.
-    if (created.ok && created.agentUid) {
-      botDisplayNames = rememberBotDisplayName(botDisplayNames, created.agentUid, displayName);
-    }
     if (created.ok) {
-      recordWelcomeSetupRun();
-      return { ok: true, existing: false };
-    }
-    // "It already exists" is the opposite of a failure: the bot the person
-    // needs is there. Another window, another Mac, or this account's earlier
-    // install got in first — re-read both views and open it.
-    if (isAlreadyExistsFailure(created.raw ?? created.reason)) {
-      await refreshLocalBots();
-      const adopted = await findExistingSetupBot();
-      if (adopted) {
-        openSetupBotDm(adopted);
-        return { ok: true, existing: true };
+      // The facts belong to the assistant this create made, and to no other.
+      if (fromFirstRun && firstRunCreateFactsPending) {
+        firstRunCreateFacts = { agentUid: created.agentUid, ...firstRunCreateFactsPending };
       }
-      return { ok: false, reason: SETUP_BOT_ALREADY_ELSEWHERE };
+      return { ok: true, agentUid: created.agentUid, outcome: created.outcome ?? null };
     }
-    return { ok: false, reason: created.reason };
+    // The generic fallback names the reserved handle; the person knows the
+    // assistant by the name they gave it.
+    const generic = `Could not create ${SETUP_BOT_NAME}.`;
+    return {
+      ok: false,
+      reason: created.reason === generic ? `Couldn't start ${displayName}. Try again in a moment.` : created.reason,
+      raw: created.raw,
+    };
   }
   /**
    * First open on this Mac: the setup bot starts by itself, so its hello is
@@ -3151,7 +3427,7 @@
    * per app session. A failure leaves the button to retry and explain.
    */
   $effect(() => {
-    if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
+    if (setupBotAutoStarted || !adapter.bots || welcomeSetupRun) return;
     // `desktop.visual-first-run`: nothing starts by itself until the flag has
     // answered, and nothing at all while the visual first run is on screen.
     // Flag off is "legacy" the moment it answers, and this runs as before.
@@ -3159,7 +3435,7 @@
     // Wait for the shell's first conversation to be chosen, so opening the
     // bot's DM is not undone by the boot selection landing afterwards.
     if (!selectedRow) return;
-    if (!firstSignedInRuntime(localBotRuntimeReady)) return;
+    if (!firstSignedInRuntime(botRuntimeReadiness)) return;
     setupBotAutoStarted = true;
     void startSetupBot()
       .then((result) => {
@@ -3221,6 +3497,48 @@
       active = false;
     };
   });
+  /**
+   * `desktop.first-run-found-apps-v1`, read only once the visual first run is
+   * on. Until it answers (or when it cannot be read) the takeover keeps Note
+   * taker and Project management.
+   */
+  let foundAppsFlag = $state<boolean>(false);
+  let foundAppsFlagRead = false;
+  /**
+   * The found-apps answer is in (or its wait ran out). The takeover opens only
+   * after this, and the answer never changes afterwards, so the steps cannot
+   * swap while the person is in the flow.
+   */
+  let foundAppsFlagSettled = $state(false);
+  function settleFoundAppsFlag(value: boolean): void {
+    if (foundAppsFlagSettled) return;
+    foundAppsFlag = value;
+    foundAppsFlagSettled = true;
+  }
+  $effect(() => {
+    if (visualFirstRunFlag !== true || foundAppsFlagRead) return;
+    foundAppsFlagRead = true;
+    const identity = adapter.identity;
+    if (!identity || typeof identity.hasFeature !== "function") {
+      untrack(() => settleFoundAppsFlag(false));
+      return;
+    }
+    void Promise.resolve()
+      .then(() => identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG))
+      .then(
+        (result) => settleFoundAppsFlag(result.ok && result.value === true),
+        (err: unknown) => {
+          console.warn("[hq-desktop] first-run found-apps flag lookup failed:", err);
+          settleFoundAppsFlag(false);
+        },
+      );
+  });
+  // A found-apps answer that never comes stops holding the takeover (counts as off).
+  $effect(() => {
+    if (visualFirstRunFlag !== true || foundAppsFlagSettled) return;
+    const timer = window.setTimeout(() => settleFoundAppsFlag(false), FIRST_RUN_LISTINGS_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  });
   // The "setup owed" answer is in and the flag is not: the flag has the grace
   // left, then counts as off.
   $effect(() => {
@@ -3230,11 +3548,11 @@
   });
   const firstRunRouteNow = $derived.by(() =>
     firstRunDev.force
-      ? Boolean(adapter.bots) && SETUP_BOT_MODE && !visualFirstRunFinished
+      ? Boolean(adapter.bots) && !visualFirstRunFinished
         ? "visual"
         : "legacy"
       : firstRunRoute({
-      hasBots: Boolean(adapter.bots) && SETUP_BOT_MODE,
+      hasBots: Boolean(adapter.bots),
       welcomeSetupRun,
       welcomeSetupOwed,
       flag: visualFirstRunFlag,
@@ -3245,21 +3563,46 @@
   let visualFirstRunOpen = $state(false);
   /** The name the name step opens with, picked when the takeover opens. */
   let firstRunSuggestedName = $state("");
+  /**
+   * Both bot listings have answered (or failed), so the name step knows
+   * whether the account already has an assistant. A listing that never
+   * answers stops holding the takeover after FIRST_RUN_LISTINGS_WAIT_MS.
+   */
+  let firstRunListingsWaitOver = $state(false);
+  const firstRunListingsRead = $derived(
+    !adapter.bots || firstRunDev.dry || (localBotsRead && remoteBotsRead) || firstRunListingsWaitOver,
+  );
   $effect(() => {
-    if (firstRunRouteNow !== "visual" || untrack(() => visualFirstRunOpen)) return;
+    if (firstRunRouteNow !== "visual" || firstRunListingsRead) return;
+    const timer = window.setTimeout(() => (firstRunListingsWaitOver = true), FIRST_RUN_LISTINGS_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  });
+  $effect(() => {
+    if (firstRunRouteNow !== "visual" || !firstRunListingsRead || !foundAppsFlagSettled || untrack(() => visualFirstRunOpen)) return;
     untrack(() => {
       firstRunSuggestedName = firstRunInitialName();
       visualFirstRunOpen = true;
     });
   });
-  /** A setup bot already here keeps its name; otherwise a friendly free one. */
+  /**
+   * The account's assistant keeps its name, whether it is on this computer or
+   * only on the account's listing (a new computer). A friendly free name only
+   * when the account has no assistant anywhere, or its name is not known.
+   * Never its handle, and never "Your assistant".
+   */
   function firstRunInitialName(): string {
-    const existing = findSetupBot(localBotRecords);
-    const known = existing ? (botDisplayNames[existing.agentUid] ?? "").trim() : "";
-    if (known && !assistantNameIssue(known)) return known;
+    const known = existingSetupBot || remoteAssistantRow ? assistantLabel : "";
+    if (known && known !== ASSISTANT_FALLBACK_NAME && !isAssistantSlug(known) && !assistantNameIssue(known)) {
+      return known;
+    }
     return pickSetupBotName(takenBotNames(null, Object.values(botDisplayNames)));
   }
-  let firstRunCreation = $state<FirstRunCreation>({ state: "idle" });
+  /**
+   * The takeover's own start: not yet asked, running, or settled. What it
+   * shows comes from the owner's status (`assistantNow`), so a start that
+   * failed while the assistant came up anyway reads as ready.
+   */
+  let firstRunStart = $state<{ state: "idle" } | { state: "running" } | { state: "settled" }>({ state: "idle" });
   /** The confirmed name, waiting for a signed-in coding tool to start. */
   let firstRunPendingName = $state<string | null>(null);
   /** The coding tool picked on the tools step, when it is signed in. */
@@ -3269,46 +3612,69 @@
    * chat" so #welcome's start creates the setup bot under it. Null on the
    * flag-off path.
    */
-  let firstRunConfirmedName: string | null = null;
-  /** The first-run create while it runs, so #welcome's start can wait for it. */
-  let firstRunCreateInFlight: Promise<FirstRunAssistantResult> | null = null;
-  /** True while the first-run create runs (drives #welcome's starting line). */
-  let firstRunCreateRunning = $state(false);
+  let firstRunConfirmedName = $state<string | null>(null);
   /** The setup bot the first run made (or adopted) this session. */
   let firstRunCreatedBot: SetupBotRef | null = null;
+  /** A dry walk's pretend assistant (dev-switches.ts): nothing is created or sent. */
+  let firstRunDryBot = $state<SetupBotRef | null>(null);
+  /** Where creating the assistant stands, as the takeover shows it. Derived, never stored. */
+  const firstRunCreation = $derived.by<FirstRunCreation>(() => {
+    const name = firstRunConfirmedName;
+    if (!name || firstRunStart.state === "idle") return { state: "idle" };
+    if (firstRunStart.state === "running") return { state: "creating", name };
+    if (firstRunDev.dry) return firstRunDryBot ? { state: "ready", name, bot: firstRunDryBot } : { state: "creating", name };
+    const now = assistantNow;
+    if (now.state === "ready") return { state: "ready", name, bot: now.bot };
+    if (now.state === "failed") return { state: "failed", name, reason: now.reason };
+    return { state: "creating", name };
+  });
   /**
-   * The first-run create, visible to #welcome as the setup bot starting (its
-   * button holds) and to `setupBotStartGate`, which waits for it.
+   * Start the assistant from the takeover, once. The owner waits for any
+   * other operation on it, finds it if it is here, and otherwise creates or
+   * adopts it under this name.
    */
-  function runFirstRunAssistantCreateTracked(name: string): Promise<FirstRunAssistantResult> {
-    setupBotStarting = true;
-    firstRunCreateRunning = true;
-    setupBotStartError = null;
-    const run = runFirstRunAssistantCreate(name)
-      .then((result) => {
-        if (result.ok) {
-          firstRunCreatedBot = result.bot;
-          // A scan that finished while the create ran: its kickoff missed it.
-          deliverFirstRunImport();
-          // The takeover closed while the create ran: the later screens' note.
-          deliverFirstRunSettled();
-        } else setupBotStartError = result.reason;
-        return result;
-      })
-      .finally(() => {
-        if (firstRunCreateInFlight === run) firstRunCreateInFlight = null;
-        setupBotStarting = false;
-        firstRunCreateRunning = false;
-      });
-    firstRunCreateInFlight = run;
-    return run;
+  function startFirstRunAssistant(name: string): void {
+    if (firstRunStart.state === "running") return;
+    if (firstRunStart.state === "settled" && firstRunCreation.state !== "failed") return;
+    firstRunStart = { state: "running" };
+    if (firstRunDev.dry) {
+      // Dry walk: the assistant "is ready" after a beat. Nothing is created or sent.
+      setTimeout(() => {
+        firstRunDryBot = { agentUid: "agt_first_run_dry", handle: SETUP_BOT_NAME };
+        firstRunStart = { state: "settled" };
+      }, FIRST_RUN_DRY_DELAY_MS);
+      return;
+    }
+    void assistantOwner.start({ name }).then((result) => {
+      if (result.ok) adoptFirstRunAssistant(result.bot, result.outcome, name);
+      firstRunStart = { state: "settled" };
+    });
   }
-  const firstRunStarter = createFirstRunAssistantStarter(
-    (name) => runFirstRunAssistantCreateTracked(name),
-    (state) => {
-      firstRunCreation = state;
-    },
-  );
+  /**
+   * The assistant the takeover settled on, created or already here. Either
+   * way it runs no turn for the first run until the takeover closes; then it
+   * gets the one handoff note (`deliverFirstRunHandoff`).
+   */
+  function adoptFirstRunAssistant(bot: SetupBotRef, outcome: "created" | "adopted" | "existing", name: string): void {
+    if (firstRunCreatedBot?.agentUid === bot.agentUid) return;
+    firstRunCreatedBot = bot;
+    firstRunHandoffName = name;
+    if (outcome === "created") firstRunCreatedUids.add(bot.agentUid);
+    // The takeover closed while the create ran: the note goes now.
+    deliverFirstRunHandoff();
+  }
+  // A start that failed while the assistant came up anyway (it is in the
+  // list): the takeover reads ready, and the assistant gets the handoff.
+  $effect(() => {
+    const creation = firstRunCreation;
+    if (creation.state !== "ready" || firstRunDev.dry || firstRunStart.state !== "settled") return;
+    untrack(() => adoptFirstRunAssistant(creation.bot, "existing", creation.name));
+  });
+  function retryFirstRunAssistant(): void {
+    const name = firstRunConfirmedName;
+    if (!name || firstRunCreation.state !== "failed") return;
+    startFirstRunAssistant(name);
+  }
   function confirmFirstRunName(typed: string, runtime: LocalBotRow["runtime"]): void {
     // The host's display-name rule collapses spaces; send what it checks.
     const name = normalizeAssistantName(typed);
@@ -3316,15 +3682,60 @@
     firstRunRuntime = runtime;
     firstRunPendingName = name;
     firstRunConfirmedName = name;
-    if (firstSignedInRuntime(localBotRuntimeReady)) firstRunStarter.start(name);
+    if (firstSignedInRuntime(botRuntimeReadiness)) startFirstRunAssistant(name);
   }
   // A tool signed in after the name was confirmed: start then.
   $effect(() => {
     const name = firstRunPendingName;
-    if (!visualFirstRunOpen || !name || firstRunCreation.state !== "idle") return;
-    if (!firstSignedInRuntime(localBotRuntimeReady)) return;
-    untrack(() => firstRunStarter.start(name));
+    if (!visualFirstRunOpen || !name || firstRunStart.state !== "idle") return;
+    if (!firstSignedInRuntime(botRuntimeReadiness)) return;
+    untrack(() => startFirstRunAssistant(name));
   });
+  /**
+   * The real sign-in check on the first run. `agent_session_preflight` only
+   * reports that a login is stored; a stored login whose refresh token is
+   * dead still reads as signed in there. So a tool counts on the first run
+   * (its row, Next, the pick, the assistant's start and its hello) only once
+   * `hq bot probe` ran one real turn on it. A dead login keeps the row on
+   * Sign in, which then replaces it. A check that cannot tell does not block.
+   */
+  let firstRunSignInChecks = $state<ToolSignInChecks>({});
+  const firstRunSignInChecker = createSignInChecker({
+    probe:
+      adapter.bots?.probe && !firstRunDev.dry
+        ? (tool) =>
+            adapter.bots!.probe!(tool, null, { effort: PROBE_EFFORT, timeoutSecs: TOOL_SIGNIN_CHECK_TIMEOUT_SECS })
+        : null,
+    onchange: (checks) => {
+      firstRunSignInChecks = checks;
+    },
+  });
+  onDestroy(() => firstRunSignInChecker.dispose());
+  /** The readiness the first run acts on: stored logins that passed the check. */
+  const firstRunRuntimeReady = $derived(checkedReadiness(localBotRuntimeReady, firstRunSignInChecks));
+  /**
+   * THE ONE READINESS SIGNAL, shared by automatic restore, #welcome, the
+   * assistant's owner and the first run. While the first run is open a stored
+   * login counts only once its real check passed (above); otherwise the
+   * stored logins are the answer.
+   */
+  const botRuntimeReadiness = $derived(visualFirstRunOpen ? firstRunRuntimeReady : localBotRuntimeReady);
+  /** The same signal, read now (inside a call rather than a render). */
+  function currentBotRuntimeReadiness(): Record<string, boolean> | null {
+    return visualFirstRunOpen
+      ? checkedReadiness(localBotRuntimeReady, firstRunSignInChecker.current())
+      : localBotRuntimeReady;
+  }
+  $effect(() => {
+    if (!visualFirstRunOpen) return;
+    const ready = localBotRuntimeReady;
+    untrack(() => firstRunSignInChecker.sync(ready));
+  });
+  /** A sign-in on the coding tools screen finished: it counts, then read readiness again. */
+  async function onFirstRunToolSignedIn(runtime: LocalBotRow["runtime"]): Promise<void> {
+    if (runtime === "claude" || runtime === "codex") firstRunSignInChecker.signedIn(runtime satisfies SignInTool);
+    await onBotRuntimeSignedIn();
+  }
   /**
    * "Bring in your context" (slice 4). The scan runs inside the takeover; the
    * host supplies the command (`adapter.contextImport`) and the event bus.
@@ -3333,196 +3744,109 @@
   const firstRunImportHost = createImportScanHost(adapter.contextImport, syncEvents);
   /** The finished scan's counts and report path, for the setup bot's handoff. */
   let firstRunImport: FirstRunImportHandoff | null = null;
-  /** The setup bot has the import result (in its kickoff or a notice). */
-  let firstRunImportDelivered = false;
-  /** A notice send is in flight (one at a time). */
-  let firstRunImportSending = false;
-  /** The next try of a failed import notice, cleared when the shell goes away. */
-  let firstRunImportRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  let firstRunImportStopped = false;
-  onDestroy(() => {
-    firstRunImportStopped = true;
-    if (firstRunImportRetryTimer !== null) clearTimeout(firstRunImportRetryTimer);
-    firstRunImportRetryTimer = null;
-  });
   function recordFirstRunImport(result: FirstRunImportHandoff): void {
     firstRunImport = result;
-    deliverFirstRunImport();
   }
   /**
-   * The assistant is usually created before the scan finishes (it starts at
-   * the name step), so its kickoff went out without the import. Tell it with
-   * a bot-only note, once. A create that has not started yet carries it in
-   * its kickoff instead.
+   * "Your team", Note taker and Project management (slices 2 and 5): what
+   * they settled, for the handoff note.
+   */
+  let firstRunSettled: FirstRunSettled = { team: null, apps: {} };
+  function recordFirstRunSettled(next: FirstRunSettled): void {
+    firstRunSettled = next;
+  }
+  /** The takeover closed (Done or Continue in chat): what it settled is final. */
+  let firstRunLeft = false;
+  /** The name the handoff gives the assistant (the one the person confirmed). */
+  let firstRunHandoffName: string | null = null;
+  /** The runtime, tools and sign-in check the first-run create used, when it created one. */
+  type FirstRunCreateFacts = { runtime: LocalBotRow["runtime"]; toolsReady: LocalBotRow["runtime"][]; signInChecked: boolean };
+  /** What the create in flight used; kept only once it made an assistant. */
+  let firstRunCreateFactsPending: FirstRunCreateFacts | null = null;
+  let firstRunCreateFacts: (FirstRunCreateFacts & { agentUid: string }) | null = null;
+  /**
+   * Whether a create for the assistant now is the visual first run's: the
+   * takeover is open, or the person confirmed a name there and then left for
+   * chat. That create runs no kickoff; the handoff note starts the assistant.
+   * A dry walk creates and sends nothing.
+   */
+  function firstRunHandoffOwed(): boolean {
+    return !firstRunDev.dry && (visualFirstRunOpen || firstRunConfirmedName !== null);
+  }
+  /** Everything the takeover settled, for the assistant's handoff note. */
+  function firstRunHandoffFor(bot: SetupBotRef, name: string): FirstRunHandoff {
+    const facts = firstRunCreateFacts?.agentUid === bot.agentUid ? firstRunCreateFacts : null;
+    const checks = firstRunSignInChecker.current();
+    const ready = checkedReadiness(localBotRuntimeReady, checks);
+    const toolsReady = facts?.toolsReady ?? SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
+    const runtime =
+      facts?.runtime ?? localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
+    const signInChecked = facts?.signInChecked ?? (!(runtime in checks) || checks[runtime as SignInTool] === "passed");
+    const { team, apps } = firstRunSettled;
+    return { name, runtime, toolsReady, signInChecked, imported: firstRunImport, team, apps };
+  }
+  /**
+   * The assistant that has the handoff note. By uid: an assistant made again
+   * later in this session (removed, then created from #welcome) runs no
+   * kickoff either, so it gets the note too.
+   */
+  let firstRunHandoffDeliveredTo: string | null = null;
+  /** A note send is in flight (one at a time). */
+  let firstRunHandoffSending = false;
+  /** The next try of a failed note, cleared when the shell goes away. */
+  let firstRunHandoffRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstRunHandoffStopped = false;
+  onDestroy(() => {
+    firstRunHandoffStopped = true;
+    if (firstRunHandoffRetryTimer !== null) clearTimeout(firstRunHandoffRetryTimer);
+    firstRunHandoffRetryTimer = null;
+  });
+  /**
+   * THE ONE HANDOFF. Once the takeover has closed and the assistant is known
+   * (created or already here, in either order), send it everything the
+   * takeover settled as one bot-only note, once. The assistant was created
+   * without a kickoff, so this note is what starts its setup conversation:
+   * its first message to the person is written with every screen's outcome
+   * in hand, and no later note makes it answer again (owner run
+   * rc-run-1011-1449: the assistant offered the import the takeover had just
+   * done, then corrected itself after a late note).
    *
    * Delivered only once a send succeeds; the idempotency key keeps a retry
    * from showing the bot the note twice. The first send is the person's own
-   * doing (the scan they just finished). Later ones go through the notice
+   * doing (they just finished the takeover). Later ones go through the notice
    * ledger like every other notice to a bot: a refusal (a 4xx) is not
    * repeated, and other failures are tried a few times, further apart.
    */
-  function deliverFirstRunImport(): void {
-    if (firstRunDev.dry) return;
-    const imported = firstRunImport;
+  function deliverFirstRunHandoff(): void {
+    if (firstRunDev.dry || !firstRunLeft) return;
     const bot = firstRunCreatedBot;
-    if (!imported || !bot || firstRunImportDelivered || firstRunImportSending) return;
-    const key = `first-run-import:${bot.agentUid}`;
+    const name = firstRunHandoffName;
+    if (!bot || !name || firstRunHandoffDeliveredTo === bot.agentUid || firstRunHandoffSending) return;
+    const key = `first-run-handoff:${bot.agentUid}`;
     const first = !connectionNoticeFailures.has(key);
-    firstRunImportSending = true;
-    void sendBotNotice(bot.agentUid, firstRunImportNotice(imported), key, key, first).then((sent) => {
-      firstRunImportSending = false;
+    const body = firstRunHandoffNotice(firstRunHandoffFor(bot, name), { noun: hostComputerNoun() });
+    firstRunHandoffSending = true;
+    void sendBotNotice(bot.agentUid, body, key, key, first).then((sent) => {
+      firstRunHandoffSending = false;
       if (sent) {
-        firstRunImportDelivered = true;
+        firstRunHandoffDeliveredTo = bot.agentUid;
+        // Adopted another assistant while this one went out: that one's turn.
+        if (firstRunCreatedBot && firstRunCreatedBot.agentUid !== bot.agentUid) deliverFirstRunHandoff();
         return;
       }
       // null: refused for good, or out of tries. Otherwise wait for the ledger.
       const nextAt = connectionNoticeFailures.get(key)?.nextAt ?? null;
-      if (nextAt === null || firstRunImportRetryTimer !== null || firstRunImportStopped) return;
-      firstRunImportRetryTimer = setTimeout(() => {
-        firstRunImportRetryTimer = null;
-        deliverFirstRunImport();
+      if (nextAt === null) {
+        // Nothing else starts it: it answers once the person writes, from
+        // the start of setup (the worker's "Your very first message").
+        console.warn("[hq-desktop] the setup assistant did not get the first-run handoff; it starts when the person writes");
+        return;
+      }
+      if (firstRunHandoffRetryTimer !== null || firstRunHandoffStopped) return;
+      firstRunHandoffRetryTimer = setTimeout(() => {
+        firstRunHandoffRetryTimer = null;
+        deliverFirstRunHandoff();
       }, Math.max(0, nextAt - Date.now()));
-    });
-  }
-  /** Best effort: a setup bot that already existed takes the confirmed name. */
-  async function nameExistingAssistant(bot: SetupBotRef, displayName: string): Promise<void> {
-    if (firstRunDev.dry) return;
-    if ((botDisplayNames[bot.agentUid] ?? "").trim() === displayName) return;
-    botDisplayNames = rememberBotDisplayName(botDisplayNames, bot.agentUid, displayName);
-    try {
-      await adapter.identity.updateAgentProfile(bot.agentUid, { displayName });
-    } catch (err) {
-      console.warn("[hq-desktop] could not rename the setup bot:", err);
-    }
-  }
-  /**
-   * A setup bot that already existed ran its kickoff long ago. Tell it what
-   * the takeover settled with a bot-only DM (the same lane and retry ledger
-   * as the app's other notices to bots), once per bot.
-   */
-  function sendFirstRunHandoffNotice(bot: SetupBotRef, displayName: string): void {
-    if (firstRunDev.dry) return;
-    const ready = localBotRuntimeReady;
-    const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
-    const runtime =
-      localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
-    const key = `first-run-handoff:${bot.agentUid}`;
-    const imported = firstRunImport;
-    if (imported) firstRunImportDelivered = true;
-    const { team, apps } = firstRunSettled;
-    // The notice carries what is settled now; a later part goes at close.
-    firstRunSettledSent = firstRunSettledParts({ team, apps });
-    void sendBotNotice(
-      bot.agentUid,
-      firstRunHandoffNotice({ name: displayName, runtime, toolsReady, imported, team, apps }, { noun: hostComputerNoun() }),
-      key,
-      key,
-      true,
-    );
-  }
-  /**
-   * Create the assistant (the setup bot, under the person's name), or adopt
-   * the one this account already has. The kickoff tells it which setup steps
-   * the takeover settled, so it does not ask them again.
-   */
-  async function runFirstRunAssistantCreate(displayName: string): Promise<FirstRunAssistantResult> {
-    if (firstRunDev.dry) {
-      // Dry walk: the assistant "is ready" after a beat. Nothing is created or sent.
-      await new Promise((resolve) => setTimeout(resolve, FIRST_RUN_DRY_DELAY_MS));
-      return { ok: true, bot: { agentUid: "agt_first_run_dry", name: displayName } };
-    }
-    if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
-    await refreshLocalBots();
-    const existing = await findExistingSetupBot();
-    if (existing) {
-      void nameExistingAssistant(existing, displayName);
-      sendFirstRunHandoffNotice(existing, displayName);
-      return { ok: true, bot: { ...existing, name: displayName } };
-    }
-    // Asked again (the readiness on screen can be a sign-in out of date), but
-    // the old reading stays on screen while it runs.
-    await loadLocalBotRuntimeReady(true);
-    const ready = localBotRuntimeReady;
-    const picked = firstRunRuntime;
-    const runtime = picked && ready?.[picked] === true ? picked : firstSignedInRuntime(ready);
-    if (!runtime) return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
-    const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
-    const noun = hostComputerNoun();
-    // A scan already finished (the name was confirmed late) rides in the kickoff.
-    const imported = firstRunImport;
-    const { team, apps } = firstRunSettled;
-    // What does not fit the kickoff goes later as a note (firstRunKickoffCarry).
-    const carry = firstRunKickoffCarry({ name: displayName, runtime, toolsReady, imported, team, apps }, { noun });
-    if (imported && carry.importWhole) firstRunImportDelivered = true;
-    // The kickoff carries what was settled when it went out; a part settled
-    // later (the create waited for a coding tool) goes at close.
-    if (carry.settled) firstRunSettledSent = firstRunSettledParts({ team, apps });
-    const created = await createBotEntry(
-      {
-        name: SETUP_BOT_NAME,
-        displayName,
-        worker: SETUP_BOT_WORKER,
-        runtime,
-        intro: firstRunIntro({ name: displayName, runtime }, { noun }),
-        kickoff: carry.kickoff,
-      },
-      // The progress card and the DM row carry the person's name for it.
-      { displayName },
-      { select: false },
-    );
-    if (created.ok) {
-      if (created.agentUid) {
-        botDisplayNames = rememberBotDisplayName(botDisplayNames, created.agentUid, displayName);
-        firstRunCreatedUids.add(created.agentUid);
-        // The ref's name titles the DM row: the person's name for it.
-        return { ok: true, bot: { agentUid: created.agentUid, name: displayName } };
-      }
-      // An older hq that answered without a uid: find it on the list.
-      const listed = findSetupBot(localBotRecords);
-      return listed ? { ok: true, bot: { ...listed, name: displayName } } : { ok: false, reason: SETUP_BOT_GENERIC_FAILURE };
-    }
-    if (isAlreadyExistsFailure(created.raw ?? created.reason)) {
-      await refreshLocalBots();
-      const adopted = await findExistingSetupBot();
-      if (adopted) {
-        void nameExistingAssistant(adopted, displayName);
-        sendFirstRunHandoffNotice(adopted, displayName);
-        return { ok: true, bot: { ...adopted, name: displayName } };
-      }
-      return { ok: false, reason: SETUP_BOT_ALREADY_ELSEWHERE };
-    }
-    // The CLI's generic fallback names the reserved handle ("setup"); the
-    // person knows the assistant by the name they just gave it.
-    const generic = `Could not create ${SETUP_BOT_NAME}.`;
-    return { ok: false, reason: created.reason === generic ? `Couldn't start ${displayName}. Try again in a moment.` : created.reason };
-  }
-  /**
-   * "Your team", Note taker and Project management (slices 2 and 5). The
-   * screens settle while the assistant already runs (it starts at the name
-   * step), so what they settled goes to it as one bot-only note when the
-   * takeover closes, unless the kickoff carried it.
-   */
-  let firstRunSettled: FirstRunSettled = { team: null, apps: {} };
-  /** Each part the assistant already has (in its kickoff or a note), by its JSON. */
-  let firstRunSettledSent: FirstRunSettledSent = {};
-  let firstRunSettledSending = false;
-  /** The takeover closed (Done or Continue in chat): what it settled is final. */
-  let firstRunLeft = false;
-  function recordFirstRunSettled(next: FirstRunSettled): void {
-    firstRunSettled = next;
-  }
-  function deliverFirstRunSettled(): void {
-    if (firstRunDev.dry || !firstRunLeft || firstRunSettledSending) return;
-    const bot = firstRunCreatedBot;
-    if (!bot) return;
-    const settled = firstRunSettled;
-    const body = firstRunSettledNotice(firstRunSettledSince(settled, firstRunSettledSent));
-    if (!body) return;
-    const key = `first-run-settled:${bot.agentUid}`;
-    firstRunSettledSending = true;
-    void sendBotNotice(bot.agentUid, body, key, key, true).then((sent) => {
-      firstRunSettledSending = false;
-      if (sent) firstRunSettledSent = { ...firstRunSettledSent, ...firstRunSettledParts(settled) };
     });
   }
   /** The person's companies and invites, once the roster answered. */
@@ -3546,6 +3870,11 @@
           created: () => {
             createCompanyRequested = true;
             void onrefreshroster?.();
+          },
+          findCompany: async (slug) => {
+            await onrefreshroster?.();
+            await svelteTick();
+            return activeCloudCompanyBySlug(companies ?? [], slug);
           },
         })
       : null,
@@ -3583,6 +3912,31 @@
       : null,
   );
 
+  /**
+   * First-run "Your apps" (flag `desktop.first-run-found-apps-v1`): the names-only
+   * scan, the fixed-list catalog lookup, connects, docs-based setup and Undo,
+   * all over the platform adapter. Null keeps Note taker and Project management.
+   */
+  const firstRunYourAppsHost = $derived(
+    foundAppsFlag && adapter.integrations
+      ? createYourAppsHost({
+          dry: firstRunDev.dry,
+          detectWorkApps: adapter.shell?.detectWorkApps ? () => adapter.shell.detectWorkApps!() : null,
+          catalogLookup: adapter.integrations.catalogLookup
+            ? (uid, domains) => adapter.integrations.catalogLookup!(uid, domains)
+            : null,
+          listConnections: adapter.integrations.listConnections
+            ? (uid) => adapter.integrations.listConnections(uid)
+            : null,
+          startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
+          install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
+          discoverDocs: adapter.integrations.discoverDocs ? (input) => adapter.integrations.discoverDocs!(input) : null,
+          uninstall: adapter.integrations.uninstall ? (input) => adapter.integrations.uninstall!(input) : null,
+          openUrl: openConnectionUrl,
+        })
+      : null,
+  );
+
   /** The takeover is done on this computer: it never opens again. */
   function closeVisualFirstRun(): void {
     // Leaving must not set off the automatic start above in this session.
@@ -3590,9 +3944,7 @@
     // A dry walk leaves no marker, so it can be walked again.
     if (!firstRunDev.dry) markVisualFirstRunFinished();
     firstRunLeft = true;
-    deliverFirstRunSettled();
-    // A dry walk's pretend assistant must not be what #welcome's Start opens.
-    if (firstRunDev.dry) firstRunCreatedBot = null;
+    deliverFirstRunHandoff();
     visualFirstRunFinished = true;
     visualFirstRunOpen = false;
     // Nothing starts from the takeover once it is closed.
@@ -3620,7 +3972,7 @@
       existing ?? {
         id: `dm:${bot.agentUid}`,
         kind: "dm",
-        title: bot.name,
+        title: assistantLabel,
         companyUid: null,
         unreadDot: false,
         lastActivityAt: Date.now(),
@@ -3682,6 +4034,14 @@
       return;
     }
     clearBotProgress(uid);
+    // The assistant is only ever made through its owner.
+    if (isAssistantRecord({ name: entry.input.name })) {
+      const result = await assistantOwner.start({ name: entry.extras.displayName?.trim() || null });
+      if (!result.ok) {
+        botProgressByUid = { ...botProgressByUid, [uid]: { ...entry, retrying: false, state: "failed", reason: result.reason } };
+      }
+      return;
+    }
     const created = await createBotEntry(entry.input, entry.extras);
     if (!created.ok) {
       botProgressByUid = { ...botProgressByUid, [uid]: { ...entry, retrying: false, state: "failed", reason: created.reason } };
@@ -3739,18 +4099,137 @@
       return { state, message: rec.message };
     };
     return {
-      loginStart: async (runtime) => toState(await sessions.loginStart!(runtime as SessionProviderId)),
+      loginStart: async (runtime, opts) =>
+        toState(
+          await (opts?.force
+            ? sessions.loginStart!(runtime as SessionProviderId, { force: true })
+            : sessions.loginStart!(runtime as SessionProviderId)),
+        ),
       loginStatus: async (runtime) => toState(await sessions.loginStatus!(runtime as SessionProviderId)),
       loginCancel: sessions.loginCancel
         ? async (runtime) => toState(await sessions.loginCancel!(runtime as SessionProviderId))
         : undefined,
     };
   });
-  async function onBotRuntimeSignedIn(): Promise<void> {
-    localBotRuntimeReady = null;
-    await loadLocalBotRuntimeReady();
+  async function onBotRuntimeSignedIn(runtime?: string): Promise<void> {
+    // A repair card still saying this tool is signed out checks again and
+    // turns fixed in place.
+    if (runtime) recheckRepairSignIn(runtime);
+    // Read again with the old reading on screen: clearing it first left the
+    // first run's rows on "Checking…" if the read then failed.
+    await recheckLocalBotRuntimes();
   }
   const selectedLocalBot = $derived(localBotForRow(localBots, selectedRow));
+  /**
+   * Runtime repair cards in a local bot's DM (runtime-repair-model.ts). One
+   * controller for the window, so a card keeps its state when it scrolls
+   * away or its conversation is left and opened again. Each button runs the
+   * real fix through the host, and only a passing `hq bot probe` turns the
+   * card to "You're all set".
+   */
+  const runtimeRepairController = new RuntimeRepairController({
+    // The tool's own browser sign-in, then a restart of the bots paused on it
+    // so the one that asked picks the person's message up again.
+    signIn: async (runtime) => {
+      const sessions = adapter.sessions;
+      if (!sessions) return false;
+      const result = await signInAgain(runtime, {
+        sessions,
+        bots: adapter.bots ?? null,
+        gate: {
+          canStart: (bot) => canStartBot(botStartGate, bot.name),
+          onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
+        },
+      });
+      if (!result.ok) console.warn("[runtime-repair] sign-in did not finish", result.reason);
+      return result.ok;
+    },
+    // The app's own install path (install_session_provider): the latest
+    // release into HQ's managed toolchain, no admin password.
+    update: async (runtime) => {
+      const install = adapter.sessions?.installProvider;
+      if (!install) return false;
+      const result = await install(runtime as SessionProviderId);
+      if (!result.ok) console.warn("[runtime-repair] update failed", result.message);
+      return result.ok;
+    },
+    canUpdate: () => Boolean(adapter.sessions?.installProvider),
+    botModel: (botName) => localBots.find((bot) => bot.name === botName)?.model ?? null,
+    setModel: async (botName, model) => {
+      const set = adapter.bots?.setModel;
+      if (!set) return false;
+      const result = await set(botName, model);
+      if (!result.ok) console.warn("[runtime-repair] set-model failed", result.message);
+      return result.ok;
+    },
+    probe: async (runtime, model) => {
+      const probe = adapter.bots?.probe;
+      if (!probe) return { ok: false };
+      const result = await probe(runtime as SessionProviderId, model ?? null);
+      if (!result.ok) {
+        console.warn("[runtime-repair] probe could not run", result.message);
+        return { ok: false };
+      }
+      return result.value;
+    },
+    onfixed: () => refreshLocalBots(),
+    // A sign-in made somewhere else turned cards fixed: restart the bots
+    // paused on that tool so the one that asked picks the message up now.
+    onsignedin: (runtime) => restartBotsAfterSignIn(runtime),
+  });
+  /** A sign-in for `runtime` finished somewhere: check it and turn its signed-out cards fixed. */
+  function recheckRepairSignIn(runtime: string): void {
+    if (runtime !== "claude" && runtime !== "codex" && runtime !== "grok") return;
+    void runtimeRepairController.recheckSignIn({ runtime, force: true });
+  }
+  // Any other screen that finished a sign-in (Settings) says so on the window.
+  // The window coming back (from the browser sign-in, or from a terminal
+  // where the person ran the tool's own login) checks too, spaced by the
+  // controller, and only while a signed-out card is waiting.
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const onSignedIn = (event: Event): void => {
+      const runtime = signedInRuntimeOf(event);
+      if (runtime) recheckRepairSignIn(runtime);
+    };
+    const onBack = (): void => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void runtimeRepairController.recheckSignIn();
+    };
+    window.addEventListener(RUNTIME_SIGNED_IN_EVENT, onSignedIn);
+    window.addEventListener("focus", onBack);
+    document.addEventListener("visibilitychange", onBack);
+    return () => {
+      window.removeEventListener(RUNTIME_SIGNED_IN_EVENT, onSignedIn);
+      window.removeEventListener("focus", onBack);
+      document.removeEventListener("visibilitychange", onBack);
+    };
+  });
+  // A bot's own report that its sign-in works again (its paused retry ran a
+  // turn) is a sign-in that finished, wherever it was made. A restart clears
+  // the report too, so this check keeps the controller's restart window.
+  let botsPausedOnSignIn = new Map<string, LocalBotRow["runtime"]>();
+  $effect(() => {
+    const next = new Map<string, LocalBotRow["runtime"]>();
+    for (const bot of localBots) if (botNeedsSignIn(bot)) next.set(bot.agentUid, expiredRuntimeOf(bot));
+    const before = botsPausedOnSignIn;
+    botsPausedOnSignIn = next;
+    for (const [uid, runtime] of before) {
+      if (!next.has(uid) && localBots.some((bot) => bot.agentUid === uid)) {
+        untrack(() => {
+          if (runtime === "claude" || runtime === "codex" || runtime === "grok") {
+            void runtimeRepairController.recheckSignIn({ runtime, unspaced: true });
+          }
+        });
+      }
+    }
+  });
+  /** The repair host for the open DM: only a local bot's DM draws repair cards. */
+  const selectedRuntimeRepair = $derived.by(() => {
+    const bot = selectedLocalBot;
+    if (!bot || selectedRow?.kind !== "dm") return null;
+    return { botUid: bot.agentUid, botName: botLabel(bot), controller: runtimeRepairController };
+  });
   /**
    * The setup bot's DM, once the bot has marked setup finished and the person
    * has not written since: show the finish card. A follow-up puts it away.
@@ -3791,6 +4270,9 @@
       if (setupToolOffer) return null;
       return bot.agentUid;
     }
+    // Any other bot on this computer (a pack's setup bot, say) draws the
+    // suggestions it writes too: its questions come with tap-to-answer buttons.
+    if (bot) return bot.agentUid;
     return dmCloudBotUid;
   });
   /** "Shown" is recorded once per bot, however often the card re-renders. */
@@ -3859,9 +4341,7 @@
     selectedLocalBot ? `setup-finale-dismissed:${selectedLocalBot.agentUid}` : null,
   );
   /** The setup bot's human name ("Pickles"), when it has one. */
-  const setupBotDisplayName = $derived(
-    selectedLocalBot ? (botDisplayNames[selectedLocalBot.agentUid] ?? null) : null,
-  );
+  const setupBotDisplayName = $derived(selectedLocalBot ? botLabel(selectedLocalBot) : null);
   /** The bot offered a Slack bot on its finish: only for a person who started their own company. */
   const setupFinaleSlackOffer = $derived.by(() => {
     const bot = selectedLocalBot;
@@ -3881,7 +4361,44 @@
     if (key) tenantStorage.setItem(key, "1");
     setupFinaleDismissedAt = Date.now();
   }
-  const selectedLocalBotOffline = $derived(localBotNeedsOfflineNotice(selectedLocalBot));
+  /**
+   * When the app first saw each local bot not yet online, by agent uid; dropped
+   * once HQ reports it online. A bot that was just started (a pack install, a
+   * restart) reaches HQ Cloud a few seconds later, and the offline notice waits
+   * out LOCAL_BOT_STARTUP_GRACE_MS from this moment instead of flashing.
+   */
+  let localBotStartingSince = $state<Record<string, number>>({});
+  let localBotGraceClock = $state(Date.now());
+  /** Bots in the first local listing; a bot not in it appeared while the app was open. */
+  let localBotsAtOpen = null as Set<string> | null;
+  $effect(() => {
+    const bots = localBots;
+    untrack(() => {
+      if (localBotsAtOpen === null && bots.length > 0) localBotsAtOpen = new Set(bots.map((b) => b.agentUid));
+      const now = Date.now();
+      const next: Record<string, number> = {};
+      for (const b of bots) {
+        if (b.online === true) continue;
+        next[b.agentUid] = localBotStartingSince[b.agentUid] ?? now;
+      }
+      localBotStartingSince = next;
+    });
+  });
+  $effect(() => {
+    const since = selectedLocalBot ? localBotStartingSince[selectedLocalBot.agentUid] : undefined;
+    if (since === undefined) return;
+    const wait = since + LOCAL_BOT_STARTUP_GRACE_MS - Date.now();
+    if (wait <= 0) return;
+    const timer = setTimeout(() => { localBotGraceClock = Date.now(); }, wait + 50);
+    return () => clearTimeout(timer);
+  });
+  const selectedLocalBotOffline = $derived(
+    localBotNeedsOfflineNotice(selectedLocalBot, {
+      startingSinceMs: selectedLocalBot ? (localBotStartingSince[selectedLocalBot.agentUid] ?? null) : null,
+      nowMs: Math.max(localBotGraceClock, Date.now()),
+      justCreated: selectedLocalBot ? localBotsAtOpen !== null && !localBotsAtOpen.has(selectedLocalBot.agentUid) : false,
+    }),
+  );
   /**
    * The open bot's coding tool needs a new sign-in (`hq bot list` reports it):
    * the bot has paused, so the conversation says so above the composer and
@@ -3905,8 +4422,83 @@
   );
   const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
   /**
+   * The open bot is paused on a sign-in, but its conversation has no
+   * signed-out repair card to fix it from: the bot said so in another
+   * conversation (a scheduled run, a room), its notice reached the server
+   * without the card, or it was posted before the loaded messages. The same
+   * repair card is drawn above the composer instead, so the sign-in always
+   * has its one place. It stays, as "You're all set", after it worked.
+   */
+  let signInCardShown = $state<{ botUid: string; eventId: string; payload: RepairPayload } | null>(null);
+  /** The card drawn last, kept while it works and once it worked, until the conversation changes. */
+  function keptSignInCard(botUid: string) {
+    const shown = signInCardShown;
+    if (!shown || shown.botUid !== botUid) return null;
+    return runtimeRepairController.stateFor(shown.eventId).phase === "offered" ? null : shown;
+  }
+  const selectedSignInCard = $derived.by(() => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || row.kind !== "dm" || !selectedRuntimeRepair) return null;
+    // Wait for the conversation, so the card never shows for a moment and
+    // then gives way to the bot's own card.
+    if (liveTimelineId !== row.id || timelineHydrating) return null;
+    const own = liveTimeline.filter(
+      (msg) => (msg.fromPersonUid ?? "").trim() === bot.agentUid && repairPayloadForMessage(msg)?.class === "signed-out",
+    );
+    const paused = pausedSignInCard(bot, own);
+    if (paused) return paused;
+    // Once the conversation has a signed-out card of its own, that card is the one place.
+    return own.length === 0 ? keptSignInCard(bot.agentUid) : null;
+  });
+  /** The card for a bot paused on a sign-in whose conversation has no waiting signed-out card. */
+  function pausedSignInCard(bot: LocalBotRow, own: readonly ConversationMessageWire[]) {
+    if (!botNeedsSignIn(bot)) return null;
+    const runtime = expiredRuntimeOf(bot);
+    if (runtime !== "claude" && runtime !== "codex" && runtime !== "grok") return null;
+    const since = bot.runtimeSignIn?.since ?? "";
+    // Signed in here since the bot paused: its own status catches up on its
+    // next try or restart, and no card asks again meanwhile.
+    const signedInAt = runtimeRepairController.signedInAt[runtime];
+    const sinceMs = Date.parse(since);
+    if (signedInAt !== undefined && (!Number.isFinite(sinceMs) || signedInAt >= sinceMs)) return null;
+    const waiting = own.some(
+      (msg) =>
+        repairPayloadForMessage(msg)?.runtime === runtime &&
+        runtimeRepairController.stateFor(msg.eventId).phase !== "fixed",
+    );
+    if (waiting) return null;
+    const payload: RepairPayload = { v: 1, kind: "runtime-repair", class: "signed-out", runtime, action: "signIn", botName: bot.name };
+    return { botUid: bot.agentUid, eventId: `local-sign-in:${bot.agentUid}:${since}`, payload };
+  }
+  // A different conversation puts a finished card away.
+  let signInCardRowId: string | null = null;
+  $effect(() => {
+    const rowId = selectedRow?.id ?? null;
+    if (rowId === signInCardRowId) return;
+    signInCardRowId = rowId;
+    untrack(() => {
+      if (signInCardShown && runtimeRepairController.stateFor(signInCardShown.eventId).phase === "fixed") {
+        signInCardShown = null;
+      }
+    });
+  });
+  $effect(() => {
+    const card = selectedSignInCard;
+    if (!card) return;
+    untrack(() => {
+      runtimeRepairController.track(card.eventId, card.payload);
+      if (signInCardShown?.eventId === card.eventId) return;
+      signInCardShown = card;
+      // Like the bot's own card: a sign-in made before the chat was opened
+      // (the tool's own login outside the app) shows at once. Spaced by the
+      // controller.
+      void runtimeRepairController.recheckSignIn({ runtime: card.payload.runtime });
+    });
+  });
+  /**
    * The open bot runs on a coding tool that is not installed or not signed in
-   * here (an expired sign-in has its own banner above). The DM says so in one
+   * here (an expired sign-in has its own repair card). The DM says so in one
    * line and offers the same guided install the setup channel uses, instead
    * of letting each message come back as a failure.
    */
@@ -3941,7 +4533,20 @@
   }
   /** Restart the bots paused on a tool after it was signed in again elsewhere. */
   async function afterRuntimeSignedIn(runtime: string): Promise<void> {
-    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], adapter.bots ?? null, {
+    recheckRepairSignIn(runtime);
+    await restartBotsAfterSignIn(runtime);
+  }
+  async function restartBotsAfterSignIn(runtime: string): Promise<void> {
+    const api = adapter.bots;
+    // The assistant's stop and start wait for anything its owner is doing.
+    const bots = api
+      ? {
+          ...api,
+          stop: (name: string) => (isAssistantRecord({ name }) ? assistantOwner.exclusive(() => api.stop(name)) : api.stop(name)),
+          start: (name: string) => (isAssistantRecord({ name }) ? assistantOwner.exclusive(() => api.start(name)) : api.start(name)),
+        }
+      : null;
+    await restartBotsNeedingSignIn(runtime as LocalBotRow["runtime"], bots, {
       // Same gate as every other start: a bot whose start already failed
       // definitively is not re-issued here either, and one that does start
       // drops its "cannot run here" notice.
@@ -3994,7 +4599,8 @@
         [uid]: { name, state: "installing", reason: null, extras: {}, adoptName: name, startedAt: Date.now(), retrying: false },
       };
     }
-    const result = await adopt(name);
+    // The assistant is adopted through its owner, after anything it is doing.
+    const result = isAssistantRecord({ name }) ? await assistantOwner.exclusive(() => adopt(name)) : await adopt(name);
     botAdoptBusy = null;
     if (!result.ok) {
       // The bots API shells out to the CLI, so `message` can be its own words
@@ -4090,21 +4696,96 @@
   const autoRestoreReady = $derived(
     Boolean(adapter.bots?.restore) &&
       !botRestoreUnavailable &&
-      Boolean(firstSignedInRuntime(localBotRuntimeReady)),
+      Boolean(firstSignedInRuntime(botRuntimeReadiness)),
   );
   /** True while automatic restore owns these bots: the banner stands down. */
-  const autoRestoreHandling = $derived(
-    autoRestoreBusy ||
+  const autoRestoreHandling = $derived.by(
+    () =>
+      autoRestoreBusy ||
+      assistantRecovering ||
       (autoRestoreReady &&
         autoRestorableBots.length > 0 &&
-        !autoRestoreExhausted(autoRestoreAttempts, autoRestorableBots)),
+        !autoRestoreExhausted(autoRestoreAttempts, autoRestorableBots)) ||
+      // The owner brings the assistant back: only while a recovery runs, is
+      // waiting for its back-off, or is about to make its first try.
+      assistantRecoverScheduled ||
+      (assistantRecoverDue && assistantRecoverAttempts === 0),
   );
   /** The open DM's bot is one being brought back right now. */
-  const selectedBotAutoRestoring = $derived(
+  const selectedBotAutoRestoring = $derived.by(() =>
     selectedRow?.kind === "dm" && selectedRow.personUid
-      ? autoRestoringUids.includes(selectedRow.personUid.trim())
+      ? autoRestoringUids.includes(selectedRow.personUid.trim()) ||
+        (assistantRecovering && selectedRow.personUid.trim() === assistantUid)
       : false,
   );
+  // ── The assistant comes back through its owner ─────────────────────────────
+  //
+  // Automatic restore never takes the assistant (bot-auto-restore.ts). When
+  // the account's listing shows it is not here after setup already ran on
+  // this computer (an update or a crash took it), its owner adopts it, with
+  // the same budget and back-off restore uses. On a computer that has never
+  // run setup the first run (or #welcome's start) brings it, under the name
+  // the person chooses.
+  /** The assistant as the account lists it, when it is not here and could be. */
+  const assistantMissingHere = $derived(assistantToRecover(remoteBotListing, localBotRecords));
+  let assistantRecovering = $state(false);
+  let assistantRecoverAttempts = $state(0);
+  let assistantRecoverLastAt = 0;
+  /** A retry after a failed recovery is waiting for its back-off. */
+  let assistantRecoverScheduled = $state(false);
+  /** Bumped when that back-off ends, so the effect below asks again. */
+  let assistantRecoverTick = $state(0);
+  let assistantRecoverTimer: ReturnType<typeof setTimeout> | null = null;
+  onDestroy(() => {
+    if (assistantRecoverTimer !== null) clearTimeout(assistantRecoverTimer);
+    assistantRecoverTimer = null;
+  });
+  /** The owner may bring the assistant back by itself now. */
+  const assistantRecoverDue = $derived.by(
+    () =>
+      Boolean(assistantMissingHere) &&
+      autoRestoreReady &&
+      Boolean(adapter.bots?.adopt) &&
+      (welcomeSetupRun || visualFirstRunFinished) &&
+      !visualFirstRunOpen,
+  );
+  $effect(() => {
+    if (!assistantRecoverDue) return;
+    // A newer listing, the end of a back-off, or the owner going idle is a
+    // newer chance to try again (within the budget).
+    void remoteBotListing;
+    void assistantRecoverTick;
+    void assistantQueued;
+    untrack(() => void recoverAssistant(false));
+  });
+  /** Ask the owner to bring the assistant back. `now`: a person wrote to it. */
+  async function recoverAssistant(now: boolean): Promise<boolean> {
+    if (assistantRecovering || assistantOwner.busy()) return assistantRecovering;
+    if (assistantRecoverAttempts >= AUTO_RESTORE_MAX_ATTEMPTS) return false;
+    if (!now && assistantRecoverLastAt && Date.now() - assistantRecoverLastAt < AUTO_RESTORE_RETRY_MS) return false;
+    assistantRecovering = true;
+    assistantRecoverAttempts += 1;
+    assistantRecoverLastAt = Date.now();
+    try {
+      const result = await assistantOwner.recover();
+      if (result.ok) assistantRecoverAttempts = 0;
+      else scheduleAssistantRecover();
+      await refreshRemoteBots(true);
+      return result.ok;
+    } finally {
+      assistantRecovering = false;
+    }
+  }
+  /** After a failed recovery: try again once the back-off has passed, while budget is left. */
+  function scheduleAssistantRecover(): void {
+    if (assistantRecoverTimer !== null || assistantRecoverAttempts >= AUTO_RESTORE_MAX_ATTEMPTS) return;
+    assistantRecoverScheduled = true;
+    assistantRecoverTimer = setTimeout(() => {
+      assistantRecoverTimer = null;
+      assistantRecoverScheduled = false;
+      assistantRecoverTick += 1;
+    }, AUTO_RESTORE_RETRY_MS);
+  }
   $effect(() => {
     const candidates = autoRestorableBots;
     const ready = autoRestoreReady;
@@ -4122,7 +4803,7 @@
   ): Promise<void> {
     if (!ready || candidates.length === 0) return;
     // Never overlapping with a person-driven restore or adopt: two `hq bot`
-    // writes at once is exactly what `singleFlightStart` exists to prevent.
+    // writes at once is what the assistant owner's queue exists to prevent.
     if (autoRestoreBusy || botRestoreBusy || botAdoptBusy) return;
     // A bot never tried goes at once — one wiped by an update or a crash comes
     // back the same way a reinstall's does. One tried already waits: a fresh
@@ -4157,6 +4838,8 @@
     const restore = adapter.bots?.restore;
     const adoptOne = adapter.bots?.adopt;
     if (autoRestoreBusy || bots.length === 0) return;
+    // The bulk command takes every bot not here, the assistant included, so
+    // it runs only when that is exactly this set.
     const bulk = Boolean(restore) && autoRestoreCoversAll(bots, botsMissingHere);
     if (!bulk && !adoptOne) return;
     autoRestoreBusy = true;
@@ -4164,7 +4847,7 @@
     autoRestoreLastAt = noteAutoRestoreAttempt(autoRestoreLastAt, bots, startedAt);
     autoRestoreAttempts = countAutoRestoreAttempt(autoRestoreAttempts, bots);
     autoRestoringUids = bots.map((bot) => bot.agentUid.trim()).filter(Boolean);
-    const names = bots.map((bot) => bot.name);
+    const names = bots.map((bot) => botLabel(bot));
     autoRestoreStatus = AUTO_RESTORE_RUNNING;
     try {
       const back: string[] = [];
@@ -4184,9 +4867,9 @@
         for (const row of result.value.bots ?? []) {
           if (row.action === "restored" || row.action === "repaired") {
             noteBotStarted(row.name, row.agentUid);
-            back.push(row.name);
+            back.push(botLabel(row));
           } else if (botRestoreRowFailed(row)) {
-            stuck.push(row.name);
+            stuck.push(botLabel(row));
           }
         }
       } else {
@@ -4194,12 +4877,12 @@
           const result = await adoptOne!(bot.name);
           if (result.ok) {
             noteBotStarted(bot.name, bot.agentUid);
-            back.push(bot.name);
+            back.push(botLabel(bot));
             continue;
           }
           const raw = result.message ?? "";
           if (raw) console.warn("[hq-desktop] automatic bot adopt failed:", raw);
-          stuck.push(bot.name);
+          stuck.push(botLabel(bot));
         }
       }
       autoRestoreStatus =
@@ -4233,6 +4916,13 @@
   function autoRestoreForSend(agentUid: string): boolean {
     const uid = (agentUid ?? "").trim();
     if (!uid || !autoRestoreReady) return false;
+    if (assistantMissingHere && assistantMissingHere.agentUid.trim() === uid) {
+      if (!assistantRecoverDue) return false;
+      if (assistantRecovering) return true;
+      if (assistantRecoverAttempts >= AUTO_RESTORE_MAX_ATTEMPTS) return false;
+      void recoverAssistant(true);
+      return true;
+    }
     // `autoRestorableBots` is the automatic set, so a bot that is RUNNING on
     // another computer is not in it — writing to a bot must not take it off
     // the Mac it is answering on. The conversation says so in one sentence and
@@ -4247,8 +4937,8 @@
     void runAutoRestore([bot]);
     return true;
   }
-  const showBotRestorePrompt = $derived(
-    Boolean(adapter.bots?.restore) &&
+  const showBotRestorePrompt = $derived.by(
+    () => Boolean(adapter.bots?.restore) &&
       !botRestoreUnavailable &&
       !botRestoreDismissed &&
       !botRestoreResult &&
@@ -4256,18 +4946,55 @@
       // bots back by itself, a prompt asking for the click it no longer needs
       // is the confusion this whole change removes.
       !autoRestoreHandling &&
-      botsMissingHere.length > 0,
+      restorePromptBots.length > 0,
+  );
+  /**
+   * The bots the prompt offers. On a computer that has not run setup the
+   * assistant is the first run's (or #welcome's) to bring, under the name the
+   * person chooses, so the prompt does not offer it.
+   */
+  const restorePromptBots = $derived.by(() =>
+    botsMissingHere.filter((bot) => !isAssistantRecord(bot) || welcomeSetupRun || visualFirstRunFinished),
   );
   function dismissBotRestorePrompt(): void {
     botRestoreDismissed = true;
     rememberBotRestoreDismissed(botMachineMemory);
+  }
+  /**
+   * "Restore all" without the assistant: `hq bot restore` takes no names, so
+   * the other bots come back one at a time through `hq bot adopt`, and the
+   * answer reads like a restore.
+   */
+  async function restoreEachExceptAssistant(): Promise<
+    { ok: true; value: BotRestoreResult } | { ok: false; message?: string }
+  > {
+    const adoptOne = adapter.bots?.adopt;
+    if (!adoptOne) return { ok: false };
+    const rows: BotRestoreResult["bots"] = [];
+    for (const bot of botsMissingHere.filter((row) => !isAssistantRecord(row))) {
+      const result = await adoptOne(bot.name);
+      if (!result.ok && result.message) console.warn("[hq-desktop] bot adopt failed:", result.message);
+      rows.push({ name: bot.name, agentUid: bot.agentUid, action: result.ok ? "restored" : "failed", detail: "" });
+    }
+    const restored = rows.filter((row) => row.action === "restored").length;
+    return {
+      ok: true,
+      value: { ok: true, dryRun: false, restored, repaired: 0, skipped: 0, failed: rows.length - restored, bots: rows },
+    };
   }
   async function restoreMyBots(): Promise<void> {
     const restore = adapter.bots?.restore;
     if (!restore || botRestoreBusy) return;
     botRestoreBusy = true;
     botRestoreError = null;
-    const result = await restore({ all: true });
+    // It can bring the assistant back too: never alongside its owner. On a
+    // computer that has not run setup the assistant is the first run's (or
+    // #welcome's) to bring, so the others come back one by one without it.
+    const assistantMissing = botsMissingHere.some((bot) => isAssistantRecord(bot));
+    const result =
+      assistantMissing && !(welcomeSetupRun || visualFirstRunFinished)
+        ? await restoreEachExceptAssistant()
+        : await assistantOwner.exclusive(() => restore({ all: true }), { touchesAssistant: assistantMissing });
     botRestoreBusy = false;
     if (!result.ok || !result.value) {
       const raw = (result.ok ? "" : result.message) ?? "";
@@ -4335,8 +5062,16 @@
     const rail = resolveConversationRow(selected, rows);
     if (!rail || rail.id !== selected.id) return;
     const currentTitle = untrack(() => selected.title);
+    const isAssistantRow = Boolean(assistantUid) && (selected.personUid ?? "").trim() === assistantUid;
+    if (isAssistantRow) {
+      // The assistant's row always carries its one name.
+      const name = assistantLabel;
+      if (currentTitle !== name) selectedRow = { ...rail, title: name };
+      return;
+    }
     if (rail.title === currentTitle) return;
     if (
+      !isAssistantRow &&
       !isRawParticipantUid(currentTitle) &&
       currentTitle !== DIRECT_MESSAGE_PLACEHOLDER &&
       currentTitle !== GROUP_MESSAGE_PLACEHOLDER
@@ -4344,6 +5079,18 @@
       return;
     }
     selectedRow = rail;
+  });
+  // The open conversation is the assistant's: it is titled with the
+  // assistant's one name, never a handle a row was opened with.
+  $effect(() => {
+    const selected = selectedRow;
+    const uid = assistantUid;
+    const name = assistantLabel;
+    if (!selected || selected.kind !== "dm" || !uid || (selected.personUid ?? "").trim() !== uid) return;
+    if (selected.title === name) return;
+    untrack(() => {
+      selectedRow = { ...selected, title: name };
+    });
   });
   let pendingReplyRootId = $state<string | null>(
     initialReplyRootEventId?.trim() || null,
@@ -5143,7 +5890,7 @@
         },
         async fix(fix, bot) {
           if (fix === "create-bot") {
-            const started = await runSetupBotStart();
+            const started = await startSetupBot();
             return started.ok ? null : started.reason;
           }
           if (!bot) return null;
@@ -5152,7 +5899,7 @@
             return started.ok ? null : started.reason;
           }
           // Sign-in and model setup live in the bot's conversation.
-          openSetupBotDm({ agentUid: bot.agentUid, name: bot.name });
+          openSetupBotDm({ agentUid: bot.agentUid, handle: bot.name });
           return null;
         },
         notify(title, body) {
@@ -5647,7 +6394,7 @@
       thinkingByRow = startThinkingIn(
         thinkingByRow,
         row.id,
-        { agentUid: uid, agentName: row.title?.trim() || pending.name },
+        { agentUid: uid, agentName: agentLabel(uid, thinkingAgentName(row.title, uid, localBots, pending.name)) },
         decision.startedAt,
         { afterMs: decision.afterMs },
       );
@@ -5799,7 +6546,7 @@
     kickoffPendingByUid = rest;
     if (decision.state === "start") {
       answeredWhileBusy = forgetAnswered(answeredWhileBusy, uid);
-      thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: row.title?.trim() || name }, Date.now(), {
+      thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: agentLabel(uid, thinkingAgentName(row.title, uid, localBots, name)) }, Date.now(), {
         afterMs: decision.afterMs,
       });
     }
@@ -5808,9 +6555,14 @@
   // hidden in the same render that shows the reply, whichever path appended it.
   const agentThinking = $derived<ThinkingEntry[]>(
     selectedRow
-      ? visibleThinking(
-          thinkingByRow[selectedRow.id] ?? [],
-          liveTimelineId === selectedRow.id ? liveTimeline : [],
+      ? withAssistantNames(
+          visibleThinking(
+            thinkingByRow[selectedRow.id] ?? [],
+            liveTimelineId === selectedRow.id ? liveTimeline : [],
+          ),
+          assistantNameOverride,
+          "agentUid",
+          "agentName",
         )
       : [],
   );
@@ -5821,12 +6573,9 @@
     if (!adapter.bots) return;
     const bot = selectedLocalBot;
     if (!bot || selectedRow?.kind !== "dm") return;
-    const handle = window.setInterval(() => {
+    return startVisibleInterval(() => {
       void refreshLocalBots();
     }, LOCAL_BOT_BUSY_POLL_MS);
-    return () => {
-      clearInterval(handle);
-    };
   });
 
   // A local bot that is busy (the CLI's in-flight marker) shows its row in its
@@ -6010,8 +6759,8 @@
     if (!row || !note) return null;
     if ((thinkingByRow[row.id] ?? []).some((entry) => entry.agentUid === uid)) return null;
     if (liveTimelineId !== row.id || timelineHydrating) return null;
-    if (!stoppedRespondingApplies(note, timeline, { agentUid: uid, selfUid: self?.uid })) return null;
-    return stoppedRespondingLine(row.title?.trim() || note.name);
+    if (!stoppedRespondingApplies(note, withThreadAnswers(timeline, uid), { agentUid: uid, selfUid: self?.uid })) return null;
+    return stoppedRespondingLine(agentLabel(uid, row.title?.trim() || note.name));
   });
 
   onMount(() => {
@@ -6034,6 +6783,7 @@
     messages: ReadonlyArray<{
       fromPersonUid?: string | null;
       createdAt?: string | null;
+      body?: string | null;
     }>,
     rowId: string,
   ): void {
@@ -6050,14 +6800,33 @@
   }
 
   /**
-   * A one-to-one conversation with a bot reads as one exchange: the bot's
-   * answers show in line, whether or not it posted them as thread replies.
+   * A one-to-one conversation with a bot keeps the bot's threaded answers in
+   * their threads, like any other conversation. Answers that carry connect
+   * cards stay on the main timeline, where the cards' buttons work.
    */
   function timelineDisplayFor(row: ConversationRow | null | undefined): TimelineDisplayOptions {
     // The viewer's uid goes with it: a row with no audience counts as the
     // app's own hidden request only when this person sent it (live-messages.ts,
     // `isAppRequestRow`). A bot's row is never hidden, whatever it says.
-    return { inlineReplies: row?.kind === "dm" && (row.personUid ?? "").startsWith("agt_"), selfUid: self?.uid ?? null };
+    if (!isBotDmRow(row)) return { selfUid: self?.uid ?? null };
+    return { botDm: true, keepReplyInMain: botReplyKeepsCardsInMain, selfUid: self?.uid ?? null };
+  }
+
+  function isBotDmRow(row: ConversationRow | null | undefined): boolean {
+    return row?.kind === "dm" && (row.personUid ?? "").startsWith("agt_");
+  }
+
+  /**
+   * The rows of a fetched page that can end a bot's thinking row. In a bot's
+   * conversation the answer is usually a thread reply, which the timeline
+   * folds away, so the page's replies count too.
+   */
+  function thinkingRowsFrom(
+    row: ConversationRow,
+    raw: unknown,
+    shown: ConversationMessageWire[],
+  ): ConversationMessageWire[] {
+    return isBotDmRow(row) ? normalizeConversationMessages(raw) : shown;
   }
 
   /** Same messages (by reference) in the same order — nothing to repaint. */
@@ -6344,7 +7113,7 @@
       incoming = patchLifecycleCardState(incoming, pendingCardId, { state: "pending", reason: null });
     }
     commitTimeline(row, incoming);
-    clearThinkingFromIncoming(incoming, row.id);
+    clearThinkingFromIncoming(thinkingRowsFrom(row, raw, incoming), row.id);
   }
 
   async function catchUpTimeline(row: ConversationRow): Promise<void> {
@@ -6363,7 +7132,7 @@
       ? liveTimeline
       : (timelineCache.get(row.id) ?? []);
     commitTimeline(row, mergeFetchedTimeline(current, raw, timelineDisplayFor(row)));
-    clearThinkingFromIncoming(incoming, row.id);
+    clearThinkingFromIncoming(thinkingRowsFrom(row, raw, incoming), row.id);
   }
 
   $effect(() => {
@@ -6432,16 +7201,17 @@
   const timeline = $derived.by(() => {
     if (!selectedRow) return [];
     const injected = messagesByRow?.(selectedRow) ?? [];
-    const rows =
+    const source =
       liveTimelineId === selectedRow.id
         ? liveTimeline
         : injected.length > 0
           ? injected
           : [];
-    // One flat exchange with a bot: whichever path put a row on the timeline
-    // (a fetched page, the host's stored thread, a live update), replies show
-    // in line and rows written for the bot only are left out.
-    if (timelineDisplayFor(selectedRow).inlineReplies) return inlineReplyRows(rows, { selfUid: self?.uid ?? null });
+    // In a bot's conversation, whichever path put a row on the timeline (a
+    // fetched page, the host's stored thread, a live update), rows written
+    // for the bot only are left out and an answer whose root is not shown
+    // stays visible.
+    const rows = isBotDmRow(selectedRow) ? botDmRows(source, timelineDisplayFor(selectedRow)) : source;
     if (Object.keys(replyCountOverride).length === 0) return rows;
     return rows.map((msg) =>
       replyCountOverride[msg.eventId] != null
@@ -7396,7 +8166,7 @@
       thinkingByRow = startThinkingIn(
         thinkingByRow,
         row.id,
-        { agentUid, agentName: row.title?.trim() || "bot" },
+        { agentUid, agentName: agentLabel(agentUid, thinkingAgentName(row.title, agentUid, localBots, "bot")) },
         Date.now(),
         { afterMs: botPinFor(row.id, agentUid) },
       );
@@ -7984,7 +8754,7 @@
    */
   function withoutCardsOnlyRows(rows: ConversationMessageWire[]): ConversationMessageWire[] {
     const row = selectedRow;
-    if (!row || !timelineDisplayFor(row).inlineReplies || dmCloudBotUid) return rows;
+    if (!row || !isBotDmRow(row) || dmCloudBotUid) return rows;
     const kept = rows.filter((message) => !isCardsOnlyMessage(message));
     return kept.length === rows.length ? rows : kept;
   }
@@ -8010,7 +8780,12 @@
     }
     // A bot's failure reply quotes its coding tool's own error; show the
     // plain sentence instead (chat/bot-runtime-failure.ts).
-    return withPlainBotFailureReplies(coalesceWorkSessionWires(rows), { noun: hostComputerNoun() });
+    return withAssistantNames(
+      withPlainBotFailureReplies(coalesceWorkSessionWires(rows), { noun: hostComputerNoun() }),
+      assistantNameOverride,
+      "fromPersonUid",
+      "fromDisplayName",
+    );
   });
 
   /**
@@ -8221,7 +8996,16 @@
       : (openProfileMember?.avatarUrl ?? null),
   );
 
+  /** Where the profile panel opens; the rail's badge hover card opens it on badges. */
+  type ProfileStart = { view: "profile" | "badges"; badgeId?: string | null };
+  let profileStart = $state<{ view: "profile" | "badges"; badgeId: string | null; key: number }>({
+    view: "profile",
+    badgeId: null,
+    key: 0,
+  });
+
   function openMemberProfile(row: StatusPersonRow): void {
+    profileStart = { view: "profile", badgeId: null, key: profileStart.key + 1 };
     // One right panel at a time — a profile/agent pane supersedes a reply.
     openReplyRootId = null;
     openArtifactView = null;
@@ -9350,7 +10134,8 @@
   }
 
   // Auto-start: fresh install, not seen (host flag or local fallback), shell
-  // up, the setup conversation on screen; then a short settle delay.
+  // up, the setup conversation on screen and not asking for a coding tool
+  // first (its Install Claude card); then a short settle delay.
   $effect(() => {
     const ready = shouldAutoStartTour({
       welcomeSetupOwed: tourHostStatus ? tourHostStatus.owed : null,
@@ -9358,11 +10143,18 @@
       shellReady: tourShellReady,
       welcomeOnScreen: tourWelcomeOnScreen,
       startedThisSession: tourStartedThisSession,
+      setupBlocked: tourSetupBlocked({
+        hasSetupBot: setupBotLauncher !== null,
+        runtimeReady: localBotRuntimeReady,
+        setupError: assistantNow.state === "failed" ? assistantNow.reason : null,
+      }),
     });
     if (!ready || adapter.kind === "web") return;
     // The visual first run comes first; the tour waits for it (and for the
-    // flag's answer, so it never starts under a takeover about to open).
+    // flag's answer, and for the bot listings the takeover waits on, so it
+    // never starts under a takeover about to open; the found-apps flag holds it too).
     if (visualFirstRunOpen || firstRunRouteNow === "pending") return;
+    if (firstRunRouteNow === "visual" && (!firstRunListingsRead || !foundAppsFlagSettled)) return;
     tourAutoTimer = window.setTimeout(() => {
       if (!tourStartedThisSession) startGuidedTour();
     }, TOUR_AUTO_START_DELAY_MS);
@@ -10076,11 +10868,6 @@
     const row = selectedRow;
     return wakes.on("reply:new", (payload) => {
       if (!replyNewMatchesConversation(payload, row)) return;
-      if (row && timelineDisplayFor(row).inlineReplies) {
-        // The reply is a row of the main timeline here, not a count on its root.
-        void catchUpTimeline(row).catch(() => undefined);
-        return;
-      }
       if (openReplyRootId === payload.rootEventId) return;
       const injected = row ? (messagesByRow?.(row) ?? []) : [];
       const source =
@@ -11551,7 +12338,7 @@
     if (selectedRow?.id !== row.id) return;
     const incoming = messagesForDisplay(res.value, timelineDisplayFor(row));
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value, timelineDisplayFor(row)));
-    clearThinkingFromIncoming(incoming, row.id);
+    clearThinkingFromIncoming(thinkingRowsFrom(row, res.value, incoming), row.id);
   }
 
   /**
@@ -11952,7 +12739,7 @@
             row.id,
             {
               agentUid: row.personUid,
-              agentName: row.title?.trim() || "Bot",
+              agentName: agentLabel(row.personUid, thinkingAgentName(row.title, row.personUid ?? "", localBots, "Bot")),
             },
             Date.now(),
             // A new ask: the row is for this message, and the 90 s silence
@@ -12402,7 +13189,7 @@
   // company's membership roster (GET /membership/company/{uid}); the contacts
   // read used before carries no role and leaves the caller out, so every row
   // was a dash. Owner rows first, then by name.
-  const profileOpen = $derived(view === "settings" && (settingsSection == null || settingsSection === "profile"));
+  const profileOpen = $derived(view === "settings" && (settingsSection == null || settingsSection === "profile" || settingsSection === "companies"));
   $effect(() => {
     if (!profileOpen) return;
     for (const company of railCompanyRoster) {
@@ -12415,12 +13202,7 @@
       .sort((x, y) => (x.role === "Owner") === (y.role === "Owner") ? x.label.localeCompare(y.label) : x.role === "Owner" ? -1 : 1),
   );
   const youPresence = $derived(
-    ownLiveWork(
-      presenceSnapshot(),
-      self?.uid ?? "",
-      Object.fromEntries(railCompanyRoster.map((company) => [company.uid, company.label])),
-      tenantCompanyId,
-    ),
+    ownLiveWork(presenceSnapshot(), self?.uid ?? ""),
   );
 
   // US-007: a company tile opens the company sidepane; Home returns to chat.
@@ -12564,6 +13346,53 @@
         bottom: Math.max(8, window.innerHeight - rect.bottom),
       };
     }
+  }
+
+  /**
+   * Badges come from hq-pro (GET /v1/badges/{uid}) through the platform
+   * adapter. Installed while the script runs, before any view reads a badge,
+   * and only when no source is installed yet (the design harness has samples).
+   */
+  onDestroy(installBadgeLoader(untrack(() => adapter.identity)));
+
+  /** Your earned badges, for the hover card on the rail's You button. */
+  const youBadges = $derived(
+    badgesFor({ kind: "person", name: resolvedAccountLabel ?? "", email: self?.email ?? null, uid: self?.uid ?? null }),
+  );
+  /** The badge behind your tier mark, on your picture in the account menu. */
+  const youTopBadge = $derived(topBadge(youBadges));
+
+  /**
+   * Your own profile panel, from the You hover card: on the Badges page
+   * ("See all") or on one badge. The panel sits beside a conversation; with
+   * none open, your profile settings stand in for it.
+   */
+  async function openSelfProfile(start: ProfileStart): Promise<void> {
+    const uid = self?.uid?.trim();
+    const row = selectedRow;
+    accountMenuOpen = false;
+    if (!uid || !row) {
+      openAccountPage("profile");
+      return;
+    }
+    // From another page, back to the open conversation the panel sits beside.
+    if (view !== "conversation") {
+      await navigate(destinationFromConversation(row, { ...currentConversationNested(), replyRootEventId: null }));
+    }
+    openMemberProfile(
+      {
+        personUid: uid,
+        // The account name, so the panel shows the same badges as the card.
+        displayName: resolvedAccountLabel ?? "You",
+        email: self?.email?.trim() || null,
+        avatarUrl: selfAvatarUrl,
+        description: selfDescription,
+        role: null,
+        statusIcon: "idle",
+        online: youPresence.live,
+      },
+    );
+    profileStart = { view: start.view, badgeId: start.badgeId ?? null, key: profileStart.key };
   }
 
   function toggleAccountMenu(): void {
@@ -13465,8 +14294,10 @@
       onyou={toggleAccountMenu}
       youExpanded={accountMenuOpen}
       youLive={youPresence.live}
-      youWork={youPresence.work}
       briefRun={briefRailRun}
+      {youBadges}
+      onyoubadges={() => void openSelfProfile({ view: "badges" })}
+      onyoubadge={(badge: ResolvedBadge) => void openSelfProfile({ view: "profile", badgeId: badge.def.id })}
     />
     {#if accountMenuOpen}
       <AccountMenu
@@ -13474,7 +14305,7 @@
         email={self?.email ?? ""}
         initials={resolvedAccountInitials ?? ""}
         live={youPresence.live}
-        work={youPresence.work}
+        topBadge={youTopBadge}
         anchorLeft={accountMenuAnchor.left}
         anchorBottom={accountMenuAnchor.bottom}
         onclose={() => (accountMenuOpen = false)}
@@ -13558,7 +14389,7 @@
          landed. Dismissal is remembered per machine; Settings › Bots offers
          it again. -->
     <BotRestoreBanner
-      count={botsMissingHere.length}
+      count={restorePromptBots.length}
       liveElsewhere={botsLiveElsewhere.length}
       busy={botRestoreBusy}
       result={botRestoreResult}
@@ -13701,6 +14532,7 @@
           onsectionchange={(section) => openSettings(section)}
           openExternal={onopenurl}
           {profileCompanies}
+          selectedCompanyUid={tenantCompanyId}
           oncompany={(uid) => {
             companyPaneOpen = true;
             changeTenantCompany(uid);
@@ -13873,8 +14705,12 @@
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
+          probeBotRuntime={adapter.bots?.probe
+            ? (input) => adapter.bots!.probe!(input.runtime, input.model, { effort: input.effort, timeoutSecs: PROBE_TIMEOUT_SECS })
+            : null}
           {localBots}
           {botDisplayNames}
+          assistantName={assistantNameOverride}
           {ownedLocalBotUids}
           onrows={(rows) => {
             railRows = rows;
@@ -14840,17 +15676,21 @@
                       {/if}
                     </div>
                   {/if}
-                  {#if selectedLocalBot && selectedLocalBotNeedsSignIn && adapter.sessions?.loginStart}
-                    <BotSignInBanner
-                      bot={selectedLocalBot}
-                      sessions={adapter.sessions}
-                      bots={adapter.bots ?? null}
-                      gate={{
-                        canStart: (bot) => canStartBot(botStartGate, bot.name),
-                        onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
-                      }}
-                      ondone={refreshLocalBots}
-                    />
+                  {#if selectedSignInCard && selectedRuntimeRepair}
+                    <!-- The bot is paused on a sign-in and its conversation
+                         has no repair card for it: the same card, here. -->
+                    {@const signInCard = selectedSignInCard}
+                    <div class="bot-sign-in-card" data-testid="bot-sign-in-card">
+                      <RuntimeRepairCard
+                        view={repairCardView(
+                          signInCard.payload,
+                          runtimeRepairController.stateFor(signInCard.eventId),
+                          selectedRuntimeRepair.botName,
+                          runtimeRepairController.updatePathFor(signInCard.payload.runtime),
+                        )}
+                        onaction={(action) => runtimeRepairController.run(signInCard.eventId, signInCard.payload, action)}
+                      />
+                    </div>
                   {/if}
                   {#if selectedLocalBot && selectedLocalBotNeedsCodingTool}
                     <div class="local-bot-notice" data-testid="bot-needs-coding-tool" role="status">
@@ -15122,7 +15962,7 @@
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   allowHereMention={Boolean(selectedRow?.channelId)}
-                  onreply={timelineDisplayFor(selectedRow).inlineReplies ? undefined : openReply}
+                  onreply={openReply}
                   onforward={adapter.messaging.forwardMessage ? openForward : undefined}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
@@ -15149,6 +15989,7 @@
                   belowMessages={agentThinkingBelow}
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
+                  runtimeRepair={selectedRuntimeRepair}
                   extraBlocksByEventId={cloudBotExtraCards}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
@@ -15276,6 +16117,10 @@
                     props={{
                       kind: "person",
                       name: openProfileMember.displayName,
+                      personUid: openProfileMember.personUid,
+                      view: profileStart.view,
+                      badgeId: profileStart.badgeId,
+                      openKey: profileStart.key,
                       email: openProfileMember.email,
                       role: openProfileMember.role,
                       company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
@@ -15451,8 +16296,9 @@
       initialName={firstRunSuggestedName}
       runtimeReady={localBotRuntimeReady}
       runtimeStatus={localBotRuntimeStatus}
+      signInChecks={firstRunSignInChecks}
       signInApi={botSignIn}
-      onsignedin={onBotRuntimeSignedIn}
+      onsignedin={onFirstRunToolSignedIn}
       onrecheck={recheckLocalBotRuntimes}
       {aiTools}
       hqFolderPath={hqFolderPath ?? ""}
@@ -15462,12 +16308,14 @@
       creation={firstRunCreation}
       onconfirmname={confirmFirstRunName}
       onruntime={(runtime) => (firstRunRuntime = runtime)}
-      onretry={() => firstRunStarter.retry()}
+      onretry={retryFirstRunAssistant}
       importHost={firstRunImportHost}
       onimport={recordFirstRunImport}
       teamOptions={firstRunTeamOptions}
       teamHost={firstRunTeamHost}
       appsHost={firstRunAppsHost}
+      yourAppsHost={firstRunYourAppsHost}
+      onopenintegrations={(companyUid) => openConnectionUrl(companyIntegrationsUrl(companySlugForUid(companyUid)))}
       onsettled={recordFirstRunSettled}
       ontalk={talkToFirstRunAssistant}
       oncontinueinchat={continueFirstRunInChat}
@@ -16296,6 +17144,9 @@
   }
   .bot-needs-coding-tool-guide {
     margin: 4px 16px 8px;
+  }
+  .bot-sign-in-card {
+    margin: 12px 16px 4px;
   }
   .local-bot-notice {
     display: flex;

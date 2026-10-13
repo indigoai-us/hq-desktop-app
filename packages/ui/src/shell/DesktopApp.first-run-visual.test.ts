@@ -6,12 +6,14 @@
  * setup chat's intro and kickoff. Flag on, the New bot step-through takeover
  * opens instead: the name the person confirms creates the setup bot once (in
  * the background), the coding tools step is required only without a signed-in
- * tool, and Done opens the assistant's chat with a kickoff that hands off the
- * settled steps. Done or "Continue in chat" means it never opens again.
+ * tool. The create runs no kickoff: the assistant runs no turn while the
+ * takeover is open, and Done (or "Continue in chat") sends it one bot-only
+ * note with everything the takeover settled. Done or "Continue in chat"
+ * means it never opens again.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { failure, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
+import { failure, FIRST_RUN_FOUND_APPS_FLAG, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
@@ -22,10 +24,9 @@ import { SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup
 import {
   VISUAL_FIRST_RUN_DONE_KEY,
   VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+  FIRST_RUN_LISTINGS_WAIT_MS,
   firstRunHandoffNotice,
-  firstRunImportNotice,
   firstRunIntro,
-  firstRunKickoff,
 } from "../chat/first-run/visual-first-run.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
 
@@ -35,6 +36,8 @@ interface AdapterOptions {
   create?: NonNullable<PlatformAdapter["bots"]>["create"];
   /** `hq bot list` rows (a setup bot that already exists here). */
   bots?: unknown[];
+  /** Answer `hq bot list` this way instead (a slow listing). */
+  listImpl?: () => Promise<unknown>;
   /** Answer `hasFeature` for the flag this way instead (timing tests). */
   hasFeatureImpl?: (name: string) => Promise<unknown>;
   /** Answer the host's setup status this way instead (timing tests). */
@@ -43,6 +46,15 @@ interface AdapterOptions {
   /** `desktop.visual-first-run`; undefined leaves `hasFeature` answering false for it. */
   flag?: boolean;
   claudeLoggedIn?: boolean;
+  /** Answer `agent_session_preflight` this way instead. */
+  preflightImpl?: () => Promise<unknown>;
+  /** `hq bot probe` (the real sign-in check); null leaves the host without it. Passes by default. */
+  probe?: ((runtime: string) => Promise<unknown>) | null;
+  /** The tool's browser sign-in (`agent_provider_login_start` / status). */
+  loginStart?: (runtime: string, opts?: { force?: boolean }) => Promise<unknown>;
+  loginStatus?: (runtime: string) => Promise<unknown>;
+  /** `hq bot list --remote` (the account's own listing); absent leaves the host without it. */
+  listRemote?: () => Promise<unknown>;
 }
 
 function adapter({
@@ -52,6 +64,12 @@ function adapter({
   bots = [],
   hasFeatureImpl,
   setupStatusImpl,
+  preflightImpl,
+  probe = async () => ok({ ok: true, class: null }),
+  loginStart,
+  loginStatus,
+  listRemote,
+  listImpl,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
     hasFeatureImpl ?? (async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false)),
@@ -79,7 +97,7 @@ function adapter({
       detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
     },
     sessions: {
-      preflight: async () =>
+      preflight: preflightImpl ?? (async () =>
         ok({
           claudeAvailable: true,
           claudeLoggedIn,
@@ -87,15 +105,19 @@ function adapter({
           codexLoggedIn: false,
           grokAvailable: false,
           grokLoggedIn: false,
-        }),
+        })),
+      ...(loginStart ? { loginStart } : {}),
+      ...(loginStatus ? { loginStatus } : {}),
     },
     bots: {
-      list: async () => ok({ bots }),
+      list: listImpl ?? (async () => ok({ bots })),
       create: create ?? (async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID })),
       start: async () => ok({}),
       stop: async () => ok({}),
       remove: async () => ok({}),
       workers: async () => ok({ workers: [] }),
+      ...(probe ? { probe } : {}),
+      ...(listRemote ? { listRemote } : {}),
     },
   } as unknown as PlatformAdapter;
   return { platform, hasFeature, updateAgentProfile, sendDm };
@@ -237,7 +259,7 @@ describe("visual first run, flag off", () => {
 describe("visual first run, flag on", () => {
   it("opens the takeover instead of the setup chat, and creates the assistant once, under the confirmed name", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform } = adapter({ create, flag: true });
+    const { platform, sendDm } = adapter({ create, flag: true });
     await boot(platform);
 
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
@@ -261,7 +283,6 @@ describe("visual first run, flag on", () => {
       worker: "setup",
       runtime: "claude",
       intro: firstRunIntro({ name: "Biscuit", runtime: "claude" }),
-      kickoff: firstRunKickoff({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"] }),
     });
     // The person is on the coding tools step while that runs.
     expect(step()).toBe("tools");
@@ -273,13 +294,19 @@ describe("visual first run, flag on", () => {
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Biscuit");
 
+    expect(sendDm).not.toHaveBeenCalled();
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle();
+    // The assistant gets everything the takeover settled, in one note, now.
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    expect((sendDm.mock.calls[0] as unknown as [string, string])[1]).toBe(
+      firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true }, { noun: "computer" }),
+    );
     // The assistant's chat is open, the takeover is gone for good.
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     // (The rail labels the setup bot's DM the same way today's flow does.)
     await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
-    expect(q('[data-testid="channel-name"]')?.textContent).toMatch(/Biscuit|setup/);
+    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit");
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     // The legacy automatic start never ran alongside it.
@@ -340,6 +367,117 @@ describe("visual first run, flag on", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  // The owner's test Mac kept a Claude Code login whose refresh token was
+  // dead. `auth status` still said signed in, so the assistant was created
+  // saying "signed in Claude Code" and its first turn failed to sign in.
+  it("a stored but dead login: nothing is created, the row offers Sign in, and Sign in replaces the login", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const probe = vi.fn(async () => ok({ ok: false, class: "signed-out", detail: "OAuth session expired" }));
+    const loginStart = vi.fn(async () => ok({ state: "waiting" }));
+    const loginStatus = vi.fn(async () => ok({ state: "connected" }));
+    const { platform } = adapter({ create, flag: true, probe, loginStart, loginStatus });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Popcorn");
+    pressEnter();
+    await settle();
+    await vi.waitFor(() =>
+      expect(probe).toHaveBeenCalledWith("claude", null, expect.objectContaining({ timeoutSecs: 15 })),
+    );
+    await settle();
+    expect(step()).toBe("tools");
+    expect(create).not.toHaveBeenCalled();
+    expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("signIn");
+    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
+
+    q<HTMLButtonElement>('[data-testid="first-run-tool-claude-signin"]')!.click();
+    await vi.waitFor(() => expect(loginStart).toHaveBeenCalledWith("claude", { force: true }));
+    // The fresh login counts: the assistant is created, once, and may say so.
+    // (The sign-in's status is polled every 1.5 s.)
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ runtime: "claude", intro: firstRunIntro({ name: "Popcorn", runtime: "claude" }) }),
+    );
+  });
+
+  it("a dead login replaced in a terminal: back in the window, HQ checks again and creates the assistant", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const answers = [ok({ ok: false, class: "signed-out" })];
+    const probe = vi.fn(async () => answers.shift() ?? ok({ ok: true, class: null }));
+    const { platform } = adapter({ create, flag: true, probe });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Popcorn");
+    pressEnter();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("signIn"));
+    expect(create).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ intro: firstRunIntro({ name: "Popcorn", runtime: "claude" }) }),
+    );
+  });
+
+  it.each([
+    ["fails for another reason", async () => ok({ ok: false, class: "transient" })],
+    ["could not run", async () => failure("unavailable", "probe exited with status 1")],
+  ])("a sign-in check that %s does not block, and the hello does not claim signed in", async (_label, answer) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform, sendDm } = adapter({ create, flag: true, probe: vi.fn(answer) });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Popcorn");
+    pressEnter();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const input = (create.mock.calls[0] as unknown[])[0] as { intro: string; kickoff?: string };
+    expect(input.intro).toBe(firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: false }));
+    expect(input.intro).not.toContain("signed in");
+    expect(input.kickoff).toBeUndefined();
+    // The note at close carries the same caution.
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const body = (sendDm.mock.calls[0] as unknown as [string, string])[1];
+    expect(body).not.toContain("Claude Code is signed in");
+    expect(body).toContain("HQ could not confirm its sign-in");
+    warn.mockRestore();
+  });
+
+  it("a readiness check that fails does not strand the tools step: each row offers Try again, which recovers", async () => {
+    let fail = true;
+    const preflightImpl = vi.fn(async () =>
+      fail
+        ? { ok: false as const, reason: "error", message: "Setup lookup timed out. Please retry." }
+        : ok({
+            claudeAvailable: true,
+            claudeLoggedIn: true,
+            codexAvailable: false,
+            codexLoggedIn: false,
+            grokAvailable: false,
+            grokLoggedIn: false,
+            claudeStatus: { state: "signedIn" },
+            codexStatus: { state: "notInstalled", searched: [] },
+          }),
+    );
+    const { platform } = adapter({ flag: true, preflightImpl });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+    await settle();
+    expect(step()).toBe("tools");
+    await vi.waitFor(() => expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("recheck"));
+    expect(q('[data-testid="first-run-continue-in-chat"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("timed out");
+    fail = false;
+    q<HTMLButtonElement>('[data-testid="first-run-tool-claude-recheck"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false));
+    expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
+  });
+
   it("Continue in chat leaves for #welcome, starts nothing by itself, and the takeover never opens again", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const { platform } = adapter({ create, flag: true, claudeLoggedIn: false });
@@ -381,7 +519,10 @@ describe("visual first run, leaving for chat while the assistant is being create
 
   it("#welcome holds its start while the first-run create runs, and never makes a second setup bot", async () => {
     const pending = deferredCreate();
-    const { platform } = adapter({ create: pending.create as never, flag: true });
+    // `hq bot list` shows the setup bot once its create has landed: the list
+    // is what every later start reads.
+    const listed: unknown[] = [];
+    const { platform } = adapter({ create: pending.create as never, flag: true, bots: listed });
     await boot(platform);
     await confirmAndLeave();
     await vi.waitFor(() => expect(pending.create).toHaveBeenCalledTimes(1));
@@ -394,6 +535,20 @@ describe("visual first run, leaving for chat while the assistant is being create
     run.click();
     await settle();
 
+    listed.push({
+      name: "setup",
+      agentUid: SETUP_BOT_UID,
+      ownerUid: "prs_test",
+      runtime: "claude",
+      state: "running",
+      pid: 1,
+      processAlive: true,
+      online: true,
+      lastHeartbeatAt: new Date().toISOString(),
+      daemonInstalled: true,
+      daemonLoaded: true,
+      dir: "/tmp/.hq/bots/setup",
+    });
     pending.resolve(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     await settle();
     // Once it lands the button opens that bot; it still never creates again.
@@ -438,22 +593,59 @@ describe("visual first run, leaving for chat while the assistant is being create
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
     expect(create.mock.calls[1]![0]).toEqual(expect.objectContaining({ displayName: "Biscuit", worker: "setup" }));
   });
+
+  // The takeover settled the name (and here the coding tool) before the
+  // person left for chat; #welcome's create used to run today's kickoff,
+  // which carries none of it, so the assistant asked again.
+  it("a create from #welcome after the takeover runs no kickoff and the assistant gets the takeover's note", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, message: "Claude Code is not signed in." })
+      .mockResolvedValue(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform, sendDm } = adapter({ create: create as never, flag: true });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Biscuit");
+    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("failed"),
+    );
+    q<HTMLButtonElement>('[data-testid="first-run-failed-chat"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
+    expect(sendDm).not.toHaveBeenCalled();
+
+    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    expect(create.mock.calls[1]![0]).not.toHaveProperty("kickoff");
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
+    expect(body).toBe(
+      firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true }, { noun: "computer" }),
+    );
+  });
 });
 
 describe("visual first run, names with stray whitespace", () => {
-  it("sends the collapsed name the host checks, to the create, the hello and the kickoff", async () => {
+  it("sends the collapsed name the host checks, to the create, the hello and the handoff note", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform } = adapter({ create, flag: true });
+    const { platform, sendDm } = adapter({ create, flag: true });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     typeName(" Mr\tBiscuit  Pants ");
     q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    const input = (create.mock.calls as unknown as Array<[{ displayName: string; intro: string; kickoff: string }]>)[0]![0];
+    const input = (create.mock.calls as unknown as Array<[{ displayName: string; intro: string; kickoff?: string }]>)[0]![0];
     expect(input.displayName).toBe("Mr Biscuit Pants");
     expect(input.intro).toContain("Hi, I'm Mr Biscuit Pants,");
-    expect(input.kickoff).toContain('"name":"Mr Biscuit Pants"');
-    expect(input.kickoff).not.toMatch(/\t|  /);
+    expect(input.kickoff).toBeUndefined();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const body = (sendDm.mock.calls[0] as unknown as [string, string])[1];
+    expect(body).toContain('"name":"Mr Biscuit Pants"');
+    expect(body).not.toMatch(/\t|  /);
   });
 });
 
@@ -505,7 +697,7 @@ describe("visual first run never reappears", () => {
 });
 
 describe("visual first run with a setup bot that already exists", () => {
-  it("adopts it under the confirmed name and sends it the handoff as a bot-only message", async () => {
+  it("adopts it under the confirmed name and sends it the handoff as a bot-only message, only once the takeover closes", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const existing = {
       name: "setup",
@@ -531,6 +723,10 @@ describe("visual first run with a setup bot that already exists", () => {
 
     expect(create).not.toHaveBeenCalled();
     expect(updateAgentProfile).toHaveBeenCalledWith(SETUP_BOT_UID, { displayName: "Biscuit" });
+    // Nothing while the takeover is open: a note now would be answered now.
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
     expect(to).toBe(SETUP_BOT_UID);
@@ -541,13 +737,275 @@ describe("visual first run with a setup bot that already exists", () => {
   });
 });
 
+describe("visual first run: the name step on an account that already has an assistant", () => {
+  /** The account's assistant as `hq bot list --remote` shows it on a new computer. */
+  function cloudAssistant(fields: Record<string, unknown> = {}) {
+    return {
+      name: "setup",
+      displayName: "Fluffy",
+      role: "assistant",
+      agentUid: SETUP_BOT_UID,
+      kind: "personal",
+      online: false,
+      lastHeartbeatAt: null,
+      here: false,
+      ...fields,
+    };
+  }
+
+  function nameField(): string | undefined {
+    return q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value;
+  }
+
+  it("a returning account on a new computer: the step opens with the assistant's cloud name, and Continue keeps it", async () => {
+    const create = vi.fn(async () => ok({ ok: true, outcome: "adopted", name: "setup", agentUid: SETUP_BOT_UID }));
+    // The listing answers after the flag and the setup-owed answer, as it
+    // can on a real network: the name step waits for it.
+    let answer: (v: unknown) => void = () => undefined;
+    const listRemote = vi.fn(() => new Promise((resolve) => (answer = resolve)));
+    const { platform } = adapter({ create, flag: true, listRemote });
+    await boot(platform);
+    await settle(20);
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+
+    answer(ok({ bots: [cloudAssistant()] }));
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(step()).toBe("name");
+    expect(nameField()).toBe("Fluffy");
+
+    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "setup", displayName: "Fluffy" }));
+  });
+
+  it("a cloud row that carries only the handle is never offered as the name", async () => {
+    const listRemote = vi.fn(async () =>
+      ok({ bots: [cloudAssistant({ name: "setup-ab12cd34", displayName: "setup-ab12cd34" })] }),
+    );
+    const { platform } = adapter({ flag: true, listRemote });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(SETUP_BOT_NAMES).toContain(nameField());
+  });
+
+  it("a fresh account with no assistant anywhere gets a friendly free name", async () => {
+    const listRemote = vi.fn(async () => ok({ bots: [] }));
+    const { platform } = adapter({ flag: true, listRemote });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(listRemote).toHaveBeenCalled();
+    expect(SETUP_BOT_NAMES).toContain(nameField());
+  });
+
+  it("a listing that fails still opens the step with a friendly free name, and shows nothing of the failure", async () => {
+    const listRemote = vi.fn(async () => failure("unavailable", "hq bot list --remote: 500 Internal Server Error"));
+    const { platform } = adapter({ flag: true, listRemote });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(SETUP_BOT_NAMES).toContain(nameField());
+    expect(q('[data-testid="first-run-takeover"]')?.textContent ?? "").not.toMatch(/500|Internal Server Error/);
+  });
+
+  it("an account listing that never answers holds the step for at most the first run's wait, then a free name", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const listRemote = vi.fn(() => new Promise(() => undefined));
+      const { platform } = adapter({ flag: true, listRemote });
+      await boot(platform);
+      await settle(20);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS - 1000);
+      await settle(10);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(1100);
+      await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+      expect(SETUP_BOT_NAMES).toContain(nameField());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("this computer's bot list never answering also holds the step for at most the first run's wait", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const listRemote = vi.fn(async () => ok({ bots: [] }));
+      const { platform } = adapter({ flag: true, listRemote });
+      (platform.bots as unknown as Record<string, unknown>).list = vi.fn(() => new Promise(() => undefined));
+      await boot(platform);
+      await settle(20);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS + 100);
+      await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+      expect(SETUP_BOT_NAMES).toContain(nameField());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("visual first run: the found-apps flag is settled before the takeover opens", () => {
+  it("holds the takeover until the found-apps answer, so the steps never swap mid-flow", async () => {
+    let answerFoundApps: (value: unknown) => void = () => undefined;
+    const hasFeatureImpl = vi.fn((name: string) =>
+      name === VISUAL_FIRST_RUN_FLAG
+        ? Promise.resolve(ok(true))
+        : name === FIRST_RUN_FOUND_APPS_FLAG
+          ? new Promise((resolve) => (answerFoundApps = resolve))
+          : Promise.resolve(ok(false)),
+    );
+    const { platform } = adapter({ flag: true, hasFeatureImpl });
+    await boot(platform);
+    await settle(20);
+    expect(hasFeatureImpl).toHaveBeenCalledWith(FIRST_RUN_FOUND_APPS_FLAG);
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    answerFoundApps(ok(false));
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(step()).toBe("name");
+  });
+
+  it("a found-apps answer that never comes holds the takeover for at most the first run's wait (counts as off)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const hasFeatureImpl = (name: string) =>
+        name === VISUAL_FIRST_RUN_FLAG ? Promise.resolve(ok(true)) : name === FIRST_RUN_FOUND_APPS_FLAG ? new Promise(() => undefined) : Promise.resolve(ok(false));
+      const { platform } = adapter({ flag: true, hasFeatureImpl });
+      await boot(platform);
+      await settle(20);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS + 100);
+      await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("visual first run: #welcome's start while the takeover waits for the bot listings", () => {
+  // #1570 holds the takeover until the bot listings answer, and #welcome's
+  // start button is live in that wait. A create made there with #welcome's
+  // kickoff, then adopted by the takeover, would write twice: once on create
+  // and once on the note at close. The start reads the listings itself before
+  // it creates, which ends the wait first; these pin that order.
+  const listedSetupBot = {
+    name: "setup",
+    agentUid: SETUP_BOT_UID,
+    ownerUid: "prs_test",
+    runtime: "claude",
+    state: "running",
+    pid: 1,
+    processAlive: true,
+    online: true,
+    lastHeartbeatAt: null,
+    daemonInstalled: true,
+    daemonLoaded: true,
+    dir: "/tmp/HQ/personal/workers/setup",
+    workerId: "setup",
+  };
+
+  /**
+   * `hq bot list` answers with whatever `rows` holds. With `holdAll`, every
+   * call waits for `release`; otherwise only the first (the boot read the
+   * takeover waits on) does.
+   */
+  function slowListing({ holdAll }: { holdAll: boolean }) {
+    const rows: unknown[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const listImpl = vi.fn(async () => {
+      calls += 1;
+      if (holdAll || calls === 1) await held;
+      return ok({ bots: [...rows] });
+    });
+    return { rows, listImpl, release: () => release() };
+  }
+
+  const takeoverOpen = () => Boolean(q('[data-testid="first-run-takeover"]'));
+
+  async function clickWelcomeStartInTheWait(): Promise<void> {
+    await settle(12);
+    expect(takeoverOpen()).toBe(false);
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+  }
+
+  async function walkTheTakeoverToDone(): Promise<void> {
+    await vi.waitFor(() => expect(takeoverOpen()).toBe(true));
+    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+  }
+
+  function expectOneHandoffNote(sendDm: ReturnType<typeof vi.fn>): void {
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    const [to, , extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
+  }
+
+  it("with this computer's bot list slow, the click creates nothing until the takeover is open; no kickoff, one note at close", async () => {
+    const listing = slowListing({ holdAll: true });
+    const openAtCreate: boolean[] = [];
+    let landCreate!: (value: unknown) => void;
+    const create = vi.fn((_input: unknown) => {
+      openAtCreate.push(takeoverOpen());
+      return new Promise((r) => (landCreate = r));
+    });
+    const { platform, sendDm } = adapter({ create: create as never, flag: true, listImpl: listing.listImpl });
+    await boot(platform);
+    await clickWelcomeStartInTheWait();
+    await settle(12);
+    expect(create).not.toHaveBeenCalled();
+
+    listing.release();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(openAtCreate).toEqual([true]);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
+    listing.rows.push(listedSetupBot);
+    landCreate(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
+
+    await walkTheTakeoverToDone();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    await settle(12);
+    expect(create).toHaveBeenCalledTimes(1);
+    expectOneHandoffNote(sendDm);
+  });
+
+  it("with only the boot read slow, the click's own read opens the takeover before it creates; no kickoff, one note at close", async () => {
+    const listing = slowListing({ holdAll: false });
+    const openAtCreate: boolean[] = [];
+    const create = vi.fn(async (_input: unknown) => {
+      openAtCreate.push(takeoverOpen());
+      listing.rows.push(listedSetupBot);
+      return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
+    });
+    const { platform, sendDm } = adapter({ create: create as never, flag: true, listImpl: listing.listImpl });
+    await boot(platform);
+    await clickWelcomeStartInTheWait();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(openAtCreate).toEqual([true]);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
+
+    listing.release();
+    await walkTheTakeoverToDone();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    await settle(12);
+    expect(create).toHaveBeenCalledTimes(1);
+    expectOneHandoffNote(sendDm);
+  });
+});
+
 describe("visual first run: Bring in your context", () => {
   const IMPORTED = { summary: { companies: 0, projects: 0, sessions: 12 }, report: "workspace/reports/import.json" };
 
   /**
-   * Boot with the flag on, name the assistant, run the scan to its end, and
-   * hand over a finished import. Timers are fake from the scan on, so the
-   * notice ledger's waits can be stepped through.
+   * Boot with the flag on, name the assistant, and run the scan to its end.
+   * Timers are fake from the scan on, so the notice ledger's waits can be
+   * stepped through.
    */
   async function finishAScan(firstSend: () => Promise<unknown>) {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
@@ -611,18 +1069,33 @@ describe("visual first run: Bring in your context", () => {
     ];
     for (const line of lines) handlers.forEach((h) => h({ payload: { scanId, event: { v: 1, ...line } } }));
     finishScan(ok({ status: "done", lines: 3, dropped: 0 }));
-    // The host's short tail wait, then the notice.
+    // The host's short tail wait: the import is recorded, and nothing is sent.
     await vi.advanceTimersByTimeAsync(1000);
     await settle();
     return { sendDm, scanCancel };
   }
 
-  function expectImportNotices(sendDm: ReturnType<typeof vi.fn>) {
+  /** Leave the takeover through Done ("Talk to Biscuit"). */
+  async function talk(): Promise<void> {
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await settle();
+    expect(step()).toBe("done");
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await settle();
+  }
+
+  function expectHandoffNotes(sendDm: ReturnType<typeof vi.fn>) {
     for (const call of sendDm.mock.calls) {
       const [to, body, extras] = call as unknown as [string, string, Record<string, unknown>];
       expect(to).toBe(SETUP_BOT_UID);
-      expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-import:${SETUP_BOT_UID}` });
-      expect(body).toBe(firstRunImportNotice(IMPORTED));
+      expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
+      expect(body).toBe(
+        firstRunHandoffNotice(
+          { name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true, imported: IMPORTED },
+          { noun: "computer" },
+        ),
+      );
     }
   }
 
@@ -630,8 +1103,14 @@ describe("visual first run: Bring in your context", () => {
     vi.useRealTimers();
   });
 
-  it("hands the finished import to the assistant once, as a bot-only note, trying a failed send again after the ledger's wait", async () => {
+  it("keeps a finished import for the one note at close, and tries a failed send again after the ledger's wait", async () => {
     const { sendDm, scanCancel } = await finishAScan(async () => failure("network", "offline"));
+    // The scan finished while the takeover is open: nothing goes to the assistant.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await settle();
+    expect(sendDm).not.toHaveBeenCalled();
+
+    await talk();
     expect(sendDm).toHaveBeenCalledTimes(1);
     // Not before the notice ledger allows it (30 s after a failure that may pass).
     await vi.advanceTimersByTimeAsync(20_000);
@@ -640,28 +1119,31 @@ describe("visual first run: Bring in your context", () => {
     await vi.advanceTimersByTimeAsync(11_000);
     await settle();
     expect(sendDm).toHaveBeenCalledTimes(2);
-    expectImportNotices(sendDm);
+    expectHandoffNotes(sendDm);
 
-    // Delivered: nothing more goes, however long it waits, and Next: Done sends nothing.
+    // Delivered: nothing more goes, however long it waits.
     await vi.advanceTimersByTimeAsync(10 * 60_000);
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
     await settle();
-    expect(step()).toBe("done");
     expect(sendDm).toHaveBeenCalledTimes(2);
     expect(scanCancel).not.toHaveBeenCalled();
   });
 
-  it("a send the server refuses (403) is not tried again", async () => {
+  it("a send the server refuses (403) is not tried again, and says so in the log", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { sendDm } = await finishAScan(async () => ({ ok: false, reason: "forbidden", code: "http-403" }));
+    await talk();
     expect(sendDm).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     await settle();
     expect(sendDm).toHaveBeenCalledTimes(1);
-    expectImportNotices(sendDm);
+    expectHandoffNotes(sendDm);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("did not get the first-run handoff"));
+    warn.mockRestore();
   });
 
   it("a pending try is called off when the shell goes away", async () => {
     const { sendDm } = await finishAScan(async () => failure("network", "offline"));
+    await talk();
     expect(sendDm).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBeGreaterThan(0);
     await unmount(component!);

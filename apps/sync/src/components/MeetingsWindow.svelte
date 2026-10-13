@@ -1,5 +1,6 @@
 <script lang="ts">
   import RailIcon from '@hq/ui/rail-icon';
+  import { startVisibleInterval } from '@hq/ui/visible-interval';
   /**
    * Upcoming Meetings — standalone Tauri window (label: `meetings-window`).
    * Mirrors the new-files-detail pattern: own window, decorated, resizable.
@@ -575,7 +576,8 @@
     // that already have a bot scheduled. 30s is a sweet spot: fast enough
     // for the user to see joining/recording flips within a meeting, slow
     // enough that the upstream API isn't hit on every redraw.
-    const pollId = window.setInterval(() => {
+    // Paused while the window is hidden; refreshes at once when shown.
+    const stopPoll = startVisibleInterval(() => {
       void refresh();
     }, 30_000);
 
@@ -603,7 +605,7 @@
     };
     window.addEventListener('keydown', onkeydown);
     return () => {
-      window.clearInterval(pollId);
+      stopPoll();
       window.removeEventListener('keydown', onkeydown);
       unlistenFocus?.();
     };

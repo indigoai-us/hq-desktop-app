@@ -37,6 +37,8 @@ pub mod dm_notify;
 pub mod dock;
 pub mod drift_detail;
 pub mod feedback;
+pub mod storage;
+pub mod cloud_file;
 pub mod first_push;
 pub mod setup_secret;
 pub mod first_run;
@@ -105,6 +107,7 @@ pub mod window_material;
 pub mod update_gate;
 pub mod uploads_paused;
 pub mod retired_entities;
+pub mod work_apps;
 pub mod workspaces;
 #[cfg(any(windows, test))]
 mod windows_symlink_fallback;

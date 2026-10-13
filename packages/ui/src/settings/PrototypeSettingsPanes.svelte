@@ -16,11 +16,12 @@
     RESTART_HQ_LABEL,
     TRY_AGAIN_LABEL,
     UPDATE_FAILED_QUIET,
-    UPDATE_HEAL_PROMPT,
     UPDATE_NOW_LABEL,
     UPDATING_LABEL,
-    quietInstall,
+    buildHealPrompt,
+    quietInstallWithReason,
     type RowInstallPhase,
+    type UpdateRowKey,
   } from "./update-row-actions";
   import { heldRestartTitle, holdReasonText, restartHoldText } from "../shell/update-toast";
   import {
@@ -311,6 +312,10 @@
   const appInstallFailed = $derived(updateStore.installPhase === "failed");
   let coreInstallPhase = $state<RowInstallPhase>("idle");
   let cliInstallPhase = $state<RowInstallPhase>("idle");
+  // Last failure text from each row's own install. Never shown on the page;
+  // it goes into that row's heal prompt.
+  let coreInstallReason = $state<string | null>(null);
+  let cliInstallReason = $state<string | null>(null);
   const appIdleHint = $derived(appRowIdleHint(updateStore.idleWaitRemainingSecs));
   // #1237: the host's deferral sentence names what holds a requested restart
   // (a recording, a transcript still saving, or an HQ Core update).
@@ -925,12 +930,14 @@
     if (coreInstallPhase === "updating") return;
     const host = adapter;
     coreInstallPhase = "updating";
-    const ok = await quietInstall(() => host.updates.installCoreUpdate());
-    if (ok) {
+    const outcome = await quietInstallWithReason(() => host.updates.installCoreUpdate());
+    if (outcome.ok) {
+      coreInstallReason = null;
       coreInstallPhase = "idle";
       await refreshVersions();
       return;
     }
+    coreInstallReason = outcome.reason;
     coreInstallPhase = "failed";
   }
 
@@ -939,16 +946,42 @@
     if (cliInstallPhase === "updating") return;
     const host = adapter;
     cliInstallPhase = "updating";
-    const ok = await quietInstall(() => host.updates.installCliUpdate());
-    if (ok) {
+    const outcome = await quietInstallWithReason(() => host.updates.installCliUpdate());
+    if (outcome.ok) {
+      cliInstallReason = null;
       cliInstallPhase = "idle";
       await refreshVersions();
       return;
     }
+    cliInstallReason = outcome.reason;
     cliInstallPhase = "failed";
   }
 
-  async function healWith(tool: LaunchKey): Promise<void> {
+  /** What the row's heal prompt says: versions and the last failure. */
+  function healPromptFor(row: UpdateRowKey): string {
+    if (row === "cli") {
+      return buildHealPrompt("cli", {
+        current: cliVersion,
+        latest: updateStore.cliLatestVersion,
+        reason: cliInstallReason,
+      });
+    }
+    if (row === "core") {
+      const state = updateStore.coreState as { targetVersion?: unknown } | null;
+      return buildHealPrompt("core", {
+        current: coreVersion,
+        latest: typeof state?.targetVersion === "string" ? state.targetVersion : null,
+        reason: coreInstallReason,
+      });
+    }
+    return buildHealPrompt("app", {
+      current: appVersion,
+      latest: updateStore.availableVersion,
+      reason: updateStore.installError,
+    });
+  }
+
+  async function healWith(tool: LaunchKey, row: UpdateRowKey): Promise<void> {
     if (!adapter) return;
     let folder = hqFolder;
     if (!folder) {
@@ -956,10 +989,14 @@
       if (res.ok) folder = readFolderFromSettings(res.value);
     }
     if (!folder) return;
+    const prompt = healPromptFor(row);
+    // The same request on every path: Claude's deep link, the Codex app, and
+    // the terminal CLIs (grok, codex, claude).
     const actions = createLaunchActions({
       shell: adapter.shell,
       hqFolderPath: folder,
-      prompt: UPDATE_HEAL_PROMPT,
+      prompt,
+      terminalPrompt: prompt,
     });
     const err =
       tool === "claude"
@@ -1939,13 +1976,13 @@
   {/if}
 </div>
 
-{#snippet healActions(row: string)}
+{#snippet healActions(row: UpdateRowKey)}
   <span class="update-heal" data-testid={`settings-${row}-heal`}>
     {#each HEAL_TOOLS as tool (tool.key)}
       <button
         type="button"
         class="chip"
-        onclick={() => void healWith(tool.key)}
+        onclick={() => void healWith(tool.key, row)}
       >{tool.label}</button>
     {/each}
   </span>

@@ -5,6 +5,9 @@
  * A brand-new person: no memberships, no invites, every handle free.
  * `&companyDelay=<ms>` slows the create-company card fetch, as on a real
  * network, so the step first shows "Getting things ready…" and then grows.
+ * `&connectors=ok|fail` finds two Claude Desktop connectors, so the connector
+ * import is offered once a company is made (never after Skip for now), and
+ * the import succeeds (ok) or fails (fail) to show the Try again screen.
  */
 const CREATE_COMPANY_CARD = {
   v: 1,
@@ -38,6 +41,11 @@ export function companyFlowEnabled(): boolean {
 
 const NOT_HANDLED = Symbol('not-handled');
 
+function connectorSwitch(): 'ok' | 'fail' | null {
+  const value = new URLSearchParams(window.location.search).get('connectors');
+  return value === 'ok' || value === 'fail' ? value : null;
+}
+
 function cardDelayMs(): number {
   const raw = Number(new URLSearchParams(window.location.search).get('companyDelay') ?? 0);
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
@@ -49,6 +57,18 @@ export async function companyFlowAnswer(cmd: string, args?: Record<string, unkno
     await new Promise((resolve) => setTimeout(resolve, cardDelayMs()));
   }
   switch (cmd) {
+    case 'detect_claude_desktop_connectors':
+      if (!connectorSwitch()) return NOT_HANDLED;
+      return { present: true, count: 2, outcome: 'servers_detected', inspectedSources: 'claude_desktop_config' };
+    case 'import_claude_desktop_connectors':
+      if (!connectorSwitch()) return NOT_HANDLED;
+      return connectorSwitch() === 'ok'
+        ? { ok: true, message: 'Imported 2 connectors.', errorCategory: 'unknown' }
+        : {
+            ok: false,
+            message: 'hq: No active company memberships found. Use --company <slug> to specify.',
+            errorCategory: 'exit-nonzero',
+          };
     case 'list_syncable_workspaces':
       return { workspaces: [], cloudReachable: true, error: null, hqFolderPath: '/Users/preview/hq' };
     case 'web_visitor_anon_id':

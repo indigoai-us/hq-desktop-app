@@ -148,8 +148,10 @@ test.describe('console rail: full user path', () => {
     for (const id of ['account-profile', 'account-billing']) {
       await expect(page.getByTestId(id)).toHaveCount(0);
     }
-    page.once('dialog', (dialog) => void dialog.accept());
+    // WKWebView cannot show window.confirm; Sign out uses the in-app dialog.
     await page.getByTestId('account-sign-out').click();
+    await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+    await page.getByTestId('confirm-dialog-ok').click();
     await expect(menu).toHaveCount(0);
   });
 });

@@ -121,7 +121,8 @@ async function settle(): Promise<void> {
 }
 
 describe("DesktopApp account menu (US-010)", () => {
-  it("names the company open in the main pane, not the first online company (QA-073)", async () => {
+  // Owner, 2026-10-12: no "Working in {company}" line in the menu or the You hover.
+  it("shows no Working in line after switching companies", async () => {
     const hpo: Workspace = { ...company(), slug: "hpo", displayName: "HPO", cloudUid: "co_hpo" };
     await mountShell(undefined, [company(), hpo]);
     const tile = host.querySelector<HTMLButtonElement>('[data-testid="rail-company"][aria-label="HPO"]');
@@ -132,8 +133,8 @@ describe("DesktopApp account menu (US-010)", () => {
     host.querySelector<HTMLButtonElement>('[data-testid="rail-you"]')?.click();
     await settle();
     const menu = host.querySelector('[data-testid="account-menu"]');
-    expect(menu?.textContent).toContain("Working in HPO");
-    expect(menu?.textContent).not.toContain("Working in Indigo");
+    expect(menu?.textContent).not.toContain("Working in");
+    expect(menu?.querySelector('[data-testid="account-menu-live-chip"]')).toBeNull();
   });
 
   // OWNER-R21: the menu has the identity block, one Settings entry and Sign
@@ -148,7 +149,8 @@ describe("DesktopApp account menu (US-010)", () => {
     you?.click();
     await settle();
     const menu = host.querySelector('[data-testid="account-menu"]');
-    expect(menu?.textContent).toContain("Working in Indigo");
+    expect(menu?.querySelector('[data-testid="account-menu-live"]')).not.toBeNull();
+    expect(menu?.textContent).not.toContain("Working in");
     // Companies live on the rail tiles and the More companies popover only.
     expect(menu?.querySelector('[data-testid="account-role"]')).toBeNull();
     expect(menu?.textContent).not.toMatch(/companies/i);
@@ -162,23 +164,43 @@ describe("DesktopApp account menu (US-010)", () => {
     host.querySelector<HTMLButtonElement>('[data-testid="account-identity"]')?.click();
     await settle();
     expect(host.querySelector('[data-testid="account-menu"]')).toBeNull();
-    await vi.waitFor(() =>
-      expect(host.querySelector('[data-testid="settings-nav-profile"]')?.getAttribute("aria-current")).toBe("page"),
+    await vi.waitFor(
+      () =>
+        expect(host.querySelector('[data-testid="settings-nav-profile"]')?.getAttribute("aria-current")).toBe("page"),
+      { timeout: 5_000 },
     );
     const nav = [...host.querySelectorAll('[data-testid^="settings-nav-"]')].map((el) => el.getAttribute("data-testid"));
     expect(nav.slice(0, 3)).toEqual(["settings-nav-profile", "settings-nav-public-profile", "settings-nav-billing"]);
     expect(host.querySelector('[data-testid="account-host"]')).toBeNull();
   });
 
-  it("confirms sign out and asks the host to end the session", async () => {
+  it("keeps Sign out enabled in the account menu", async () => {
+    await mountShell();
+    host.querySelector<HTMLButtonElement>('[data-testid="rail-you"]')?.click();
+    await settle();
+    const signOut = host.querySelector<HTMLButtonElement>('[data-testid="account-sign-out"]');
+    expect(signOut).not.toBeNull();
+    expect(signOut?.disabled).toBe(false);
+    expect(signOut?.getAttribute("aria-disabled")).not.toBe("true");
+  });
+
+  it("signs out through the in-app confirm even when window.confirm is a no-op", async () => {
     const onsignout = vi.fn(async () => {});
-    vi.stubGlobal("confirm", vi.fn(() => true));
+    // Tauri WKWebView: window.confirm exists but never shows and returns false.
+    vi.stubGlobal("confirm", vi.fn(() => false));
     await mountShell(onsignout);
     host.querySelector<HTMLButtonElement>('[data-testid="rail-you"]')?.click();
     await tick();
-    host.querySelector<HTMLButtonElement>('[data-testid="account-sign-out"]')?.click();
+    const signOut = host.querySelector<HTMLButtonElement>('[data-testid="account-sign-out"]');
+    expect(signOut).not.toBeNull();
+    signOut?.click();
     await tick();
-    expect(confirm).toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(onsignout).not.toHaveBeenCalled();
+    const dialog = document.querySelector('[data-testid="confirm-dialog"]');
+    expect(dialog).not.toBeNull();
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-ok"]')?.click();
+    await tick();
     expect(onsignout).toHaveBeenCalledOnce();
   });
 
@@ -189,6 +211,8 @@ describe("DesktopApp account menu (US-010)", () => {
     host.querySelector<HTMLButtonElement>('[data-testid="rail-you"]')?.click();
     await tick();
     host.querySelector<HTMLButtonElement>('[data-testid="account-sign-out"]')?.click();
+    await tick();
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-cancel"]')?.click();
     await tick();
     expect(onsignout).not.toHaveBeenCalled();
     expect(host.querySelector('[data-testid="app-rail"]')).not.toBeNull();

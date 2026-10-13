@@ -76,7 +76,8 @@
     LocalBotWorkerOption,
   } from "@hq/platform";
   import type { BotDisplayNames } from "./bot-display-names.js";
-  import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
+  import { localBotForRow, localBotPeers, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
+  import { withAssistantNames } from "./assistant-owner.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import { botHandle, newBotOtherWayLabel, type BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
@@ -457,6 +458,8 @@
     existingBotNames?: readonly string[] | null;
     botSignIn?: RuntimeSignInApi | null;
     onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    /** Readiness check before a local bot is saved (`hq bot probe`). See CreateBotFlow. */
+    probeBotRuntime?: ((input: import("./create-bot/runtime-probe.js").RuntimeProbeInput) => AdapterPromise<unknown>) | null;
     /**
      * The user's own local bots. GET /v1/notify/contacts never lists them, so
      * they are merged into the contacts the "+" modal searches and invites
@@ -465,6 +468,12 @@
     localBots?: readonly LocalBotRow[] | null;
     /** agentUid → display name for local bots that have one. */
     botDisplayNames?: BotDisplayNames | null;
+    /**
+     * The assistant's uid and the one name it goes by (assistant-owner.ts
+     * `assistantName`). Its contact and conversation rows show this name,
+     * never a handle or slug.
+     */
+    assistantName?: { agentUid: string; name: string } | null;
     /**
      * The user's own local bots that this computer cannot run right now — a
      * wiped config, a reinstall, a second Mac. They are not on `localBots`,
@@ -610,8 +619,10 @@
     existingBotNames = null,
     botSignIn = null,
     onbotsignedin = null,
+    probeBotRuntime = null,
     localBots = null,
     botDisplayNames = null,
+    assistantName = null,
     ownedLocalBotUids = null,
     onrows,
     onretired = null,
@@ -1103,7 +1114,10 @@
   let botRemovals = $state<BotRemoval[]>(loadAccountBotRemovals(accountStorage, legacyRemovalStorage));
   /** Bots the server confirmed removed. Their conversation stays off the list. */
   let removedBotUids = $state<string[]>(loadAccountRemovedBots(accountStorage, legacyRemovalStorage));
-  const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
+  // The assistant's row reads its name, never its handle or slug.
+  const contactsWithUnreads = $derived(
+    withAssistantNames(applyPairUnreads(contacts, pairUnreads), assistantName, "personUid", "displayName"),
+  );
 
   /**
    * Names for DM peers the contacts roster does not cover: people read from
@@ -1117,6 +1131,9 @@
     for (const channel of channels) {
       addToPeerDirectory(directory, channel.members ?? []);
     }
+    // A bot made on this computer (a pack's setup bot, say) is named here
+    // before HQ's rosters list it, so its row never reads "Unknown bot".
+    addToPeerDirectory(directory, localBotPeers(localBots));
     return directory;
   });
 
@@ -1443,7 +1460,7 @@
   // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
     withoutRetiredRows(
-      normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames), {
+      normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames, assistantName), {
         pinnedIds: pinsWithSetup,
         dmDots,
         includeContactsWithoutConversation: true,
@@ -5135,7 +5152,7 @@
         props={{
           api,
           rows: [...directoryRows, ...browseRows],
-          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames, assistantName),
           companies: scopeCompanies,
           activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
           scopeLabel,
@@ -5160,7 +5177,7 @@
         props={{
           api,
           rows: [...directoryRows, ...browseRows],
-          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames, assistantName),
           companies: createScopeCompanies,
           activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
           onclose: closeCreate,
@@ -5176,7 +5193,7 @@
       botCompanyUid={createBotCompanyUid}
       botCompanySlug={createBotCompanySlug}
       rows={[...directoryRows, ...browseRows]}
-      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
+      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames, assistantName)}
       {scopeCompanies}
       createCompanies={createScopeCompanies}
       activeScope={scope}
@@ -5210,6 +5227,7 @@
       {botCompanies}
       {botSignIn}
       {onbotsignedin}
+      {probeBotRuntime}
       initialKind={createKind}
       initialStep={createStep}
       sunrise={createSunrise}

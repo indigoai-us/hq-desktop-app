@@ -1,18 +1,47 @@
 <script lang="ts">
-  import type { ConflictParkedNotice } from '../lib/conflictNotices';
+  import { untrack } from 'svelte';
+  import {
+    clearDismissedConflictBatch,
+    defaultConflictBatchStorage,
+    isConflictBatchDismissed,
+    readDismissedConflictBatch,
+    writeDismissedConflictBatch,
+    type ConflictBatchStorage,
+    type ConflictParkedNotice,
+  } from '../lib/conflictNotices';
 
   interface Props {
     notices: readonly ConflictParkedNotice[];
     busyIds: ReadonlySet<string>;
     onShowInFinder: (notice: ConflictParkedNotice) => void;
     onAcknowledge: (notice: ConflictParkedNotice) => void;
+    /** Where the dismissed batch is kept so it survives a window reload. */
+    storage?: ConflictBatchStorage | null;
+    /**
+     * Set when a parked-conflict OS notification was clicked: show the card
+     * again (even if this batch was dismissed) with the Review list open.
+     */
+    reviewRequested?: boolean;
+    onReviewHandled?: () => void;
   }
 
-  let { notices, busyIds, onShowInFinder, onAcknowledge }: Props = $props();
+  let {
+    notices,
+    busyIds,
+    onShowInFinder,
+    onAcknowledge,
+    storage = defaultConflictBatchStorage(),
+    reviewRequested = false,
+    onReviewHandled,
+  }: Props = $props();
 
   // Several parked copies collapse into one card with a count. The per-file
   // rows only render when there is one notice or the person opens the list.
   let expanded = $state(false);
+  // The X closes the card for the current batch only (see
+  // isConflictBatchDismissed); a notice outside that batch brings it back.
+  let dismissedIds = $state<Set<string>>(untrack(() => readDismissedConflictBatch(storage)));
+  const dismissed = $derived(isConflictBatchDismissed(notices, dismissedIds));
   const grouped = $derived(notices.length > 1);
   const showRows = $derived(!grouped || expanded);
   const title = $derived(
@@ -22,8 +51,25 @@
     grouped ? `${notices[0].relativePath} and ${notices.length - 1} more have preserved copies.` : '',
   );
 
+  function dismissBatch(): void {
+    dismissedIds = writeDismissedConflictBatch(storage, notices);
+    expanded = false;
+  }
+
   $effect(() => {
     if (notices.length <= 1) expanded = false;
+  });
+
+  $effect(() => {
+    // Wait for the notices to load: a cold notification click can arrive
+    // before the pending list does.
+    if (!reviewRequested || notices.length === 0) return;
+    untrack(() => {
+      clearDismissedConflictBatch(storage);
+      dismissedIds = new Set();
+      expanded = true;
+      onReviewHandled?.();
+    });
   });
 </script>
 
@@ -35,7 +81,7 @@
   - sets its own font and only uses tokens defined at :root in
     styles/design-system.css (light and dark), never inherited ones.
 -->
-{#if notices.length > 0}
+{#if notices.length > 0 && !dismissed}
   <section class="conflict-notices" data-testid="conflict-parked-notices" role="status" aria-live="polite">
     <header class="head">
       <div class="copy">
@@ -44,16 +90,29 @@
           <p class="summary">{summary}</p>
         {/if}
       </div>
-      {#if grouped}
+      <div class="head-actions">
+        {#if grouped}
+          <button
+            type="button"
+            class="toggle"
+            aria-expanded={expanded}
+            onclick={() => (expanded = !expanded)}
+          >
+            {expanded ? 'Hide' : 'Review'}
+          </button>
+        {/if}
         <button
           type="button"
-          class="toggle"
-          aria-expanded={expanded}
-          onclick={() => (expanded = !expanded)}
+          class="close"
+          aria-label="Dismiss"
+          data-testid="conflict-parked-notices-dismiss"
+          onclick={dismissBatch}
         >
-          {expanded ? 'Hide' : 'Review'}
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+          </svg>
         </button>
-      {/if}
+      </div>
     </header>
     {#if showRows}
       <ul class="rows">
@@ -143,7 +202,22 @@
   }
 
   button.show { font-weight: 600; }
+  .head-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
   button.toggle { flex: 0 0 auto; }
+  /* Icon-only close, same shape as the notification rows' dismiss X. */
+  button.close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    min-height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 5px;
+    color: var(--pop-muted);
+  }
+  button.close:hover { color: var(--pop-text); }
   button:hover:not(:disabled) { background: var(--pop-hover); }
   button:focus-visible { outline: 2px solid var(--pop-focus-ring); outline-offset: var(--pop-focus-offset); }
   button:disabled { cursor: wait; opacity: 0.65; }

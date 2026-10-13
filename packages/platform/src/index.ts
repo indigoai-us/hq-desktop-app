@@ -1,5 +1,7 @@
 // Full platform adapter surface (US-004).
 export * from "./adapter.js";
+// Accomplishment badges from hq-pro: wire types and the defensive parser.
+export * from "./badges.js";
 export * from "./capabilities.js";
 export * from "./host-platform.js";
 export * from "./host-computer-noun.js";
@@ -20,6 +22,7 @@ export {
   FIRST_FOLDER_SYNC_STEP_FLAG,
   FIRST_WEEK_RETURN_NUDGE_FLAG,
   HQ_ANYWHERE_RUNTIME_FLAG,
+  HQ_STORAGE_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   PERSONAL_WORKSPACE_BOARD_FLAG,
@@ -29,6 +32,8 @@ export {
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   VISUAL_FIRST_RUN_FLAG,
+  FIRST_RUN_FOUND_APPS_FLAG,
+  BOT_INTEGRATION_CONTROL_FLAG,
   RAIL_ATLAS_FLAG,
   RAIL_DEPLOYMENTS_ACTIONS_FLAG,
   RAIL_GATE_EVERYONE_DEFAULT,

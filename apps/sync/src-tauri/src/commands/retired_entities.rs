@@ -293,6 +293,8 @@ mod tests {
         assert_eq!(entity_liveness_from_json(&tombstoned), EntityLiveness::Gone);
         let company = serde_json::json!({ "uid": "cmp_a", "type": "company", "deleted": false });
         assert_eq!(entity_liveness_from_json(&company), live(&[]));
+        let liveness_only = serde_json::json!({ "deleted": false });
+        assert_eq!(entity_liveness_from_json(&liveness_only), live(&[]));
         let bot = serde_json::json!({
             "uid": "agt_a",
             "type": "agent",

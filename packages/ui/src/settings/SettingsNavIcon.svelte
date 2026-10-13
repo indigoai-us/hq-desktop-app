@@ -13,7 +13,8 @@
       | "notifications"
       | "sync"
       | "meetings"
-      | "updates";
+      | "updates"
+      | "storage";
   }
   let { name }: Props = $props();
 </script>
@@ -127,6 +128,20 @@
       stroke="currentColor"
       stroke-width="1.3"
       stroke-linecap="round"
+    />
+  {:else if name === "storage"}
+    <ellipse
+      cx="8"
+      cy="4.2"
+      rx="4.8"
+      ry="1.8"
+      stroke="currentColor"
+      stroke-width="1.3"
+    />
+    <path
+      d="M3.2 4.2v7.6c0 1 2.15 1.8 4.8 1.8s4.8-.8 4.8-1.8V4.2M3.2 8c0 1 2.15 1.8 4.8 1.8s4.8-.8 4.8-1.8"
+      stroke="currentColor"
+      stroke-width="1.3"
     />
   {:else}
     <path

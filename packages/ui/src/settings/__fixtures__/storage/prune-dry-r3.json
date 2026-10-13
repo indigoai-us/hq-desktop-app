@@ -1,0 +1,25 @@
+{
+  "local": {
+    "available": true,
+    "would_remove_commits": 144,
+    "est_bytes": 125938296,
+    "flattened_merges": 1,
+    "retained_refs": 3,
+    "holding_refs": [],
+    "holding_refs_count": 0,
+    "refs_to_remove": 1,
+    "refs_to_remove_sample": [
+      "refs/cmux/last-turn/a"
+    ],
+    "backup_ref": null,
+    "reclaim_after": "2026-10-10T21:26:00Z",
+    "pending_reclaim_bytes": 125938296
+  },
+  "cloud": [],
+  "dry_run": true,
+  "reclaim": {
+    "available": true,
+    "dropped": 0,
+    "freed_bytes": 0
+  }
+}

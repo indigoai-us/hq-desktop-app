@@ -226,6 +226,16 @@ pub fn reconcile_action(
 /// launch.
 pub const PRODUCTION_BUNDLE_IDENTIFIER: &str = "ai.indigo.hq-sync-menubar";
 
+/// The one "is this the shipped HQ bundle" predicate. Stable, beta and alpha
+/// all ship under [`PRODUCTION_BUNDLE_IDENTIFIER`] (the channel is a runtime
+/// setting, not a separate bundle), so any other identifier is a scratch,
+/// Lane Check, worktree or side-by-side test build, and an unreadable one
+/// counts as non-production. Launch-time autostart, the updater and every
+/// launch-time install or uninstall path decide through this function.
+pub fn is_production_bundle_identifier(bundle_identifier: Option<&str>) -> bool {
+    bundle_identifier == Some(PRODUCTION_BUNDLE_IDENTIFIER)
+}
+
 /// Env var that turns the updater off for scratch builds. Launch-time
 /// autostart reconciliation honours it too.
 pub const UPDATER_DISABLED_ENV: &str = "HQ_UPDATER_DISABLED";
@@ -258,9 +268,10 @@ pub fn launch_ensure_gate(
     if env_flag_truthy(updater_disabled_env) {
         return LaunchEnsureGate::SkipUpdaterDisabled;
     }
-    match bundle_identifier {
-        Some(PRODUCTION_BUNDLE_IDENTIFIER) => LaunchEnsureGate::Proceed,
-        other => LaunchEnsureGate::SkipNonProductionBundle(other.map(str::to_string)),
+    if is_production_bundle_identifier(bundle_identifier) {
+        LaunchEnsureGate::Proceed
+    } else {
+        LaunchEnsureGate::SkipNonProductionBundle(bundle_identifier.map(str::to_string))
     }
 }
 
@@ -441,8 +452,8 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
 #[cfg(test)]
 mod launchagent_write_tests {
     use super::{
-        bundle_identifier_from_exe, generate_plist, launch_ensure_gate, write_plist_if_changed,
-        LaunchEnsureGate,
+        bundle_identifier_from_exe, generate_plist, is_production_bundle_identifier,
+        launch_ensure_gate, write_plist_if_changed, LaunchEnsureGate,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -473,6 +484,23 @@ mod launchagent_write_tests {
             launch_ensure_gate(None, None),
             LaunchEnsureGate::SkipNonProductionBundle(None)
         );
+    }
+
+    #[test]
+    fn only_the_shipped_identifier_is_a_production_bundle() {
+        assert!(is_production_bundle_identifier(Some("ai.indigo.hq-sync-menubar")));
+        for id in [
+            "ai.indigo.hq-lane-check.conflict-toast",
+            "ai.indigo.hq-lane-check",
+            "ai.indigo.hq-sync-menubar-dev",
+            "ai.indigo.hq-new-bot-test",
+            "ai.indigo.hq-rail-newbot",
+            "ai.indigo.hq-sync-menubar.worktree",
+            "",
+        ] {
+            assert!(!is_production_bundle_identifier(Some(id)), "{id}");
+        }
+        assert!(!is_production_bundle_identifier(None));
     }
 
     #[test]

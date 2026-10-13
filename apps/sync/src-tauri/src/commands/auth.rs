@@ -3,7 +3,7 @@ use super::cognito::{self, AuthState, CognitoRefreshFailureClass, CognitoTokens}
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub const AUTH_SESSION_CHANGED_EVENT: &str = "auth:session-changed";
 const MAX_AUTH_SESSION_REASON_CHARS: usize = 200;
@@ -613,7 +613,8 @@ pub async fn get_stored_token_presence() -> String {
     hq_desktop_core::unexpected_surface::stored_token_presence_label(presence).to_string()
 }
 
-/// Sign out: clear the locally stored Cognito tokens (file + in-memory cache)
+/// Sign out: revoke the refresh token at Cognito (single attempt, 5s bound),
+/// then always clear the locally stored Cognito tokens (file + in-memory cache)
 /// and reset the Sentry user scope. After this, `get_auth_state` / a relaunch
 /// both report unauthenticated — without it, a frontend-only sign-out leaves the
 /// token file on disk and the app re-authenticates silently on next launch.
@@ -634,6 +635,11 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     clear_sentry_user();
     // The next account must not inherit this one's plan-limit upload pause.
     crate::commands::uploads_paused::clear(&app);
+    // Nor this one's active company: a later connector import or scoped read
+    // must never land in the previous account's company.
+    if let Some(scope) = app.try_state::<crate::commands::desktop_alt::DesktopSessionScope>() {
+        scope.clear();
+    }
     publish_auth_session(
         &app,
         AuthSessionEnvelope {

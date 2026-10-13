@@ -3,6 +3,7 @@ import {
   companySlugFromName,
   parseInviteEmails,
   pinnedIdsAfterFinish,
+  projectSlugFromName,
   railPreview,
   stepOneEffects,
 } from "./new-company.js";
@@ -10,6 +11,19 @@ import {
 describe("new company flow (US-037)", () => {
   it("slugs the name and parses invite addresses", () => {
     expect(companySlugFromName("Holler Management")).toBe("holler-management");
+    // The slug is sent on create, so it follows the server's rule
+    // (hq-pro COMPANY_SLUG_RE): a letter first, at most 30 long.
+    const serverRule = /^[a-z][a-z0-9-]{0,29}$/;
+    for (const name of ["42 Labs", "StefanTest123", "The Very Long Company Name of Many Words Incorporated", "Café Olé"]) {
+      const slug = companySlugFromName(name);
+      expect(serverRule.test(slug), `${name} -> ${slug}`).toBe(true);
+    }
+    expect(companySlugFromName("42 Labs")).toBe("labs");
+    expect(companySlugFromName("x".repeat(80))).toHaveLength(30);
+    expect(companySlugFromName("123")).toBe("");
+    // Project folders keep their own rule: a leading number stays.
+    expect(projectSlugFromName("2024 Launch")).toBe("2024-launch");
+    expect(projectSlugFromName("!!!")).toBeNull();
     expect(parseInviteEmails("Chris@Holler.co, dana@holler.co dana@holler.co")).toEqual([
       "chris@holler.co",
       "dana@holler.co",

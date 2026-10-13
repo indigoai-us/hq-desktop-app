@@ -174,6 +174,10 @@ pub fn setup_last_pass_watch(app: &AppHandle) {
                         "sync:conflict-notices",
                         &record.pending_conflict_notices,
                     );
+                    crate::commands::hq_daemon_host::notify_new_conflict_batch(
+                        &handle,
+                        &record.pending_conflict_notices,
+                    );
                 }
             }
             let Some(pass) = tracker.take_new(pass) else {

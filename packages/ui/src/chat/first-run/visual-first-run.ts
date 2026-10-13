@@ -15,7 +15,7 @@
  * bars, "Next: <step>" labels and Back follow it, and `firstRunStepsFor`
  * leaves out the screens a host cannot run.
  *
- * This module is pure: steps, copy, the name rule, the handoff kickoff, the
+ * This module is pure: steps, copy, the name rule, the handoff note, the
  * "never again" marker, the routing decision and the one-create-at-a-time
  * starter. `DesktopApp.svelte` hosts the takeover on top of it.
  */
@@ -23,12 +23,13 @@
 import type { LocalBotRow } from "@hq/platform";
 
 import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
-import { SETUP_BOT_KICKOFF_PREFIX, SETUP_BOT_RUNTIME_ORDER, type SetupBotRef } from "../setup-bot.js";
+import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "../agent-channel.js";
+import { SETUP_BOT_RUNTIME_ORDER, type SetupBotRef } from "../setup-bot.js";
 
 export type FirstRunRuntime = LocalBotRow["runtime"];
 
 /** Every screen of the flow. */
-export type FirstRunStepId = "name" | "team" | "tools" | "context" | "notes" | "projects" | "done";
+export type FirstRunStepId = "name" | "team" | "tools" | "context" | "notes" | "projects" | "apps" | "done";
 
 export interface FirstRunStep {
   id: FirstRunStepId;
@@ -46,6 +47,16 @@ export const FIRST_RUN_STEPS: readonly FirstRunStep[] = [
   { id: "projects", label: "Project management" },
   { id: "done", label: "Done" },
 ];
+
+/**
+ * The flow with "Your apps" (integration auto-detect MVP, flag
+ * `desktop.first-run-found-apps-v1`): one step listing every app found on
+ * this computer replaces Note taker and Project management, so the first run
+ * has one step fewer. Owner decision dec-20261012015131-z0g0.
+ */
+export const FIRST_RUN_STEPS_YOUR_APPS: readonly FirstRunStep[] = FIRST_RUN_STEPS.flatMap((step) =>
+  step.id === "notes" ? [{ id: "apps" as const, label: "Your apps" }] : step.id === "projects" ? [] : [step],
+);
 
 /** What the host can run, which decides the screens shown. */
 export interface FirstRunHostCaps {
@@ -76,7 +87,7 @@ export function firstRunStepsFor(
   return steps.filter((step) => {
     if (step.id === "context") return host.canImport;
     if (step.id === "team") return host.canTeam === true;
-    if (step.id === "notes" || step.id === "projects") return apps;
+    if (step.id === "notes" || step.id === "projects" || step.id === "apps") return apps;
     return true;
   });
 }
@@ -114,11 +125,25 @@ export function firstRunNextLabel(id: FirstRunStepId, steps: readonly FirstRunSt
 }
 
 /**
- * "Finish with defaults" sits beside "Next" on every step whose next step is
- * not the last one. Next to the last step both buttons would do the same
- * thing, so the step shows only Next.
+ * True on the steps that come before "Bring in your context" in this flow.
+ * The import is the payoff of first run (owner, 2026-10-10): no control on
+ * these steps may jump past it. False everywhere when the host has no
+ * import step.
+ */
+export function firstRunBeforeImport(id: FirstRunStepId, steps: readonly FirstRunStep[] = FIRST_RUN_STEPS): boolean {
+  const context = indexOfStep("context", steps);
+  const at = indexOfStep(id, steps);
+  return context >= 0 && at >= 0 && at < context;
+}
+
+/**
+ * "Finish with defaults" sits beside "Next" on every step from the import
+ * on whose next step is not the last one. Before the import only Next moves
+ * forward, so nobody finishes past it. Next to the last step both buttons
+ * would do the same thing, so the step shows only Next.
  */
 export function firstRunOffersFinish(id: FirstRunStepId, steps: readonly FirstRunStep[] = FIRST_RUN_STEPS): boolean {
+  if (firstRunBeforeImport(id, steps)) return false;
   const next = nextFirstRunStep(id, steps);
   return next !== null && nextFirstRunStep(next, steps) !== null;
 }
@@ -129,15 +154,45 @@ export function anyToolReady(ready: Record<string, boolean> | null | undefined):
 }
 
 /**
- * Where "Finish with defaults" lands: Done, unless a required step is still
- * open. The coding tools step is required only while no tool is ready.
+ * Where "Finish with defaults" pressed on `from` lands: Done, unless a
+ * required step is still open. The coding tools step is required only while
+ * no tool is ready, and from a step before "Bring in your context" the
+ * import comes first, so a finish never lands past it.
  */
 export function firstRunFinishTarget(
   ready: Record<string, boolean> | null | undefined,
   steps: readonly FirstRunStep[] = FIRST_RUN_STEPS,
+  from: FirstRunStepId = steps[0]?.id ?? "name",
 ): FirstRunStepId {
   if (!anyToolReady(ready) && indexOfStep("tools", steps) >= 0) return "tools";
+  if (firstRunBeforeImport(from, steps)) return "context";
   return steps[steps.length - 1]?.id ?? "done";
+}
+
+/**
+ * Whether a step shows "Continue in chat" (the header's way out, and the
+ * same link beside a failed team join or a failed create). Leaving for chat
+ * ends the takeover, so before the import it would skip the import. It shows
+ * after the import step. On the import step itself the scene's own buttons
+ * are the way on (Bring it in, or the quiet Skip for now), so it shows only
+ * when the scene could not load (`importLoadFailed`) and would otherwise
+ * leave the person with no way out.
+ *
+ * Never on the coding tools step, in any state and on any host (owner,
+ * 2026-10-10): the assistant runs on a signed-in coding tool, so that screen
+ * helps the person sign in (FirstRunToolsSignIn) instead of offering a way
+ * around it. `ready` stays in the signature for the callers.
+ */
+export function firstRunOffersChat(
+  id: FirstRunStepId,
+  ready: Record<string, boolean> | null | undefined,
+  steps: readonly FirstRunStep[] = FIRST_RUN_STEPS,
+  opts: { importLoadFailed?: boolean } = {},
+): boolean {
+  void ready;
+  if (id === "tools") return false;
+  if (id === "context" && indexOfStep("context", steps) >= 0) return opts.importLoadFailed === true;
+  return !firstRunBeforeImport(id, steps);
 }
 
 /** Whether a step lets the person move on. */
@@ -189,7 +244,7 @@ export function firstRunDoneTitle(name: string): FirstRunTitle {
 }
 
 export const FIRST_RUN_COPY = {
-  /** The header's way out, on every screen. */
+  /** The header's way out, after the import step (see firstRunOffersChat). */
   continueInChat: "Continue in chat",
   finish: "Finish with defaults",
   /** Shown on the name step once the assistant is being created. */
@@ -215,7 +270,7 @@ export const ASSISTANT_NAME_MAX = 35;
 /**
  * The name as the host keeps it (`validate_display_name`): runs of
  * whitespace, tabs included, become one space, ends trimmed. Every place the
- * name goes (the create, the kickoff, the hello, the handoff note) uses this.
+ * name goes (the create, the hello, the handoff note) uses this.
  */
 export function normalizeAssistantName(name: string): string {
   return name.split(/\s+/).filter(Boolean).join(" ");
@@ -223,14 +278,14 @@ export function normalizeAssistantName(name: string): string {
 
 /**
  * Why a name cannot be the assistant's display name, or null. The same rule
- * as the host's `validate_display_name` (apps/sync bots.rs): letters first,
- * then letters, spaces, apostrophes, periods and hyphens, at most 35.
+ * as the host's `validate_display_name` (apps/sync bots.rs): a letter first,
+ * then letters, numbers, spaces, apostrophes, periods and hyphens, at most 35.
  */
 export function assistantNameIssue(name: string): string | null {
   const collapsed = normalizeAssistantName(name);
   if (!collapsed) return "Give your assistant a name.";
   if ([...collapsed].length > ASSISTANT_NAME_MAX) return `Keep the name under ${ASSISTANT_NAME_MAX} characters.`;
-  if (!/^\p{L}[\p{L} .'-]*$/u.test(collapsed)) return "Use letters, spaces, apostrophes, periods and hyphens.";
+  if (!/^\p{L}[\p{L}\p{N} .'-]*$/u.test(collapsed)) return "Use letters, numbers, spaces, apostrophes, periods and hyphens.";
   return null;
 }
 
@@ -260,11 +315,19 @@ export interface FirstRunAppHandoff {
   domain: string;
 }
 
-/** The two app screens. A key is present once its screen was passed; null there means skipped. */
+/**
+ * The two app screens. A key is present once its screen was passed; null there
+ * means skipped. "Your apps" fills both (its first note taker and project
+ * tool, or skipped) and lists every other connected app in `others`.
+ */
 export interface FirstRunAppsHandoff {
   notes?: FirstRunAppHandoff | null;
   projects?: FirstRunAppHandoff | null;
+  others?: FirstRunAppHandoff[];
 }
+
+/** At most this many other apps go in the handoff. */
+export const FIRST_RUN_OTHER_APPS_MAX = 12;
 
 /** What the takeover settled, handed to the setup bot so it never asks again. */
 export interface FirstRunHandoff {
@@ -274,6 +337,12 @@ export interface FirstRunHandoff {
   runtime: FirstRunRuntime;
   /** Every coding tool signed in when the assistant was created. */
   toolsReady: readonly FirstRunRuntime[];
+  /**
+   * False when the real sign-in check (`hq bot probe`) did not pass for
+   * `runtime` (it could not tell): the hello and the handoff note then do not say
+   * the tool is signed in. Missing means it passed.
+   */
+  signInChecked?: boolean;
   /** The context scan, when it finished before this was written. */
   imported?: FirstRunImportHandoff | null;
   /** "Your team", once settled. */
@@ -323,11 +392,22 @@ function appJson(app: FirstRunAppHandoff | null | undefined): Record<string, str
   return { name, domain };
 }
 
-/** The apps part of the handoff JSON: each passed screen, its app or "skipped". */
-export function firstRunAppsJson(apps: FirstRunAppsHandoff): Record<string, Record<string, string> | "skipped"> {
-  const out: Record<string, Record<string, string> | "skipped"> = {};
+/**
+ * The apps part of the handoff JSON: each passed screen, its app or
+ * "skipped", and the other apps "Your apps" connected (clean ones only,
+ * capped).
+ */
+export function firstRunAppsJson(
+  apps: FirstRunAppsHandoff,
+): Record<string, Record<string, string> | "skipped" | Record<string, string>[]> {
+  const out: Record<string, Record<string, string> | "skipped" | Record<string, string>[]> = {};
   if ("notes" in apps) out.notes = appJson(apps.notes) ?? "skipped";
   if ("projects" in apps) out.projects = appJson(apps.projects) ?? "skipped";
+  const others = (apps.others ?? [])
+    .map((app) => appJson(app))
+    .filter((app): app is Record<string, string> => app !== null)
+    .slice(0, FIRST_RUN_OTHER_APPS_MAX);
+  if (others.length) out.others = others;
   return out;
 }
 
@@ -386,7 +466,7 @@ export function firstRunImportJson(imported: FirstRunImportHandoff): Record<stri
   return out;
 }
 
-/** The machine-readable part of the kickoff: one JSON object, one line. */
+/** The machine-readable part of the handoff note: one JSON object, one line. */
 export function firstRunHandoffNote(handoff: FirstRunHandoff): string {
   const team = handoff.team ? firstRunTeamJson(handoff.team) : null;
   const apps = handoff.apps ? firstRunAppsJson(handoff.apps) : null;
@@ -403,7 +483,7 @@ export function firstRunHandoffNote(handoff: FirstRunHandoff): string {
   });
 }
 
-/** The words the kickoff and the notices add about the team and the apps, when settled. */
+/** The words the handoff note adds about the team and the apps, when settled. */
 function settledSentence(handoff: Pick<FirstRunHandoff, "team" | "apps">): string {
   let out = "";
   const team = handoff.team ? firstRunTeamJson(handoff.team) : null;
@@ -417,224 +497,93 @@ function settledSentence(handoff: Pick<FirstRunHandoff, "team" | "apps">): strin
   }
   const apps = handoff.apps ? firstRunAppsJson(handoff.apps) : null;
   if (apps && Object.keys(apps).length) {
-    out += "The note taker and project management choices are in the handoff: do not ask about them again. ";
+    out += "others" in apps
+      ? "The note taker, project management and other app choices are in the handoff: do not ask about them again. "
+      : "The note taker and project management choices are in the handoff: do not ask about them again. ";
   }
   return out;
 }
 
 /**
  * The assistant's name in prose only when it passes the display-name rule
- * (letters, spaces, apostrophes, periods, hyphens); anything else is named
- * by its place in the JSON.
+ * (a letter, then letters, numbers, spaces, apostrophes, periods, hyphens);
+ * anything else is named by its place in the JSON.
  */
 function proseName(name: string, before: string, after: string, otherwise: string): string {
   return name && !assistantNameIssue(name) ? `${before}${name}${after}` : otherwise;
 }
 
-/** The words the kickoff and the notices add about the import, when it ran. */
+/** The words the handoff note adds about the import, when it ran. */
 function importSentence(imported: FirstRunImportHandoff | null | undefined): string {
   if (!imported) return "";
   const report = typeof firstRunImportJson(imported).report === "string";
   return report
-    ? "The context import is finished (counts and report path are in the handoff): do not ask me to import it again. "
-    : "The context import is finished (counts are in the handoff): do not ask me to import it again. ";
+    ? "The context import is finished (counts and report path are in the handoff): do not offer it, ask me about it or scan this computer again. "
+    : "The context import is finished (counts are in the handoff): do not offer it, ask me about it or scan this computer again. ";
 }
 
-/** Under the CLI's `--kickoff` bound (2000) with room to spare. */
-export const FIRST_RUN_KICKOFF_MAX = 1900;
-
 /**
- * The setup bot's first task (`hq bot create --kickoff`) when it was named in
- * the takeover. Same contract as `setupBotKickoff`: starts with the prefix
- * the setup template recognises, one line, no control characters, under 2000
- * characters. It says which steps are done (the JSON handoff and the same in
- * words) so the bot skips them, and otherwise follows the usual opening.
+ * The longest handoff note. It goes as a bot-only DM, not through
+ * `hq bot create --kickoff` (2000), so it shares the bound of the app's other
+ * DMs to a bot (`AGENT_HELLO_REQUEST_MAX_CHARS`, 4000), with room to spare.
  */
-export function firstRunKickoff(handoff: FirstRunHandoff, opts: { noun?: string } = {}): string {
-  return firstRunKickoffCarry(handoff, opts).kickoff;
-}
-
-/** A kickoff and what it carried, so the host can send the rest as a note. */
-export interface FirstRunKickoffCarry {
-  kickoff: string;
-  /** The team and app screens rode in the kickoff. */
-  settled: boolean;
-  /** The import rode in the kickoff with its report path (when it had one). */
-  importWhole: boolean;
-}
+export const FIRST_RUN_HANDOFF_NOTICE_MAX = 3000;
 
 /**
- * The kickoff, kept under `FIRST_RUN_KICKOFF_MAX`. What does not fit is left
- * for a bot-only note, never lost: first the team and app choices (the host
- * sends them with `firstRunSettledNotice`), and only if it still does not
- * fit, the report path (the host then sends `firstRunImportNotice`, which
- * always keeps it). The counts and the settled-step words always stay.
- */
-export function firstRunKickoffCarry(handoff: FirstRunHandoff, opts: { noun?: string } = {}): FirstRunKickoffCarry {
-  const hasSettled = !!(handoff.team || (handoff.apps && Object.keys(handoff.apps).length));
-  const hasReport = !!(handoff.imported && handoffReportPath(handoff.imported.report));
-  const full = buildKickoff(handoff, opts);
-  if (full.length <= FIRST_RUN_KICKOFF_MAX) return { kickoff: full, settled: hasSettled, importWhole: true };
-  const lean: FirstRunHandoff = { ...handoff, team: null, apps: null };
-  const withoutSettled = buildKickoff(lean, opts);
-  if (withoutSettled.length <= FIRST_RUN_KICKOFF_MAX || !hasReport) {
-    return { kickoff: withoutSettled, settled: false, importWhole: true };
-  }
-  return {
-    kickoff: buildKickoff({ ...lean, imported: { ...handoff.imported!, report: null } }, opts),
-    settled: false,
-    importWhole: false,
-  };
-}
-
-function buildKickoff(handoff: FirstRunHandoff, opts: { noun?: string }): string {
-  const noun = opts.noun?.trim() || "computer";
-  const name = normalizeAssistantName(handoff.name);
-  const tool = runtimeLabel(handoff.runtime);
-  const kickoff =
-    `${SETUP_BOT_KICKOFF_PREFIX} setup started in the HQ desktop app's visual setup, where I already finished some steps, ` +
-    "and your hello already went out, so do not greet again or repeat the plan. " +
-    `Handoff from the app: ${firstRunHandoffNote(handoff)}. ` +
-    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
-    `${proseName(name, "I chose your name, ", ", so keep it. ", "I chose your name (\"name\" in the handoff), so keep it. ")}` +
-    `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. ` +
-    importSentence(handoff.imported) +
-    settledSentence(handoff) +
-    "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
-    "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and whether any other tool HQ leans on is missing, and fix what you can yourself. " +
-    "I chose to jump straight in, so do not ask whether I want HQ explained first. " +
-    "Tell me in one line what you found or fixed, then begin the first unfinished step that is not in \"done\", " +
-    "ending each message with exactly one concrete question or one concrete action for me. " +
-    "If setup is already finished, say so in one line and offer two or three concrete next moves drawn from this HQ, then ask which to start. " +
-    "Never end with an open question like \"what would you like to do?\"";
-  // eslint-disable-next-line no-control-regex
-  return kickoff.replace(/[\u0000-\u001f\u007f]/g, " ");
-}
-
-/**
- * The same handoff for a setup bot that already existed (a reinstall, or a
- * second computer): its kickoff ran long ago, so the app sends this as a
- * bot-only message in its DM instead. Not a kickoff (no prefix): the bot
- * carries on from where it is, minus the settled steps. One line, no control
- * characters, under 2000 characters.
+ * Everything the takeover settled, for the setup assistant, in ONE bot-only
+ * DM sent when the takeover closes (Done or Continue in chat). This is how
+ * the assistant's setup conversation starts after the visual first run: the
+ * app creates the assistant without a kickoff while the takeover is open, so
+ * no model turn runs (and nothing is said to the person) until every screen
+ * is settled. The same note goes to an assistant that already existed (a
+ * reinstall or a second computer).
+ *
+ * One line, no control characters, under `FIRST_RUN_HANDOFF_NOTICE_MAX`.
+ * Opens with `FIRST_RUN_NOTE_LEAD`, so the person's view hides it.
  */
 export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: string } = {}): string {
   const noun = opts.noun?.trim() || "computer";
   const name = normalizeAssistantName(handoff.name);
-  const tools = [...new Set(handoff.toolsReady)].map(runtimeLabel).join(", ") || runtimeLabel(handoff.runtime);
+  const tool = runtimeLabel(handoff.runtime);
   const notice =
-    "Setup note from the HQ desktop app: I just went through the app's visual setup, which finished some setup steps for you. " +
-    `Handoff from the app: ${firstRunHandoffNote(handoff)}. ` +
-    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
+    `${FIRST_RUN_NOTE_LEAD} I just finished the app's visual setup, and this note is where setup with you starts. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${firstRunHandoffNote(handoff)}. ` +
+    "Every step in \"done\" is settled: never ask about it, offer it or redo it, and record it as done in your setup-progress.md note. " +
     `${proseName(name, "I named you ", ", so use that name. ", "I named you (\"name\" in the handoff), so use that name. ")}` +
-    `The coding tool sign-in is finished: signed in on this ${noun}: ${tools}. Do not ask me to pick or sign in to a coding tool. ` +
+    (handoff.signInChecked === false
+      ? `I picked ${tool} on this ${noun} and you run on it, so do not ask me to pick a coding tool. HQ could not confirm its sign-in, so if a turn fails to sign in, say so in one line. `
+      : `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. `) +
     importSentence(handoff.imported) +
     settledSentence(handoff) +
-    "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
-  // eslint-disable-next-line no-control-regex
-  return notice.replace(/[\u0000-\u001f\u007f]/g, " ");
-}
-
-/**
- * The import result for an assistant whose kickoff already went out before
- * the scan finished: a bot-only note in its DM. One line, no control
- * characters, under 2000 characters. Only counts and the report path, never
- * what the report says.
- */
-export function firstRunImportNotice(imported: FirstRunImportHandoff): string {
-  const note = JSON.stringify({
-    from: "desktop-visual-first-run",
-    v: 1,
-    done: [FIRST_RUN_IMPORT_STEP],
-    import: firstRunImportJson(imported),
-  });
-  const notice =
-    "Setup note from the HQ desktop app: I just finished the context import in the app's visual setup. " +
-    `Handoff from the app: ${note}. ` +
-    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
-    importSentence(imported) +
-    "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
-  // eslint-disable-next-line no-control-regex
-  return notice.replace(/[\u0000-\u001f\u007f]/g, " ");
-}
-
-/** The parts of the later screens that are delivered to the bot one by one. */
-export type FirstRunSettledPart = "team" | "notes" | "projects";
-/** What the bot already has of each part: the part's JSON when it was sent. */
-export type FirstRunSettledSent = Partial<Record<FirstRunSettledPart, string>>;
-
-/** Each settled part's JSON, for the parts present. */
-export function firstRunSettledParts(settled: Pick<FirstRunHandoff, "team" | "apps">): FirstRunSettledSent {
-  const out: FirstRunSettledSent = {};
-  const team = settled.team ? firstRunTeamJson(settled.team) : null;
-  if (team) out.team = JSON.stringify(team);
-  const apps = settled.apps ? firstRunAppsJson(settled.apps) : {};
-  if (apps.notes !== undefined) out.notes = JSON.stringify(apps.notes);
-  if (apps.projects !== undefined) out.projects = JSON.stringify(apps.projects);
-  return out;
-}
-
-/**
- * The parts the bot does not have yet (or has with another value): what a
- * settled notice still needs to carry after the kickoff or an earlier note.
- */
-export function firstRunSettledSince(
-  settled: Pick<FirstRunHandoff, "team" | "apps">,
-  sent: FirstRunSettledSent,
-): Pick<FirstRunHandoff, "team" | "apps"> {
-  const now = firstRunSettledParts(settled);
-  const apps: FirstRunAppsHandoff = {};
-  if (now.notes !== undefined && now.notes !== sent.notes) apps.notes = settled.apps?.notes ?? null;
-  if (now.projects !== undefined && now.projects !== sent.projects) apps.projects = settled.apps?.projects ?? null;
-  return {
-    team: now.team !== undefined && now.team !== sent.team ? (settled.team ?? null) : null,
-    apps,
-  };
-}
-
-/**
- * What the later screens settled ("Your team", Note taker, Project
- * management, and the import when it is not delivered yet), for an
- * assistant whose kickoff already went out: a bot-only note in its DM. One
- * line, no control characters, under 2000 characters. Null when nothing is
- * left to say.
- */
-export function firstRunSettledNotice(
-  settled: Pick<FirstRunHandoff, "imported" | "team" | "apps">,
-): string | null {
-  const team = settled.team ? firstRunTeamJson(settled.team) : null;
-  const apps = settled.apps ? firstRunAppsJson(settled.apps) : null;
-  const done = firstRunDoneSteps(settled).filter((step) => !(FIRST_RUN_SETTLED_STEPS as readonly string[]).includes(step));
-  if (!done.length) return null;
-  const note = JSON.stringify({
-    from: "desktop-visual-first-run",
-    v: 1,
-    done,
-    ...(settled.imported ? { import: firstRunImportJson(settled.imported) } : {}),
-    ...(team ? { team } : {}),
-    ...(apps && Object.keys(apps).length ? { apps } : {}),
-  });
-  const notice =
-    "Setup note from the HQ desktop app: I just finished more of the app's visual setup. " +
-    `Handoff from the app: ${note}. ` +
-    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
-    importSentence(settled.imported) +
-    settledSentence(settled) +
-    "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
+    "Your hello already went out, so do not greet me again, do not repeat the plan, and do not ask whether I want HQ explained first. " +
+    "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
+    "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and whether any other tool HQ leans on is missing, and fix what you can yourself. " +
+    "Tell me in one line what you found or fixed, then begin the first unfinished step that is not in \"done\", " +
+    "ending with exactly one concrete question or one concrete action for me. " +
+    "If setup is already finished, say so in one line and offer two or three concrete next moves drawn from this HQ, then ask which to start. " +
+    "Never end with an open question like \"what would you like to do?\"";
   // eslint-disable-next-line no-control-regex
   return notice.replace(/[\u0000-\u001f\u007f]/g, " ");
 }
 
 /**
  * The bot's hello (`hq bot create --intro`, under 500 characters, one line)
- * when it was named in the takeover: it already knows its name and tool.
+ * when it was named in the takeover: it already knows its name and tool. It
+ * promises nothing before the takeover closes: the assistant runs no turn
+ * until the app hands it everything the takeover settled.
  */
-export function firstRunIntro(handoff: Pick<FirstRunHandoff, "name" | "runtime">, opts: { noun?: string } = {}): string {
-  const noun = opts.noun?.trim() || "computer";
+export function firstRunIntro(
+  handoff: Pick<FirstRunHandoff, "name" | "runtime" | "signInChecked">,
+  opts: { noun?: string } = {},
+): string {
+  void opts;
   const name = normalizeAssistantName(handoff.name) || "your HQ assistant";
+  const tool = runtimeLabel(handoff.runtime);
+  // Only a passing real check may say "signed in": a stored login can be dead.
+  const settled = handoff.signInChecked === false ? `picked ${tool}` : `signed in ${tool}`;
   return (
-    `Hi, I'm ${name}, your HQ assistant. You've named me and signed in ${runtimeLabel(handoff.runtime)}, so I won't ask about those again. ` +
-    `I'm checking your ${noun} now, which can take a minute, and I'll post my next question here as soon as I'm done.`
+    `Hi, I'm ${name}, your HQ assistant. You've named me and ${settled}, so I won't ask about those again. ` +
+    "As soon as you finish setting up in the app, I'll pick up from there and post my next question here."
   );
 }
 
@@ -695,6 +644,14 @@ export type FirstRunRoute = "legacy" | "visual" | "pending";
  */
 export const VISUAL_FIRST_RUN_FLAG_GRACE_MS = 1000;
 
+/**
+ * The longest the takeover waits for the bot listings (this computer's and
+ * the account's) before its name step opens anyway. Within it, an account
+ * that already has an assistant is offered that assistant's name; after it,
+ * a slow listing means a friendly free name, as for a new account.
+ */
+export const FIRST_RUN_LISTINGS_WAIT_MS = 5_000;
+
 export interface FirstRunRouteInput {
   /** The host can run local bots (desktop app). */
   hasBots: boolean;
@@ -718,64 +675,14 @@ export function firstRunRoute(input: FirstRunRouteInput): FirstRunRoute {
 
 // ── creating the assistant ─────────────────────────────────────────────────
 
-export type FirstRunAssistantResult = { ok: true; bot: SetupBotRef } | { ok: false; reason: string };
-
-/** Where creating the assistant stands, as the takeover shows it. */
+/**
+ * Where creating the assistant stands, as the takeover shows it. The host
+ * works it out from the assistant's owner and the bot list
+ * (chat/assistant-owner.ts); nothing here stores it.
+ */
 export type FirstRunCreation =
   | { state: "idle" }
   | { state: "creating"; name: string }
   | { state: "ready"; name: string; bot: SetupBotRef }
   | { state: "failed"; name: string; reason: string };
 
-export interface FirstRunAssistantStarter {
-  /**
-   * Start creating the assistant under this name. A call while one is in
-   * flight, or after one succeeded, does nothing: a double click or a second
-   * Enter never creates a second bot. After a failure it runs again (Retry).
-   */
-  start(name: string): void;
-  /** Run again with the last name, after a failure. */
-  retry(): void;
-  current(): FirstRunCreation;
-}
-
-/**
- * The single-flight creator behind the takeover. `run` creates (or adopts)
- * the setup bot; `onchange` gets every state, starting with "creating"
- * synchronously so the pending state shows on the same frame as the click.
- */
-export function createFirstRunAssistantStarter(
-  run: (name: string) => Promise<FirstRunAssistantResult>,
-  onchange: (state: FirstRunCreation) => void,
-): FirstRunAssistantStarter {
-  let state: FirstRunCreation = { state: "idle" };
-  let lastName = "";
-  const set = (next: FirstRunCreation): void => {
-    state = next;
-    onchange(next);
-  };
-  function start(name: string): void {
-    if (state.state === "creating" || state.state === "ready") return;
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    lastName = trimmed;
-    set({ state: "creating", name: trimmed });
-    void Promise.resolve()
-      .then(() => run(trimmed))
-      .then(
-        (result) =>
-          set(result.ok ? { state: "ready", name: trimmed, bot: result.bot } : { state: "failed", name: trimmed, reason: result.reason }),
-        (err: unknown) => {
-          console.warn("[hq-desktop] first-run assistant create threw:", err);
-          set({ state: "failed", name: trimmed, reason: "Could not start your assistant. Please try again." });
-        },
-      );
-  }
-  return {
-    start,
-    retry() {
-      if (state.state === "failed" && lastName) start(lastName);
-    },
-    current: () => state,
-  };
-}

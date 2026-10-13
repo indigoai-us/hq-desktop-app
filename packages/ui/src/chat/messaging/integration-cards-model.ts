@@ -207,13 +207,24 @@ function newestFirst(connections: CompanyConnection[]): CompanyConnection[] {
  * {@link connectionForItem}), which only the app's own picks carry.
  */
 export function connectionForDomain(facts: CompanyConnections | null | undefined, domain: string): CompanyConnection | null {
-  if (!facts) return null;
   const wanted = normalizeConnectDomain(domain);
-  if (!wanted) return null;
-  const listed = facts.connections.filter((c) => c.domain !== null);
-  const exact = listed.filter((c) => c.domain === wanted);
-  const matches = exact.length > 0 ? exact : listed.filter((c) => sameSite(c.domain!, wanted));
-  return newestFirst(matches)[0] ?? null;
+  const matches = connectionsForDomain(facts, domain);
+  const exact = matches.filter((c) => c.domain === wanted);
+  return newestFirst(exact.length > 0 ? exact : matches)[0] ?? null;
+}
+
+/**
+ * Every connection a domain names, by the same rule as
+ * {@link connectionForDomain}: its listed domain is the domain, its parent,
+ * or its subdomain (`api.linear.app` for `linear.app`). A lookalike such as
+ * `notlinear.app` or `linear.app.example.com` is not a match. A connection
+ * the list gives no domain for never matches. In list order.
+ */
+export function connectionsForDomain(facts: CompanyConnections | null | undefined, domain: string): CompanyConnection[] {
+  if (!facts) return [];
+  const wanted = normalizeConnectDomain(domain);
+  if (!wanted) return [];
+  return facts.connections.filter((c) => c.domain !== null && sameSite(c.domain, wanted));
 }
 
 /**

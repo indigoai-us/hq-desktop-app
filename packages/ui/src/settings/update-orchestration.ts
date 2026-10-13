@@ -52,6 +52,8 @@ export interface UpdateCheckOutcome {
   appUpdateVersion: string | null;
   /** Raw Core state payload (drift, channel, versionBehind) from the check. */
   coreState: unknown;
+  /** CLI version npm offers (`latest` from the CLI check); null when none. */
+  cliLatestVersion: string | null;
 }
 
 export interface UpdateVersions {
@@ -254,6 +256,9 @@ export async function runUpdateCheck(
     cliProbeError = plainProbeError(cliCheck.message, "CLI update");
   }
   options.onRow?.("cli", cliStatus);
+  const cliLatestRaw = cliCheck.ok ? asRecord(cliCheck.value)?.latest : null;
+  const cliLatestVersion =
+    typeof cliLatestRaw === "string" && cliLatestRaw.trim() ? cliLatestRaw.trim() : null;
 
   return {
     appStatus: await appPromise,
@@ -265,6 +270,7 @@ export async function runUpdateCheck(
     cliProbeError,
     appUpdateVersion,
     coreState,
+    cliLatestVersion,
   };
 }
 

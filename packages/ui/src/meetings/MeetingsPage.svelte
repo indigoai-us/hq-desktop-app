@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { startVisibleInterval } from "../common/visible-interval.js";
   import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
@@ -743,7 +744,7 @@
     setMeetingsViewActive(true);
     void refreshMeetingPermissions();
     void refreshPersonalMeetingTranscripts();
-    const transcriptPoll = window.setInterval(() => void refreshPersonalMeetingTranscripts(), 30_000);
+    const stopTranscriptPoll = startVisibleInterval(() => void refreshPersonalMeetingTranscripts(), 30_000);
     const onTranscriptFocus = () => void refreshPersonalMeetingTranscripts();
     window.addEventListener("focus", onTranscriptFocus);
     const stopTranscriptFlag = adapter.identity.subscribeFeature?.(
@@ -773,7 +774,7 @@
     return () => {
       window.removeEventListener("focus", onTranscriptFocus);
       window.removeEventListener("focus", onFocus);
-      window.clearInterval(transcriptPoll);
+      stopTranscriptPoll();
       stopTranscriptFlag?.();
       setMeetingsViewActive(false);
       if (focusClearTimer) clearTimeout(focusClearTimer);

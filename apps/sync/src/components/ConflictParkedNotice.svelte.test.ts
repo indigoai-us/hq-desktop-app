@@ -103,3 +103,18 @@ describe('ConflictParkedNotice rendering', () => {
     expect(shell).toMatch(/<ConflictParkedNotice\b/);
   });
 });
+
+describe('conflict review route wiring', () => {
+  const shell = readSource('../desktop-alt/HqWorkWorkShell.svelte');
+
+  it('routes a notification click (live and cold) to the toast Review list', () => {
+    // Live: the window is open and receives `desktop:navigate`.
+    expect(shell).toMatch(
+      /listen<string>\('desktop:navigate',[\s\S]{0,120}isConflictReviewRoute\(event\.payload\)[\s\S]{0,80}conflictReviewRequested = true/,
+    );
+    // Cold: the click opened the window and queued the route.
+    expect(shell).toMatch(/isConflictReviewRoute\(pending\)[\s\S]{0,60}conflictReviewRequested = true/);
+    expect(shell).toMatch(/reviewRequested=\{conflictReviewRequested\}/);
+    expect(shell).toMatch(/onReviewHandled=\{\(\) => \(conflictReviewRequested = false\)\}/);
+  });
+});

@@ -67,6 +67,16 @@ describe("integration paths", () => {
     expect(INTEGRATION_PATHS.blueprint).toBe("/v1/integrations/factory/blueprint");
   });
 
+  it("names the per-connection access read with both ids encoded, and the revoke route", () => {
+    expect(INTEGRATION_PATHS.readAccess("cmp_acme", "acct_linear")).toBe(
+      "/v1/integrations/factory/access?companyUid=cmp_acme&connectionId=acct_linear",
+    );
+    expect(INTEGRATION_PATHS.readAccess("a b&c", "x/y")).toBe(
+      "/v1/integrations/factory/access?companyUid=a%20b%26c&connectionId=x%2Fy",
+    );
+    expect(INTEGRATION_PATHS.revokeAccess).toBe("/v1/integrations/factory/access/revoke");
+  });
+
   it("keeps the console's Integrations page on the full view, which it reads creator names from", () => {
     expect(COMPANY_INTEGRATION_PATHS.list("cmp_acme")).toBe("/v1/integrations/admin?companyUid=cmp_acme");
   });
@@ -156,6 +166,62 @@ describe("WebPlatformAdapter integrations", () => {
     const result = await adapter.integrations.listConnections("cmp_acme");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("http-500");
+  });
+
+  it("GETs the per-connection access envelope at the factory read route, with both ids encoded", async () => {
+    const envelope = {
+      access: { mode: "private" },
+      canManage: true,
+      entries: [{ granteeType: "person", granteeId: "agt_nova", permission: "read" }],
+    };
+    const { adapter, calls } = makeAdapter(() => ({ status: 200, body: envelope }));
+    const result = await adapter.integrations.getConnectionAccess({
+      companyUid: "cmp_acme",
+      connectionId: "acct_linear",
+    });
+    expect(calls).toEqual([
+      {
+        method: "GET",
+        path: "/v1/integrations/factory/access?companyUid=cmp_acme&connectionId=acct_linear",
+        body: undefined,
+      },
+    ]);
+    expect(result).toEqual({ ok: true, value: envelope });
+  });
+
+  it("POSTs a revoke for the bot as a person grant, with no permission", async () => {
+    const { adapter, calls } = makeAdapter(() => ({ status: 200, body: { connectionId: "acct_linear" } }));
+    const result = await adapter.integrations.revokeConnectionAccess({
+      companyUid: "cmp_acme",
+      connectionId: "acct_linear",
+      granteeUid: "agt_nova",
+    });
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        path: "/v1/integrations/factory/access/revoke",
+        body: { companyUid: "cmp_acme", connectionId: "acct_linear", granteeType: "person", granteeId: "agt_nova" },
+      },
+    ]);
+    expect(result).toEqual({ ok: true, value: { connectionId: "acct_linear" } });
+  });
+
+  it("returns a refused revoke as a failure that names the 403", async () => {
+    const { adapter } = makeAdapter(() => ({
+      status: 403,
+      body: { error: "Only the connection owner or a company admin can manage access" },
+    }));
+    const result = await adapter.integrations.revokeConnectionAccess({
+      companyUid: "cmp_acme",
+      connectionId: "acct_linear",
+      granteeUid: "agt_nova",
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: "error",
+      code: "http-403",
+      message: "Only the connection owner or a company admin can manage access",
+    });
   });
 });
 
@@ -286,6 +352,17 @@ describe("WebPlatformAdapter integrations: connecting an app from a card", () =>
     expect(calls).toEqual([
       { method: "POST", path: "/v1/integrations/factory/blueprint", body: { companyUid: "cmp_acme", domain: "example.com" } },
       { method: "POST", path: "/v1/integrations/factory/blueprint", body: { companyUid: "cmp_acme", catalogEntryId: "cat_1" } },
+    ]);
+  });
+});
+
+describe("catalog lookup (first-run Your apps)", () => {
+  it("posts the fixed list to the lookup route", async () => {
+    const { adapter, calls } = makeAdapter(() => ({ status: 200, body: { ok: true, companyUid: "cmp_acme", matches: {} } }));
+    const res = await adapter.integrations.catalogLookup!("cmp_acme", ["linear.app", "zoom.us"]);
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual([
+      { method: "POST", path: "/v1/integrations/factory/catalog/lookup", body: { companyUid: "cmp_acme", domains: ["linear.app", "zoom.us"] } },
     ]);
   });
 });

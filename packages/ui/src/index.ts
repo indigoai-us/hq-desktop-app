@@ -347,3 +347,18 @@ export { loadTelemetry } from "./shell/telemetry-lazy.js";
 export { loadBrief } from "./shell/brief-lazy.js";
 export { configureBriefSeed } from "./brief/brief-seed.js";
 export { octoberEightBrief } from "./brief/brief-fixture.js";
+// Accomplishment badges: profile panes read earned badges from this source.
+export {
+  setBadgeSource,
+  setBadgeProgressSource,
+  type BadgeSource,
+  type BadgeSubject,
+  type BadgeProgress,
+  type BadgeProgressSource,
+} from "./badges/badge-source.js";
+export type { EarnedBadge } from "./badges/badge-catalog.js";
+// The rule for the tiers a badge can be earned at, which the loader reads
+// hq-pro's badges by; the design harness's ?earn= switch follows it too.
+export { BADGE_BY_ID, earnedTier } from "./badges/badge-catalog.js";
+// The "You earned" notice and the Gold / Legendary card reveal. No earning events call it yet.
+export { announceBadgeEarned, announceBadgesEarned } from "./badges/badge-announce.js";

@@ -1954,7 +1954,7 @@ mod tests {
         let launch = include_str!("launch.rs");
         for command in [
             "pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {",
-            "pub fn launch_cli_in_terminal(path: String, tool: String) -> Result<(), String> {",
+            "pub fn launch_cli_in_terminal(path: String, tool: String, prompt: Option<String>) -> Result<(), String> {",
             "pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<(), String> {",
         ] {
             let bodies: Vec<_> = launch.split(command).skip(1).collect();

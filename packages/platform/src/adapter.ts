@@ -23,6 +23,7 @@
  */
 
 import type { Capabilities, Capability } from "./capabilities.js";
+import type { BadgesPayload } from "./badges.js";
 import type {
   EvidenceOptions,
   ServiceEvidence,
@@ -476,6 +477,13 @@ export interface IdentityApi {
     agentUid: string,
     input: SelectAgentAvatarInput,
   ): AdapterPromise<SelectAgentAvatarResult>;
+  /**
+   * GET /v1/badges/{uid} — a teammate's accomplishment badges (`uid` is a
+   * `prs_*` person uid or `me`), parsed by `parseBadgesPayload`. A failure
+   * (including the 404 for agents, non-teammates and a route that is not
+   * deployed yet) is the caller's cue to show no badges.
+   */
+  getBadges?(uid: string): AdapterPromise<BadgesPayload>;
 }
 
 export interface MessageSearchOptions {
@@ -1194,8 +1202,12 @@ export interface CompanyApi {
   setMemberRole?(companyUid: string, membershipKey: string, newRole: string): AdapterPromise<Json>;
   /** OWNER-R9: remove a member or revoke an invite (`POST /membership/revoke`). Server keeps the last owner. */
   revokeMembership?(companyUid: string, membershipKey: string): AdapterPromise<Json>;
-  /** Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to the last 30 days). */
-  getTeamTelemetry(slug: string, range?: { from: string; to: string }): AdapterPromise<Json>;
+  /**
+   * Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to
+   * the last 30 days). `range.tz` is an IANA zone sent to hq-pro as `tz`; the
+   * host sends this machine's zone when it is absent.
+   */
+  getTeamTelemetry(slug: string, range?: { from: string; to: string; tz?: string }): AdapterPromise<Json>;
   claimPendingInvite(slug: string): AdapterPromise<Json>;
   connectToCloud(slug: string): AdapterPromise<Json>;
   getSummary(slug: string): AdapterPromise<Json>;
@@ -1209,6 +1221,15 @@ export interface CompanyApi {
    * slug) since callers already have it from the workspace roster.
    */
   ensureHomeChannel(companyUid: string): AdapterPromise<{ homeChannelId: string }>;
+  /**
+   * Mint a Stripe customer-portal session for a company
+   * (`POST /v1/billing/portal`, body `{ companyUid }`). hq-pro owner-gates the
+   * call and verifies the Stripe customer belongs to that company before it
+   * mints; a non-owner gets 403 (`FORBIDDEN`), a mislinked customer 409
+   * (`BILLING_CUSTOMER_CONFLICT`). The `url` is short-lived: mint one per
+   * click and never cache it.
+   */
+  createBillingPortalSession(companyUid: string): AdapterPromise<{ url: string }>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }
@@ -1506,11 +1527,25 @@ export const AGENT_PATHS = {
   },
   owners: (companyUid: string, agentUid: string) =>
     `/v1/fleet/${encodeURIComponent(companyUid)}/agents/${encodeURIComponent(agentUid)}/owners`,
-  companyTelemetry: (companyUid: string, from: string, to: string) =>
-    `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+  companyTelemetry: (companyUid: string, from: string, to: string, tz?: string) =>
+    `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`,
   myTelemetry: (from: string, to: string, tz?: string) =>
     `/v1/telemetry/me?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`,
 } as const;
+
+/**
+ * This machine's IANA time zone (e.g. "America/Denver"), or undefined when the
+ * runtime cannot say. Sent to hq-pro telemetry reads as `tz`.
+ */
+export function localIanaZone(): string | undefined {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof zone === "string" && zone.trim() ? zone : undefined;
+  } catch (err) {
+    console.warn("[telemetry] could not read the local time zone:", err);
+    return undefined;
+  }
+}
 
 /** One company's connected apps (hq-pro integrations-admin; any member may read). */
 export const COMPANY_INTEGRATION_PATHS = {
@@ -1642,11 +1677,15 @@ export interface AgentsApi {
   ): AdapterPromise<Json>;
   /** GET /v1/fleet/{companyUid}/agents/{uid}/owners. */
   listOwners(companyUid: string, agentUid: string): AdapterPromise<Json>;
-  /** GET /v1/telemetry/company?companyUid=&from=&to= — owner/admin. */
+  /**
+   * GET /v1/telemetry/company?companyUid=&from=&to=&tz= — owner/admin. `tz` is
+   * an IANA zone; the response's `bucketTz` says which zone the days were cut in.
+   */
   getCompanyTelemetry(
     companyUid: string,
     from: string,
     to: string,
+    tz?: string,
   ): AdapterPromise<Json>;
   /**
    * GET /v1/telemetry/me?from=&to=&tz= — the caller's own cross-company rollups
@@ -1693,6 +1732,10 @@ export const INTEGRATION_PATHS = {
   connections: (companyUid: string) =>
     `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}&view=summary`,
   grantAccess: "/v1/integrations/factory/access/grant",
+  /** The per-connection access view: mode, entries, caller's `canManage`. */
+  readAccess: (companyUid: string, connectionId: string) =>
+    `/v1/integrations/factory/access?companyUid=${encodeURIComponent(companyUid)}&connectionId=${encodeURIComponent(connectionId)}`,
+  revokeAccess: "/v1/integrations/factory/access/revoke",
   /** The catalog of apps HQ can connect. `limit` is left out when not given; the server bounds it to 1..100. */
   catalog: (companyUid: string, query: string, limit?: number) =>
     `/v1/integrations/factory/catalog?companyUid=${encodeURIComponent(companyUid)}` +
@@ -1701,6 +1744,11 @@ export const INTEGRATION_PATHS = {
   oauthStart: "/v1/integrations/factory/oauth/start",
   install: "/v1/integrations/factory/install",
   blueprint: "/v1/integrations/factory/blueprint",
+  /** Which of a fixed list of domains are in the catalog (first-run "Your apps"). */
+  catalogLookup: "/v1/integrations/factory/catalog/lookup",
+  /** Find and probe a vendor's remote MCP server from its docs page. */
+  discoverDocs: "/v1/integrations/factory/discover-docs",
+  uninstall: "/v1/integrations/factory/uninstall",
 } as const;
 
 /** One row of the integration catalog, as the server sends it. Every field may be missing. */
@@ -1780,6 +1828,13 @@ export interface IntegrationInstallInput {
     | { placement: "header"; header: string };
   provider?: string;
   displayName?: string;
+  /** A docs-discovery receipt (`discoverDocs`); the server installs what it verified. */
+  discoveryReceiptId?: string;
+  /**
+   * Marks an install the desktop first run made with no sign-in, so it can be
+   * undone and shown as automatic (hq-pro `installation.origin`).
+   */
+  origin?: "first-run-auto";
 }
 
 /** Who gets to use a connection. A bot's uid is granted as a person. */
@@ -1821,6 +1876,20 @@ export interface IntegrationsApi {
    */
   grantConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
   /**
+   * GET /v1/integrations/factory/access?companyUid=&connectionId=: the mode,
+   * creator and ACL entries for a single connection, plus whether the caller
+   * may manage it. Serves per-bot read of effective access.
+   */
+  getConnectionAccess(input: {
+    companyUid: string;
+    connectionId: string;
+  }): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/access/revoke: remove a person's or bot's
+   * grant on a connection. Same manage check as `grantConnectionAccess`.
+   */
+  revokeConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
+  /**
    * GET /v1/integrations/factory/catalog?companyUid=&query=&limit=: the apps
    * HQ can connect that match `query`. Owner or admin only; anyone else gets
    * a 403 with code `INTEGRATION_FACTORY_FORBIDDEN`. Answers
@@ -1828,6 +1897,31 @@ export interface IntegrationsApi {
    * carries the HTTP status (`status`) and the server's `code`.
    */
   catalogSearch(companyUid: string, query: string, limit?: number): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/catalog/lookup with `{ companyUid, domains }`:
+   * which of a FIXED list of app domains are in the catalog. The first-run
+   * "Your apps" step always sends its whole signature list, so the request
+   * says nothing about what was found on this computer. Owner or admin only.
+   * Answers `{ ok, companyUid, matches: { [domain]: IntegrationCatalogEntry | null } }`
+   * (hq-pro `lookupFactoryCatalog`, integrations-admin.ts). Optional: hosts
+   * without it leave it out.
+   */
+  catalogLookup?(companyUid: string, domains: readonly string[]): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/discover-docs with `{ companyUid, docsUrl }`:
+   * hq-pro reads the vendor's docs page, finds its remote MCP server and
+   * probes it (it never builds or hosts one). Owner or admin only, runs
+   * synchronously (up to about 18 s). Answers `{ ok, discoveryReceiptId?,
+   * discovery: { authMode, verification, provider, displayName, mcpUrl } }`,
+   * or a CLI-only `cliDetection`. A 404, 409 or 422 means HQ cannot connect
+   * it yet; the server records the attempt. Optional.
+   */
+  discoverDocs?(input: { companyUid: string; docsUrl: string }): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/uninstall with `{ companyUid, installationId }`:
+   * revoke a factory installation's connection. Owner or admin only. Optional.
+   */
+  uninstall?(input: { companyUid: string; installationId: string }): AdapterPromise<Json>;
   /**
    * POST /v1/integrations/factory/oauth/start with `{ companyUid, domain }`
    * or `{ companyUid, catalogEntryId }` and no `redirectUri`: the server's
@@ -1900,6 +1994,63 @@ export interface SyncApi {
   restoreFromUpstream(args: Json): AdapterPromise<void>;
   beginReauth(): AdapterPromise<Json>;
   listSyncableWorkspaces(): AdapterPromise<Json[]>;
+  /**
+   * Per-company download footprint (`get_sync_mode`; CLI `hq sync mode`).
+   * `isDefault: true` means no saved choice, so the effective mode is `all`.
+   * Footprint only: access is unchanged by either mode.
+   */
+  getCompanySyncMode?(slug: string): AdapterPromise<CompanySyncModeConfig>;
+  /** Set a company's footprint to `all` or `shared` (`set_sync_mode`). */
+  setCompanySyncMode?(
+    slug: string,
+    mode: CompanySyncMode,
+  ): AdapterPromise<CompanySyncModeConfig>;
+}
+
+/** Download footprint choices the desktop exposes; `custom` stays CLI-only. */
+export type CompanySyncMode = 'all' | 'shared';
+
+/** Wire shape of `get_sync_mode` / `set_sync_mode` (`MembershipSyncConfig`). */
+export interface CompanySyncModeConfig {
+  membershipId: string;
+  syncMode: 'all' | 'shared' | 'custom';
+  isDefault: boolean;
+  customPaths?: string[] | null;
+  updatedBy?: string | null;
+}
+
+/** One installed app, as `detect_work_apps` reports it. */
+export interface FoundWorkApp {
+  /** macOS `CFBundleIdentifier`; null on Windows. */
+  bundleId: string | null;
+  name: string;
+}
+
+/** One configured MCP server: its name and host only, never a URL or a credential. */
+export interface FoundMcpServer {
+  tool: "claude_code" | "claude_desktop" | "cursor" | "codex";
+  name: string;
+  transport: "http" | "sse" | "stdio" | "unknown";
+  /** Host only; null for local, unparsable or URL-less servers. */
+  host: string | null;
+  local: boolean;
+  /** A credential field is present in the config; its value was never read. */
+  hasCredentialFields: boolean;
+  enabled: boolean;
+}
+
+/** The answer of `detect_work_apps` (apps/sync/src-tauri/src/commands/work_apps.rs). */
+export interface FoundWorkApps {
+  platform: "macos" | "windows" | "linux";
+  scannedAtMs: number;
+  apps: FoundWorkApp[];
+  mcpServers: FoundMcpServer[];
+  sources: {
+    source: "apps" | FoundMcpServer["tool"];
+    outcome: "read" | "missing" | "unreadable" | "invalid" | "unsupported" | "budget";
+    count: number;
+  }[];
+  truncated: boolean;
 }
 
 /** Desktop-only group (capability: canLaunchApps). */
@@ -1936,8 +2087,18 @@ export interface ShellApi {
    *  Backed by the `launch_codex_workspace` command (ChatGPT-bundled CLI's
    *  `codex app <path>` + delayed `codex://threads/new?prompt=` follow-up). */
   launchCodexWorkspace(path: string, prompt?: string): AdapterPromise<void>;
+  /** Open `{ path, tool }` (tool: claude | codex | grok) in a terminal. An
+   *  optional `prompt` string is handed to the tool as its first prompt. */
   launchCliInTerminal(args: Json): AdapterPromise<void>;
   detectAiTools(): AdapterPromise<Json>;
+  /**
+   * Names-only scan of this computer's work apps (`detect_work_apps`): app
+   * bundle ids and names, and the MCP servers configured in Claude Code,
+   * Claude Desktop, Cursor and Codex by name and host. The values of a
+   * server's credential fields and arguments are never read. Optional:
+   * hosts without the scan leave it out. See {@link FoundWorkApps}.
+   */
+  detectWorkApps?(): AdapterPromise<FoundWorkApps>;
   pickFolder(): AdapterPromise<string | null>;
   pickFile(kind: string): AdapterPromise<string | null>;
 }
@@ -2080,6 +2241,11 @@ export interface LocalBotRow {
    * copy (`chat/bot-display-names.ts`); readers fall back to `name`.
    */
   displayName?: string;
+  /**
+   * `assistant` for the person's assistant (the setup bot), from an hq-cli
+   * that reports the cloud role marker. Absent on older CLI versions.
+   */
+  role?: string;
   agentUid: string;
   ownerUid: string;
   runtime: "claude" | "codex" | "grok";
@@ -2140,6 +2306,10 @@ export interface LocalBotRow {
 export interface RemoteBotRow {
   /** Local folder name (what `adopt`/`start` take). */
   name: string;
+  /** The cloud name, from an hq-cli that reports it. Absent on older CLI versions. */
+  displayName?: string;
+  /** `assistant` for the person's assistant (the setup bot). Absent on older CLI versions. */
+  role?: string;
   agentUid: string;
   /** `personal` | `company`, as the cloud record has it. */
   kind: string;
@@ -2170,6 +2340,10 @@ export interface RemoteBotRow {
 /** One bot's outcome in `hq bot restore --json`. */
 export interface BotRestoreRow {
   name: string;
+  /** The cloud name, from an hq-cli that reports it. Absent on older CLI versions. */
+  displayName?: string;
+  /** `assistant` for the person's assistant (the setup bot). Absent on older CLI versions. */
+  role?: string;
   agentUid: string;
   /** `restored` = brought back here; `repaired` = new credentials for one already here. */
   action:
@@ -2275,6 +2449,22 @@ export interface LocalBotsApi {
   configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
   promote?(name: string, companyUid: string): AdapterPromise<Json>;
   /**
+   * Set the model a bot asks its runtime for (`hq bot set-model <name>
+   * <model|default>`), from its next message. Used by the runtime repair
+   * card's "Use a supported model". Optional for older hosts.
+   */
+  setModel?(name: string, model: string): AdapterPromise<Json>;
+  /**
+   * Run one test turn with a runtime (and model) exactly as a bot would
+   * (`hq bot probe --runtime <r> [--model <m>] [--effort <e>] [--timeout
+   * <s>]`): `{ ok, class, detail, runtime, model, modelFallback? }`. A failing
+   * check is a value with `ok: false`, not an error. An hq CLI that predates
+   * the command answers `{ supported: false }`. The repair card passes the
+   * runtime and model; the New bot flow adds the bot's thinking level and a
+   * shorter timeout. Optional for older hosts.
+   */
+  probe?(runtime: SessionProviderId, model?: string | null, options?: LocalBotProbeOptions): AdapterPromise<Json>;
+  /**
    * The local bots this ACCOUNT owns, each flagged `here` or not
    * (`hq bot list --remote`). The one source of truth for "the person owns
    * this bot and this computer cannot run it". Optional: older hosts and the
@@ -2311,6 +2501,277 @@ export interface ImportScanEndView {
  * host validates each line and emits it as `IMPORT_SCAN_EVENT` with the
  * scan's id; nothing leaves the computer. One scan at a time.
  */
+/** Settings > Storage (`hq storage status --json`). Desktop-only. */
+export interface StorageLocalTranche {
+  id: string;
+  label: string;
+  from?: string | null;
+  to?: string | null;
+  commit_count: number;
+  est_bytes: number;
+}
+
+export interface StorageCloudTranche {
+  id: string;
+  label: string;
+  count: number;
+  bytes: number;
+}
+
+export interface StorageCloudCompany {
+  company: string;
+  available: boolean;
+  error?: string | null;
+  current_bytes: number;
+  noncurrent_bytes: number;
+  noncurrent_count: number;
+  delete_markers: number;
+  tranches: StorageCloudTranche[];
+  /** Owner or admin: may delete old versions. Absent on older CLIs. */
+  can_delete?: boolean | null;
+}
+
+export interface StorageStatus {
+  local: {
+    available: boolean;
+    reason?: string | null;
+    root?: string | null;
+    git_dir_bytes: number;
+    working_tree_bytes: number;
+    commit_count: number;
+    oldest_commit_at?: string | null;
+    newest_commit_at?: string | null;
+    tranches: StorageLocalTranche[];
+    /** Tool bookmarks (e.g. refs/cmux/last-turn/*) that prune clears. */
+    extra_refs?: number;
+    /** Branches, tags or a stash that still reach old history. */
+    holding_refs?: StorageHoldingRef[];
+    holding_refs_count?: number;
+    /** Bytes an undo backup still holds, freed at `reclaim_after`. */
+    pending_reclaim_bytes?: number | null;
+    reclaim_after?: string | null;
+  };
+  cloud: StorageCloudCompany[];
+  /**
+   * Big files that can move to HQ cloud. Absent on CLIs without offload, and
+   * on newer CLIs that leave the big-file scan out of status
+   * (`big_files_included: false`; read them with `StorageApi.bigFiles`).
+   */
+  offload?: StorageOffloadStatus | null;
+  /** Cloud history could not be read at all (e.g. signed out). */
+  cloud_error?: string | null;
+  generated_at?: string | null;
+  /**
+   * `false`: this CLI left the big-file scan out of status; `hq storage
+   * big-files` has it. Absent on older CLIs, whose status carries `offload`.
+   */
+  big_files_included?: boolean | null;
+  reclaim?: StorageReclaim | null;
+}
+
+/** A branch, tag or stash that keeps old backup history alive. */
+export interface StorageHoldingRef {
+  name: string;
+  commit_date?: string | null;
+}
+
+/** Top-level `reclaim`: expired undo backups the CLI dropped first. */
+export interface StorageReclaim {
+  available: boolean;
+  dropped?: number | null;
+  freed_bytes?: number | null;
+  reason?: string | null;
+}
+
+export interface StorageCountBytes {
+  count: number;
+  bytes: number;
+}
+
+/** `hq storage big-files --json`: the big-file scan on its own. */
+export interface StorageBigFiles {
+  offload?: StorageOffloadStatus | null;
+  generated_at?: string | null;
+}
+
+/** `hq storage status --json` → `offload`. */
+export interface StorageOffloadStatus {
+  /** Old copies of big files in local backup history. */
+  history_candidates: StorageCountBytes;
+  /** Big files in the HQ folder not opened or changed for a while. */
+  current_candidates: StorageCountBytes;
+  /** `.hqcloud` placeholders already on this computer. */
+  placeholders: StorageCountBytes;
+  /** `false` when big files can't move at all (old HQ, old HQ sync). */
+  available?: boolean | null;
+  reason?: string | null;
+  /**
+   * `true` only once the CLI can move current files. Absent means it can't,
+   * so `current_candidates` is not offered.
+   */
+  current_available?: boolean | null;
+  /** Why current files can't move yet. Never shown raw. */
+  current_reason?: string | null;
+  /**
+   * Old big files a linked worktree still uses. They can't be freed, so they
+   * are not in `history_candidates`. `worktrees` are paths; show folder names only.
+   */
+  history_held?: (StorageCountBytes & { worktrees?: string[] | null }) | null;
+}
+
+/** `hq storage offload --json` (with `--dry-run`: what would move). */
+export interface StorageOffloadResult {
+  history: {
+    uploaded: number;
+    bytes: number;
+    freed_bytes: number;
+    /** Old copies that would move (dry run) or were eligible. */
+    candidates?: number | null;
+    candidate_bytes?: number | null;
+    /** `false` with a `reason` when history copies could not move. */
+    available?: boolean | null;
+    reason?: string | null;
+    /** Undo backup the rewrite kept (normally none: offload frees at once). */
+    backup_ref?: string | null;
+    /** When `pending_reclaim_bytes` are freed (dry run: an estimate). */
+    reclaim_after?: string | null;
+    pending_reclaim_bytes?: number | null;
+    /** Old versions a linked worktree still uses: left in place, never counted as freed. */
+    held_by_worktrees?: StorageCountBytes | null;
+    /** Worktree paths that still use old history. Show folder names only. */
+    worktree_holders?: string[] | null;
+    /** Set when the run stops before changing anything, e.g. nothing_to_free. */
+    refused?: string | null;
+    /** The CLI's plain sentence for `refused`. */
+    message?: string | null;
+  };
+  current: {
+    offloaded: Array<{ path: string; bytes: number }>;
+    freed_bytes: number;
+    /** `false` with a `reason` while current files can't move yet. */
+    available?: boolean | null;
+    reason?: string | null;
+  };
+  /** Per-file failures; the UI only counts them. */
+  errors: unknown[];
+  dry_run?: boolean;
+  reclaim?: StorageReclaim | null;
+}
+
+/** Native event while HQ opens a `.hqcloud` placeholder. */
+export const CLOUD_FILE_EVENT = "cloud-file://fetch";
+
+export interface CloudFileEventPayload {
+  /** Original file name, e.g. `promo.mp4`. */
+  name: string;
+  /** Full placeholder path; keys the toast. */
+  path?: string | null;
+  phase: "fetching" | "opened" | "error";
+  /**
+   * `offline` | `no-access` | `orphaned` | `not-member` | `update-hq` |
+   * `open-failed` | `failed`.
+   */
+  error?: string | null;
+}
+
+export interface StoragePruneRequest {
+  /** YYYY-MM-DD; local snapshots older than this are removed. */
+  localBefore?: string | null;
+  /** YYYY-MM-DD; old cloud file versions older than this are removed. */
+  cloudBefore?: string | null;
+  company?: string | null;
+}
+
+/**
+ * `hq storage prune --json`. `local` is the hq-core script's output with
+ * `available` added: a dry run reports `would_remove_commits`/`est_bytes`, a
+ * real run `removed_commits` and git dir size `before`/`after`.
+ * `retained_refs` counts other refs that can keep old history alive.
+ */
+export interface StorageLocalPruneResult {
+  available: boolean;
+  reason?: string | null;
+  would_remove_commits: number;
+  est_bytes: number;
+  removed_commits: number;
+  total_commits_before: number;
+  flattened_merges: number;
+  retained_refs: number;
+  /** Dry run: tool bookmarks prune would clear. */
+  refs_to_remove?: number;
+  /** Real run: tool bookmarks prune cleared. */
+  refs_removed?: number;
+  refs_to_remove_sample?: string[];
+  before?: { git_dir_bytes: number } | null;
+  after?: { git_dir_bytes: number } | null;
+  /** `nothing_to_free`: branches, tags or a stash still reach the history. */
+  refused?: string | null;
+  holding_refs?: StorageHoldingRef[];
+  holding_refs_count?: number;
+  /** Real run: bytes freed right away. */
+  freed_bytes?: number | null;
+  /** The 24 h undo backup, and when the bytes it holds are freed. */
+  backup_ref?: string | null;
+  reclaim_after?: string | null;
+  pending_reclaim_bytes?: number | null;
+}
+
+export interface StorageCloudPruneResult {
+  company: string;
+  deleted_count: number;
+  deleted_bytes: number;
+  errors: string[];
+}
+
+export interface StoragePruneResult {
+  local?: StorageLocalPruneResult | null;
+  cloud: StorageCloudPruneResult[];
+  dry_run: boolean;
+  reclaim?: StorageReclaim | null;
+}
+
+/**
+ * Desktop-only. A failure whose message is `update-hq` means the hq CLI is
+ * missing or predates `hq storage`.
+ */
+/** Last good `hq storage status`, kept by the desktop host. */
+export interface CachedStorageStatus {
+  status: StorageStatus;
+  /** ISO time the scan finished. */
+  fetched_at: string;
+  hq_root: string;
+}
+
+export interface StorageApi {
+  /**
+   * `hq storage status --json`. Slow (minutes cold). The host runs one scan
+   * at a time: a call made while one runs joins it.
+   */
+  status(): AdapterPromise<StorageStatus>;
+  /** Last known status without scanning; null when there is none. */
+  cachedStatus?(): AdapterPromise<CachedStorageStatus | null>;
+  /**
+   * `hq storage big-files --json`: the slow big-file scan, separate from
+   * status so the summary shows first. One scan at a time on the host. An
+   * older CLI without the command fails with `update-hq`; its status carries
+   * big files instead.
+   */
+  bigFiles?(): AdapterPromise<StorageBigFiles>;
+  previewPrune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
+  prune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
+  /** `hq storage offload --dry-run --json`. */
+  previewOffload(): AdapterPromise<StorageOffloadResult>;
+  /** `hq storage offload --yes --json`: upload, verify, free space. */
+  offload(): AdapterPromise<StorageOffloadResult>;
+  /** Download a `.hqcloud` placeholder's original and open it. */
+  openCloudFile(path: string): AdapterPromise<string>;
+  /**
+   * The UI is listening for `CLOUD_FILE_EVENT`: returns events that fired
+   * before (e.g. a cold start from a Finder double-click).
+   */
+  cloudFileUiReady(): AdapterPromise<CloudFileEventPayload[]>;
+}
+
 export interface ContextImportApi {
   /** Run a scan under this id. Resolves when it ends, however it ends. */
   scanStart(scanId: string): AdapterPromise<ImportScanEndView>;
@@ -2319,6 +2780,13 @@ export interface ContextImportApi {
 }
 
 /** Input to `LocalBotsApi.configure`. */
+export interface LocalBotProbeOptions {
+  /** Thinking level the check runs at; null = the runtime's default. */
+  effort?: string | null;
+  /** Give up after this many seconds (the CLI's own default is 120). */
+  timeoutSecs?: number | null;
+}
+
 export interface LocalBotSettingsInput {
   model?: string | null;
   effort?: string | null;
@@ -2599,6 +3067,8 @@ export interface PlatformAdapter {
   readonly bots?: LocalBotsApi;
   /** Optional: only the desktop host can read this computer's context. */
   readonly contextImport?: ContextImportApi;
+  /** Optional: only the desktop host can read and prune local HQ backups. */
+  readonly storage?: StorageApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
   /** Native calling (US-014). Unsupported hosts implement it as refusals. */

@@ -1,0 +1,113 @@
+{
+  "local": {
+    "available": true,
+    "root": "/tmp/e2e2-f1",
+    "git_dir_bytes": 633815040,
+    "working_tree_bytes": 254873163,
+    "commit_count": 303,
+    "oldest_commit_at": "2025-04-11T17:03:52Z",
+    "newest_commit_at": "2026-10-09T21:13:28Z",
+    "tranches": [
+      {
+        "id": "7d",
+        "label": "Last 7 days",
+        "from": "2026-10-02T21:22:38Z",
+        "to": "2026-10-09T21:22:38Z",
+        "commit_count": 4,
+        "est_bytes": 0
+      },
+      {
+        "id": "30d",
+        "label": "7\u201330 days",
+        "from": "2026-09-09T21:22:38Z",
+        "to": "2026-10-02T21:22:38Z",
+        "commit_count": 13,
+        "est_bytes": 0
+      },
+      {
+        "id": "90d",
+        "label": "30\u201390 days",
+        "from": "2026-07-11T21:22:38Z",
+        "to": "2026-09-09T21:22:38Z",
+        "commit_count": 33,
+        "est_bytes": 0
+      },
+      {
+        "id": "365d",
+        "label": "90 days\u20131 year",
+        "from": "2025-10-09T21:22:38Z",
+        "to": "2026-07-11T21:22:38Z",
+        "commit_count": 153,
+        "est_bytes": 0
+      },
+      {
+        "id": "older",
+        "label": "Older than 1 year",
+        "from": "2025-04-11T17:03:52Z",
+        "to": "2025-10-09T21:22:38Z",
+        "commit_count": 100,
+        "est_bytes": 0
+      }
+    ],
+    "holding_refs": [
+      {
+        "name": "refs/stash",
+        "commit_date": "2026-10-09T21:22:34Z"
+      },
+      {
+        "name": "refs/tags/v-new",
+        "commit_date": "2026-07-10T13:13:28Z"
+      },
+      {
+        "name": "refs/heads/side",
+        "commit_date": "2026-04-10T05:13:38Z"
+      },
+      {
+        "name": "refs/heads/old-branch",
+        "commit_date": "2025-06-21T22:49:28Z"
+      },
+      {
+        "name": "refs/tags/v-old-annot",
+        "commit_date": "2025-06-03T16:25:28Z"
+      },
+      {
+        "name": "refs/tags/v-old-light",
+        "commit_date": "2025-06-03T16:25:28Z"
+      }
+    ],
+    "holding_refs_count": 6,
+    "extra_refs": 3,
+    "pending_reclaim_bytes": 125921912,
+    "reclaim_after": "2026-10-10T21:26:58Z"
+  },
+  "cloud": [],
+  "offload": {
+    "history_candidates": {
+      "count": 4,
+      "bytes": 252357290
+    },
+    "current_candidates": {
+      "count": 0,
+      "bytes": 0
+    },
+    "placeholders": {
+      "count": 0,
+      "bytes": 0
+    },
+    "current_available": false,
+    "current_reason": "Offloading current files is not available yet: HQ sync would treat the replaced file as deleted.",
+    "history_held": {
+      "count": 2,
+      "bytes": 126178646,
+      "worktrees": [
+        ".claude/worktrees/old-ui"
+      ]
+    }
+  },
+  "generated_at": "2026-10-09T21:22:40.528Z",
+  "reclaim": {
+    "available": true,
+    "dropped": 0,
+    "freed_bytes": 0
+  }
+}

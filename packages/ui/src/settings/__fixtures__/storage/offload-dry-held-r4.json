@@ -1,0 +1,30 @@
+{
+  "history": {
+    "uploaded": 4,
+    "bytes": 252357290,
+    "freed_bytes": 0,
+    "candidates": 4,
+    "candidate_bytes": 252357290,
+    "backup_ref": null,
+    "reclaim_after": "2026-10-10T21:20:00Z",
+    "pending_reclaim_bytes": 252357290,
+    "held_by_worktrees": {
+      "count": 2,
+      "bytes": 126178646
+    },
+    "worktree_holders": [
+      ".claude/worktrees/old-ui"
+    ]
+  },
+  "current": {
+    "offloaded": [],
+    "freed_bytes": 0
+  },
+  "errors": [],
+  "dry_run": true,
+  "reclaim": {
+    "available": true,
+    "dropped": 0,
+    "freed_bytes": 0
+  }
+}

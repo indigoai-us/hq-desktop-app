@@ -4,7 +4,8 @@
    * Company settings (console-rail US-030).
    * General, Brand, Groups, Grants, HQ Workforce, and Billing.
    * Cached snapshot paints on the first frame. Upgrade opens Stripe checkout.
-   * Manage payment opens the Stripe portal. Delete group asks first.
+   * Manage payment opens a Stripe portal session hq-pro mints for this
+   * company (never a fixed link). Delete group asks first.
    */
   import {
     emptySnapshot,
@@ -16,6 +17,7 @@
     type SettingsTab,
   } from "./company-settings.js";
   import type { CompanyApi, FilesApi, MessagingApi } from "@hq/platform";
+  import { billingPortalHint, openBillingPortal, type BillingPortalOutcome } from "../account/billing-portal.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import GroupGrantsPane from "./GroupGrantsPane.svelte";
   import type { GrantTarget } from "./group-grants.js";
@@ -246,9 +248,39 @@
     remember();
   }
 
-  function openStripe(action: "upgrade" | "portal"): void {
+  function openStripe(action: "upgrade"): void {
     const url = stripeDestination(action);
     openExternal?.(url);
+  }
+
+  // Manage payment: hq-pro mints the portal session per click (owner-gated,
+  // customer ownership verified server-side). Pending while in flight; a
+  // failure leaves a quiet hint and the same button retries.
+  let portalPending = $state(false);
+  let portalOutcome = $state<BillingPortalOutcome | null>(null);
+  const portalOwnerOnly = $derived(role !== null && role.toLowerCase() !== "owner");
+  const portalHint = $derived(
+    portalOwnerOnly
+      ? billingPortalHint({ kind: "owner-only" }, companyLabel)
+      : billingPortalHint(portalOutcome, companyLabel),
+  );
+
+  async function managePayment(): Promise<void> {
+    const uid = companyUid;
+    const api = company;
+    const open = openExternal;
+    if (portalPending || portalOwnerOnly || !uid || !api || !open) return;
+    portalPending = true;
+    portalOutcome = null;
+    try {
+      portalOutcome = await openBillingPortal({
+        companyUid: uid,
+        createSession: (id) => api.createBillingPortalSession(id),
+        openExternal: open,
+      });
+    } finally {
+      portalPending = false;
+    }
   }
 
 </script>
@@ -368,8 +400,20 @@
           <p class="sub">Plan, seats and payment · billed to {snap.general.name || companyLabel}</p>
         </div>
         <span class="grow"></span>
-        <RailButton icon="external" type="button" data-testid="manage-payment" onclick={() => openStripe("portal")}>Manage payment</RailButton>
+        {#if !portalOwnerOnly}
+          <RailButton
+            icon="external"
+            type="button"
+            data-testid="manage-payment"
+            disabled={portalPending || !companyUid || !company || !openExternal}
+            aria-busy={portalPending}
+            onclick={() => void managePayment()}
+          >{portalPending ? "Opening Stripe…" : portalOutcome && portalOutcome.kind !== "opened" ? "Try again" : "Manage payment"}</RailButton>
+        {/if}
       </div>
+      {#if portalHint}
+        <p class="note" data-testid="manage-payment-hint" role="status">{portalHint}</p>
+      {/if}
       <div class="plan">
         <div data-testid="workforce-seats">
           <b>{rosterHumans ?? "–"}</b>{#if seatLimit && snap.seatsLimit !== null}<span data-testid="workforce-seat-limit"> of {snap.seatsLimit}</span>{/if}<span>Seats used · humans on Team</span>
@@ -391,7 +435,7 @@
         </div>
         <RailButton icon="arrow-right" variant="primary" type="button" data-testid="workforce-upgrade" onclick={() => openStripe("upgrade")}>Upgrade</RailButton>
       </div>
-      <p class="note">Manage payment opens the Stripe customer portal in your browser.</p>
+      <p class="note">Manage payment opens the Stripe customer portal in your browser. Invoices are listed there.</p>
     {/if}
   </div>
 </section>

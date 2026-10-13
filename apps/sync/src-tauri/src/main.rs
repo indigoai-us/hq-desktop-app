@@ -63,6 +63,7 @@ mod ui_protocol;
 mod tray_helper;
 mod updater;
 mod scratch_build;
+mod toolchain;
 mod updater_outcome;
 mod util;
 #[cfg(target_os = "macos")]
@@ -483,6 +484,15 @@ fn main() {
         // menubar process. Here the callback surfaces the existing instance and
         // the second process exits instead of becoming a ghost duplicate.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // Windows/Linux: double-clicking a `.hqcloud` placeholder while HQ
+            // runs lands here. Fetch the original and open it; no window steal.
+            let cloud_files = commands::cloud_file::placeholders_from_argv(&argv);
+            if !cloud_files.is_empty() {
+                for file in cloud_files {
+                    commands::cloud_file::spawn_fetch_and_open(app, file);
+                }
+                return;
+            }
             // US-104: if the OS delivered a hqwork:// URL to THIS process,
             // route it internally. Do not steal the popover for a deep link.
             if let Some(url) = commands::hq_work::hqwork_url_from_argv(&argv) {
@@ -612,6 +622,7 @@ fn main() {
         .manage(commands::dm_notify::WatchedSharesState::new())
         .manage(commands::messages::PendingMessagesTarget::new())
         .manage(crate::deep_link::PendingSetupTarget::new())
+        .manage(crate::deep_link::PendingPackTarget::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         .manage(commands::banner::PendingBannerActions::default())
         .manage(commands::banner::BannerActionRouterReadiness::default())
@@ -715,6 +726,7 @@ fn main() {
             commands::ai_tools::detect_claude_ready,
             commands::ai_tools::detect_claude_desktop_connectors,
             commands::ai_tools::import_claude_desktop_connectors,
+            commands::work_apps::detect_work_apps,
             commands::launch::launch_claude_code,
             commands::launch::launch_cli_in_terminal,
             commands::launch::launch_codex_workspace,
@@ -913,12 +925,23 @@ fn main() {
             commands::drift_detail::open_drift_detail,
             commands::drift_detail::drift_window_ready,
             commands::feedback::submit_bug_report,
+            commands::storage::get_storage_status,
+            commands::storage::get_cached_storage_status,
+            commands::storage::get_storage_big_files,
+            commands::storage::preview_storage_prune,
+            commands::storage::run_storage_prune,
+            commands::storage::preview_storage_offload,
+            commands::storage::run_storage_offload,
+            commands::cloud_file::open_cloud_file,
+            commands::cloud_file::cloud_file_ui_ready,
             commands::bots::local_bots_list,
             commands::bots::local_bots_create,
             commands::bots::local_bots_start,
             commands::bots::local_bots_stop,
             commands::bots::local_bots_remove,
             commands::bots::local_bots_configure,
+            commands::bots::local_bots_set_model,
+            commands::bots::local_bots_probe,
             commands::bots::local_bots_promote,
             commands::bots::local_bots_workers,
             commands::bots::local_bots_list_remote,
@@ -936,6 +959,8 @@ fn main() {
             commands::packages::uninstall_package,
             commands::packages::open_packages_window,
             commands::packages::packages_window_ready,
+            commands::packages::pack_deep_link_catalog_name,
+            commands::packages::install_pack_from_deep_link,
             commands::activity::open_activity_log,
             commands::activity::activity_window_ready,
             commands::activity::get_activity_log,
@@ -1116,6 +1141,8 @@ fn main() {
             commands::messages::get_company_tab,
             commands::messages::run_company_tab_action,
             crate::deep_link::take_pending_setup_target,
+            crate::deep_link::peek_pending_pack_target,
+            crate::deep_link::take_pending_pack_target,
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
             commands::messages::delete_channel,
@@ -1173,6 +1200,14 @@ fn main() {
             commands::compat::open_developer_settings,
         ])
         .setup(|app| {
+            // Windows/Linux cold start from a `.hqcloud` double-click. macOS
+            // delivers it as `RunEvent::Opened` below instead.
+            #[cfg(not(target_os = "macos"))]
+            for file in commands::cloud_file::placeholders_from_argv(
+                &std::env::args().collect::<Vec<_>>(),
+            ) {
+                commands::cloud_file::spawn_fetch_and_open(app.handle(), file);
+            }
             // Unattended dependency-install mode for the VM install matrix.
             // Engaged only by HQ_HEADLESS_INSTALL_DEPS=<out.json>; runs the
             // real `install_deps` orchestrator, writes a JSON result, exits.
@@ -1298,9 +1333,9 @@ fn main() {
             // hq-cli can attach the installed hq-sync version to feedback
             // submissions — the CLI has no other way to learn the running
             // menubar-app version. Best-effort; never aborts launch.
-            // Not from a scratch build (scratch_build.rs): it would name the
-            // test bundle as the installed app.
-            if !scratch_build::active() {
+            // Only from the shipped bundle (scratch_build.rs): a scratch or
+            // side-by-side bundle would name itself as the installed app.
+            if scratch_build::production_bundle() {
                 commands::config::record_sync_version(app_version::current());
             }
 
@@ -1787,6 +1822,17 @@ fn main() {
             // `has_visible_windows` is deliberately ignored: a hidden-but-live
             // notification banner still counts as a visible window, so
             // honouring the flag would make the Dock icon inert.
+            // Finder double-click on a `.hqcloud` placeholder (cold or warm
+            // start): fetch the original from HQ cloud and open it.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                for url in urls {
+                    if let Some(file) = commands::cloud_file::placeholder_from_url(url) {
+                        commands::cloud_file::spawn_fetch_and_open(_app_handle, file);
+                    }
+                }
+            }
+
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 // Same reason as the focus handler above: no eager force-probe.

@@ -37,9 +37,11 @@ import {
   vaultPutIntegrityFields,
   withHttpStatus,
   withoutSecret,
+  localIanaZone,
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
+import { parseBadgesPayload } from '../badges.js';
 import {
   CLAUDE_PROVIDER_FLAG,
   RAIL_GATE_EVERYONE_DEFAULT,
@@ -115,6 +117,14 @@ export const RECORDED_DETAIL_TIMEOUT_SECS = 45;
  * connected apps." The company integrations read asks for a longer bound.
  */
 export const COMPANY_INTEGRATIONS_TIMEOUT_SECS = 45;
+
+/**
+ * POST /v1/agents/{uid}/login-code types the Claude code on the bot's machine
+ * and waits up to 20 s for Claude's answer, plus SSM pickup, before it replies.
+ * The shared 15 s bound cut that wait off, so a code that went through could
+ * read as a failure. The paste-back asks for a longer bound.
+ */
+export const CLAUDE_LOGIN_CODE_TIMEOUT_SECS = 45;
 
 const NOT_MAPPED = unavailable(
   'not-yet-mapped',
@@ -724,6 +734,11 @@ export function createSyncPlatformAdapter(
       getAvatarPack: (packId) => hqProJson('GET', WEB_PATHS.avatarPack(packId)),
       selectAgentAvatar: (agentUid, input) =>
         hqProJson('POST', WEB_PATHS.agentAvatar(agentUid), input),
+      // Accomplishment badges over hq_pro_fetch, parsed at this boundary.
+      getBadges: async (uid) => {
+        const result = await hqProJson<unknown>('GET', WEB_PATHS.badges(uid));
+        return result.ok ? ok(parseBadgesPayload(result.value)) : result;
+      },
     },
 
     messaging: {
@@ -1260,8 +1275,18 @@ export function createSyncPlatformAdapter(
         hqProRequestWithStatus('GET', AGENT_PATHS.status(agentUid, brain)),
       restartBrainApproval: (agentUid, brain) =>
         hqProJson('POST', AGENT_PATHS.reauth(agentUid), { brain }),
-      submitClaudeLoginCode: (agentUid, code) =>
-        hqProJson('POST', AGENT_PATHS.loginCode(agentUid), { code }),
+      // A refusal keeps its HTTP status: the New Bot screen tells a code the
+      // server turned down (4xx) from one whose fate is not known (5xx).
+      submitClaudeLoginCode: async (agentUid, code) => {
+        const attempted = await hqProAttemptWithRetries<Json>(
+          'POST',
+          AGENT_PATHS.loginCode(agentUid),
+          { code },
+          CLAUDE_LOGIN_CODE_TIMEOUT_SECS,
+        );
+        if (!attempted.result.ok && attempted.result.code === 'network') return attempted.result;
+        return withHttpStatus(attempted.result, attempted.status);
+      },
       attachSlack: (agentUid) =>
         hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
       // The token goes in the body only. The path names the bot, nothing else.
@@ -1293,8 +1318,8 @@ export function createSyncPlatformAdapter(
         ),
       listOwners: (companyUid, agentUid) =>
         hqProJson('GET', AGENT_PATHS.owners(companyUid, agentUid)),
-      getCompanyTelemetry: (companyUid, from, to) =>
-        hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+      getCompanyTelemetry: (companyUid, from, to, tz) =>
+        hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to, tz ?? localIanaZone())),
       getMyTelemetry: (from, to, tz) =>
         hqProJson('GET', AGENT_PATHS.myTelemetry(from, to, tz)),
       listLocalSessions: (range, page) =>
@@ -1310,6 +1335,10 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', INTEGRATION_PATHS.connections(companyUid)),
       grantConnectionAccess: (input) =>
         hqProJson('POST', INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+      getConnectionAccess: ({ companyUid, connectionId }) =>
+        hqProJson('GET', INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+      revokeConnectionAccess: (input) =>
+        hqProJson('POST', INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
       catalogSearch: (companyUid, query, limit) =>
         hqProRequestWithStatus('GET', INTEGRATION_PATHS.catalog(companyUid, query, limit)),
       // No redirectUri: the server's default lands on the console's callback.
@@ -1320,6 +1349,12 @@ export function createSyncPlatformAdapter(
         withoutSecret(await hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ''),
       blueprint: (input) =>
         hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
+      catalogLookup: (companyUid, domains) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+      discoverDocs: (input) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+      uninstall: (input) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
     },
 
     company: {
@@ -1353,8 +1388,15 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', '/membership/role', { companyUid, membershipKey, newRole }),
       revokeMembership: (companyUid, membershipKey) =>
         hqProJson('POST', '/membership/revoke', { companyUid, membershipKey }),
-      getTeamTelemetry: (slug, range) =>
-        call('get_company_team_telemetry', range ? { slug, from: range.from, to: range.to } : { slug }),
+      getTeamTelemetry: (slug, range) => {
+        // hq-pro cuts days in `tz` when it can; this Mac's zone is the default.
+        const tz = range?.tz ?? localIanaZone();
+        return call('get_company_team_telemetry', {
+          slug,
+          ...(range ? { from: range.from, to: range.to } : {}),
+          ...(tz ? { tz } : {}),
+        });
+      },
       claimPendingInvite: (slug) =>
         call('claim_pending_company_invite', { slug, route: 'company_page' }),
       connectToCloud: (slug) =>
@@ -1364,6 +1406,10 @@ export function createSyncPlatformAdapter(
       getActivity: (slug) => call('get_company_activity', { slug }),
       getFirstWeekReturnNudge: (companyUid) =>
         hqProJson('GET', WEB_PATHS.firstWeekReturnNudge(companyUid)),
+      createBillingPortalSession: (companyUid) =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingPortal(), {
+          companyUid,
+        }),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,
@@ -1559,6 +1605,9 @@ export function createSyncPlatformAdapter(
       },
       beginReauth: () => call('begin_reauth'),
       listSyncableWorkspaces: () => call('list_syncable_workspaces'),
+      getCompanySyncMode: (slug) => call('get_sync_mode', { companySlug: slug }),
+      setCompanySyncMode: (slug, mode) =>
+        call('set_sync_mode', { companySlug: slug, mode }),
     },
 
     shell: {
@@ -1590,11 +1639,15 @@ export function createSyncPlatformAdapter(
         if (!path || !tool) {
           return failure('invalid-argument', 'launch payload needs path and tool');
         }
-        const result = await call<void>('launch_cli_in_terminal', { path, tool });
+        // Optional first prompt. Rust flattens it to one line and binds it
+        // after `--` as the tool's PROMPT argument.
+        const prompt = typeof rec.prompt === 'string' && rec.prompt.trim() ? rec.prompt : null;
+        const result = await call<void>('launch_cli_in_terminal', { path, tool, prompt });
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },
       detectAiTools: () => call('detect_ai_tools'),
+      detectWorkApps: () => call('detect_work_apps'),
       pickFolder: async () => {
         const result = await call<string | null>('pick_folder');
         if (result.ok && result.value) dispatchPostReadyAction('open_folder');
@@ -1721,6 +1774,14 @@ export function createSyncPlatformAdapter(
       stop: (name) => call('local_bots_stop', { name }),
       remove: (name) => call('local_bots_remove', { name }),
       configure: (name, settings) => call('local_bots_configure', localBotSettingsArgs(name, settings)),
+      setModel: (name, model) => call('local_bots_set_model', { name, model }),
+      probe: (runtime, model, options) =>
+        call('local_bots_probe', {
+          runtime,
+          model: model ?? null,
+          effort: options?.effort ?? null,
+          timeoutSecs: options?.timeoutSecs ?? null,
+        }),
     promote: (name, companyUid) => call("local_bots_promote", { name, companyUid }),
       // Bots come back after a reinstall: the cloud knows every local bot this
       // account owns, and `here` says which of them this computer can run.
@@ -1732,6 +1793,21 @@ export function createSyncPlatformAdapter(
     // Visual first run, "Bring in your context": `hq import scan --json
     // --stream` behind the same launch boundary (src-tauri/src/commands/
     // import_scan.rs). Lines arrive as IMPORT_SCAN_EVENT events.
+    // Settings > Storage: `hq storage status|prune|offload --json`, and
+    // opening `.hqcloud` placeholders (cloud_file.rs)
+    // (src-tauri/src/commands/storage.rs).
+    storage: {
+      status: () => call('get_storage_status'),
+      cachedStatus: () => call('get_cached_storage_status'),
+      bigFiles: () => call('get_storage_big_files'),
+      previewPrune: (request) => call('preview_storage_prune', { request }),
+      prune: (request) => call('run_storage_prune', { request }),
+      previewOffload: () => call('preview_storage_offload'),
+      offload: () => call('run_storage_offload'),
+      openCloudFile: (path) => call('open_cloud_file', { path }),
+      cloudFileUiReady: () => call('cloud_file_ui_ready'),
+    },
+
     contextImport: {
       scanStart: (scanId) => call('import_scan_start', { scanId }),
       scanCancel: (scanId) => call('import_scan_cancel', { scanId }),

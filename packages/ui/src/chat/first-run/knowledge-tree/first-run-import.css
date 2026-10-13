@@ -277,6 +277,20 @@
   outline: 1px solid #fff;
   outline-offset: 3px;
 }
+/* "Skip for now": a small, quiet link under the primary import button. */
+.fr-skip-row {
+  margin: 12px 0 0;
+  text-align: center;
+}
+.fr-skip {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+.fr-skip:hover:not(:disabled) {
+  color: rgba(255, 255, 255, 0.86);
+}
 
 /* Footer: the takeover's "Next: <step>" + primary pair. */
 .fr-actions {

@@ -8,8 +8,12 @@
  * could show the person a message they never wrote and cannot find in the
  * thread (review B-3).
  *
+ * The visual first run's notes to the setup assistant ("Setup note from the
+ * HQ desktop app: ...", carrying the "Handoff from the app:" JSON) go the
+ * same way and are treated the same (`isAppNoticeBody`).
+ *
  * This leaves those hits out of the results. A hit is left out only when its
- * text opens with the app's own lead AND it is the app's request:
+ * text is one of the app's own notices AND it is the app's request:
  *
  *   - it is marked for the bot only (`audience: "agent"`), or
  *   - it was sent from this person's side (`direction: "out"`, or a sender
@@ -22,13 +26,13 @@
  * sender nor the direction. For such a hit the conversation decides. In a
  * direct message with a bot there are two sides, the person and the bot, and
  * the conversation already leaves out every row that opens with the lead,
- * whoever wrote it (`inlineReplyRows`). A hit for that row would open a
+ * whoever wrote it (`botDmRows`). A hit for that row would open a
  * thread that does not show it, so it is left out here too. Anywhere else
  * (a channel, a group, a direct message with a person) a hit that does not
  * say who sent it is kept.
  */
 
-import { AGENT_HELLO_REQUEST_LEAD, isAgentUid } from "../agent-channel.js";
+import { isAgentUid, isAppNoticeBody } from "../agent-channel.js";
 import type { MessageSearchHit } from "../sidebar-model.js";
 
 /** What a host may add to a hit. The server sends `direction`; some hosts drop it. */
@@ -43,7 +47,7 @@ function text(value: unknown): string {
 }
 
 function opensWithLead(hit: MessageSearchHit): boolean {
-  return [hit.body, hit.snippet].some((value) => text(value).startsWith(AGENT_HELLO_REQUEST_LEAD));
+  return [hit.body, hit.snippet].some((value) => isAppNoticeBody(text(value)));
 }
 
 /** True when this hit is a request the app wrote to a bot for this person. */

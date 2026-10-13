@@ -69,7 +69,7 @@
       <h2 class="confirm-title" id="confirm-title">{title}</h2>
       <p class="confirm-copy" id="confirm-copy">{message}</p>
       <div class="confirm-actions">
-        <button type="button" class="confirm-btn ghost" onclick={oncancel}>
+        <button type="button" class="confirm-btn ghost" data-testid="confirm-dialog-cancel" onclick={oncancel}>
           {cancelLabel}
         </button>
         <button

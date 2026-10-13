@@ -479,6 +479,14 @@
   const firstFolderSelfHealIntervalMs = 2_000;
   let companyStepVisited = false;
   /**
+   * The company picked, joined or created in this flow, as the reference the
+   * connector import passes to `hq integrations import --company` (slug, or
+   * the `cmp_` uid when no slug is known). Null for a Personal setup (no
+   * company, or the company step skipped): integrations are company-scoped,
+   * so the connector import is not offered then.
+   */
+  let connectorImportCompany = $state<string | null>(null);
+  /**
    * The company route lookup. It starts on the second setup explainer, so the
    * company step can run between the setup explainers and the ready
    * ("Open HQ Desktop") screen instead of after it. Reset on an account switch.
@@ -1617,12 +1625,20 @@
     } finally {
       switchingAccount = false;
     }
+    // The next account must never import connectors into, or read from, the
+    // previous account's company. sign_out clears it natively too; this also
+    // covers a sign-out that failed.
+    connectorImportCompany = null;
+    // The cached membership read belongs to the previous account as well.
+    membershipMeRead = null;
+    await selectCompany(null, true);
     existingSessionEmail = null;
     signedInEmail = null;
     if (from === 'company') {
       companyPath = null;
       companyPriorPlan = null;
       companyStepVisited = false;
+      connectorImportCompany = null;
       resetCompanyRoute();
       postSetupStepsResolved = false;
       resumeAfterAccountSwitch = true;
@@ -2964,6 +2980,12 @@
     inviteTeammateContext = null;
     showInviteTeammateStep = false;
     if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
+    // The lookup could not say which company this person is in. The app's
+    // active company still names one when there is one; the connector import
+    // is skipped only when there is none.
+    const active = await activeCompanyForConnectorImport();
+    if (!stillCurrent()) return;
+    connectorImportCompany = active;
     if (setupCompleted) {
       // After setup there is no later attempt: settle on no company step.
       companyRouteResolved = true;
@@ -4035,6 +4057,12 @@
       return;
     }
     if (connectorImportVisited) return;
+    if (!connectorImportCompany) {
+      // Personal setup: there is no company to import connectors into, so
+      // the step is not offered and the ready screen stays on show.
+      connectorImportVisited = true;
+      return;
+    }
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX, null);
   });
 
@@ -4077,7 +4105,10 @@
       paidCompany: summary.paidCompany,
       pendingInvites: summary.pendingInvites,
     });
-    if (route.kind === 'skip') void selectCompany(route.company.slug);
+    if (route.kind === 'skip') {
+      connectorImportCompany = route.company.slug ?? route.company.companyUid;
+      void selectCompany(route.company.slug);
+    }
   }
 
   /** A failed lookup keeps the existing #setup create-company recovery in place. */
@@ -4096,9 +4127,19 @@
     });
   }
 
-  /** Make the chosen company the app's active one. Best effort. */
-  async function selectCompany(slug: string | null): Promise<void> {
-    if (!slug) return;
+  /** The app's active company slug, or null when there is none or it cannot be read. */
+  async function activeCompanyForConnectorImport(): Promise<string | null> {
+    try {
+      const slug = await invokeCommand<string | null>('get_desktop_active_company');
+      return typeof slug === 'string' && slug.trim() ? slug.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Make the chosen company the app's active one (or clear it). Best effort. */
+  async function selectCompany(slug: string | null, clear = false): Promise<void> {
+    if (!slug && !clear) return;
     try {
       await invokeCommand('set_desktop_active_company', { companySlug: slug });
     } catch (error) {
@@ -4117,7 +4158,9 @@
           ? 'joined_invite'
           : result.outcome;
     const details: StepTelemetryDetails = { outcome };
+    connectorImportCompany = result.outcome === 'skipped' ? (result.company ?? null) : null;
     if (result.outcome === 'created') {
+      connectorImportCompany = result.companyUid;
       recordWorkspaceSelected(result.companyUid);
     } else if (result.outcome === 'joined') {
       details.decision = 'joined_invite';
@@ -4130,10 +4173,12 @@
         companyStepCompanyUid = companyUid;
         recordWorkspaceSelected(companyUid);
       }
+      connectorImportCompany = result.slugs[0] ?? companyUid ?? null;
       void selectCompany(result.slugs[0] ?? null);
     } else if (result.outcome === 'used_existing') {
       details.decision = 'used_existing';
       companyStepCompanyUid = result.companyUid;
+      connectorImportCompany = result.slug ?? result.companyUid;
       recordWorkspaceSelected(result.companyUid);
       void selectCompany(result.slug);
     }
@@ -4747,6 +4792,7 @@
       <div class="panel-block" bind:this={refs['panel:connectors']}>
         {#if currentStep === CONNECTOR_IMPORT_STEP_INDEX}
           <ConnectorImportStep
+            company={connectorImportCompany}
             oncomplete={() => advanceTo(READY_STEP_INDEX, null)}
             onoffer={() => (scene = 'connectors')}
             onTelemetry={(event) =>

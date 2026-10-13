@@ -180,6 +180,14 @@ describe("ChannelConversation suggested replies", () => {
     expect(labels(messageEl(root, "q"))).toEqual(["Connect more tools", "List our open projects"]);
   });
 
+  it("never shows Something else twice when the bot already offers its own", async () => {
+    // Live walkthrough 2026-10-12: HQ's setup bot suggested "Something else"
+    // and the app added its own, so two "Something else" buttons showed.
+    const { root } = await mountWith({ messages: [message(BOT, "Is it an AI agency?" + suggestions(["Yes, an AI agency", "Something else"]), "q")] });
+    expect(labels(messageEl(root, "q"))).toEqual(["Yes, an AI agency", "Something else"]);
+    expect(root.querySelector('[data-testid="suggested-reply-other"]')).toBeNull();
+  });
+
   it("offers Something else only with two or more suggestions, never with one, never alone", async () => {
     const { root, state } = await mountWith({ messages: [message(BOT, "Want a summary?" + suggestions(["Yes please"]), "q1")] });
     expect(labels(messageEl(root, "q1"))).toEqual(["Yes please"]);

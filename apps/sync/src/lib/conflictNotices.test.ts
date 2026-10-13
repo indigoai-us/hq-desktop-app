@@ -43,3 +43,46 @@ describe('conflict parked notices', () => {
     ]);
   });
 });
+
+describe('conflict notice batch dismissal', () => {
+  it('treats the dismissed id set as the batch identity', async () => {
+    const { isConflictBatchDismissed } = await import('./conflictNotices');
+    const dismissed = new Set(['a', 'b']);
+    expect(isConflictBatchDismissed([notice('a'), notice('b')], dismissed)).toBe(true);
+    expect(isConflictBatchDismissed([notice('b')], dismissed)).toBe(true);
+    expect(isConflictBatchDismissed([notice('b'), notice('c')], dismissed)).toBe(false);
+    expect(isConflictBatchDismissed([], dismissed)).toBe(false);
+  });
+
+  it('round-trips through storage and ignores malformed values', async () => {
+    const {
+      CONFLICT_DISMISSED_BATCH_KEY,
+      clearDismissedConflictBatch,
+      readDismissedConflictBatch,
+      writeDismissedConflictBatch,
+    } = await import('./conflictNotices');
+    const data = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => void data.set(key, value),
+      removeItem: (key: string) => void data.delete(key),
+    };
+    writeDismissedConflictBatch(storage, [notice('a'), notice('b')]);
+    expect([...readDismissedConflictBatch(storage)].sort()).toEqual(['a', 'b']);
+    clearDismissedConflictBatch(storage);
+    expect(readDismissedConflictBatch(storage).size).toBe(0);
+    data.set(CONFLICT_DISMISSED_BATCH_KEY, '{torn');
+    expect(readDismissedConflictBatch(storage).size).toBe(0);
+    expect(readDismissedConflictBatch(null).size).toBe(0);
+  });
+
+  it('recognises only the conflict review route the native notification carries', async () => {
+    const { CONFLICT_REVIEW_ROUTE, isConflictReviewRoute } = await import('./conflictNotices');
+    // Must match hq_desktop_core::conflict_notify::CONFLICT_REVIEW_ROUTE.
+    expect(CONFLICT_REVIEW_ROUTE).toBe('conflicts');
+    expect(isConflictReviewRoute('conflicts')).toBe(true);
+    expect(isConflictReviewRoute(' conflicts ')).toBe(true);
+    expect(isConflictReviewRoute('meetings')).toBe(false);
+    expect(isConflictReviewRoute(null)).toBe(false);
+  });
+});

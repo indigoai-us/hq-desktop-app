@@ -1,0 +1,40 @@
+{
+  "local": {
+    "available": true,
+    "refused": "nothing_to_free",
+    "holding_refs": [
+      {
+        "name": "refs/stash",
+        "commit_date": "2026-10-09T21:22:34Z"
+      },
+      {
+        "name": "refs/tags/v-new",
+        "commit_date": "2026-07-10T13:13:28Z"
+      },
+      {
+        "name": "refs/heads/side",
+        "commit_date": "2026-04-10T05:13:38Z"
+      },
+      {
+        "name": "refs/heads/old-branch",
+        "commit_date": "2025-06-21T22:49:28Z"
+      },
+      {
+        "name": "refs/tags/v-old-annot",
+        "commit_date": "2025-06-03T16:25:28Z"
+      },
+      {
+        "name": "refs/tags/v-old-light",
+        "commit_date": "2025-06-03T16:25:28Z"
+      }
+    ],
+    "holding_refs_count": 6
+  },
+  "cloud": [],
+  "dry_run": false,
+  "reclaim": {
+    "available": true,
+    "dropped": 0,
+    "freed_bytes": 0
+  }
+}

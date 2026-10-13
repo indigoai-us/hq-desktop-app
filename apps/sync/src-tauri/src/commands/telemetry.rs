@@ -1005,6 +1005,7 @@ const CONNECTOR_IMPORT_OUTCOME_VALUES: &[&str] = &[
     "import_failed",
     "command_failed",
     "user_skipped",
+    "skipped_after_failure",
     "unknown",
 ];
 
@@ -4304,6 +4305,19 @@ mod codex_telemetry_tests {
         assert_eq!(event.properties["outcome"], "unknown");
         assert_eq!(event.properties["detectedSourceSet"], "unknown");
         assert!(!event.properties.to_string().contains("alice"));
+
+        let skipped = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "connector-import",
+                "outcome": "skipped_after_failure",
+                "detectedSourceSet": "claude_desktop_config",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(skipped.properties["outcome"], "skipped_after_failure");
     }
 
     #[test]

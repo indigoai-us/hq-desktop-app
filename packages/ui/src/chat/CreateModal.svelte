@@ -198,6 +198,8 @@
     botSignIn?: RuntimeSignInApi | null;
     /** A runtime just signed in — the host refreshes `botRuntimeReady`. */
     onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
+    /** Readiness check before a local bot is saved (`hq bot probe`). See CreateBotFlow. */
+    probeBotRuntime?: ((input: import("./create-bot/runtime-probe.js").RuntimeProbeInput) => AdapterPromise<unknown>) | null;
     /**
      * What to create inside a company: a plain team channel (default —
      * `scope: "company"` for name uniqueness, but never the company's home)
@@ -262,6 +264,7 @@
     botCompanies = null,
     botSignIn = null,
     onbotsignedin = null,
+    probeBotRuntime = null,
     initialKind = "channel",
     initialStep = "find",
     botCompanyUid = null,
@@ -2209,6 +2212,7 @@
         entryFix,
         signInApi: botSignIn,
         onsignedin: onbotsignedin,
+        probeBotRuntime,
       }}
     />
 {/snippet}

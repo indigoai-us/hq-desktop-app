@@ -38,6 +38,40 @@ describe("catalog filter (the catalog has no category: filtered here)", () => {
     });
   });
 
+  it("lists Fireflies, Otter, Read.ai and tl;dv under Note taker, not under Project management", () => {
+    // Names and domains as the catalog lists them (Otter and Read.ai are named by their domain).
+    const entries = [
+      { name: "Fireflies.ai", domain: "fireflies.ai", authClass: "oauth" as const },
+      { name: "otter.ai", domain: "otter.ai", authClass: "oauth" as const },
+      { name: "read.ai", domain: "read.ai", authClass: "oauth" as const },
+      { name: "tl;dv", domain: "tldv.io", authClass: "oauth" as const },
+      { name: "Granola", domain: "granola.ai", authClass: "none" as const },
+    ];
+    expect(appsForKind(entries, "notes").map((a) => a.domain)).toEqual(["fireflies.ai", "granola.ai", "otter.ai", "read.ai", "tldv.io"]);
+    expect(appsForKind(entries, "projects")).toEqual([]);
+  });
+
+  it("does not file lookalikes of the new note takers under Note taker", () => {
+    const entries = [
+      { name: "Readwise", domain: "readwise.io" },
+      { name: "Enzo Reader", domain: "enzoreader.com" },
+      { name: "Spotter", domain: "spotter.io" },
+      // Same top-level domain: a plain substring match on otter.ai or read.ai would take these.
+      { name: "Spotter", domain: "spotter.ai" },
+      { name: "Thread AI", domain: "thread.ai" },
+      { name: "Bread", domain: "app.bread.ai" },
+    ];
+    expect(appsForKind(entries, "notes")).toEqual([]);
+  });
+
+  it("files a subdomain of a note taker's website, and tl;dv by its name alone, under Note taker", () => {
+    const entries = [
+      { name: "Otter", domain: "mcp.otter.ai" },
+      { name: "tl;dv", domain: "tl-dv.example.org" },
+    ];
+    expect(appsForKind(entries, "notes").map((a) => a.domain)).toEqual(["mcp.otter.ai", "tl-dv.example.org"]);
+  });
+
   it("lists trackers for Project management and nothing else", () => {
     expect(appsForKind(ENTRIES, "projects").map((a) => a.name)).toEqual(["Asana", "Jira", "Linear"]);
   });

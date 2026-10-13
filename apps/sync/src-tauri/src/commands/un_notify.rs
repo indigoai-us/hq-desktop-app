@@ -493,6 +493,7 @@ fn route_label_for_log(route: Option<&str>) -> &'static str {
     match route {
         Some("meetings") => "meetings",
         Some("inbox") => "inbox",
+        Some("conflicts") => "conflicts",
         Some(r) if r.starts_with("inbox:dm:") => "inbox-dm",
         Some(r) if r.starts_with("inbox:channel:") => "inbox-channel",
         Some(_) => "custom",
@@ -1078,6 +1079,21 @@ mod tests {
             ),
             Some("inbox:channel:chn_eng:evt_root".to_string())
         );
+    }
+
+    // A parked-conflict notification carries the Review route explicitly, so
+    // a click opens the conflict list rather than the Meetings fallback, and
+    // it never triggers the meeting "record" action or the prompt badge.
+    #[test]
+    fn conflict_notification_click_routes_to_conflict_review() {
+        use hq_desktop_core::conflict_notify::{CONFLICT_NOTIFY_KIND, CONFLICT_REVIEW_ROUTE};
+        assert_eq!(
+            resolve_click_route(CONFLICT_NOTIFY_KIND, CONFLICT_REVIEW_ROUTE, "", "", "", ""),
+            Some("conflicts".to_string())
+        );
+        assert_eq!(click_action_for_kind(CONFLICT_NOTIFY_KIND, ""), None);
+        assert_eq!(category_id_for_kind(CONFLICT_NOTIFY_KIND), None);
+        assert_eq!(route_label_for_log(Some(CONFLICT_REVIEW_ROUTE)), "conflicts");
     }
 
     #[test]

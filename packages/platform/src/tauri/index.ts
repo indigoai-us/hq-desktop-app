@@ -24,6 +24,7 @@ import {
   validateSendReply,
   withHttpStatus,
   withoutSecret,
+  localIanaZone,
   type AdapterPromise,
   type AdapterResult,
   type AgentProvisionOptionsView,
@@ -34,6 +35,7 @@ import {
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
 import { claudeLaunchArgs } from "./claude-launch.js";
+import { parseBadgesPayload } from "../badges.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { withCreateAgentsAdmins } from "./provision-refusal.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
@@ -333,6 +335,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
         input,
       ),
+    getBadges: async (uid) => {
+      const result = await this.hqProJson<unknown>("GET", WEB_PATHS.badges(uid));
+      return result.ok ? ok(parseBadgesPayload(result.value)) : result;
+    },
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -642,8 +648,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       ),
     listOwners: (companyUid, agentUid) =>
       this.hqProJson("GET", AGENT_PATHS.owners(companyUid, agentUid)),
-    getCompanyTelemetry: (companyUid, from, to) =>
-      this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+    getCompanyTelemetry: (companyUid, from, to, tz) =>
+      this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to, tz ?? localIanaZone())),
     getMyTelemetry: (from, to, tz) =>
       this.hqProJson("GET", AGENT_PATHS.myTelemetry(from, to, tz)),
   };
@@ -653,6 +659,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("GET", INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.hqProJson("POST", INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    getConnectionAccess: ({ companyUid, connectionId }) =>
+      this.hqProJson("GET", INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+    revokeConnectionAccess: (input) =>
+      this.hqProJson("POST", INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.hqProRequestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
     // No redirectUri: the server's default lands on the console's callback.
@@ -663,6 +673,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       withoutSecret(await this.hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
     blueprint: (input) =>
       this.hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
+    catalogLookup: (companyUid, domains) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+    discoverDocs: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+    uninstall: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
   };
 
   readonly company: PlatformAdapter["company"] = {
@@ -677,6 +693,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.call("get_activity", { slug }),
     ensureHomeChannel: (companyUid) =>
       this.hqProJson("POST", `/v1/companies/${companyUid}/home-channel`),
+    createBillingPortalSession: (companyUid) =>
+      this.hqProJson("POST", WEB_PATHS.companyBillingPortal(), { companyUid }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
@@ -775,6 +793,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     launchCliInTerminal: (args) =>
       this.call("launch_cli_in_terminal", { args }),
     detectAiTools: () => this.call("detect_ai_tools"),
+    detectWorkApps: () => this.call("detect_work_apps"),
     pickFolder: () => this.call("pick_folder"),
     pickFile: (kind) => this.call("pick_file", { kind }),
   };
@@ -882,6 +901,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
   };
 
+  readonly storage: NonNullable<PlatformAdapter["storage"]> = {
+    status: () => this.call("get_storage_status"),
+    cachedStatus: () => this.call("get_cached_storage_status"),
+    bigFiles: () => this.call("get_storage_big_files"),
+    previewPrune: (request) => this.call("preview_storage_prune", { request }),
+    prune: (request) => this.call("run_storage_prune", { request }),
+    previewOffload: () => this.call("preview_storage_offload"),
+    offload: () => this.call("run_storage_offload"),
+    openCloudFile: (path) => this.call("open_cloud_file", { path }),
+    cloudFileUiReady: () => this.call("cloud_file_ui_ready"),
+  };
+
   readonly bots: NonNullable<PlatformAdapter["bots"]> = {
     list: () => this.call("local_bots_list"),
     create: (input) =>
@@ -903,6 +934,14 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     stop: (name) => this.call("local_bots_stop", { name }),
     remove: (name) => this.call("local_bots_remove", { name }),
     configure: (name, settings) => this.call("local_bots_configure", localBotSettingsArgs(name, settings)),
+    setModel: (name, model) => this.call("local_bots_set_model", { name, model }),
+    probe: (runtime, model, options) =>
+      this.call("local_bots_probe", {
+        runtime,
+        model: model ?? null,
+        effort: options?.effort ?? null,
+        timeoutSecs: options?.timeoutSecs ?? null,
+      }),
     promote: (name, companyUid) => this.call("local_bots_promote", { name, companyUid }),
   };
 

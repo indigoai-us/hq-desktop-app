@@ -13,6 +13,7 @@
 
 import { stripeDestination } from "../../company/company-settings.js";
 import { pinCompany } from "../more-companies.js";
+import { serverCompanySlug } from "../../chat/first-run/team-step.js";
 
 export const metadata = {
   performanceBudget: {
@@ -55,8 +56,17 @@ export interface NewCompanyFinish {
   template: ProjectTemplate;
 }
 
-/** Lowercase vault slug. Empty when the name has no letters or digits. */
+/**
+ * The company's vault slug, sent to the server on create. Same rule as the
+ * first-run team step (a letter first, at most 30 long, the server's
+ * COMPANY_SLUG_RE). Empty when the name has no letter to start one.
+ */
 export function companySlugFromName(name: string): string {
+  return serverCompanySlug(name);
+}
+
+/** Lowercase slug for a project folder. Empty when the name has no letters or digits. */
+function folderSlug(name: string): string {
   return name
     .trim()
     .toLowerCase()
@@ -99,7 +109,7 @@ export function stepOneEffects(plan: NewCompanyPlan): {
 }
 
 export function projectSlugFromName(name: string): string | null {
-  const slug = companySlugFromName(name);
+  const slug = folderSlug(name);
   return slug || null;
 }
 

@@ -25,14 +25,29 @@
  *       assistant create answers after ?loadingMs (default 2500). visual-notools: no
  *       tool signed in, so the coding tools step is required. visual-fail: the
  *       create fails, to see the failure line with Retry.
+ *   ?firstrun=visual-signin|visual-signin-fail|visual-desktop  the coding tools screen with no
+ *       tool signed in. visual-signin: Sign in waits in the browser for ?loadingMs (default
+ *       2500), then the tool reads as signed in and the screen turns ready. visual-signin-fail:
+ *       the sign-in ends without signing in, to see the plain failure with Try again.
+ *       visual-desktop: Claude Desktop is here but Claude Code is not set up in it yet, and
+ *       Codex can sign in.
  *   ?firstrun=visual-import[-fast|-slow|-empty|-error|-fail|-update]  as visual, and the
  *       "Bring in your context" scan replays a fixture stream (import-scan-fixture.ts).
  *       Plain ?firstrun=visual leaves the scan command unhandled: the stream-failed state.
  *   ?team=invites|member|many|fail and ?apps=on|empty|forbidden|fail  with a ?firstrun= switch:
  *       the "Your team", Note taker and Project management screens (first-run-fixtures.ts).
  *       Without ?team= the roster is the persona's; without ?apps= the catalog is the usual mock.
+ *       With any ?firstrun= switch, the app's notes to the new assistant (POST /v1/notify/dm)
+ *       come back in its direct message the way the server returns them today: from the
+ *       person and with no audience, so the chat can be checked for leaked handoff text.
  *   ?conflicts=N                                 N parked conflict copies (1-50), to see the
  *       grouped "Conflict copy parked" card over the shell
+ *   ?probe=ok|fallback|signed-out|cli-outdated|model-unsupported|transient|not-installed|unknown|unsupported
+ *       the readiness check a local bot gets before it is saved (`hq bot probe`), as the
+ *       New bot flow's coding tool step sees it. Each class fails every check; a check on
+ *       GPT-5.5 passes, so "Use GPT-5.5" can be followed through. fallback: passes on GPT-5.5
+ *       after the tool was too old for its default. unsupported: an hq CLI without the
+ *       check. The answer comes after ?loadingMs (default 1500), to see "Checking Codex...".
  *
  * Combine freely with ?persona=, ?theme= and ?route=.
  */
@@ -40,6 +55,7 @@ import { emit } from '@tauri-apps/api/event';
 import { isBootCommand } from './state-flags';
 import { cancelImportScan, replayImportScan, type ImportVariant } from './import-scan-fixture';
 import { firstRunScreensAnswer } from './first-run-fixtures';
+import { resolveHarnessPersona } from './personas';
 
 function params(search?: string | null): URLSearchParams {
   const raw = search ?? (typeof window === 'undefined' ? '' : window.location.search);
@@ -86,6 +102,41 @@ export function newBotSwitch(search?: string | null): NewBotSwitch | null {
   return value === 'priced' || value === 'included' ? value : null;
 }
 
+export const PROBE_SWITCHES = [
+  'ok',
+  'fallback',
+  'signed-out',
+  'cli-outdated',
+  'model-unsupported',
+  'transient',
+  'not-installed',
+  'unknown',
+  'unsupported',
+] as const;
+export type ProbeSwitch = (typeof PROBE_SWITCHES)[number];
+
+export function probeSwitch(search?: string | null): ProbeSwitch | null {
+  const value = params(search).get('probe') as ProbeSwitch | null;
+  return value && PROBE_SWITCHES.includes(value) ? value : null;
+}
+
+/** What `local_bots_probe` answers under `?probe=`, for the runtime and model asked. */
+export function probeAnswer(kind: ProbeSwitch, args: Record<string, unknown> | undefined): unknown {
+  const runtime = typeof args?.runtime === 'string' ? args.runtime : 'codex';
+  const model = typeof args?.model === 'string' && args.model ? args.model : null;
+  const base = { runtime, model, durationMs: 1200 };
+  if (kind === 'unsupported') return { supported: false };
+  if (kind === 'ok') return { ok: true, class: null, detail: 'It answered.', ...base };
+  if (kind === 'fallback') {
+    return { ok: true, class: null, detail: 'It answered on an older model.', ...base, modelFallback: { from: 'gpt-6-astra', to: 'gpt-5.5' } };
+  }
+  // A supported model passes, so "Use GPT-5.5" can be followed through.
+  if (model === 'gpt-5.5' || model === 'claude-sonnet-5' || model === 'grok-4.6') {
+    return { ok: true, class: null, detail: 'It answered.', ...base };
+  }
+  return { ok: false, class: kind, detail: 'It did not answer.', ...base };
+}
+
 /** The plan check New bot makes for a company, as the server answers it. */
 function newBotProvisionOptions(kind: NewBotSwitch): unknown {
   const included = kind === 'included';
@@ -110,7 +161,17 @@ function newBotProvisionOptions(kind: NewBotSwitch): unknown {
   };
 }
 
-export type FirstRunSwitch = 'visual' | 'visual-notools' | 'visual-fail' | `visual-import${string}`;
+export type FirstRunSwitch =
+  | 'visual'
+  | 'visual-notools'
+  | 'visual-fail'
+  | 'visual-signin'
+  | 'visual-signin-fail'
+  | 'visual-desktop'
+  | `visual-import${string}`;
+
+/** The switches that open the coding tools screen with no tool signed in. */
+const NO_TOOL_SWITCHES = new Set<string>(['visual-notools', 'visual-signin', 'visual-signin-fail', 'visual-desktop']);
 
 const IMPORT_VARIANTS: Record<string, ImportVariant> = {
   'visual-import': 'default',
@@ -125,7 +186,9 @@ const IMPORT_VARIANTS: Record<string, ImportVariant> = {
 export function firstRunSwitch(search?: string | null): FirstRunSwitch | null {
   const value = params(search).get('firstrun');
   if (value && value in IMPORT_VARIANTS) return value as FirstRunSwitch;
-  return value === 'visual' || value === 'visual-notools' || value === 'visual-fail' ? value : null;
+  return value === 'visual' || value === 'visual-fail' || (value !== null && NO_TOOL_SWITCHES.has(value))
+    ? (value as FirstRunSwitch)
+    : null;
 }
 
 /** The scan fixture a `?firstrun=visual-import...` switch replays; null for the other first-run switches. */
@@ -134,19 +197,86 @@ export function importVariant(search?: string | null): ImportVariant | null {
   return value ? (IMPORT_VARIANTS[value] ?? null) : null;
 }
 
-function firstRunPreflight(signedIn: boolean): unknown {
+/** Tools a harness sign-in finished, for the rest of this page load. */
+const harnessSignedIn = new Set<string>();
+/** When each harness sign-in started (ms), so it can finish after ?loadingMs. */
+const harnessSignInStarted = new Map<string, number>();
+
+export function resetHarnessSignIns(): void {
+  harnessSignedIn.clear();
+  harnessSignInStarted.clear();
+}
+
+function firstRunPreflight(firstRun: FirstRunSwitch): unknown {
+  const noTool = NO_TOOL_SWITCHES.has(firstRun);
+  const claudeMissing = firstRun === 'visual-desktop';
+  const claudeIn = !noTool || harnessSignedIn.has('claude');
+  const codexIn = harnessSignedIn.has('codex');
+  const status = (signedIn: boolean) => ({ state: signedIn ? 'signedIn' : 'signedOut' });
   return {
     hqRoot: '/Users/corey/Documents/HQ',
     hooksReady: true,
     hooksError: null,
-    claudeAvailable: true,
-    claudeLoggedIn: signedIn,
+    claudeAvailable: !claudeMissing,
+    claudeLoggedIn: claudeIn && !claudeMissing,
     codexAvailable: true,
-    codexLoggedIn: false,
+    codexLoggedIn: codexIn,
     grokAvailable: false,
     grokLoggedIn: false,
+    claudeStatus: claudeMissing ? { state: 'notInstalled', searched: [] } : status(claudeIn),
+    codexStatus: status(codexIn),
+    grokStatus: { state: 'notInstalled', searched: [] },
     companies: [],
   };
+}
+
+/** The coding tools screen's sign-in commands under ?firstrun=visual-signin[-fail]|visual-desktop. */
+function firstRunSignInAnswer(
+  firstRun: FirstRunSwitch,
+  cmd: string,
+  args: Record<string, unknown> | undefined,
+  search?: string | null,
+): { value: unknown } | undefined {
+  if (!NO_TOOL_SWITCHES.has(firstRun) || firstRun === 'visual-notools') return undefined;
+  const tool = String(args?.tool ?? '');
+  const ms = Number(params(search).get('loadingMs')) || 2500;
+  if (cmd === 'agent_provider_login_start') {
+    if (harnessSignedIn.has(tool)) return { value: { state: 'connected', message: null } };
+    if (!harnessSignInStarted.has(tool)) harnessSignInStarted.set(tool, Date.now());
+    return { value: { state: 'waiting', message: 'Complete sign-in in your browser.' } };
+  }
+  if (cmd === 'agent_provider_login_status') {
+    const started = harnessSignInStarted.get(tool);
+    if (harnessSignedIn.has(tool)) return { value: { state: 'connected', message: null } };
+    if (started === undefined) return { value: { state: 'disconnected', message: null } };
+    if (Date.now() - started < ms) return { value: { state: 'waiting', message: 'Complete sign-in in your browser.' } };
+    harnessSignInStarted.delete(tool);
+    if (firstRun === 'visual-signin-fail') {
+      return { value: { state: 'error', message: 'harness: sign-in did not complete' } };
+    }
+    harnessSignedIn.add(tool);
+    return { value: { state: 'connected', message: null } };
+  }
+  if (cmd === 'agent_provider_login_cancel') {
+    harnessSignInStarted.delete(tool);
+    return { value: { state: 'disconnected', message: 'Sign-in cancelled.' } };
+  }
+  if (cmd === 'detect_ai_tools' && firstRun === 'visual-desktop') {
+    return {
+      value: {
+        claude_cli: false,
+        claude_desktop: true,
+        codex_cli: true,
+        codex_desktop: false,
+        grok_cli: false,
+        claude_last_used_ms: null,
+        codex_last_used_ms: null,
+        grok_last_used_ms: null,
+        any: true,
+      },
+    };
+  }
+  return undefined;
 }
 
 export function atlasPopulated(search?: string | null): boolean {
@@ -207,6 +337,52 @@ function atlasObjects(full: boolean): Array<{ key: string; lastModified: string;
   return out;
 }
 
+/** The assistant a first-run switch creates. */
+const FIRST_RUN_BOT_UID = 'agt_PREVIEWSETUP';
+/** The app's notes to the assistant, in the order they were sent. */
+const firstRunNotes: Array<{ eventId: string; body: string; createdAt: string }> = [];
+
+function recordFirstRunNote(raw: unknown): { status: number; body: string } {
+  let body = '';
+  try {
+    const parsed = JSON.parse(typeof raw === 'string' ? raw : '{}') as { body?: unknown };
+    body = typeof parsed.body === 'string' ? parsed.body : '';
+  } catch {
+    body = '';
+  }
+  const eventId = `evt_first_run_note_${firstRunNotes.length + 1}`;
+  const createdAt = new Date().toISOString();
+  if (body) firstRunNotes.push({ eventId, body, createdAt });
+  return { status: 200, body: JSON.stringify({ eventId, createdAt }) };
+}
+
+/**
+ * The assistant's direct message, newest first: its hello, then each note
+ * the app sent. Like the server's thread read today, a note carries the
+ * person as its sender and no audience.
+ */
+function firstRunAssistantThread(search?: string | null): { messages: unknown[]; nextCursor: null } {
+  // The person the harness signs in as (mocks/core.ts `whoami`).
+  const self = resolveHarnessPersona(search)?.whoami ?? { personUid: 'prs_ada', displayName: 'Ada Lovelace' };
+  const hello = {
+    eventId: 'evt_first_run_hello',
+    fromPersonUid: FIRST_RUN_BOT_UID,
+    fromDisplayName: 'Assistant',
+    body: "Hi, I'm your HQ assistant. I'm checking your computer now.",
+    createdAt: '2026-01-01T00:00:00.000Z',
+    direction: 'in',
+  };
+  const notes = firstRunNotes.map((note) => ({
+    eventId: note.eventId,
+    fromPersonUid: self.personUid,
+    fromDisplayName: self.displayName,
+    body: note.body,
+    createdAt: note.createdAt,
+    direction: 'out',
+  }));
+  return { messages: [...notes].reverse().concat([hello]), nextCursor: null };
+}
+
 /**
  * Handlers layered over the normal mock when a switch is on. Returns
  * `undefined` when no switch claims the command.
@@ -243,9 +419,17 @@ export function switchedHandler(
         },
       };
     }
+    if (cmd === 'hq_pro_fetch' && url.startsWith('/v1/notify/dm') && args?.method === 'POST') {
+      return { value: recordFirstRunNote(args?.body) };
+    }
+    if (cmd === 'fetch_dm_thread' && String(args?.withPersonUid ?? '') === FIRST_RUN_BOT_UID) {
+      return { value: firstRunAssistantThread(search) };
+    }
     const screens = firstRunScreensAnswer(cmd, args, search);
     if (screens) return screens;
-    if (cmd === 'agent_session_preflight') return { value: firstRunPreflight(firstRun !== 'visual-notools') };
+    if (cmd === 'agent_session_preflight') return { value: firstRunPreflight(firstRun) };
+    const signIn = firstRunSignInAnswer(firstRun, cmd, args, search);
+    if (signIn) return signIn;
     if (cmd === 'local_bots_list') return { value: { bots: [] } };
     // "Bring in your context": replay a scan (import-scan-fixture.ts). The
     // other first-run switches leave the command unhandled, which the screen
@@ -261,11 +445,17 @@ export function switchedHandler(
         value: new Promise((resolve, reject) =>
           setTimeout(() => {
             if (firstRun === 'visual-fail') reject(new Error('harness: hq bot create failed'));
-            else resolve({ agentUid: 'agt_PREVIEWSETUP', name: 'setup' });
+            else resolve({ agentUid: FIRST_RUN_BOT_UID, name: 'setup' });
           }, ms),
         ),
       };
     }
+  }
+  const probe = probeSwitch(search);
+  if (probe && cmd === 'local_bots_probe') {
+    const ms = Number(params(search).get('loadingMs')) || 1500;
+    const answer = probeAnswer(probe, args);
+    return { value: new Promise((resolve) => setTimeout(() => resolve(answer), ms)) };
   }
   const newBot = newBotSwitch(search);
   if (newBot && cmd === 'hq_pro_fetch') {

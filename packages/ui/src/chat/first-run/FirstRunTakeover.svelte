@@ -22,6 +22,12 @@
    * and Project management (`appsHost`) for the company picked there; a
    * connect never holds Next. What they settle goes to the host
    * (`onsettled`) for the setup bot's handoff.
+   *
+   * Your coding tools is required (owner, 2026-10-10): the assistant runs on
+   * a signed-in coding tool, so the screen has no Continue in chat. While no
+   * tool is signed in it shows one Sign in per tool (FirstRunToolsSignIn),
+   * leading with the tool whose desktop app is here, and reads readiness
+   * again when a sign-in ends and when the window comes back into focus.
    */
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import LazyDoor from "../../shell/LazyDoor.svelte";
@@ -56,12 +62,14 @@
     FIRST_RUN_COPY,
     FIRST_RUN_NAME_TITLE,
     FIRST_RUN_STEPS,
+    FIRST_RUN_STEPS_YOUR_APPS,
     anyToolReady,
     assistantNameIssue,
     firstRunCanLeave,
     firstRunDoneTitle,
     firstRunFinishTarget,
     firstRunNextLabel,
+    firstRunOffersChat,
     firstRunOffersFinish,
     firstRunStepNumber,
     firstRunStepsFor,
@@ -79,6 +87,37 @@
   import FirstRunTeamStep from "./FirstRunTeamStep.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   import FirstRunAppStep from "./FirstRunAppStep.svelte";
+  import FirstRunYourAppsStep from "./FirstRunYourAppsStep.svelte";
+  import { evidenceLine, matchFoundApps, type FoundAppKind, type FoundAppsResult } from "./found-apps.js";
+  import {
+    YOUR_APPS_COPY,
+    autoConnectPlan,
+    connectedCount,
+    fallbackFoundApps,
+    yourAppsConsentLine,
+    opensSignIn,
+    signInRunning,
+    yourAppsHandoff,
+    yourAppsLead,
+    yourAppsStatus,
+    yourAppsView,
+    type AppRun,
+    type AppTile,
+    type ConnectedChip,
+  } from "./your-apps.js";
+  import type { YourAppsHost, YourAppsLoad } from "./your-apps-host.js";
+  import type { FoundWorkApps } from "@hq/platform";
+  import FirstRunToolsSignIn from "./FirstRunToolsSignIn.svelte";
+  import {
+    checkedReadiness,
+    forcingSignInApi,
+    signInProbeStates,
+    preferredSignInTool,
+    toolRowKinds,
+    toolsSignInLead,
+    type SignInTool,
+    type ToolSignInChecks,
+  } from "./tools-signin.js";
   import {
     TEAM_COPY,
     companyNameIssue,
@@ -121,9 +160,19 @@
     initialStep?: FirstRunStepId;
     runtimeReady: Record<string, boolean> | null;
     runtimeStatus?: Record<string, RuntimeStatus> | null;
+    /**
+     * The real sign-in check per tool (`hq bot probe`), run by the host. A tool
+     * counts as signed in only once its check passed or could not tell. Null
+     * when the host runs none: the status read decides, as before.
+     */
+    signInChecks?: ToolSignInChecks | null;
     signInApi?: RuntimeSignInApi | null;
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     onrecheck?: (() => void | Promise<void>) | null;
+    /** Test seam: how long opening a sign-in may take before it fails. */
+    signInOpenTimeoutMs?: number;
+    /** Test seam: how long a tool may read "Checking…" before Check again shows. */
+    toolCheckingStaleMs?: number;
     aiTools?: AiTools | null;
     hqFolderPath?: string;
     onopenassistant?: (assistant: AssistantId, url: string) => Promise<InstallOutcome>;
@@ -142,7 +191,7 @@
     onretry: () => void;
     /** Done: open the assistant's chat. */
     ontalk: () => void | Promise<void>;
-    /** Leave for the setup chat (every screen, and the failure line). */
+    /** Leave for the setup chat (every screen but Your coding tools, and the failure line). */
     oncontinueinchat: () => void | Promise<void>;
     /**
      * Runs the context scan on this computer. Without it the flow has no
@@ -158,6 +207,16 @@
     teamHost?: FirstRunTeamHost | null;
     /** Without it there are no Note taker and Project management screens. */
     appsHost?: FirstRunAppsHost | null;
+    /**
+     * "Your apps" (flag `desktop.first-run-found-apps-v1`): with it, one step
+     * listing every app found on this computer replaces Note taker and
+     * Project management.
+     */
+    yourAppsHost?: YourAppsHost | null;
+    /** Opens the company's Integrations page (Slack and Google Workspace connect there). */
+    onopenintegrations?: ((companyUid: string) => void) | null;
+    /** Test and harness seam: a names-only scan that already ran. */
+    initialWorkScan?: FoundWorkApps | null;
     /** Every change to what "Your team" and the app screens settled. */
     onsettled?: ((settled: FirstRunSettled) => void) | null;
   }
@@ -166,11 +225,14 @@
     initialName,
     steps = FIRST_RUN_STEPS,
     initialStep = "name",
-    runtimeReady,
+    runtimeReady: storedReady,
     runtimeStatus = null,
+    signInChecks = null,
     signInApi = null,
     onsignedin = null,
     onrecheck = null,
+    signInOpenTimeoutMs = undefined,
+    toolCheckingStaleMs = undefined,
     aiTools = null,
     hqFolderPath = "",
     onopenassistant,
@@ -189,8 +251,27 @@
     teamOptions = null,
     teamHost = null,
     appsHost = null,
+    yourAppsHost = null,
+    onopenintegrations = null,
+    initialWorkScan = null,
     onsettled = null,
   }: Props = $props();
+
+  /**
+   * Readiness as the flow acts on it: a stored login counts only once the
+   * host's real check passed (or could not tell). Next, the pick and the
+   * assistant's start all follow this, never the stored login alone.
+   */
+  const runtimeReady = $derived(checkedReadiness(storedReady, signInChecks));
+  /**
+   * The ready view (one tool passed) shows every tool's check on its card:
+   * a tool whose stored login is dead reads "Sign in first", and its Sign in
+   * replaces the login. Next stays on: the passing tool is enough.
+   */
+  const homeProbeStates = $derived(signInChecks ? signInProbeStates(signInChecks) : null);
+  const homeSignInApi = $derived(
+    signInApi && signInChecks ? forcingSignInApi(signInApi, (tool) => signInChecks?.[tool] === "signedOut") : signInApi,
+  );
 
   // ── Your team ──────────────────────────────────────────────────────────
   const canTeam = $derived(!!teamOptions && !!teamHost);
@@ -240,10 +321,11 @@
       {
         canImport: !!importHost,
         canTeam,
-        canConnectApps: !!appsHost && !!appsCompany,
+        canConnectApps: (yourAppsHost ? true : !!appsHost) && !!appsCompany,
         personal: !appsCompany,
       },
-      steps,
+      // "Your apps" replaces the two app screens of the standard flow.
+      yourAppsHost && steps === FIRST_RUN_STEPS ? FIRST_RUN_STEPS_YOUR_APPS : steps,
     ),
   );
 
@@ -262,6 +344,12 @@
 
   function settled(): FirstRunSettled {
     const apps: FirstRunAppsHandoff = {};
+    if (yourAppsPassed && yourAppsShown) {
+      const handoff = yourAppsHandoff(yourAppsShown, foundKinds);
+      apps.notes = handoff.notes;
+      apps.projects = handoff.projects;
+      if (handoff.others.length) apps.others = handoff.others;
+    }
     for (const kind of ["notes", "projects"] as const) {
       if (!appsPassed[kind]) continue;
       const app = connectedAppOf(kind);
@@ -364,6 +452,252 @@
     });
   });
 
+  // ── Your apps ──────────────────────────────────────────────────────────
+  /** What the names-only scan found, matched to known apps; null until it answers. */
+  let workScan = $state.raw<FoundAppsResult | null>(untrack(() => (initialWorkScan ? matchFoundApps(initialWorkScan) : null)));
+  let workScanStarted = untrack(() => !!initialWorkScan);
+  /** The catalog lookup and connections for the company the apps connect to. */
+  let yourAppsLoad = $state.raw<YourAppsLoad | null>(null);
+  let yourAppsLoading = $state(false);
+  let yourAppsLoadCompany: string | null = null;
+  /**
+   * Bumped whenever "Your apps" starts over (company change, Retry): an answer
+   * that comes back for an older generation is dropped, even after A, B, A.
+   */
+  let yourAppsGen = 0;
+  /** Each app's connect in this step, by domain. */
+  let appRuns = $state<Record<string, AppRun>>({});
+  /** Domains the person undid in this company: never auto-connected again in this run. */
+  const undone = new Set<string>();
+  let autoRanFor: string | null = null;
+  let yourAppsPassed = $state(false);
+
+  /** Start the names-only scan once, with the context scan (it is part of "Bring it in"). */
+  function startWorkAppScan(): void {
+    const host = yourAppsHost;
+    // Only when "Your apps" is in this flow (a company to connect to).
+    if (!host || workScanStarted || !yourAppsShownInFlow) return;
+    workScanStarted = true;
+    void host.detect().then(
+      (found) => (workScan = matchFoundApps(found)),
+      () => (workScan = matchFoundApps(null)),
+    );
+  }
+
+  /** "Your apps" is one of this flow's steps. */
+  const yourAppsShownInFlow = $derived(!!yourAppsHost && shownSteps.some((s) => s.id === "apps"));
+  /** The apps the step lists: what was found, else the catalog's common note takers and project tools. */
+  const yourAppsFound = $derived.by(() => {
+    if (!yourAppsLoad) return null;
+    const found = workScan?.apps ?? [];
+    return found.length ? { apps: found, unmatched: workScan?.unmatched ?? 0, fallback: false } : { apps: fallbackFoundApps(yourAppsLoad.catalog), unmatched: workScan?.unmatched ?? 0, fallback: true };
+  });
+  const foundKinds = $derived<Record<string, FoundAppKind>>(
+    Object.fromEntries((yourAppsFound?.apps ?? []).map((a) => [a.domain, a.kind])),
+  );
+  const yourAppsShown = $derived(
+    yourAppsLoad && yourAppsFound
+      ? yourAppsView({
+          found: yourAppsFound.apps,
+          unmatched: yourAppsFound.fallback ? 0 : yourAppsFound.unmatched,
+          catalog: yourAppsLoad.catalog,
+          connections: yourAppsLoad.connections,
+          installations: yourAppsLoad.installations,
+          canManage: yourAppsLoad.canManage,
+          runs: appRuns,
+          evidence: (app) => evidenceLine(app.evidence, hostNoun),
+        })
+      : null,
+  );
+
+  function loadYourApps(): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    if (!company || !host) return;
+    yourAppsLoadCompany = company.uid;
+    yourAppsLoading = true;
+    const gen = ++yourAppsGen;
+    void host.load(company.uid).then(
+      (load) => {
+        if (gen !== yourAppsGen) return;
+        yourAppsLoad = load;
+        yourAppsLoading = false;
+      },
+      (err: unknown) => {
+        console.warn("[hq-desktop] first-run apps load threw:", err);
+        if (gen !== yourAppsGen) return;
+        yourAppsLoad = { catalog: null, connections: [], installations: {}, canManage: false, problem: { reason: "Couldn't load your apps. Try again.", retry: true } };
+        yourAppsLoading = false;
+      },
+    );
+  }
+
+  function setRun(domain: string, run: AppRun): void {
+    appRuns = { ...appRuns, [domain]: run };
+  }
+
+  /** Connect the no-sign-in catalog apps that were found (owner or admin only). */
+  function runAutoConnect(): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    const load = yourAppsLoad;
+    if (!company || !host || !load || !yourAppsFound || yourAppsFound.fallback) return;
+    if (autoRanFor === company.uid) return;
+    autoRanFor = company.uid;
+    const gen = yourAppsGen;
+    // Apps already running, connected or failed in this step are left alone,
+    // so a Retry during an install never installs the same app twice.
+    const plan = autoConnectPlan(
+      { found: yourAppsFound.apps, catalog: load.catalog, connections: load.connections, canManage: load.canManage, runs: appRuns },
+      undone,
+    );
+    for (const item of plan) {
+      const name = yourAppsFound.apps.find((a) => a.domain === item.domain)?.name ?? item.domain;
+      setRun(item.domain, { state: "connecting", via: "install" });
+      // An install is one quick request with no browser, so it is not
+      // cancelled on a company change: it finishes on the server, its answer
+      // is dropped, and the old company's list marks it automatic for Undo.
+      void host.autoConnect(company.uid, item.entryId, name).then((res) => {
+        if (!sameRun(gen, company.uid)) return;
+        if (res.ok) {
+          setRun(item.domain, { state: "connected", how: "auto", connectionId: res.connectionId, installationId: res.installationId });
+          report();
+        } else {
+          // Not connected after all: the tile offers Connect again.
+          setRun(item.domain, res.reason ? { state: "failed", reason: res.reason, retry: res.retry } : { state: "idle" });
+        }
+      });
+    }
+  }
+
+  /**
+   * The answer still belongs to what is on screen: same company, and no
+   * company change since it started (a Retry keeps runs: they finish on their
+   * own).
+   */
+  function sameRun(gen: number, companyUid: string): boolean {
+    return appsCompany?.uid === companyUid && gen >= runsGen;
+  }
+  /** The generation the current company's runs started in (a company change moves it). */
+  let runsGen = 0;
+  /**
+   * Cancels this company's browser sign-ins and docs checks: a company change
+   * aborts it, so the old company's sign-in window stops being waited on and
+   * the new company may open its own.
+   */
+  let yourAppsAbort = new AbortController();
+
+  function connectTile(tile: AppTile): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    if (!company || !host) return;
+    if (tile.action === "integrations") {
+      onopenintegrations?.(company.uid);
+      return;
+    }
+    // One browser sign-in at a time.
+    if (opensSignIn(tile) && yourAppsShown && signInRunning(yourAppsShown)) return;
+    const gen = yourAppsGen;
+    setRun(tile.domain, { state: "connecting", via: tile.action === "install" ? "install" : "browser" });
+    void host.connect(company.uid, tile, yourAppsAbort.signal).then((res) => {
+      if (!sameRun(gen, company.uid)) return;
+      if (res.ok) {
+        setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
+        report();
+      } else {
+        setRun(tile.domain, res.reason ? { state: "failed", reason: res.reason, retry: res.retry } : { state: "idle" });
+      }
+    });
+  }
+
+  function setupTile(tile: AppTile): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    if (!company || !host) return;
+    if (yourAppsShown && signInRunning(yourAppsShown)) return;
+    const gen = yourAppsGen;
+    setRun(tile.domain, { state: "checking-docs" });
+    void host.setup(company.uid, tile, yourAppsAbort.signal).then((res) => {
+      if (!sameRun(gen, company.uid)) return;
+      if (res.ok) {
+        setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
+        report();
+      } else if (res.unsupported) {
+        setRun(tile.domain, { state: "unsupported" });
+      } else {
+        setRun(tile.domain, res.reason ? { state: "failed", reason: res.reason, retry: res.retry } : { state: "idle" });
+      }
+    });
+  }
+
+  function undoChip(chip: ConnectedChip): void {
+    const company = appsCompany;
+    const host = yourAppsHost;
+    if (!company || !host) return;
+    // The chip carries the installation of this company's list or run; no id, no Undo.
+    const installationId = chip.installationId;
+    if (!installationId) return;
+    const before = appRuns[chip.domain] ?? { state: "idle" };
+    const gen = yourAppsGen;
+    yourAppsUndoProblem = null;
+    setRun(chip.domain, { state: "undoing", connectionId: chip.connectionId, installationId });
+    void host.undo(company.uid, installationId).then((res) => {
+      if (!sameRun(gen, company.uid)) return;
+      if (res.ok) {
+        undone.add(chip.domain);
+        // The connection is gone: the app goes back to "Ready to connect".
+        if (yourAppsLoad && chip.connectionId) {
+          yourAppsLoad = { ...yourAppsLoad, connections: yourAppsLoad.connections.filter((c) => c.id !== chip.connectionId) };
+        }
+        setRun(chip.domain, { state: "idle" });
+        report();
+      } else {
+        setRun(chip.domain, before.state === "idle" ? { state: "connected", how: "auto", connectionId: chip.connectionId, installationId } : before);
+        yourAppsUndoProblem = res.reason;
+      }
+    });
+  }
+  /** An Undo that failed: one line above the groups. */
+  let yourAppsUndoProblem = $state<string | null>(null);
+
+  // The company the apps connect to changed: "Your apps" starts over.
+  $effect(() => {
+    const uid = appsCompany?.uid ?? null;
+    untrack(() => {
+      if (yourAppsHost && uid !== yourAppsLoadCompany && yourAppsLoadCompany !== null) {
+        // Nothing from the old company carries over: its list, runs, Undo
+        // state and any answer still on its way.
+        yourAppsGen += 1;
+        runsGen = yourAppsGen;
+        yourAppsAbort.abort();
+        yourAppsAbort = new AbortController();
+        yourAppsLoad = null;
+        yourAppsLoading = false;
+        appRuns = {};
+        undone.clear();
+        yourAppsUndoProblem = null;
+        autoRanFor = null;
+        yourAppsPassed = false;
+        yourAppsLoadCompany = null;
+      }
+    });
+  });
+  // "Your apps" is open with no list and none on its way (first time, or after
+  // a company change): the list loads.
+  $effect(() => {
+    const open = step === "apps";
+    const needed = !yourAppsLoad && !yourAppsLoading;
+    const uid = appsCompany?.uid ?? null;
+    if (!open || !needed || !uid) return;
+    untrack(() => loadYourApps());
+  });
+  // Once the list and the scan are both in, the no-sign-in apps connect.
+  $effect(() => {
+    if (step !== "apps" || !yourAppsLoad || !yourAppsFound) return;
+    void workScan;
+    untrack(() => runAutoConnect());
+  });
+
   let step = $state<FirstRunStepId>(untrack(() => initialStep));
   /** The name as typed or confirmed. */
   let name = $state(untrack(() => initialName));
@@ -400,17 +734,67 @@
       : (SETUP_BOT_RUNTIME_ORDER.find((runtime) => runtimeReady?.[runtime] === true) ?? null),
   );
 
-  // A tool signed in later: the picked card follows to a ready one, so the
-  // assistant thinks with what the person sees picked.
+  // ── Your coding tools ──────────────────────────────────────────────────
+  /** What each tool's Sign in row offers (Claude Code and Codex). */
+  const toolKinds = $derived(toolRowKinds(runtimeStatus, storedReady, aiTools, signInChecks));
+  /** The tool the screen leads with: the one whose desktop app is here. */
+  const preferredTool = $derived<SignInTool>(preferredSignInTool(toolKinds, aiTools));
+  /** The person picked a tool (a card, or a Sign in): the pick is theirs now. */
+  let runtimePicked = false;
+  /**
+   * The tool the pick moves to while the person has not chosen: the
+   * preferred tool when it is signed in (or none is), else the first signed
+   * in one.
+   */
+  const autoRuntime = $derived<BotRuntime>(
+    !anyToolReady(runtimeReady) || runtimeReady?.[preferredTool] === true
+      ? preferredTool
+      : (SETUP_BOT_RUNTIME_ORDER.find((runtime) => runtimeReady?.[runtime] === true) ?? preferredTool),
+  );
+  // Preselect the preferred tool, and follow a tool signed in later, so the
+  // assistant thinks with what the person sees picked. A pick the person made
+  // stays unless it is not signed in and another one is.
   $effect(() => {
-    const current = untrack(() => draft.runtime);
-    if (runtimeReady?.[current] === true) return;
-    const first = SETUP_BOT_RUNTIME_ORDER.find((runtime) => runtimeReady?.[runtime] === true);
-    if (first && first !== current) {
-      draft = { ...untrack(() => draft), runtime: first };
-      onruntime?.(first);
-    }
+    const target = autoRuntime;
+    untrack(() => {
+      const current = draft.runtime;
+      if (runtimePicked && (runtimeReady?.[current] === true || !anyToolReady(runtimeReady))) return;
+      if (!runtimePicked || runtimeReady?.[target] === true) {
+        if (target !== current) {
+          draft = { ...draft, runtime: target };
+          onruntime?.(target);
+        }
+      }
+    });
   });
+  /** What the tools step asks the one live region to say (a sign-in's state). */
+  let toolsAnnouncement = $state("");
+  onMount(() => {
+    // The rows lead with a desktop app's tool, so ask which apps are here.
+    if (untrack(() => aiTools) == null) onrequestaitools?.();
+  });
+  let focusRecheck = false;
+  /**
+   * Back from the browser or a desktop app: read readiness (and the desktop
+   * apps) again, so a sign-in finished elsewhere shows at once.
+   */
+  async function recheckOnFocus(): Promise<void> {
+    if (step !== "tools" || ready || focusRecheck) return;
+    focusRecheck = true;
+    try {
+      onrequestaitools?.();
+      await onrecheck?.();
+    } finally {
+      focusRecheck = false;
+    }
+  }
+  function pickTool(tool: SignInTool): void {
+    runtimePicked = true;
+    if (draft.runtime !== tool) {
+      draft = { ...draft, runtime: tool };
+      onruntime?.(tool);
+    }
+  }
 
   // ── Bring in your context ──────────────────────────────────────────────
   /** The context scene's clock, started the first time the step opens. */
@@ -435,13 +819,54 @@
       importClock = createSceneClock();
     });
   });
+  /**
+   * The scene's code could not load: the step would show only its loading
+   * frame, so the header's Continue in chat comes back as the way out.
+   */
+  let importDoorFailed = $state(false);
+  /** How often a failed load of the scene is tried again while its step is open. */
+  const IMPORT_DOOR_RETRY_MS = 5000;
+  /** Bumped when the scene loads after a failed load, so the step mounts it. */
+  let importDoorKey = $state(0);
+  $effect(() => {
+    if (step !== "context") return;
+    if (firstRunImportDoor.peek()) {
+      importDoorFailed = false;
+      return;
+    }
+    // A failed load is tried again every few seconds while the step is open;
+    // once the scene is there, Continue in chat goes away again.
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const attempt = (): void => {
+      firstRunImportDoor.load().then(
+        () => {
+          if (!live || !importDoorFailed) return;
+          importDoorFailed = false;
+          importDoorKey += 1;
+        },
+        () => {
+          if (!live) return;
+          importDoorFailed = true;
+          timer = setTimeout(attempt, IMPORT_DOOR_RETRY_MS);
+        },
+      );
+    };
+    attempt();
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  });
   onMount(() => {
     // Warm the scene's chunk while the person is on the earlier steps.
     if (untrack(() => importHost)) firstRunImportDoor.preload();
   });
   onDestroy(() => {
     appsAbort.abort();
+    yourAppsAbort.abort();
     importRunner.dispose();
+    teamRunner.dispose();
     importClock?.dispose();
   });
 
@@ -478,6 +903,10 @@
       }
       if ((id === "notes" || id === "projects") && i === from && !appsPassed[id]) {
         appsPassed = { ...appsPassed, [id]: true };
+        changed = true;
+      }
+      if (id === "apps" && i === from && !yourAppsPassed) {
+        yourAppsPassed = true;
         changed = true;
       }
     }
@@ -546,10 +975,11 @@
       name = normalizeAssistantName(next);
       onconfirmname(name, draft.runtime);
     }
-    goTo(finish ? firstRunFinishTarget(runtimeReady, shownSteps) : nextFirstRunStep("name", shownSteps));
+    goTo(finish ? firstRunFinishTarget(runtimeReady, shownSteps, "name") : nextFirstRunStep("name", shownSteps));
   }
 
   function patchDraft(patch: Partial<CreateBotDraft>): void {
+    if (patch.runtime) runtimePicked = true;
     draft = { ...draft, ...patch };
     if (patch.runtime) onruntime?.(patch.runtime);
   }
@@ -567,7 +997,8 @@
 
   function onKeydown(event: KeyboardEvent): void {
     // Escape does not leave a first run by accident: the header's
-    // "Continue in chat" is the way out.
+    // "Continue in chat" is the way out, and on Your coding tools there is
+    // none (a signed-in tool is required).
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -583,6 +1014,8 @@
   const announcement = $derived(
     step === "context" && importAnnouncement
       ? importAnnouncement
+      : step === "tools" && toolsAnnouncement && !ready
+      ? toolsAnnouncement
       : step === "team" && teamAction.state === "running"
       ? teamAction.label
       : step === "team" && teamAction.state === "failed"
@@ -616,7 +1049,7 @@
         (step === "name" && locked
           ? card.querySelector<HTMLElement>('[data-testid="new-bot-continue-name"]')
           : card.querySelector<HTMLElement>(
-              'input:not([disabled]), button[role=radio][aria-checked=true]:not([disabled]), [data-testid="first-run-import-start"]:not([disabled]), [data-testid="first-run-next"]:not([disabled]), [data-testid="first-run-talk"]:not([disabled])',
+              'input:not([disabled]), button[role=radio][aria-checked=true]:not([disabled]), .first-run-tool-action.primary:not([disabled]), [data-testid="first-run-import-start"]:not([disabled]), [data-testid="first-run-next"]:not([disabled]), [data-testid="first-run-talk"]:not([disabled])',
             )) ?? card;
       target.focus();
     });
@@ -637,8 +1070,15 @@
   const summaryRows = $derived(
     2 +
       (canTeam ? 1 : 0) +
-      shownSteps.filter((s) => s.id === "context" || s.id === "notes" || s.id === "projects").length,
+      shownSteps.filter((s) => s.id === "context" || s.id === "notes" || s.id === "projects" || s.id === "apps").length,
   );
+
+  /**
+   * "Continue in chat" ends the takeover, so it is held back on the steps
+   * before the import (firstRunOffersChat): Next is the only way forward
+   * there, and the import is never skipped without being seen.
+   */
+  const offersChat = $derived(firstRunOffersChat(step, runtimeReady, shownSteps, { importLoadFailed: importDoorFailed }));
 
   const talkLabel = $derived(
     leaving === "talk"
@@ -649,7 +1089,7 @@
   );
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onfocus={() => void recheckOnFocus()} />
 
 <div
   class="new-bot-takeover chat-shell"
@@ -661,14 +1101,14 @@
   <div class="new-bot-takeover-shade" aria-hidden="true"></div>
   <header class="new-bot-takeover-header">
     <span class="new-bot-takeover-wordmark">HQ</span>
-    <button
+    {#if offersChat}<button
       type="button"
       class="new-bot-takeover-cancel"
       data-testid="first-run-continue-in-chat"
       disabled={leaving !== null}
       aria-busy={leaving === "chat" ? "true" : undefined}
       onclick={() => void leave("chat")}
-    >{leaving === "chat" ? FIRST_RUN_COPY.opening : FIRST_RUN_COPY.continueInChat}</button>
+    >{leaving === "chat" ? FIRST_RUN_COPY.opening : FIRST_RUN_COPY.continueInChat}</button>{/if}
   </header>
   {#if step === "context"}
     <!-- Bring in your context: a full-window scene instead of the card. -->
@@ -682,6 +1122,7 @@
     >
       <div class="first-run-import-step" data-testid="first-run-step" data-step={step} role="group">
         {#if importClock}
+          {#key importDoorKey}
           <LazyDoor
             door={firstRunImportDoor}
             props={{
@@ -695,7 +1136,11 @@
               finishLabel: FIRST_RUN_COPY.finish,
               leaving: leaving !== null,
               onback: () => goTo(prevFirstRunStep("context", shownSteps)),
-              onstart: () => importRunner.start(),
+              onstart: () => {
+                importRunner.start();
+                startWorkAppScan();
+              },
+              appsConsent: yourAppsShownInFlow ? yourAppsConsentLine(hostNoun) : null,
               onskip: () => {
                 importRunner.skip();
                 goTo(nextFirstRunStep("context", shownSteps));
@@ -703,7 +1148,7 @@
               onretry: () => importRunner.retry(),
               onrecheck: () => importRunner.recheck(),
               onnext: () => goTo(nextFirstRunStep("context", shownSteps)),
-              onfinish: () => goTo(firstRunFinishTarget(runtimeReady, shownSteps)),
+              onfinish: () => goTo(firstRunFinishTarget(runtimeReady, shownSteps, "context")),
               reducedMotion,
               onannounce: (text: string) => (importAnnouncement = text),
             }}
@@ -712,6 +1157,7 @@
               <div class="first-run-import-loading" data-testid="first-run-import-loading" aria-hidden="true"></div>
             {/snippet}
           </LazyDoor>
+          {/key}
         {/if}
       </div>
     </div>
@@ -744,7 +1190,7 @@
         {:else}
           {@const appKind = step === "notes" || step === "projects" ? step : null}
           {@const appCopy = appKind ? appStepCopy(appKind, shownName, appsCompany?.name ?? "") : null}
-          {@const title = step === "tools" ? toolsTitle : step === "team" ? TEAM_COPY : appCopy ?? doneTitle}
+          {@const title = step === "tools" ? toolsTitle : step === "team" ? TEAM_COPY : step === "apps" ? { kicker: YOUR_APPS_COPY.kicker, lead: YOUR_APPS_COPY.lead, em: YOUR_APPS_COPY.em, copy: "" } : appCopy ?? doneTitle}
           {@const isLast = nextFirstRunStep(step, shownSteps) === null}
           {@const canLeave = firstRunCanLeave(step, runtimeReady)}
           <NewBotStepHead
@@ -757,7 +1203,8 @@
             lead={title.lead}
             em={title.em}
           />
-          <section class="new-bot-step new-bot-step--fit" data-testid={`first-run-${step}`}>
+          <!-- "Your apps" can be longer than the card: only its body scrolls, the head and footer stay put. -->
+          <section class="new-bot-step new-bot-step--fit" class:new-bot-create-scroll={step === "apps"} data-testid={`first-run-${step}`}>
             {#if step === "team"}
               <FirstRunTeamStep
                 options={teamOpts}
@@ -770,6 +1217,25 @@
                 nameLocked={!!createdChoice}
                 onsubmit={teamNext}
               />
+            {:else if step === "apps"}
+              {#if yourAppsShown && yourAppsFound}
+                <FirstRunYourAppsStep
+                  lead={yourAppsLead(yourAppsFound.fallback ? 0 : yourAppsShown.foundCount, shownName, hostNoun)}
+                  view={yourAppsShown}
+                  problem={yourAppsUndoProblem ? { reason: yourAppsUndoProblem, retry: false } : yourAppsLoad?.problem ?? null}
+                  onconnect={connectTile}
+                  onsetup={setupTile}
+                  onundo={undoChip}
+                  onreload={() => {
+                    yourAppsUndoProblem = null;
+                    yourAppsLoad = null;
+                    autoRanFor = null;
+                    loadYourApps();
+                  }}
+                />
+              {:else}
+                <p class="new-bot-muted" data-testid="first-run-apps-loading" role="status">Looking for your apps…</p>
+              {/if}
             {:else if appKind && appCopy}
               <FirstRunAppStep
                 kind={appKind}
@@ -780,10 +1246,35 @@
                 onconnect={(app) => connectApp(appKind, app)}
                 onreload={() => loadCatalog(appKind)}
               />
+            {:else if step === "tools" && !ready}
+            <p class="new-bot-create-copy" data-testid="first-run-tools-lead">{toolsSignInLead(shownName, hostNoun, preferredTool, toolKinds, aiTools)}</p>
             {:else}
             <p class="new-bot-create-copy">{title.copy}</p>
             {/if}
-            {#if step === "tools"}
+            {#if step === "tools" && !ready}
+              <FirstRunToolsSignIn
+                kinds={toolKinds}
+                preferred={preferredTool}
+                noun={hostNoun}
+                {signInApi}
+                {pollMs}
+                openTimeoutMs={signInOpenTimeoutMs}
+                checkingStaleMs={toolCheckingStaleMs}
+                {hqFolderPath}
+                onpick={pickTool}
+                forceSignIn={(tool) => signInChecks?.[tool] === "signedOut"}
+                onsignedin={async (tool) => {
+                  await (onsignedin ? onsignedin(tool) : onrecheck?.());
+                }}
+                onrecheck={async () => {
+                  onrequestaitools?.();
+                  await onrecheck?.();
+                }}
+                {onopenassistant}
+                {onassistedinstall}
+                onannounce={(text) => (toolsAnnouncement = text)}
+              />
+            {:else if step === "tools"}
               <HomeStep
                 runtimeOnly
                 {draft}
@@ -793,7 +1284,9 @@
                 {runtimeStatus}
                 companies={[]}
                 onpatch={patchDraft}
-                {signInApi}
+                signInApi={homeSignInApi}
+                probeStates={homeProbeStates}
+                probe={homeProbeStates?.[draft.runtime] ?? null}
                 onsignedin={onsignedin ?? undefined}
                 onrecheck={onrecheck ?? undefined}
                 {pollMs}
@@ -845,6 +1338,18 @@
                     </span>
                   </li>
                 {/if}
+                {#if shownSteps.some((s) => s.id === "apps")}
+                  {@const n = yourAppsShown ? connectedCount(yourAppsShown) : 0}
+                  <li>
+                    <span class="first-run-summary-dot" class:ready={n > 0} aria-hidden="true"></span>
+                    <span class="first-run-summary-text">
+                      <span class="first-run-summary-label">Your apps</span>
+                      <span class="first-run-summary-value" data-testid="first-run-summary-apps">
+                        {n > 0 ? `${n} connected` : yourAppsPassed ? "Skipped" : "Not set up"}
+                      </span>
+                    </span>
+                  </li>
+                {/if}
                 {#each ["notes", "projects"] as const as kind (kind)}
                   {#if shownSteps.some((s) => s.id === kind)}
                     {@const state = appConnect[kind]}
@@ -869,8 +1374,8 @@
               <p class="new-bot-price first-run-status" data-testid="first-run-team-status" data-state="failed">
                 {teamAction.reason}
                 <button type="button" class="new-bot-inline-link" data-testid="first-run-team-retry" onclick={() => teamRunner.retry()}>{FIRST_RUN_COPY.retry}</button>
-                <span aria-hidden="true">·</span>
-                <button type="button" class="new-bot-inline-link" data-testid="first-run-team-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
+                {#if offersChat}<span aria-hidden="true">·</span>
+                <button type="button" class="new-bot-inline-link" data-testid="first-run-team-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>{/if}
               </p>
             {:else if appKind && appConnect[appKind].state === "failed"}
               {@const failed = appConnect[appKind] as { reason: string; retry: boolean }}
@@ -880,6 +1385,11 @@
                 <span aria-hidden="true">·</span>{/if}
                 <button type="button" class="new-bot-inline-link" data-testid={`first-run-${appKind}-chat`} disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
               </p>
+            {:else if step === "apps" && yourAppsShown && creation.state !== "failed"}
+              {@const appsConnected = connectedCount(yourAppsShown)}
+              <p class="new-bot-price first-run-status" data-testid="first-run-apps-status">
+                {#if appsConnected > 0 && appsCompany}{appsConnected} connected to <CompanyLabel name={appsCompany.name} companyUid={appsCompany.uid} size={14} />. {YOUR_APPS_COPY.statusTail}{:else}{yourAppsStatus(appsConnected, "")}{/if}
+              </p>
             {:else if appKind && appConnect[appKind].state === "idle" && creation.state !== "failed"}
               <p class="new-bot-price first-run-status" data-testid={`first-run-${appKind}-hint`}>Don't use one? Skip this with Next.</p>
             <!-- Creating the assistant runs behind the screens: one quiet line. -->
@@ -887,8 +1397,8 @@
               <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="failed">
                 {creation.reason}
                 <button type="button" class="new-bot-inline-link" data-testid="first-run-retry" onclick={onretry}>{FIRST_RUN_COPY.retry}</button>
-                <span aria-hidden="true">·</span>
-                <button type="button" class="new-bot-inline-link" data-testid="first-run-failed-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>
+                {#if offersChat}<span aria-hidden="true">·</span>
+                <button type="button" class="new-bot-inline-link" data-testid="first-run-failed-chat" disabled={leaving !== null} onclick={() => void leave("chat")}>{FIRST_RUN_COPY.continueInChat}</button>{/if}
               </p>
             {:else if creation.state === "creating" && !isLast}
               <!-- On Done the held button already says it. -->
@@ -920,14 +1430,14 @@
                   disabled={!canLeave || teamBusy}
                   aria-busy={teamBusy ? "true" : undefined}
                   onclick={() => (step === "team" ? teamNext() : goTo(nextFirstRunStep(step, shownSteps)))}
-                >{#if teamBusy && teamPending}{teamPending.verb}<CompanyLabel name={teamPending.name} companyUid={teamPending.companyUid} size={14} />…{:else}{firstRunNextLabel(step, shownSteps)}<RailIcon name="arrow-right" />{/if}</button>
+                >{#if teamBusy && teamPending}{teamPending.verb}<CompanyLabel name={teamPending.name} companyUid={teamPending.companyUid} size={14} />…{:else}{step === "apps" ? YOUR_APPS_COPY.continue : firstRunNextLabel(step, shownSteps)}<RailIcon name="arrow-right" />{/if}</button>
                 {#if offersFinish}
                   <button
                     type="button"
                     class="new-bot-create-submit"
                     data-testid="first-run-finish"
                     disabled={!canLeave || (step === "team" && teamAction.state === "running")}
-                    onclick={() => goTo(firstRunFinishTarget(runtimeReady, shownSteps))}
+                    onclick={() => goTo(firstRunFinishTarget(runtimeReady, shownSteps, step))}
                   >{FIRST_RUN_COPY.finish}</button>
                 {/if}
               </div>

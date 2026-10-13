@@ -3,6 +3,7 @@
   import type { PlatformAdapter, SessionProviderId } from "@hq/platform";
   import { hostComputerNoun } from "@hq/platform";
   import "./settings-chrome.css";
+  import { announceRuntimeSignedIn } from "../chat/messaging/runtime-repair.svelte.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -119,6 +120,7 @@
     const state = result.ok ? String((result.value as { state?: string }).state ?? "") : "error";
     if (state === "connected") {
       stopPolling();
+      announceRuntimeSignedIn(id);
       busy = null;
       action = null;
       line = "";
@@ -156,6 +158,7 @@
     }
     const state = String((result.value as { state?: string }).state ?? "");
     if (state === "connected") {
+      announceRuntimeSignedIn(id);
       busy = null;
       action = null;
       line = "";

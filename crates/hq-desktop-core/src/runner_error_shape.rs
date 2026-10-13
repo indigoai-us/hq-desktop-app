@@ -316,7 +316,22 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// (`error`, `auth-error`). The runner adds an additive `journal-quarantine`
 /// event, which `parse_sync_line` skips as an unknown type. The source-version
 /// marker moves with the runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.52";
+///
+/// The `~6.18.52` -> `~6.18.60` bump was derived from the runner tree
+/// (`git diff v6.18.52..main -- src`, excluding tests, at the 6.18.59 release
+/// plus hq-cloud#920). It adds two literal `this.name` identities, neither of
+/// which reaches the runner-error event surface:
+/// `JournalIncompleteUpsertError` (src/journal.ts) is mapped by
+/// `journalErrorClass` in the company runner leg to an `error` event whose
+/// message is the fixed text `journal write or recovery failed` with
+/// `errorClass`, `diagnostic: true`, and `path: "(journal)"`, so the class
+/// name never leads the message; `RealtimePushYield`
+/// (src/sync/push-receiver.ts) is thrown and caught inside the receiver's
+/// admission loop. Both are excluded like `PushScopeForbiddenError`.
+/// `HQ_CLOUD_IDENTITIES` remains 59. `src/bin/sync-runner-events.ts` is
+/// untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
+/// source-version marker moves with the runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.60";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -3497,6 +3512,12 @@ mod tests {
             // Added at ~6.18.52 (git diff v6.18.51..v6.18.52): caught by the
             // PUT path in src/object-io.ts.
             "PresignAlreadyCurrent",
+            // Added at ~6.18.60 (git diff v6.18.52..main): the journal class
+            // is rewritten to a fixed message by journalErrorClass on the
+            // company runner leg; the yield is caught inside
+            // src/sync/push-receiver.ts.
+            "JournalIncompleteUpsertError",
+            "RealtimePushYield",
         ];
         for name in EXCLUDED {
             assert!(

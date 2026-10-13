@@ -56,6 +56,7 @@
   } from "../chat/bot-restore.js";
   import { botNeedsSignIn, expiredRuntimeOf } from "../chat/runtime-sign-in-again.js";
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import { PROBE_TIMEOUT_SECS } from "../chat/create-bot/runtime-probe.js";
   import NewBotSunriseShell from "../chat/create-bot/NewBotSunriseShell.svelte";
   import CardModal from "../chat/messaging/CardModal.svelte";
   import CardModalStatus from "../chat/messaging/CardModalStatus.svelte";
@@ -73,6 +74,7 @@
     type CloudBotRow,
   } from "./cloud-bots.js";
   import "./settings-chrome.css";
+  import { announceRuntimeSignedIn } from "../chat/messaging/runtime-repair.svelte.js";
   import { friendlyApiError } from "../common/api-error.js";
 
   interface Props {
@@ -1087,7 +1089,13 @@
       entryBusy={createBusy}
       entryError={createError}
       signInApi={botSignIn}
-      onsignedin={() => loadPreflight()}
+      onsignedin={(runtime) => {
+        announceRuntimeSignedIn(runtime);
+        return loadPreflight();
+      }}
+      probeBotRuntime={adapter?.bots?.probe
+        ? (input) => adapter!.bots!.probe!(input.runtime, input.model, { effort: input.effort, timeoutSecs: PROBE_TIMEOUT_SECS })
+        : null}
     />
   </NewBotSunriseShell>
 {/if}

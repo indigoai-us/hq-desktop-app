@@ -11,6 +11,7 @@
     },
     "./board/thread-model": "./src/board/thread-model.ts",
     "./link-preview": "./src/common/linkPreview.ts",
+    "./visible-interval": "./src/common/visible-interval.ts",
     "./link-titles": "./src/common/linkTitles.ts",
     "./meetings/past-meetings": "./src/meetings/past-meetings.ts",
     "./emoji-shortcodes": {

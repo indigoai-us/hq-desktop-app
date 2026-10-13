@@ -1,6 +1,7 @@
 import { mount } from 'svelte';
 import Harness from './Harness.svelte';
-import { configureBriefSeed, octoberEightBrief } from '@hq/ui';
+import { announceBadgesEarned, configureBriefSeed, octoberEightBrief, setBadgeProgressSource, setBadgeSource } from '@hq/ui';
+import { earnedFromUrl, sampleBadges, sampleProgress } from './badge-fixtures';
 // Load the base design tokens (the --pop-* / --c-* primitives + light/dark
 // blocks) the same way the real app entry (src/main.ts) does, then the popover
 // aliases on top. Without design-system.css the popover's --pop-* tokens are
@@ -8,7 +9,7 @@ import { configureBriefSeed, octoberEightBrief } from '@hq/ui';
 import '../src/styles/design-system.css';
 import '../src/styles/popover.css';
 // The desktop shell loads Geist Mono (src/desktop-alt/main.ts); the knowledge
-// tree's ASCII grid and the first-run kickers are drawn in it.
+// tree's ASCII grid, the first-run kickers and the badge marks are drawn in it.
 import '@fontsource-variable/geist-mono/wght.css';
 
 // The Daily Brief serves the approved mockup's Oct 8 day here: several of its
@@ -19,4 +20,15 @@ if (!new URLSearchParams(window.location.search).get('briefRun')) {
   configureBriefSeed(() => octoberEightBrief(new Date()));
 }
 
-mount(Harness,{ target: document.getElementById('app')! });
+// Sample badges on profile panes. Installed before the shell mounts, so the
+// production loader (hq-pro GET /v1/badges) stays out of the harness.
+setBadgeSource(sampleBadges);
+setBadgeProgressSource(sampleProgress);
+
+mount(Harness, { target: document.getElementById('app')! });
+
+// ?earn=<badge>[:<tier>]: the "You earned" notice with its card reveal
+// (dev-harness/badge-fixtures.ts). Several badges (`earn=og,poweruser:3`)
+// raise the one notice for everything since your last visit.
+const earned = earnedFromUrl(window.location.search);
+if (earned.length) setTimeout(() => announceBadgesEarned(earned), 1500);

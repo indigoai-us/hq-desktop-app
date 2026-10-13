@@ -26,6 +26,7 @@ import {
   vaultPutIntegrityFields,
   withHttpStatus,
   withoutSecret,
+  localIanaZone,
   type AdapterFailure,
   type AdapterPromise,
   type AdapterResult,
@@ -35,6 +36,7 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { WEB_CAPABILITIES, type Capability } from "../capabilities.js";
+import { parseBadgesPayload } from "../badges.js";
 import { createUnsupportedCallsApi } from "../calls/api.js";
 import {
   parseShelfViewer,
@@ -138,6 +140,8 @@ export const WEB_PATHS = {
     `/v1/avatar-packs/${encodeURIComponent(packId)}`,
   agentAvatar: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
+  /** GET a person's accomplishment badges; `uid` is `me` or a `prs_*` uid. */
+  badges: (uid: string) => `/v1/badges/${encodeURIComponent(uid)}`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
   cardAction: (channelId: string, cardId: string) =>
@@ -230,6 +234,8 @@ export const WEB_PATHS = {
     `/companies/${encodeURIComponent(slug)}/activity`,
   companyHomeChannel: (companyUid: string) =>
     `/v1/companies/${encodeURIComponent(companyUid)}/home-channel`,
+  /** POST, body `{ companyUid }`: hq-pro's owner-gated Stripe portal mint. */
+  companyBillingPortal: () => `/v1/billing/portal`,
   firstWeekReturnNudge: (companyUid: string) =>
     `/membership/first-week-return-nudge?companyUid=${encodeURIComponent(companyUid)}`,
 
@@ -706,6 +712,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getAvatarPack: (packId) => this.get(WEB_PATHS.avatarPack(packId)),
     selectAgentAvatar: (agentUid, input) =>
       this.post(WEB_PATHS.agentAvatar(agentUid), input),
+    getBadges: async (uid) => {
+      const result = await this.get<unknown>(WEB_PATHS.badges(uid));
+      return result.ok ? ok(parseBadgesPayload(result.value)) : result;
+    },
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -1116,8 +1126,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       ),
     listOwners: (companyUid, agentUid) =>
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
-    getCompanyTelemetry: (companyUid, from, to) =>
-      this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
+    getCompanyTelemetry: (companyUid, from, to, tz) =>
+      this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to, tz ?? localIanaZone())),
     getMyTelemetry: (from, to, tz) => this.get(WEB_PATHS.myTelemetry(from, to, tz)),
   };
 
@@ -1126,6 +1136,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.post(INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    getConnectionAccess: ({ companyUid, connectionId }) =>
+      this.get(INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+    revokeConnectionAccess: (input) =>
+      this.post(INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
     // No redirectUri: the server's default lands on the console's callback.
@@ -1136,6 +1150,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
       withoutSecret(await this.postWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
     blueprint: (input) =>
       this.postWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
+    catalogLookup: (companyUid, domains) =>
+      this.postWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+    discoverDocs: (input) =>
+      this.postWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+    uninstall: (input) =>
+      this.postWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
   };
 
   readonly company: PlatformAdapter["company"] = {
@@ -1157,6 +1177,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.get(WEB_PATHS.companyActivity(slug)),
     ensureHomeChannel: (companyUid) =>
       this.post(WEB_PATHS.companyHomeChannel(companyUid)),
+    createBillingPortalSession: (companyUid) =>
+      this.post(WEB_PATHS.companyBillingPortal(), { companyUid }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
@@ -1303,6 +1325,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     launchCodexWorkspace: async () => DESKTOP_ONLY,
     launchCliInTerminal: async () => DESKTOP_ONLY,
     detectAiTools: async () => DESKTOP_ONLY,
+    detectWorkApps: async () => DESKTOP_ONLY,
     pickFolder: async () => DESKTOP_ONLY,
     pickFile: async () => DESKTOP_ONLY,
   };

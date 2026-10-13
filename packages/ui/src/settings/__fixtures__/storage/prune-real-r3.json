@@ -1,0 +1,28 @@
+{
+  "local": {
+    "available": true,
+    "removed_commits": 145,
+    "total_commits_before": 303,
+    "flattened_merges": 1,
+    "retained_refs": 3,
+    "refs_removed": 1,
+    "est_bytes": 125938296,
+    "before": {
+      "git_dir_bytes": 633815040
+    },
+    "after": {
+      "git_dir_bytes": 633798656
+    },
+    "backup_ref": "refs/hq-storage/backup/1791581211-80993",
+    "reclaim_after": "2026-10-10T21:26:58Z",
+    "freed_bytes": 16384,
+    "pending_reclaim_bytes": 125921912
+  },
+  "cloud": [],
+  "dry_run": false,
+  "reclaim": {
+    "available": true,
+    "dropped": 0,
+    "freed_bytes": 0
+  }
+}

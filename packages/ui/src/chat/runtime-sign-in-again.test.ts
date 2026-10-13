@@ -7,7 +7,6 @@ import {
   restartBotsNeedingSignIn,
   runtimesNeedingSignIn,
   signInAgain,
-  signInAgainCopy,
 } from "./runtime-sign-in-again.js";
 
 function bot(over: Partial<LocalBotRow> = {}): LocalBotRow {
@@ -74,13 +73,6 @@ describe("runtime sign-in helpers", () => {
     expect(botNeedsSignIn(rows[1])).toBe(false);
     expect(botsNeedingSignIn(rows, "claude").map((b) => b.name)).toEqual(["a"]);
     expect(runtimesNeedingSignIn(rows)).toEqual(["claude", "codex"]);
-  });
-
-  it("names the tool and the bot in plain words", () => {
-    const copy = signInAgainCopy(bot({ name: "scout", runtime: "codex", runtimeSignIn: expired("codex") }));
-    expect(copy.lead).toBe("Codex needs you to sign in again before scout can keep working.");
-    expect(copy.action).toBe("Sign in to Codex");
-    expect(copy.waiting).toContain("scout will pick up where it left off");
   });
 });
 

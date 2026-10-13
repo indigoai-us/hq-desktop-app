@@ -1,7 +1,7 @@
 <script lang="ts">
   import RailIcon from "../common/button/RailIcon.svelte";
   import BillingSettingsPane from "./BillingSettingsPane.svelte";
-  import CompanyLabel from "../company/CompanyLabel.svelte";
+  import CompaniesSettingsPane from "./CompaniesSettingsPane.svelte";
   /**
    * ShellSettings — the FULL-WINDOW, Profile-first Settings destination for the
    * V2 shell (design source: hq-desktop-preview-v2 ?view=v2).
@@ -18,6 +18,8 @@
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import PageHeader from "../shell/PageHeader.svelte";
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
+  import StorageSettingsPane from "./StorageSettingsPane.svelte";
+  import { resolveStorageFeature } from "./storage-feature.js";
   import AgentsSettingsPane from "./AgentsSettingsPane.svelte";
   import BotsSettingsPane from "./BotsSettingsPane.svelte";
   import SettingsNavIcon from "./SettingsNavIcon.svelte";
@@ -46,6 +48,7 @@
     | "profile"
     | "public-profile"
     | "billing"
+    | "companies"
     | "general"
     | "agents"
     | "bots"
@@ -53,7 +56,8 @@
     | "notifications"
     | "sync"
     | "meetings"
-    | "updates";
+    | "updates"
+    | "storage";
 
   const ALL_SECTIONS: ReadonlyArray<{ id: ShellSettingsSection | "sep"; label: string }> =
     [
@@ -62,6 +66,8 @@
       // OWNER-R23: the marketplace creator profile, moved here from Library.
       { id: "public-profile", label: "Public profile" },
       { id: "billing", label: "Billing" },
+      // Owner-approved 2026-10-11: roles, cloud vs local, and per-company sync.
+      { id: "companies", label: "Companies" },
       { id: "sep", label: "" },
       { id: "general", label: "General" },
       { id: "appearance", label: "Appearance" },
@@ -69,6 +75,7 @@
       { id: "sync", label: "Sync" },
       { id: "meetings", label: "Meetings" },
       { id: "updates", label: "Updates" },
+      { id: "storage", label: "Storage" },
       { id: "agents", label: "AI tools" },
       { id: "bots", label: "Bots" },
     ];
@@ -79,12 +86,8 @@
     companies?: Workspace[] | null;
     adapter?: PlatformAdapter | null;
     version?: string;
-    /**
-     * Host-routed subsection; null preserves Profile-first normal entry.
-     * "companies" is a retired section kept for old deep links: companies
-     * are reached from the rail, so it lands on Profile.
-     */
-    initialSection?: ShellSettingsSection | "companies" | null;
+    /** Host-routed subsection; null preserves Profile-first normal entry. */
+    initialSection?: ShellSettingsSection | null;
     /** Monotonic native auth generation; stale profile loads/saves are rejected. */
     sessionGeneration?: number;
     /** Account/company-scoped renderer persistence supplied by the host. */
@@ -96,7 +99,9 @@
     openExternal?: (url: string) => void;
     /** OWNER-R20: companies with the caller's real role (null when unknown), owners first. */
     profileCompanies?: ReadonlyArray<{ uid: string; label: string; role: string | null }>;
-    /** OWNER-R20/R24: a company row opens that company's General pane. */
+    /** The company selected in the shell; Billing manages it first. */
+    selectedCompanyUid?: string | null;
+    /** OWNER-R20/R24: a Companies row opens that company's General pane. */
     oncompany?: (uid: string) => void;
     onsignout?: () => Promise<void> | void;
     /** Open HQ Console (optional URL for a company or integrations). */
@@ -126,6 +131,7 @@
     onsectionchange,
     openExternal,
     profileCompanies = [],
+    selectedCompanyUid = null,
     oncompany,
     onsignout,
     onopenconsole,
@@ -173,8 +179,7 @@
     // A bare Settings destination is an explicit Profile-first request too.
     // Without this reset a warm `settings` route could leave a previously
     // selected subsection visible when the settings shell stays mounted.
-    active =
-      initialSection && initialSection !== "companies" ? initialSection : "profile";
+    active = initialSection ?? "profile";
   });
   let signOutConfirmOpen = $state(false);
 
@@ -436,6 +441,22 @@
     }
   }
 
+  // hq-storage allowlist gate (owner hold 2026-10-11, Indigo-only). Hidden
+  // until the registry says true for one of the person's companies; any
+  // failure keeps it hidden.
+  let storageFeatureOn = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    let live = true;
+    storageFeatureOn = false;
+    void resolveStorageFeature(identity).then((on) => {
+      if (live) storageFeatureOn = on;
+    });
+    return () => {
+      live = false;
+    };
+  });
+
   const sections = $derived(
     ALL_SECTIONS.filter((section) => {
       if (section.id === "sync")
@@ -443,6 +464,8 @@
       if (section.id === "updates") {
         return adapter?.isAvailable("canSelfUpdate") ?? false;
       }
+      // Storage shells to the local hq CLI; desktop host only.
+      if (section.id === "storage") return Boolean(adapter?.storage) && storageFeatureOn;
       if (section.id === "agents")
         return Boolean(adapter?.sessions?.preflight);
       // Bots: the Cloud group reads adapter.agents (every host); the Local
@@ -456,7 +479,7 @@
 <section class="shell-settings" data-testid="settings-two-column">
   <PageHeader
     title="Settings"
-    subtitle="yours — moved here from the Core menu"
+    subtitle="Your account and app preferences"
     subtitleTestId="settings-subtitle"
     backTestId="settings-back"
     onback={() => onback?.()}
@@ -598,24 +621,6 @@
                 {/if}
               </span>
             </div>
-            {#if profileCompanies.length > 0}
-              <div class="ss-companies" data-testid="settings-profile-companies">
-                <div class="sn ss-companies-head">Companies and roles</div>
-                {#each profileCompanies as company (company.uid)}
-                  <button
-                    type="button"
-                    class="ss-company-row"
-                    data-testid="settings-profile-company"
-                    data-company-uid={company.uid}
-                    onclick={() => oncompany?.(company.uid)}
-                  >
-                    <span class="ss-company-name"><CompanyLabel name={company.label} companyUid={company.uid} /></span>
-                    <span class="ss-company-role" data-testid="settings-profile-company-role">{company.role ?? ""}</span>
-                    <svg class="ss-company-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
-                  </button>
-                {/each}
-              </div>
-            {/if}
             <div class="set-row ss-save-row">
               <div>
                 {#if profileError}
@@ -711,9 +716,21 @@
           {/await}
         {/if}
       {:else if active === "billing"}
-        <BillingSettingsPane {openExternal} />
+        <BillingSettingsPane {openExternal} company={adapter?.company ?? null} companies={profileCompanies} {selectedCompanyUid} />
+      {:else if active === "companies"}
+        <CompaniesSettingsPane
+          {adapter}
+          {companies}
+          roles={profileCompanies}
+          personalLabel={profile?.displayName ?? ""}
+          {oncompany}
+        />
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
+      {:else if active === "storage"}
+        {#if storageFeatureOn}
+          <StorageSettingsPane {adapter} onfeaturedisabled={() => (storageFeatureOn = false)} />
+        {/if}
       {:else if active === "bots"}
         <BotsSettingsPane {adapter} {companies} {onnewbot} />
       {:else}
@@ -775,27 +792,6 @@
     overflow: hidden;
   }
 
-  .ss-companies { display: flex; flex-direction: column; gap: 1px; padding: 6px 0; }
-  .ss-companies-head { padding: 0 0 4px; }
-  .ss-company-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 80px 14px;
-    align-items: center;
-    gap: 8px;
-    min-height: 28px;
-    padding: 0 8px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--t1, inherit);
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-  .ss-company-row:hover { background: var(--hover, var(--overlay-hover)); }
-  .ss-company-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ss-company-role, .ss-company-chev { color: var(--t3, currentColor); }
-  .ss-company-chev { width: 14px; height: 14px; }
   .ss-nav {
     display: flex;
     flex-direction: column;

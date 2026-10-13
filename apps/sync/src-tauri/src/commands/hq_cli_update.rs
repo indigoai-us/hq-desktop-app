@@ -4367,7 +4367,7 @@ async fn provision_managed_npm_for_first_install(app: &AppHandle) -> Option<(Str
     Some((managed_npm, managed_path))
 }
 
-fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
+pub(crate) fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
     let root = paths::managed_toolchain_roots().into_iter().next()?;
     let node_exe = paths::managed_node_executable_in(&root);
     let bin_dir = node_exe.parent()?.to_path_buf();
@@ -5022,8 +5022,7 @@ fn heal_blocked_managed_shadow(latest: &str) -> Option<HqCliUpdateInfo> {
 }
 
 pub fn setup_hq_cli_update_checker(app: &AppHandle) {
-    if crate::scratch_build::active() {
-        crate::scratch_build::skip("hq CLI update checker");
+    if !crate::scratch_build::launch_side_effect_allowed("hq CLI update checker") {
         return;
     }
     let handle = app.clone();
@@ -5085,6 +5084,11 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
                 }
             }
         }
+        // US-010: Claude Code rides the hq-cli cadence. At launch only an
+        // absent install is filled in (no network when it is present); each
+        // scheduled cycle below also moves it to the registry's latest.
+        crate::toolchain::ensure_claude_toolchain(&handle, crate::toolchain::EnsureMode::InstallIfAbsent)
+            .await;
         tokio::time::sleep(first_scheduled_delay).await;
         loop {
             // hq daemon's updater keeps the CLI current when it hosts
@@ -5093,6 +5097,8 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             if !crate::commands::hq_daemon_host::daemon_mode_active() {
                 let lease_timed_out =
                     run_check_cycle(&handle, retry_floor_repair, lease_retries_scheduled).await;
+                crate::toolchain::ensure_claude_toolchain(&handle, crate::toolchain::EnsureMode::Update)
+                    .await;
                 if lease_timed_out {
                     if let Some(delay) = hq_desktop_core::hq_cli_update::auto_update_retry_delay(
                         hq_desktop_core::hq_cli_update::AutoUpdateFailureKind::PackageUseLeaseTimeout,

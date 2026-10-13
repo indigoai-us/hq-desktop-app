@@ -263,6 +263,31 @@ export function layoutAtlas(
   return { placed, regions: scaled };
 }
 
+/** Most dots the map draws at once; past this, SVG paint cost climbs fast. */
+export const ATLAS_DOT_CAP = 400;
+
+/**
+ * The dots to draw when a company has more objects than ATLAS_DOT_CAP. Pinned
+ * ids (selected, hovered, live) always stay; the rest are the largest dots.
+ * Keeps the input order so keyed rendering stays stable.
+ */
+export function atlasCapDots<T extends { id: string; r: number }>(
+  placed: T[],
+  pinned: Iterable<string | null | undefined> = [],
+  cap: number = ATLAS_DOT_CAP,
+): T[] {
+  if (placed.length <= cap) return placed;
+  const keep = new Set<string>();
+  const pins = new Set(pinned);
+  for (const n of placed) if (pins.has(n.id) && keep.size < cap) keep.add(n.id);
+  const bySize = [...placed].sort((a, b) => b.r - a.r || (a.id < b.id ? -1 : 1));
+  for (const n of bySize) {
+    if (keep.size >= cap) break;
+    keep.add(n.id);
+  }
+  return placed.filter((n) => keep.has(n.id));
+}
+
 /** Graph edges plus `contains` edges from parentId. */
 export function atlasEdges(graphEdges: AtlasRefEdge[] | undefined, nodes: AtlasNode[]): AtlasRefEdge[] {
   const out = [...(graphEdges ?? [])];

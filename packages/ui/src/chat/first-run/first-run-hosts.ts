@@ -12,12 +12,20 @@
  * reads, but every action only pretends.
  */
 
-import type { AdapterResult, IntegrationAppRef, IntegrationInstallInput, IntegrationOAuthStart, Json } from "@hq/platform";
+import type {
+  AdapterResult,
+  IntegrationAppRef,
+  IntegrationCatalogEntry,
+  IntegrationInstallInput,
+  IntegrationOAuthStart,
+  Json,
+} from "@hq/platform";
 
 import { catalogFailureLine } from "../../company/files-connect/integration-apps.js";
 import { CONNECTING_TIMEOUT_MS } from "../messaging/connection-card-model.js";
-import { connectFailureSentence, readCompanyConnections } from "../messaging/integration-cards-model.js";
+import { connectFailureSentence, connectionsForDomain, readCompanyConnections, type CompanyConnections } from "../messaging/integration-cards-model.js";
 import { appsForKind, catalogEntries, type AppCatalogResult, type AppConnectResult, type FirstRunApp, type FirstRunAppKind } from "./app-step.js";
+import { normalizeConnectDomain } from "../messaging/richMessageContent.js";
 import { FIRST_RUN_DRY_DELAY_MS } from "./dev-switches.js";
 import { companySlugFromName, type FirstRunTeamCompany, type TeamActionResult } from "./team-step.js";
 import type { FirstRunAppsHandoff, FirstRunTeamHandoff } from "./visual-first-run.js";
@@ -70,41 +78,118 @@ export interface TeamHostDeps {
   /** After a join or a create: pin, refresh the roster. Never navigates. */
   joined?: (companyUid: string | null) => void | Promise<void>;
   created?: (companyUid: string | null) => void | Promise<void>;
+  /**
+   * Re-read the roster and return the person's company with this slug, or
+   * null. Asked before a create runs again after a failure or a timeout:
+   * the first try may have made the company after all.
+   */
+  findCompany?: ((slug: string) => Promise<FirstRunTeamCompany | null>) | null;
+  /** Test seam; defaults to FIND_COMPANY_TIMEOUT_MS. */
+  findTimeoutMs?: number;
   dry: boolean;
   delayMs?: number;
 }
 
+/**
+ * How long a Retry waits on the roster read before it creates as before. A
+ * read that never answers must not hold Retry.
+ */
+export const FIND_COMPANY_TIMEOUT_MS = 10_000;
+
 export const JOIN_FAILURE = "Couldn't join the company. Try again.";
 export const CREATE_UNAVAILABLE = "Starting a company isn't available here yet. Continue in chat to start one.";
 
+/** The roster read, or null when it fails or has not answered within `ms`. */
+function findWithin(
+  find: (slug: string) => Promise<FirstRunTeamCompany | null>,
+  slug: string,
+  ms: number,
+): Promise<FirstRunTeamCompany | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    find(slug).then(
+      (found) => {
+        clearTimeout(timer);
+        resolve(found);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
 export function createFirstRunTeamHost(deps: TeamHostDeps): FirstRunTeamHost {
   const delay = deps.delayMs ?? FIRST_RUN_DRY_DELAY_MS;
-  return {
-    async join(company) {
-      if (deps.dry) {
-        await sleep(delay);
-        return { ok: true, choice: { kind: "company", how: "joined", company } };
-      }
-      if (!deps.claimInvite) return { ok: false, reason: JOIN_FAILURE };
-      const claim = await deps.claimInvite(company.slug);
-      const { inviteClaimOutcome } = await import("../../inbox/company-invite-requests.js");
-      const outcome = inviteClaimOutcome(claim, company.companyUid ?? "", []);
-      if (!outcome.ok) return { ok: false, reason: outcome.message };
-      await deps.joined?.(company.companyUid);
+  /**
+   * Calls still running, by action and slug. A Retry after the screen gave up
+   * waiting (team-step.ts TEAM_ACTION_TIMEOUT_MS) waits on the same call
+   * instead of joining or creating a second time.
+   */
+  const inFlight = new Map<string, Promise<TeamActionResult>>();
+  /** How the last create for a slug ended, once it has. */
+  const lastCreate = new Map<string, TeamActionResult>();
+  function once(key: string, start: () => Promise<TeamActionResult>): Promise<TeamActionResult> {
+    const running = inFlight.get(key);
+    if (running) return running;
+    const call = start().finally(() => inFlight.delete(key));
+    inFlight.set(key, call);
+    return call;
+  }
+
+  async function join(company: FirstRunTeamCompany): Promise<TeamActionResult> {
+    if (deps.dry) {
+      await sleep(delay);
       return { ok: true, choice: { kind: "company", how: "joined", company } };
+    }
+    if (!deps.claimInvite) return { ok: false, reason: JOIN_FAILURE };
+    const claim = await deps.claimInvite(company.slug);
+    const { inviteClaimOutcome } = await import("../../inbox/company-invite-requests.js");
+    const outcome = inviteClaimOutcome(claim, company.companyUid ?? "", []);
+    if (!outcome.ok) return { ok: false, reason: outcome.message };
+    await deps.joined?.(company.companyUid);
+    return { ok: true, choice: { kind: "company", how: "joined", company } };
+  }
+
+  async function create(name: string, slug: string): Promise<TeamActionResult> {
+    if (deps.dry) {
+      await sleep(delay);
+      return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: "cmp_dry_run", slug, name } } };
+    }
+    if (!deps.createCompany) return { ok: false, reason: CREATE_UNAVAILABLE };
+    const before = lastCreate.get(slug);
+    // The last try made it after the screen gave up waiting: keep that company.
+    if (before?.ok) return before;
+    // The last try failed or never answered: it may have made the company anyway.
+    if (before && deps.findCompany) {
+      const found = await findWithin(deps.findCompany, slug, deps.findTimeoutMs ?? FIND_COMPANY_TIMEOUT_MS);
+      if (found) return { ok: true, choice: { kind: "company", how: "existing", company: found } };
+    }
+    const result = await deps.createCompany(name, slug);
+    if (!result.ok) return { ok: false, reason: result.reason };
+    await deps.created?.(result.companyUid);
+    return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: result.companyUid, slug, name } } };
+  }
+
+  return {
+    join(company) {
+      return once(`join:${company.slug}`, () => join(company));
     },
-    async create(name) {
+    create(name) {
       const slug = companySlugFromName(name);
-      if (!slug) return { ok: false, reason: "Use at least three letters or digits, starting with a letter." };
-      if (deps.dry) {
-        await sleep(delay);
-        return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: "cmp_dry_run", slug, name } } };
-      }
-      if (!deps.createCompany) return { ok: false, reason: CREATE_UNAVAILABLE };
-      const result = await deps.createCompany(name, slug);
-      if (!result.ok) return { ok: false, reason: result.reason };
-      await deps.created?.(result.companyUid);
-      return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: result.companyUid, slug, name } } };
+      if (!slug) return Promise.resolve({ ok: false, reason: "Use at least three letters or digits, starting with a letter." });
+      return once(`create:${slug}`, async () => {
+        let result: TeamActionResult;
+        try {
+          result = await create(name, slug);
+        } catch (err) {
+          lastCreate.set(slug, { ok: false, reason: "" });
+          throw err;
+        }
+        lastCreate.set(slug, result);
+        return result;
+      });
     },
   };
 }
@@ -126,11 +211,43 @@ export interface AppsHostDeps {
   now?: () => number;
 }
 
-/** The catalog's server bound (1..100): one read covers both screens' apps. */
+/**
+ * The apps each screen also asks the catalog for by their website's domain.
+ * The unfiltered read is capped at 100 entries across the catalog's
+ * recommended, community and listed apps, so a listed app can be cut from it
+ * (Linear and Read.ai were; Otter was near the end). A read by domain keeps
+ * only that app and returns it wherever it ranks. It uses CATALOG_LIMIT too:
+ * the server searches the first `limit` apps of its listing, so a smaller
+ * limit can miss it. tl;dv is not in the catalog yet; its read finds nothing
+ * until it is.
+ */
+export const KEY_APPS: Record<FirstRunAppKind, readonly string[]> = {
+  notes: ["fireflies.ai", "otter.ai", "read.ai", "tldv.io"],
+  projects: ["linear.app"],
+};
+
+/**
+ * The entries a by-domain read returned that are that app: its domain or a
+ * subdomain of it (`mcp.linear.app` for linear.app), never a lookalike such as
+ * `notlinear.app`, `linearb.io` or `linear.app.example.com`.
+ */
+function namedEntries(json: unknown, domain: string): IntegrationCatalogEntry[] {
+  return catalogEntries(json).filter((entry) => {
+    const entryDomain = normalizeConnectDomain(entry.domain);
+    return entryDomain === domain || !!entryDomain?.endsWith(`.${domain}`);
+  });
+}
+
+/** The catalog's server bound (1..100). */
 export const CATALOG_LIMIT = 100;
 
-function connectedDomains(json: unknown): string[] {
-  return (readCompanyConnections(json)?.connections ?? []).map((c) => c.domain).filter((d): d is string => !!d);
+/**
+ * The listed apps the company already has a connection to. A connection
+ * counts for an app when its domain is the app's or a subdomain of it
+ * (`api.linear.app` for Linear), the same rule the rest of the app uses.
+ */
+function connectedAppDomains(facts: CompanyConnections | null, apps: readonly FirstRunApp[]): string[] {
+  return apps.filter((app) => connectionsForDomain(facts, app.domain).length > 0).map((app) => app.domain);
 }
 
 export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
@@ -139,14 +256,18 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
   const timeoutMs = deps.timeoutMs ?? CONNECTING_TIMEOUT_MS;
   const now = deps.now ?? Date.now;
 
-  /** The ids of the company's connections to this app's domain, or null when the list cannot be read. */
+  /**
+   * The ids of the company's connections to this app's domain or a subdomain
+   * of it (a sign-in can record `api.linear.app` for `linear.app`), or null
+   * when the list cannot be read.
+   */
   async function connectionIds(companyUid: string, domain: string): Promise<Set<string> | null> {
     const list = deps.listConnections;
     if (!list) return null;
     const read = await list(companyUid).catch(() => null);
     if (!read?.ok) return null;
     const facts = readCompanyConnections(read.value);
-    return new Set((facts?.connections ?? []).filter((c) => c.domain === domain).map((c) => c.id));
+    return new Set(connectionsForDomain(facts, domain).map((c) => c.id));
   }
 
   /**
@@ -176,14 +297,27 @@ export function createFirstRunAppsHost(deps: AppsHostDeps): FirstRunAppsHost {
     async catalog(companyUid, kind) {
       const search = deps.catalogSearch;
       if (!search) return { ok: false, reason: "Apps can't be listed here. You can skip this.", retry: false };
-      const res = await search(companyUid, "", CATALOG_LIMIT);
+      const domains = KEY_APPS[kind];
+      // A by-domain read that fails leaves the screen with the unfiltered read alone.
+      const [res, ...byDomain] = await Promise.all([
+        search(companyUid, "", CATALOG_LIMIT),
+        ...domains.map((domain) =>
+          Promise.resolve()
+            .then(() => search(companyUid, domain, CATALOG_LIMIT))
+            .catch((err: unknown) => {
+              console.warn(`[hq-desktop] first-run catalog read for ${domain} threw:`, err);
+              return null;
+            }),
+        ),
+      ]);
       if (!res.ok) {
         const verdict = catalogFailureLine(res);
         return { ok: false, reason: verdict.line, retry: verdict.retry };
       }
-      const apps = appsForKind(catalogEntries(res.value), kind);
+      const named = byDomain.flatMap((read, i) => (read?.ok ? namedEntries(read.value, domains[i]!) : []));
+      const apps = appsForKind([...catalogEntries(res.value), ...named], kind);
       const listed = deps.listConnections ? await deps.listConnections(companyUid).catch(() => null) : null;
-      return { ok: true, apps, connected: listed?.ok ? connectedDomains(listed.value) : [] };
+      return { ok: true, apps, connected: listed?.ok ? connectedAppDomains(readCompanyConnections(listed.value), apps) : [] };
     },
     async connect(companyUid, app, signal) {
       if (deps.dry) {

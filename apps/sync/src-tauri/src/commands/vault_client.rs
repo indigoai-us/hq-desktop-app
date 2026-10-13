@@ -568,7 +568,9 @@ impl VaultClient {
         self.find_entity_by_uid(&uid).await
     }
 
-    /// `GET /entity/{uid}` — fetch a single entity by its UID. Returns `None` on 404.
+    /// `GET /entity/{uid}` — fetch a single readable entity by its UID.
+    /// Returns `None` on 404 or when the response is a liveness-only body
+    /// without an entity uid.
     ///
     /// Used by the workspaces command to resolve memberships (which carry only
     /// `companyUid`) into full Company entities (`name`, `slug`, `bucketName`).
@@ -586,7 +588,17 @@ impl VaultClient {
             return Ok(None);
         }
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
-        serde_json::from_value(wrapper["entity"].clone())
+        let entity = &wrapper["entity"];
+        if entity
+            .get("uid")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|uid| !uid.is_empty())
+            .is_none()
+        {
+            return Ok(None);
+        }
+        serde_json::from_value(entity.clone())
             .map(Some)
             .map_err(|e| VaultClientError::Json(e.to_string()))
     }
@@ -1421,6 +1433,51 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_uid_none_on_liveness_only_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_unreadable"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": { "deleted": false }
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client(&server.uri())
+            .find_entity_by_uid("cmp_unreadable")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn entity_liveness_reads_minimal_live_body_and_404_as_gone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_live"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": { "deleted": false }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_gone"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(&json!({ "error": "not found" })))
+            .mount(&server)
+            .await;
+
+        let vault = client(&server.uri());
+        assert_eq!(
+            vault.entity_liveness("cmp_live").await.unwrap(),
+            EntityLiveness::Live { company_uids: Vec::new() }
+        );
+        assert_eq!(
+            vault.entity_liveness("cmp_gone").await.unwrap(),
+            EntityLiveness::Gone
+        );
     }
 
     #[tokio::test]

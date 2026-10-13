@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { startVisibleInterval } from "../common/visible-interval.js";
   /**
    * Shell host for the shared Office view (US-018) — the ONE implementation.
    *
@@ -293,21 +294,15 @@
       knocks.setDnd(store.visibleSelf()?.willingness === "dnd");
       await knocks.refresh();
     };
-    const handle = setInterval(() => void reconcile(), knockPollMs);
+    // Paused while hidden: only the transition back to visible can have
+    // missed something, and that reconciles at once.
+    const stopPoll = startVisibleInterval(() => void reconcile(), knockPollMs);
     const onFocus = () => void reconcile();
-    // Becoming HIDDEN is not a reason to spend a request: only the transition
-    // back to visible can have missed something.
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      void knocks.refresh();
-    };
     window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisible);
     return () => {
       disposed = true;
-      clearInterval(handle);
+      stopPoll();
       window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisible);
     };
   });
 

@@ -338,8 +338,17 @@
    * would put it, instead of the setup bot starting and failing every turn.
    */
   const needsCodingTool = $derived(Boolean(setupBot?.needsCodingTool));
+  /**
+   * A start's failure, only while the setup bot is not here. Once the host's
+   * bot list shows it, nothing says it could not start (the host works its
+   * own error out the same way). "No coding tool" is about this computer, not
+   * the bot, so it stays.
+   */
+  const startError = $derived(
+    setupBot?.existing && !isSetupBotNoRuntimeMessage(botError) ? null : (botError ?? setupBot?.error ?? null),
+  );
   const visibleBotError = $derived(
-    botError ?? setupBot?.error ?? (needsCodingTool ? setupBotNoRuntime({ noun: hostNoun }) : null),
+    startError ?? (needsCodingTool ? setupBotNoRuntime({ noun: hostNoun }) : null),
   );
   /**
    * No coding tool is signed in and the host can install and sign one in:
