@@ -35,7 +35,8 @@
   type Theme = 'dark' | 'light' | 'system';
   const THEMES: Theme[] = ['dark', 'light', 'system'];
   const t0 = params.get('theme');
-  let theme = $state<Theme>(t0 === 'light' || t0 === 'system' ? t0 : 'dark');
+  // Default follows the system, as the app does.
+  let theme = $state<Theme>(t0 === 'light' || t0 === 'dark' ? t0 : 'system');
   $effect(() => {
     const root = document.documentElement;
     if (theme === 'system') delete root.dataset.forceTheme;
