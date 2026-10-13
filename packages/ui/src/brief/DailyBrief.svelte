@@ -56,7 +56,7 @@
   import { effortMinutes } from "./brief-hero.js";
   import { briefHover } from "./brief-hover.js";
   import { FIELD, inLabel, nextCall, promoteMain } from "./brief-layout.js";
-  import { CARD_TAG, cardTag } from "./brief-card-tags.js";
+  import { CARD_TAG, cardTag, tagIconWidth, tagViewBox } from "./brief-card-tags.js";
   import { rangeText } from "./brief-strip.js";
   /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
   const REWARD_KINDS = new Set(["shipped", "firsts", "resolved"]);
@@ -335,7 +335,7 @@
     </div>
     <BriefDayTimeline events={input.calendarToday} now={input.now} sample={input.calendarSample ?? false} {onopenmeetings} />
     <aside class="b-next" data-testid="brief-next" use:peek={{ state: briefState, content: nextPeek }}>
-      <div class="nx-head"><span class="nx-tag"><svg viewBox="0 0 256 256" aria-hidden="true"><path d={CARD_TAG.meetings.d} /></svg>{next ? (next.live ? "On a call" : "Next call") : "Calls today"}</span></div>
+      <div class="nx-head"><span class="nx-tag"><svg viewBox={tagViewBox(CARD_TAG.meetings)} style:width="{tagIconWidth(CARD_TAG.meetings)}px" aria-hidden="true"><path d={CARD_TAG.meetings.d} /></svg>{next ? (next.live ? "On a call" : "Next call") : "Calls today"}</span></div>
       {#if next}
         <div class="nx-time">{nextTime.t}<span>{nextTime.ap}</span></div>
         <div class="nx-title">{next.event.title}</div>
@@ -379,7 +379,7 @@
         >
           <!-- The card's label: mono, all caps, a Phosphor icon on its left. Hover says why the card is here today. -->
           <span class="why" role="note" aria-label="{tag.label}. Why this card: {w.reason}" title={w.reason} data-testid="brief-why" use:peek={{ state: briefState, content: () => ({ title: entry.name, status: "Why it is here today", sections: [{ label: "Reason", text: w.reason }] }) }}
-            >{#if tag.d}<svg viewBox="0 0 256 256" aria-hidden="true"><path d={tag.d} /></svg>{/if}{tag.label}</span
+            >{#if tag.d}<svg viewBox={tagViewBox(tag)} style:width="{tagIconWidth(tag)}px" aria-hidden="true"><path d={tag.d} /></svg>{/if}{tag.label}</span
           >
           {#if allCards}<span class="kind-tag">{w.kind} · {w.size} · T{w.tier} · {w.score}</span>{/if}
           {#if !entry.ready}

@@ -216,7 +216,8 @@
   /* Done: outline only. Later: fill only. */
   li.done .st {
     background: transparent;
-    border-color: rgb(var(--b-ink) / 0.12);
+    border-color: rgb(var(--b-ink) / 0.08);
+    color: rgb(var(--b-ink) / 0.32);
   }
   li.later .st {
     border-color: transparent;

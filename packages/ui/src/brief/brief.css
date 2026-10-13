@@ -980,7 +980,7 @@
   left: 14px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   height: 20px;
   padding: 0 7px 0 6px;
   border-radius: 6px;
@@ -997,7 +997,6 @@
   transition: background 0.15s, color 0.15s;
 }
 .daily-brief .slot > .why svg {
-  width: 12px;
   height: 12px;
   flex: none;
   fill: currentColor;
@@ -1068,7 +1067,7 @@
   gap: 32px;
   align-items: stretch;
   min-width: 1180px;
-  margin: 8px 0 18px;
+  margin: 28px 0 22px;
 }
 .daily-brief .b-upd {
   font-size: 11px;
@@ -1076,7 +1075,7 @@
 }
 /* The greeting is the brief's one display moment: HQ's serif, large and light. */
 .daily-brief .b-greet {
-  margin: 6px 0 0;
+  margin: 0;
   font-family: var(--b-serif);
   font-size: 44px;
   font-weight: 400;
@@ -1086,7 +1085,7 @@
 .daily-brief .b-stats {
   display: flex;
   gap: 32px;
-  margin-top: 26px;
+  margin-top: 40px;
 }
 .daily-brief .stat {
   display: flex;
@@ -1145,7 +1144,7 @@
 .daily-brief .b-next .nx-tag {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   height: 20px;
   padding: 0 7px 0 6px;
   border-radius: 6px;
@@ -1160,7 +1159,6 @@
   background: rgb(var(--b-ink) / 0.06);
 }
 .daily-brief .b-next .nx-tag svg {
-  width: 12px;
   height: 12px;
   flex: none;
   fill: currentColor;
