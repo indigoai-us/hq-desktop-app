@@ -478,6 +478,10 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
+  .chip-m.age {
+    min-width: 36px;
+    justify-content: center;
+  }
   .age.warn::before,
   .age.red::before {
     content: "";
@@ -487,8 +491,8 @@
     background: #ffd27a;
   }
   .age.red::before {
-    background: #ff8a80;
-    box-shadow: 0 0 6px rgba(255, 138, 128, 0.8);
+    background: #ff6b5e;
+    box-shadow: 0 0 0 2px rgba(255, 107, 94, 0.25), 0 0 8px rgba(255, 107, 94, 0.9);
   }
   .more-row {
     justify-content: center;

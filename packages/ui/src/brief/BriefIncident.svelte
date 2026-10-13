@@ -64,8 +64,23 @@
     {/if}
   </div>
   {#if m}
-    <div class="big" style="margin-top:{tall ? 12 : 6}px;font-size:var(--b-fs-num)" use:countUp={stuck}>0</div>
-    <div class="sub" data-testid="brief-incident-sub">{m.unit} stuck · {m.cause}<br />{risk.summary}</div>
+    <!-- The count, with one lit cell per stuck unit beside it (never the whole fleet). -->
+    <div class="count">
+      <div class="big" style="font-size:var(--b-fs-num)" use:countUp={stuck}>0</div>
+      {#if stuck > 0}
+        <div class="dots" data-testid="brief-incident-dots" aria-label="{stuck} {m.unit} stuck">
+          {#each Array.from({ length: stuck }, (_, i) => i) as i (i)}
+            <i
+              role="img"
+              aria-label="Stuck {unitOne}"
+              onmouseenter={() => (probe = `${unitOne.toUpperCase()} ${i + 1} OF ${stuck} · ${m.cause.toUpperCase()}`)}
+              onmouseleave={() => (probe = "")}
+            ></i>
+          {/each}
+        </div>
+      {/if}
+    </div>
+    <div class="sub" data-testid="brief-incident-sub"><span class="unit">{m.unit} stuck · {m.cause}</span><br />{risk.summary}</div>
   {:else if ci}
     {#if ci.note && ci.note !== ci.workflow}<p class="lede">{ci.note}</p>{/if}
     <!-- The details as label / value rows at the card's foot. -->
@@ -109,19 +124,6 @@
       {/if}
     </div>
   {/if}
-  {#if m && stuck > 0}
-    <!-- One dot per affected unit, never the whole fleet. -->
-    <div class="dots" class:wide={!tall} data-testid="brief-incident-dots" aria-label="{stuck} {m.unit} stuck">
-      {#each Array.from({ length: stuck }, (_, i) => i) as i (i)}
-        <i
-          role="img"
-          aria-label="Stuck {unitOne}"
-          onmouseenter={() => (probe = `${unitOne.toUpperCase()} ${i + 1} OF ${stuck} · ${m.cause.toUpperCase()}`)}
-          onmouseleave={() => (probe = "")}
-        ></i>
-      {/each}
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -135,10 +137,10 @@
   .eb {
     flex: 1;
     min-width: 0;
-    font-size: var(--b-fs-title-lg);
+    font-size: 16px;
     font-weight: 500;
-    line-height: 1.25;
-    letter-spacing: -0.015em;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
     color: #fff;
     overflow: hidden;
     display: -webkit-box;
@@ -147,15 +149,18 @@
     line-clamp: 2;
     overflow-wrap: anywhere;
   }
-  /* LIVE: the shared mono label as a glass pill, its dot pulsing. */
+  /* LIVE: the shared mono label as a glass pill, its dot pulsing, in the card's top-right corner
+     opposite the card label (same 18px / 20px inset and 20px height). */
   .livetag {
+    position: absolute;
+    z-index: 4;
+    top: 18px;
+    right: 20px;
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    height: 18px;
-    margin-left: 8px;
-    padding: 0 7px;
-    vertical-align: 3px;
+    height: 20px;
+    padding: 0 8px;
     border-radius: 999px;
     font-family: var(--b-code);
     font-size: 10px;
@@ -193,7 +198,7 @@
   }
   .lgo {
     flex: none;
-    margin-top: 2px;
+    margin-top: 0;
     display: inline-grid;
     place-items: center;
     width: 20px;
@@ -202,7 +207,7 @@
     overflow: hidden;
   }
   .lede {
-    margin: 8px 0 0;
+    margin: 8px 0 12px;
     font-size: 13px;
     line-height: 1.4;
     color: rgba(255, 255, 255, 0.85);
@@ -225,7 +230,7 @@
   }
   .facts span {
     flex: none;
-    width: 64px;
+    width: 68px;
     font-family: var(--b-code);
     font-size: 10px;
     font-weight: 500;
@@ -284,10 +289,12 @@
     gap: 4px;
   }
   .also-l {
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    color: rgb(var(--b-ink) / 0.6);
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.62);
     margin-bottom: 2px;
   }
   .arow {
@@ -295,13 +302,13 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
-    padding: 5px 8px;
-    border-radius: 6px;
+    padding: 7px 10px;
+    border-radius: 10px;
     font-size: 13px;
     line-height: 1.3;
-    color: rgb(var(--b-ink) / 0.92);
-    background: rgb(var(--b-ink) / 0.1);
-    border: 1px solid rgb(var(--b-ink) / 0.12);
+    color: #fff;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.18);
     transition: background 0.2s;
   }
   .arow:hover,
@@ -322,10 +329,8 @@
   }
   .arow .st {
     flex: none;
-    font-family: var(--b-mono);
     font-size: 11px;
-    letter-spacing: 0;
-    color: rgb(var(--b-ink) / 0.72);
+    color: rgba(255, 255, 255, 0.75);
     white-space: nowrap;
   }
   .arow.more {
@@ -336,37 +341,38 @@
     flex: none;
     display: inline-grid;
     place-items: center;
-    width: 14px;
-    height: 14px;
-    border-radius: 4px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
     overflow: hidden;
   }
-  /* The affected set: one square per stuck unit, wrapping; the fleet total never renders. */
+  /* The count and its stuck units: lit cells in the mosaic style, beside the number. */
+  .count {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 2px;
+  }
   .dots {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    margin-top: auto;
-    padding-top: 10px;
-  }
-  .dots.wide {
-    gap: 3px;
+    max-width: 120px;
   }
   .dots i {
-    width: 10px;
-    height: 10px;
-    border-radius: 2px;
-    background: rgba(0, 0, 0, 0.3);
-    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.28);
-    cursor: crosshair;
-    transition: transform 0.2s, box-shadow 0.2s;
-  }
-  .dots.wide i {
     width: 8px;
     height: 8px;
+    border-radius: 1.5px;
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 6px rgba(255, 255, 255, 0.45);
+    cursor: crosshair;
+    transition: scale 0.15s;
   }
   .dots i:hover {
-    transform: scale(1.6);
-    box-shadow: 0 0 0 2px #fff;
+    scale: 1.4;
+  }
+  .sub .unit {
+    color: #fff;
+    font-weight: 500;
   }
 </style>
