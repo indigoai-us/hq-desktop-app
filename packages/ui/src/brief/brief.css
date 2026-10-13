@@ -1035,10 +1035,10 @@
     linear-gradient(160deg, #98a0f5 0%, #7c83ef 50%, #8570e9 100%);
   --b-field-glow: rgba(110, 110, 235, 0.4);
 }
-/* One quiet motif on every field (not the sunrise, which has its sun): a soft
-   glass orb rising from the bottom-right corner and one dotted orbit. Sized to
-   the card's height up to 240px, so it reads the same on every card and stays
-   in the corner, clear of the text. */
+/* One quiet motif on every field (not the sunrise, which has its sun): a glass
+   shape and a dotted line in the bottom-right corner, drawn from the card's
+   content (brief-deco.ts, set per slot as --b-deco). Sized to the card's height
+   up to 240px, so it reads the same on every card and stays clear of the text. */
 .daily-brief .slot[data-field]:not([data-field="dusk"]) > .w {
   /* The motif, then the field: one soft bloom (two for teal) over a two-hue base, smooth like the reference. */
   background-image: var(--b-deco), var(--b-edge), var(--b-field-bg);
@@ -1171,11 +1171,11 @@
 /* The greeting is the brief's one display moment: HQ's serif, large and light. */
 .daily-brief .b-greet {
   margin: 0;
-  font-family: var(--b-serif);
+  font-family: var(--b-ui);
   font-size: 44px;
   font-weight: 300;
   line-height: 1.08;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.04em;
 }
 .daily-brief .b-stats {
   display: flex;

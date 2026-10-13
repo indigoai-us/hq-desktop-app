@@ -55,6 +55,7 @@
   import type { BriefInput, BriefRisk as BriefRiskRow } from "./brief-types.js";
   import { effortMinutes } from "./brief-hero.js";
   import { briefHover } from "./brief-hover.js";
+  import { decoUrl } from "./brief-deco.js";
   import { FIELD, clockLabel, inLabel, nextCall, promoteMain, todayStats, withLine, type TodayStatKey } from "./brief-layout.js";
   import { CARD_TAG, cardTag, tagIconWidth, tagViewBox } from "./brief-card-tags.js";
   /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
@@ -356,6 +357,7 @@
           class:short={w.rows === 1}
           class:lit={!NO_HOVER_KINDS.has(String(w.kind))}
           data-field={FIELD[String(w.kind)] ?? "teal"}
+          style:--b-deco={decoUrl(String(w.kind))}
           use:briefHover={{ tilt: REWARD_KINDS.has(String(w.kind)) }}
           style="{allCards ? `grid-column:span ${w.cols};grid-row:span ${w.rows}` : `grid-area:${w.kind}`};animation-delay:{i * 70}ms"
           data-widget={w.kind}

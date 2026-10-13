@@ -361,10 +361,8 @@
     -webkit-line-clamp: 3;
     line-clamp: 3;
     overflow: hidden;
-    max-width: min(330px, calc(54% - 32px));
-  }
-  .lede.big {
-    max-width: min(420px, calc(54% - 32px));
+    /* The full card width, so a sentence only wraps at the card's edge. */
+    max-width: none;
   }
   /* The timeline sits at the bottom with a guaranteed gap above it, so the lede never touches its label. */
   /* The strip ends the card: no space under it beyond the card's own padding. */
