@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Bots: a cloud bot's side panel now has four tabs: Channels, Routines, Persona and Brain. Channels shows where the bot talks (HQ messages, Slack, Telegram, Email) with a switch for each, and Connect starts Slack setup. Routines lists the bot's scheduled prompts with the schedule in plain words ("Weekdays at 9:00"), the next run and how the last run went; a routine opens in a pop-up where you can change it, run it now or delete it. Persona shows the bot's name, title, description and instructions, and Edit opens a large editor. Brain shows the model, with a picker to change it, and the bot's memories and knowledge files, which open to read, edit or delete. Every change is saved on the bot's computer and shown as the bot read it back; while the bot is offline the panel says so and changes are turned off. Pause/Resume, Open session, Stop and "Bot · 30d usage" are gone from cloud bots. Local bots keep their panel as it was.
+
 ## [0.11.9] — 2026-10-14
 
 - Daily Brief is now only shown to Indigo members. For everyone else the Daily Brief entry is gone from the side rail and the command palette, and an open Daily Brief page goes back to the company's landing page, or Home. It can be opened to everyone later from HQ's flag registry (`desktop.rail-brief-v1`) without a new release.
