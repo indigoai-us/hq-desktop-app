@@ -339,7 +339,7 @@
       {#if next}
         <div class="nx-time">{nextTime.t}<span>{nextTime.ap}</span></div>
         <div class="nx-title">{next.event.title}</div>
-        <div class="nx-in">{inLabel(next.inMin, next.live)}{#if callsLeft > 1} · {callsLeft - 1} more after{/if}</div>
+        <div class="nx-in">{inLabel(next.inMin, next.live)}{callsLeft > 1 ? ` · ${callsLeft - 1} more after` : ""}</div>
       {:else}
         <div class="nx-time">Free</div>
         <div class="nx-title">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</div>

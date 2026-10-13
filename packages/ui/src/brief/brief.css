@@ -1124,6 +1124,8 @@
 }
 .daily-brief .b-next {
   position: relative;
+  /* Room for the timeline's active-call arrow between the list and this panel. */
+  margin-left: 10px;
   overflow: hidden;
   display: flex;
   flex-direction: column;

@@ -98,7 +98,7 @@
         >
           <span class="pt" aria-hidden="true"></span>
           <span class="tt">{s.e.title}</span>
-          <span class="tm">{at(s.e)}{#if s.e.tentative} · Maybe{/if}</span>
+          <span class="tm">{at(s.e)}{s.e.tentative ? " · Maybe" : ""}</span>
           <span class="st">{STATE_LABEL[s.state]}</span>
           {#if s.state === "now" || s.state === "next"}<span class="mk" aria-hidden="true"></span>{/if}
         </li>
@@ -160,7 +160,7 @@
     gap: 10px;
     height: 32px;
     padding: 0 8px;
-    margin: 0 -8px 0 0;
+    margin: 0;
     border-radius: 6px;
     font-size: 13px;
     color: var(--b-t3);
@@ -240,9 +240,10 @@
     box-shadow: 0 0 0 1.5px var(--b-hot);
   }
   /* The marker beside the active call, as in the reference. */
+  /* Even air on both sides: 22px from the pill, 22px to the Next call panel. */
   .mk {
     position: absolute;
-    right: -14px;
+    right: -20px;
     top: 50%;
     margin-top: -4px;
     border: 4px solid transparent;
