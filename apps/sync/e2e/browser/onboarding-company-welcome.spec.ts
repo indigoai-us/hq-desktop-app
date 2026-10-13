@@ -112,10 +112,17 @@ for (const size of SIZES) {
     for (const buttonCentre of await buttonCentres(page, '[data-testid="onboarding-company-actions"]')) {
       expect(Math.abs(buttonCentre - size.width / 2)).toBeLessThanOrEqual(1);
     }
-    // The line under the heading is no wider than the form column.
-    expect((await box(page, '.scene.on .follow-on .cs-pane > .body')).width).toBeLessThanOrEqual(
-      (await box(page, 'form.cs-form')).width,
-    );
+    // The line under the heading is centred with the heading and stays on one line
+    // (it may be wider than the form column by design).
+    const subtitle = await page.locator('.scene.on .follow-on .cs-pane > .body').evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
+      const text = range.getBoundingClientRect();
+      return { lineTops: new Set(rects.map((rect) => Math.round(rect.top))).size, centre: text.left + text.width / 2 };
+    });
+    expect(subtitle.lineTops).toBe(1);
+    expect(Math.abs(subtitle.centre - centre(await box(page, '.scene.on [data-scene-heading]')))).toBeLessThanOrEqual(1);
 
     // Typing and moving through the fields (focus, caret) leaves it in place.
     await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
