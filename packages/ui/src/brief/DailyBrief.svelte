@@ -344,11 +344,18 @@
         <div class="nx-time">Free</div>
         <div class="nx-title">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</div>
       {/if}
-      <!-- The cards' motif: a glass orb, one dotted orbit, one node (hot while a call is next). -->
-      <svg class="orbit" viewBox="0 0 200 200" aria-hidden="true">
-        <circle class="orb" cx="158" cy="196" r="100" />
-        <circle class="path" cx="158" cy="196" r="124" />
-        <circle class="node" class:hot={!!next} cx="96" cy="88" r="4" />
+      <!-- A small orbit: the day around you. On a call the node circles and a soft ring pulses; before a call it waits at the top. -->
+      <svg class="orbit" class:live={next?.live} class:idle={!next} viewBox="0 0 120 120" aria-hidden="true">
+        <defs>
+          <radialGradient id="b-orb-fill" cx="0.35" cy="0.3" r="0.8">
+            <stop offset="0" stop-color="currentColor" stop-opacity="0.1" />
+            <stop offset="1" stop-color="currentColor" stop-opacity="0.02" />
+          </radialGradient>
+        </defs>
+        {#if next?.live}<circle class="pulse" cx="60" cy="60" r="28" />{/if}
+        <circle class="orb" cx="60" cy="60" r="28" fill="url(#b-orb-fill)" />
+        <circle class="path" cx="60" cy="60" r="46" />
+        {#if next}<g class="spin"><circle class="node" cx="60" cy="14" r="4.5" /></g>{/if}
       </svg>
     </aside>
   </section>

@@ -1182,43 +1182,70 @@
   margin-top: 10px;
   font-size: 13px;
   font-weight: 500;
-  max-width: 58%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  /* The whole title, wrapped; kept clear of the orbit in the corner. */
+  max-width: calc(100% - 104px);
 }
 .daily-brief .b-next .nx-in {
   margin-top: 4px;
   font-size: 11px;
   color: var(--b-t3);
-  max-width: 58%;
+  max-width: calc(100% - 104px);
 }
 .daily-brief .b-next .orbit {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  height: 100%;
-  width: auto;
-  aspect-ratio: 1;
+  right: 14px;
+  bottom: 14px;
+  width: 96px;
+  height: 96px;
+  color: rgb(var(--b-ink));
   pointer-events: none;
 }
 .daily-brief .b-next .orbit .orb {
-  fill: rgb(var(--b-ink) / 0.035);
-  stroke: rgb(var(--b-ink) / 0.14);
-  stroke-width: 0.7;
+  stroke: rgb(var(--b-ink) / 0.12);
+  stroke-width: 1;
 }
 .daily-brief .b-next .orbit .path {
   fill: none;
-  stroke: rgb(var(--b-ink) / 0.3);
-  stroke-width: 1.3;
-  stroke-dasharray: 0 5;
+  stroke: rgb(var(--b-ink) / 0.26);
+  stroke-width: 1.2;
+  stroke-dasharray: 0 4.5;
   stroke-linecap: round;
 }
 .daily-brief .b-next .orbit .node {
-  fill: rgb(var(--b-ink) / 0.7);
-}
-.daily-brief .b-next .orbit .node.hot {
   fill: var(--b-hot);
+}
+.daily-brief .b-next .orbit.idle .path {
+  stroke: rgb(var(--b-ink) / 0.16);
+}
+/* On a call: the node travels the orbit and a soft ring breathes out from the orb. */
+.daily-brief .b-next .orbit .spin {
+  transform-origin: 60px 60px;
+}
+.daily-brief .b-next .orbit.live .spin {
+  animation: b-orbit 9s linear infinite;
+}
+.daily-brief .b-next .orbit .pulse {
+  fill: none;
+  stroke: var(--b-hot);
+  stroke-width: 1.2;
+  transform-origin: 60px 60px;
+  animation: b-pulse 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+}
+@keyframes b-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes b-pulse {
+  from {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.6);
+  }
 }
 /* Keep each card's top row clear of the corner arrow. */
 /* Each card's own content starts under its label. */
