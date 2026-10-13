@@ -157,7 +157,7 @@ describe("blockedLayout and chainNodes", () => {
     expect(geoff.sections[1]!.lines![0]!.label).toBe("Cut the hq-core release");
     const docs = partyPeek(s.parties.find((p) => p.name === "Docs release")!, titles);
     expect(docs.status).toBe("Held until you act");
-    expect(docs.origin).toEqual({ companyUid: INDIGO, label: "indigo-docs" });
+    expect(docs.origin).toEqual({ companyUid: INDIGO, label: "Docs site" });
     const more = morePartiesPeek(s.parties.slice(3), titles);
     expect(more.title).toBe("2 more waiting on you");
     expect(more.sections[0]!.lines!.map((l) => l.label)).toEqual(["Stefan · runs liveops on a green main · Fix the skill-metadata check", "Yousuf · moves off Pluto · Ack the Pluto handoff"]);

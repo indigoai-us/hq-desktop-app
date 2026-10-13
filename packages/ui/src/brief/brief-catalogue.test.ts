@@ -23,6 +23,7 @@ import {
   pick,
   rankDecisions,
   reasonFor,
+  skipFor,
   weekdayOf,
   type Dropped,
 } from "./brief-catalogue.js";
@@ -350,11 +351,58 @@ describe("pairs", () => {
   it("the symmetric table has a skip sentence per rule and never pairs a kind with itself", () => {
     for (const r of PAIRS) {
       expect(r.pair[0]).not.toBe(r.pair[1]);
-      expect(r.skip.length).toBeGreaterThan(10);
+      expect(skipFor(r, r.pair[0]).length).toBeGreaterThan(10);
+      expect(skipFor(r, r.pair[1]).length).toBeGreaterThan(10);
       expect(pairRuleFor(r.pair[1], r.pair[0])).toBe(r);
     }
     expect(pairRuleFor("agenda", "runway")!.coexist(buildContext(octoberEleven()), null)).toBe(false);
     expect(pairRuleFor("incident", "risk")).toBeNull();
+  });
+
+  it("a skip sentence names the card that stays, never the one that was dropped", () => {
+    const names: Record<BriefWidgetKind, string> = Object.fromEntries(CATALOGUE.map((e) => [e.id, e.name])) as Record<BriefWidgetKind, string>;
+    const mentions = (text: string, kind: BriefWidgetKind) => text.toLowerCase().includes(names[kind].toLowerCase());
+    const alwaysOn: BriefWidgetKind[] = ["sunrise", "catchup", "needs"];
+    for (const r of PAIRS) {
+      for (const [kept, dropped] of [r.pair, [r.pair[1], r.pair[0]]] as const) {
+        if (alwaysOn.includes(dropped)) continue;
+        const why = skipFor(r, kept);
+        // A sentence that names one of the pair must name the kept card.
+        if (mentions(why, dropped) && !mentions(why, kept)) throw new Error(`${r.pair.join("/")}: "${why}" names the dropped ${dropped}`);
+      }
+    }
+    expect(skipFor(pairRuleFor("agenda", "runway")!, "agenda")).toBe("the Today card already shows the agenda");
+    expect(skipFor(pairRuleFor("agenda", "runway")!, "runway")).toBe("Focus time already shows today's calls and gaps");
+    const rt = pairRuleFor("blockedByMe", "releaseTrain")!;
+    expect(skipFor(rt, "releaseTrain")).toContain("Release train");
+    expect(skipFor(rt, "blockedByMe")).toContain("unblock graph");
+  });
+
+  it("fleet recovery needs a previous run to compare with; the first brief hosts the stuck set on the incident card only", () => {
+    const input = everything();
+    const fi = input.fleetIncident!;
+    const measure = (series: typeof fi.series, verdict: typeof fi.verdict) =>
+      entryOf("fleetRecovery").measure(buildContext({ ...input, fleetIncident: { ...fi, series, verdict } }));
+    // Two points: a story.
+    expect(measure(fi.series, "healing")?.fact).toBe("the fleet is healing: 1 agent still stuck");
+    // One point (today's sweep only) and a plateaued verdict: no evidence, no card.
+    expect(measure([fi.series[1]!], "plateaued")).toBeNull();
+    // A healed fleet on its first brief still gets to say so.
+    expect(measure([fi.series[1]!], "healed")?.fact).toBe("the fleet healed: no agent still stuck");
+  });
+
+  it("an incident that is not a red main is named by its product in the reason sentence, never by its verb-first title", () => {
+    const input = octoberEleven();
+    const fleet = input.risks.find((r) => r.severity === "incident" && !r.ci)!;
+    const ci = input.risks.find((r) => r.severity === "incident" && r.ci)!;
+    const only = { ...input, risks: [fleet], priorities: [{ n: 1, text: fleet.title, because: "x", itemId: fleet.id }] };
+    const ev = entryOf("incident").measure(buildContext(only))!;
+    expect(ev.fact).toBe("a Fleet problem is live");
+    const both = { ...input, risks: [fleet, ci], priorities: [{ n: 1, text: ci.title, because: "x", itemId: ci.id }] };
+    const ctx = buildContext(both);
+    const serve = entryOf("incident").serves(ctx, entryOf("incident").measure(ctx)!)[0]!;
+    expect(serve.what).toBe("it is live, and a Fleet problem is live");
+    expect(serve.what).not.toContain(fleet.title);
   });
 
   it("agenda and runway never share the grid", () => {

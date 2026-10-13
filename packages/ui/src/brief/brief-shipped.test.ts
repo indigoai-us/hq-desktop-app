@@ -68,7 +68,7 @@ describe("BriefShipped", () => {
     expect(text(q('[data-testid="brief-shipped-more"]'))).toBe("+2 more");
     // Products, never repo short names; the first-of-its-kind ship leads, then the most merged, then the name.
     const labels = tiles.map((t) => text(t.querySelector('[data-testid="brief-origin-label"]')));
-    expect(labels).toEqual(["HQ Pro", "Desktop app", "HQ core", "CLI", "Deploy"]);
+    expect(labels).toEqual(["HQ Pro", "Desktop app", "HQ core", "Fleet", "HQ Cloud"]);
     for (const l of labels) expect(l).not.toMatch(/^hq-|indigoai-us/);
     expect(tiles.map((t) => text(t.querySelector('[data-testid="brief-shipped-headline"]')))).toEqual(["1 merged", "4 merged", "3 merged", "1 merged", "1 merged"]);
     // Company logo on every tile.
@@ -113,8 +113,8 @@ describe("BriefShipped", () => {
     expect(text(peek)).toContain("2 more products");
     const lines = [...peek.querySelectorAll('[data-testid="brief-peek-line"]')].map((l) => [text(l.querySelector("div")), text(l.querySelector("span"))]);
     expect(lines).toEqual([
-      ["Fleet", "1 merged"],
-      ["HQ Cloud", "1 merged"],
+      ["HQ command line", "1 merged"],
+      ["Sharing and deploys", "1 merged"],
     ]);
   });
 

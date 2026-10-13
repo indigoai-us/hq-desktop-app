@@ -196,7 +196,7 @@ describe("BriefResolved", () => {
     expect(text).not.toMatch(/#\d+/);
     expect(text).not.toContain("fix(ci)");
     const products = qa('[data-testid="brief-resolved-product"]').map((el) => el.textContent);
-    expect(products).toEqual(["Finance dashboard", "Deploy", "CLI", "Fleet", "Desktop app"]);
+    expect(products).toEqual(["Finance dashboard", "Sharing and deploys", "HQ command line", "Fleet", "Desktop app"]);
     expect(qa('[data-testid="brief-logo"]')).toHaveLength(5);
     expect(qa(".when").map((el) => el.textContent)).toEqual(["8h ago", "10h ago", "12h ago", "14h ago", "16h ago"]);
   });

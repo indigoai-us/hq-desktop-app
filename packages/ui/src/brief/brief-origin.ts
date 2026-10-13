@@ -4,17 +4,30 @@
  */
 
 /** Repo short name to the product people call it. Unknown repos keep their short name. */
+/** Same map as the writer's `PRODUCT_NAMES` in personal/skills/daily-brief/scripts/brief_rank.py; change both together. */
 const PRODUCTS: Record<string, string> = {
   "hq-desktop-app": "Desktop app",
+  "hq-desktop": "Desktop app",
   "hq-cloud": "HQ Cloud",
+  "hq-sync": "HQ Sync",
   "hq-core-staging": "HQ core",
   "hq-core": "HQ core",
   "hq-pro": "HQ Pro",
+  "hq-pro-core": "HQ Pro",
   "hq-finance": "Finance dashboard",
+  "cfo-dashboard": "Finance dashboard",
   "hq-pro-agents": "Fleet",
-  "hq-cli": "CLI",
-  "hq-deploy": "Deploy",
-  "hq-packages": "Packs",
+  "hq-agents-v2": "Fleet",
+  "hq-fleet-runtime": "Fleet",
+  "hq-cli": "HQ command line",
+  "hq-deploy": "Sharing and deploys",
+  "hq-packages": "Skill packs",
+  "hq-console": "HQ Console",
+  "hq-shepherd": "HQ Shepherd",
+  "hq-native-mobile": "HQ Mobile",
+  "hq-status": "Status page",
+  "indigo-marketing": "Marketing site",
+  "indigo-docs": "Docs site",
 };
 
 /** "indigoai-us/hq-core" -> "hq-core". */

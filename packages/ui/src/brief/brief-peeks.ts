@@ -175,8 +175,9 @@ export function riskPeek(risk: BriefRisk, prompt: string | undefined, nowIso = "
     if (onTop) facts.push({ label: onTop, state: "ON TOP", tone: "warn" });
   }
   const affected = affectedOf(risk);
+  // The affected set only; the fleet's headcount is not a fact about the incident.
   if (risk.measure && affected != null) {
-    facts.push({ label: `${affected} of ${countNoun(risk.measure.total, risk.measure.unit.replace(/s$/, ""), risk.measure.unit)} ${risk.measure.cause}`, state: "MEASURED", tone: "red" });
+    facts.push({ label: `${countNoun(affected, risk.measure.unit.replace(/s$/, ""), risk.measure.unit)} ${risk.measure.cause}`, state: "MEASURED", tone: "red" });
   }
   const sections: PeekContent["sections"] = [];
   if (facts.length) sections.push({ label: live ? "Live" : "Facts", lines: facts });

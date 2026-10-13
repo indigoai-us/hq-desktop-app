@@ -168,6 +168,11 @@ describe("Needs you (8, 11, 16, 17)", () => {
     expect(productName("indigoai-us/hq-desktop-app")).toBe("Desktop app");
     expect(productName("hq-core-staging")).toBe("HQ core");
     expect(productName("indigoai-us/hq-pro-agents")).toBe("Fleet");
+    // The same names the writer's PRODUCT_NAMES table uses, so sweep rollups and writer rows merge by product.
+    expect(productName("hq-cli")).toBe("HQ command line");
+    expect(productName("hq-shepherd")).toBe("HQ Shepherd");
+    expect(productName("hq-fleet-runtime")).toBe("Fleet");
+    expect(productName("hq-native-mobile")).toBe("HQ Mobile");
     expect(productName("indigoai-us/something-new")).toBe("something-new");
     expect(productName("hq-cloud", "Sync")).toBe("Sync");
     expect(repoShort("indigoai-us/hq-finance")).toBe("hq-finance");

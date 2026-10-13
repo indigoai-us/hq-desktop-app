@@ -300,9 +300,10 @@ function redHours(r: BriefRisk, nowMs: number): number | null {
   return null;
 }
 
+/** A red main by product and workflow; anything else as "a <product> problem", since a verb-first title cannot be a sentence subject. */
 function incidentLabel(r: BriefRisk): string {
   if (r.ci) return `${productOf(r.origin)}'s ${r.ci.workflow ?? "main CI"}`;
-  return r.title;
+  return `a ${productOf(r.origin)} problem`;
 }
 
 function incidentState(r: BriefRisk, nowMs: number): string {
@@ -588,6 +589,9 @@ export const CATALOGUE: readonly WidgetEntry[] = [
       if (!fi) return null;
       const ended = fi.incidentEnd ? Date.parse(fi.incidentEnd) : NaN;
       if (Number.isFinite(ended) && ctx.nowMs - ended > DAY_MS) return null;
+      // A recovery arc needs a previous run to compare with; the first brief has only today's point,
+      // and "plateaued" would be a claim with no evidence. The incident card still hosts the stuck set.
+      if (fi.series.length < 2 && fi.verdict !== "healed") return null;
       const value: 1 | 2 | 3 = fi.verdict === "relapsing" || fi.verdict === "plateaued" ? 3 : fi.verdict === "healing" ? 2 : 1;
       const stuck = fi.stillStuck.length;
       const fact = fi.verdict === "healed" ? "the fleet healed: no agent still stuck" : `the fleet is ${fi.verdict}: ${plural(stuck, "agent")} still stuck`;
@@ -1216,11 +1220,22 @@ export interface PairRule {
   pair: [BriefWidgetKind, BriefWidgetKind];
   /** `placed` is null at admission (rows unknown): row conditions are deferred to assignSlots. */
   coexist(ctx: BriefContext, placed: readonly Placed[] | null): boolean;
-  /** Skip sentence for the later-ranked one, in the dropped entry's own words. */
-  skip: string;
+  /**
+   * Skip sentence for the later-ranked one. A string names the card that stays
+   * either way (the kept card is always on the grid, or the sentence names
+   * neither); a map is keyed by the kind that stays, so the sentence never
+   * names a card that is not shown.
+   */
+  skip: string | Partial<Record<BriefWidgetKind, string>>;
 }
 
 const placedOf = (placed: readonly Placed[] | null, kind: BriefWidgetKind) => placed?.find((p) => p.kind === kind) ?? null;
+
+/** The rule's skip sentence when `kept` is the card that stays on the grid. */
+export function skipFor(rule: PairRule, kept: BriefWidgetKind): string {
+  if (typeof rule.skip === "string") return rule.skip;
+  return rule.skip[kept] ?? rule.skip[rule.pair[0]] ?? rule.skip[rule.pair[1]] ?? "it would repeat a card already on the grid";
+}
 
 export const PAIRS: readonly PairRule[] = [
   {
@@ -1238,28 +1253,44 @@ export const PAIRS: readonly PairRule[] = [
     coexist: (ctx) => !ctx.input.decisions.some((d) => d.action === "cut" && d.source === "prs"),
     skip: "Cut the release is already a call in Needs you",
   },
-  { pair: ["blockedByMe", "releaseTrain"], coexist: () => false, skip: "the unblock graph already shows the release" },
+  {
+    pair: ["blockedByMe", "releaseTrain"],
+    coexist: () => false,
+    skip: { blockedByMe: "the unblock graph already shows the release", releaseTrain: "the Release train card already shows the release call" },
+  },
   {
     pair: ["meetings", "decided"],
     coexist: (ctx) => {
       const ms = meetingsInWindow(ctx);
       return decidedLines(ms) >= 3 && ms.filter((m) => m.decided?.length).length >= 2;
     },
-    skip: "the meetings card already lists what got settled",
+    skip: { meetings: "the Yesterday card already lists each meeting's decisions", decided: "What got settled already lists the decisions from yesterday's meetings" },
   },
   {
     pair: ["shipped", "firsts"],
     coexist: (ctx, placed) => ctx.input.shipped.filter((s) => s.first).length >= 2 || (placed ? placedOf(placed, "shipped")?.rows === 1 : true),
-    skip: "the shipped card already carries the FIRST badge",
+    skip: { shipped: "the shipped card already carries the FIRST badge", firsts: "the Firsts card already shows what shipped" },
   },
-  { pair: ["agenda", "runway"], coexist: () => false, skip: "Focus time already shows today's calls and gaps" },
+  {
+    pair: ["agenda", "runway"],
+    coexist: () => false,
+    skip: { runway: "Focus time already shows today's calls and gaps", agenda: "the Today card already shows the agenda" },
+  },
   {
     pair: ["sunrise", "focus"],
     coexist: (ctx, placed) => sessionProducts(ctx.ownSessions).length >= 3 || (placed ? placedOf(placed, "sunrise")?.size === "M" : true),
     skip: "the sunrise timeline already shows the sessions",
   },
-  { pair: ["weekArc", "focus"], coexist: () => false, skip: "Your week covers where the days went" },
-  { pair: ["incident", "fleetRecovery"], coexist: (ctx) => ctx.incidents.length > 1, skip: "the incident card already shows the stuck agents" },
+  {
+    pair: ["weekArc", "focus"],
+    coexist: () => false,
+    skip: { weekArc: "Your week covers where the days went", focus: "Where your day went already covers the last seven days" },
+  },
+  {
+    pair: ["incident", "fleetRecovery"],
+    coexist: (ctx) => ctx.incidents.length > 1,
+    skip: { incident: "the incident card already shows the stuck agents", fleetRecovery: "Fleet recovery already shows the stuck agents" },
+  },
   { pair: ["catchup", "incident"], coexist: () => false, skip: "shown in the Welcome back tiles" },
   { pair: ["catchup", "shipped"], coexist: () => false, skip: "shown in the Welcome back tiles" },
   { pair: ["catchup", "resolved"], coexist: () => false, skip: "shown in the Welcome back tiles" },
@@ -1270,10 +1301,10 @@ export function pairRuleFor(a: BriefWidgetKind, b: BriefWidgetKind): PairRule | 
   return PAIRS.find((r) => (r.pair[0] === a && r.pair[1] === b) || (r.pair[0] === b && r.pair[1] === a)) ?? null;
 }
 
-/** The skip sentence when `a` and `b` may not share the grid, else null. Both directions. */
+/** The skip sentence for `b` when it may not share the grid with the kept `a`, else null. Both directions. */
 export function pairClash(a: Scored, b: Scored, ctx: BriefContext, placed: readonly Placed[] | null): string | null {
   const rule = pairRuleFor(a.kind, b.kind);
-  return rule && !rule.coexist(ctx, placed) ? rule.skip : null;
+  return rule && !rule.coexist(ctx, placed) ? skipFor(rule, a.kind) : null;
 }
 
 /** Every pair whose two kinds are placed must coexist with rows known. */
@@ -1389,8 +1420,9 @@ export function pick(ctx: BriefContext, pool: readonly Scored[]): Picked {
           // When the slots alone would take it, a pair's row condition is what failed, and that
           // pair's sentence explains it; when no layout fits even with pairs ignored, say so.
           const fitsSomewhere = assignSlots(tpl, [...picks, c], null) !== null;
-          const rule = fitsSomewhere ? picks.map((p) => pairRuleFor(p.kind, c.kind)).find((r): r is PairRule => !!r) : null;
-          skipped.push({ kind: c.kind, why: rule ? rule.skip : `no slot fits it at ${plural(n, "widget")}` });
+          const kept = fitsSomewhere ? picks.find((p) => pairRuleFor(p.kind, c.kind)) : undefined;
+          const rule = kept ? pairRuleFor(kept.kind, c.kind) : null;
+          skipped.push({ kind: c.kind, why: rule && kept ? skipFor(rule, kept.kind) : `no slot fits it at ${plural(n, "widget")}` });
           continue;
         }
         picks.push(c);

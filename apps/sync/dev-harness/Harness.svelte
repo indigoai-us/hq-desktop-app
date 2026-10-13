@@ -148,6 +148,21 @@
   // view is the production HQ Work shell; size that one to ~1180x760.
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'shell';
+  // A real brief run read from the HQ root (see the brief view below).
+  const briefRun = params.get('briefRun');
+  const briefCompanies = [
+    {
+      uid: params.get('briefCompanyUid') ?? 'cmp_indigo',
+      slug: params.get('briefCompany') ?? 'indigo',
+      label: params.get('briefCompany') ?? 'indigo',
+    },
+  ];
+  const briefRunSource = {
+    async readHqFile(rel: string): Promise<string | null> {
+      const res = await fetch(`/__hq/${rel}`);
+      return res.ok ? res.text() : null;
+    },
+  };
   if (params.get('tour') === '1') {
     try {
       localStorage.removeItem(TOUR_SEEN_STORAGE_KEY);
@@ -239,8 +254,16 @@
 {#if view === 'brief'}
   <!-- Daily Brief page alone. Add ?briefDemo=1|fail or ?briefDemoAt=0..1|fail
        (packages/ui/src/brief/brief-demo.ts) to review the Create brief sunrise. -->
+  <!-- ?briefRun=<run_id>&briefCompany=<slug>&briefCompanyUid=<uid> renders a real
+       run from the HQ root (HQ_ROOT, default ~/hq) through the app's loader. -->
   {#await loadBrief() then mod}
-    <div style="height:100vh;overflow:auto"><mod.BriefRunsPage adapter={{}} companies={[]} source={null} /></div>
+    <div style="height:100vh;overflow:auto">
+      {#if briefRun}
+        <mod.BriefRunsPage adapter={{}} companies={briefCompanies} source={briefRunSource} />
+      {:else}
+        <mod.BriefRunsPage adapter={{}} companies={[]} source={null} />
+      {/if}
+    </div>
   {/await}
 {:else if view === 'forward'}
   <!-- The Forward message dialog with fictional destinations. ~900x760 viewport. -->

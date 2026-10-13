@@ -111,7 +111,9 @@ describe("incident wording", () => {
     expect(p.prompt).toEqual({ id: "p1", text: "Look at the sync." });
     const f = riskPeek(FLEET, undefined, NOW);
     expect(f.origin).toEqual({ companyUid: INDIGO, label: "Fleet" });
-    expect(f.sections[0]!.lines![0]).toMatchObject({ label: "5 of 95 agents setup phase", state: "MEASURED", tone: "red" });
+    // The affected set only; the fleet's headcount is not a fact about the incident.
+    expect(f.sections[0]!.lines![0]).toMatchObject({ label: "5 agents setup phase", state: "MEASURED", tone: "red" });
+    expect(f.sections.flatMap((s) => s.lines ?? []).some((l) => l.label.includes("of 95"))).toBe(false);
     expect(f.prompt).toBeUndefined();
     expect(riskPeek({ ...FLEET, severity: "watch" }, undefined).eyebrow).toBe("Watch");
   });
@@ -223,7 +225,8 @@ describe("Incident card", () => {
     await hover(rows[0]!);
     const peek = q("brief-peek")!;
     expect(peek.textContent).toContain("Unstick five fleet agents in setup");
-    expect(peek.textContent).toContain("5 of 95 agents setup phase");
+    expect(peek.textContent).toContain("5 agents setup phase");
+    expect(peek.textContent).not.toContain("of 95");
     expect(q("brief-peek-prompt")!.textContent).toBe("Unstick the agents.");
     expect(q("brief-peek-origin")!.textContent).toContain("Fleet");
   });

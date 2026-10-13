@@ -84,7 +84,7 @@ describe("watch helpers", () => {
     expect(lines[0]).toMatchObject({ label: "Desktop app · CI", state: "RED", tone: "red" });
     expect(lines.slice(1).every((l) => l.state === "GREEN" && l.tone === "ok")).toBe(true);
     expect(lines.map((l) => l.label)).not.toContainEqual(expect.stringMatching(/hq-/));
-    expect(lines.slice(1).map((l) => l.label)).toEqual(["CLI", "Deploy", "Fleet", "HQ Cloud", "HQ core", "HQ Pro"]);
+    expect(lines.slice(1).map((l) => l.label)).toEqual(["Fleet", "HQ Cloud", "HQ command line", "HQ core", "HQ Pro", "Sharing and deploys"]);
   });
 
   it("the watch peek says Watch, carries the product chip and the prompt; the more peek marks red mains", () => {

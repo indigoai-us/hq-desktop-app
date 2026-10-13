@@ -9,6 +9,7 @@
 
 import { CATALOGUE } from "./brief-catalogue.js";
 import { humanTitle } from "./brief-distill.js";
+import { productName } from "./brief-origin.js";
 import type {
   BriefBlocked,
   BriefCarry,
@@ -166,15 +167,25 @@ function ciDetail(r: Record<string, unknown>, title: string): NonNullable<BriefR
   };
 }
 
+/** The writer's `risk` when it is a phrase; a single level word (low, medium, high) is dropped. */
+function riskSentence(raw: unknown): string {
+  const text = str(raw).trim();
+  return text.split(/\s+/).length >= 2 ? text : "";
+}
+
 function parseBlocks(raw: unknown, companyUid: string | null): BriefBlocked[] {
   return list(raw)
     .map((b): BriefBlocked => {
-      const hasOrigin = !!(str(b.repo) || str(rec(b.origin).repo) || str(b.product));
+      const hasOrigin = !!(str(b.repo) || str(rec(b.origin).repo) || str(b.product) || str(rec(b.origin).product));
+      const kind = str(b.kind) === "person" ? "person" : "work";
+      const origin = hasOrigin ? originOf(b, companyUid) : null;
+      // A blocked piece of work named only by its product ("the Desktop app release waits") keeps the product as its name.
+      const who = str(b.who) || str(b.name) || (kind === "work" && origin ? productName(origin.repo, origin.product) : "");
       return {
-        who: str(b.who) || str(b.name),
+        who,
         what: str(b.what),
-        kind: str(b.kind) === "person" ? "person" : "work",
-        ...(hasOrigin ? { origin: originOf(b, companyUid) } : {}),
+        kind,
+        ...(origin ? { origin } : {}),
       };
     })
     .filter((b) => b.who);
@@ -246,7 +257,8 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
           .map((u) => (typeof u === "string" ? u.trim() : str(rec(u).label)))
           .filter(Boolean)
           .map((label) => ({ label, state: "" })),
-        ...(str(d.risk) ? { risk: str(d.risk) } : {}),
+        // The app reads `risk` as a sentence ("First check: …", the Watch section); a bare level word ("high") is not one.
+        ...(riskSentence(d.risk) ? { risk: riskSentence(d.risk) } : {}),
         source: [ref, source || "Daily brief"].filter(Boolean).join(" · "),
       },
       ...(ageHours != null ? { ageHours } : {}),

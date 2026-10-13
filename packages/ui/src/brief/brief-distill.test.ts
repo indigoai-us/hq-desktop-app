@@ -74,7 +74,7 @@ describe("shippedTiles", () => {
       sweepRow("hq-cloud", ["9 x"]),
       sweepRow("hq-cli", ["8 y"]),
     ]);
-    expect(tiles.map((t) => t.product)).toEqual(["HQ Pro", "Desktop app", "CLI", "HQ Cloud"]);
+    expect(tiles.map((t) => t.product)).toEqual(["HQ Pro", "Desktop app", "HQ Cloud", "HQ command line"]);
     expect(tiles[0]!.first).toBe(true);
     expect(tiles[1]!.first).toBe(false);
   });

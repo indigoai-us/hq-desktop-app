@@ -79,6 +79,13 @@
       .map(([p, v]) => ({ label: p, state: `${v.merged}/${v.total}`, tone: "ok" as const }));
   }
 
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  /** "2026-10-11" as "Oct 11"; anything else as given. */
+  function dayLabel(day: string): string {
+    const m = /^\d{4}-(\d{2})-(\d{2})/.exec(day);
+    return m ? `${MONTHS[Number(m[1]) - 1] ?? m[1]} ${Number(m[2])}` : day;
+  }
+
   function track(event: PointerEvent): void {
     const el = event.currentTarget as HTMLElement;
     const r = el.getBoundingClientRect();
@@ -109,11 +116,11 @@
             state: brief,
             content: () => ({
               title: `${win.total} PRs · ${win.merged} merged`,
-              status: `${win.from} to ${win.to}`,
+              status: `${dayLabel(win.from)} to ${dayLabel(win.to)}`,
               sections: [{ label: "By product", lines: byProduct(win) }],
             }),
           }}
-        >{win.from.slice(5)} to {win.to.slice(5)} · {win.total} PRs · {win.merged} merged</div>
+        >{dayLabel(win.from)} to {dayLabel(win.to)} · {win.total} PRs · {win.merged} merged</div>
       {/if}
     </div>
     <div class="tot">

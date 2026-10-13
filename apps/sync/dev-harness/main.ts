@@ -13,6 +13,10 @@ import '@fontsource-variable/geist-mono/wght.css';
 
 // The Daily Brief serves the approved mockup's Oct 8 day here: several of its
 // sources (shipped PRs, fleet health) have no adapter route the mocks cover.
-configureBriefSeed(() => octoberEightBrief(new Date()));
+// `?briefRun=<run_id>` renders a real run from the HQ root instead, through the
+// app's own loader (served by vite.preview.config.ts under /__hq/).
+if (!new URLSearchParams(window.location.search).get('briefRun')) {
+  configureBriefSeed(() => octoberEightBrief(new Date()));
+}
 
 mount(Harness,{ target: document.getElementById('app')! });

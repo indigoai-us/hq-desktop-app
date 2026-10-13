@@ -257,7 +257,7 @@ describe("catchUpTiles", () => {
     expect(h.sections).toHaveLength(1);
     const s = shippedPeek([{ id: "s", title: "hq-cli", status: "2 merged", note: "", origin: origin("indigoai-us/hq-cli"), lines: [] }], null);
     expect(s.title).toBe("1 product shipped");
-    expect(s.sections[0]!.lines![0]!.label).toBe("CLI");
+    expect(s.sections[0]!.lines![0]!.label).toBe("HQ command line");
     expect(s.sections).toHaveLength(1);
   });
 });

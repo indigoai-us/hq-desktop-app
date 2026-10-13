@@ -183,6 +183,7 @@ const fullBrief = {
           { who: "Ada", what: "the launch email", kind: "person" },
           { who: "release 1.2", what: "waits on the date", kind: "work", repo: "widget-app" },
           { what: "nameless" },
+          { what: "the next release", kind: "work", origin: { product: "Widget app" } },
         ],
         origin: { repo: "widget-app", number: 12, url: "https://example.test/pr/12" },
       },
@@ -332,13 +333,24 @@ describe("parseBriefItems: writer additions", () => {
       carriedBriefs: 2,
       origin: { companyUid: "cmp_indigo", repo: "widget-app", product: "Widget app" },
     });
+    // A nameless person block is dropped; a work block named only by its product keeps the product as its name.
     expect(d1!.blocks).toEqual([
       { who: "Ada", what: "the launch email", kind: "person" },
       { who: "release 1.2", what: "waits on the date", kind: "work", origin: { companyUid: "cmp_indigo", repo: "widget-app" } },
+      { who: "Widget app", what: "the next release", kind: "work", origin: { companyUid: "cmp_indigo", repo: null, product: "Widget app" } },
     ]);
     expect(d2).toMatchObject({ id: "d2", effort: "quick", revenue: false, source: "dms" });
     expect(d2!.carriedBriefs).toBeUndefined();
     expect(d2!.blocks).toBeUndefined();
+  });
+
+  it("a decision's risk is kept as a phrase and dropped when it is a bare level word", () => {
+    const parse = (risk: unknown) =>
+      parseBriefItems(JSON.stringify({ items: { decisions: [{ id: "d9", title: "Approve the thing", action: "go", risk }] } }), "cmp_indigo")!.decisions[0]!.detail?.risk;
+    expect(parse("Touches the runner")).toBe("Touches the runner");
+    expect(parse("high")).toBeUndefined();
+    expect(parse(" medium ")).toBeUndefined();
+    expect(parse(undefined)).toBeUndefined();
   });
 
   it("waits carry age, a known kind and an origin; an unknown kind is left out", () => {
