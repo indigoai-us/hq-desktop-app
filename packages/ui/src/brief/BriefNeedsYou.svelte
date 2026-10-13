@@ -319,7 +319,7 @@
     background: linear-gradient(180deg, rgb(var(--b-ink) / 0.11), rgb(var(--b-ink) / 0.06));
     border: 1px solid rgb(var(--b-ink) / 0.1);
     border-top-color: rgb(var(--b-ink) / 0.18);
-    box-shadow: 0 6px 14px rgba(30, 6, 30, 0.25);
+    box-shadow: 0 6px 14px rgba(90, 30, 140, 0.18);
     transition: background 0.25s, opacity 0.5s;
   }
   .it:hover {

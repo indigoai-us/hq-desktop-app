@@ -851,8 +851,8 @@
    ------------------------------------------------------------------------ */
 .daily-brief .slot[data-field] > .w {
   --b-t1: #fff;
-  --b-t2: rgba(255, 255, 255, 0.86);
-  --b-t3: rgba(255, 255, 255, 0.72);
+  --b-t2: rgba(255, 255, 255, 0.9);
+  --b-t3: rgba(255, 255, 255, 0.82);
   --b-line: rgba(255, 255, 255, 0.2);
   --b-top-light: rgba(255, 255, 255, 0.4);
   --b-glass: rgba(255, 255, 255, 0.14);
@@ -863,7 +863,7 @@
   --b-accent-grad: linear-gradient(90deg, #ffffff, #ffe3d3);
   --b-bracket: rgba(255, 255, 255, 0.85);
   --b-well-bg: rgba(255, 255, 255, 0.12);
-  box-shadow: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -20px var(--b-field-glow, rgba(60, 30, 110, 0.45));
+  box-shadow: 0 1px 2px rgba(30, 20, 60, 0.08), 0 0 22px -8px var(--b-field-glow, rgba(60, 30, 110, 0.45)), 0 18px 34px -20px var(--b-field-glow, rgba(60, 30, 110, 0.45));
   background-repeat: no-repeat;
   /* A whisper of shadow keeps white text crisp on the light ends of the fields. */
   text-shadow: 0 1px 2px rgba(70, 10, 50, 0.2);
@@ -871,11 +871,12 @@
 /* Glass edge, after the reference: a bright hairline rim and a soft band of
    light along the top and sides, drawn as gradients (no blurred inner shadow). */
 .daily-brief .slot[data-field] > .w::after {
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.36);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0) 18px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0) 16px),
-    linear-gradient(270deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 14px);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0) 28px),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0) 28px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 22px),
+    linear-gradient(270deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0) 22px);
 }
 .daily-brief .slot[data-field] > .w .eyebrow {
   color: rgba(255, 255, 255, 0.82);
@@ -886,13 +887,12 @@
 }
 
 .daily-brief .slot[data-field="violet"] > .w {
-  /* Lilac light from the top right over a deep violet core, magenta in the lower left. */
+  /* Reference "Average investment": milky lavender at the top left deepening to violet,
+     one soft lilac bloom at the top right. Two hues, no hard-edged blobs. */
   --b-field-bg:
-    radial-gradient(75% 70% at 92% 4%, #eab4f0 0%, rgba(234, 180, 240, 0) 62%),
-    radial-gradient(70% 80% at 0% 100%, #c24fc8 0%, rgba(194, 79, 200, 0) 65%),
-    radial-gradient(60% 70% at 30% 45%, #9a44d2 0%, rgba(154, 68, 210, 0) 70%),
-    linear-gradient(150deg, #c477e4 0%, #9446d6 50%, #ac58da 100%);
-  --b-field-glow: rgba(160, 80, 220, 0.45);
+    radial-gradient(95% 85% at 100% 0%, rgba(242, 196, 246, 0.6) 0%, rgba(242, 196, 246, 0) 72%),
+    linear-gradient(155deg, #d48de6 0%, #b468d9 38%, #9c4ed2 74%, #a65ad6 100%);
+  --b-field-glow: rgba(160, 80, 220, 0.4);
 }
 .daily-brief .slot[data-field="dusk"] > .w {
   /* Dawn sky: violet overhead warming through rose to a peach horizon. */
@@ -902,59 +902,56 @@
   --b-field-glow: rgba(200, 90, 140, 0.45);
 }
 .daily-brief .slot[data-field="pink"] > .w {
-  /* Soft pink at the top, hot magenta glowing up from the bottom. */
+  /* Reference "Marketing information": soft pink at the top, hot pink pooling at the bottom. */
   --b-field-bg:
-    radial-gradient(70% 60% at 55% 105%, #ff3d93 0%, rgba(255, 61, 147, 0) 70%),
-    radial-gradient(80% 60% at 20% 0%, rgba(244, 139, 192, 0.7) 0%, rgba(244, 139, 192, 0) 70%),
-    linear-gradient(180deg, #ec6fae 0%, #e94f9a 55%, #e63a88 100%);
-  --b-field-glow: rgba(240, 70, 150, 0.45);
+    radial-gradient(75% 65% at 55% 100%, rgba(255, 64, 146, 0.55) 0%, rgba(255, 64, 146, 0) 72%),
+    linear-gradient(172deg, #ec7fb8 0%, #ee64a7 45%, #ec4692 82%, #ee55a0 100%);
+  --b-field-glow: rgba(240, 70, 150, 0.4);
 }
 .daily-brief .slot[data-field="sunset"] > .w {
-  /* Pink framing a warm orange core, a golden glow rising from the bottom. */
+  /* Reference "Opportunity information": pink at the top right blending into peach at the
+     bottom, a golden glow rising from the bottom. */
   --b-field-bg:
-    radial-gradient(40% 45% at 58% 100%, rgba(255, 196, 110, 0.85) 0%, rgba(255, 196, 110, 0) 72%),
-    radial-gradient(70% 70% at 0% 0%, #ee5ea8 0%, rgba(238, 94, 168, 0) 68%),
-    radial-gradient(50% 80% at 100% 40%, #f586b2 0%, rgba(245, 134, 178, 0) 70%),
-    linear-gradient(135deg, #ec5f9c 0%, #f2775f 45%, #f2804a 75%, #ee6f5a 100%);
-  --b-field-glow: rgba(245, 120, 110, 0.45);
+    radial-gradient(60% 55% at 60% 110%, rgba(252, 196, 120, 0.55) 0%, rgba(252, 196, 120, 0) 70%),
+    linear-gradient(205deg, #ec6aa8 0%, #f3868e 38%, #f39a66 72%, #f5a466 100%);
+  --b-field-glow: rgba(245, 120, 110, 0.4);
 }
 .daily-brief .slot[data-field="sky"] > .w {
-  /* Cyan in the top left, azure through the middle, a violet hint at the right edge. */
+  /* Reference "Application map": cyan at the top left into azure, a light sky haze at the right. */
   --b-field-bg:
-    radial-gradient(65% 65% at 0% 0%, #5fd8f8 0%, rgba(95, 216, 248, 0) 72%),
-    radial-gradient(60% 80% at 100% 85%, #6a6cf0 0%, rgba(106, 108, 240, 0) 72%),
-    linear-gradient(135deg, #46bdf0 0%, #3d9cf0 50%, #4683ee 100%);
-  --b-field-glow: rgba(60, 150, 240, 0.45);
+    radial-gradient(65% 70% at 90% 25%, rgba(140, 218, 250, 0.5) 0%, rgba(140, 218, 250, 0) 72%),
+    radial-gradient(60% 55% at 0% 100%, rgba(140, 140, 245, 0.35) 0%, rgba(140, 140, 245, 0) 72%),
+    linear-gradient(160deg, #52c3ef 0%, #42a5ef 45%, #4a6cf0 100%);
+  --b-field-glow: rgba(60, 150, 240, 0.4);
 }
 .daily-brief .slot[data-field="teal"] > .w {
-  /* Muted sea glass: a brighter cyan glow at the top right, paler toward the bottom. */
+  /* Reference big card: quiet sea-glass teal, a cyan light along the top edge, paler at the bottom left. */
   --b-field-bg:
-    radial-gradient(65% 50% at 96% 0%, #9fe3ec 0%, rgba(159, 227, 236, 0) 66%),
-    radial-gradient(60% 55% at 0% 100%, rgba(127, 214, 224, 0.5) 0%, rgba(127, 214, 224, 0) 70%),
-    linear-gradient(180deg, #3f97a6 0%, #4ba3b0 55%, #5aaeb9 100%);
-  --b-field-glow: rgba(80, 150, 160, 0.4);
+    radial-gradient(70% 40% at 85% 0%, rgba(170, 235, 245, 0.7) 0%, rgba(170, 235, 245, 0) 70%),
+    radial-gradient(85% 65% at 0% 100%, rgba(172, 214, 220, 0.5) 0%, rgba(172, 214, 220, 0) 72%),
+    linear-gradient(180deg, #58a2ae 0%, #6fb2bc 60%, #8fcad2 100%);
+  --b-field-glow: rgba(80, 150, 160, 0.35);
 }
 .daily-brief .slot[data-field="peri"] > .w {
-  /* Periwinkle: pale lavender light at the top right over blue-violet. */
+  /* Periwinkle (no reference card): soft lavender light at the top right over blue-violet. */
   --b-field-bg:
-    radial-gradient(65% 60% at 95% 0%, #c7c9ff 0%, rgba(199, 201, 255, 0) 66%),
-    radial-gradient(60% 70% at 100% 100%, #b07cf0 0%, rgba(176, 124, 240, 0) 68%),
-    radial-gradient(70% 70% at 0% 100%, #6a5de6 0%, rgba(106, 93, 230, 0) 68%),
-    linear-gradient(140deg, #8a92f6 0%, #6f74ee 55%, #7368ea 100%);
-  --b-field-glow: rgba(110, 110, 235, 0.45);
+    radial-gradient(80% 70% at 100% 0%, rgba(204, 208, 255, 0.55) 0%, rgba(204, 208, 255, 0) 72%),
+    radial-gradient(60% 60% at 100% 100%, rgba(201, 184, 255, 0.4) 0%, rgba(201, 184, 255, 0) 72%),
+    linear-gradient(160deg, #98a0f5 0%, #7c83ef 50%, #8570e9 100%);
+  --b-field-glow: rgba(110, 110, 235, 0.4);
 }
 /* One quiet motif on every field (not the sunrise, which has its sun): a soft
    glass orb rising from the bottom-right corner and one dotted orbit. Sized to
    the card's height up to 240px, so it reads the same on every card and stays
    in the corner, clear of the text. */
 .daily-brief .slot[data-field]:not([data-field="dusk"]) > .w {
-  /* The motif, a faint grain against banding, then the field's mesh of glows over its base. */
-  background-image: var(--b-deco), var(--b-grain), var(--b-field-bg);
+  /* The motif, then the field: one soft bloom (two for teal) over a two-hue base, smooth like the reference. */
+  background-image: var(--b-deco), var(--b-field-bg);
   background-position: right bottom, 0 0, 0 0, 0 0, 0 0, 0 0;
   /* The motif is capped, so on the big cards it stays a corner accent instead of running under the rows. */
-  background-size: auto min(100%, 240px), 160px 160px, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
-  background-repeat: no-repeat, repeat, no-repeat;
-  box-shadow: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -20px var(--b-field-glow, rgba(60, 30, 110, 0.45));
+  background-size: auto min(100%, 240px), 100% 100%, 100% 100%, 100% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  box-shadow: 0 1px 2px rgba(30, 20, 60, 0.08), 0 0 22px -8px var(--b-field-glow, rgba(60, 30, 110, 0.45)), 0 18px 34px -20px var(--b-field-glow, rgba(60, 30, 110, 0.45));
   background-repeat: no-repeat;
 }
 .daily-brief {
@@ -976,8 +973,9 @@
 .daily-brief .slot > .why {
   position: absolute;
   z-index: 4;
-  top: 14px;
-  left: 14px;
+  /* Same inset as the Next call panel (18px 20px), so every card and panel lines up. */
+  top: 18px;
+  left: 20px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1221,13 +1219,13 @@
 /* Keep each card's top row clear of the corner arrow. */
 /* Each card's own content starts under its label. */
 .daily-brief .slot[data-field] > .w {
-  padding-top: 44px;
+  padding-top: 52px;
 }
 .daily-brief .slot[data-field] > .w.dawn {
   padding-top: 0;
 }
 .daily-brief .slot[data-field] > .w.dawn > .over {
-  padding-top: 44px;
+  padding-top: 52px;
 }
 
 /* The corner label names every card, so each card's own top line (its old
