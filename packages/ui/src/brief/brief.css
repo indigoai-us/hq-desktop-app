@@ -2,7 +2,15 @@
   font-family: "Brief Fraunces";
   src: url("../chat/create-bot/assets/new-bot-wallpapers/fraunces-variable-latin.woff2") format("woff2");
   font-style: italic;
-  font-weight: 400 700;
+  font-weight: 300 700;
+  font-display: swap;
+}
+/* The same variable file upright, as the welcome flow declares it: the greeting's serif. */
+@font-face {
+  font-family: "Brief Fraunces";
+  src: url("../chat/create-bot/assets/new-bot-wallpapers/fraunces-variable-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
   font-display: swap;
 }
 /*
@@ -75,8 +83,9 @@
      8px buttons and pop-ups; full rounding only on informational pills. */
   --b-r: 10px;
   --b-gap: 8px;
-  /* The one hot pill (the first stat), after the reference's pink tag. */
-  --b-hot: #ff6f98;
+  /* The highlight: HQ's terracotta orange (the "Most popular" plan tag), white ink on it. */
+  --b-hot: #c9765a;
+  --b-on-hot: #fff;
   /* Inner glass tile fill; colour fields raise it. */
   --b-glass: rgb(var(--b-ink) / 0.04);
   /* Neutral glass panels in the top section. */
@@ -90,7 +99,7 @@
   --b-fs-display: var(--type-title, 20px);
   --b-fs-display-sm: var(--type-title, 20px);
   --b-display-track: -0.035em;
-  --b-serif: var(--b-ui);
+  --b-serif: "Brief Fraunces", "Fraunces", Georgia, serif;
   --b-fs-num: 32px; /* the one measured number a card leads with */
   --b-fs-title-lg: var(--type-title, 20px); /* a card's headline when it leads at a large size */
   --b-fs-title: 13px; /* every other card headline */
@@ -757,7 +766,6 @@
   --b-foil-blend: multiply;
   --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
   --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
-  --b-hot: #ec4f80;
   --b-panel: rgba(255, 255, 255, 0.55);
   --b-panel-line: rgba(255, 255, 255, 0.9);
   --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
@@ -792,7 +800,6 @@
   --b-foil-blend: multiply;
   --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
   --b-peek-shadow: 0 0 0 1px rgb(17 17 17 / 0.1), 0 1px 2px rgba(40, 30, 20, 0.06), 0 14px 32px rgba(40, 30, 20, 0.12);
-  --b-hot: #ec4f80;
   --b-panel: rgba(255, 255, 255, 0.55);
   --b-panel-line: rgba(255, 255, 255, 0.9);
   --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
@@ -1023,13 +1030,14 @@
   font-size: 11px;
   color: var(--b-t3);
 }
-/* The page title, as on every app page: 20px / 500. */
+/* The greeting is the brief's one display moment: HQ's serif, large and light. */
 .daily-brief .b-greet {
-  margin: 4px 0 0;
-  font-size: var(--type-title, 20px);
-  font-weight: var(--type-title-weight, 500);
-  line-height: var(--type-title-line, 1.25);
-  letter-spacing: 0;
+  margin: 6px 0 0;
+  font-family: var(--b-serif);
+  font-size: 44px;
+  font-weight: 400;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
 }
 .daily-brief .b-stats {
   display: flex;
@@ -1048,14 +1056,14 @@
 /* Info pill (app standard): 11px / 400, fully rounded. */
 .daily-brief .stat .pill {
   font-size: 11px;
-  padding: 2px 7px;
+  padding: 4px 10px;
   border: 0;
   background: rgb(var(--b-ink) / 0.07);
   color: var(--b-t2);
 }
 .daily-brief .stat .pill.hot {
   background: var(--b-hot);
-  color: #fff;
+  color: var(--b-on-hot);
 }
 .daily-brief .stat .num {
   font-size: var(--b-fs-num);

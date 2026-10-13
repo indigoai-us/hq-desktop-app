@@ -200,7 +200,7 @@
     justify-self: end;
     font-size: 11px;
     line-height: 1;
-    padding: 4px 8px;
+    padding: 5px 10px;
     border-radius: 999px;
     border: 1px solid var(--b-line);
     color: var(--b-t3);
@@ -235,7 +235,7 @@
   }
   li.now .st {
     background: var(--b-hot);
-    color: #fff;
+    color: var(--b-on-hot);
   }
   /* The marker beside the active call, as in the reference. */
   .mk {
