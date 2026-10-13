@@ -62,6 +62,8 @@ describe("packDisplayName precedence", () => {
     expect(packDisplayName({ name: "gstack" })).toBe("gStack");
     expect(PACK_DISPLAY_NAMES.crm).toBe("CRM");
     expect(packDisplayName({ name: "hq-pack-imessage" })).toBe("iMessage");
+    // Slug that itself starts with "hq-" keeps its product name.
+    expect(packDisplayName({ name: "hq-pack-hq-capture" })).toBe("HQ Capture");
   });
 
   it("derives a title-cased name when the slug is not curated", () => {
