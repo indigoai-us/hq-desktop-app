@@ -21,6 +21,8 @@ export const PACK_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   crm: "CRM",
   // Brand casing: the generic prettifier would produce "Imessage".
   imessage: "iMessage",
+  // Product name keeps its "HQ" prefix; the prettifier strips it to "Capture".
+  "hq-capture": "HQ Capture",
 };
 
 /** Words we keep lowercased when title-casing a derived name (unless leading). */
@@ -66,8 +68,13 @@ export function packDisplayName(pack: {
 }): string {
   const hosted = pack.displayName?.trim();
   if (hosted) return hosted;
+  // Try the slug with only `hq-pack-` stripped first, so a slug that itself
+  // starts with `hq-` (e.g. `hq-pack-hq-capture` -> `hq-capture`) still matches.
+  const packSlug = (pack.name ?? "").trim().replace(/^hq-pack[-_]/i, "").toLowerCase();
   const slug = stripPackPrefix(pack.name).toLowerCase();
-  const curated = slug ? PACK_DISPLAY_NAMES[slug] : undefined;
+  const curated =
+    (packSlug ? PACK_DISPLAY_NAMES[packSlug] : undefined) ??
+    (slug ? PACK_DISPLAY_NAMES[slug] : undefined);
   if (curated) return curated;
   return prettifyPackName(pack.name) || pack.name;
 }
