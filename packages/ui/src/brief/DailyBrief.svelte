@@ -309,7 +309,7 @@
   <section class="b-top">
     <div class="b-hello">
       <h1 class="b-greet">Morning{input.userName ? `, ${input.userName}` : ""}.</h1>
-      <div class="b-stats" title="What this brief was generated from">
+      <div class="b-stats">
         {#each plan.provenance as p, i (p.label)}
           <div class="stat prov" role="group" aria-label="{p.n} {p.label}" use:peek={{ state: briefState, content: () => provPeek(p.label) }}>
             <span class="pill" class:hot={i === 0}>{statName(p.label)}</span>
@@ -382,7 +382,7 @@
           data-reason={w.reason}
         >
           <!-- The card's label: mono, all caps, a Phosphor icon on its left. Hover says why the card is here today. -->
-          <span class="why" role="note" aria-label="{tag.label}. Why this card: {w.reason}" title={w.reason} data-testid="brief-why" use:peek={{ state: briefState, content: () => ({ title: entry.name, status: "Why it is here today", sections: [{ label: "Reason", text: w.reason }] }) }}
+          <span class="why" role="note" aria-label="{tag.label}. Why this card: {w.reason}" data-testid="brief-why" use:peek={{ state: briefState, content: () => ({ title: entry.name, status: "Why it is here today", sections: [{ label: "Reason", text: w.reason }] }) }}
             >{#if tag.d}<svg viewBox={tagViewBox(tag)} style:width="{tagIconWidth(tag)}px" aria-hidden="true"><path d={tag.d} /></svg>{/if}{tag.label}</span
           >
           {#if allCards}<span class="kind-tag">{w.kind} · {w.size} · T{w.tier} · {w.score}</span>{/if}
@@ -502,7 +502,7 @@
     <div class="b-dropped" data-testid="brief-dropped">
       <span class="eyebrow">Not shown today</span>
       {#each notShown.slice(0, 5) as r, i (`${r.kind}-${i}`)}
-        <span class="drop b-glass" data-testid="brief-dropped-row" data-kind={r.kind} title={partsOf(r.kind) ?? r.why}><b>{r.name}</b> {r.why}</span>
+        <span class="drop b-glass" data-testid="brief-dropped-row" data-kind={r.kind} data-parts={partsOf(r.kind) ?? r.why}><b>{r.name}</b> {r.why}</span>
       {/each}
       {#if notShown.length > 5}
         <span class="drop b-glass more" role="group" aria-label="More not shown" use:peek={{ state: briefState, content: notShownRest }}>+{notShown.length - 5} more</span>
@@ -520,9 +520,11 @@
   .leadchip {
     cursor: default;
   }
+  /* Hover gives the stat a roomy tile; the negative margin keeps it in place. */
   .prov {
-    border-radius: 6px;
-    padding: 2px 4px;
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin: -12px -14px;
     transition: background 0.15s;
   }
   .prov:hover {

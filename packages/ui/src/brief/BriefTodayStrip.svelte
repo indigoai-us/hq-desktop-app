@@ -50,7 +50,7 @@
 </script>
 
 <div class="cal" data-testid="brief-today" style="height:{height}px">
-  <div class="lbl">Today{#if sample}<span class="sample-tag" title="No live calendar in this preview">Sample</span>{/if}<b>{dateLabel}</b></div>
+  <div class="lbl">Today{#if sample}<span class="sample-tag">Sample</span>{/if}<b>{dateLabel}</b></div>
   <div class="trk" data-h0={layout.h0} data-h1={layout.h1}>
     {#each layout.ticks as h (h)}
       <div class="hr" style="left:{X(h)}%">{hourLabel(h)}</div>

@@ -84,7 +84,7 @@
           aria-label={`${h.object} · ${h.from} to ${h.to}`}
           use:peek={{ state: brief, content: () => handoffPeek(h, prompt, now) }}
         >
-          <span class="ini" style:--h={monogramHue(h.from)} title={h.from} data-testid="brief-handoff-from">{initial(h.from)}</span>
+          <span class="ini" style:--h={monogramHue(h.from)} data-testid="brief-handoff-from">{initial(h.from)}</span>
           <svg class="ar" viewBox="0 0 42 20" aria-hidden="true" data-testid="brief-handoff-arrow" data-acked={isAcked}>
             <line class="track" x1="2" y1="10" x2="34" y2="10" stroke-dasharray={isAcked ? null : "3 3"} />
             {#if isAcked}
@@ -94,7 +94,7 @@
               <circle class="baton" cx="4" cy="10" r="2" />
             {/if}
           </svg>
-          <span class="ini" style:--h={monogramHue(h.to)} title={h.to} data-testid="brief-handoff-to">{initial(h.to)}</span>
+          <span class="ini" style:--h={monogramHue(h.to)} data-testid="brief-handoff-to">{initial(h.to)}</span>
           <span class="ob">
             <span class="name" data-testid="brief-handoff-object">{h.object}</span>
             <BriefOrigin origin={h.origin} product />
@@ -107,7 +107,6 @@
                 class:hot={receiptHot(h, r.key, now)}
                 role="img"
                 aria-label={`${r.label} ${s}`}
-                title={`${r.label} · ${s}`}
                 data-testid="brief-receipt"
                 data-receipt={r.key}
                 data-state={s}
@@ -122,7 +121,7 @@
                 <span class="verb" data-testid="brief-handoff-ack">Acknowledge</span>
                 <BriefLaunch id={h.id} {prompt} compact />
               {:else}
-                <button type="button" class="nudge" data-testid="brief-handoff-nudge" title="Copy a DM-draft prompt; nothing is sent" onclick={() => void nudge(h)}>
+                <button type="button" class="nudge" data-testid="brief-handoff-nudge" onclick={() => void nudge(h)}>
                   {copied === h.id ? "Copied" : "Nudge"}
                 </button>
               {/if}

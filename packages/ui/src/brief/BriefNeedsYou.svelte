@@ -219,8 +219,8 @@
               {#if tall || carried || age}
                 <span class="meta">
                   {#if tall}<BriefOrigin origin={d.origin} product />{/if}
-                  {#if carried}<span class="chip-m carried" data-testid="brief-need-carried" title="Carried from {d.carriedBriefs} earlier brief{d.carriedBriefs === 1 ? '' : 's'}">{carried}</span>{/if}
-                  {#if age}<span class="chip-m age" class:warn={ageTone(d.ageHours) === "warn"} class:red={ageTone(d.ageHours) === "red"} data-testid="brief-need-age" title="Open for {age}">{age}</span>{/if}
+                  {#if carried}<span class="chip-m carried" data-testid="brief-need-carried">{carried}</span>{/if}
+                  {#if age}<span class="chip-m age" class:warn={ageTone(d.ageHours) === "warn"} class:red={ageTone(d.ageHours) === "red"} data-testid="brief-need-age">{age}</span>{/if}
                 </span>
               {/if}
             </div>
@@ -256,7 +256,7 @@
             <div class="tt">
               <span class="t" use:asciiDecode>{p.text}</span>
               {#if tall && risk?.origin.companyUid}
-                <span class="meta"><span class="lg" title={riskProduct(risk)}><BriefLogo company={brief.company(risk.origin.companyUid)} fallback={risk.origin.companyUid} size={14} /></span></span>
+                <span class="meta"><span class="lg"><BriefLogo company={brief.company(risk.origin.companyUid)} fallback={risk.origin.companyUid} size={14} /></span></span>
               {/if}
             </div>
             {#if tall && p.because}<div class="ts">{p.because}</div>{/if}

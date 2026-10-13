@@ -95,7 +95,7 @@
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4.5 4.5L19 7" /></svg> Run complete · yesterday
       </div>
       <h3>
-        What you shipped{#if streak}<span class="streak" title={streakTitle(streak)} data-testid="brief-shipped-streak"
+        What you shipped{#if streak}<span class="streak" data-testid="brief-shipped-streak"
             ><svg viewBox="0 0 12 14" aria-hidden="true"><path d="M6 0C7 3 10 5 10 9a4 4 0 0 1-8 0c0-2 1-3 2-4 0 2 1 3 2 3-1-3 0-6 0-8z" /></svg>{streak.days} days</span
           >{/if}
       </h3>
@@ -134,7 +134,7 @@
         >
           <div class="hd">
             <BriefOrigin origin={t.origin} product />
-            {#if t.first}<span class="first" data-testid="brief-shipped-first" title="A first for this product">★ FIRST</span>{/if}
+            {#if t.first}<span class="first" data-testid="brief-shipped-first">★ FIRST</span>{/if}
           </div>
           <div class="v" data-testid="brief-shipped-headline">{t.headline}</div>
           {#each t.highlights.slice(0, lines) as h, i (i)}

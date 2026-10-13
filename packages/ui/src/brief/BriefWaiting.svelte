@@ -63,7 +63,7 @@
     <div class="row" role="group" aria-label={label(w)} data-testid="brief-waiting-row" use:peek={{ state: brief, content: () => content(w) }}>
       <span class="bul" style="background:var(--b-t1)"></span>
       <div class="tx">{w.who} <em>{w.what}</em></div>
-      {#if age}<span class="age" class:old={age.old} data-testid="brief-waiting-age" title={age.old ? "Over a day" : "Under a day"}>{age.label}</span>{/if}
+      {#if age}<span class="age" class:old={age.old} data-testid="brief-waiting-age">{age.label}</span>{/if}
     </div>
   {/each}
   {#if rest.length}

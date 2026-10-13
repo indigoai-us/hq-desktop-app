@@ -236,13 +236,13 @@ describe("BriefResolved", () => {
       expect.arrayContaining([expect.stringContaining("Step 6"), expect.stringContaining("Step 7")]),
     );
 
-    // The row peek: timeline capped at five by the peek card, evidence, and the prompt.
+    // The row peek: the full timeline (the card scrolls rather than folding), evidence, and the prompt.
     await hover(q('[data-testid="brief-resolved-one"]')!);
     const peek = q('[data-testid="brief-peek"]')!;
     expect(peek.textContent).toContain("Timeline");
     expect(peek.textContent).toContain("Evidence");
-    expect(peek.querySelectorAll('[data-testid="brief-peek-line"]').length).toBeLessThanOrEqual(5);
-    expect(peek.textContent).toContain("+2 more");
+    expect(peek.textContent).toContain("Step 7");
+    expect(peek.textContent).not.toMatch(/\+\d+ more/);
     expect(q('[data-testid="brief-peek-prompt"]')!.textContent).toMatch(/^Write the post-incident note for: /);
 
     // Start launches the prompt in the chosen engine.

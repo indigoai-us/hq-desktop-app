@@ -98,7 +98,7 @@
               <span class="donechip">Done</span>
             {:else}
               <BriefLaunch id={r.id} prompt={promptFor(r)} compact />
-              <button type="button" class="mark" data-testid="brief-reminder-done" title="Mark done in this brief" onclick={() => brief.clear(r.id)}>Done</button>
+              <button type="button" class="mark" data-testid="brief-reminder-done" onclick={() => brief.clear(r.id)}>Done</button>
             {/if}
           </div>
         </div>

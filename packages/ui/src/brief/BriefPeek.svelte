@@ -11,7 +11,6 @@
   import { ENGINES, copyBriefPrompt, useBrief } from "./brief-context.svelte.js";
   import { peekTop } from "./brief-layout.js";
 
-  const PEEK_MAX_LINES = 5;
   const brief = useBrief();
   // Level with the hovered thing; moved up only as far as its measured height needs to stay on screen.
   let peekH = $state(0);
@@ -60,8 +59,8 @@
       <div class="sec">
         {#if s.label}<div class="eyebrow {s.tone ? `tone-${s.tone}` : ''}">{s.label}</div>{/if}
         {#if s.text}<p>{s.text}</p>{/if}
-        <!-- Never more than five lines: past that a list stops being readable. -->
-        {#each (s.lines ?? []).slice(0, PEEK_MAX_LINES) as line, j (j)}
+        <!-- The full list: the card scrolls past its max height rather than folding into "+N more". -->
+        {#each s.lines ?? [] as line, j (j)}
           <div class="li" data-testid="brief-peek-line">
             <div>{line.label}{#if line.tag}<i class="tag" data-testid="brief-peek-tag">{line.tag}</i>{/if}</div><span class="tone-{line.tone ?? 'neutral'}">{line.state}</span>
           </div>
@@ -74,7 +73,6 @@
             {#if brief.notes[lp.id]}<div class="note" role="status">{brief.notes[lp.id]}</div>{/if}
           {/if}
         {/each}
-        {#if (s.lines?.length ?? 0) > PEEK_MAX_LINES}<div class="more">+{s.lines!.length - PEEK_MAX_LINES} more</div>{/if}
       </div>
     {/each}
     {#if p.content.actions?.length}
@@ -109,11 +107,6 @@
 {/if}
 
 <style>
-  .more {
-    margin-top: 6px;
-    font-size: 13px;
-    color: var(--b-t3);
-  }
   .peek-act {
     all: unset;
     cursor: pointer;

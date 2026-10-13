@@ -91,7 +91,7 @@
       {#each cardList as s (`${s.at}|${s.title}`)}
         <li class="card" data-testid="brief-sample" in:fly={{ y: reduced ? 0 : 14, duration: reduced ? 0 : 420, opacity: reduced ? 1 : 0 }}>
           <span class="kind tone-{sampleTone(s.kind)}">{s.kind.replace(/[_-]+/g, " ")}</span>
-          <span class="title" title={s.title}>{s.title}</span>
+          <span class="title">{s.title}</span>
           <span class="co">{s.company}</span>
         </li>
       {/each}

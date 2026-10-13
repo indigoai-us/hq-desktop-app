@@ -648,6 +648,7 @@
 }
 .daily-brief .peek .sec .eyebrow {
   margin-bottom: 0;
+  line-height: 1.3;
   font-family: var(--b-code);
   font-size: 10px;
   font-weight: 500;
@@ -671,6 +672,13 @@
   border-radius: 0;
   background: none;
   margin-top: 0;
+}
+/* The first line sits close under its section label; the row padding only separates lines from each other. */
+.daily-brief .peek .sec .eyebrow + .li {
+  padding-top: 6px;
+}
+.daily-brief .peek .sec > .li:first-child {
+  padding-top: 0;
 }
 .daily-brief .peek .li + .li {
   border-top: 1px solid rgb(var(--b-ink) / 0.05);

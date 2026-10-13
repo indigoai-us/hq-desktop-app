@@ -108,7 +108,7 @@ describe("session strip (10) and session peek (15)", () => {
     render(base({ recentSessions: [...sessions, { id: "s5", title: "auto-checkpoint", startedAt: at(1), workstream: "Work", company: "cmp_indigo" }] }));
     const head = q("brief-timeline-head")!;
     expect(head.textContent!.trim()).toBe("Last 24h · 2 sessions");
-    expect(head.getAttribute("title")).toBe("1 background session hidden");
+    expect(head.getAttribute("data-hidden")).toBe("1 background session hidden");
     expect(qa("brief-session-dot")).toHaveLength(2);
   });
 

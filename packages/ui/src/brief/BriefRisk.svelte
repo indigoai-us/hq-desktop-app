@@ -50,7 +50,7 @@
   </div>
   <div class="rows" class:tall>
     {#each list.shown as r (r.id)}
-      <div class="rk" role="group" aria-label={r.title} data-testid="brief-risk-row" title={riskProduct(r)} use:peek={{ state: brief, content: () => riskPeek(r, promptOf(r), now) }}>
+      <div class="rk" role="group" aria-label={r.title} data-testid="brief-risk-row" use:peek={{ state: brief, content: () => riskPeek(r, promptOf(r), now) }}>
         {#if r.origin.companyUid}
           <span class="lg"><BriefLogo company={brief.company(r.origin.companyUid)} fallback={r.origin.companyUid} size={16} /></span>
         {:else}
@@ -60,7 +60,7 @@
           <div class="t" data-testid="brief-risk-title">{watchTitle(r)}{#if r.sample}<span class="sample-tag">sample</span>{/if}</div>
           {#if tall && why(r)}<div class="y" data-testid="brief-risk-why">{why(r)}</div>{/if}
         </div>
-        {#if r.ci}<span class="red" title="Red on main" data-testid="brief-risk-red">red</span>{/if}
+        {#if r.ci}<span class="red" data-testid="brief-risk-red">red</span>{/if}
       </div>
     {/each}
     {#if list.rest.length}

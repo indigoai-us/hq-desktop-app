@@ -64,7 +64,7 @@
         <span class="n">{i + 1}</span>
         <span class="tx"><b>{p.text}</b>{#if p.because}<span class="why">{" · "}{p.because}</span>{/if}</span>
         {#if o}
-          <span class="lg" title={o.product} data-testid="brief-priority-logo"><BriefLogo company={brief.company(o.companyUid)} fallback={o.companyUid} size={14} /></span>
+          <span class="lg" data-testid="brief-priority-logo"><BriefLogo company={brief.company(o.companyUid)} fallback={o.companyUid} size={14} /></span>
         {/if}
       </li>
     {/each}

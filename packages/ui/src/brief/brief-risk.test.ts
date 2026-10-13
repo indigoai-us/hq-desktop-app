@@ -183,10 +183,10 @@ describe("Watch card", () => {
     expect(peek.textContent).toContain("Main health");
     expect(peek.textContent).toContain("6 of 7 products green · Desktop app red");
     const lines = [...peek.querySelectorAll('[data-testid="brief-peek-line"]')];
-    expect(lines).toHaveLength(5); // the peek itself shows five, then +N more
+    expect(lines).toHaveLength(7); // every product, in full
     expect(lines[0]!.textContent).toContain("Desktop app");
     expect(lines[0]!.textContent).toContain("RED");
-    expect(peek.textContent).toContain("+2 more");
+    expect(peek.textContent).not.toMatch(/\+\d+ more/);
   });
 
   it("without main health there is no footer; without any row the card is empty but mounts", () => {

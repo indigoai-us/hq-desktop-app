@@ -109,8 +109,8 @@
           <div class="n">
             <span class="nm">{t.name}</span>
             {#if t.isAgent}<span class="tag" data-testid="brief-team-agent">agent</span>{/if}
-            {#if t.dmCount}<span class="cnt" title="{t.dmCount} DMs to you" data-testid="brief-team-count">{t.dmCount}</span>{/if}
-            {#if loaded(t)}<span class="load" data-load={t.load} data-testid="brief-team-load" title={t.load === "storm" ? "Carrying an incident or a red main" : "A heavy day"}>{t.load}</span>{/if}
+            {#if t.dmCount}<span class="cnt" data-testid="brief-team-count">{t.dmCount}</span>{/if}
+            {#if loaded(t)}<span class="load" data-load={t.load} data-testid="brief-team-load">{t.load}</span>{/if}
             {#if t.thanks}
               <svg class="tick" viewBox="0 0 24 24" aria-label="Worth a thank-you" role="img" data-testid="brief-team-thanks"><title>{t.thanks}</title><path d="m5 12 4.5 4.5L19 7" /></svg>
             {/if}
@@ -124,9 +124,9 @@
         </div>
         <div class="acts">
           {#if t.thanks}
-            <button type="button" class="act" style="--g:#34d399,#047857" title="Draft a thank-you DM; you confirm before it sends" data-testid="brief-team-say-thanks" onclick={() => void brief.start(thanksId(t), thanksPrompt(t))}>THANKS</button>
+            <button type="button" class="act" style="--g:#34d399,#047857" data-testid="brief-team-say-thanks" onclick={() => void brief.start(thanksId(t), thanksPrompt(t))}>THANKS</button>
           {/if}
-          <button type="button" class="act" style="--g:{GRAD[i % GRAD.length]}" title="Copy a DM-draft prompt" onclick={() => void draft(t)}>{copied === t.id ? "COPIED" : "DM"}</button>
+          <button type="button" class="act" style="--g:{GRAD[i % GRAD.length]}" onclick={() => void draft(t)}>{copied === t.id ? "COPIED" : "DM"}</button>
         </div>
       </div>
     {/each}

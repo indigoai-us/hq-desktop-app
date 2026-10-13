@@ -99,7 +99,8 @@ describe("DailyBrief", () => {
       const card = slot!.querySelector(".w");
       expect(card, `${kind} renders its card`).not.toBeNull();
       expect(card!.textContent!.trim().length, `${kind} has content`).toBeGreaterThan(10);
-      expect(slot!.querySelector('[data-testid="brief-why"]')!.getAttribute("title")).toMatch(/^(Always first|Shown)\b.*\.$/);
+      expect(slot!.getAttribute("data-reason")).toMatch(/^(Always first|Shown)\b.*\.$/);
+      expect(slot!.querySelector('[data-testid="brief-why"]')!.hasAttribute("title"), "no native tooltip").toBe(false);
     }
     // Owner rules on the page: no repo slug, PR number or conventional prefix on any card face.
     const faces = qa("[data-widget] .w").map((el) => el.textContent ?? "").join("\n");
@@ -140,7 +141,7 @@ describe("DailyBrief", () => {
   it("every slot carries its reason on its corner arrow and as data-reason; the hero names priority 1", () => {
     render({});
     const plan = generateBrief(day());
-    const why = (slot: Element) => slot.querySelector('[data-testid="brief-why"]')!.getAttribute("title");
+    const why = (slot: Element) => slot.querySelector('[data-testid="brief-why"]')!.getAttribute("aria-label")!.split("Why this card: ")[1];
     for (const w of plan.widgets) {
       const slot = q(`[data-widget="${w.kind}"]`)!;
       expect(why(slot)).toBe(w.reason);
@@ -191,8 +192,10 @@ describe("DailyBrief", () => {
     expect(peek.textContent).toContain(generateBrief(day()).reason);
     expect(peek.textContent).toContain("Sunrise — Always first:");
     expect(peek.textContent).toContain("Not shown today");
-    expect(peek.querySelectorAll('[data-testid="brief-peek-line"]').length).toBeLessThanOrEqual(10);
-    expect(peek.textContent).toMatch(/\+\d+ more/);
+    // Peeks list in full (the card scrolls), never folding into "+N more".
+    const reviewPlan = generateBrief(day());
+    expect(peek.querySelectorAll('[data-testid="brief-peek-line"]').length).toBe(1 + reviewPlan.widgets.length + reviewPlan.dropped.length);
+    expect(peek.textContent).not.toMatch(/\+\d+ more/);
     // Dropped kinds read as card names, never camelCase ids.
     const plan = generateBrief(day());
     expect(plan.dropped.map((d) => d.kind)).toContain("team");
@@ -219,7 +222,7 @@ describe("DailyBrief", () => {
     // Hovering a dropped kind shows the score parts behind it.
     const team = rows.find((el) => el.getAttribute("data-kind") === "team")!;
     expect(team.querySelector("b")!.textContent).toBe("Team");
-    expect(team.getAttribute("title")).toMatch(/^value \d+ · priority \d+ · day \d+ · pref -?\d+ · rotation -\d+$/);
+    expect(team.getAttribute("data-parts")).toMatch(/^value \d+ · priority \d+ · day \d+ · pref -?\d+ · rotation -\d+$/);
     await hover(qa(".b-dropped .more")[0]!);
     expect(q('[data-testid="brief-peek"]')!.textContent).toContain("more not shown");
   });

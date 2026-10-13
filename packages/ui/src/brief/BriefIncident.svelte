@@ -56,7 +56,7 @@
   aria-label={risk.title}
   use:peek={{ state: brief, content: () => riskPeek(risk, prompt, now) }}
 >
-  <div class="eyebrow inc-eyebrow" title={risk.title}>
+  <div class="eyebrow inc-eyebrow">
     <span class="live"></span>
     <span class="eb" data-testid="brief-incident-eyebrow">{eyebrow} · live</span>
     {#if risk.origin.companyUid}

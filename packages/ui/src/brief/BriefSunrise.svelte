@@ -258,7 +258,7 @@
         class="eyebrow tl-head"
         style="color:rgba(255,255,255,.85)"
         data-testid="brief-timeline-head"
-        title={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}
+        data-hidden={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}
       >
         Last 24h · {tl.work ? `${tl.work} session${tl.work === 1 ? "" : "s"}` : "no sessions"}
       </div>
@@ -286,7 +286,7 @@
     <div class="meter">
       <div class="track"><i style="width:{total ? (cleared / total) * 100 : 100}%"></i></div>
       <b>{total ? `${cleared} / ${total}` : "CLEAR"}</b>
-      {#if eta}<span class="eta" data-testid="brief-sunrise-eta" title="Time to clear what is left, from the size of each decision">{eta}</span>{/if}
+      {#if eta}<span class="eta" data-testid="brief-sunrise-eta">{eta}</span>{/if}
     </div>
   </div>
 </div>
