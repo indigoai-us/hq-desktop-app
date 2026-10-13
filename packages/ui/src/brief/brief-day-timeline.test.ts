@@ -23,13 +23,14 @@ describe("daySteps", () => {
     expect(hidden.map((e) => e.id)).toEqual(["a", "g"]);
   });
 
-  it("keeps the active call in the middle late in the day rather than filling with more past calls; skips busy holds", () => {
-    const events = [ev("a", 9), ev("hold", 10, 0, { busy: true }), ev("b", 11), ev("c", 13), ev("d", 16), ev("e", 17)];
+  it("late in the day, with one call left after it, earlier calls fill the list so it keeps five rows; skips busy holds", () => {
+    const events = [ev("a", 8), ev("b", 9), ev("hold", 10, 0, { busy: true }), ev("c", 11), ev("d", 13), ev("e", 16), ev("f", 17)];
     expect(daySteps(events, at(16, 10)).steps.map((s) => [s.e.id, s.state])).toEqual([
       ["b", "done"],
       ["c", "done"],
-      ["d", "now"],
-      ["e", "later"],
+      ["d", "done"],
+      ["e", "now"],
+      ["f", "later"],
     ]);
   });
 

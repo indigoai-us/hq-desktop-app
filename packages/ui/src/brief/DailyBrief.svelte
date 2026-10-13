@@ -332,7 +332,8 @@
             <span class="names">{withLine(people)}</span>
           </div>
         {:else}
-          <div class="nx-in">{inLabel(next.inMin, next.live)}{callsLeft > 1 ? ` · ${callsLeft - 1} more after` : ""}</div>
+          <!-- The time to the call is already beside the hour; this line says what follows. -->
+          <div class="nx-in">{callsLeft > 1 ? `${callsLeft - 1} more after` : "Last call today"}</div>
         {/if}
       {:else}
         <div class="nx-time">Free</div>

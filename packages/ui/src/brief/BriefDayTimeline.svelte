@@ -11,9 +11,9 @@
    * Today's calls as steps, after the reference's vertical progress list. The
    * active call (in progress, else the next one) sits in the middle: two
    * finished calls above it and two to come below, when the day has them.
-   * With fewer than two behind it (early in the day), more upcoming calls fill
-   * the list; it is never padded with extra past calls. A day with nothing
-   * still ahead shows its last five calls. Busy holds are left
+   * When one side runs short (early or late in the day) the other side fills
+   * in, so the list keeps five rows instead of leaving a gap. A day with
+   * nothing still ahead shows its last five calls. Busy holds are left
    * out. `hidden` holds the calls that did not fit (they open from "+N more").
    */
   export function daySteps(events: readonly BriefCalendarEvent[], nowIso: string, max = 5): { steps: Step[]; hidden: BriefCalendarEvent[] } {
@@ -23,9 +23,16 @@
     const past = calls.filter((e) => endOf(e) <= now);
     const open = calls.filter((e) => endOf(e) > now);
     const side = Math.floor((max - 1) / 2);
-    const shownPast = open.length ? past.slice(Math.max(0, past.length - side)) : past.slice(Math.max(0, past.length - max));
-    // Early in the day there is nothing to put above it, so the rows below take the room.
-    const shownOpen = open.slice(0, side + 1 + (side - shownPast.length));
+    let ahead = Math.min(open.length, side + 1);
+    let behind = Math.min(past.length, open.length ? side : max);
+    // One side short of calls: the other side takes the spare rows.
+    let spare = max - ahead - behind;
+    const more = Math.min(open.length - ahead, spare);
+    ahead += more;
+    spare -= more;
+    behind += Math.min(past.length - behind, spare);
+    const shownPast = past.slice(past.length - behind);
+    const shownOpen = open.slice(0, ahead);
     const steps: Step[] = [
       ...shownPast.map((e) => ({ e, state: "done" as const })),
       ...shownOpen.map((e, i) => ({ e, state: (i === 0 ? (Date.parse(e.start) <= now ? "now" : "next") : "later") as StepState })),
