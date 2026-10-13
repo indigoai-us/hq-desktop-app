@@ -127,27 +127,30 @@ describe("Today strip render", () => {
     target?.remove();
   });
 
-  it("renders the Oct 9 fixture: 7:30 start, no busy duplicates, lanes, tentative dashed, peek with Open in Meetings", async () => {
+  it("the page shows the Oct 9 calls as top-centre steps: busy left out, the next call active, the rest behind +N more, peek with Open in Meetings", async () => {
     const onopenmeetings = vi.fn();
     target = document.createElement("div");
     document.body.appendChild(target);
-    app = mount(DailyBrief, { target, props: { input: octoberEightBrief(new Date(2026, 9, 9, 10, 15)), onopenmeetings } });
+    // 3 PM: Rachel's 3:30 call is next.
+    app = mount(DailyBrief, { target, props: { input: octoberEightBrief(new Date(2026, 9, 9, 15, 0)), onopenmeetings } });
     flushSync();
-    const strip = target.querySelector<HTMLElement>('[data-testid="brief-today"]')!;
-    expect(strip.querySelector(".trk")!.getAttribute("data-h0")).toBe("7");
-    const blocks = [...strip.querySelectorAll<HTMLElement>('[data-testid="brief-strip-event"]')];
-    const labels = blocks.map((b) => b.getAttribute("aria-label") ?? "");
-    expect(labels.filter((l) => l.startsWith("Busy"))).toEqual(["Busy, 4:30–5 PM"]);
-    expect(labels.some((l) => l.startsWith("HQ Founder Office Hours"))).toBe(true);
-    expect(labels.some((l) => l.startsWith("VYG Standup, 7:30–8 AM"))).toBe(true);
-    const jacob = blocks.find((b) => b.getAttribute("aria-label")!.startsWith("Jacob"))!;
-    expect(jacob.getAttribute("data-lane")).toBe("1");
-    const jordan = blocks.find((b) => b.getAttribute("aria-label")!.startsWith("Jordan"))!;
-    expect(jordan.classList.contains("tent")).toBe(true);
-    expect(jordan.textContent).toBe("");
-    expect(strip.textContent).toContain("8 calls");
-    const rachel = blocks.find((b) => b.getAttribute("aria-label")!.includes("Rachel"))!;
-    rachel.dispatchEvent(new MouseEvent("mouseenter"));
+    const day = target.querySelector<HTMLElement>('[data-testid="brief-today"]')!;
+    expect(day.closest(".b-top")).not.toBeNull();
+    expect(day.textContent).toContain("8 calls");
+    const steps = [...day.querySelectorAll<HTMLElement>('[data-testid="brief-day-step"]')];
+    expect(steps.length).toBeLessThanOrEqual(5);
+    const labels = steps.map((b) => b.getAttribute("aria-label") ?? "");
+    expect(labels.some((l) => l.startsWith("Busy"))).toBe(false);
+    // Five rows plus "+N more" account for all eight named calls.
+    const more = day.querySelector('[data-testid="brief-strip-more"]');
+    expect(steps.length + Number(more?.textContent?.match(/\d+/)?.[0] ?? 0)).toBe(8);
+    const active = steps.filter((b) => ["now", "next"].includes(b.getAttribute("data-state")!));
+    expect(active).toHaveLength(1);
+    expect(active[0]!.getAttribute("aria-label")).toContain("Rachel");
+    expect(active[0]!.getAttribute("aria-label")).toContain("3:30–4 PM, Next");
+    // Earlier calls read Done.
+    expect(steps.slice(0, steps.indexOf(active[0]!)).every((b) => b.getAttribute("data-state") === "done")).toBe(true);
+    active[0]!.dispatchEvent(new MouseEvent("mouseenter"));
     await new Promise((r) => setTimeout(r, 260));
     await tick();
     flushSync();

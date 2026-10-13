@@ -34,7 +34,7 @@
   import BriefShipped from "./BriefShipped.svelte";
   import BriefSunrise from "./BriefSunrise.svelte";
   import BriefTeam from "./BriefTeam.svelte";
-  import BriefTodayStrip from "./BriefTodayStrip.svelte";
+  import BriefDayTimeline from "./BriefDayTimeline.svelte";
   import BriefWaiting from "./BriefWaiting.svelte";
   import BriefWeekArc from "./BriefWeekArc.svelte";
   import BriefHousekeeping from "./BriefHousekeeping.svelte";
@@ -330,6 +330,7 @@
         {/each}
       </div>
     </div>
+    <BriefDayTimeline events={input.calendarToday} now={input.now} sample={input.calendarSample ?? false} {onopenmeetings} />
     <aside class="b-next" data-testid="brief-next" use:peek={{ state: briefState, content: nextPeek }}>
       <div class="nx-head"><span>{next ? (next.live ? "On a call" : "Next call") : "Calls today"}</span><span class="arr" aria-hidden="true">↗</span></div>
       {#if next}
@@ -340,20 +341,14 @@
         <div class="nx-time">Free</div>
         <div class="nx-title">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</div>
       {/if}
-      <svg class="orbit" viewBox="0 0 220 120" aria-hidden="true">
-        {#each [0, 1, 2, 3, 4, 5, 6] as k (k)}
-          <ellipse cx="80" cy="60" rx={52 - k * 7.5} ry="52" />
-          <ellipse cx="140" cy="60" rx={52 - k * 7.5} ry="52" />
-        {/each}
-        <circle class="dot" cx="28" cy="60" r="3" />
-        <circle class="hot" cx={next ? 110 : 192} cy="60" r="5" />
-        <circle class="ring" cx="110" cy="9" r="3" />
-        <circle class="ring" cx="192" cy="60" r="3" />
+      <!-- The cards' motif: a glass orb, one dotted orbit, one node (hot while a call is next). -->
+      <svg class="orbit" viewBox="0 0 200 200" aria-hidden="true">
+        <circle class="orb" cx="158" cy="196" r="100" />
+        <circle class="path" cx="158" cy="196" r="124" />
+        <circle class="node" class:hot={!!next} cx="96" cy="88" r="4" />
       </svg>
     </aside>
   </section>
-
-  <BriefTodayStrip events={input.calendarToday} now={input.now} {dateLabel} sample={input.calendarSample ?? false} {onopenmeetings} />
 
   {#if allCards}<div class="b-review" data-testid="brief-review">Review mode · every card with evidence, by group · Shift+A to go back</div>{/if}
   <main
