@@ -55,7 +55,6 @@
   }: { events: BriefCalendarEvent[]; now: string; sample?: boolean; onopenmeetings?: () => void } = $props();
   const brief = useBrief();
   const plan = $derived(daySteps(events, now));
-  const named = $derived(events.filter((e) => !e.busy).length);
   const at = (e: BriefCalendarEvent) => {
     const d = new Date(e.start);
     const m = d.getMinutes();
@@ -84,10 +83,6 @@
 </script>
 
 <section class="day" data-testid="brief-today" aria-label="Today's calls">
-  <div class="hd">
-    <span>Today</span>
-    <span class="ct">{named ? `${named} call${named === 1 ? "" : "s"}` : "No calls"}</span>
-  </div>
   {#if plan.steps.length}
     <ol>
       {#each plan.steps as s (s.e.id)}
@@ -122,26 +117,12 @@
     flex-direction: column;
     padding: 2px 0 0;
   }
-  /* Right edge matches the state pills below (rows keep 8px of padding). */
-  .hd {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding-right: 8px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--b-t2);
-  }
-  .ct {
-    margin-left: auto;
-    font-size: 11px;
-    font-weight: 400;
-    color: var(--b-t3);
-  }
+
+
   ol {
     position: relative;
     list-style: none;
-    margin: 10px 0 0;
+    margin: 0;
     padding: 0 0 0 18px;
   }
   /* The rail: a fine dotted line, as in the reference. Only the active call gets a marker. */

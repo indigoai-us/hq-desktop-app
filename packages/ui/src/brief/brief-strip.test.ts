@@ -136,7 +136,6 @@ describe("Today strip render", () => {
     flushSync();
     const day = target.querySelector<HTMLElement>('[data-testid="brief-today"]')!;
     expect(day.closest(".b-top")).not.toBeNull();
-    expect(day.textContent).toContain("8 calls");
     const steps = [...day.querySelectorAll<HTMLElement>('[data-testid="brief-day-step"]')];
     expect(steps.length).toBeLessThanOrEqual(5);
     const labels = steps.map((b) => b.getAttribute("aria-label") ?? "");
