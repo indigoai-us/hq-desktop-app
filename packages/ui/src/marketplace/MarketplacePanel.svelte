@@ -28,6 +28,7 @@
     installMarketplacePack,
     listingAuthor,
     listingDisplayName,
+    listingPublicUrl,
     loadMarketplaceListings,
     recordMarketplaceInstall,
     type InstallScope,
@@ -41,6 +42,7 @@
     marketplaceAvatarSrc,
   } from "../library/pack-covers.js";
   import type { WorkspacesResult } from "../chat/workspaces.js";
+  import { copyLinkHref, openExternalHref } from "../common/external-links.js";
 
   /** Host seam for the streamed install progress events the desktop emits
    *  (`marketplace:install-progress` / `-complete` / `-error`). Optional —
@@ -73,6 +75,39 @@
   let error = $state<string | null>(null);
   let query = $state("");
   let selected = $state<MarketplaceListing | null>(null);
+
+  // ── Public page link ───────────────────────────────────────────────────────
+  // Every approved listing has a shareable page on hqforwork.com. Open it in
+  // the system browser (host opener), or copy the clean canonical URL.
+  const selectedPublicUrl = $derived(selected ? listingPublicUrl(selected) : null);
+  let publicLinkCopied = $state(false);
+  let publicLinkCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function openPublicPage(event: MouseEvent): void {
+    if (!selectedPublicUrl) return;
+    event.preventDefault();
+    openExternalHref(selectedPublicUrl);
+  }
+
+  async function copyPublicLink(): Promise<void> {
+    if (!selectedPublicUrl) return;
+    try {
+      await copyLinkHref(selectedPublicUrl);
+    } catch (err) {
+      console.warn("[marketplace] copy public link failed", err);
+      return;
+    }
+    publicLinkCopied = true;
+    if (publicLinkCopiedTimer) clearTimeout(publicLinkCopiedTimer);
+    publicLinkCopiedTimer = setTimeout(() => {
+      publicLinkCopied = false;
+    }, 1500);
+  }
+
+  $effect(() => {
+    void selectedPublicUrl;
+    publicLinkCopied = false;
+  });
 
   // ── Install scope picker (US-009) ──────────────────────────────────────────
   //
@@ -541,6 +576,40 @@
           <span class="pill version">v{selected.version}</span>
           <span class="scope-badge">{selected.slug}</span>
         </div>
+        {#if selectedPublicUrl}
+          <div class="public-link" data-testid="marketplace-public-link">
+            <a
+              class="public-link-open"
+              href={selectedPublicUrl}
+              data-testid="marketplace-public-link-open"
+              onclick={openPublicPage}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M9 3h4v4M13 3 7.5 8.5M11 9.5V13H3V5h3.5" />
+              </svg>
+              View public page
+            </a>
+            <button
+              type="button"
+              class="public-link-copy"
+              data-testid="marketplace-public-link-copy"
+              aria-label="Copy public page link"
+              title="Copy link"
+              onclick={copyPublicLink}
+            >
+              {#if publicLinkCopied}
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" /></svg>
+                <span>Copied</span>
+              {:else}
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="5.5" y="5.5" width="7" height="7" rx="1.5" />
+                  <path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5" />
+                </svg>
+                <span>Copy link</span>
+              {/if}
+            </button>
+          </div>
+        {/if}
       </div>
       <button
         type="button"
@@ -1252,6 +1321,48 @@
     flex-wrap: wrap;
     gap: var(--v4-space-1);
     margin-top: var(--v4-space-2);
+  }
+
+  .public-link {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--v4-space-1);
+    margin-top: var(--v4-space-2);
+  }
+
+  .public-link-open,
+  .public-link-copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 500;
+    line-height: 18px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .public-link-open:hover,
+  .public-link-copy:hover {
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
+  }
+
+  .public-link svg {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .scope-badge {
