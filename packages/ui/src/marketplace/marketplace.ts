@@ -135,6 +135,8 @@ export const PACK_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   crm: "CRM",
   // Brand casing: the generic prettifier would produce "Imessage".
   imessage: "iMessage",
+  // Product name keeps its "HQ" prefix; the prettifier strips it to "Capture".
+  "hq-capture": "HQ Capture",
 };
 
 /** Words we keep lowercased when title-casing a derived name (unless leading). */
