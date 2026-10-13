@@ -54,6 +54,27 @@
     onopenmeetings,
   }: { events: BriefCalendarEvent[]; now: string; sample?: boolean; onopenmeetings?: () => void } = $props();
   const brief = useBrief();
+  // The rail runs from the first row's centre to the last row's (measured, since rows share the height).
+  let list = $state<HTMLOListElement | null>(null);
+  let railTop = $state(0);
+  let railBottom = $state(0);
+  $effect(() => {
+    const ol = list;
+    if (!ol) return;
+    const measure = () => {
+      const rows = ol.querySelectorAll<HTMLElement>(":scope > li");
+      const first = rows[0];
+      const last = rows[rows.length - 1];
+      if (!first || !last) return;
+      railTop = first.offsetTop + first.offsetHeight / 2;
+      railBottom = ol.clientHeight - (last.offsetTop + last.offsetHeight / 2);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(ol);
+    return () => ro.disconnect();
+  });
   const plan = $derived(daySteps(events, now));
   const at = (e: BriefCalendarEvent) => {
     const d = new Date(e.start);
@@ -84,7 +105,7 @@
 
 <section class="day" data-testid="brief-today" aria-label="Today's calls">
   {#if plan.steps.length}
-    <ol>
+    <ol bind:this={list} style:--rail-top="{railTop}px" style:--rail-bottom="{railBottom}px">
       {#each plan.steps as s (s.e.id)}
         <li
           class={s.state}
@@ -131,17 +152,18 @@
     padding: 0 0 0 18px;
   }
   /* The rail: a fine dotted line, as in the reference. Only the active call gets a marker. */
-  /* Sparse dots that fade out at both ends. */
+  /* Sparse dots between the first and last call. */
   ol::before {
     content: "";
     position: absolute;
     left: 4px;
-    top: -10px;
-    bottom: -10px;
+    top: var(--rail-top, 16px);
+    bottom: var(--rail-bottom, 16px);
     width: 2px;
     background: radial-gradient(circle, rgb(var(--b-ink) / 0.5) 0.8px, transparent 1px) center top / 2px 8px repeat-y;
-    -webkit-mask: linear-gradient(180deg, transparent, #000 22%, #000 78%, transparent);
-    mask: linear-gradient(180deg, transparent, #000 22%, #000 78%, transparent);
+    /* Starts at the first call and ends at the last, softening over its last few dots. */
+    -webkit-mask: linear-gradient(180deg, rgba(0, 0, 0, 0.35), #000 24px, #000 calc(100% - 24px), rgba(0, 0, 0, 0.35));
+    mask: linear-gradient(180deg, rgba(0, 0, 0, 0.35), #000 24px, #000 calc(100% - 24px), rgba(0, 0, 0, 0.35));
   }
   li {
     position: relative;

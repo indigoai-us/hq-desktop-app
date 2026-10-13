@@ -349,7 +349,7 @@
         {#if next?.live}<circle class="pulse" cx="60" cy="60" r="28" />{/if}
         <circle class="orb" cx="60" cy="60" r="28" fill="url(#b-orb-fill)" />
         <circle class="path" cx="60" cy="60" r="46" />
-        {#if next}<g class="spin"><circle class="node" cx="60" cy="14" r="4.5" /></g>{/if}
+        {#if next}<g class="spin"><circle class="node" cx="60" cy="14" r="4.5" />{#if next.live}<circle class="node trail" cx="99.8" cy="83" r="3.5" /><circle class="node trail" cx="20.2" cy="83" r="3.5" />{/if}</g>{/if}
       </svg>
     </aside>
   </section>

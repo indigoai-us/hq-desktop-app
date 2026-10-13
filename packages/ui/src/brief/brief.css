@@ -1267,8 +1267,12 @@
   transform-origin: 60px 60px;
   transform: rotate(-40deg);
 }
+/* On a call three nodes share the orbit, a third of a turn apart, so one is always on the card. */
 .daily-brief .b-next .orbit.live .spin {
-  animation: b-orbit 9s linear infinite;
+  animation: b-orbit 18s linear infinite;
+}
+.daily-brief .b-next .orbit .node.trail {
+  opacity: 0.45;
 }
 .daily-brief .b-next .orbit .pulse {
   fill: none;
@@ -1277,17 +1281,12 @@
   transform-origin: 60px 60px;
   animation: b-pulse 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
 }
-/* One full circle, but unhurried only where the card shows the ring (about -100 to 20 deg):
-   two thirds of the loop crossing the visible arc, the hidden rest in the last third. */
 @keyframes b-orbit {
-  0% {
-    transform: rotate(-100deg);
+  from {
+    transform: rotate(-40deg);
   }
-  66% {
-    transform: rotate(20deg);
-  }
-  100% {
-    transform: rotate(260deg);
+  to {
+    transform: rotate(320deg);
   }
 }
 @keyframes b-pulse {
