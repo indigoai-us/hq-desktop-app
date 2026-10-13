@@ -237,8 +237,9 @@
     border-left: 6px solid rgb(var(--b-ink) / 0.85);
     border-right: 0;
   }
+  /* Lines up with the call titles above (rail gutter 18px + row padding 8px). */
   .more {
-    margin: 4px 0 0 18px;
+    margin: 4px 0 0 26px;
     font-size: 11px;
     color: var(--b-t3);
     cursor: default;
