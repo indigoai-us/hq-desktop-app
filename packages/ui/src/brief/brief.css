@@ -610,8 +610,8 @@
   width: 320px;
   max-height: min(460px, calc(100vh - 32px));
   overflow: auto;
-  /* Text's line box adds air under the last line, so the bottom padding is a touch less to look even. */
-  padding: 16px 16px 12px;
+  /* 16px on every side, measured to the letters: the first and last lines are trimmed to cap height and baseline below. */
+  padding: 16px;
   border-radius: var(--b-r);
   background: linear-gradient(180deg, rgb(var(--b-ink) / 0.015), transparent 40px), var(--b-card-hi);
   color: var(--b-t1);
@@ -624,6 +624,18 @@
     opacity: 0;
     transform: translateY(4px) scale(0.98);
   }
+}
+/* Even padding, visually: the card's first line starts at its capital letters and its last line ends on the baseline,
+   so line-height leading doesn't add hidden air at the top or bottom. */
+.daily-brief .peek > :is(.ttl, .sample):first-child,
+.daily-brief .peek > .head:first-child .eyebrow {
+  text-box: trim-start cap alphabetic;
+}
+.daily-brief .peek > :is(.ttl, .st, .note):last-child,
+.daily-brief .peek > .sec:last-child > p:last-child,
+.daily-brief .peek > .sec:last-child > .li:last-child > *,
+.daily-brief .peek > .sec:last-child > .eyebrow:last-child {
+  text-box: trim-end cap alphabetic;
 }
 .daily-brief .peek .ttl {
   font-size: 13px;
