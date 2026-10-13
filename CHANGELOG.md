@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.11.8] — 2026-10-13
+
 - Settings > AI tools: a new "Connect AI apps to HQ" section lets Grok Bot, Claude, ChatGPT, Claude Code, Codex and the Grok command line read and write your HQ files and use your secrets and connected apps. Each app has a Copy button for its setup. Grok Bot's "Copy instructions" adds HQ, asks you to sign in, and teaches Grok Bot to pick the right company for each task. Claude shows the steps for its Connectors screen. One sign-in covers every company you belong to. If copying is blocked, the text appears so you can select it by hand.
 - First run: the company step has a new look. Its screens (name your company, "Setting up <company>", choose a plan, invite your team and "<company> is ready.") now match the other setup screens, with centred content and screens that fade into each other. Inviting people is its own screen after the plan: addresses turn into chips, and the invites wait until the company is ready. "Skip for now" sits under the main button. If setup does not finish, the message says so in plain words without the internal step name. Back works from the first company question, and the company step has its own tick on the progress strip. Behind it there are ASCII flower trees, fields are borderless until you hover or focus them, and the ready screen's HQ Desktop, Claude Code and Codex buttons use their own icons. Going Back from the company step and then Next no longer sends you through it a second time, which could make a second company.
 - Marketplace: the HQ Capture pack now shows as "HQ Capture" on its card, its detail page and your installed packs. Before, it read "Capture".
