@@ -1370,6 +1370,12 @@ export interface FilesApi {
   vault?: VaultApi;
   getFileContent(path: string): AdapterPromise<string>;
   /**
+   * Append one JSON line to the Daily Brief preference log
+   * (`personal/brief/brief-log.jsonl`). The host fixes the path and refuses
+   * anything but a single JSON object. Desktop only; hosts without it omit it.
+   */
+  appendBriefLog?(line: string): AdapterPromise<void>;
+  /**
    * Create a new text file at an HQ-relative path in the synced HQ folder
    * (QA-072). Refuses an existing file. `cloudSync` is true when the company
    * is cloud-backed and syncing, so HQ Sync carries the file to the vault.

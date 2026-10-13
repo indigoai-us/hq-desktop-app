@@ -2536,6 +2536,56 @@ pub fn read_file_content_capped(
     let bytes = read_file_bytes_capped(hq_root, rel_path, max_bytes)?;
     String::from_utf8(bytes).map_err(|_| format!("cannot preview binary file: {rel_path:?}"))
 }
+/// The Daily Brief preference log: one JSON object per line, appended by the
+/// app when the person sees a brief, dismisses an item or launches a prompt
+/// from it. The daily-brief writer folds it into `brief-prefs.yaml` weekly.
+pub const BRIEF_LOG_PATH: &str = "personal/brief/brief-log.jsonl";
+/// One event is a few hundred bytes; anything larger is not an event.
+pub const BRIEF_LOG_MAX_LINE_BYTES: usize = 4 * 1024;
+
+/// Pure body for `append_brief_log`. The path is fixed here, so the renderer
+/// never names a file; the line must be one JSON object with no line break.
+pub fn append_brief_log_line(hq_root: &Path, line: &str) -> Result<(), String> {
+    use std::io::Write;
+    let line = line.trim();
+    if line.is_empty() {
+        return Err("brief log line is empty".to_string());
+    }
+    if line.len() > BRIEF_LOG_MAX_LINE_BYTES {
+        return Err(format!(
+            "brief log line is too long ({} bytes; limit is {} bytes)",
+            line.len(),
+            BRIEF_LOG_MAX_LINE_BYTES
+        ));
+    }
+    if line.contains('\n') || line.contains('\r') {
+        return Err("brief log line must be a single line".to_string());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| format!("brief log line is not JSON: {e}"))?;
+    if !value.is_object() {
+        return Err("brief log line must be a JSON object".to_string());
+    }
+    let path = hq_root.join(BRIEF_LOG_PATH);
+    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+        if meta.file_type().is_symlink() {
+            return Err(format!("{BRIEF_LOG_PATH} is a symlink; refusing to append"));
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)
+        .map_err(|e| format!("cannot open {BRIEF_LOG_PATH}: {e}"))?;
+    file.write_all(line.as_bytes())
+        .and_then(|_| file.write_all(b"\n"))
+        .map_err(|e| format!("cannot append to {BRIEF_LOG_PATH}: {e}"))
+}
+
 // ---- Lazy HQ-root file explorer (US-010) ----------------------------------
 
 /// One entry in a single directory listing for the lazy file explorer (US-010).
@@ -5164,5 +5214,53 @@ mod tests {
                 result.unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod brief_log_tests {
+    use super::{append_brief_log_line, BRIEF_LOG_MAX_LINE_BYTES, BRIEF_LOG_PATH};
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn appends_one_object_per_line_and_creates_the_folder() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        append_brief_log_line(root, r#"{"at":"2026-10-13T09:00:00Z","event":"shown","run_id":"brief-20261013-090000"}"#).unwrap();
+        append_brief_log_line(root, r#"  {"event":"dismiss","item_id":"d1"}  "#).unwrap();
+        let text = fs::read_to_string(root.join(BRIEF_LOG_PATH)).unwrap();
+        assert_eq!(
+            text,
+            "{\"at\":\"2026-10-13T09:00:00Z\",\"event\":\"shown\",\"run_id\":\"brief-20261013-090000\"}\n{\"event\":\"dismiss\",\"item_id\":\"d1\"}\n"
+        );
+    }
+
+    #[test]
+    fn rejects_anything_that_is_not_one_json_object() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        assert!(append_brief_log_line(root, "").unwrap_err().contains("empty"));
+        assert!(append_brief_log_line(root, "{\"a\":1}\n{\"b\":2}").unwrap_err().contains("single line"));
+        assert!(append_brief_log_line(root, "[1,2]").unwrap_err().contains("JSON object"));
+        assert!(append_brief_log_line(root, "{not json").unwrap_err().contains("not JSON"));
+        let long = format!("{{\"pad\":\"{}\"}}", "x".repeat(BRIEF_LOG_MAX_LINE_BYTES));
+        assert!(append_brief_log_line(root, &long).unwrap_err().contains("too long"));
+        assert!(!root.join(BRIEF_LOG_PATH).exists(), "a refused line must not create the file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_to_follow_a_symlinked_log() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let elsewhere = root.join("elsewhere.jsonl");
+        fs::write(&elsewhere, "").unwrap();
+        let log = root.join(BRIEF_LOG_PATH);
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &log).unwrap();
+        let err = append_brief_log_line(root, "{\"event\":\"shown\"}").unwrap_err();
+        assert!(err.contains("symlink"), "got: {err}");
+        assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "");
     }
 }
