@@ -18,10 +18,10 @@
 //!   pre-existing, app-managed local implementation (`start_sync`, the settings
 //!   pause seam, the CLI/Core updaters, the minisign-verified desktop updater,
 //!   `app.restart()`). There is no code path from a server string to a shell.
-//! * **Conflict-blocked RETRY_SYNC fails CLOSED.** A conflict-blocked
-//!   installation is NEVER force-synced or auto-resolved — the dispatcher
-//!   surfaces the existing user-owned local/remote/compare workflow and reports
-//!   [`ClientHealthFailureReason::ConflictBlocked`].
+//! * **Conflicts never block RETRY_SYNC.** The runner keeps the cloud copy
+//!   live and parks the local copy, so a parked conflict needs no user
+//!   decision and RETRY_SYNC always takes the normal, cloud-gated sync path
+//!   (owner decision 2026-10-13: no conflict surface on the desktop).
 //! * **Version installs are proven.** REPAIR_CLI / UPDATE_CORE read the
 //!   installed version back AFTER the install and only report `succeeded` when
 //!   it matches/advances; the read-back rides the receipt postcondition.
@@ -60,10 +60,6 @@ const LOG_TAG: &str = "client-repair";
 /// Frontend event carrying a customer-visible repair notice (RESUME_SYNC /
 /// RESTART_APP). `desktop-alt/repair-notice.svelte` listens for it.
 pub const EVENT_REPAIR_NOTICE: &str = "client-repair:notice";
-/// Frontend event asking the shell to surface the EXISTING user-owned conflict
-/// workflow (local/remote/compare) — a conflict-blocked RETRY_SYNC raises this
-/// instead of ever force-syncing.
-pub const EVENT_REPAIR_CONFLICTS_REQUIRED: &str = "client-repair:conflicts-required";
 
 /// Seconds a RESTART_APP notice counts down before the automatic restart
 /// (decision ledger #4: visible countdown then automatic restart).
@@ -174,49 +170,18 @@ async fn run_repair_action(command: &ClientHealthDesiredCommand) -> (TerminalRec
 
 // ─── RETRY_SYNC ──────────────────────────────────────────────────────────────
 
-/// Safe re-drive of sync. Conflict-blocked installs are surfaced to the
-/// user-owned workflow and NEVER force-synced ([`plan_retry_sync`]).
+/// Safe re-drive of sync through the normal, cloud-gated sync path (refuses
+/// when Cloud is paused). Parked conflicts never block it.
 async fn retry_sync() -> TerminalReceiptContent {
-    let (sync_state, _reason, conflict_count) = read_sync_snapshot();
-    match plan_retry_sync(sync_state, conflict_count) {
-        RetrySyncPlan::SurfaceConflicts => {
-            // Fail closed: open/raise the existing conflict workflow, do NOT
-            // sync, and report the closed CONFLICT_BLOCKED reason.
-            surface_conflicts_workflow(conflict_count);
-            failed(Some(ClientHealthFailureReason::ConflictBlocked))
+    match trigger_sync().await {
+        Ok(()) => {
+            let (observed, _, _) = read_sync_snapshot();
+            succeeded_with_sync_state(observed)
         }
-        RetrySyncPlan::AttemptSync => {
-            // The normal, cloud-gated sync path (refuses when Cloud is paused).
-            match trigger_sync().await {
-                Ok(()) => {
-                    let (observed, _, _) = read_sync_snapshot();
-                    succeeded_with_sync_state(observed)
-                }
-                // Cloud is paused: RETRY_SYNC does not override an intentional
-                // pause (that is RESUME_SYNC's job) — report it, don't force.
-                Err(SyncTriggerError::CloudPaused) => {
-                    failed(Some(ClientHealthFailureReason::SyncPaused))
-                }
-                Err(SyncTriggerError::Other) => {
-                    failed(Some(ClientHealthFailureReason::RunnerFailed))
-                }
-            }
-        }
-    }
-}
-
-/// Whether a RETRY_SYNC may attempt a sync at all. A conflict-blocked state (or
-/// any outstanding conflict count) is user-owned: fail closed, never force.
-pub(crate) enum RetrySyncPlan {
-    SurfaceConflicts,
-    AttemptSync,
-}
-
-pub(crate) fn plan_retry_sync(sync_state: ClientHealthSyncState, conflict_count: u64) -> RetrySyncPlan {
-    if sync_state == ClientHealthSyncState::ConflictBlocked || conflict_count > 0 {
-        RetrySyncPlan::SurfaceConflicts
-    } else {
-        RetrySyncPlan::AttemptSync
+        // Cloud is paused: RETRY_SYNC does not override an intentional
+        // pause (that is RESUME_SYNC's job) — report it, don't force.
+        Err(SyncTriggerError::CloudPaused) => failed(Some(ClientHealthFailureReason::SyncPaused)),
+        Err(SyncTriggerError::Other) => failed(Some(ClientHealthFailureReason::RunnerFailed)),
     }
 }
 
@@ -640,18 +605,6 @@ fn emit_notice(notice: RepairNotice) {
     }
 }
 
-/// Surface the EXISTING user-owned conflict workflow. Never resolves or
-/// force-syncs — it only raises the shell's conflict attention path.
-fn surface_conflicts_workflow(conflict_count: u64) {
-    if let Some(app) = repair_app_handle() {
-        let _ = app.emit(
-            EVENT_REPAIR_CONFLICTS_REQUIRED,
-            &serde_json::json!({ "conflictCount": conflict_count }),
-        );
-    }
-    log(LOG_TAG, "RETRY_SYNC blocked by conflicts; surfaced the user-owned workflow (no force-sync)");
-}
-
 /// Append a bounded local record that a support repair changed local state
 /// (decision ledger #3: desktop notice + local record). Best-effort; a write
 /// failure never fails the repair.
@@ -774,32 +727,6 @@ mod tests {
     use super::*;
 
     // ── Pure decision helpers (the safety-critical logic) ───────────────────
-
-    #[test]
-    fn conflict_blocked_retry_sync_never_attempts_a_sync() {
-        assert!(matches!(
-            plan_retry_sync(ClientHealthSyncState::ConflictBlocked, 0),
-            RetrySyncPlan::SurfaceConflicts
-        ));
-        // Any outstanding conflict count is user-owned too, even if the state
-        // reads otherwise.
-        assert!(matches!(
-            plan_retry_sync(ClientHealthSyncState::Idle, 2),
-            RetrySyncPlan::SurfaceConflicts
-        ));
-    }
-
-    #[test]
-    fn clean_state_retry_sync_may_attempt_a_sync() {
-        assert!(matches!(
-            plan_retry_sync(ClientHealthSyncState::Idle, 0),
-            RetrySyncPlan::AttemptSync
-        ));
-        assert!(matches!(
-            plan_retry_sync(ClientHealthSyncState::Error, 0),
-            RetrySyncPlan::AttemptSync
-        ));
-    }
 
     #[test]
     fn version_readback_gates_success_only_on_a_matching_or_advancing_version() {
