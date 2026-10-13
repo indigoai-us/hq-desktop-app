@@ -7,7 +7,7 @@ import {
   verifyReleaseContract,
 } from "./release-asset-contract.mjs";
 
-const localAssets = Array.from({ length: 15 }, (_, index) => ({
+const localAssets = Array.from({ length: 21 }, (_, index) => ({
   name: `asset-${String(index).padStart(2, "0")}.bin`,
   size: index + 1,
   digest: `sha256:${index.toString(16).padStart(64, "0")}`,
@@ -59,8 +59,36 @@ function validUpdaterManifest() {
         signature: "arm64-signature",
         url: `${updaterBase}/HQ_${updaterVersion}_arm64-setup.exe`,
       },
+      "linux-x86_64-deb": {
+        signature: "deb-signature",
+        url: `${updaterBase}/HQ_${updaterVersion}_amd64.deb`,
+      },
+      "linux-x86_64-appimage": {
+        signature: "appimage-signature",
+        url: `${updaterBase}/HQ_${updaterVersion}_amd64.AppImage`,
+      },
+      "linux-x86_64": {
+        signature: "appimage-signature",
+        url: `${updaterBase}/HQ_${updaterVersion}_amd64.AppImage`,
+      },
     },
   };
+}
+
+// Sidecar lookup shared by the manifest fetch stubs: every `.sig` URL maps to
+// the signature its platform entry carries in the manifest above.
+function sidecarSignature(url: string, signatures: {
+  mac: string;
+  x64: string;
+  arm64: string;
+  deb: string;
+  appimage: string;
+}) {
+  if (url.includes("universal")) return signatures.mac;
+  if (url.includes("arm64")) return signatures.arm64;
+  if (url.endsWith(".deb.sig")) return signatures.deb;
+  if (url.endsWith(".AppImage.sig")) return signatures.appimage;
+  return signatures.x64;
 }
 
 function manifestFetch(
@@ -73,11 +101,13 @@ function manifestFetch(
       return new Response(JSON.stringify(manifest), { status: 200 });
     }
     if (value.endsWith(".sig")) {
-      const signature = value.includes("universal")
-        ? "mac-signature"
-        : value.includes("arm64")
-          ? "arm64-signature"
-          : "x64-signature";
+      const signature = sidecarSignature(value, {
+        mac: "mac-signature",
+        x64: "x64-signature",
+        arm64: "arm64-signature",
+        deb: "deb-signature",
+        appimage: "appimage-signature",
+      });
       return new Response(
         mismatchSidecar ? `${signature}-mismatch` : signature,
         { status: 200 },
@@ -305,7 +335,7 @@ describe("atomic release asset contract", () => {
     ).toThrow("Release asset contract failed");
   });
 
-  it("verifies the public four-platform updater manifest and sidecars", async () => {
+  it("verifies the public seven-platform updater manifest and sidecars", async () => {
     const version = "0.10.35-beta.2";
     const tag = `v${version}`;
     const repository = "indigoai-us/hq-desktop-app";
@@ -314,6 +344,8 @@ describe("atomic release asset contract", () => {
       mac: "mac-signature",
       x64: "x64-signature",
       arm64: "arm64-signature",
+      deb: "deb-signature",
+      appimage: "appimage-signature",
     };
     const manifest = {
       version,
@@ -334,6 +366,18 @@ describe("atomic release asset contract", () => {
           signature: signatures.arm64,
           url: `${base}/HQ_${version}_arm64-setup.exe`,
         },
+        "linux-x86_64-deb": {
+          signature: signatures.deb,
+          url: `${base}/HQ_${version}_amd64.deb`,
+        },
+        "linux-x86_64-appimage": {
+          signature: signatures.appimage,
+          url: `${base}/HQ_${version}_amd64.AppImage`,
+        },
+        "linux-x86_64": {
+          signature: signatures.appimage,
+          url: `${base}/HQ_${version}_amd64.AppImage`,
+        },
       },
     };
     const fetchImpl = async (url: string | URL | Request) => {
@@ -342,12 +386,9 @@ describe("atomic release asset contract", () => {
         return new Response(JSON.stringify(manifest), { status: 200 });
       }
       if (value.endsWith(".sig")) {
-        const signature = value.includes("universal")
-          ? signatures.mac
-          : value.includes("arm64")
-            ? signatures.arm64
-            : signatures.x64;
-        return new Response(signature, { status: 200 });
+        return new Response(sidecarSignature(value, signatures), {
+          status: 200,
+        });
       }
       return new Response(null, { status: 200 });
     };
@@ -364,6 +405,9 @@ describe("atomic release asset contract", () => {
       platforms: [
         "darwin-aarch64",
         "darwin-x86_64",
+        "linux-x86_64",
+        "linux-x86_64-appimage",
+        "linux-x86_64-deb",
         "windows-aarch64",
         "windows-x86_64",
       ],
@@ -382,10 +426,38 @@ describe("atomic release asset contract", () => {
       mismatchSidecar: false,
     },
     {
+      label: "missing Linux platform",
+      mutate: (manifest: ReturnType<typeof validUpdaterManifest>) => {
+        delete (
+          manifest.platforms as Partial<typeof manifest.platforms>
+        )["linux-x86_64-deb"];
+      },
+      expected: "latest.json platforms",
+      mismatchSidecar: false,
+    },
+    {
       label: "version-pinned URL drift",
       mutate: (manifest: ReturnType<typeof validUpdaterManifest>) => {
         manifest.platforms["windows-x86_64"].url =
           `${updaterBase}/HQ_x64-setup.exe`;
+      },
+      expected: "URL does not match",
+      mismatchSidecar: false,
+    },
+    {
+      label: "Linux alias URL drift",
+      mutate: (manifest: ReturnType<typeof validUpdaterManifest>) => {
+        manifest.platforms["linux-x86_64"].url =
+          `${updaterBase}/HQ_amd64.AppImage`;
+      },
+      expected: "URL does not match",
+      mismatchSidecar: false,
+    },
+    {
+      label: "deb entry pointing at the AppImage",
+      mutate: (manifest: ReturnType<typeof validUpdaterManifest>) => {
+        manifest.platforms["linux-x86_64-deb"].url =
+          `${updaterBase}/HQ_${updaterVersion}_amd64.AppImage`;
       },
       expected: "URL does not match",
       mismatchSidecar: false,
@@ -450,6 +522,18 @@ describe("atomic release asset contract", () => {
           signature: "arm64",
           url: `${base}/HQ_${version}_arm64-setup.exe`,
         },
+        "linux-x86_64-deb": {
+          signature: "deb",
+          url: `${base}/HQ_${version}_amd64.deb`,
+        },
+        "linux-x86_64-appimage": {
+          signature: "appimage",
+          url: `${base}/HQ_${version}_amd64.AppImage`,
+        },
+        "linux-x86_64": {
+          signature: "appimage",
+          url: `${base}/HQ_${version}_amd64.AppImage`,
+        },
       },
     };
     let calls = 0;
@@ -462,11 +546,13 @@ describe("atomic release asset contract", () => {
       }
       if (value.endsWith(".sig")) {
         return new Response(
-          value.includes("universal")
-            ? "mac"
-            : value.includes("arm64")
-              ? "arm64"
-              : "x64",
+          sidecarSignature(value, {
+            mac: "mac",
+            x64: "x64",
+            arm64: "arm64",
+            deb: "deb",
+            appimage: "appimage",
+          }),
           { status: 200 },
         );
       }

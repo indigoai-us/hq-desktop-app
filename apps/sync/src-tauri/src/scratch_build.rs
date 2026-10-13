@@ -185,8 +185,10 @@ mod tests {
             assert!(!active(), "a build without HQ_SCRATCH_BUILD is never a scratch build");
             assert!(import_hq_bin().is_none());
             assert!(import_scanner().is_none());
+            // `cargo test` builds no bundle, so this is a bare Linux binary.
             let linux_off = crate::updater::linux_updater_off(
                 cfg!(target_os = "linux"),
+                crate::updater::linux_installed_bundle(),
                 std::env::var("HQ_DEV_ALLOW_AUTO_UPDATE").is_ok(),
             );
             assert_eq!(
@@ -294,8 +296,13 @@ mod tests {
     #[test]
     fn this_build_answers_by_its_switch() {
         let flag = |name: &str| std::env::var(name).map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")).unwrap_or(false);
-        // Linux adds a third input (no release feed yet), off only with the opt-in.
-        let linux_off = crate::updater::linux_updater_off(cfg!(target_os = "linux"), flag("HQ_DEV_ALLOW_AUTO_UPDATE"));
+        // Linux adds a third input: a bare binary (no bundle type, as under
+        // `cargo test`) is off unless opted in; an installed bundle is on.
+        let linux_off = crate::updater::linux_updater_off(
+            cfg!(target_os = "linux"),
+            crate::updater::linux_installed_bundle(),
+            flag("HQ_DEV_ALLOW_AUTO_UPDATE"),
+        );
         assert_eq!(crate::updater::updater_disabled(), crate::updater::updater_disabled_with(
             flag("HQ_UPDATER_DISABLED") || linux_off,
             !production_bundle(),

@@ -3,8 +3,8 @@
 This repository releases the unified `HQ` Tauri app from `apps/sync`.
 
 The release workflow builds a macOS universal app/DMG, Windows MSI and NSIS
-installers for x64 and ARM64, Tauri updater artifacts, `latest.json`, and a
-GitHub Release. Verified production runs sign, notarize, and staple the macOS
+installers for x64 and ARM64, a Linux x86_64 `.deb` and AppImage, Tauri
+updater artifacts, `latest.json`, and a GitHub Release. Verified production runs sign, notarize, and staple the macOS
 artifacts and apply Azure Trusted Signing to both Windows architectures. The
 ARM64 bundle uses a checksum-verified native ARM64 Node runtime for the Recall
 SEA launcher; Recall's separate x64 agent runs through Windows on ARM's x64
@@ -476,7 +476,9 @@ Background and the full account-migration record:
 HQ ships one updater trust root for all platforms: a single signing key and
 public key. Both `apps/sync/src-tauri/tauri.conf.json` (macOS) and
 `apps/sync/src-tauri/tauri.windows.conf.json` (Windows) carry the same pubkey
-(`9DE1695B…`, the existing `hq-sync` key).
+(`9DE1695B…`, the existing `hq-sync` key). Linux builds merge
+`apps/sync/src-tauri/tauri.linux.conf.json` on top of the base config, so they
+inherit that pubkey and the same endpoints.
 
 - Stable polls
   `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json`.
@@ -489,8 +491,19 @@ public key. Both `apps/sync/src-tauri/tauri.conf.json` (macOS) and
   checker, so a debug bundle keeps the version stamped from `versions.toml`.
   Set `HQ_DEV_ALLOW_AUTO_UPDATE=1` on a debug build to exercise the updater on
   purpose. Manual "Check for updates" is unchanged.
+- On Linux the updater runs only inside an installed bundle: a `.deb` package
+  or an AppImage, detected through Tauri's bundle type at runtime. A bare
+  `hq-sync-menubar` binary (a plain `cargo build`, or the file extracted from
+  a package) never checks for updates unless `HQ_DEV_ALLOW_AUTO_UPDATE=1` is
+  set, because the updater has no way to replace it. The log says which rule
+  applied: `background update checker enabled for the installed deb bundle`
+  or `background update checker disabled (bare Linux binary ...)`.
+- A Linux build that reads a `latest.json` without a Linux platform entry
+  (every release before the Linux job landed) treats it as "no update
+  available". It logs that once per process and does not report an error.
+  Manual "Check for updates" follows the same rule.
 
-- `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the single private key matching that pubkey (the `hq-sync` macOS updater key — set it once; the macOS and Windows jobs both use it).
+- `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the single private key matching that pubkey (the `hq-sync` macOS updater key — set it once; the macOS, Windows and Linux jobs all use it).
 
 ### Non-Indigo release smoke (`HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO`)
 
@@ -560,8 +573,8 @@ The smoke script is `scripts/macos-artifact-smoke.mjs`. It writes an isolated
 log within 30 seconds plus a bundle version that matches the tag.
 
 Each release publishes one `latest.json` covering `darwin-aarch64`,
-`darwin-x86_64`, `windows-x86_64`, and `windows-aarch64`, signed with that one
-key. Stable releases are published first as a GitHub prerelease (`make_latest=false`)
+`darwin-x86_64`, `windows-x86_64`, `windows-aarch64`, `linux-x86_64-deb`,
+`linux-x86_64-appimage`, and `linux-x86_64`, signed with that one key. Stable releases are published first as a GitHub prerelease (`make_latest=false`)
 and only flipped to latest after the tag-pinned `latest.json` smoke passes
 (`gh release edit --latest --prerelease=false`). Beta and alpha stay
 prerelease / not-latest, so GitHub's `/releases/latest/` alias remains stable
@@ -646,7 +659,7 @@ Prefer `scripts/release-mark-bad.mjs` once a bad build *did* become latest
 
 Alongside the version-stamped assets, each release also publishes versionless copies for stable, marketing-friendly download links (the hq-installer pattern):
 
-- `HQ.dmg`, `HQ_x64-setup.exe`, `HQ_arm64-setup.exe` → e.g. `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ.dmg`
+- `HQ.dmg`, `HQ_x64-setup.exe`, `HQ_arm64-setup.exe`, `HQ_amd64.deb`, `HQ_amd64.AppImage` → e.g. `https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ.dmg`
 
 (The auto-updater itself uses `latest.json` with the versioned URLs; these aliases are for direct human downloads.)
 
@@ -761,7 +774,7 @@ The publish job is globally serialized across release tags. It:
 
 1. Rejects a stable rollback before native builds and rechecks stable order
    immediately before publication.
-2. Creates or resets a hidden draft and uploads the complete 15-asset set.
+2. Creates or resets a hidden draft and uploads the complete 21-asset set.
 3. Verifies the exact names, upload state, byte sizes, SHA-256 digests,
    updater-platform URLs, and detached signature sidecars.
 4. Makes the release public as a **GitHub prerelease that is not `latest`**.
@@ -804,16 +817,83 @@ The publish job attaches these assets to the GitHub Release:
 - `HQ_<version>_arm64.msi.sig` if Tauri emits an MSI updater signature
 - `HQ_<version>_arm64-setup.exe`
 - `HQ_<version>_arm64-setup.exe.sig`
+- `HQ_<version>_amd64.deb`
+- `HQ_<version>_amd64.deb.sig`
+- `HQ_<version>_amd64.AppImage`
+- `HQ_<version>_amd64.AppImage.sig`
 - `latest.json`
 
-`latest.json` contains four updater platform entries:
+plus the versionless download aliases (`HQ.dmg`, `HQ_x64-setup.exe`,
+`HQ_arm64-setup.exe`, `HQ_amd64.deb`, `HQ_amd64.AppImage`), which brings the
+product asset set to 21 files.
+
+`latest.json` contains seven updater platform entries:
 
 - `darwin-aarch64`
 - `darwin-x86_64`
 - `windows-x86_64`
 - `windows-aarch64`
+- `linux-x86_64-deb`
+- `linux-x86_64-appimage`
+- `linux-x86_64`
 
 Both macOS entries point at the universal `HQ.app.tar.gz` updater archive.
+`linux-x86_64-deb` points at the `.deb`; `linux-x86_64-appimage` and the bare
+`linux-x86_64` key both point at the AppImage. The updater plugin looks up
+`{os}-{arch}-{installer}` first and falls back to `{os}-{arch}`, so the bare
+key is the fallback for any Linux installer type the manifest does not name.
+
+## Linux artifacts (.deb and AppImage)
+
+The `linux` release job runs on `ubuntu-22.04` so the `.deb` links against
+the oldest glibc and webkit2gtk-4.1 we support. It runs on both the legacy
+and prebuilt-shell dispatch paths because Linux has no prebuilt shell; it
+builds the UI itself through Tauri's `beforeBuildCommand`.
+
+- Build command: `pnpm tauri build --bundles deb appimage --config
+  src-tauri/tauri.linux.conf.json --config "$TAURI_LINUX_RELEASE_CONFIG"`.
+  The checked-in `tauri.linux.conf.json` keeps `createUpdaterArtifacts: false`
+  so local builds stay unsigned; the job writes a release overlay under
+  `$RUNNER_TEMP` that turns it on and adds the stamped `version.json` to the
+  bundle resources.
+- Both bundles carry the UI and `version.json` under `usr/lib/HQ/` (installed
+  path `/usr/lib/HQ/ui`; inside a mounted AppImage the same relative layout
+  under the mount point). The job fails if either bundle is missing
+  `usr/lib/HQ/ui/index.html` or `usr/lib/HQ/version.json`.
+- Signing: Tauri signs both bundles with `TAURI_SIGNING_PRIVATE_KEY` and
+  emits `.deb.sig` and `.AppImage.sig` sidecars. The job fails if either
+  signature is missing. There is no Linux code signing beyond the updater
+  signature.
+- AppImage tooling: `linuxdeploy` and `appimagetool` are downloaded by the
+  Tauri CLI; the job installs `libfuse2`, `patchelf`, `file`,
+  `desktop-file-utils` and `xdg-utils` (the bundler shells out to `xdg-mime`)
+  and sets `APPIMAGE_EXTRACT_AND_RUN=1` so the tools run
+  without FUSE on the runner.
+- Artifact: `hq-linux-x86_64-unknown-linux-gnu` with
+  `HQ_<version>_amd64.deb`, `HQ_<version>_amd64.AppImage` and their `.sig`
+  files. The publish job downloads it next to the macOS and Windows artifacts.
+- Sentry debug files are not uploaded for Linux yet; the Linux job builds with
+  the same Sentry DSN env as the other platforms but skips the debug-file step.
+
+How a Linux update installs:
+
+- `.deb` installs: the updater downloads the new `.deb`, verifies its
+  signature, then runs `dpkg -i` with privileges. It tries `pkexec` first,
+  so the user sees the system (polkit) password prompt during the update;
+  if that fails it asks for the password through `zenity` or `kdialog` and
+  runs `sudo`, and as a last resort runs plain `sudo`. If every path fails
+  the update is reported as failed and the app keeps running the current
+  version; the next check retries.
+- AppImage: the updater downloads the new AppImage, verifies its signature and
+  replaces the running AppImage file in place, then restarts. The AppImage
+  path must be writable by the user.
+- A manifest without any Linux entry (releases older than the Linux job) is
+  treated as "no update available" and logged once.
+
+Local simulation of the job lives in the Indigo company scripts
+(`companies/indigo/scripts/hq-desktop-linux/hq-desktop-linux.sh`): build in
+the container with a throwaway key from `pnpm tauri signer generate`, never
+with the release key.
 
 ## Prebuilt shell (ci/prebuilt-shell)
 

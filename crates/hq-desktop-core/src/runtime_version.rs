@@ -355,6 +355,23 @@ mod tests {
     }
 
     #[test]
+    fn linux_resources_dir_resolves_inside_a_mounted_appimage() {
+        // AppImage layout once mounted: /tmp/.mount_HQxxxx/usr/bin/<exe> with
+        // the bundle resources in /tmp/.mount_HQxxxx/usr/lib/<productName>,
+        // the same `../lib/<productName>` rule as the installed .deb.
+        let root = scratch("linux-appimage").join(".mount_HQabc123");
+        let exe = root.join("usr").join("bin").join("hq-sync-menubar");
+        let lib = root.join("usr").join("lib").join("HQ");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(lib.join("ui")).unwrap();
+        assert_eq!(
+            resources_dir_from_exe_on(&exe, "HQ", HostOs::Linux),
+            Some(lib)
+        );
+        cleanup(root.parent().unwrap());
+    }
+
+    #[test]
     fn linux_resources_dir_ignores_an_empty_product_name() {
         let root = scratch("linux-no-name");
         let exe = root.join("usr").join("bin").join("hq-sync-menubar");
