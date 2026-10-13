@@ -989,6 +989,7 @@ fn main() {
             commands::desktop_alt::get_company_crm_projection_vault,
             commands::desktop_alt::get_company_file_tree,
             commands::desktop_alt::get_company_file_content,
+            commands::desktop_alt::append_brief_log,
             commands::desktop_alt::get_authorized_file_preview,
             commands::desktop_alt::reveal_authorized_file,
             commands::desktop_alt::reveal_hq_root,
