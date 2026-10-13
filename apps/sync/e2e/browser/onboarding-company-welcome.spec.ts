@@ -61,11 +61,16 @@ async function expectCentred(page: Page, parts: string[], bottomSelector: string
   expect(Math.abs(panel.top - (viewport.height - panel.bottom))).toBeLessThanOrEqual(2);
 }
 
-async function buttonGroupCentre(page: Page, actions: string): Promise<number> {
-  const buttons = page.locator(`${actions} .btn`);
-  const first = (await buttons.first().boundingBox())!;
-  const last = (await buttons.last().boundingBox())!;
-  return (first.x + last.x + last.width) / 2;
+/** Horizontal centre of every button in the group ("Skip for now" stacks under the main button). */
+async function buttonCentres(page: Page, actions: string): Promise<number[]> {
+  const centres = await page.locator(`${actions} .btn`).evaluateAll((buttons) =>
+    buttons.map((button) => {
+      const rect = button.getBoundingClientRect();
+      return rect.left + rect.width / 2;
+    }),
+  );
+  expect(centres.length).toBeGreaterThanOrEqual(2);
+  return centres;
 }
 
 test('the company step comes after the setup explainers and before "Open HQ Desktop"', async ({ page }) => {
@@ -83,6 +88,10 @@ test('the company step comes after the setup explainers and before "Open HQ Desk
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await page.getByTestId('onboarding-company-create').click();
   await page.getByTestId('onboarding-plan-choose-starter').click();
+  // The step's own invite and "<company> is ready." screens come next, still before the ready scene.
+  await page.getByTestId('onboarding-company-invite-skip').click();
+  await expect(page.locator('.scene[data-scene="ready"]')).not.toHaveClass(/\bon\b/);
+  await page.getByTestId('onboarding-company-ready-continue').click();
   // Then the ready screen, with the install still running.
   await expect(page.locator('.scene[data-scene="ready"]')).toHaveClass(/\bon\b/);
 });
@@ -97,13 +106,15 @@ for (const size of SIZES) {
 
     await expectCentred(
       page,
-      ['.scene.on [data-scene-heading]', '.scene.on .follow-on > .body', 'form.company-form'],
+      ['.scene.on [data-scene-heading]', '.scene.on .follow-on .cs-pane > .body', 'form.cs-form'],
       '[data-testid="onboarding-company-actions"]',
     );
-    expect(Math.abs((await buttonGroupCentre(page, '[data-testid="onboarding-company-actions"]')) - size.width / 2)).toBeLessThanOrEqual(1);
+    for (const buttonCentre of await buttonCentres(page, '[data-testid="onboarding-company-actions"]')) {
+      expect(Math.abs(buttonCentre - size.width / 2)).toBeLessThanOrEqual(1);
+    }
     // The line under the heading is no wider than the form column.
-    expect((await box(page, '.scene.on .follow-on > .body')).width).toBeLessThanOrEqual(
-      (await box(page, 'form.company-form')).width,
+    expect((await box(page, '.scene.on .follow-on .cs-pane > .body')).width).toBeLessThanOrEqual(
+      (await box(page, 'form.cs-form')).width,
     );
 
     // Typing and moving through the fields (focus, caret) leaves it in place.
@@ -112,7 +123,7 @@ for (const size of SIZES) {
     await page.keyboard.press('Tab');
     await expectCentred(
       page,
-      ['.scene.on [data-scene-heading]', 'form.company-form'],
+      ['.scene.on [data-scene-heading]', 'form.cs-form'],
       '[data-testid="onboarding-company-actions"]',
     );
 
@@ -120,7 +131,7 @@ for (const size of SIZES) {
     await page.getByTestId('onboarding-plan-choose-starter').waitFor();
     await expectCentred(
       page,
-      ['.scene.on [data-scene-heading]', '.scene.on .follow-on > .body', '[data-testid="onboarding-plan-options"]', '.plan-custom'],
+      ['.scene.on [data-scene-heading]', '.scene.on .follow-on .cs-pane > .body', '[data-testid="onboarding-plan-options"]', '.plan-custom'],
       '.plan-custom',
     );
     // Both cards side by side at the welcome window's sizes, equal in height,
@@ -155,11 +166,11 @@ test('stays centred when the welcome window is resized on the company step', asy
   for (const size of [SIZES[1]!, SIZES[2]!, SIZES[0]!]) {
     await page.setViewportSize(size);
     await expect
-      .poll(async () => Math.abs(centre(await box(page, 'form.company-form')) - size.width / 2))
+      .poll(async () => Math.abs(centre(await box(page, 'form.cs-form')) - size.width / 2))
       .toBeLessThanOrEqual(1);
     await expectCentred(
       page,
-      ['.scene.on [data-scene-heading]', '.scene.on .follow-on > .body', 'form.company-form'],
+      ['.scene.on [data-scene-heading]', '.scene.on .follow-on .cs-pane > .body', 'form.cs-form'],
       '[data-testid="onboarding-company-actions"]',
     );
   }
