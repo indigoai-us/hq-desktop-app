@@ -13,6 +13,7 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { meetingCanvasDoor, meetingsSidepaneDoor } from "./lazy-doors.js";
 import { loadOutpost } from "./outpost-lazy.js";
+import { loadBrief } from "./brief-lazy.js";
 import { loadPersonalRail } from "./personal-rail-lazy.js";
 import { loadTelemetry } from "./telemetry-lazy.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
@@ -158,6 +159,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     await mountShell(telemetryAdapter());
     expect(railIds()).toEqual([
       "home",
+      "brief",
       "meetings",
       "more-companies",
       "library",
@@ -210,6 +212,16 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(current()).toBe("meetings");
     expect(host.querySelector('[data-testid="meetings-dek"]')).not.toBeNull();
     await lazyBodiesLoaded(...meetingsBodies);
+  });
+
+  it("opens the Daily Brief through its lazy host, with no side pane", async () => {
+    await mountShell();
+    click("rail-brief");
+    await settle();
+    expect(host.querySelector('[data-testid="brief-host"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
+    expect(current()).toBe("brief");
+    await lazyBodiesLoaded(loadBrief);
   });
 
   it("opens the Outpost page through its lazy host instead of the placeholder", async () => {
@@ -364,6 +376,10 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
       );
       await settle();
     };
+    // Daily Brief takes no number (owner call pending), so every shortcut
+    // keeps the number it had before the brief joined the rail.
+    const brief = host.querySelector('[data-testid="rail-brief"]')!;
+    expect(brief.getAttribute("aria-keyshortcuts")).toBeNull();
     await press("2");
     expect(current()).toBe("meetings");
     await press("4");

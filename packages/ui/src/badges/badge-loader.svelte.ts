@@ -16,7 +16,7 @@
  * bot, has no badges here; names are never used to find someone.
  */
 import type { BadgesPayload, IdentityApi } from "@hq/platform";
-import { BADGE_BY_ID, type BadgeTier, type EarnedBadge } from "./badge-catalog.js";
+import { BADGE_BY_ID, earnedTier, type EarnedBadge } from "./badge-catalog.js";
 import {
   hasBadgeSource,
   setBadgeProgressSource,
@@ -53,10 +53,6 @@ export function badgeUid(subject: BadgeSubject): string | null {
   return PERSON_UID.test(uid) ? uid : null;
 }
 
-function levelCount(id: string): number {
-  return BADGE_BY_ID[id]?.levels.split(" · ").length ?? 0;
-}
-
 /**
  * The earned badges the app can draw. Unknown ids are dropped. A single-level
  * badge (Founding Member, Founder, OG) shows at its own tier whatever the
@@ -68,13 +64,8 @@ export function earnedFromPayload(payload: BadgesPayload): EarnedBadge[] {
   const out: EarnedBadge[] = [];
   for (const row of payload.badges) {
     const def = BADGE_BY_ID[row.id];
-    if (!def) continue;
-    let tier: BadgeTier;
-    const levels = levelCount(row.id);
-    if (levels < 3) tier = def.tier;
-    else if (row.tier === 1 || row.tier === 2 || row.tier === 3) tier = row.tier;
-    else if (row.tier === "L" && levels >= 4) tier = "L";
-    else continue;
+    const tier = def ? earnedTier(def, row.tier) : null;
+    if (tier === null) continue;
     out.push({ id: row.id, tier, earnedAt: row.earnedAt });
   }
   return out;

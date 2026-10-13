@@ -271,7 +271,9 @@ describe('embedded HQ Work authoritative settings', () => {
       },
     });
     await tick();
-    expect(host.querySelector('[data-testid="settings-company-sync-unavailable"]')?.textContent).toContain('Company membership comes from your signed-in account');
+    // Per-company download choice is the account-owned Sync all / Sync shared
+    // mode (get_sync_mode / set_sync_mode), never a localStorage switch.
+    expect(host.textContent).toContain('Sync shared downloads only folders shared with you');
     expect(host.querySelectorAll('[role="switch"]')).toHaveLength(0);
     expect(host.textContent).toContain('Acme');
     expect(host.textContent).not.toContain('Former company');

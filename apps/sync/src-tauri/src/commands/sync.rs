@@ -76,7 +76,7 @@ use crate::commands::vault_client::VaultClient;
 use crate::events::{
     SyncAllCompleteEvent, SyncAuthErrorEvent, SyncCompanyProvisionedEvent, SyncErrorEvent,
     SyncEvent, SyncProgressEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR,
-    EVENT_SYNC_COMPANY_PROVISIONED, EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT,
+    EVENT_SYNC_COMPANY_PROVISIONED, EVENT_SYNC_COMPLETE,
     EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN,
     EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PLAN_LIMIT, EVENT_SYNC_PROGRESS,
     EVENT_SYNC_SETUP_NEEDED,
@@ -1296,15 +1296,26 @@ pub fn parse_sync_scope(company_slug: Option<String>) -> Result<SyncRunScope, St
             if slug == "personal" {
                 return Err("personal vault cannot be company-scoped".to_string());
             }
-            if !slug
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            // A leading hyphen would read as an option to the runner or the CLI.
+            if slug.starts_with('-')
+                || !slug
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
             {
                 return Err(format!("invalid company slug: {slug}"));
             }
             Ok(SyncRunScope::Company(slug.to_string()))
         }
     }
+}
+
+/// The company slug a daemon Sync Now passes to `hq daemon sync now`, checked
+/// by the same rules as a legacy run so both host modes accept the same input.
+pub fn daemon_sync_company_slug(company_slug: Option<String>) -> Result<Option<String>, String> {
+    Ok(match parse_sync_scope(company_slug)? {
+        SyncRunScope::All => None,
+        SyncRunScope::Company(slug) => Some(slug),
+    })
 }
 
 /// Inject `HQ_SYNC_SKIP_COMPANIES` for All-scope runs so the runner drops
@@ -1636,11 +1647,11 @@ fn handle_sync_line<R: tauri::Runtime>(
                 None => Ok(()),
             }
         }
-        // One row per conflicted path for the shell's conflict list. The
-        // aggregate `complete.conflicts` count still drives the journal and
-        // the banner; this is the per-file detail the resolve actions need,
-        // and it carries no counter of its own so the two can't disagree.
-        SyncEvent::Conflict(payload) => app.emit(EVENT_SYNC_CONFLICT, payload.clone()),
+        // Read (it refreshes the watchdog) but never forwarded: parked
+        // conflict copies have no desktop surface (owner decision 2026-10-13).
+        // The aggregate `complete.conflicts` count still reaches the journal
+        // for diagnostics.
+        SyncEvent::Conflict(_) => Ok(()),
         // A parsed no-op by design: returning true from this handler refreshes
         // the process watchdog, while keeping local journal maintenance out of
         // file-transfer totals, Recent Changes, and frontend progress.
@@ -2629,11 +2640,12 @@ async fn start_sync_inner(
     // Now, sync-on-launch, and notification retries — at the single Rust choke
     // point so no surface can start a sync while the titlebar says Cloud Off.
     start_sync_gates()?;
+    let company_slug = daemon_sync_company_slug(company_slug)?;
     let host_phase = crate::commands::hq_daemon_host::resolved_phase_for_command().await?;
     if let Some(result) = crate::commands::hq_daemon_host::daemon_sync_now_for_phase(
         host_phase,
         company_slug.as_deref(),
-        crate::commands::hq_daemon_host::request_daemon_sync_now,
+        |company_slug| crate::commands::hq_daemon_host::request_daemon_sync_now(company_slug),
     ) {
         return result;
     }
@@ -3966,13 +3978,12 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 2);
     }
 
-    /// A runner `conflict` line must reach the renderer as `sync:conflict`
-    /// with the conflicted path. The shell builds its per-file conflict rows
-    /// (Keep local / Keep cloud / Open in editor) from this stream; before the
-    /// event was modelled, the line was dropped at the parse seam and the rows
-    /// had nothing to render.
+    /// Owner decision 2026-10-13: a parked conflict copy has no desktop
+    /// surface. A manual Sync Now still reads the runner's `conflict` line (it
+    /// is a real protocol record and refreshes the watchdog) but never hands it
+    /// to a window.
     #[test]
-    fn handle_sync_line_emits_a_per_file_conflict_event() {
+    fn handle_sync_line_never_forwards_a_conflict_line_to_the_window() {
         use std::sync::Arc;
         use tauri::Listener;
 
@@ -3982,13 +3993,10 @@ mod tests {
         let totals = Mutex::new(RunTotals::default());
         let phase = Mutex::new(RunnerPhaseContext::default());
 
-        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen = Arc::new(Mutex::new(0usize));
         let seen_w = seen.clone();
-        handle.listen(EVENT_SYNC_CONFLICT, move |event| {
-            seen_w
-                .lock()
-                .unwrap()
-                .push(serde_json::from_str(event.payload()).unwrap());
+        handle.listen("sync:conflict", move |_| {
+            *seen_w.lock().unwrap() += 1;
         });
 
         let folder = hq_folder.path().to_str().unwrap();
@@ -3999,15 +4007,7 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(30));
 
-        let seen = seen.lock().unwrap();
-        assert_eq!(
-            seen.len(),
-            1,
-            "exactly one conflict event per conflicted path"
-        );
-        assert_eq!(seen[0]["path"], "knowledge/readme.md");
-        assert_eq!(seen[0]["company"], "indigo");
-        assert_eq!(seen[0]["canAutoResolve"], false);
+        assert_eq!(*seen.lock().unwrap(), 0);
     }
 
     /// hard-stop-readiness US-019: a manual "Sync Now" plan-limit notice is
@@ -4183,6 +4183,21 @@ mod tests {
         assert!(parse_sync_scope(Some(String::new())).is_err());
         assert!(parse_sync_scope(Some("personal".to_string())).is_err());
         assert!(parse_sync_scope(Some("Bad_Slug".to_string())).is_err());
+    }
+
+    #[test]
+    fn daemon_sync_now_gets_the_validated_company_slug() {
+        assert_eq!(daemon_sync_company_slug(None), Ok(None));
+        assert_eq!(
+            daemon_sync_company_slug(Some("  indigo  ".to_string())),
+            Ok(Some("indigo".to_string()))
+        );
+        for rejected in ["", "   ", "personal", "Bad_Slug", "--company"] {
+            assert!(
+                daemon_sync_company_slug(Some(rejected.to_string())).is_err(),
+                "{rejected:?} must not reach the daemon command"
+            );
+        }
     }
 
     #[test]

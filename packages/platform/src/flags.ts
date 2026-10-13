@@ -128,6 +128,15 @@ export const VISUAL_FIRST_RUN_FLAG = "desktop.visual-first-run";
  */
 export const FIRST_RUN_FOUND_APPS_FLAG = "desktop.first-run-found-apps-v1";
 /**
+ * Per-bot integration control (owner decision dec-20261012191758-lvn1):
+ * when on, the agent and local-bot detail panels show a per-connection
+ * BotIntegrationsSection with on, on-everyone, on-admin, off, or read-only
+ * state and (for a manager) a toggle. Registered default off; a missing or
+ * unreadable value keeps today's panel.
+ */
+export const BOT_INTEGRATION_CONTROL_FLAG =
+  "desktop.bot-integration-control-v1";
+/**
  * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
  * Targeted to one company, so it must be read with that company's uid:
  * `hasFeature(DESKTOP_AGENT_CREATION_FLAG, { companyUid })`. A person-only
@@ -196,6 +205,8 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,
   [PERSONAL_TRANSCRIPTS_FLAG]: PERSONAL_TRANSCRIPTS_FLAG,
   [VISUAL_FIRST_RUN_FLAG]: VISUAL_FIRST_RUN_FLAG,
+  [FIRST_RUN_FOUND_APPS_FLAG]: FIRST_RUN_FOUND_APPS_FLAG,
+  [BOT_INTEGRATION_CONTROL_FLAG]: BOT_INTEGRATION_CONTROL_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
   [RAIL_TELEMETRY_FLAG]: RAIL_TELEMETRY_FLAG,

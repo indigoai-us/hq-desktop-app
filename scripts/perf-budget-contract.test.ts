@@ -386,6 +386,14 @@ const SESSIONS_HIDDEN_POLL_FLOOR_SECS = 120;
  */
 const FAST_POLLER_ALLOWLIST = new Map<string, string>([
   [
+    "packages/ui/src/brief/BriefRunsPage.svelte",
+    "1s clock behind the visible 'working for 42s' and 'still working' lines " +
+      "of the Create brief loader. Not a long-lived poller: the $effect returns " +
+      "early unless a brief run is in flight and clears the interval the moment " +
+      "the run is ready, failed or dismissed, so it lives for the length of one " +
+      "run (about a minute). It writes one timestamp per tick.",
+  ],
+  [
     "packages/ui/src/common/ReadLoader.svelte",
     "4s rotation of the waiting line in the shared loader (BLANK-3, owner " +
       "2026-10-03). Not a long-lived poller: it starts only after a read has " +

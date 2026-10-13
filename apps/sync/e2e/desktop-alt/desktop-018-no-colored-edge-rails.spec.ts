@@ -261,18 +261,13 @@ describe('DESKTOP-018: no colored edge rails', () => {
     );
   });
 
-  it('keeps conflict and meeting status rows open across every semantic state', () => {
-    const conflicts = readFileSync(
-      join(SOURCE_ROOT, 'components/ConflictRow.svelte'),
-      'utf8',
-    );
+  it('keeps meeting status rows open across every semantic state', () => {
     const meetings = readFileSync(
       join(SOURCE_ROOT, 'components/MeetingsWindow.svelte'),
       'utf8',
     );
 
     for (const [source, selector, label] of [
-      [conflicts, '.conflict-row', 'conflict row'],
       [meetings, '.active-row', 'active meeting row'],
     ] as const) {
       const block = rule(source, selector);
@@ -285,8 +280,6 @@ describe('DESKTOP-018: no colored edge rails', () => {
     }
 
     for (const [source, selector] of [
-      [conflicts, '.conflict-row.resolved'],
-      [conflicts, '.conflict-row.error'],
       [meetings, ".active-row[data-state='recording']"],
       [meetings, ".active-row[data-state='error']"],
     ] as const) {

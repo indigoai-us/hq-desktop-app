@@ -32,9 +32,13 @@ export function topBadgeFor(subject: BadgeSubject): ResolvedBadge | null {
   return topBadge(badgesFor(subject));
 }
 
-/** The mark's size for a picture of `avatar` px: about 40% of it, never under 9px or over 20px. */
+/**
+ * The mark's size for a picture of `avatar` px: about 40% of it, never under
+ * 12px or over 20px. 12px is the smallest the icon inside the ring still
+ * reads at (owner pick 2026-10-12, option B).
+ */
 export function tierMarkPx(avatar: number): number {
-  return Math.round(Math.min(20, Math.max(9, avatar * 0.4)));
+  return Math.round(Math.min(20, Math.max(12, avatar * 0.4)));
 }
 
 /**

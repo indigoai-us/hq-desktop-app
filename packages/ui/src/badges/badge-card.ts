@@ -10,7 +10,7 @@
  * card text in Geist / Geist Mono.
  */
 
-import { BADGES, TIER_NAME, type BadgeTier, type ResolvedBadge } from "./badge-catalog.js";
+import { BADGES, TIER_NAME, earnableTiers, isAwarded, type BadgeDef, type BadgeTier, type ResolvedBadge } from "./badge-catalog.js";
 
 /** Card background, the same in the light and the dark app theme. */
 export const CARD_BG = "#17161A";
@@ -23,9 +23,21 @@ export const CARD_BASIS_PX = 280;
 
 const ROMAN: Readonly<Record<string, string>> = { 1: "I", 2: "II", 3: "III" };
 
-/** "Tier II · Silver", or "Legendary". */
-export function cardTierLabel(tier: BadgeTier): string {
-  return tier === "L" ? TIER_NAME.L : `Tier ${ROMAN[tier]} · ${TIER_NAME[tier]}`;
+/**
+ * The tier as a Roman numeral: "I" to "III", and "IV" for Legendary on a
+ * badge that climbs to it as a fourth level (Core Builder). Null for the
+ * single-level Legendary badges (OG, Captain, Patient Zero), which have no
+ * levels to count (owner review 2026-10-12).
+ */
+export function tierNumeral(def: BadgeDef, tier: BadgeTier): string | null {
+  if (tier !== "L") return ROMAN[tier];
+  return earnableTiers(def).length >= 4 ? "IV" : null;
+}
+
+/** "Tier II · Silver", "Tier IV · Legendary" for Core Builder's fourth level, or "Legendary". */
+export function cardTierLabel(def: BadgeDef, tier: BadgeTier): string {
+  const n = tierNumeral(def, tier);
+  return n ? `Tier ${n} · ${TIER_NAME[tier]}` : TIER_NAME.L;
 }
 
 /** The badge's place in the set: "No. 004 / 016". */
@@ -47,7 +59,8 @@ export function cardDate(iso: string): string {
 
 /** What a screen reader hears for the card: name, tier, what earns it, when. */
 export function cardAccessibleLabel(badge: ResolvedBadge): string {
-  return `${badge.def.name} card, ${TIER_NAME[badge.tier]}. ${badge.def.crit}. Earned ${cardDate(badge.earnedAt)}.`;
+  const when = `${isAwarded(badge.def) ? "Awarded" : "Earned"} ${cardDate(badge.earnedAt)}`;
+  return `${badge.def.name} card, ${TIER_NAME[badge.tier]}. ${badge.def.crit}. ${when}.`;
 }
 
 /** Reveal timing (ms): the glow comes up, then the card turns over from its back to its face. */

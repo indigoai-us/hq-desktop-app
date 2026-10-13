@@ -1,0 +1,3117 @@
+{
+ "generated_at": "2026-10-08T23:35:14+00:00",
+ "company": "indigo",
+ "window": {
+  "from": "2026-10-04",
+  "to": "2026-10-08",
+  "today": "2026-10-09"
+ },
+ "days": {
+  "2026-10-04": {
+   "sessions": 1,
+   "other_sessions": 3,
+   "meetings": 1,
+   "merged": 2,
+   "opened": 5,
+   "unknown_sessions": 254
+  },
+  "2026-10-05": {
+   "sessions": 1,
+   "other_sessions": 0,
+   "meetings": 11,
+   "merged": 3,
+   "opened": 8
+  },
+  "2026-10-06": {
+   "sessions": 3,
+   "other_sessions": 0,
+   "meetings": 7,
+   "merged": 21,
+   "opened": 22
+  },
+  "2026-10-07": {
+   "sessions": 1,
+   "other_sessions": 0,
+   "meetings": 5,
+   "merged": 27,
+   "opened": 42
+  },
+  "2026-10-08": {
+   "sessions": 2,
+   "other_sessions": 1,
+   "meetings": 6,
+   "merged": 34,
+   "opened": 30,
+   "unknown_sessions": 3
+  }
+ },
+ "sessions": [
+  {
+   "date": "2026-10-04",
+   "time": "00:22Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "00:25Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "00:37Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "00:39Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "00:49Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "01:15Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "01:15Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "01:24Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "01:34Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "01:39Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "01:44Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "01:54Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "01:57Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "01:57Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:00Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:03Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:05Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:07Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:09Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:12Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:12Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:15Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:17Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:19Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:20Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:25Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:34Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:37Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:41Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:42Z",
+   "company": "other",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:45Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:50Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:50Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:55Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "02:55Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:00Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:02Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:05Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:08Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:09Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:12Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:13Z",
+   "company": "other",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:15Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:19Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:21Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:24Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:29Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:29Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:29Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:35Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:36Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:38Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:43Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:43Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:47Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:52Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:53Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "03:54Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:04Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:04Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:06Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:12Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:15Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:17Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:20Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:28Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:31Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:37Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:43Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:46Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:49Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "04:54Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:04Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:05Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:10Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:10Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:17Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:17Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:22Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:23Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:25Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:31Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:36Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:44Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:47Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:48Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:48Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:52Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:53Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:56Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "05:59Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:03Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:05Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:08Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:11Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:11Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:13Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:14Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:19Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:19Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:23Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:27Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:32Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:32Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:35Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:38Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:38Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:39Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:43Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:44Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:45Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:48Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:49Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:50Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:51Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:55Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:58Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "06:59Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:02Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:05Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:08Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:11Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:14Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:14Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:17Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:21Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:23Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:28Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:29Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:34Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:36Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:42Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:42Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:43Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:44Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:46Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:48Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:49Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:51Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:54Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "07:57Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:02Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:02Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:06Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:07Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:11Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:17Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:22Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:23Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:28Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:35Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:37Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:43Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:43Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:48Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:49Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:56Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "08:57Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:02Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:04Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:07Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:09Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:11Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:19Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:19Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:21Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:23Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:26Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:28Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:32Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:33Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:39Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:40Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:40Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:44Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:45Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:47Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:50Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:50Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:52Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:57Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:57Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "09:57Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:00Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:04Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:07Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:07Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:11Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:12Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:17Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:20Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:24Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:30Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:30Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:33Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:38Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:45Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:45Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:49Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:53Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:54Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "10:59Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:00Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:01Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:04Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:07Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:11Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:12Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:15Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:16Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:21Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:22Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:26Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:31Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:35Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:35Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:39Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:46Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:54Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "11:57Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:00Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:04Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:10Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:12Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:20Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:24Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:30Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:32Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:35Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:38Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:39Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:41Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:43Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:46Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:50Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:55Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:55Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "12:57Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:01Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:05Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:06Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:08Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:12Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:13Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:15Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:21Z",
+   "company": "other",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:23Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:32Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:42Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:45Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:54Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:56Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "13:59Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "14:06Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "14:10Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "14:54Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "15:03Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-04",
+   "time": "19:51Z",
+   "company": "indigo",
+   "title": "hq-pro cycle time: US-001 merged, deploy watch, lane results"
+  },
+  {
+   "date": "2026-10-05",
+   "time": "15:59Z",
+   "company": "indigo",
+   "title": "hq-pro cycle time: US-012 live, remaining stories built, five-deploy wait"
+  },
+  {
+   "date": "2026-10-06",
+   "time": "01:36Z",
+   "company": "indigo",
+   "title": "hq-pro cycle time: core 1.120.0 shipped via 1.121.0; vault-api route cap blocks deploys"
+  },
+  {
+   "date": "2026-10-06",
+   "time": "01:51Z",
+   "company": "indigo",
+   "title": "hq-pro cycle time: route-cap outage, fleet-route removal PR in flight"
+  },
+  {
+   "date": "2026-10-06",
+   "time": "06:27Z",
+   "company": "indigo",
+   "title": "hq-pro cycle time: outage closed, US-005 and US-006 live"
+  },
+  {
+   "date": "2026-10-07",
+   "time": "22:37Z",
+   "company": "indigo",
+   "title": "HP-4 policy triggers done; stack landed"
+  },
+  {
+   "date": "2026-10-08",
+   "time": "13:40Z",
+   "company": "indigo",
+   "title": "HP-11 bot parity measured; staging merges 1173/1177/1174; Ace box run"
+  },
+  {
+   "date": "2026-10-08",
+   "time": "14:22Z",
+   "company": "indigo",
+   "title": "PR 1201 self-improving handoff: pipeline run, review, fixes"
+  },
+  {
+   "date": "2026-10-08",
+   "time": "14:30Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-08",
+   "time": "14:48Z",
+   "company": "other",
+   "title": null
+  },
+  {
+   "date": "2026-10-08",
+   "time": "19:03Z",
+   "company": "unknown",
+   "title": null
+  },
+  {
+   "date": "2026-10-08",
+   "time": "19:46Z",
+   "company": "unknown",
+   "title": null
+  }
+ ],
+ "meeting_signals": [
+  {
+   "meeting": "TG and Amir Torabi + Jacob Posel",
+   "start": "2026-10-08T14:30:00-04:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 3
+   }
+  },
+  {
+   "meeting": "Jacob / Amir",
+   "start": "2026-10-08T13:00:00-04:00",
+   "counts": {
+    "summary": 1,
+    "decision": 7,
+    "action_item": 6
+   }
+  },
+  {
+   "meeting": "Don Ranns and Jacob Posel",
+   "start": "2026-10-08T11:00:00-07:00",
+   "counts": {
+    "summary": 1,
+    "participant_contribution": 3,
+    "key_point": 8,
+    "decision": 3,
+    "action_item": 6,
+    "risk": 3
+   }
+  },
+  {
+   "meeting": "HQ <> Sales Sync",
+   "start": "2026-10-08T11:00:00-04:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 2,
+    "decision": 3,
+    "action_item": 9,
+    "participant_contribution": 4
+   }
+  },
+  {
+   "meeting": "HQ Dev Standup",
+   "start": "2026-10-08T11:00:00-04:00",
+   "counts": {
+    "summary": 2,
+    "decision": 3
+   }
+  },
+  {
+   "meeting": "Zach and Jeff / Corey Epstein - HQ Onboarding",
+   "start": "2026-10-08T10:00:00-06:00",
+   "counts": {
+    "summary": 1,
+    "decision": 3
+   }
+  },
+  {
+   "meeting": "Matt Wahl and Jacob Posel",
+   "start": "2026-10-07T14:00:00-04:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 4
+   }
+  },
+  {
+   "meeting": "HQ Training Series: How to Run a Project From Scope to Handoff",
+   "start": "2026-10-07T11:00:00-06:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 3
+   }
+  },
+  {
+   "meeting": "HQ Dev Standup",
+   "start": "2026-10-07T11:00:00-04:00",
+   "counts": {
+    "summary": 1,
+    "decision": 1
+   }
+  },
+  {
+   "meeting": "HQ GTM Sync",
+   "start": "2026-10-07T10:30:00-06:00",
+   "counts": {
+    "summary": 1,
+    "decision": 1
+   }
+  },
+  {
+   "meeting": "Hunter Durham / Corey Epstein - HQ Advisory",
+   "start": "2026-10-07T10:00:00-06:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 2
+   }
+  },
+  {
+   "meeting": "Cut30 Live Session",
+   "start": "2026-10-06T21:00:00-04:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 10,
+    "action_item": 2,
+    "commitment": 1,
+    "decision": 1,
+    "risk": 1
+   }
+  },
+  {
+   "meeting": "Jordan Menard / Corey Epstein - 15min Meeting",
+   "start": "2026-10-06T13:15:00-06:00",
+   "counts": {
+    "summary": 1,
+    "risk": 1
+   }
+  },
+  {
+   "meeting": "Kyle Heidt and Jacob Posel",
+   "start": "2026-10-06T12:30:00-04:00",
+   "counts": {
+    "summary": 1,
+    "decision": 4
+   }
+  },
+  {
+   "meeting": "Jacob/Corey Standup",
+   "start": "2026-10-06T09:30:00-06:00",
+   "counts": {
+    "summary": 1,
+    "decision": 5
+   }
+  },
+  {
+   "meeting": "Aji Ong and Jacob Posel",
+   "start": "2026-10-06T09:30:00-04:00",
+   "counts": {
+    "summary": 1,
+    "decision": 5,
+    "action_item": 4,
+    "key_point": 5,
+    "commitment": 2,
+    "risk": 3,
+    "question": 2
+   }
+  },
+  {
+   "meeting": "Sam and Jacob Posel",
+   "start": "2026-10-06T09:00:00-04:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 3
+   }
+  },
+  {
+   "meeting": "HQ Dev Standup",
+   "start": "2026-10-06T08:00:00-07:00",
+   "counts": {
+    "summary": 1
+   }
+  },
+  {
+   "meeting": "Live Test 3",
+   "start": "2026-10-05T21:30:00-07:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 2,
+    "action_item": 1,
+    "participant_contribution": 1,
+    "risk": 1
+   }
+  },
+  {
+   "meeting": "Live Test 2",
+   "start": "2026-10-05T21:00:00-07:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 3
+   }
+  },
+  {
+   "meeting": "LAUNCH Portfolio Pods!",
+   "start": "2026-10-05T14:00:00-06:00",
+   "counts": {
+    "summary": 1
+   }
+  },
+  {
+   "meeting": "david charles and Jacob Posel",
+   "start": "2026-10-05T14:00:00-04:00",
+   "counts": {
+    "summary": 1,
+    "decision": 1,
+    "action_item": 1,
+    "key_point": 1,
+    "participant_contribution": 2,
+    "risk": 1
+   }
+  },
+  {
+   "meeting": "Will and Jacob Posel",
+   "start": "2026-10-05T13:00:00-04:00",
+   "counts": {
+    "summary": 1,
+    "decision": 3
+   }
+  },
+  {
+   "meeting": "Corey<>Rich",
+   "start": "2026-10-05T12:45:00-06:00",
+   "counts": {
+    "summary": 1,
+    "decision": 4
+   }
+  },
+  {
+   "meeting": "HQ GTM Sync",
+   "start": "2026-10-05T10:30:00-06:00",
+   "counts": {
+    "summary": 1
+   }
+  },
+  {
+   "meeting": "Mark Sider  and Jacob Posel",
+   "start": "2026-10-05T10:00:00-04:00",
+   "counts": {
+    "summary": 1,
+    "decision": 2,
+    "action_item": 4,
+    "key_point": 1
+   }
+  },
+  {
+   "meeting": "Jacob/Corey Standup",
+   "start": "2026-10-05T09:30:00-06:00",
+   "counts": {
+    "summary": 1,
+    "key_point": 1,
+    "decision": 4,
+    "action_item": 8,
+    "risk": 2
+   }
+  },
+  {
+   "meeting": "Test Live 1",
+   "start": "2026-10-05T09:00:00-07:00",
+   "counts": {
+    "summary": 2,
+    "participant_contribution": 2,
+    "key_point": 3,
+    "question": 2,
+    "risk": 2
+   }
+  },
+  {
+   "meeting": "HQ Dev Standup",
+   "start": "2026-10-05T08:00:00-07:00",
+   "counts": {
+    "summary": 1
+   }
+  },
+  {
+   "meeting": "Meeting 231fb777-e5f2-4fdf-a160-16ebd93df039",
+   "start": "2026-10-04T17:51:17.100Z",
+   "counts": {
+    "summary": 1,
+    "key_point": 4,
+    "participant_contribution": 1
+   }
+  }
+ ],
+ "dms": [
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T23:08:11.237Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T23:03:38.341Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T23:00:23.169Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T20:37:59.507Z"
+  },
+  {
+   "from": "Corey Epstein",
+   "from_uid": "prs_01KQ695MZHZBYFMVMPRTGFW34B",
+   "is_agent": false,
+   "at": "2026-10-08T20:19:22.902Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T19:49:42.906Z"
+  },
+  {
+   "from": "assistant",
+   "from_uid": "agt_01M48ZVS0Q2EZJV2TK7RBMABTR",
+   "is_agent": true,
+   "at": "2026-10-08T19:48:50.221Z"
+  },
+  {
+   "from": "Ace",
+   "from_uid": "agt_01KWEPP79H761J249M55V55VXT",
+   "is_agent": true,
+   "at": "2026-10-08T19:46:25.135Z"
+  },
+  {
+   "from": "assistant",
+   "from_uid": "agt_01M48ZVS0Q2EZJV2TK7RBMABTR",
+   "is_agent": true,
+   "at": "2026-10-08T19:45:43.986Z"
+  },
+  {
+   "from": "Ace",
+   "from_uid": "agt_01KWEPP79H761J249M55V55VXT",
+   "is_agent": true,
+   "at": "2026-10-08T19:45:43.598Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T19:44:15.402Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T19:39:29.521Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T19:27:50.609Z"
+  },
+  {
+   "from": "Hassaan Saleem",
+   "from_uid": "prs_01KQ2TZQMA8078CHPDWBAFPN0Z",
+   "is_agent": false,
+   "at": "2026-10-08T15:22:55.780Z"
+  },
+  {
+   "from": "Yousuf Kalim",
+   "from_uid": "prs_01KQ7Y0X1KAGCMATCS9Q7712DV",
+   "is_agent": false,
+   "at": "2026-10-08T12:00:08.554Z"
+  },
+  {
+   "from": "Shawon Majid",
+   "from_uid": "prs_01KQRXM3T0RBVT28CN85H7AWBR",
+   "is_agent": false,
+   "at": "2026-10-08T03:19:25.410Z"
+  },
+  {
+   "from": "Shawon Majid",
+   "from_uid": "prs_01KQRXM3T0RBVT28CN85H7AWBR",
+   "is_agent": false,
+   "at": "2026-10-08T03:19:12.207Z"
+  },
+  {
+   "from": "Shawon Majid",
+   "from_uid": "prs_01KQRXM3T0RBVT28CN85H7AWBR",
+   "is_agent": false,
+   "at": "2026-10-08T03:18:43.988Z"
+  },
+  {
+   "from": "Shawon Majid",
+   "from_uid": "prs_01KQRXM3T0RBVT28CN85H7AWBR",
+   "is_agent": false,
+   "at": "2026-10-08T03:17:24.259Z"
+  },
+  {
+   "from": "Shawon Majid",
+   "from_uid": "prs_01KQRXM3T0RBVT28CN85H7AWBR",
+   "is_agent": false,
+   "at": "2026-10-08T03:16:03.691Z"
+  },
+  {
+   "from": "Shawon Majid",
+   "from_uid": "prs_01KQRXM3T0RBVT28CN85H7AWBR",
+   "is_agent": false,
+   "at": "2026-10-08T03:15:58.239Z"
+  },
+  {
+   "from": "Shawon Majid",
+   "from_uid": "prs_01KQRXM3T0RBVT28CN85H7AWBR",
+   "is_agent": false,
+   "at": "2026-10-08T03:14:14.601Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T01:40:43.841Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T01:39:00.993Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T01:37:35.884Z"
+  },
+  {
+   "from": "Hassaan Saleem",
+   "from_uid": "prs_01KQ2TZQMA8078CHPDWBAFPN0Z",
+   "is_agent": false,
+   "at": "2026-10-08T01:34:12.663Z"
+  },
+  {
+   "from": "Jacob Posel",
+   "from_uid": "prs_01KQ7NTBRY8X2QAA4S8AAF26W6",
+   "is_agent": false,
+   "at": "2026-10-08T01:11:24.362Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T01:00:44.055Z"
+  },
+  {
+   "from": "Stefan Johnson",
+   "from_uid": "prs_01KQ2RY9VB1S105X2GZ2EPHKWY",
+   "is_agent": false,
+   "at": "2026-10-08T00:52:32.620Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:37:29.219Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:35:40.083Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:33:13.315Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:33:04.578Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:29:36.069Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:28:53.989Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:28:52.907Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:28:01.846Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:26:16.710Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:25:06.920Z"
+  },
+  {
+   "from": "Izzy",
+   "from_uid": "agt_5RPNSHMTP5PP3DDCD0ZF906VYS",
+   "is_agent": true,
+   "at": "2026-10-08T00:09:51.404Z"
+  }
+ ],
+ "fleet": {
+  "total": 44,
+  "by_status": {
+   "active": 30,
+   "dormant": 10,
+   "provisioning": 4
+  },
+  "by_setup_phase": {
+   "ready": 40,
+   "waiting": 4
+  }
+ },
+ "prs": [
+  {
+   "repo": "hq-core-staging",
+   "number": 1222,
+   "title": "chore(ci): remove duplicate test runs, split slow jobs, fix work-mesh timing flake",
+   "state": "open",
+   "created": "2026-10-08T23:14:42Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "indigo-marketing",
+   "number": 558,
+   "title": "Draft: HQ 16 release page",
+   "state": "open",
+   "created": "2026-10-08T22:51:41Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1510,
+   "title": "Beta: only the installed HQ sets the login item on launch (cherry-pick of #1506)",
+   "state": "merged",
+   "created": "2026-10-08T22:25:21Z",
+   "closed": "2026-10-08T22:26:04Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1509,
+   "title": "Beta: icons on rich card labels, inline key-value pairs (cherry-pick of #1504)",
+   "state": "merged",
+   "created": "2026-10-08T22:25:17Z",
+   "closed": "2026-10-08T22:25:36Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4839,
+   "title": "fix(billing): restore plan-limit-exempt env dropped from vault-service by #4823",
+   "state": "merged",
+   "created": "2026-10-08T21:16:37Z",
+   "closed": "2026-10-08T21:22:25Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1506,
+   "title": "Autostart: only the installed HQ registers the login item",
+   "state": "merged",
+   "created": "2026-10-08T21:01:08Z",
+   "closed": "2026-10-08T21:42:13Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1221,
+   "title": "super-conductor: wake children directly with every relayed answer",
+   "state": "open",
+   "created": "2026-10-08T20:44:31Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1220,
+   "title": "chore(v16): remove /plan stub and CONTEXT.md fallback; CHANGELOG 16.0.0 heading",
+   "state": "merged",
+   "created": "2026-10-08T20:15:00Z",
+   "closed": "2026-10-08T22:10:45Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1504,
+   "title": "Messages: icons on rich card labels, inline key-value pairs",
+   "state": "merged",
+   "created": "2026-10-08T20:08:24Z",
+   "closed": "2026-10-08T22:10:38Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1218,
+   "title": "feat(garden): add /garden policies --deep reviewed policy trim",
+   "state": "open",
+   "created": "2026-10-08T19:30:16Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1217,
+   "title": "feat(conduct): on by default in v16",
+   "state": "merged",
+   "created": "2026-10-08T19:09:21Z",
+   "closed": "2026-10-08T21:06:07Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1502,
+   "title": "fix(onboarding): wait for Apple's developer tools before setup runs git (beta)",
+   "state": "merged",
+   "created": "2026-10-08T19:03:42Z",
+   "closed": "2026-10-08T20:53:52Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1501,
+   "title": "fix(onboarding): wait for Apple's developer tools before setup runs git",
+   "state": "merged",
+   "created": "2026-10-08T18:47:36Z",
+   "closed": "2026-10-08T21:34:16Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1500,
+   "title": "fix(onboarding): draw the Mac keyboard on macOS in the shortcut step (beta)",
+   "state": "merged",
+   "created": "2026-10-08T18:42:29Z",
+   "closed": "2026-10-08T19:02:47Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1499,
+   "title": "fix(onboarding): draw the Mac keyboard on macOS in the shortcut step",
+   "state": "merged",
+   "created": "2026-10-08T18:24:38Z",
+   "closed": "2026-10-08T18:53:35Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1215,
+   "title": "docs(policies): retire the when:always recommendation (HP-4 follow-up)",
+   "state": "merged",
+   "created": "2026-10-08T18:03:06Z",
+   "closed": "2026-10-08T23:07:51Z"
+  },
+  {
+   "repo": "hq-packages",
+   "number": 74,
+   "title": "fix(work-mesh): valid when: triggers on both hard policies",
+   "state": "open",
+   "created": "2026-10-08T18:02:03Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1214,
+   "title": "promote(overnight): add /overnight skill (team comms triage inside /super-conductor)",
+   "state": "merged",
+   "created": "2026-10-08T17:41:18Z",
+   "closed": "2026-10-08T18:37:57Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1210,
+   "title": "promote(handoff-all): add /handoff-all and /resume-all desktop session skills",
+   "state": "merged",
+   "created": "2026-10-08T15:59:57Z",
+   "closed": "2026-10-08T20:19:35Z"
+  },
+  {
+   "repo": "indigo-marketing",
+   "number": 554,
+   "title": "Add Operators Build E7 HQ clip (video fallback for investor memo)",
+   "state": "open",
+   "created": "2026-10-08T15:00:51Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1207,
+   "title": "feat(deploy): offer a comment monitor when comments are turned on",
+   "state": "open",
+   "created": "2026-10-08T14:52:52Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-pro-agents",
+   "number": 1132,
+   "title": "fix(self-update): run hq rescue with TMPDIR on the root disk, not the /tmp tmpfs",
+   "state": "merged",
+   "created": "2026-10-08T14:48:00Z",
+   "closed": "2026-10-08T17:00:41Z"
+  },
+  {
+   "repo": "hq-cloud",
+   "number": 913,
+   "title": "fix(rescue): stage scratch tree and size the safety snapshot on the HQ root's filesystem",
+   "state": "merged",
+   "created": "2026-10-08T14:47:57Z",
+   "closed": "2026-10-08T17:08:59Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1204,
+   "title": "feat(grok): cover the 1.0.40+ hook contract (HP-21)",
+   "state": "merged",
+   "created": "2026-10-08T14:28:51Z",
+   "closed": "2026-10-08T23:06:40Z"
+  },
+  {
+   "repo": "hq-deploy",
+   "number": 215,
+   "title": "Fix comment author names for Google sign-ins and side-pane card layout",
+   "state": "merged",
+   "created": "2026-10-08T13:41:45Z",
+   "closed": "2026-10-08T14:20:30Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1201,
+   "title": "feat(handoff): self-improving handoff — deficiency scan, auto-file, builder route, company scoping",
+   "state": "open",
+   "created": "2026-10-08T13:19:20Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4809,
+   "title": "feat(billing): plan-limit-exempt people bypass members cap and hold no seat",
+   "state": "merged",
+   "created": "2026-10-08T02:38:11Z",
+   "closed": "2026-10-08T11:35:03Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1477,
+   "title": "Desktop: key 'files are paused' status row on hq-pro's armed files.create stop",
+   "state": "merged",
+   "created": "2026-10-08T01:28:23Z",
+   "closed": "2026-10-08T20:22:17Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4800,
+   "title": "billing: zero use of a zero-capacity resource is not near-limit (false 'files are paused' fan-out)",
+   "state": "merged",
+   "created": "2026-10-08T01:21:37Z",
+   "closed": "2026-10-08T01:29:11Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1181,
+   "title": "bench-hooks: --runtime flag measures Codex, Grok, and hosted agents (HP-11)",
+   "state": "closed",
+   "created": "2026-10-08T00:42:44Z",
+   "closed": "2026-10-08T23:08:18Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1178,
+   "title": "promote(super-conductor): add /super-conductor skill (formerly /conduct-all)",
+   "state": "merged",
+   "created": "2026-10-07T23:59:09Z",
+   "closed": "2026-10-08T17:18:48Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1176,
+   "title": "handoff: name bad changeset entries; keep company-scoped follow-ups in the bound parent",
+   "state": "merged",
+   "created": "2026-10-07T23:14:41Z",
+   "closed": "2026-10-07T23:46:26Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1174,
+   "title": "auto-beta: honor HQ_BETA_BASE so staging betas can target v16",
+   "state": "merged",
+   "created": "2026-10-07T22:55:34Z",
+   "closed": "2026-10-08T03:02:20Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1173,
+   "title": "Policies: keyword-trigger every core policy, retire when: always (HP-4)",
+   "state": "merged",
+   "created": "2026-10-07T22:26:42Z",
+   "closed": "2026-10-08T00:46:21Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1171,
+   "title": "fix: repair five main checks broken by the /plan retirement",
+   "state": "merged",
+   "created": "2026-10-07T21:27:44Z",
+   "closed": "2026-10-07T22:14:33Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1169,
+   "title": "Conductor core: conduct becomes the speed layer (HP-9)",
+   "state": "merged",
+   "created": "2026-10-07T20:09:25Z",
+   "closed": "2026-10-07T21:09:28Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1168,
+   "title": "Policy lifecycle: lifecycle fields, retrieval ledger, staleness order, /learn and /garden passes",
+   "state": "merged",
+   "created": "2026-10-07T20:06:04Z",
+   "closed": "2026-10-08T07:31:34Z"
+  },
+  {
+   "repo": "indigo-docs",
+   "number": 64,
+   "title": "docs: planning merge — brainstorm gate, /prd engine, /grill-me, /plan deprecated",
+   "state": "open",
+   "created": "2026-10-07T15:41:41Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1163,
+   "title": "US-008: Rename CONTEXT.md to GLOSSARY.md with one-release compatibility",
+   "state": "merged",
+   "created": "2026-10-07T15:36:03Z",
+   "closed": "2026-10-07T20:45:28Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1162,
+   "title": "US-006: Retire /plan to a forwarding stub",
+   "state": "merged",
+   "created": "2026-10-07T15:30:46Z",
+   "closed": "2026-10-07T20:38:28Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1161,
+   "title": "US-005: Add the plan gate and plan phase to /brainstorm",
+   "state": "merged",
+   "created": "2026-10-07T15:19:33Z",
+   "closed": "2026-10-07T20:27:15Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1160,
+   "title": "US-004: Run the /prd interview on the grilling engine",
+   "state": "merged",
+   "created": "2026-10-07T15:03:38Z",
+   "closed": "2026-10-07T20:15:27Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1159,
+   "title": "US-003: Add /grill-me as a thin entry to the engine",
+   "state": "merged",
+   "created": "2026-10-07T14:52:49Z",
+   "closed": "2026-10-07T19:20:42Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1157,
+   "title": "US-002: Build the grilling interview engine skill",
+   "state": "merged",
+   "created": "2026-10-07T14:47:34Z",
+   "closed": "2026-10-07T19:12:12Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1156,
+   "title": "startwork: capability block, alias resolution, no hand lookups (HP-13)",
+   "state": "merged",
+   "created": "2026-10-07T14:46:37Z",
+   "closed": "2026-10-07T22:28:30Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1154,
+   "title": "US-007: Catch up tdd, diagnose, and wayfinder with upstream",
+   "state": "merged",
+   "created": "2026-10-07T14:39:41Z",
+   "closed": "2026-10-07T19:04:14Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1153,
+   "title": "feat(workflow-runner): default grok worker lanes to grok-4.7",
+   "state": "closed",
+   "created": "2026-10-07T14:26:41Z",
+   "closed": "2026-10-07T17:19:15Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1452,
+   "title": "New message: shared RecipientPicker extracted from the Forward picker",
+   "state": "merged",
+   "created": "2026-10-07T14:24:40Z",
+   "closed": "2026-10-08T22:40:40Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1152,
+   "title": "Split /conduct: lane mechanics load at first dispatch (HP-14)",
+   "state": "merged",
+   "created": "2026-10-07T14:21:35Z",
+   "closed": "2026-10-07T21:31:15Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1151,
+   "title": "Conductor core: conduct becomes the speed layer (HP-9)",
+   "state": "closed",
+   "created": "2026-10-07T14:06:45Z",
+   "closed": "2026-10-07T19:04:04Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1150,
+   "title": "US-001: Extract shared post-PRD steps into one reference file",
+   "state": "merged",
+   "created": "2026-10-07T14:06:29Z",
+   "closed": "2026-10-07T18:55:43Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1451,
+   "title": "Message forwarding: Forwarded-from header, Forward action and picker, file and company notices",
+   "state": "merged",
+   "created": "2026-10-07T13:45:54Z",
+   "closed": "2026-10-08T22:40:40Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1149,
+   "title": "run-project --pipeline: persistent worker lanes, pipeline conductor, lane board",
+   "state": "merged",
+   "created": "2026-10-07T13:45:22Z",
+   "closed": "2026-10-07T16:29:52Z"
+  },
+  {
+   "repo": "hq-pro-core",
+   "number": 267,
+   "title": "Message forwarding on the DM and channel send routes (1.124.0)",
+   "state": "merged",
+   "created": "2026-10-07T13:44:06Z",
+   "closed": "2026-10-07T18:25:19Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1447,
+   "title": "Bot pane: Profile | Jobs tab with job list and detail",
+   "state": "merged",
+   "created": "2026-10-07T06:08:24Z",
+   "closed": "2026-10-08T22:40:40Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1446,
+   "title": "Bots: table with status ladder, adaptive columns and sorting",
+   "state": "merged",
+   "created": "2026-10-07T05:53:36Z",
+   "closed": "2026-10-08T22:40:40Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1445,
+   "title": "Team member panel: no overlap, access as a high-level summary",
+   "state": "merged",
+   "created": "2026-10-07T05:39:23Z",
+   "closed": "2026-10-08T22:40:40Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1444,
+   "title": "Team: shared Avatar, presence outside the circle, readable member column",
+   "state": "merged",
+   "created": "2026-10-07T05:31:10Z",
+   "closed": "2026-10-08T22:40:40Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1443,
+   "title": "Activity: one team view with a row per person",
+   "state": "merged",
+   "created": "2026-10-07T05:24:01Z",
+   "closed": "2026-10-07T15:35:30Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1442,
+   "title": "Projects: hide Complete by default, richer cards, aligned title",
+   "state": "merged",
+   "created": "2026-10-07T05:22:10Z",
+   "closed": "2026-10-07T15:19:07Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1441,
+   "title": "Show real groups and folder grants on the company Groups and Grants pages",
+   "state": "merged",
+   "created": "2026-10-07T05:18:23Z",
+   "closed": "2026-10-08T22:40:40Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1440,
+   "title": "Brain pages: sidebar-width list, full-width rendered documents, row chips",
+   "state": "merged",
+   "created": "2026-10-07T05:11:09Z",
+   "closed": "2026-10-07T14:45:38Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1439,
+   "title": "Atlas: group Today changes by parent; one circle for Not on the map chips",
+   "state": "merged",
+   "created": "2026-10-07T04:58:58Z",
+   "closed": "2026-10-07T14:08:51Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1144,
+   "title": "Generated intent index for turn-one routing (HP-15)",
+   "state": "merged",
+   "created": "2026-10-07T04:55:47Z",
+   "closed": "2026-10-07T19:04:02Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1438,
+   "title": "Deployments: selecting a row no longer opens the site in the browser",
+   "state": "merged",
+   "created": "2026-10-07T04:48:17Z",
+   "closed": "2026-10-07T13:45:50Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1143,
+   "title": "fix(workflow-runner): Grok 1.0.46 envelopes + grok-4.7 default",
+   "state": "open",
+   "created": "2026-10-07T04:09:31Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4719,
+   "title": "feat(alerts): include first-touch UTM on #hq-alerts signup pings",
+   "state": "merged",
+   "created": "2026-10-07T03:20:13Z",
+   "closed": "2026-10-07T08:32:25Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1141,
+   "title": "perf(hooks): policy-trigger migration only on change, cached hq version probe (HP-7, HP-8)",
+   "state": "merged",
+   "created": "2026-10-07T02:27:24Z",
+   "closed": "2026-10-07T19:03:56Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4715,
+   "title": "feat(vyg-cdp): profile attribution emitter, default-off CDP fan-out (US-001..US-006)",
+   "state": "open",
+   "created": "2026-10-07T01:55:23Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1437,
+   "title": "Atlas: hovered names always show; fix two date-dependent tests",
+   "state": "merged",
+   "created": "2026-10-07T01:39:34Z",
+   "closed": "2026-10-07T01:53:39Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1138,
+   "title": "fix(check-hq-hooks): detect per-hook overlay entries that double-fire with master-hook (HP-6)",
+   "state": "merged",
+   "created": "2026-10-07T01:16:49Z",
+   "closed": "2026-10-07T19:03:51Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1136,
+   "title": "feat(scripts): bench-hook-corpus hook latency + context benchmark (HP-5)",
+   "state": "merged",
+   "created": "2026-10-07T00:31:31Z",
+   "closed": "2026-10-07T18:57:13Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1131,
+   "title": "conduct: compact two-line lane rows",
+   "state": "merged",
+   "created": "2026-10-06T20:39:29Z",
+   "closed": "2026-10-06T20:57:10Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1433,
+   "title": "Meetings: instant list from cache, honest loading state",
+   "state": "merged",
+   "created": "2026-10-06T20:10:47Z",
+   "closed": "2026-10-06T23:58:30Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1432,
+   "title": "Projects: Active column driven by live presence, recent stories and commits",
+   "state": "merged",
+   "created": "2026-10-06T19:48:08Z",
+   "closed": "2026-10-06T23:58:22Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1129,
+   "title": "feat(conduct): one GenUI card per running lane at end of turn",
+   "state": "merged",
+   "created": "2026-10-06T19:44:25Z",
+   "closed": "2026-10-06T20:18:20Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1431,
+   "title": "Pages: one header title size across every page",
+   "state": "merged",
+   "created": "2026-10-06T19:39:05Z",
+   "closed": "2026-10-07T02:06:08Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1429,
+   "title": "Messages: in All, channels sort into the date buckets with DMs",
+   "state": "merged",
+   "created": "2026-10-06T18:19:58Z",
+   "closed": "2026-10-06T19:51:46Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1428,
+   "title": "Pages: align header titles with the sidebar item edge",
+   "state": "merged",
+   "created": "2026-10-06T17:40:47Z",
+   "closed": "2026-10-06T19:22:52Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1427,
+   "title": "Meetings: one Today section; Tomorrow appears only after today's last meeting",
+   "state": "merged",
+   "created": "2026-10-06T17:24:47Z",
+   "closed": "2026-10-06T19:36:31Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1426,
+   "title": "Bots: one creation flow on the sunrise step screens",
+   "state": "merged",
+   "created": "2026-10-06T16:45:02Z",
+   "closed": "2026-10-06T20:07:04Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1423,
+   "title": "Atlas: project cards with story progress",
+   "state": "merged",
+   "created": "2026-10-06T15:41:03Z",
+   "closed": "2026-10-06T19:05:24Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1422,
+   "title": "Messages: show every company's channels in the All scope",
+   "state": "merged",
+   "created": "2026-10-06T14:32:03Z",
+   "closed": "2026-10-06T15:26:27Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4658,
+   "title": "test(guards): scan tracked sources only in the US-122 key derivation guard",
+   "state": "merged",
+   "created": "2026-10-06T13:10:33Z",
+   "closed": "2026-10-06T13:22:52Z"
+  },
+  {
+   "repo": "hq-deploy",
+   "number": 200,
+   "title": "Preview pass: short-lived view-only access for desktop snapshots",
+   "state": "merged",
+   "created": "2026-10-06T12:52:10Z",
+   "closed": "2026-10-06T13:50:35Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1413,
+   "title": "Tokens: provider colors and hierarchy on the Activity page",
+   "state": "merged",
+   "created": "2026-10-06T04:54:44Z",
+   "closed": "2026-10-06T15:10:22Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1412,
+   "title": "Deployments: newest first, sortable headers, lazy OG preview in the side panel",
+   "state": "merged",
+   "created": "2026-10-06T04:41:25Z",
+   "closed": "2026-10-06T14:14:57Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1411,
+   "title": "Buttons: one height and padding standard from the top bar",
+   "state": "merged",
+   "created": "2026-10-06T04:37:49Z",
+   "closed": "2026-10-06T15:40:57Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4627,
+   "title": "US-006: write the deploy version to one SSM parameter (no reader yet)",
+   "state": "merged",
+   "created": "2026-10-06T04:09:20Z",
+   "closed": "2026-10-06T04:27:47Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4624,
+   "title": "fix(infra): remove 3 zero-traffic hqk_ mirror routes to free vault-api route slots",
+   "state": "closed",
+   "created": "2026-10-06T03:40:21Z",
+   "closed": "2026-10-06T03:42:39Z"
+  },
+  {
+   "repo": "hq-mods",
+   "number": 10,
+   "title": "fix: DM refresh runs every hq read in one round",
+   "state": "open",
+   "created": "2026-10-06T03:14:31Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-pro-agents",
+   "number": 1069,
+   "title": "fix(infra): remove 13 zero-traffic Fleet routes to free vault-api route slots",
+   "state": "merged",
+   "created": "2026-10-06T01:57:15Z",
+   "closed": "2026-10-06T02:38:18Z"
+  },
+  {
+   "repo": "indigo-marketing",
+   "number": 540,
+   "title": "Add LAUNCH wordmark to /launchco hero",
+   "state": "merged",
+   "created": "2026-10-06T01:52:41Z",
+   "closed": "2026-10-06T02:14:24Z"
+  },
+  {
+   "repo": "indigo-marketing",
+   "number": 538,
+   "title": "Add /launchco: LAUNCH portfolio offer page",
+   "state": "merged",
+   "created": "2026-10-06T00:10:51Z",
+   "closed": "2026-10-06T00:28:28Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4611,
+   "title": "chore: update hq-pro-core to 1.120.0",
+   "state": "closed",
+   "created": "2026-10-05T23:16:26Z",
+   "closed": "2026-10-06T00:07:53Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1395,
+   "title": "fix(activity): read production company telemetry shape",
+   "state": "merged",
+   "created": "2026-10-05T21:23:28Z",
+   "closed": "2026-10-06T00:30:27Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4606,
+   "title": "test(infra): skip .artifact-worktrees in the Cognito write-attribute source walk",
+   "state": "closed",
+   "created": "2026-10-05T21:02:14Z",
+   "closed": "2026-10-05T21:12:59Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1394,
+   "title": "Bot create: ask Cloud or Local first, local flow in sunrise design (+ rail-ui carry-over)",
+   "state": "merged",
+   "created": "2026-10-05T20:33:11Z",
+   "closed": "2026-10-06T05:53:32Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1385,
+   "title": "Deployments: preview card in the side panel, off by default (draft)",
+   "state": "open",
+   "created": "2026-10-05T15:40:02Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1384,
+   "title": "Small UI fixes: settings, billing, packs, switcher, rail, messages (draft)",
+   "state": "open",
+   "created": "2026-10-05T15:39:59Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1383,
+   "title": "Buttons: leading icons and one label weight (draft)",
+   "state": "open",
+   "created": "2026-10-05T15:39:56Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-desktop-app",
+   "number": 1382,
+   "title": "Atlas: map design, live presence and hover cards (draft)",
+   "state": "open",
+   "created": "2026-10-05T15:39:53Z",
+   "closed": "0001-01-01T00:00:00Z"
+  },
+  {
+   "repo": "hq-pro-core",
+   "number": 256,
+   "title": "feat(sentry): read the release from the shared deploy record [US-005]",
+   "state": "merged",
+   "created": "2026-10-04T14:50:12Z",
+   "closed": "2026-10-05T22:27:02Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4540,
+   "title": "ci(vitest): use every core under CI, keep 25% locally [US-012]",
+   "state": "merged",
+   "created": "2026-10-04T14:46:25Z",
+   "closed": "2026-10-05T11:28:13Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4539,
+   "title": "feat(ci): shared hq-flags deploy switch reader [US-002]",
+   "state": "merged",
+   "created": "2026-10-04T14:46:21Z",
+   "closed": "2026-10-05T00:35:00Z"
+  },
+  {
+   "repo": "hq-pro",
+   "number": 4538,
+   "title": "feat(ci-deploy): deploy-time tracker and history view [US-001]",
+   "state": "merged",
+   "created": "2026-10-04T14:18:42Z",
+   "closed": "2026-10-04T19:46:42Z"
+  },
+  {
+   "repo": "hq-deploy",
+   "number": 195,
+   "title": "Serve deployed PDFs as application/pdf",
+   "state": "merged",
+   "created": "2026-10-04T03:16:53Z",
+   "closed": "2026-10-04T03:26:44Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 1044,
+   "title": "feat(delegate): hand off brainstorm-stage projects without a PRD",
+   "state": "merged",
+   "created": "2026-10-02T14:57:22Z",
+   "closed": "2026-10-08T02:35:31Z"
+  },
+  {
+   "repo": "hq-core-staging",
+   "number": 781,
+   "title": "promote(conduct): session link — /conduct-join, /conduct adopt|tell, conduct-link.sh",
+   "state": "merged",
+   "created": "2026-09-19T00:16:55Z",
+   "closed": "2026-10-08T15:55:40Z"
+  }
+ ],
+ "main_health": {
+  "hq-core-staging": {
+   "workflows": 6,
+   "red": []
+  },
+  "hq-desktop-app": {
+   "workflows": 3,
+   "red": [
+    "CI"
+   ]
+  },
+  "hq-pro": {
+   "workflows": 8,
+   "red": []
+  },
+  "hq-cloud": {
+   "workflows": 2,
+   "red": []
+  },
+  "hq-pro-agents": {
+   "workflows": 6,
+   "red": []
+  }
+ },
+ "sources": {
+  "sessions": {
+   "ok": true,
+   "count": 269
+  },
+  "meetings": {
+   "ok": true,
+   "count": 30
+  },
+  "dms": {
+   "ok": true,
+   "count": 40
+  },
+  "fleet": {
+   "ok": true,
+   "count": 4
+  },
+  "prs": {
+   "ok": true,
+   "count": 109
+  },
+  "main_health": {
+   "ok": true,
+   "count": 5
+  },
+  "meeting_signals": {
+   "ok": true,
+   "count": 30
+  }
+ }
+}

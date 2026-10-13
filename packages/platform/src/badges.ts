@@ -15,7 +15,7 @@
  * file's.
  */
 
-/** Tier as hq-pro sends it: 1 bronze, 2 silver, 3 gold. "L" is the legacy legendary tier. */
+/** Tier as hq-pro sends it: 1 bronze, 2 silver, 3 gold, "L" legendary (the honors badges and Core Builder's fourth level). */
 export type BadgeWireTier = 1 | 2 | 3 | "L";
 
 export interface BadgeWire {

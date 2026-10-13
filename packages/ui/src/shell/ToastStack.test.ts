@@ -289,7 +289,6 @@ describe("sync toast copy guard", () => {
     [emptySyncStatus(), true, false],
     [emptySyncStatus(), false, true],
     [{ ...emptySyncStatus(), phase: "auth-error" }, false, false],
-    [{ ...emptySyncStatus(), phase: "conflict" }, false, false],
     [{ ...emptySyncStatus(), phase: "error" }, false, false],
   ];
 

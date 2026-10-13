@@ -500,3 +500,37 @@ describe("AgentDetailPanel routines and apps", () => {
     expect(rows[0].querySelector("button")?.textContent).toContain("Connect");
   });
 });
+
+describe("AgentDetailPanel: BotIntegrationsSection flag parity", () => {
+  it("does not render the bot integrations section when the flag is off", async () => {
+    const hasFeature = vi.fn(async () => ok(false));
+    const listConnections = vi.fn(async () =>
+      ok({
+        viewer: { personUid: "prs_corey", canManageIntegrations: true },
+        connections: [],
+        audit: [],
+      }),
+    );
+    const getConnectionAccess = vi.fn();
+    const grantConnectionAccess = vi.fn();
+    const revokeConnectionAccess = vi.fn();
+    await mountPanel({
+      adapter: {
+        agents: agentsApi(),
+        integrations: {
+          listConnections,
+          getConnectionAccess,
+          grantConnectionAccess,
+          revokeConnectionAccess,
+        },
+        identity: { hasFeature },
+      },
+    });
+    await tick();
+    expect(
+      host.querySelector('[data-testid="bot-integrations-section"]'),
+    ).toBeNull();
+    expect(listConnections).not.toHaveBeenCalled();
+    expect(getConnectionAccess).not.toHaveBeenCalled();
+  });
+});

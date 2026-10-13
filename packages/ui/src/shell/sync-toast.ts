@@ -57,8 +57,6 @@ export function syncToastCopy(
     }
     case "auth-error":
       return { state: "attention", title: "Sync stopped", detail: "Sign in again to keep files syncing", progress: null };
-    case "conflict":
-      return { state: "attention", title: "Sync needs a decision", detail: "Some files changed in two places", progress: null };
     case "error":
       return { state: "attention", title: "Sync ran into a problem", detail: "HQ will try again shortly", progress: null };
     default:

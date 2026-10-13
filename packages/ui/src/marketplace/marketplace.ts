@@ -173,6 +173,23 @@ export function listingDisplayName(listing: MarketplaceListing): string {
   return prettifyPackName(listing.name) || listing.name;
 }
 
+/** Public marketing site that hosts a shareable page for every approved listing. */
+export const MARKETPLACE_PUBLIC_BASE = "https://hqforwork.com";
+
+/**
+ * The listing's public, shareable page on hqforwork.com: `/packs/{slug}`
+ * (indigo-marketing route `app/packs/[slug]`, built from the same approved
+ * listings feed this panel reads). Clean canonical URL, no UTM tags: this is
+ * an in-product link. Null when the listing has no usable slug.
+ */
+export function listingPublicUrl(
+  listing: Pick<MarketplaceListing, "slug">,
+): string | null {
+  const slug = listing.slug?.trim();
+  if (!slug) return null;
+  return `${MARKETPLACE_PUBLIC_BASE}/packs/${encodeURIComponent(slug)}`;
+}
+
 /** Listing detail (`get_marketplace_listing`) — adds the presigned download URL. */
 export interface MarketplaceListingDetail extends MarketplaceListing {
   /** Presigned GET URL for the pack tarball (24h expiry). */
