@@ -119,10 +119,12 @@
     flex-direction: column;
     padding: 2px 0 0;
   }
+  /* Right edge matches the state pills below (rows keep 8px of padding). */
   .hd {
     display: flex;
     align-items: center;
     gap: 8px;
+    padding-right: 8px;
     font-size: 13px;
     font-weight: 500;
     color: var(--b-t2);
