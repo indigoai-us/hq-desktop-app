@@ -1262,13 +1262,13 @@
   stroke: rgb(var(--b-ink) / 0.16);
 }
 /* On a call: the node travels the orbit and a soft ring breathes out from the orb. */
-/* Only the orbit's upper-left arc is on the card, so the node rests and travels there. */
+/* Before a call the node rests on the visible arc; on a call it circles the orbit. */
 .daily-brief .b-next .orbit .spin {
   transform-origin: 60px 60px;
   transform: rotate(-40deg);
 }
 .daily-brief .b-next .orbit.live .spin {
-  animation: b-orbit 7s ease-in-out infinite alternate;
+  animation: b-orbit 14s linear infinite;
 }
 .daily-brief .b-next .orbit .pulse {
   fill: none;
@@ -1279,10 +1279,10 @@
 }
 @keyframes b-orbit {
   from {
-    transform: rotate(-72deg);
+    transform: rotate(-40deg);
   }
   to {
-    transform: rotate(-12deg);
+    transform: rotate(320deg);
   }
 }
 @keyframes b-pulse {
