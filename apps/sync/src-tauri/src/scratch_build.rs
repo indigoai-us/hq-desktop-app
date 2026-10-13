@@ -185,9 +185,13 @@ mod tests {
             assert!(!active(), "a build without HQ_SCRATCH_BUILD is never a scratch build");
             assert!(import_hq_bin().is_none());
             assert!(import_scanner().is_none());
+            let linux_off = crate::updater::linux_updater_off(
+                cfg!(target_os = "linux"),
+                std::env::var("HQ_DEV_ALLOW_AUTO_UPDATE").is_ok(),
+            );
             assert_eq!(
                 crate::updater::updater_disabled(),
-                std::env::var("HQ_UPDATER_DISABLED").is_ok() || !production_bundle()
+                std::env::var("HQ_UPDATER_DISABLED").is_ok() || linux_off || !production_bundle()
             );
         }
     }
@@ -289,8 +293,11 @@ mod tests {
     /// `HQ_SCRATCH_BUILD=1 cargo test scratch_build`.
     #[test]
     fn this_build_answers_by_its_switch() {
+        let flag = |name: &str| std::env::var(name).map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")).unwrap_or(false);
+        // Linux adds a third input (no release feed yet), off only with the opt-in.
+        let linux_off = crate::updater::linux_updater_off(cfg!(target_os = "linux"), flag("HQ_DEV_ALLOW_AUTO_UPDATE"));
         assert_eq!(crate::updater::updater_disabled(), crate::updater::updater_disabled_with(
-            std::env::var("HQ_UPDATER_DISABLED").map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")).unwrap_or(false),
+            flag("HQ_UPDATER_DISABLED") || linux_off,
             !production_bundle(),
         ));
         assert_eq!(refuse_install("x").is_err(), active());

@@ -7,27 +7,33 @@
 //! order (stamped Info.plist → `Resources/version.json` → compile-time) lives
 //! in `hq_desktop_core::runtime_version`.
 
+use std::path::PathBuf;
+
 use hq_desktop_core::runtime_version;
 
 /// The compile-time version, used only when nothing was stamped at assemble
 /// time (`tauri dev`, `cargo run`, unit tests).
 pub const COMPILE_TIME: &str = env!("APP_VERSION");
 
+/// `tauri.conf.json` `productName`, emitted by `build.rs`. Linux packages
+/// install the bundle resources under `/usr/lib/<productName>`.
+pub const PRODUCT_NAME: &str = env!("APP_PRODUCT_NAME");
+
+/// The bundle's resource directory, guessed from the running executable's
+/// path before an `AppHandle` exists (`Contents/Resources` on macOS,
+/// `/usr/lib/<productName>` for an installed Linux package, else the exe dir).
+pub fn resources_dir() -> Option<PathBuf> {
+    runtime_version::resources_dir_for_product(PRODUCT_NAME)
+}
+
 /// The running app's version string (resolved once per process).
 pub fn current() -> &'static str {
-    runtime_version::resolve_app_version(
-        runtime_version::resources_dir_from_current_exe().as_deref(),
-        COMPILE_TIME,
-    )
+    runtime_version::resolve_app_version(resources_dir().as_deref(), COMPILE_TIME)
 }
 
 /// Which source [`current`] came from.
 pub fn source() -> runtime_version::VersionSource {
-    runtime_version::resolve_app_version_with_source(
-        runtime_version::resources_dir_from_current_exe().as_deref(),
-        COMPILE_TIME,
-    )
-    .1
+    runtime_version::resolve_app_version_with_source(resources_dir().as_deref(), COMPILE_TIME).1
 }
 
 /// Parse a version string as SemVer, falling back to the compile-time
@@ -53,6 +59,14 @@ mod tests {
     #[test]
     fn compile_time_fallback_is_valid_semver() {
         assert!(semver::Version::parse(COMPILE_TIME).is_ok());
+    }
+
+    #[test]
+    fn product_name_matches_tauri_conf() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
+        assert_eq!(conf["productName"].as_str(), Some(PRODUCT_NAME));
+        assert!(!PRODUCT_NAME.is_empty());
     }
 
     #[test]

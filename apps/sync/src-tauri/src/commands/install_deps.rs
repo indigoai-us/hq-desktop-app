@@ -1835,12 +1835,13 @@ fn sweep_stale_toolchain_siblings(toolchain_dir: &Path, min_age: Duration) {
     }
 }
 
+/// Where HQ installs its managed toolchain for `home`. Resolved by
+/// `hq_desktop_core::paths` so the installer and every PATH/git lookup agree
+/// (`~/Library/Application Support/Indigo HQ/toolchain` on macOS, the XDG
+/// data dir on Linux).
 #[cfg(not(windows))]
 fn managed_toolchain_dir_in(home: &std::path::Path) -> PathBuf {
-    home.join("Library")
-        .join("Application Support")
-        .join("Indigo HQ")
-        .join("toolchain")
+    hq_desktop_core::paths::managed_toolchain_dir_in(home)
 }
 
 #[cfg(not(windows))]
@@ -2041,6 +2042,16 @@ pub fn is_shell_path_configured(profile_path: &std::path::Path) -> bool {
 /// testing so assertions don't depend on the home directory.
 #[cfg(not(windows))]
 pub fn shell_path_block() -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    shell_path_block_for(&home, &managed_toolchain_dir_in(&home))
+}
+
+/// [`shell_path_block`] for an explicit home and toolchain root. A root under
+/// `home` is written as `$HOME/<relative>` so the profile line follows the
+/// user's home at run time; any other root (an `XDG_DATA_HOME` outside the
+/// home directory) is written as an absolute path.
+#[cfg(not(windows))]
+fn shell_path_block_for(home: &std::path::Path, toolchain: &std::path::Path) -> String {
     // Every managed bin dir a user-facing tool lands in — node, the npm
     // global prefix (qmd, hq, claude), the portable dugite git, and
     // ~/.local/bin (yq's direct-binary fallback). The git dir MUST come
@@ -2048,8 +2059,12 @@ pub fn shell_path_block() -> String {
     // that pops the "install developer tools" dialog. The install matrix
     // (sonoma-consumer:bare:full-fresh-install, 2026-09-03) caught both
     // `yq: command not found` and the stub git after a reported-OK install.
+    let root = match toolchain.strip_prefix(home) {
+        Ok(relative) => format!("$HOME/{}", relative.display()),
+        Err(_) => toolchain.display().to_string(),
+    };
     format!(
-        "\n{SHELL_PATH_MARKER}\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git-shim:$HOME/.local/bin:$PATH\"\n"
+        "\n{SHELL_PATH_MARKER}\nexport PATH=\"{root}/node/bin:{root}/npm-global/bin:{root}/git-shim:$HOME/.local/bin:$PATH\"\n"
     )
 }
 
@@ -11069,6 +11084,39 @@ mod shell_path_block_tests {
         assert!(idx("toolchain/git-shim") < idx("$HOME/.local/bin"));
         assert!(idx("$HOME/.local/bin") < idx(":$PATH"));
         assert!(block.contains(SHELL_PATH_MARKER));
+    }
+
+    #[test]
+    fn path_block_for_the_macos_root_is_byte_identical_to_before() {
+        let home = std::path::Path::new("/Users/x");
+        let toolchain = home.join("Library/Application Support/Indigo HQ/toolchain");
+        assert_eq!(
+            shell_path_block_for(home, &toolchain),
+            "\n# Indigo HQ managed toolchain\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git-shim:$HOME/.local/bin:$PATH\"\n"
+        );
+    }
+
+    #[test]
+    fn path_block_follows_the_linux_xdg_root() {
+        let home = std::path::Path::new("/home/x");
+        let under_home = shell_path_block_for(home, &home.join(".local/share/IndigoHQ/toolchain"));
+        assert!(under_home.contains("export PATH=\"$HOME/.local/share/IndigoHQ/toolchain/node/bin:"));
+        assert!(!under_home.contains("Library"));
+        let outside_home =
+            shell_path_block_for(home, std::path::Path::new("/srv/xdg-data/IndigoHQ/toolchain"));
+        assert!(outside_home.contains("export PATH=\"/srv/xdg-data/IndigoHQ/toolchain/node/bin:"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_toolchain_installs_under_the_xdg_data_dir() {
+        let home = std::path::Path::new("/home/x");
+        let root = managed_toolchain_dir_in(home);
+        assert!(
+            root.ends_with("IndigoHQ/toolchain") && !root.starts_with(home.join("Library")),
+            "{}",
+            root.display()
+        );
     }
 
     #[test]

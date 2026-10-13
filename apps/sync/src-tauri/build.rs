@@ -21,6 +21,17 @@ fn main() {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     println!("cargo:rustc-env=APP_VERSION={}", version);
 
+    // Emit tauri.conf.json's `productName` as `APP_PRODUCT_NAME`. Linux
+    // packages install resources under `/usr/lib/<productName>` (Tauri's
+    // `resource_dir` rule), and the app needs that directory before an
+    // `AppHandle` exists (runtime version, UI protocol root, shell key).
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+    let tauri_conf = std::fs::read_to_string("tauri.conf.json")
+        .expect("build.rs: failed to read tauri.conf.json");
+    let product_name = extract_json_string_field(&tauri_conf, "productName")
+        .expect("build.rs: tauri.conf.json has no productName");
+    println!("cargo:rustc-env=APP_PRODUCT_NAME={}", product_name);
+
     // Pin the `wry` version this crate actually resolves to.
     //
     // `util::webview2_automation::WRY_DEFAULT_BROWSER_ARGS` is a hand

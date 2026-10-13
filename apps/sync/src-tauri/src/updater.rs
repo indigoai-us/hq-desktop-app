@@ -1191,8 +1191,8 @@ async fn channel_aware_updater_with_mode(
     app: &AppHandle,
     mode: UpdateOfferMode,
 ) -> Result<ChannelAwareUpdater, String> {
-    if updater_disabled() {
-        log("updater", "update check skipped: HQ_UPDATER_DISABLED=1");
+    if let Some(reason) = updater_disabled_reason() {
+        log("updater", &format!("update check skipped: {reason}"));
         return Err(UPDATER_DISABLED_MESSAGE.to_string());
     }
     let (channel, resolved) = resolve_endpoint().await;
@@ -1468,8 +1468,8 @@ async fn install_verified_update(
 /// A `force` result skips the 10-minute idle wait but still pauses new sync
 /// cycles and drains in-flight transfers for up to [`IN_FLIGHT_DRAIN_TIMEOUT`].
 pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String> {
-    if updater_disabled() {
-        log("updater", "stable install skipped: HQ_UPDATER_DISABLED=1");
+    if let Some(reason) = updater_disabled_reason() {
+        log("updater", &format!("stable install skipped: {reason}"));
         return Err(UPDATER_DISABLED_MESSAGE.to_string());
     }
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
@@ -2635,12 +2635,17 @@ fn notify_manual_check(app: &AppHandle, body: &str) {
 /// pulled stable 0.10.377 over itself and relaunched as the old app. Any build
 /// with debug assertions now skips the background checker too, unless
 /// `HQ_DEV_ALLOW_AUTO_UPDATE=1` is set to exercise the updater on purpose.
+///
+/// Linux has no release feed yet (no `latest.json` entry and no updater
+/// artifacts for the .deb), so a Linux build skips the checker too unless
+/// `HQ_DEV_ALLOW_AUTO_UPDATE=1` opts in.
 pub fn background_updates_disabled() -> bool {
     background_updates_disabled_for(
         tauri::is_dev(),
         cfg!(debug_assertions),
         dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE") || updater_disabled(),
         dev_env_flag_set("HQ_DEV_ALLOW_AUTO_UPDATE"),
+        cfg!(target_os = "linux"),
     )
 }
 
@@ -2649,11 +2654,30 @@ fn background_updates_disabled_for(
     debug_build: bool,
     no_auto_update: bool,
     allow_auto_update: bool,
+    linux: bool,
 ) -> bool {
     if no_auto_update || is_dev {
         return true;
     }
+    if linux_updater_off(linux, allow_auto_update) {
+        return true;
+    }
     debug_build && !allow_auto_update
+}
+
+/// Linux has no release feed (no `latest.json` entry, no .deb updater
+/// artifacts), so every updater path is off there unless
+/// `HQ_DEV_ALLOW_AUTO_UPDATE=1` opts in to exercise the updater on purpose.
+/// macOS and Windows never hit this rule.
+pub(crate) fn linux_updater_off(linux: bool, allow_auto_update: bool) -> bool {
+    linux && !allow_auto_update
+}
+
+fn linux_without_release_feed() -> bool {
+    linux_updater_off(
+        cfg!(target_os = "linux"),
+        dev_env_flag_set("HQ_DEV_ALLOW_AUTO_UPDATE"),
+    )
 }
 
 /// Whether this build skips the background update checker (dev or debug
@@ -2712,11 +2736,37 @@ const UPDATER_DISABLED_MESSAGE: &str = "Updates are turned off for this build";
 /// decided by `scratch_build::LaunchIdentity::is_production`, the predicate
 /// launch-time autostart and the launch-time installers use. A test bundle
 /// opened from Finder (no shell env) is covered too.
+///
+/// A Linux build is off the same way (`linux_updater_off`): there is no
+/// Linux release feed, so a manual check would only fail on `latest.json`.
 pub fn updater_disabled() -> bool {
-    updater_disabled_with(
+    updater_disabled_reason().is_some()
+}
+
+/// Why the updater is off for this process, or `None` when it may run.
+fn updater_disabled_reason() -> Option<&'static str> {
+    updater_disabled_reason_for(
         dev_env_flag_set(UPDATER_DISABLED_ENV),
         !crate::scratch_build::production_bundle(),
+        linux_without_release_feed(),
     )
+}
+
+/// `updater_disabled_reason` with its inputs passed in (testable in any build).
+fn updater_disabled_reason_for(
+    env_switch: bool,
+    non_production_bundle: bool,
+    linux_without_feed: bool,
+) -> Option<&'static str> {
+    if env_switch {
+        Some("HQ_UPDATER_DISABLED=1")
+    } else if non_production_bundle {
+        Some("non-production bundle")
+    } else if linux_without_feed {
+        Some("no Linux release feed")
+    } else {
+        None
+    }
 }
 
 /// `updater_disabled` with its two inputs passed in (testable in any build).
@@ -2726,9 +2776,14 @@ pub(crate) fn updater_disabled_with(env_switch: bool, non_production_bundle: boo
 
 pub fn setup_update_checker(app: &AppHandle) {
     if background_updates_disabled() {
+        let reason = if linux_without_release_feed() {
+            "no Linux release feed"
+        } else {
+            "dev or debug build, or HQ_DEV_NO_AUTO_UPDATE=1"
+        };
         log(
             "updater",
-            "background update checker disabled (dev or debug build, or HQ_DEV_NO_AUTO_UPDATE=1)",
+            &format!("background update checker disabled ({reason})"),
         );
         return;
     }
@@ -3995,14 +4050,62 @@ mod tests {
     fn debug_bundles_never_self_update_unless_opted_in() {
         use super::background_updates_disabled_for as off;
         // `tauri build --debug`: not is_dev, but debug assertions are on.
-        assert!(off(false, true, false, false));
-        assert!(!off(false, true, false, true));
+        assert!(off(false, true, false, false, false));
+        assert!(!off(false, true, false, true, false));
         // Release bundle: on by default, off with the opt-out flag.
-        assert!(!off(false, false, false, false));
-        assert!(off(false, false, true, false));
+        assert!(!off(false, false, false, false, false));
+        assert!(off(false, false, true, false, false));
         // `tauri dev` and the opt-out flag always win over the opt-in.
-        assert!(off(true, true, false, true));
-        assert!(off(false, true, true, true));
+        assert!(off(true, true, false, true, false));
+        assert!(off(false, true, true, true, false));
+    }
+
+    #[test]
+    fn linux_never_runs_the_background_update_checker_unless_opted_in() {
+        use super::background_updates_disabled_for as off;
+        // A Linux release bundle has no release feed: off by default, on only
+        // with HQ_DEV_ALLOW_AUTO_UPDATE=1.
+        assert!(off(false, false, false, false, true));
+        assert!(!off(false, false, false, true, true));
+        // The opt-out flag and `tauri dev` still win over the opt-in on Linux.
+        assert!(off(false, false, true, true, true));
+        assert!(off(true, false, false, true, true));
+        // A Linux debug bundle follows the debug rule once opted in.
+        assert!(off(false, true, false, false, true));
+        assert!(!off(false, true, false, true, true));
+    }
+
+    #[test]
+    fn linux_turns_every_updater_path_off_without_the_opt_in() {
+        use super::linux_updater_off;
+        assert!(linux_updater_off(true, false));
+        assert!(!linux_updater_off(true, true));
+        // macOS and Windows never hit the Linux rule.
+        assert!(!linux_updater_off(false, false));
+        assert!(!linux_updater_off(false, true));
+    }
+
+    #[test]
+    fn updater_disabled_reason_names_the_first_matching_gate() {
+        use super::updater_disabled_reason_for as reason;
+        assert_eq!(reason(true, true, true), Some("HQ_UPDATER_DISABLED=1"));
+        assert_eq!(reason(false, true, true), Some("non-production bundle"));
+        assert_eq!(reason(false, false, true), Some("no Linux release feed"));
+        assert_eq!(reason(false, false, false), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_linux_build_reports_updates_off_without_the_opt_in() {
+        // Pure over the env value: the opt-in flag is the only thing that can
+        // turn the Linux gate off, and it is unset in CI and the container.
+        let opted_in = super::dev_env_flag_set("HQ_DEV_ALLOW_AUTO_UPDATE");
+        assert_eq!(super::linux_without_release_feed(), !opted_in);
+        if !opted_in {
+            assert!(super::updater_disabled());
+            assert!(super::background_updates_disabled());
+            assert_eq!(super::updater_disabled_reason().is_some(), true);
+        }
     }
 }
 
