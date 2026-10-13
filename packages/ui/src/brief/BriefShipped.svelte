@@ -176,7 +176,7 @@
     font-size: var(--b-fs-num);
   }
   .tot .dim {
-    color: rgb(var(--b-ink) / 0.56);
+    color: rgb(var(--b-ink) / 0.7);
   }
   .tot small {
     font-size: 13px;

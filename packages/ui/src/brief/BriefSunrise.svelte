@@ -256,7 +256,7 @@
     <div class="tl">
       <div
         class="eyebrow tl-head"
-        style="color:rgba(255,255,255,.72)"
+        style="color:rgba(255,255,255,.85)"
         data-testid="brief-timeline-head"
         title={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}
       >
@@ -437,7 +437,7 @@
     margin-top: 4px;
     font-family: var(--b-mono);
     font-size: 11px;
-    color: rgb(var(--b-ink) / 0.4);
+    color: rgb(var(--b-ink) / 0.8);
   }
   .tick {
     position: absolute;
