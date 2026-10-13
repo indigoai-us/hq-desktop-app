@@ -534,8 +534,8 @@
   .it {
     --acts-w: 150px;
   }
-  .it:has(.acts:is(:hover, :focus-within)) {
-    --acts-w: 290px;
+  .it:not(.done):is(:hover, :focus-within) {
+    --acts-w: 300px;
   }
   /* One height for every control on the row (28px), light glass chips, no ring or drop. */
   .acts :global(.launch) {
@@ -579,17 +579,16 @@
     background: rgba(255, 255, 255, 0.26);
     color: #fff;
   }
-  /* Only the primary pill shows on the row; the engine switch and copy appear when you reach for it. */
+  /* The engine switch and copy are hidden until the row is hovered. */
   .acts :global(.eng),
   .acts :global(.copy) {
     display: none;
   }
-  .acts:hover :global(.eng),
-  .acts:focus-within :global(.eng) {
+  /* The whole set shows as soon as the row is hovered, so nothing shifts under the pointer once you reach for a button. */
+  .it:is(:hover, :focus-within) .acts :global(.eng) {
     display: inline-flex;
   }
-  .acts:hover :global(.copy),
-  .acts:focus-within :global(.copy) {
+  .it:is(:hover, :focus-within) .acts :global(.copy) {
     display: inline-grid;
   }
   /* Row text stays readable on the dusk gradient's bright corner. */

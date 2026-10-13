@@ -137,7 +137,6 @@
     <!-- An open day: the rail with nothing on it, and one quiet line in the middle. -->
     <div class="empty" data-testid="brief-today-empty">
       <span class="pt" aria-hidden="true"></span>
-      <span class="lbl">No calls today</span>
       <span class="msg">A clear run at the work.</span>
     </div>
   {/if}
@@ -323,14 +322,6 @@
     border-radius: 50%;
     background: var(--b-knob);
     box-shadow: 0 0 0 1px rgb(var(--b-ink) / 0.05);
-  }
-  .empty .lbl {
-    font-family: var(--b-code);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--b-t3);
   }
   .empty .msg {
     font-size: 13px;

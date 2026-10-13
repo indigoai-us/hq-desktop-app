@@ -1,20 +1,23 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { DECO, decoSvg, decoUrl } from "./brief-deco.js";
+import { DECO, decoSvg, decoUrl, hasDeco } from "./brief-deco.js";
 import { FIELD } from "./brief-layout.js";
 
 describe("card corner motifs", () => {
   it("every card on a colour field has its own motif, none repeated", () => {
     // Sunrise and catch-up sit on the dusk field, which has no corner motif.
     const kinds = Object.entries(FIELD).filter(([, f]) => f !== "dusk").map(([k]) => k);
-    for (const k of kinds) expect(DECO[k], k).toBeTruthy();
-    const bodies = kinds.map((k) => DECO[k]);
+    for (const k of kinds) expect(DECO[k], k).toBeTypeOf("string");
+    // Cards whose corner holds their action buttons opt out with an empty motif.
+    expect(kinds.filter((k) => !hasDeco(k)).sort()).toEqual(["oneThing", "releaseTrain"]);
+    expect(decoUrl("releaseTrain")).toBe("none");
+    const bodies = kinds.filter(hasDeco).map((k) => DECO[k]);
     expect(new Set(bodies).size).toBe(bodies.length);
   });
 
   it("each motif is a glass shape plus a dotted line, in the shared style; priorities is only a fading grid", () => {
     for (const [k, body] of Object.entries(DECO)) {
-      if (k === "needs") continue;
+      if (k === "needs" || !body) continue;
       expect(body, k).toContain("fill='url(#o)'");
       expect(body, k).toContain("stroke-dasharray='0 5'");
     }

@@ -82,9 +82,13 @@
 <style>
   /* At rest the pill is just its label, sized to it; on hover (or when an answer
      has focus) it swaps to the two answers. The answers never widen the resting pill. */
+  /* A floor wide enough for the two answers, so the pill does not grow when they open. */
   .choice {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    min-width: 132px;
+    box-sizing: border-box;
     cursor: default;
   }
   .choice > .alt {
