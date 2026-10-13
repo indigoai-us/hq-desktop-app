@@ -246,3 +246,46 @@ describe("CompanySettingsPage live Groups and Grants", () => {
     expect(target.textContent).not.toContain("folder grants");
   });
 });
+
+describe("CompanySettingsPage Billing: Manage payment", () => {
+  const roster = () => ({
+    getTeamTelemetry: vi.fn(async () => ({ ok: true as const, value: { perMember: [] } })),
+    listMembers: vi.fn(async () => ({ ok: true as const, value: [] })),
+  });
+
+  it("opens the portal session hq-pro minted for this company", async () => {
+    const portal = "https://billing.stripe.com/p/session/test_unicom";
+    const company = { ...roster(), createBillingPortalSession: vi.fn(async () => ({ ok: true as const, value: { url: portal } })) };
+    const openExternal = vi.fn();
+    const target = render({ slug: "unicom-portal", companyUid: "cmp_unicom", company, openExternal, role: "Owner" });
+    openWorkforce(target);
+    target.querySelector<HTMLButtonElement>("[data-testid='manage-payment']")!.click();
+    await vi.waitFor(() => expect(openExternal).toHaveBeenCalledWith(portal));
+    expect(company.createBillingPortalSession).toHaveBeenCalledWith("cmp_unicom");
+    expect(openExternal).not.toHaveBeenCalledWith("https://billing.stripe.com/p/login/hq");
+  });
+
+  it("a non-owner sees an owner handoff instead of the button", () => {
+    const company = { ...roster(), createBillingPortalSession: vi.fn() };
+    const target = render({ slug: "unicom-member", companyUid: "cmp_unicom", company, openExternal: vi.fn(), role: "Member" });
+    openWorkforce(target);
+    expect(target.querySelector("[data-testid='manage-payment']")).toBeNull();
+    expect(text(target, "manage-payment-hint")).toBe("Only an owner of Unicom can manage payment. Ask an owner to open it.");
+    expect(company.createBillingPortalSession).not.toHaveBeenCalled();
+  });
+
+  it("an owner-gate refusal shows the handoff hint, not the server text", async () => {
+    const company = {
+      ...roster(),
+      createBillingPortalSession: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "FORBIDDEN", message: "Requires owner role on this company" })),
+    };
+    const target = render({ slug: "unicom-403", companyUid: "cmp_unicom", company, openExternal: vi.fn(), role: null });
+    openWorkforce(target);
+    target.querySelector<HTMLButtonElement>("[data-testid='manage-payment']")!.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "manage-payment-hint")).toContain("Only an owner of Unicom");
+    });
+    expect(target.textContent).not.toContain("Requires owner role");
+  });
+});

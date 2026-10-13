@@ -1221,6 +1221,15 @@ export interface CompanyApi {
    * slug) since callers already have it from the workspace roster.
    */
   ensureHomeChannel(companyUid: string): AdapterPromise<{ homeChannelId: string }>;
+  /**
+   * Mint a Stripe customer-portal session for a company
+   * (`POST /v1/billing/portal`, body `{ companyUid }`). hq-pro owner-gates the
+   * call and verifies the Stripe customer belongs to that company before it
+   * mints; a non-owner gets 403 (`FORBIDDEN`), a mislinked customer 409
+   * (`BILLING_CUSTOMER_CONFLICT`). The `url` is short-lived: mint one per
+   * click and never cache it.
+   */
+  createBillingPortalSession(companyUid: string): AdapterPromise<{ url: string }>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }

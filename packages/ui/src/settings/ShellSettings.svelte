@@ -100,6 +100,8 @@
     openExternal?: (url: string) => void;
     /** OWNER-R20: companies with the caller's real role (null when unknown), owners first. */
     profileCompanies?: ReadonlyArray<{ uid: string; label: string; role: string | null }>;
+    /** The company selected in the shell; Billing manages it first. */
+    selectedCompanyUid?: string | null;
     /** OWNER-R20/R24: a company row opens that company's General pane. */
     oncompany?: (uid: string) => void;
     onsignout?: () => Promise<void> | void;
@@ -130,6 +132,7 @@
     onsectionchange,
     openExternal,
     profileCompanies = [],
+    selectedCompanyUid = null,
     oncompany,
     onsignout,
     onopenconsole,
@@ -733,7 +736,7 @@
           {/await}
         {/if}
       {:else if active === "billing"}
-        <BillingSettingsPane {openExternal} />
+        <BillingSettingsPane {openExternal} company={adapter?.company ?? null} companies={profileCompanies} {selectedCompanyUid} />
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
       {:else if active === "storage"}
