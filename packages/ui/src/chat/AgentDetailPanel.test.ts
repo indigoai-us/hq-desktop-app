@@ -146,7 +146,7 @@ async function mountPanel(over: Record<string, unknown> = {}) {
 }
 
 describe("AgentDetailPanel", () => {
-  it("renders header, jobs, and usage from fixture adapter data", async () => {
+  it("renders header and jobs from fixture adapter data, with no usage block", async () => {
     await mountPanel();
     await vi.waitFor(() => {
       expect(
@@ -169,10 +169,9 @@ describe("AgentDetailPanel", () => {
     expect(
       host.querySelector('[data-testid="agent-detail-job-row"]')?.textContent,
     ).toContain("Daily digest");
-    expect(
-      host.querySelector('[data-testid="agent-detail-usage-tokens"]')
-        ?.textContent,
-    ).toBe("1K");
+    expect(host.querySelector('[data-testid="agent-detail-usage"]')).toBeNull();
+    expect(host.textContent).not.toContain("30d usage");
+    expect(host.querySelector('[data-testid="agent-detail-pause-agent"]')).toBeNull();
     expect(
       host.querySelector('[data-testid="agent-detail-avatar-picker-slot"]'),
     ).not.toBeNull();
@@ -200,13 +199,15 @@ describe("AgentDetailPanel", () => {
     ).toContain("Daily digest");
   });
 
-  it("shows empty and unavailable section states", async () => {
+  it("shows the empty jobs state and never reads company telemetry", async () => {
+    const getCompanyTelemetry = vi.fn(async () =>
+      failure("http-403", "Forbidden: owner or admin role required"),
+    );
     await mountPanel({
       adapter: {
         agents: agentsApi({
           listJobs: async () => ok({ jobs: [] }),
-          getCompanyTelemetry: async () =>
-            failure("http-403", "Forbidden: owner or admin role required"),
+          getCompanyTelemetry,
         }),
       },
     });
@@ -214,11 +215,9 @@ describe("AgentDetailPanel", () => {
       expect(
         host.querySelector('[data-testid="agent-detail-jobs-empty"]'),
       ).not.toBeNull();
-      expect(
-        host.querySelector('[data-testid="agent-detail-usage-unavailable"]')
-          ?.textContent,
-      ).toContain("owner or admin");
     });
+    expect(getCompanyTelemetry).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="agent-detail-usage"]')).toBeNull();
   });
 
   it("hides settings for non-owners and saves the profile payload for owners", async () => {
@@ -359,13 +358,12 @@ describe("AgentDetailPanel profile endpoint", () => {
     });
     await vi.waitFor(() => {
       expect(host.querySelector('[data-testid="agent-detail-channels"]')).not.toBeNull();
-      expect(host.querySelector('[data-testid="agent-detail-usage-tokens"]')?.textContent).toBe("1K"); // shared compactNumber formatter (OWNER-R28)
     });
     expect(getStatus).not.toHaveBeenCalled();
     expect(listMobileRoster).not.toHaveBeenCalled();
     expect(listJobs).not.toHaveBeenCalled();
     expect(listOwners).not.toHaveBeenCalled();
-    expect(getCompanyTelemetry).toHaveBeenCalledTimes(1);
+    expect(getCompanyTelemetry).not.toHaveBeenCalled();
     expect(host.querySelector('[data-testid="agent-detail-jobs"]')).toBeNull();
     expect(host.querySelector('[data-testid="agent-detail-channel-row"]')?.textContent).toContain("slack");
     expect(host.querySelector('[data-testid="agent-detail-apps-featured"]')?.textContent).toContain("Notion");

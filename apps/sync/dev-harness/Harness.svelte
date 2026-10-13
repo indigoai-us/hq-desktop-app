@@ -25,6 +25,7 @@
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
   import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
+  import AgentControlPreview from './AgentControlPreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
@@ -276,6 +277,9 @@
        desktop.bot-integration-control-v1 is forced on via the flagEnabled
        prop. Size the preview viewport to ~1180x760. -->
   <BotIntegrationsPreview />
+{:else if view === 'agent-control'}
+  <!-- Cloud bot pane tabs over an in-memory control API (?tab=, ?offline=1, ?empty=1). ~900x760 viewport. -->
+  <AgentControlPreview />
 {:else if view === 'claude-code'}
   <!-- New Bot waking screen at the Claude code paste-back (?claude= variants in ClaudeCodePreview.svelte). -->
   <ClaudeCodePreview />

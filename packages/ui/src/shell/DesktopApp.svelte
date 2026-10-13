@@ -15975,6 +15975,13 @@
                       runtimeKind: "cloud",
                       companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      control: adapter.agentControl ?? null,
+                      avatarUrl: openAgentMember.avatarUrl ?? avatarByUid[openAgentMember.personUid] ?? null,
+                      onconnect: dmCloudBotUid === openAgentMember.personUid
+                        ? (kind: string) => { if (kind === "slack") openConnectionModal(openAgentMember!.personUid, "slack"); }
+                        : null,
+                      onopenurl: (url: string) => onopenurl?.(url),
+                      adapter,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}

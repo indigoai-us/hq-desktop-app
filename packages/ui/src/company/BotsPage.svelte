@@ -306,6 +306,8 @@
                 runtimeKind: current.kind,
                 companyUid,
                 agents: adapter?.agents ?? null,
+                control: adapter?.agentControl ?? null,
+                adapter: adapter ?? null,
                 onclose: closeProfile,
                 onmessage: () => onmessage?.(current.uid, current.name),
               }}

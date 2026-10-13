@@ -1,0 +1,190 @@
+/*
+ * Shared controls for the cloud bot pane's tabs and pop-ups. 13px text,
+ * weight 500 at most, an 8px spacing scale, theme tokens only.
+ */
+
+.cp-section { display: flex; flex-direction: column; gap: 8px; }
+.cp-section + .cp-section { border-top: 1px solid var(--v4-rowline, var(--line)); padding-top: 16px; }
+.cp-head { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.cp-label { color: var(--v4-text-2); font-weight: 500; }
+.cp-count { color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
+.cp-head .cp-act { margin-left: auto; }
+.cp-muted { margin: 0; color: var(--v4-text-3); }
+
+.cp-rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.cp-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--v4-rowline, var(--line));
+}
+.cp-row:last-child { border-bottom: 0; }
+.cp-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+button.cp-row-main { cursor: pointer; border-radius: 6px; }
+button.cp-row-main:hover .cp-row-title { color: var(--v4-text-1); text-decoration: none; }
+button.cp-row-main:focus-visible { outline: 2px solid var(--v4-focus-ring); outline-offset: 2px; }
+.cp-row-title { color: var(--v4-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  color: var(--v4-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.cp-row-side { display: flex; align-items: center; gap: 8px; }
+
+.cp-state { display: inline-flex; align-items: center; gap: 6px; color: var(--v4-text-3); }
+.cp-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--v4-idle, var(--v4-text-3)); }
+.cp-state[data-tone="ok"]::before { background: var(--v4-ok); }
+.cp-state[data-tone="error"] { color: var(--v4-error); }
+.cp-state[data-tone="error"]::before { background: var(--v4-error); }
+
+.cp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--hq-btn-h, 28px);
+  padding: 0 var(--hq-btn-pad-inline, 10px);
+  border: 1px solid var(--v4-control-border, var(--line2));
+  border-radius: var(--v4-radius-button, 6px);
+  background: transparent;
+  color: var(--v4-text-1);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cp-btn:hover:not(:disabled) { background: var(--hover, var(--v4-hover)); }
+.cp-btn:focus-visible { outline: 2px solid var(--v4-focus-ring); outline-offset: 2px; }
+.cp-btn:disabled { opacity: 0.5; cursor: default; }
+.cp-btn.primary { border-color: transparent; background: var(--v4-primary-bg); color: var(--v4-primary-fg); font-weight: 500; }
+.cp-btn.primary:hover:not(:disabled) { background: var(--v4-primary-bg); filter: brightness(1.08); }
+.cp-btn.danger { color: var(--v4-error); }
+.cp-btn.quiet { border-color: transparent; color: var(--v4-text-2); }
+.cp-btn.quiet:hover:not(:disabled) { color: var(--v4-text-1); }
+.cp-grow { flex: 1; }
+
+.cp-spin {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: cp-spin 0.8s linear infinite;
+}
+@keyframes cp-spin { to { transform: rotate(360deg); } }
+
+.cp-switch {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--v4-control-bg);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.cp-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--v4-text-2);
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+.cp-switch[aria-checked="true"] { background: var(--v4-ok); }
+.cp-switch[aria-checked="true"]::after { transform: translateX(12px); background: var(--v4-primary-fg, var(--v4-text-1)); }
+.cp-switch:disabled { opacity: 0.5; cursor: default; }
+.cp-switch:focus-visible { outline: 2px solid var(--v4-focus-ring); outline-offset: 2px; }
+
+.cp-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--v4-hairline, var(--line));
+  border-radius: var(--v4-radius-field, 6px);
+  background: var(--v4-control-faint);
+  color: var(--v4-text-2);
+}
+.cp-banner[data-tone="warn"] { color: var(--v4-warn, var(--v4-text-2)); }
+.cp-error { margin: 0; color: var(--v4-error); }
+
+.cp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px 0;
+  color: var(--v4-text-3);
+}
+.cp-empty p { margin: 0; }
+
+.cp-field { display: flex; flex-direction: column; gap: 4px; }
+.cp-field > span { color: var(--v4-text-2); }
+.cp-input, .cp-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--overlay-field-border, var(--v4-control-border));
+  border-radius: var(--v4-radius-field, 6px);
+  background: var(--overlay-field-bg, var(--v4-control-faint));
+  color: var(--v4-text-1);
+  font: inherit;
+}
+.cp-input:focus-visible, .cp-textarea:focus-visible { outline: 2px solid var(--v4-focus-ring); outline-offset: 0; }
+.cp-textarea { min-height: 96px; resize: vertical; line-height: 1.5; }
+.cp-textarea.roomy { min-height: 320px; font-family: var(--font-mono, "Geist Mono", monospace); }
+.cp-hint { margin: 0; color: var(--v4-text-3); }
+
+.cp-seg { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.cp-seg button {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--v4-control-border, var(--line));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--v4-text-2);
+  font: inherit;
+  cursor: pointer;
+}
+.cp-seg button[aria-pressed="true"] { background: var(--v4-active-row, var(--v4-hover)); color: var(--v4-text-1); }
+
+.cp-kv { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px 12px; margin: 0; }
+.cp-kv dt { color: var(--v4-text-3); }
+.cp-kv dd { margin: 0; color: var(--v4-text-1); overflow-wrap: anywhere; }
+
+.cp-clamp {
+  margin: 0;
+  color: var(--v4-text-2);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cp-doc { color: var(--v4-text-1); overflow-wrap: anywhere; }
+.cp-doc pre { overflow: auto; }
+.cp-mono { font-family: var(--font-mono, "Geist Mono", monospace); }

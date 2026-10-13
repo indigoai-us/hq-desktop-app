@@ -56,7 +56,7 @@ async function openJobsTab(agents = agentsApi()) {
   document.body.appendChild(host);
   component = mount(ProfilePaneHost, {
     target: host,
-    props: { kind: "bot", name: "scout", agentUid: "agt_scout", runtimeKind: "cloud", companyUid: "cmp_a", agents: agents as never },
+    props: { kind: "bot", name: "scout", agentUid: "agt_scout", runtimeKind: "local", companyUid: "cmp_a", agents: agents as never },
   });
   await settle();
   click('[data-testid="bot-pane-tab-jobs"]');
@@ -75,7 +75,7 @@ describe("bot pane Jobs tab", () => {
     document.body.appendChild(host);
     component = mount(ProfilePaneHost, {
       target: host,
-      props: { kind: "bot", name: "scout", agentUid: "agt_scout", runtimeKind: "cloud", companyUid: "cmp_a", agents: agentsApi() as never },
+      props: { kind: "bot", name: "scout", agentUid: "agt_scout", runtimeKind: "local", companyUid: "cmp_a", agents: agentsApi() as never },
     });
     await settle();
     expect(q('[data-testid="bot-pane-tab-profile"]')?.getAttribute("aria-selected")).toBe("true");

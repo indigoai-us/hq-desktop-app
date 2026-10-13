@@ -208,7 +208,7 @@ describe("bot profile opened from a DM header (QA-087)", () => {
         company: "Indigo",
         agentUid: "agt_drlove",
         companyUid: "cmp_indigo",
-        runtimeKind: "cloud",
+        runtimeKind: "local",
         agents: agents as never,
       },
     });

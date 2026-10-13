@@ -148,33 +148,33 @@ async function mountPanel(over: Record<string, unknown> = {}) {
 const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
 
 describe("AgentDetailPanel raw errors", () => {
-  it("shows plain copy, not the raw adapter message, when pausing the bot fails", async () => {
+  it("shows plain copy, not the raw adapter message, when removing the bot fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await mountPanel({
       adapter: {
         agents: agentsApi({
-          stop: async () => failure("unknown", RAW),
+          deprovision: async () => failure("unknown", RAW),
           getCompanyTelemetry: async () => failure("unknown", RAW),
         }),
       },
     });
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="agent-detail-pause-agent"]')).not.toBeNull();
+      expect(host.querySelector('[data-testid="agent-detail-remove"]')).not.toBeNull();
     });
-    (host.querySelector('[data-testid="agent-detail-pause-agent"]') as HTMLButtonElement).click();
+    (host.querySelector('[data-testid="agent-detail-remove"]') as HTMLButtonElement).click();
     await tick();
     (document.querySelector('[data-testid="confirm-dialog-ok"]') as HTMLButtonElement).click();
     await vi.waitFor(() => {
       expect(
         host.querySelector('[data-testid="agent-detail-action-error"]')?.textContent,
-      ).toContain("Could not pause the bot. Try again.");
+      ).toContain("Could not remove the bot. Try again.");
     });
     expect(host.textContent).not.toContain("boom");
     expect(host.textContent).not.toContain("HTTP 500");
     for (const el of host.querySelectorAll("[title]")) {
       expect(el.getAttribute("title")).not.toContain("boom");
     }
-    expect(warn).toHaveBeenCalledWith("[agent-detail] pause the bot failed", RAW);
+    expect(warn).toHaveBeenCalledWith("[agent-detail] remove the bot failed", RAW);
     warn.mockRestore();
   });
 });

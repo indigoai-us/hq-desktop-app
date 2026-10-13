@@ -10,12 +10,13 @@
   import BotSessionPane from "./BotSessionPane.svelte";
   import EditBotSheet from "./EditBotSheet.svelte";
   import UserProfilePane from "./UserProfilePane.svelte";
+  import CloudBotPane from "./cloud/CloudBotPane.svelte";
   import { badgeProgressFor, badgesFor } from "../../badges/badge-source.js";
   import BadgeDetailPane from "../../badges/BadgeDetailPane.svelte";
   import BadgesPane from "../../badges/BadgesPane.svelte";
   import { resolveEarned, type ResolvedBadge } from "../../badges/badge-catalog.js";
   import { untrack } from "svelte";
-  import type { AgentsApi } from "@hq/platform";
+  import type { AgentControlApi, AgentControlChannelKind, AgentsApi, PlatformAdapter } from "@hq/platform";
   import {
     defaultTelemetryRange,
     jobsFromPayload,
@@ -59,6 +60,13 @@
     runtimeKind?: "local" | "cloud" | null;
     companyUid?: string | null;
     agents?: AgentsApi | null;
+    /** Cloud bots: the control API their tabs read and write through. */
+    control?: AgentControlApi | null;
+    avatarUrl?: string | null;
+    /** Cloud bots: start connecting a channel through the shell's existing flow. */
+    onconnect?: ((kind: AgentControlChannelKind) => void) | null;
+    onopenurl?: ((url: string) => void) | null;
+    adapter?: PlatformAdapter | null;
     /** Where it opens: the profile, or straight to the Badges page ("See all"). */
     view?: "profile" | "badges";
     /** Opens straight to this earned badge's detail. */
@@ -86,6 +94,11 @@
     runtimeKind = null,
     companyUid = null,
     agents = null,
+    control = null,
+    avatarUrl = null,
+    onconnect = null,
+    onopenurl = null,
+    adapter = null,
     view = "profile",
     badgeId = null,
     openKey = 0,
@@ -106,6 +119,8 @@
   let paused = $state(false);
   let controlBusy = $state(false);
   let actionError = $state<string | null>(null);
+  /** Cloud bots get the tabbed control pane; local bots keep the profile pane. */
+  const cloudPane = $derived(kind === "bot" && runtimeKind === "cloud" && !!(agentUid ?? "").trim());
 
   // Jobs and usage refresh behind the cached first frame; the usage row paints
   // a skeleton until the telemetry call settles.
@@ -123,7 +138,8 @@
       usage = null;
       return;
     }
-    usage = { status: "loading" };
+    const cloud = runtimeKind === "cloud";
+    usage = cloud ? null : { status: "loading" };
     let cancelled = false;
     const range = defaultTelemetryRange(30);
     // The bot's own membership list is agent-scoped, so it reads the same from
@@ -142,6 +158,11 @@
       .catch((err: unknown) => {
         if (!cancelled) console.warn("[hq-desktop] bot memberships refresh failed", err);
       });
+    if (cloud) {
+      return () => {
+        cancelled = true;
+      };
+    }
     void Promise.all([
       api.listJobs(uid),
       company
@@ -301,6 +322,20 @@
       owner={kind === "bot" ? botName : name}
       onback={() => (badgesPage = false)}
       {onclose}
+    />
+  {:else if cloudPane}
+    <CloudBotPane
+      uid={(agentUid ?? "").trim()}
+      name={botName}
+      {live}
+      {avatarUrl}
+      {control}
+      {onclose}
+      {onmessage}
+      {onconnect}
+      {onopenurl}
+      {adapter}
+      {companyUid}
     />
   {:else if kind === "bot" && mode === "session" && botView}
     <BotSessionPane

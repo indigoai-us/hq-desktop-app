@@ -1,10 +1,9 @@
 <script lang="ts">
   import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
-  import { compactNumber } from "../common/compact-number.js";
   /**
-   * Slack-style right-hand agent detail pane: identity, scheduled jobs,
-   * 30-day usage, and owner/admin settings. Data comes from adapter.agents
+   * Slack-style right-hand agent detail pane: identity, scheduled jobs
+   * and owner/admin settings. Data comes from adapter.agents
    * (hq-pro). Missing/forbidden endpoints render an honest empty state.
    */
   import type { AgentsApi, LocalBotRow, PlatformAdapter } from "@hq/platform";
@@ -17,7 +16,6 @@
   import type { SelfIdentity } from "../identity/self.js";
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import {
-    defaultTelemetryRange,
     draftFromRoutine,
     emptyRoutineDraft,
     freshnessNote,
@@ -32,12 +30,10 @@
     routineBodyFromDraft,
     seedHeader,
     unavailableMessage,
-    usageFromCompanyTelemetry,
     type AgentDetailHeader,
     type AgentJobRow,
     type AgentProfileView,
     type AgentRoutineRow,
-    type AgentUsageView,
     type LoadState,
     type RoutineActionId,
     type RoutineCadence,
@@ -120,14 +116,13 @@
   let routineError = $state<string | null>(null);
   let appsExpanded = $state(false);
   let jobsState = $state<LoadState<AgentJobRow[]>>({ status: "loading" });
-  let usageState = $state<LoadState<AgentUsageView>>({ status: "loading" });
   let expandedJobId = $state<string | null>(null);
   let nameDraft = $state("");
   let descriptionDraft = $state("");
   let saveBusy = $state(false);
   let saveError = $state<string | null>(null);
   let confirm = $state<
-    "pause-agent" | "remove-agent" | "pause-job" | "delete-routine" | null
+    "remove-agent" | "pause-job" | "delete-routine" | null
   >(null);
   let pendingJobId = $state<string | null>(null);
   let actionError = $state<string | null>(null);
@@ -155,7 +150,6 @@
     nameDraft = displayName;
     descriptionDraft = description ?? "";
     jobsState = { status: "loading" };
-    usageState = { status: "loading" };
     profile = null;
     titleDraft = "";
     routines = [];
@@ -173,22 +167,10 @@
         status: "unavailable",
         message: "Not available yet.",
       };
-      usageState = {
-        status: "unavailable",
-        message: "Not available yet.",
-      };
       return;
     }
 
     async function load(): Promise<void> {
-      const range = defaultTelemetryRange(30);
-      const usagePromise = company
-        ? agents.getCompanyTelemetry(company, range.from, range.to)
-        : Promise.resolve({
-            ok: false as const,
-            reason: "unavailable" as const,
-            message: "No company is bound to this conversation.",
-          });
       const profileRes = agents.getProfile
         ? await agents.getProfile(uid)
         : null;
@@ -204,18 +186,14 @@
         nameDraft = owned.header.displayName;
         titleDraft = owned.header.title;
         descriptionDraft = owned.header.description;
-        const usageRes = await usagePromise;
-        if (cancelled) return;
-        applyUsage(usageRes);
         return;
       }
 
-      const [statusRes, rosterRes, jobsRes, usageRes, ownersRes] =
+      const [statusRes, rosterRes, jobsRes, ownersRes] =
         await Promise.all([
           agents.getStatus(uid),
           agents.listMobileRoster(company),
           agents.listJobs(uid),
-          usagePromise,
           company
             ? agents.listOwners(company, uid)
             : Promise.resolve({
@@ -260,37 +238,6 @@
         };
       }
 
-      applyUsage(usageRes);
-    }
-
-    function applyUsage(
-      usageRes:
-        | { ok: true; value: unknown }
-        | { ok: false; reason: string; code?: string; message?: string },
-    ): void {
-      if (usageRes.ok) {
-        const usage = usageFromCompanyTelemetry(usageRes.value, uid);
-        usageState = {
-          status: "ready",
-          value:
-            usage ?? {
-              tokens: 0,
-              sessions: 0,
-              stories: 0,
-              deploys: 0,
-              outcomesPerMillion: null,
-              dailyTokens: [],
-              tokensByModel: [],
-              topSkills: [],
-              projects: [],
-            },
-        };
-      } else {
-        usageState = {
-          status: "unavailable",
-          message: unavailableMessage(usageRes, "usage"),
-        };
-      }
     }
 
     void load();
@@ -458,16 +405,6 @@
     if (next?.hasBox) routines = next.routines;
   }
 
-  async function pauseAgent(): Promise<void> {
-    const res = await adapter.agents.stop(agentUid);
-    if (!res.ok) {
-      console.warn("[agent-detail] pause the bot failed", res.message);
-      actionError = "Could not pause the bot. Try again.";
-      return;
-    }
-    header = { ...header, status: "IDLE", runtimeStatus: "stopped" };
-  }
-
   async function removeAgent(): Promise<void> {
     const res = await adapter.agents.deprovision(agentUid);
     if (!res.ok) {
@@ -478,16 +415,6 @@
     onclose?.();
   }
 
-  function sparkHeight(value: number, max: number): number {
-    if (max <= 0) return 8;
-    return Math.max(8, Math.round((value / max) * 100));
-  }
-
-  const dailyMax = $derived(
-    usageState.status === "ready"
-      ? Math.max(0, ...usageState.value.dailyTokens)
-      : 0,
-  );
 </script>
 
 <aside
@@ -1021,88 +948,6 @@
     </section>
     {/if}
 
-    <section class="ad-section" data-testid="agent-detail-usage">
-      <h3 class="ad-kicker">Bot · 30d usage</h3>
-      {#if usageState.status === "loading"}
-        <p class="ad-muted">Loading usage…</p>
-      {:else if usageState.status === "unavailable"}
-        <p class="ad-muted" data-testid="agent-detail-usage-unavailable">
-          {usageState.message}
-        </p>
-      {:else}
-        {@const usage = usageState.value}
-        <dl class="ad-stats">
-          <div>
-            <dt>Tokens</dt>
-            <dd data-testid="agent-detail-usage-tokens">
-              {compactNumber(usage.tokens)}
-            </dd>
-          </div>
-          <div>
-            <dt>Sessions</dt>
-            <dd>{usage.sessions ?? "—"}</dd>
-          </div>
-          <div>
-            <dt>Stories</dt>
-            <dd>{usage.stories ?? "—"}</dd>
-          </div>
-          <div>
-            <dt>Deploys</dt>
-            <dd>{usage.deploys ?? "—"}</dd>
-          </div>
-          <div class="ad-stat-wide">
-            <dt>Outcomes / 1M tokens</dt>
-            <dd>
-              {usage.outcomesPerMillion == null
-                ? "—"
-                : usage.outcomesPerMillion.toFixed(1)}
-            </dd>
-          </div>
-        </dl>
-        {#if usage.dailyTokens.length > 0}
-          <div
-            class="ad-spark"
-            data-testid="agent-detail-usage-spark"
-            aria-hidden="true"
-          >
-            {#each usage.dailyTokens as value, i (i)}
-              <span style={`height:${sparkHeight(value, dailyMax)}%`}></span>
-            {/each}
-          </div>
-        {/if}
-        {#if usage.tokensByModel.length > 0}
-          <h4 class="ad-sub">Tokens by model</h4>
-          <ul class="ad-models">
-            {#each usage.tokensByModel as model (model.model)}
-              <li>
-                <span class="ad-model-name">{model.model}</span>
-                <span class="ad-bar" aria-hidden="true"
-                  ><i style={`width:${model.pct}%`}></i></span
-                >
-                <span class="ad-model-n">{compactNumber(model.tokens)}</span>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-        {#if usage.topSkills.length > 0}
-          <h4 class="ad-sub">Top skills</h4>
-          <div class="ad-chips">
-            {#each usage.topSkills as skill (skill.skill)}
-              <span>{skill.skill} {skill.count}</span>
-            {/each}
-          </div>
-        {/if}
-        {#if usage.projects.length > 0}
-          <h4 class="ad-sub">Projects</h4>
-          <div class="ad-chips">
-            {#each usage.projects as project (project)}
-              <span>{project}</span>
-            {/each}
-          </div>
-        {/if}
-      {/if}
-    </section>
-
     {#if canManage}
       <section class="ad-section" data-testid="agent-detail-settings">
         <h3 class="ad-kicker">Settings</h3>
@@ -1159,14 +1004,6 @@
         <div class="ad-danger-row">
           <button
             type="button"
-            class="ad-text-btn"
-            data-testid="agent-detail-pause-agent"
-            onclick={() => (confirm = "pause-agent")}
-          ><RailIcon name="stop" />
-            Pause agent
-          </button>
-          <button
-            type="button"
             class="ad-text-btn danger"
             data-testid="agent-detail-remove"
             onclick={() => (confirm = "remove-agent")}
@@ -1216,18 +1053,6 @@
     confirm = null;
     pendingJobId = null;
   }}
-/>
-
-<ConfirmDialog
-  open={confirm === "pause-agent"}
-  title="Pause this bot?"
-  message="Stops the bot's box. Scheduled jobs will not run while it is stopped."
-  confirmLabel="Pause bot"
-  onconfirm={() => {
-    confirm = null;
-    void pauseAgent();
-  }}
-  oncancel={() => (confirm = null)}
 />
 
 <ConfirmDialog
@@ -1333,28 +1158,17 @@
     line-height: 1.45;
   }
 
-  .ad-meta,
-  .ad-stats {
+  .ad-meta {
     display: grid;
     gap: 8px;
     margin: 0;
   }
 
-  .ad-meta div,
-  .ad-stats div {
+  .ad-meta div {
     min-width: 0;
   }
 
-  .ad-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .ad-stat-wide {
-    grid-column: 1 / -1;
-  }
-
   .ad-meta dt,
-  .ad-stats dt,
   .ad-kicker,
   .ad-sub,
   .ad-field span {
@@ -1362,8 +1176,7 @@
     font: 500 13px/1.2 var(--font-ui);
   }
 
-  .ad-meta dd,
-  .ad-stats dd {
+  .ad-meta dd {
     margin: 2px 0 0;
     color: var(--t1);
     font-size: 13px;
@@ -1465,62 +1278,6 @@
     color: var(--t2);
     font: 400 13px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
     white-space: pre-wrap;
-  }
-
-  .ad-spark {
-    display: flex;
-    align-items: flex-end;
-    gap: 2px;
-    height: 28px;
-  }
-
-  .ad-spark span {
-    flex: 1 1 0;
-    min-width: 2px;
-    background: color-mix(in srgb, var(--t1) 35%, transparent);
-  }
-
-  .ad-models {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .ad-models li {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 72px 40px;
-    gap: 8px;
-    align-items: center;
-  }
-
-  .ad-model-name {
-    overflow: hidden;
-    color: var(--t2);
-    font-size: 13px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ad-bar {
-    display: block;
-    height: 4px;
-    overflow: hidden;
-    background: color-mix(in srgb, var(--t1) 10%, transparent);
-  }
-
-  .ad-bar i {
-    display: block;
-    height: 100%;
-    background: color-mix(in srgb, var(--t1) 45%, transparent);
-  }
-
-  .ad-model-n {
-    color: var(--t3);
-    font-size: 13px;
-    text-align: right;
   }
 
   .ad-chips {
