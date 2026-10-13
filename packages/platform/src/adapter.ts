@@ -1152,6 +1152,19 @@ export interface CompanyApi {
    */
   listIntegrations?(companyUid: string): AdapterPromise<Json>;
   /**
+   * One connection's redaction presets, hq-pro `GET
+   * /v1/integrations/admin/redaction` (US-004). A refusal keeps the HTTP
+   * status and the server code (`REDACTION_ADMIN_REQUIRED`,
+   * `CONNECTION_NOT_FOUND`, `REDACTION_REQUEST_INVALID`). Desktop only.
+   */
+  getRedaction?(companyUid: string, connectionId: string): AdapterPromise<Json>;
+  /**
+   * Replace one connection's list of presets that are on (`[]` = all off),
+   * hq-pro `PUT /v1/integrations/admin/redaction`. Same answer and refusals
+   * as {@link getRedaction}. Desktop only.
+   */
+  putRedaction?(companyUid: string, connectionId: string, presets: readonly string[]): AdapterPromise<Json>;
+  /**
    * Raw hq-deploy `/api/apps` rows for one scope (company slug or
    * `personal`): `{ scope, callerSub, apps }`. Desktop only.
    */
@@ -1557,6 +1570,18 @@ export function localIanaZone(): string | undefined {
 export const COMPANY_INTEGRATION_PATHS = {
   list: (companyUid: string) =>
     `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}`,
+} as const;
+
+/**
+ * US-004 (hq-pro #4915): the "Hidden from AI" redaction presets of one
+ * connection. GET reads them; PUT replaces the whole list of presets that are
+ * on (`[]` = all off). Both answer `{ companyUid, connectionId, presets,
+ * availablePresets, isDefault, updatedAt, updatedBy, canEdit }`.
+ */
+export const REDACTION_PATHS = {
+  read: (companyUid: string, connectionId: string) =>
+    `/v1/integrations/admin/redaction?companyUid=${encodeURIComponent(companyUid)}&connectionId=${encodeURIComponent(connectionId)}`,
+  write: "/v1/integrations/admin/redaction",
 } as const;
 
 /** The caller's personal integrations, as read by the console's Personal Integrations page. */
