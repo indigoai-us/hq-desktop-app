@@ -5115,10 +5115,16 @@ fn skip_automatic_core_update_for_disabled_updates(
 fn defer_automatic_core_update_for_sync(
     candidate: CoreAutoUpdateCandidate<'_>,
     deferral: Option<(u32, Duration)>,
+    daemon_mode: bool,
 ) -> NativeCoreAutoUpdateOutcome {
+    let (count, age) = deferral.unwrap_or((0, Duration::ZERO));
     log(
         "hq-core-update",
-        "native auto-update deferred: sync in progress",
+        &format!(
+            "native auto-update deferred: sync in progress (host={}, deferral {count}/{CORE_UPDATE_SYNC_DEFERRAL_CAP}, first {}s ago)",
+            if daemon_mode { "daemon" } else { "app" },
+            age.as_secs()
+        ),
     );
     emit_core_update_event(
         "core_update_skipped",
@@ -5567,7 +5573,6 @@ where
         automatic_target_baseline_refresh_pending_with_path(candidate.channel, injected_path);
     let mut sync_deferral = (sync_in_progress
         && auto_updates
-        && !daemon_mode
         && (candidate.version_behind || baseline_refresh_pending))
         .then(|| record_core_update_sync_deferral(now()));
     let mut sync_deferral_cap_reached = sync_deferral.is_some_and(|(_, _, capped)| capped);
@@ -5584,6 +5589,7 @@ where
             defer_automatic_core_update_for_sync(
                 candidate,
                 sync_deferral.map(|(count, age, _)| (count, age)),
+                daemon_mode,
             )
         }
         CoreAutoUpdateDecision::Install => {
@@ -5606,9 +5612,6 @@ where
                     return NativeCoreAutoUpdateOutcome::DeferredForPrewarm;
                 }
                 AutomaticCoreUpdatePreinstall::DeferForSync => {
-                    if daemon_mode {
-                        return defer_automatic_core_update_for_sync(candidate, None);
-                    }
                     let checked_at = now();
                     let current_streak = core_update_sync_deferral_snapshot(checked_at);
                     if !current_streak.2 {
@@ -5617,6 +5620,7 @@ where
                             return defer_automatic_core_update_for_sync(
                                 candidate,
                                 Some((count, age)),
+                                daemon_mode,
                             );
                         }
                         sync_deferral = Some((count, age, capped));
