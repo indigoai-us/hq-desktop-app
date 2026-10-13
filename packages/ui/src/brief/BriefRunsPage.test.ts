@@ -170,6 +170,36 @@ describe("BriefRunsPage", () => {
     expect(creator.fix).toHaveBeenCalledWith("connect-model", bot);
   });
 
+  it("keeps Create brief available next to the sign-in fix when a brief already exists", async () => {
+    const bot = { name: "setup", role: "assistant", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    let signedIn = false;
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: vi.fn(async () =>
+        signedIn
+          ? { ok: false as const, bot, fix: "start-bot" as const, message: "Your assistant is not running." }
+          : { ok: false as const, bot, fix: "sign-in" as const, message: "Your assistant needs you to sign in to Claude again before it can build a brief." },
+      ),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render(files(), { creator });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    expect(q("brief-blocked")?.textContent).toContain("sign in to Claude again");
+    // The run action is not hidden behind the sign-in state: after signing in
+    // elsewhere, Create brief checks again and shows the next real reason.
+    expect(q("brief-create")).not.toBeNull();
+    signedIn = true;
+    q("brief-create")!.click();
+    await settle();
+    expect(creator.check).toHaveBeenCalledTimes(2);
+    expect(q("brief-blocked")?.textContent).toBe("Your assistant is not running.");
+    expect(q("brief-fix")?.textContent?.trim()).toBe("Start it");
+  });
+
   it("Create brief dispatches and shows the progress step from status.json", async () => {
     const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
     const f: Record<string, string> = {};
