@@ -106,6 +106,38 @@ describe('Onboarding: the welcome flow window', () => {
     expect(commands()).not.toContain('get_desktop_wallpaper');
   });
 
+  it('keeps the heads-up card transparent until the window is at card size', async () => {
+    let finishResize: () => void = () => {};
+    win.center.mockImplementationOnce(
+      () => new Promise<undefined>((done) => (finishResize = () => done(undefined))),
+    );
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    const card = () => host.querySelector<HTMLElement>('[data-testid="heads-up"]');
+    expect(card()?.dataset.ready).toBe('false');
+    expect(card()?.classList.contains('ready')).toBe(false);
+
+    finishResize();
+    await settle();
+    expect(card()?.dataset.ready).toBe('true');
+    expect(card()?.classList.contains('ready')).toBe(true);
+  });
+
+  it('still shows the heads-up card when the window cannot be resized', async () => {
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    win.setSize.mockRejectedValueOnce(new Error('no window'));
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    expect(host.querySelector<HTMLElement>('[data-testid="heads-up"]')?.dataset.ready).toBe('true');
+    warned.mockRestore();
+  });
+
   it('starts the session scan as soon as the heads-up opens, before sign-in', async () => {
     component = mount(Onboarding, {
       target: host,

@@ -1,10 +1,18 @@
 <script lang="ts">
   import { HEADS_UP_COPY, type HeadsUpAction } from '../../lib/heads-up';
+  import { HQ_MARK_H, HQ_MARK_Q } from './welcome/engines';
+  import './welcome/welcome.css';
 
   let {
     onaction,
+    ready = true,
   }: {
     onaction: (action: HeadsUpAction) => void | Promise<void>;
+    /**
+     * False while the window is still being sized down from full screen.
+     * The card stays transparent until then, so the screen does not flash.
+     */
+    ready?: boolean;
   } = $props();
 
   let busy = $state(false);
@@ -20,145 +28,152 @@
   }
 </script>
 
-<!-- The first-launch heads-up. Same palette and type as the welcome flow
-     (welcome.css), at card size, before the window takes the screen. -->
-<div class="heads-up" data-testid="heads-up" data-tauri-drag-region>
-  <h1 class="title" data-tauri-drag-region>{HEADS_UP_COPY.title}</h1>
-  <ul class="points">
-    {#each HEADS_UP_COPY.points as point (point)}
-      <li>{point}</li>
-    {/each}
-  </ul>
-  <div class="actions">
-    <button
-      type="button"
-      class="btn primary"
-      data-testid="heads-up-start"
-      disabled={busy}
-      onclick={() => void choose('start')}>{HEADS_UP_COPY.startNow}</button
-    >
-    <div class="secondary">
+<!-- The first-launch heads-up. It is the first frame of the welcome flow at
+     card size: the same .hq-welcome tokens, veil color, grain, type, buttons and
+     enter motion (welcome/welcome.css). -->
+<div
+  class="hq-welcome heads-up"
+  class:ready
+  data-testid="heads-up"
+  data-ready={ready ? 'true' : 'false'}
+  data-tauri-drag-region
+>
+  <div class="surface" aria-hidden="true"></div>
+  <div class="grain" class:on={ready} aria-hidden="true"></div>
+
+  <div class="content" class:on={ready} data-tauri-drag-region>
+    <svg class="mark" viewBox="0 0 280 161" aria-hidden="true" data-tauri-drag-region>
+      <path d={HQ_MARK_H} /><path fill-rule="evenodd" d={HQ_MARK_Q} />
+    </svg>
+    <h1 class="h title" data-tauri-drag-region>{HEADS_UP_COPY.title}</h1>
+    <ul class="body points">
+      {#each HEADS_UP_COPY.points as point (point)}
+        <li>{point}</li>
+      {/each}
+    </ul>
+    <div class="actions">
       <button
         type="button"
-        class="btn"
-        data-testid="heads-up-later"
+        class="btn btn-primary"
+        data-testid="heads-up-start"
         disabled={busy}
-        onclick={() => void choose('later')}>{HEADS_UP_COPY.later}</button
+        onclick={() => void choose('start')}>{HEADS_UP_COPY.startNow}</button
       >
-      <button
-        type="button"
-        class="btn"
-        data-testid="heads-up-manual"
-        disabled={busy}
-        onclick={() => void choose('manual')}>{HEADS_UP_COPY.manual}</button
-      >
+      <div class="secondary">
+        <button
+          type="button"
+          class="btn btn-secondary"
+          data-testid="heads-up-later"
+          disabled={busy}
+          onclick={() => void choose('later')}>{HEADS_UP_COPY.later}</button
+        >
+        <button
+          type="button"
+          class="btn btn-secondary"
+          data-testid="heads-up-manual"
+          disabled={busy}
+          onclick={() => void choose('manual')}>{HEADS_UP_COPY.manual}</button
+        >
+      </div>
+      <p class="hint">{HEADS_UP_COPY.laterHint}</p>
     </div>
-    <p class="hint">{HEADS_UP_COPY.laterHint}</p>
   </div>
 </div>
 
 <style>
-  @font-face {
-    font-family: 'Fraunces';
-    src: url('../../assets/fonts/fraunces-variable-latin.woff2') format('woff2');
-    font-style: normal;
-    font-weight: 100 900;
-    font-display: swap;
-  }
-
+  /* Layout only. Color, type, easing and buttons come from the .hq-welcome
+     tokens and classes in welcome.css. The card uses no backdrop filter, as
+     a rounded one shows square corners in WKWebView. */
   .heads-up {
-    position: fixed;
-    inset: 0;
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-    padding: 32px 32px 24px;
     border-radius: 16px;
-    background: rgba(0, 0, 0, 0.86);
-    color: #fff;
-    font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-    font-size: 14px;
-    line-height: 21px;
     font-weight: 400;
-    overflow: hidden;
-    user-select: none;
-    -webkit-user-select: none;
   }
 
-  .title {
-    margin: 0;
-    font-family: 'Fraunces', Georgia, 'Times New Roman', serif;
-    font-size: 28px;
-    line-height: 34px;
-    font-weight: 400;
-    letter-spacing: -0.01em;
+  .surface {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    /* The takeover's veil over a dark base: the desktop behind the window
+       is not blurred here, so the card stays close to opaque. */
+    background:
+      linear-gradient(var(--w-veil-bg), var(--w-veil-bg)),
+      rgba(22, 22, 26, 0.9);
+    opacity: 0;
+    transition: opacity 0.7s var(--w-ease-in-out);
   }
 
-  .points {
-    margin: 0;
-    padding: 0 0 0 18px;
+  .ready .surface {
+    opacity: 1;
+  }
+
+  .content {
+    position: relative;
+    z-index: 2;
+    box-sizing: border-box;
+    height: 100%;
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    color: rgba(255, 255, 255, 0.62);
+    padding: 26px 32px 20px;
+  }
+
+  .mark {
+    width: 40px;
+    height: auto;
+    fill: var(--w-text);
+    opacity: 0;
+    transition: opacity 0.9s var(--w-ease-out);
+  }
+
+  .content.on .mark {
+    opacity: 1;
+  }
+
+  .content .title {
+    margin-top: 18px;
+    font-size: 30px;
+  }
+
+  .content .points {
+    margin: 14px 0 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
 
   .actions {
     margin-top: auto;
+    padding-top: 18px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
+    opacity: 0;
+    transform: translateY(12px);
+    transition:
+      opacity 0.9s var(--w-ease-out),
+      transform 0.9s var(--w-ease-out);
+  }
+
+  .content.on .actions {
+    opacity: 1;
+    transform: none;
+    transition-delay: 0.7s;
   }
 
   .secondary {
     display: flex;
-    gap: 10px;
+    gap: 8px;
   }
 
   .secondary .btn {
     flex: 1;
   }
 
-  .btn {
-    height: 38px;
-    padding: 0 16px;
-    border: 0;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.14);
-    color: #fff;
-    font: inherit;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 160ms cubic-bezier(0.23, 1, 0.32, 1);
-  }
-
-  .btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.22);
-  }
-
-  .btn.primary {
-    background: #fff;
-    color: #000;
-  }
-
-  .btn.primary:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.88);
-  }
-
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-
-  .btn:focus-visible {
-    outline: 2px solid rgba(255, 255, 255, 0.6);
-    outline-offset: 2px;
-  }
-
   .hint {
-    margin: 0;
-    color: rgba(255, 255, 255, 0.38);
+    margin: 4px 0 0;
+    color: var(--w-faint);
     font-size: 12px;
     line-height: 18px;
     text-align: center;

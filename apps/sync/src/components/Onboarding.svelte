@@ -85,6 +85,8 @@
       initialStepForLifecycle(lifecycleStateProp, setupEvidence) === WELCOME_SIGNIN_STEP_INDEX,
   );
   let showHeadsUp = $state(opensOnHeadsUp);
+  /** The heads-up card paints only once the window is at card size. */
+  let headsUpReady = $state(false);
 
   const headsUpTimer = createScreenTimer('welcome', (message) => {
     if (typeof invoke !== 'function') return;
@@ -167,7 +169,8 @@
   /**
    * Show the heads-up as a small centred card. The native side may already
    * have fitted the window to the screen for the first run, so hand that back
-   * first, then size and centre it.
+   * first, then size and centre it. The card stays transparent until then,
+   * so a full-screen window never flashes dark.
    */
   async function enterHeadsUpWindow() {
     await setWelcomeWindow(false);
@@ -178,6 +181,8 @@
       await win.center();
     } catch (error) {
       console.warn('onboarding: could not size the heads-up window', error);
+    } finally {
+      if (!destroyed) headsUpReady = true;
     }
   }
 
@@ -276,7 +281,7 @@
 </script>
 
 {#if showHeadsUp}
-  <HeadsUpWindow onaction={handleHeadsUpAction} />
+  <HeadsUpWindow ready={headsUpReady} onaction={handleHeadsUpAction} />
 {:else}
   <OnboardingWizard
     {initialStep}

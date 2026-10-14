@@ -17,6 +17,7 @@
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
   import CompanyStepPreview from './CompanyStepPreview.svelte';
+  import HeadsUpWindow from '../src/components/onboarding/HeadsUpWindow.svelte';
   import YourAppsPreview from './YourAppsPreview.svelte';
   import MarketplaceDetailPreview from './MarketplaceDetailPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
@@ -345,6 +346,11 @@
        ?state=auto|connect|connecting|failed|docs|member|empty|many. Size the
        viewport to ~1200x800 or ~960x600. In-page answers only. -->
   <YourAppsPreview />
+{:else if view === 'heads-up'}
+  <!-- The first-launch heads-up card. Size the viewport to 440x380 (the real
+       window). The buttons do nothing here. -->
+  <div class="fake-desktop" aria-hidden="true"></div>
+  <HeadsUpWindow onaction={() => {}} />
 {:else if view === 'onboarding-company'}
   <!-- The first-run company step on its own: ?scenario=create|join|paused.
        Size the viewport to ~800x900 like the welcome window. -->
