@@ -220,10 +220,11 @@
     display: flex;
     flex-direction: column;
   }
+  /* The featured block sits in the list's rhythm: the same 6px gap as the rows under it. */
   .items {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 6px;
   }
 
   /* How long you were gone: a big light number with a small unit, the orbit to its right. */
