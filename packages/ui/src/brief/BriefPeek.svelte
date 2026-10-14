@@ -124,9 +124,12 @@
   .peek-act {
     all: unset;
     cursor: pointer;
-    font-size: 13px;
+    font-family: var(--b-code);
+    font-size: 10px;
     font-weight: 500;
-    padding: 6px 14px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 8px 12px;
     border-radius: 8px;
     color: var(--b-bg);
     background: rgb(var(--b-ink) / 0.92);
@@ -177,8 +180,11 @@
     flex: 1;
     height: 30px;
     padding: 0 12px;
-    font-size: 13px;
+    font-family: var(--b-code);
+    font-size: 10px;
     font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     white-space: nowrap;
     border-radius: 8px;
     color: var(--b-t1, #fff);
@@ -206,7 +212,7 @@
   .pills.small .pill {
     flex: none;
     height: 24px;
-    font-size: 11px;
+    font-size: 10px;
     padding: 0 10px;
   }
   /* The shared highlight label (terracotta, white, fully rounded). */

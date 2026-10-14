@@ -136,8 +136,11 @@
     height: 30px;
     padding: 0 12px;
     border-radius: 8px;
-    font-size: 13px;
+    font-family: var(--b-code);
+    font-size: 10px;
     font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     transition: background 0.15s;
   }
   .primary {

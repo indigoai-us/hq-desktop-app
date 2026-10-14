@@ -501,9 +501,12 @@
   gap: 0;
   box-sizing: border-box;
   height: 30px;
-  font-size: 13px;
+  /* Button labels share the DM button's style: mono, all caps. */
+  font-family: var(--b-code);
+  font-size: 10px;
   font-weight: 500;
-  letter-spacing: -0.005em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   padding: 0 12px;
   border-radius: 8px;
   color: #18181b;
