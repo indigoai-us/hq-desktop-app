@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Cloud / Local marker for a bot. The one user-facing split between bots:
    * "Cloud" (company-hosted, always on) vs "Local · Claude Code" (this Mac,
@@ -42,20 +43,9 @@
 >
   {#if variant === "icon"}
     {#if kind === "cloud"}
-      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-        <path
-          d="M5 12.5h6.5a2.75 2.75 0 0 0 .4-5.47A4 4 0 0 0 4.3 8.2 2.2 2.2 0 0 0 5 12.5Z"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <RailIcon name="cloud" size={12} />
     {:else}
-      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-        <rect x="3" y="3.5" width="10" height="6.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3" />
-        <path d="M1.8 12.5h12.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-      </svg>
+      <RailIcon name="laptop" size={12} />
     {/if}
   {:else}
     {label}

@@ -762,7 +762,7 @@
   }
 
   .vp-btn-primary:hover:not(:disabled) {
-    opacity: 0.9;
+    opacity: 0.85;
     background: var(--fg);
   }
 
@@ -932,8 +932,7 @@
   }
 
   .vp-settings-link:hover {
-    color: var(--fg);
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   @media (prefers-reduced-transparency: reduce) {

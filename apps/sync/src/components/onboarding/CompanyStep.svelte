@@ -582,13 +582,7 @@
 </script>
 
 {#snippet mark(state: PlanRowState)}
-  {#if state === 'on'}
-    <svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
-  {:else if state === 'off'}
-    <svg viewBox="0 0 16 16" width="12" height="12"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
-  {:else}
-    <svg viewBox="0 0 16 16" width="12" height="12"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" /><path d="M5.5 7V5.2a2.5 2.5 0 015 0V7" fill="none" stroke="currentColor" stroke-width="1.5" /></svg>
-  {/if}
+  <RailIcon name={state === 'on' ? 'check' : state === 'off' ? 'x' : 'lock-simple'} size={12} />
 {/snippet}
 
 <div class="follow-on on" data-testid="onboarding-company">
@@ -1051,9 +1045,10 @@
     border: 0;
     padding: 0;
     color: inherit;
-    text-decoration: underline;
+    text-decoration: none;
     cursor: pointer;
   }
+  .link:hover { opacity: 0.7; }
   .sr-only {
     position: absolute;
     width: 1px;

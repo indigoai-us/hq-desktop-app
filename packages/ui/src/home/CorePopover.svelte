@@ -159,7 +159,9 @@
     onopenurl,
   }: Props = $props();
 
-  let packsExpanded = $state(true);
+  /** Collapsed on open: the count in the row says enough, and the list
+      pushed Open marketplace and the rest of the panel down every time. */
+  let packsExpanded = $state(false);
   let resolveSheetOpen = $state(false);
   let browsePacksOpen = $state(false);
   let coreRestoring = $state(false);
@@ -299,6 +301,18 @@
   const canInspectCore = $derived(
     adapter.isAvailable("canSelfUpdate") ||
       adapter.isAvailable("canManagePackages"),
+  );
+
+  /* Version rows stack their actions on a second line; a row with nothing
+     actionable must not reserve that line. */
+  const coreRowHasActions = $derived(
+    model.showRestore ||
+      (!useFixtures && canInspectCore && !updateStore.isInstallBusy),
+  );
+  const appRowHasActions = $derived(
+    !useFixtures &&
+      canInspectCore &&
+      (appActions.showDownload || appActions.showRestart || appActions.showCheck),
   );
 
   function orchAdapter(): UpdateStoreAdapter {
@@ -762,9 +776,12 @@
   {/if}
 
   <div class="core-rows" data-testid="core-popover-version-rows">
-    <div class="core-row" data-testid="core-popover-core-row">
-      <span class="core-row-label">{model.hqVersionLabel}</span>
-      <span class="core-row-actions">
+    <!-- Status right, actions underneath: on one line "UPDATE AVAILABLE" +
+         "Download & install" ran past the panel's right edge and bought it a
+         horizontal scrollbar. -->
+    <div class="core-row core-row-stacked" data-testid="core-popover-core-row">
+      <span class="core-row-head">
+        <span class="core-row-label">{model.hqVersionLabel}</span>
         {#if model.driftOpenable}
           <button
             type="button"
@@ -786,10 +803,16 @@
             {model.driftPill}
           </span>
         {/if}
+      </span>
+      {#if coreRowHasActions}
+      <span class="core-row-actions">
         {#if model.showRestore}
+          <!-- Restore matches Install: the two version rows carry the same
+               kind of action, so a filled chip on one and text on the other
+               read as two different affordances. -->
           <button
             type="button"
-            class="core-btn primary"
+            class="core-text-btn accent"
             data-testid="core-popover-core-restore"
             disabled={coreRestoring}
             aria-busy={coreRestoring}
@@ -810,11 +833,12 @@
           </button>
         {/if}
       </span>
+      {/if}
     </div>
 
-    <div class="core-row" data-testid="core-popover-app-row">
-      <span class="core-row-label">{model.appVersionLabel}</span>
-      <span class="core-row-actions">
+    <div class="core-row core-row-stacked" data-testid="core-popover-app-row">
+      <span class="core-row-head">
+        <span class="core-row-label">{model.appVersionLabel}</span>
         <span
           class="core-pill"
           class:ok={appStatusLabel === "UP TO DATE"}
@@ -833,6 +857,9 @@
         >
           {appStatusLabel}
         </span>
+      </span>
+      {#if appRowHasActions}
+      <span class="core-row-actions">
         {#if !useFixtures && canInspectCore}
           {#if appActions.showDownload}
             <button
@@ -869,6 +896,7 @@
           {/if}
         {/if}
       </span>
+      {/if}
     </div>
     {#if appIdleHint}
       <p class="core-idle-hint" data-testid="core-popover-idle-hint">
@@ -886,11 +914,17 @@
       }}
     >
       <span class="core-row-label">Marketplace</span>
-      <span class="core-row-chevron" aria-hidden="true">›</span>
+      <span class="core-row-chevron" aria-hidden="true"><RailIcon name="caret-right" size={12} /></span>
     </button>
   </div>
 
-  <section class="core-packs" data-testid="core-popover-packs">
+  <!-- Collapsed, Packs is a plain menu row like Library above it; the boxed
+       sub-list chrome only appears once there is a sub-list to hold. -->
+  <section
+    class="core-packs"
+    class:open={packsExpanded}
+    data-testid="core-popover-packs"
+  >
     <button
       type="button"
       class="core-packs-toggle"
@@ -898,12 +932,14 @@
       aria-expanded={packsExpanded}
       onclick={() => (packsExpanded = !packsExpanded)}
     >
-      <span class="core-packs-label">PACKS</span>
-      <span class="core-packs-meta">{model.packsSummary}</span>
+      <span class="core-packs-label">Packs</span>
+      <span class="core-packs-meta" data-testid="core-popover-packs-count"
+        >{model.packsSummary}</span
+      >
       <span
         class="core-row-chevron"
         class:open={packsExpanded}
-        aria-hidden="true">›</span
+        aria-hidden="true"><RailIcon name="caret-right" size={12} /></span
       >
     </button>
     {#if packsExpanded}
@@ -918,13 +954,25 @@
           {#each model.packs as pack (pack.name)}
             <li class="core-pack-row" data-testid="core-popover-pack-row">
               <span class="core-pack-name" title={pack.name}>{packDisplayName(pack)}</span>
-              {#if pack.isNew}
-                <span class="core-pack-new" data-testid="core-popover-pack-new"
-                  >NEW</span
+              <!-- One meta on the right, `v3.0 · NEW`. The badge used to sit
+                   between the name and the version, which pulled the version
+                   column out of line on any row that carried it. -->
+              {#if pack.version || pack.isNew}
+                <span
+                  class="core-pack-meta"
+                  class:new={pack.isNew}
+                  data-testid="core-popover-pack-meta"
                 >
-              {/if}
-              {#if pack.version}
-                <span class="core-pack-version">v{pack.version}</span>
+                  {#if pack.version}<span class="core-pack-version"
+                      >v{pack.version}</span
+                    >{/if}
+                  {#if pack.isNew}
+                    {#if pack.version}<span aria-hidden="true">·</span>{/if}
+                    <span class="core-pack-new" data-testid="core-popover-pack-new"
+                      >NEW</span
+                    >
+                  {/if}
+                </span>
               {/if}
             </li>
           {/each}
@@ -1207,10 +1255,10 @@
     font-size: 13px;
     font-weight: 500;
     color: var(--v4-text-2, var(--t2));
-    text-decoration: underline;
-    text-underline-offset: 3px;
+    text-decoration: none;
     cursor: pointer;
   }
+  .core-link:hover { opacity: 0.7; }
 
   .core-pack-actions {
     display: flex;
@@ -1276,17 +1324,36 @@
     gap: 2px;
   }
 
-  /* Rows wrap at narrow widths so the actions move to their own line
-     instead of clipping at the panel edge (QA-037). */
+  /* Every row in this panel is the same height — a 28px minimum let the two
+     version rows grow to 30px on their mono meta while Library and Packs
+     stayed at 29, so the pitch jogged down the list. */
   .core-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    min-height: 28px;
+    min-height: 30px;
     padding: 6px 8px;
     border-radius: 8px;
+  }
+
+  /* Status right, actions underneath. The status is the row's right-hand
+     meta (like the Packs count); anything actionable drops to its own line,
+     flush with the row label. 3px keeps the action attached to its title. */
+  .core-row-stacked {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: 3px;
+  }
+
+  .core-row-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
   }
 
   .core-row-button {
@@ -1315,14 +1382,19 @@
   }
 
   .core-row-actions {
-    display: inline-flex;
+    display: flex;
     flex-wrap: wrap;
-    flex-shrink: 0;
     align-items: center;
-    justify-content: flex-end;
-    gap: 4px;
+    /* Left edge of the label, not of the panel — the row's own padding
+       already provides the inset. */
+    justify-content: flex-start;
+    gap: 12px;
     max-width: 100%;
-    margin-left: auto;
+  }
+
+  /* Nothing actionable: don't reserve the second line. */
+  .core-row-actions:empty {
+    display: none;
   }
 
   .core-idle-hint {
@@ -1338,7 +1410,6 @@
     appearance: none;
     display: inline-flex;
     align-items: center;
-    margin-left: 6px;
     padding: 0;
     border: 0;
     background: transparent;
@@ -1350,6 +1421,9 @@
     cursor: pointer;
   }
 
+  /* The primary text action (Install, Restart, Restore): accent ink, so it
+     reads as the row's one primary affordance without any chrome. Weight
+     stays at the button standard's 500 (button-weight guard). */
   .core-text-btn.accent {
     color: var(--ice-ink);
   }
@@ -1369,9 +1443,9 @@
   }
 
   .core-row-chevron {
+    display: inline-grid;
+    place-items: center;
     color: var(--t3);
-    font-size: 13px;
-    line-height: 1;
     transition: transform 120ms ease;
   }
 
@@ -1452,7 +1526,7 @@
 
   .core-btn.primary:hover:not(:disabled) {
     border: none;
-    opacity: 0.88;
+    opacity: 0.85;
   }
 
   .core-btn.secondary {
@@ -1480,16 +1554,29 @@
     outline-offset: var(--v4-focus-offset, 2px);
   }
 
+  /* Collapsed, Packs is a plain menu row like Library above it — the boxed
+     sub-list chrome only appears once it has a sub-list to hold. The box was
+     painted unconditionally, so a closed Packs sat in a grey slab with
+     nothing in it. */
   .core-packs {
     display: flex;
     flex-direction: column;
     gap: 0;
     border: none;
     border-radius: 10px;
+    transition: background 0.12s;
+  }
+
+  .core-packs.open {
     background: var(--v4-raised, var(--raised));
     padding: 4px 0;
     margin-top: 4px;
-    transition: background 0.12s;
+  }
+
+  /* Open, the box owns the hover: brightening the whole thing beats a pill
+     around a row that is now a header. */
+  .core-packs.open:has(.core-packs-toggle:hover) {
+    background: var(--btn-bg);
   }
 
   .core-packs-toggle {
@@ -1498,21 +1585,24 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    padding: 8px;
+    min-height: 30px;
+    padding: 6px 8px;
     border: 0;
     border-radius: 8px;
     background: transparent;
     color: inherit;
     font: inherit;
+    text-align: left;
     cursor: pointer;
   }
 
-  .core-packs-toggle:hover {
-    background: transparent;
+  /* Collapsed it is a menu row, so it gets the row hover pill. */
+  .core-packs:not(.open) .core-packs-toggle:hover {
+    background: var(--v4-hover, var(--hover));
   }
 
-  .core-packs:has(.core-packs-toggle:hover) {
-    background: var(--btn-bg);
+  .core-packs.open .core-packs-toggle:hover {
+    background: transparent;
   }
 
   .core-packs-label {
@@ -1529,6 +1619,7 @@
     font-size: 13px;
     text-align: right;
     text-transform: lowercase;
+    white-space: nowrap;
   }
 
   .core-pack-list {
@@ -1564,13 +1655,25 @@
     white-space: nowrap;
   }
 
-  .core-pack-version {
+  /* Version, then NEW, as one right-hand mono column. */
+  .core-pack-meta {
+    display: inline-flex;
     flex-shrink: 0;
+    align-items: center;
+    gap: 4px;
     margin-left: auto;
     color: var(--t3);
     font-family: var(--font-mono);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
+  }
+
+  .core-pack-meta.new {
+    color: var(--ice-ink);
+  }
+
+  .core-pack-version {
+    flex-shrink: 0;
   }
 
   .core-marketplace {

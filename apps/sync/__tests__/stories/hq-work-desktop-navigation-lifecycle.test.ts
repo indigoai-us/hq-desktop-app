@@ -594,6 +594,9 @@ describe('embedded Work navigation and lifecycle', () => {
     await flush();
     (host.querySelector('[data-testid="titlebar-core-pill"]') as HTMLButtonElement).click();
     await flush();
+    // Packs start collapsed; Open marketplace is the last row inside them.
+    (host.querySelector('[data-testid="core-popover-packs-toggle"]') as HTMLButtonElement).click();
+    await flush();
     (host.querySelector('[data-testid="core-popover-open-marketplace"]') as HTMLButtonElement).click();
     await flush();
     expect(

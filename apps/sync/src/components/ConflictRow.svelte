@@ -24,21 +24,11 @@
   <div class="row-header">
     <div class="file-info">
       {#if conflict.status === 'resolved'}
-        <svg class="status-icon resolved-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
-          <path d="M5.5 8.5l1.5 1.5 3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <span class="status-icon resolved-icon"><RailIcon name="check-circle" /></span>
       {:else if conflict.status === 'error'}
-        <svg class="status-icon error-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
-          <path d="M10 6L6 10M6 6l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        </svg>
+        <span class="status-icon error-icon"><RailIcon name="x-circle" /></span>
       {:else}
-        <svg class="status-icon warning-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M8 1.5L1 13.5h14L8 1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M8 6v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          <circle cx="8" cy="11.5" r="0.75" fill="currentColor" />
-        </svg>
+        <span class="status-icon warning-icon"><RailIcon name="warning" /></span>
       {/if}
 
       <span class="file-path" title={conflict.path}>
@@ -81,10 +71,7 @@
         <RailIcon name="download" />Keep Remote
       </button>
       <button class="action-btn editor-btn" onclick={() => onopen(conflict.path)} title="Open in editor" aria-label="Open {fileName} in editor">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M11.5 1.5l3 3-9 9H2.5v-3l9-9Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M9.5 3.5l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <RailIcon name="pencil" size={12} />
       </button>
     </div>
   {/if}
@@ -131,6 +118,7 @@
   }
 
   .status-icon {
+    display: flex;
     flex-shrink: 0;
   }
 

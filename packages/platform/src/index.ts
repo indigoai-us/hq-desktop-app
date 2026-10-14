@@ -1,5 +1,7 @@
 // Full platform adapter surface (US-004).
 export * from "./adapter.js";
+// Accomplishment badges from hq-pro: wire types and the defensive parser.
+export * from "./badges.js";
 export * from "./capabilities.js";
 export * from "./host-platform.js";
 export * from "./host-computer-noun.js";

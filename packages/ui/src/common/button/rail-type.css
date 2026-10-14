@@ -37,8 +37,10 @@
 }
 
 /* Leading icon inside a labelled button that is not a RailButton: 14px glyph,
-   6px before the label, centred on the text. */
-button:not([data-rail-btn]) > svg.rail-icon:first-child {
+   6px before the label, centred on the text. Icon-only buttons (data-solo, set
+   by RailIcon) get no gap so the glyph sits in the centre; buttons that set
+   their own flex/grid gap (data-gapped) keep just that gap. */
+button:not([data-rail-btn]) > svg.rail-icon:first-child:not([data-solo]):not([data-gapped]) {
   display: inline-block;
   vertical-align: -2px;
   margin-inline-end: 6px;

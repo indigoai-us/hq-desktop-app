@@ -466,7 +466,7 @@
               class="icon-btn"
               aria-label="Remove link"
               data-testid="profile-social-remove"
-              onclick={() => removeSocial(i)}>×</button
+              onclick={() => removeSocial(i)}><RailIcon name="x" size={14} /></button
             >
           </div>
           {#if link.url.trim().length > 0 && socialUrlHint(link.url)}
@@ -952,7 +952,7 @@
   }
   .btn-primary:hover:not(:disabled) {
     background: var(--v4-primary-bg);
-    filter: brightness(0.92);
+    opacity: 0.85;
   }
   .btn-secondary {
     background: var(--v4-raised);
@@ -1069,7 +1069,7 @@
     text-decoration: none;
   }
   .preview-link:hover {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   .preview-tip {

@@ -158,7 +158,14 @@ describe("ChatSidebar All scope — channels in the date buckets", () => {
     expect(companyTag("ch:chn_hq_dev")).toBe("Indigo");
     expect(companyTag("ch:chn_acme_general")).toBe("Acme");
     expect(host.querySelector('[data-conversation-id="ch:chn_hq_sentry"] [data-testid="chat-row-muted"]')).toBeTruthy();
-    expect(host.querySelector('[data-conversation-id="ch:chn_hq_dev"]')?.textContent).toContain("3");
+    // The unread count is the row button's sibling inside its `.chat-li`
+    // (it sits inside the row's hover fill, right of the pin).
+    expect(
+      host
+        .querySelector('[data-conversation-id="ch:chn_hq_dev"]')
+        ?.closest(".chat-li")
+        ?.querySelector('[data-testid="chat-unread-badge"]')?.textContent?.trim(),
+    ).toBe("3");
   });
 
   it("leaves the single-company scope on its Activity section, without company tags", async () => {

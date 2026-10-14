@@ -68,12 +68,16 @@ function rule(selector: string): string {
   return STYLE.slice(open + 1, STYLE.indexOf("\n  }", open));
 }
 
-/** The glyph holds still: no class or style on the icon or its svg drives a motion. */
+/** The glyph holds still: no class or style on the icon or its svg drives a motion.
+ *  The svg is the shared Phosphor rail icon, whose only class is the static
+ *  `rail-icon` (no animation, transform, or transition). */
 function expectStillGlyph(): void {
   const svg = glyph()!;
+  expect(svg.getAttribute("data-rail-icon")).toBeTruthy();
+  expect(svg.getAttribute("viewBox")).toBe("0 0 256 256");
   for (const el of [icon()!, svg]) {
     for (const name of Array.from(el.classList).filter((name) => !name.startsWith("svelte-"))) {
-      expect(["bot-sync-status-icon"]).toContain(name);
+      expect(["bot-sync-status-icon", "rail-icon"]).toContain(name);
     }
     expect(el.getAttribute("style") ?? "").not.toMatch(/animation|transform|rotate|transition/);
   }

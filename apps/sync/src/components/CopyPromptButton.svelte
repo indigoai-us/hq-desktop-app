@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import { buildPrompt, type Issue } from '../lib/copy-prompts';
 
   interface Props {
@@ -52,16 +53,9 @@
   {#if copying}
     <span class="button-spinner" aria-hidden="true"></span>
   {:else if copied}
-    <!-- check -->
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
+    <RailIcon name="check" size={12} />
   {:else}
-    <!-- clipboard -->
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <rect x="4" y="3" width="8" height="11" rx="1.2" stroke="currentColor" stroke-width="1.4" />
-      <path d="M6 3V2.2a.7.7 0 0 1 .7-.7h2.6a.7.7 0 0 1 .7.7V3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
+    <RailIcon name="clipboard-text" size={12} />
   {/if}
   <span class="copy-prompt-label">
     {copying ? 'Copying…' : copied ? 'Copied' : copyError ? 'Copy failed' : label}

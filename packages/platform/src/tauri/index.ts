@@ -33,6 +33,7 @@ import {
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
+import { parseBadgesPayload } from "../badges.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { withCreateAgentsAdmins } from "./provision-refusal.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
@@ -332,6 +333,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
         input,
       ),
+    getBadges: async (uid) => {
+      const result = await this.hqProJson<unknown>("GET", WEB_PATHS.badges(uid));
+      return result.ok ? ok(parseBadgesPayload(result.value)) : result;
+    },
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {

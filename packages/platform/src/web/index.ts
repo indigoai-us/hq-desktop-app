@@ -35,6 +35,7 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { WEB_CAPABILITIES, type Capability } from "../capabilities.js";
+import { parseBadgesPayload } from "../badges.js";
 import { createUnsupportedCallsApi } from "../calls/api.js";
 import {
   parseShelfViewer,
@@ -138,6 +139,8 @@ export const WEB_PATHS = {
     `/v1/avatar-packs/${encodeURIComponent(packId)}`,
   agentAvatar: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
+  /** GET a person's accomplishment badges; `uid` is `me` or a `prs_*` uid. */
+  badges: (uid: string) => `/v1/badges/${encodeURIComponent(uid)}`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
   cardAction: (channelId: string, cardId: string) =>
@@ -706,6 +709,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getAvatarPack: (packId) => this.get(WEB_PATHS.avatarPack(packId)),
     selectAgentAvatar: (agentUid, input) =>
       this.post(WEB_PATHS.agentAvatar(agentUid), input),
+    getBadges: async (uid) => {
+      const result = await this.get<unknown>(WEB_PATHS.badges(uid));
+      return result.ok ? ok(parseBadgesPayload(result.value)) : result;
+    },
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {

@@ -308,9 +308,7 @@
               <span class="vt-guide" style={`--g:${g}`} aria-hidden="true"></span>
             {/each}
             {#if entry.isDir}
-              <svg class="vt-chevron" class:open={!!expanded[entry.path]} viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
+              <span class="vt-chevron" class:open={!!expanded[entry.path]} aria-hidden="true"><RailIcon name="caret-right" size={14} /></span>
             {:else}
               <span class="vt-chevron-spacer" aria-hidden="true"></span>
             {/if}
@@ -418,6 +416,9 @@
   }
   .vt-chevron {
     flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 14px;
     height: 14px;
     color: var(--v4-text-3);

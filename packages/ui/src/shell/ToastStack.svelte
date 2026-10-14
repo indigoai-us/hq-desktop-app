@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
    * The one shared toast layer (OWNER-003). Mounted once at the app root and
-   * portaled to <body>, fixed to the window's lower right above
-   * the shell. Newest on top, at most three visible; the
+   * portaled to <body>, fixed to the window's lower-right corner above
+   * the shell, the same 16px in from the right and the bottom. Newest on top, at most three visible; the
    * rest collapse into a "+N more" row. Escape is never handled here, so the
    * nested Escape layer keeps working. Solid surface (no backdrop-filter:
    * WKWebView paints it as a square behind rounded cards).
@@ -13,6 +13,7 @@
    * its actions reachable. Toasts clear of the overlay stay visible.
    */
   import { onDestroy } from "svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import {
     MAX_VISIBLE_TOASTS,
     claimToastLayer,
@@ -196,9 +197,7 @@
         data-testid="toast-dismiss"
         onclick={() => close(toast)}
       >
-        <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
-          <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
-        </svg>
+        <RailIcon name="x" size={14} />
       </button>
     </div>
   {/each}
@@ -216,8 +215,8 @@
     --ts-font: var(--font-ui, "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
     font-family: var(--ts-font);
     position: fixed;
-    right: 16px;
-    bottom: var(--toast-bottom-inset, 84px);
+    right: var(--toast-right-inset, 16px);
+    bottom: var(--toast-bottom-inset, 16px);
     z-index: 50000;
     display: flex;
     flex-direction: column;
@@ -281,7 +280,10 @@
     flex-direction: column;
   }
 
+  /* The title reads a step above the detail, which is muted. */
   .ts-title {
+    font-size: 14px;
+    line-height: 1.4;
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -289,7 +291,7 @@
   }
 
   .ts-m {
-    color: var(--v4-text-2);
+    color: var(--v4-text-3);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

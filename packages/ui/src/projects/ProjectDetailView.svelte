@@ -782,29 +782,13 @@
           data-testid="indicator-prd"
           title={project.prdPath}
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              d="M4.5 2.5h5l2.5 2.5v8.5h-7.5zM9.5 2.5V5H12M6.5 8h3.5M6.5 10.5h3.5"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <RailIcon name="file-text" size={13} />
           PRD
         </span>
       {/if}
       {#if hasReadme}
         <span class="indicator" data-testid="indicator-readme">
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              d="M3 3.5h4a1.5 1.5 0 0 1 1 .5 1.5 1.5 0 0 1 1-.5h4v9H9a1 1 0 0 0-1 1 1 1 0 0 0-1-1H3z"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <RailIcon name="book-open" size={13} />
           README
         </span>
       {/if}
@@ -814,10 +798,7 @@
           data-testid="detail-goal-chip"
           title={`Goal: ${linkedGoal.title}`}
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.2" />
-            <circle cx="8" cy="8" r="2" fill="currentColor" />
-          </svg>
+          <RailIcon name="target" size={13} />
           <span class="indicator-text">{linkedGoal.title}</span>
         </span>
       {/if}
@@ -827,15 +808,7 @@
           data-testid="indicator-branch"
           title={`Branch ${prd.branchName}`}
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path
-              d="M5 3v10M5 9c0-2 6-1 6-4M5 13a1.5 1.5 0 1 0 0-.01M11 3.5a1.5 1.5 0 1 0 0 .01"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linecap="round"
-            />
-          </svg>
+          <RailIcon name="git-branch" size={13} />
           <span class="indicator-text">{prd.branchName}</span>
         </span>
       {/if}
@@ -980,7 +953,7 @@
                       {#if isLive}
                         <span class="live-dot" aria-hidden="true"></span>
                       {:else if item.story.passes}
-                        <span class="task-rail-done" aria-hidden="true">✓</span>
+                        <span class="task-rail-done" aria-hidden="true"><RailIcon name="check" size={13} /></span>
                       {:else}
                         <span class="task-rail-spacer" aria-hidden="true"
                         ></span>
@@ -1515,12 +1488,6 @@
     white-space: nowrap;
   }
 
-  .indicator svg {
-    flex: 0 0 auto;
-    width: 13px;
-    height: 13px;
-  }
-
   .indicator-text {
     min-width: 0;
     overflow: hidden;
@@ -1911,6 +1878,9 @@
   }
 
   .task-rail-done {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: var(--v4-text-3);
     font-size: 13px;
     text-align: center;
@@ -2320,7 +2290,7 @@
   }
 
   .markdown-body :global(a:hover) {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   .markdown-body :global(code) {
@@ -2382,7 +2352,6 @@
     border: 0;
     border-radius: 0;
     background: transparent;
-    scrollbar-color: var(--v4-control-border) transparent;
   }
 
   .markdown-body :global(table) {

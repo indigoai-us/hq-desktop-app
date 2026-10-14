@@ -10,6 +10,7 @@
    * content. `variant="embedded"` is the in-pane form (Meetings,
    * Notifications) — same Back control, no traffic-light gutter.
    */
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { startWindowDrag } from "../home/window-drag.js";
   import "../home/tokens.css";
 
@@ -63,21 +64,7 @@
       data-tauri-drag-region="false"
       onclick={() => onback?.()}
     >
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 16 16"
-        fill="none"
-        aria-hidden="true"
-      >
-        <path
-          d="M10 3.5 5.5 8 10 12.5"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <RailIcon name="caret-left" size={12} />
       Back
     </button>
   {/if}

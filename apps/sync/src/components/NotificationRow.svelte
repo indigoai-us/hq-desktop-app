@@ -438,7 +438,7 @@
         ? `${actor}: ${text}`
         : text}
   >
-    {#if actor}<span class="nr-actor" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Bot" aria-label="Bot sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
+    {#if actor}<span class="nr-actor" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Bot" aria-label="Bot sender"><RailIcon name="robot" size={10} /></span>{/if}{' '}{/if}{text}
   </span>
   <span class="nr-trail">
     {#if resolvable}<span class="nr-needs-action" data-testid="notification-needs-action" aria-hidden="true">Needs action</span>{/if}
@@ -700,14 +700,7 @@
           {#if textDismiss}
             Dismiss
           {:else}
-            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path
-                d="M4 4l8 8M12 4l-8 8"
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linecap="round"
-              />
-            </svg>
+            <RailIcon name="x" size={10} />
           {/if}
         </button>
       {/if}
@@ -733,71 +726,22 @@
 </div>
 
 {#snippet typeIcon(t: NotificationRowType)}
-  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-    {#if t === 'message'}
-      <path
-        d="M2.5 3h11a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6l-3.5 2.6V11h0a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linejoin="round"
-      />
-    {:else if t === 'share'}
-      <path
-        d="M8 1.8v8.4M4.6 5.2 8 1.8l3.4 3.4M2.8 9.4v3.2a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1V9.4"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    {:else if t === 'sync'}
-      <path
-        d="M2.5 6.2A5.6 5.6 0 0 1 12.6 4.4M13.4 2v2.8h-2.8M13.5 9.8A5.6 5.6 0 0 1 3.4 11.6M2.6 14v-2.8h2.8"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    {:else if t === 'deploy'}
-      <path
-        d="M8 13.5V4M4.2 7.8 8 4l3.8 3.8M3 2.5h10"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    {:else if t === 'meeting'}
-      <path
-        d="M2.5 4.5h7.5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2.5a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1ZM11 8l3.5-2.2v4.4L11 8Z"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    {:else if t === 'mention'}
-      <path
-        d="M10.4 8a2.4 2.4 0 1 1-4.8 0 2.4 2.4 0 0 1 4.8 0Zm0 0v1.1c0 1 .7 1.7 1.6 1.7 1.2 0 2-.9 2-2.8A6 6 0 1 0 8 14a5.9 5.9 0 0 0 3-.8"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linecap="round"
-      />
-    {:else}
-      <!-- system: thin-stroke info in an angular rounded square -->
-      <path
-        d="M2.8 2.8h10.4v10.4H2.8Z"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-      <path
-        d="M8 7.2v4M8 4.6h.01"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-    {/if}
-  </svg>
+  <RailIcon
+    name={t === 'message'
+      ? 'chat-circle'
+      : t === 'share'
+        ? 'upload'
+        : t === 'sync'
+          ? 'arrows-clockwise'
+          : t === 'deploy'
+            ? 'rocket-launch'
+            : t === 'meeting'
+              ? 'video-camera'
+              : t === 'mention'
+                ? 'at'
+                : 'info'}
+    size={12}
+  />
 {/snippet}
 
 <style>

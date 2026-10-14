@@ -332,9 +332,8 @@
     background: none;
     color: var(--t2);
     font: 500 12px/1.45 var(--font-ui, inherit);
+    text-decoration: none;
     cursor: pointer;
-    text-decoration: underline;
-    text-underline-offset: 3px;
   }
 
   .generated.on,

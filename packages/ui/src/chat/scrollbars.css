@@ -1,0 +1,46 @@
+/*
+ * One scrollbar for the whole shell.
+ *
+ * Every scroller inside `.chat-shell` (the desktop shell root, which is also
+ * where portaled overlays mount) draws the same bar: 4px wide, 2px radius,
+ * transparent track, `--line` thumb going `--line2` on hover. Production had
+ * drifted into 4px, 6px, the browser default, and `scrollbar-width: thin`.
+ *
+ * The selectors are wrapped in `:where()` so this sheet has the specificity of
+ * a bare pseudo-element: any component rule — including the ones that hide a
+ * bar outright with `display: none` — still wins.
+ *
+ * DO NOT add `scrollbar-width` or `scrollbar-color` to a scroller in this
+ * shell. Chromium and WebKit implement the standard properties, and where
+ * both are present the standard one WINS: `scrollbar-width: thin` renders an
+ * ~11px bar straight through a 4px `::-webkit-scrollbar` rule. The one
+ * legitimate use is `scrollbar-width: none` to hide a bar (pair it with
+ * `::-webkit-scrollbar { display: none; }`). A contract test
+ * (scrollbars.contract.test.ts) enforces this.
+ */
+:where(.chat-shell) ::-webkit-scrollbar,
+:where(.chat-shell)::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+:where(.chat-shell) ::-webkit-scrollbar-track,
+:where(.chat-shell)::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:where(.chat-shell) ::-webkit-scrollbar-thumb,
+:where(.chat-shell)::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: var(--line);
+}
+
+:where(.chat-shell) ::-webkit-scrollbar-thumb:hover,
+:where(.chat-shell)::-webkit-scrollbar-thumb:hover {
+  background: var(--line2);
+}
+
+:where(.chat-shell) ::-webkit-scrollbar-corner,
+:where(.chat-shell)::-webkit-scrollbar-corner {
+  background: transparent;
+}

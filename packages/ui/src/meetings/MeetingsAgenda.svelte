@@ -170,7 +170,7 @@
                     >&#9679;</span
                   >{:else if state === "next"}<span
                     class="arrow-next"
-                    aria-hidden="true">&#8593;</span
+                    aria-hidden="true"><RailIcon name="arrow-up" size={12} /></span
                   >{/if}
                 <span class="meeting-title"
                   >{event.summary ?? "(no title)"}</span
@@ -182,42 +182,7 @@
                     aria-label="series"
                     role="img"
                   >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 14 14"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M3.5 4.5h5.8c.95 0 1.7.76 1.7 1.7v.3"
-                        stroke="currentColor"
-                        stroke-width="1.35"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                      <path
-                        d="M8.8 2.8 11 4.5 8.8 6.2"
-                        stroke="currentColor"
-                        stroke-width="1.35"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                      <path
-                        d="M10.5 9.5H4.7C3.76 9.5 3 8.74 3 7.8v-.3"
-                        stroke="currentColor"
-                        stroke-width="1.35"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                      <path
-                        d="M5.2 11.2 3 9.5l2.2-1.7"
-                        stroke="currentColor"
-                        stroke-width="1.35"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
+                    <RailIcon name="repeat" size={12} />
                   </span>
                 {/if}
               </div>
@@ -250,7 +215,7 @@
                 <span class="pill">Next</span>
               {:else if state === "past"}
                 <span class="pill ok"
-                  ><span class="check" aria-hidden="true">&#10003;</span> Synced</span
+                  ><span class="check" aria-hidden="true"><RailIcon name="check" size={11} /></span> Synced</span
                 >
               {:else}
                 <span class="pill">Scheduled</span>
@@ -308,20 +273,7 @@
                   {#if invitePending}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
                   {:else}
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 12 12"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M6 2v8M2 6h8"
-                        stroke="currentColor"
-                        stroke-width="1.6"
-                        stroke-linecap="round"
-                      />
-                    </svg>
+                    <RailIcon name="plus" size={12} />
                   {/if}
                 </button>
               {:else if kind === "invited"}
@@ -350,21 +302,7 @@
                   {#if uninvitePending}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
                   {:else}
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 12 12"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M2.5 6.5L5 9L9.5 3.5"
-                        stroke="currentColor"
-                        stroke-width="1.6"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
+                    <RailIcon name="check" size={12} />
                   {/if}
                 </button>
               {:else if kind === "in-call"}
@@ -432,17 +370,7 @@
                   title="Processing transcript"
                   aria-label={notetaker.ariaLabel}
                 >
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 12 12"
-                    fill="currentColor"
-                    aria-hidden="true"
-                  >
-                    <circle cx="2.5" cy="6" r="1" />
-                    <circle cx="6" cy="6" r="1" />
-                    <circle cx="9.5" cy="6" r="1" />
-                  </svg>
+                  <RailIcon name="dots-three" size={12} />
                 </span>
               {:else}
                 <span
@@ -452,21 +380,7 @@
                   title="Done — transcript saved"
                   aria-label={notetaker.ariaLabel}
                 >
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 12 12"
-                    fill="none"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d="M2.5 6.5L5 9L9.5 3.5"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
+                  <RailIcon name="check" size={12} />
                 </span>
               {/if}
               {#if url}
@@ -488,34 +402,7 @@
                   {#if joinNowPending}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
                   {:else}
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 12 12"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <line
-                        x1="6"
-                        y1="1"
-                        x2="6"
-                        y2="2.5"
-                        stroke="currentColor"
-                        stroke-width="1.4"
-                        stroke-linecap="round"
-                      />
-                      <rect
-                        x="2"
-                        y="3"
-                        width="8"
-                        height="6.5"
-                        rx="1.5"
-                        stroke="currentColor"
-                        stroke-width="1.4"
-                      />
-                      <circle cx="4.6" cy="6.5" r="0.7" fill="currentColor" />
-                      <circle cx="7.4" cy="6.5" r="0.7" fill="currentColor" />
-                    </svg>
+                    <RailIcon name="robot" size={12} />
                   {/if}
                 </button>
               {/if}
@@ -686,12 +573,6 @@
     opacity: 0.76;
   }
 
-  .series-chip svg {
-    display: block;
-    width: 12px;
-    height: 12px;
-  }
-
   .series-chip:hover {
     color: var(--v4-text-2);
     opacity: 1;
@@ -703,6 +584,8 @@
   }
 
   .arrow-next {
+    display: inline-flex;
+    vertical-align: middle;
     margin-right: 2px;
     color: var(--v4-text-2);
   }
@@ -777,7 +660,8 @@
   }
 
   .pill .check {
-    font-size: var(--type-metadata, 13px);
+    display: inline-flex;
+    align-items: center;
   }
 
   /* ── Action cluster (parity 5th column) ───────────────────────────────

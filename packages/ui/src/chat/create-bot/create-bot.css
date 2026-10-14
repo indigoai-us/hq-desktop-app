@@ -215,10 +215,10 @@
   color: var(--v4-link, var(--v4-brand-accent));
   font: inherit;
   font-size: 13px;
+  text-decoration: none;
   cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
+.cb-pill-link:hover { opacity: 0.7; }
 
 /* ── fields ────────────────────────────────────────────────────────────── */
 
@@ -350,10 +350,17 @@
   display: none;
 }
 
+/* Phosphor Regular CaretRight, masked so it paints in currentColor. */
 .cb-advanced > summary::before {
-  content: "›";
+  content: "";
   display: inline-block;
+  width: 12px;
+  height: 12px;
   margin-right: 8px;
+  vertical-align: -1px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath d='M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath d='M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z'/%3E%3C/svg%3E") center / contain no-repeat;
   transition: transform 120ms ease;
 }
 
@@ -402,9 +409,10 @@
   margin-left: 6px;
   font: inherit;
   color: var(--v4-accent, #4f7cff);
+  text-decoration: none;
   cursor: pointer;
-  text-decoration: underline;
 }
+.cb-linkish:hover { opacity: 0.7; }
 .cb-linkish:disabled {
   opacity: 0.5;
   cursor: default;

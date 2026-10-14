@@ -495,7 +495,7 @@ describe("the pieces a flow is built from", () => {
   it("a done step shows a check and says done; a step to do is not the current one", async () => {
     const root = mountPiece(CardModalStep, { number: 1, state: "done", text: "Create the app" });
     const row = root.querySelector<HTMLElement>('[data-testid="card-modal-step"]')!;
-    expect(row.querySelector(".card-modal-step-num svg")).not.toBeNull();
+    expect(row.querySelector('.card-modal-step-num svg[data-rail-icon="check"]')).not.toBeNull();
     expect(row.querySelector(".card-modal-step-num")!.textContent?.trim()).toBe("");
     expect(row.querySelector(".card-modal-step-text")!.textContent?.replace(/\s+/g, " ").trim()).toBe(
       "Step 1, done: Create the app",
@@ -512,8 +512,8 @@ describe("the pieces a flow is built from", () => {
   it("a status line says working, done or a problem, and a problem is announced at once", async () => {
     const kinds = [
       ["working", "status", ".card-modal-spinner"],
-      ["done", "status", "svg"],
-      ["problem", "alert", "svg"],
+      ["done", "status", 'svg[data-rail-icon="check"]'],
+      ["problem", "alert", 'svg[data-rail-icon="warning"]'],
     ] as const;
     for (const [kind, role, mark] of kinds) {
       const root = mountPiece(CardModalStatus, { kind, text: `It is ${kind}.` });

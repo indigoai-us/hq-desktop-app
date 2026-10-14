@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * One row of a numbered list of steps inside a card modal: the number, a
    * one-line instruction, and an optional action on the right. Put the rows
@@ -40,7 +41,7 @@
 >
   <span class="card-modal-step-num" aria-hidden="true">
     {#if state === "done"}
-      <svg viewBox="0 0 16 16" width="12" height="12"><path d="M6.5 11L3.5 8l1-1 2 2 5-5 1 1z" fill="currentColor" /></svg>
+      <RailIcon name="check" size={12} />
     {:else}
       {number}
     {/if}

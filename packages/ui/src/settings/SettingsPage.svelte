@@ -3043,14 +3043,12 @@
     min-height: 48px;
     margin-bottom: 10px;
     padding: 14px 16px;
-    border: 1px solid var(--line, var(--v4-rowline));
-    border-top: 1px solid var(--v4-rowline);
+    /* Filled card, no resting outline. The border stays (transparent) on all
+       four sides so every row keeps the same box; the old top rule was a
+       list-divider leftover that drew a hairline across each card. */
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised, var(--v4-raised));
-  }
-
-  .setting-row:first-child {
-    border-top: 0;
   }
 
   .setting-row > span:first-child,

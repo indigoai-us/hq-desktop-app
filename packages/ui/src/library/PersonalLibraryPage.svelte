@@ -1,6 +1,7 @@
 <script lang="ts">
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Personal Library (US-031). My files and Shared with me.
    * Company rows reuse CompanyLibraryPanel. File rows reuse FilePreviewPane
@@ -236,7 +237,7 @@
         data-testid="library-folder"
         onclick={() => (collapsed = { ...collapsed, [node.id]: !collapsed[node.id] })}
       >
-        <span>{collapsed[node.id] ? "▸" : "▾"} {node.name}</span>
+        <span class="folder-label"><RailIcon name={collapsed[node.id] ? "caret-right" : "chevron-down"} size={12} />{node.name}</span>
       </button>
       {#if !collapsed[node.id]}
         {@render treeNodes(node.children, depth + 1)}
@@ -353,4 +354,5 @@
   .access dd { margin: 0; color: var(--v4-text-1); }
   .foot, .empty { padding: 12px; line-height: 1.5; }
   .frow { border-bottom: 1px solid var(--v4-rowline); }
+  .folder-label { display: inline-flex; align-items: center; gap: 4px; }
 </style>

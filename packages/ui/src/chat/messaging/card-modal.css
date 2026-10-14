@@ -256,7 +256,13 @@
   padding: 0 28px 24px;
   overflow: visible;
   color: var(--cm-muted);
-  scrollbar-color: var(--cm-line) transparent;
+}
+
+/* The surface variant follows the theme, so its 4px bar takes the theme's
+   line ink (not the always-dark white thumb below). No scrollbar-color: the
+   standard property beats ::-webkit-scrollbar and draws ~11px. */
+.card-modal--surface .card-modal-body::-webkit-scrollbar-thumb {
+  background: var(--cm-line);
 }
 
 .card-modal--surface .card-modal-foot {
@@ -519,12 +525,12 @@
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.26) transparent;
 }
 
+/* The shell's 4px bar (chat/scrollbars.css), re-inked for this always-dark
+   surface. No scrollbar-width/-color: the standard properties beat these. */
 .card-modal-body::-webkit-scrollbar {
-  width: 6px;
+  width: 4px;
 }
 
 .card-modal-body::-webkit-scrollbar-track {
@@ -532,7 +538,7 @@
 }
 
 .card-modal-body::-webkit-scrollbar-thumb {
-  border-radius: 3px;
+  border-radius: 2px;
   background: rgba(255, 255, 255, 0.26);
 }
 
@@ -626,8 +632,7 @@
 }
 
 .card-modal-btn.is-primary:hover:not(:disabled) {
-  border-color: #fff;
-  background: #fff;
+  opacity: 0.85;
 }
 
 .card-modal-btn.is-danger {

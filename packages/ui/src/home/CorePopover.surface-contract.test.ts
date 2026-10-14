@@ -78,11 +78,14 @@ describe("Core popout rows wrap instead of clipping actions", () => {
     expect(decl(rule(coreCss, ".core-row"), "flex-wrap")).toBe("wrap");
   });
 
+  // The version rows now stack (PR #772 port): status on the first line, the
+  // action group on its own line under the label, so it can never be pushed
+  // past the panel edge by the status pill beside it.
   it("lets the action group wrap and stay inside the panel", () => {
     const actions = rule(coreCss, ".core-row-actions");
     expect(decl(actions, "flex-wrap")).toBe("wrap");
     expect(decl(actions, "max-width")).toBe("100%");
-    expect(decl(actions, "margin-left")).toBe("auto");
+    expect(decl(rule(coreCss, ".core-row-stacked"), "flex-direction")).toBe("column");
   });
 
   it("keeps action labels on one line so they are never cut mid-word", () => {

@@ -4,6 +4,7 @@
    * (type badge + name) and a `+N` overflow tile. Clicking any tile fires
    * `onopen` — US-008 attaches the picker; this component does not open one.
    */
+  import RailIcon from '@hq/ui/rail-icon';
   import {
     attachmentStackItems,
     attachmentTypeBadge,
@@ -61,24 +62,9 @@
     >
       <span class="tile-icon" aria-hidden="true">
         {#if isFolderAttachment(item)}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M2.5 4.5A1.5 1.5 0 0 1 4 3h2.2c.3 0 .58.16.73.42L7.5 4.5H12A1.5 1.5 0 0 1 13.5 6v5.5A1.5 1.5 0 0 1 12 13H4A1.5 1.5 0 0 1 2.5 11.5V4.5Z"
-              stroke="currentColor"
-              stroke-width="1.4"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <RailIcon name="folder" size={16} />
         {:else}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-              stroke="currentColor"
-              stroke-width="1.4"
-              stroke-linejoin="round"
-            />
-            <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-          </svg>
+          <RailIcon name="file" size={16} />
         {/if}
         <span class="tile-badge">{attachmentTypeBadge(item)}</span>
       </span>

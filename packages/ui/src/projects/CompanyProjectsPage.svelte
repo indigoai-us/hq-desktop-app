@@ -1095,10 +1095,7 @@
     <div class="portfolio-tools" data-testid="portfolio-tools">
       <label class="project-search">
         <span class="visually-hidden">Search projects</span>
-        <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true">
-          <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-          <path d="m10.5 10.5 3 3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-        </svg>
+        <span class="search-icon" aria-hidden="true"><RailIcon name="search" size={13} /></span>
         <input
           type="search"
           placeholder="Search projects…"
@@ -1132,9 +1129,7 @@
         onclick={cycleFilter}
       >
         <span>Filter: {filterLabel(projectFilter)}</span>
-        <svg class="button-caret" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M5.5 5.5 8 3l2.5 2.5M5.5 10.5 8 13l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <span class="button-caret" aria-hidden="true"><RailIcon name="caret-up-down" size={12} /></span>
       </button>
 
       <div class="view-toggle" role="group" aria-label="Project view">
@@ -1203,7 +1198,7 @@
                     onclick={createProject}
                   >
                     <span class="empty-create-title">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                      <RailIcon name="plus" size={16} />
                       Create project
                     </span>
                     <span class="empty-create-sub"
@@ -1625,6 +1620,7 @@
 
   .search-icon {
     position: absolute;
+    display: inline-flex;
     top: 50%;
     left: 9px;
     width: 13px;
@@ -1678,6 +1674,7 @@
 
   .select-caret,
   .button-caret {
+    display: inline-flex;
     width: 12px;
     height: 12px;
     color: var(--v4-text-3);

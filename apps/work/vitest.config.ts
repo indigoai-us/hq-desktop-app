@@ -19,6 +19,9 @@ export default defineConfig({
       "$env/dynamic/public": fileURLToPath(
         new URL("./src/lib/test/env-stub-public.ts", import.meta.url),
       ),
+      "$app/environment": fileURLToPath(
+        new URL("./src/lib/test/app-environment-stub.ts", import.meta.url),
+      ),
       $lib: fileURLToPath(new URL("./src/lib", import.meta.url)),
     },
   },

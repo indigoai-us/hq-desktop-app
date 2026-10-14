@@ -187,7 +187,7 @@
         aria-label="Close details"
         onclick={onclose}
       >
-        <span aria-hidden="true">×</span>
+        <RailIcon name="x" size={14} />
       </button>
     </header>
 
@@ -593,7 +593,7 @@
   }
 
   .markdown-body :global(a:hover) {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   .markdown-body :global(code) {
@@ -655,7 +655,6 @@
     border: 0;
     border-radius: 0;
     background: transparent;
-    scrollbar-color: var(--v4-control-border) transparent;
   }
 
   .markdown-body :global(table) {

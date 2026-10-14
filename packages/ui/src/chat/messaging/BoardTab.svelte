@@ -281,7 +281,7 @@
                   >{column.title}</span
                 >
                 <span class="column-count">{column.cards.length}</span>
-                {#if onCreateTask}<button class="board-add" type="button" aria-label={`Create task in ${column.title}`} disabled={createPending} onclick={() => beginCreate(column.id)}>+</button>{/if}
+                {#if onCreateTask}<button class="board-add" type="button" aria-label={`Create task in ${column.title}`} disabled={createPending} onclick={() => beginCreate(column.id)}><RailIcon name="plus" size={16} /></button>{/if}
               </div>
               <div class="column-body">
                 {#if column.cards.length === 0}
@@ -342,7 +342,7 @@
               aria-label="Close task details"
               onclick={closePanel}
             >
-              <span aria-hidden="true">×</span>
+              <RailIcon name="x" size={14} />
             </button>
           </header>
 
@@ -439,7 +439,7 @@
 </div>
 
 <style>
-  .board-add { margin-left: auto; color: var(--pop-text); background: transparent; border: 0; font-size: 20px; cursor: pointer; }
+  .board-add { display: inline-grid; place-items: center; margin-left: auto; color: var(--pop-text); background: transparent; border: 0; cursor: pointer; }
   .board-create { padding: 12px 16px; border-bottom: 1px solid var(--pop-border); }
   .board-create label { display: block; margin: 8px 0; }
   .board-create input, .board-create textarea { display: block; box-sizing: border-box; width: 100%; padding: 6px; color: var(--pop-text); background: var(--c-field-bg); border: 1px solid var(--pop-border); border-radius: 4px; }
@@ -628,7 +628,9 @@
     gap: 6px;
     width: 100%;
     padding: 12px;
-    border: 1px solid var(--line);
+    /* Resting cards carry no outline; the border stays (transparent) so the
+       selected state can paint one without shifting a pixel. */
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised);
     color: inherit;
@@ -640,7 +642,10 @@
       border-color 0.12s;
   }
 
-  .board-card:hover,
+  .board-card:hover {
+    background: var(--btn-bg);
+  }
+
   .board-card.selected {
     background: var(--btn-bg);
     border-color: var(--line2);

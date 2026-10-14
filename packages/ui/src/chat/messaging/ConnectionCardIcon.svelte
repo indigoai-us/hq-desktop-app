@@ -6,10 +6,11 @@
    *
    * Slack draws Slack's own mark (app-brand-marks.ts) in Slack's colour, so
    * the box it sits in should be a light tile. Everything else draws the
-   * generic app glyph in the current text colour: four small tiles, the sign
+   * generic app glyph in the current text colour: Phosphor SquaresFour, the sign
    * for "an app" when there is no logo to show. It is never a letter or two
    * made from the name.
    */
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { SLACK_MARK } from "./app-brand-marks.js";
   import type { ConnectionCardTarget } from "./connection-card-model.js";
 
@@ -27,10 +28,11 @@
     <path d={SLACK_MARK.path} />
   </svg>
 {:else}
-  <svg viewBox="0 0 16 16" width={size} height={size} fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" data-testid="connection-card-icon-generic" aria-hidden="true">
-    <rect x="2" y="2" width="5" height="5" rx="1.4" />
-    <rect x="9" y="2" width="5" height="5" rx="1.4" />
-    <rect x="2" y="9" width="5" height="5" rx="1.4" />
-    <rect x="9" y="9" width="5" height="5" rx="1.4" />
-  </svg>
+  <span class="connection-card-icon-generic" data-testid="connection-card-icon-generic" aria-hidden="true"><RailIcon name="squares-four" {size} /></span>
 {/if}
+
+<style>
+  .connection-card-icon-generic {
+    display: inline-flex;
+  }
+</style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * The modal a card can open.
    *
@@ -284,9 +285,7 @@
           disabled={busy}
           onclick={requestClose}
         >
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-            <path d="M4 4l8 8M12 4l-8 8" />
-          </svg>
+          <RailIcon name="x" size={14} />
         </button>
       </header>
       <div

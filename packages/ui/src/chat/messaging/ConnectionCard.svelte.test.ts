@@ -185,9 +185,13 @@ describe("a connection card", () => {
     component = null;
     host?.remove();
     const tools = renderCard(connectionCardView("tools", input()));
-    const glyph = tools.querySelector<SVGElement>('[data-testid="connection-card-icon-generic"]')!;
+    const glyph = tools.querySelector<HTMLElement>('[data-testid="connection-card-icon-generic"]')!;
     expect(glyph).not.toBeNull();
-    expect(glyph.getAttribute("stroke")).toBe("currentColor");
+    // The generic app glyph is Phosphor SquaresFour, painted in currentColor.
+    const svg = glyph.querySelector<SVGElement>('svg[data-rail-icon="squares-four"]')!;
+    expect(svg).not.toBeNull();
+    expect(svg.getAttribute("viewBox")).toBe("0 0 256 256");
+    expect(svg.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
     expect(tools.querySelector('[data-testid="connection-card-icon-slack"]')).toBeNull();
   });
 

@@ -152,7 +152,8 @@
   .why { grid-column: 1 / -1; color: var(--v4-text-3); }
   .muted { margin: 0; color: var(--v4-text-3); }
   .inh { overflow-wrap: anywhere; }
-  .link { background: none; border: 0; padding: 0; color: var(--v4-text-2); text-decoration: underline; cursor: pointer; font: inherit; }
+  .link { background: none; border: 0; padding: 0; color: var(--v4-text-2); text-decoration: none; cursor: pointer; font: inherit; }
+  .link:hover { opacity: 0.7; }
   .failed { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
   .failed p { margin: 0; color: var(--v4-text-2); }
 </style>

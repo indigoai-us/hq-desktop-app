@@ -30,7 +30,7 @@ describe("labelled buttons carry a leading icon", () => {
 
   it("spaces a leading icon 6px from the label and centres it", () => {
     const css = read("common/button/rail-type.css");
-    expect(css).toMatch(/button:not\(\[data-rail-btn\]\) > svg\.rail-icon:first-child \{[^}]*margin-inline-end: 6px/u);
+    expect(css).toMatch(/button:not\(\[data-rail-btn\]\) > svg\.rail-icon:first-child:not\(\[data-solo\]\):not\(\[data-gapped\]\) \{[^}]*margin-inline-end: 6px/u);
     expect(read("common/button/RailIcon.svelte")).toMatch(/import "\.\/rail-type\.css"/u);
   });
 });
@@ -41,11 +41,13 @@ describe("labelled buttons carry a leading icon", () => {
  * and "←" in labels are real icons.
  */
 describe("remaining action buttons (second sweep)", () => {
-  it("adds the new icons to the line set in the same 16px style", async () => {
+  it("draws every line icon from Phosphor Regular (256-unit filled paths)", async () => {
     const { LINE_ICONS } = await import("./rail-icons.js");
-    for (const name of ["archive", "ban", "check-circle", "bell", "door", "sliders"] as const) {
-      expect(LINE_ICONS[name], name).toMatch(/^M[\d.\s,a-zA-Z-]+$/u);
-      expect(LINE_ICONS[name]).not.toMatch(/fill/u);
+    for (const [name, d] of Object.entries(LINE_ICONS)) {
+      expect(d, name).toMatch(/^M[\d.\s,a-zA-Z-]+$/u);
+      expect(d).not.toMatch(/fill/u);
+      // Phosphor draws on a 256 grid: some coordinate always exceeds the old 16-unit box.
+      expect(Math.max(...(d.match(/\d+(?:\.\d+)?/gu) ?? ["0"]).map(Number)), name).toBeGreaterThan(32);
     }
   });
 

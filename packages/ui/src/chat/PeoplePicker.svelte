@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import {
     filterPickerEntries,
     groupPickerEntries,
@@ -44,7 +45,7 @@
         >
           <span class="mini" class:sq={entry.kind === "agent"} class:grp={entry.kind === "group"}>{initials(entry.name)}</span>
           {rowPrimaryLabel({ name: entry.name })}
-          <span class="x" aria-hidden="true">✕</span>
+          <span class="x" aria-hidden="true"><RailIcon name="x" size={10} /></span>
         </button>
       {/each}
       <span class="pp-n">{selectedEntries.length}</span>
@@ -72,7 +73,7 @@
           data-id={entry.id}
           onclick={() => onToggle(entry)}
         >
-          <i aria-hidden="true">{selected.includes(entry.id) ? "✓" : ""}</i>
+          <i aria-hidden="true">{#if selected.includes(entry.id)}<RailIcon name="check" size={10} />{/if}</i>
           <span class="mini" class:sq={entry.kind === "agent"} class:grp={entry.kind === "group"}>{initials(entry.name)}</span>
           <span class="who">
             <b>{rowPrimaryLabel({ name: entry.name })}</b>
@@ -119,7 +120,7 @@
     color: var(--t1, var(--v4-text-1));
     font-size: 13px;
   }
-  .x { color: var(--t3, var(--v4-text-3)); }
+  .x { display: inline-flex; align-items: center; color: var(--t3, var(--v4-text-3)); }
   .pp-n { margin-left: auto; align-self: center; font-size: 13px; color: var(--t3, var(--v4-text-3)); }
   .pp-q { display: block; margin: 8px 10px 2px; }
   .pp-q input {

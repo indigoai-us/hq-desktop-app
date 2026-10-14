@@ -23,6 +23,7 @@
     type TaskColumn,
   } from "./projects-model.js";
   import StoryCard from "./StoryCard.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import StoryList from "./StoryList.svelte";
 
@@ -147,16 +148,7 @@
                 class:is-open={!collapsed[column]}
                 aria-hidden="true"
               >
-                <svg viewBox="0 0 16 16">
-                  <path
-                    d="m6 4 4 4-4 4"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.4"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                </svg>
+                <RailIcon name="caret-right" size={12} />
               </span>
             </button>
 
@@ -380,11 +372,6 @@
     transition:
       transform 150ms ease,
       opacity 150ms ease;
-  }
-
-  .chevron svg {
-    width: 12px;
-    height: 12px;
   }
 
   .column-header:hover .chevron,

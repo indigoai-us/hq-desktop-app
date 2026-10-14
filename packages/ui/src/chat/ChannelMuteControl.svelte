@@ -1,4 +1,6 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import Caret from "../common/Caret.svelte";
   /**
    * Channel-header mute control. A bell icon (bell-slash when muted) toggles
    * Muted against the channel's last non-muted level; the chevron (or a
@@ -102,23 +104,7 @@
     onclick={toggleMute}
     oncontextmenu={openMenu}
   >
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
-      <path
-        d="M8 2.5a3.3 3.3 0 0 0-3.3 3.3v2.1c0 .55-.2 1.08-.57 1.49L3 10.75h10l-1.13-1.35a2.3 2.3 0 0 1-.57-1.49V5.8A3.3 3.3 0 0 0 8 2.5Z"
-        stroke="currentColor"
-        stroke-width="1.2"
-        stroke-linejoin="round"
-      />
-      <path
-        d="M6.6 12.5a1.5 1.5 0 0 0 2.8 0"
-        stroke="currentColor"
-        stroke-width="1.2"
-        stroke-linecap="round"
-      />
-      {#if muted}
-        <path d="M2.5 2.5l11 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-      {/if}
-    </svg>
+    <RailIcon name={muted ? "bell-slash" : "bell"} size={14} />
   </button>
   <button
     type="button"
@@ -130,9 +116,7 @@
     aria-label="Channel notification level"
     onclick={() => (open = !open)}
   >
-    <svg viewBox="0 0 16 16" width="10" height="10" fill="none" aria-hidden="true">
-      <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
+    <Caret size="var(--hq-btn-caret)" />
   </button>
 
   {#if open}
@@ -155,15 +139,7 @@
         >
           <span class="notify-check" aria-hidden="true">
             {#if option.level === level}
-              <svg viewBox="0 0 16 16" width="12" height="12" fill="none">
-                <path
-                  d="M3.5 8.5l3 3 6-7"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <RailIcon name="check" size={12} />
             {/if}
           </span>
           <span class="notify-copy">
@@ -186,6 +162,8 @@
     border: 1px solid transparent;
     border-radius: 8px;
     background: var(--btn-bg);
+    /* The app's one icon tone (--t2, as the sidebar's add, search and
+       filter icons), shared with the members button beside it. */
     color: var(--t2);
   }
 
@@ -203,7 +181,9 @@
     -webkit-appearance: none;
     display: inline-grid;
     place-items: center;
-    height: 28px;
+    /* The app's one button height (button-standard.css), shared with the
+       header's tabs and member count. */
+    height: var(--hq-btn-h);
     padding: 0;
     border: 0;
     background: transparent;
@@ -211,19 +191,19 @@
     cursor: pointer;
   }
 
+  /* The button standard's inline padding at the ends and its icon gap
+     between bell and caret, split across the two halves, as the Launch
+     pill lays out icon, label and caret. */
   .mute-toggle {
-    width: 28px;
+    width: auto;
+    padding: 0 calc(var(--hq-btn-gap) / 2) 0 var(--hq-btn-pad-inline);
     border-radius: 8px 0 0 8px;
   }
 
   .mute-chevron {
-    width: 18px;
+    width: auto;
+    padding: 0 var(--hq-btn-pad-inline) 0 calc(var(--hq-btn-gap) / 2);
     border-radius: 0 8px 8px 0;
-  }
-
-  .mute-toggle:hover,
-  .mute-chevron:hover {
-    color: var(--t1);
   }
 
   .mute-toggle:disabled {

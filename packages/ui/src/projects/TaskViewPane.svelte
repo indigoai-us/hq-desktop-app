@@ -7,6 +7,7 @@
 -->
 <script lang="ts">
   import RailButton from "../common/button/RailButton.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import type { PortfolioSessionRef } from "../chat/portfolio-session.js";
   import BoardFaces from "./BoardFaces.svelte";
@@ -123,14 +124,14 @@
       aria-label="Open project"
       title="Open project"
       data-testid="task-view-open-project"
-      onclick={() => onopenproject(selected?.id ?? null)}>↗</button
+      onclick={() => onopenproject(selected?.id ?? null)}><RailIcon name="arrow-up-right" size={14} /></button
     >
     <button
       type="button"
       class="icon-btn"
       aria-label="Close"
       data-testid="task-view-close"
-      onclick={onclose}>✕</button
+      onclick={onclose}><RailIcon name="x" size={14} /></button
     >
   </div>
 
@@ -286,6 +287,9 @@
   }
 
   .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 26px;
     height: 26px;
     flex: none;

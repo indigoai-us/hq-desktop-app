@@ -7,6 +7,7 @@
   // `onsend` callback. Visuals (message row + composer CSS) live here so they travel
   // with the component.
   import { tick } from 'svelte';
+  import RailIcon from '@hq/ui/rail-icon';
   import ReactionBar from './ReactionBar.svelte';
   import IdentityMark from './IdentityMark.svelte';
   import WorkMeshActivityRow from './WorkMeshActivityRow.svelte';
@@ -615,14 +616,9 @@
             {#if isCopying(msg.eventId, 'body')}
               <span class="action-spinner" aria-hidden="true"></span>
             {:else if isCopied(msg.eventId, 'body')}
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M3 8.5L6.5 12L13 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
+              <RailIcon name="check" size={13} />
             {:else}
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3" />
-                <path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
+              <RailIcon name="copy" size={13} />
             {/if}
           </button>
         </div>
@@ -642,10 +638,7 @@
           <div class="share-card" class:share-card-multi={share.paths.length > 1}>
             <div class="share-card-head">
               <span class="share-card-icon" aria-hidden="true">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-                  <path d="M9 1.5V5.5H13" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
-                </svg>
+                <RailIcon name="file" />
               </span>
               <span class="share-card-label">
                 Shared {share.paths.length === 1 ? 'a file' : `${share.paths.length} files`}
@@ -706,11 +699,11 @@
                 aria-busy={openingShareIds.has(msg.eventId)}
                 aria-label="Open share in Claude Code with prompt"
               >
-                {openingShareIds.has(msg.eventId)
+                <RailIcon name="external" />{openingShareIds.has(msg.eventId)
                   ? 'Opening…'
                   : actionFailure(msg.eventId, 'open-share')
                     ? 'Retry open'
-                    : 'Open in Claude ↗'}
+                    : 'Open in Claude'}
               </button>
             {/if}
           </div>
@@ -797,7 +790,7 @@
       aria-label="Jump to new messages"
     >
       New messages
-      <span aria-hidden="true">↓</span>
+      <RailIcon name="arrow-down" size={12} />
     </button>
   {/if}
   {#if linkMenu}
@@ -893,17 +886,21 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    scrollbar-width: thin;
-    scrollbar-color: var(--pop-muted) transparent;
   }
 
+  /* One 4px bar (see packages/ui chat/scrollbars.css). No scrollbar-width/-color:
+     the standard properties beat ::-webkit-scrollbar and draw ~11px. */
   .dm-thread::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
+  }
+
+  .dm-thread::-webkit-scrollbar-track {
+    background: transparent;
   }
 
   .dm-thread::-webkit-scrollbar-thumb {
     background: var(--pop-hover);
-    border-radius: 3px;
+    border-radius: 2px;
   }
 
   .dm-thread-status {
@@ -1259,8 +1256,23 @@
     white-space: pre;
     overflow-wrap: normal;
     word-break: normal;
-    scrollbar-width: thin;
-    scrollbar-color: var(--message-markdown-muted) transparent;
+  }
+
+  /* Code blocks and wide tables scroll sideways on the same 4px bar. */
+  .dm-bubble-body :global(pre::-webkit-scrollbar),
+  .dm-bubble-body :global(.markdown-table-scroll::-webkit-scrollbar) {
+    height: 4px;
+  }
+
+  .dm-bubble-body :global(pre::-webkit-scrollbar-track),
+  .dm-bubble-body :global(.markdown-table-scroll::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+
+  .dm-bubble-body :global(pre::-webkit-scrollbar-thumb),
+  .dm-bubble-body :global(.markdown-table-scroll::-webkit-scrollbar-thumb) {
+    background: var(--message-markdown-muted);
+    border-radius: 2px;
   }
 
   .dm-bubble-body :global(pre code) {
@@ -1306,8 +1318,6 @@
     border: 0;
     border-radius: 0;
     background: transparent;
-    scrollbar-width: thin;
-    scrollbar-color: var(--message-markdown-muted) transparent;
   }
 
   .dm-bubble-body :global(.markdown-table-scroll:focus-visible) {
@@ -1785,7 +1795,10 @@
   :global([data-window='messages']) .dm-thread {
     padding: var(--space-4) var(--space-5);
     gap: 0;
-    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  :global([data-window='messages']) .dm-thread::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb, var(--pop-hover));
   }
 
   :global([data-window='messages']) .dm-thread-status {

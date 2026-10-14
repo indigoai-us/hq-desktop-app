@@ -70,7 +70,7 @@
 <aside class="pane" data-testid="goal-pane" aria-label={objective.title || "Objective"}>
   <header class="ph">
     <h2 class="pt" title={objective.title}>{objective.title || "Objective"}</h2>
-    <button type="button" class="x" aria-label="Close" data-testid="goal-pane-close" onclick={onclose}>✕</button>
+    <button type="button" class="x" aria-label="Close" data-testid="goal-pane-close" onclick={onclose}><RailIcon name="x" size={14} /></button>
   </header>
   <div class="pb">
     <div class="meta" data-testid="goal-pane-meta">
@@ -146,7 +146,7 @@
   .pane { flex: 0 0 340px; width: 340px; min-width: 0; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; font-size: 13px; color: var(--t1); }
   .ph { display: flex; align-items: center; gap: 8px; height: 52px; box-sizing: border-box; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); flex: none; }
   .pt { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .x { font: inherit; color: var(--t2); background: transparent; border: 0; border-radius: 6px; width: 28px; height: 28px; cursor: pointer; }
+  .x { display: inline-flex; align-items: center; justify-content: center; font: inherit; color: var(--t2); background: transparent; border: 0; border-radius: 6px; width: 28px; height: 28px; cursor: pointer; }
   .x:hover { background: var(--hover); color: var(--t1); }
   .pb { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 12px 16px 24px; }
   .meta { display: flex; align-items: center; gap: 6px; color: var(--t3); }

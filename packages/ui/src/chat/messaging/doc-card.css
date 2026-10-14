@@ -1,0 +1,208 @@
+/* Shared "document card" language.
+ *
+ * Two things hang under a chat bubble and mean the same thing to the reader —
+ * "there is more here than the message shows":
+ *
+ *   - an ARTIFACT card (ArtifactCard.svelte) for a long structured block that
+ *     travelled inside the message (`hq dm --details` / `--prompt`, delegation
+ *     and handoff cards), and
+ *   - a FILE card (MessageAttachments.svelte) for a real attachment in the
+ *     vault.
+ *
+ * They used to look nothing alike: the artifact card carried a 44px animated
+ * gradient mesh tile and 13.5/12.5px type found nowhere else in the shell,
+ * while the file card was a small outlined grey pill. Same job, same shell.
+ *
+ * Global (not Svelte-scoped) on purpose — two components share these classes,
+ * and restating the rules in both would let them drift, which is the bug this
+ * file exists to fix.
+ *
+ * Every colour is a theme token from chat-tokens.css, so light and dark both
+ * hold without a second set of rules.
+ */
+
+.doc-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 440px;
+  margin-top: 4px;
+  padding: 9px 10px;
+  /* No outline. The raised fill already separates the card from the message
+     above it; a hairline on top of that drew a second edge a few pixels
+     inside the first. Kept transparent rather than dropped so keyboard focus
+     can paint an edge without moving anything. */
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background-color: var(--raised);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease;
+}
+
+/* Hover lifts the fill rather than drawing an edge. `--hover` is a
+   translucent wash, layered over the raised fill (not swapped for it): in the
+   dark theme the two tokens are the same alpha, so a swap would not change a
+   pixel. */
+.doc-card:hover:not(:disabled) {
+  background-image: linear-gradient(var(--hover), var(--hover));
+}
+
+.doc-card:focus-visible {
+  border-color: var(--ice-ink);
+  outline: none;
+}
+
+.doc-card:disabled {
+  cursor: default;
+}
+
+/* Sized to its content rather than to the column: a file card carries a name
+   and a size, and stretching that to 440px left a lake of empty card. */
+.doc-card.is-compact {
+  width: fit-content;
+  min-width: 180px;
+}
+
+/* Icon well. Either a glyph (artifact) or the file's short type label
+   (PDF / XLSX / …), which says more than a generic document icon. */
+.doc-card-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--btn-bg);
+  color: var(--t2);
+  font: 700 9px/1 var(--font-mono, ui-monospace, Menlo, monospace);
+  letter-spacing: 0.04em;
+}
+
+.doc-card-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.doc-card-copy {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.doc-card-title {
+  overflow: hidden;
+  color: var(--t1);
+  font: 500 13px/1.35 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-card-summary {
+  overflow: hidden;
+  color: var(--t2);
+  font: 400 12px/1.4 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One caption line, one plain style throughout. The kind used to be bold,
+   uppercase and wide-tracked, which made "DETAILS" read as a heading over its
+   own metadata instead of the first item in it. */
+.doc-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 2px;
+  color: var(--t3, var(--t2));
+  font: 400 10px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.doc-card-meta.is-error {
+  color: var(--red, #f0616d);
+}
+
+/* Actions stay out of the way until the card is hovered or something in it
+   has keyboard focus, so a run of cards reads as a list rather than a wall
+   of buttons. A mouse click that leaves focus behind does not pin them. */
+.doc-card-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.doc-card:hover .doc-card-actions,
+.doc-card:focus-visible .doc-card-actions,
+.doc-card:has(:focus-visible) .doc-card-actions {
+  opacity: 1;
+}
+
+/* Icon, not a word. A run of cards carried "Copy Open" over and over, which
+   read as a toolbar competing with the title — the glyph says the same thing
+   at a third of the width. Each still carries its own `aria-label`, and a
+   tooltip names it on hover and focus. */
+.doc-card-btn {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  /* Square on the one button standard (button-standard.css): icon-only
+     buttons read --hq-btn-h rather than a hand-rolled height. */
+  width: var(--hq-btn-h);
+  height: var(--hq-btn-h);
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--t2);
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.doc-card-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.doc-card-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--t1);
+}
+
+.doc-card-btn:focus-visible {
+  outline: 2px solid var(--ice-ink);
+  outline-offset: -2px;
+}
+
+.doc-card-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.doc-card-btn.is-primary {
+  color: var(--ice-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .doc-card,
+  .doc-card-actions,
+  .doc-card-btn {
+    transition: none;
+  }
+}

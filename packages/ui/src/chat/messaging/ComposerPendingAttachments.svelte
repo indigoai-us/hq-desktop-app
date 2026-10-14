@@ -96,7 +96,7 @@
           onclick={() => onremove(i)}
           onkeydown={(e) => onRemoveKey(e, i)}
         >
-          ×
+          <RailIcon name="x" size={12} />
         </button>
       </span>
     {:else}
@@ -114,7 +114,7 @@
           onclick={() => onremove(i)}
           onkeydown={(e) => onRemoveKey(e, i)}
         >
-          ×
+          <RailIcon name="x" size={10} />
         </button>
       </span>
     {/if}
@@ -172,8 +172,9 @@
     border: 0;
     border-radius: 999px;
     background: rgba(0, 0, 0, 0.62);
+    display: grid;
+    place-items: center;
     color: #fff;
-    font-size: 14px;
     line-height: 20px;
     cursor: pointer;
     opacity: 0;
@@ -232,6 +233,8 @@
 
   .composer-chip-remove {
     appearance: none;
+    display: inline-flex;
+    align-items: center;
     border: 0;
     background: transparent;
     color: var(--t2);
@@ -255,7 +258,8 @@
     color: var(--accent, #7aa2ff);
     font: inherit;
     font-size: 12px;
-    text-decoration: underline;
+    text-decoration: none;
     cursor: pointer;
   }
+  .composer-attach-upgrade:hover { opacity: 0.7; }
 </style>

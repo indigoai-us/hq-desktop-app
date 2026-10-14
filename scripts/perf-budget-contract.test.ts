@@ -171,6 +171,9 @@ const BACKDROP_FILTER_ALLOWLIST = new Set([
   "packages/ui/src/library/LibraryBrowser.svelte::.scope-menu",
   "packages/ui/src/projects/ProjectDetailView.svelte::.status-menu",
   "packages/ui/src/settings/VersionPopout.svelte::.version-popout",
+  // Attachment lightbox scrim: a full-window dialog that exists only while an
+  // attachment is open; its 4px blur is the designed lightbox (PR #1508).
+  "packages/ui/src/chat/messaging/AttachmentTray.svelte::.att-modal",
   // Emoji picker + command palette + shortcut sheet: modal-ish, dismissed fast.
   "packages/ui/src/chat/messaging/EmojiPicker.svelte::.emoji-picker",
   "packages/ui/src/common/CommandPalette.svelte::.command-palette",

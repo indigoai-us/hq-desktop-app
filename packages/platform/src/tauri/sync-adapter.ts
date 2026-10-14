@@ -40,6 +40,7 @@ import {
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
+import { parseBadgesPayload } from '../badges.js';
 import {
   CLAUDE_PROVIDER_FLAG,
   RAIL_GATE_EVERYONE_DEFAULT,
@@ -723,6 +724,11 @@ export function createSyncPlatformAdapter(
       getAvatarPack: (packId) => hqProJson('GET', WEB_PATHS.avatarPack(packId)),
       selectAgentAvatar: (agentUid, input) =>
         hqProJson('POST', WEB_PATHS.agentAvatar(agentUid), input),
+      // Accomplishment badges over hq_pro_fetch, parsed at this boundary.
+      getBadges: async (uid) => {
+        const result = await hqProJson<unknown>('GET', WEB_PATHS.badges(uid));
+        return result.ok ? ok(parseBadgesPayload(result.value)) : result;
+      },
     },
 
     messaging: {

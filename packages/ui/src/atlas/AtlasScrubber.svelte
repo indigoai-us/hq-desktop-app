@@ -5,6 +5,7 @@
    * the map fades objects by opacity only while scrubbing or playing.
    */
   import { onDestroy } from "svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import {
     ATLAS_TIMELINE_DAYS,
     atlasHistogramHeights,
@@ -155,9 +156,9 @@
     onclick={play}
   >
     {#if playing}
-      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M5 3.5v7M9 3.5v7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
+      <RailIcon name="pause" size={14} />
     {:else}
-      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M4.5 3.2v7.6L10.8 7z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none" /></svg>
+      <RailIcon name="play" size={14} />
     {/if}
   </button>
   <div

@@ -330,9 +330,7 @@
     {#if openState[entry.path] === 'local'}
       <span class="drift-mini-spinner" aria-hidden="true"></span>
     {:else}
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M11 2.6l2.4 2.4M3 13l.6-2.5 7-7 1.9 1.9-7 7L3 13z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+      <RailIcon name="pencil" size={13} />
     {/if}
   </button>
 {/snippet}
@@ -349,9 +347,7 @@
     {#if openState[entry.path] === 'upstream'}
       <span class="drift-mini-spinner" aria-hidden="true"></span>
     {:else}
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M9 3h4v4M13 3l-6.5 6.5M11.5 9.2v2.8a1.7 1.7 0 0 1-1.7 1.7H4A1.7 1.7 0 0 1 2.3 12V6.2A1.7 1.7 0 0 1 4 4.5h2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+      <RailIcon name="external" size={13} />
     {/if}
   </button>
 {/snippet}
@@ -374,13 +370,9 @@
     {#if st === 'in-flight'}
       <span class="drift-mini-spinner" aria-hidden="true"></span>
     {:else if st === 'done'}
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M3.5 8.4l3 3 6-6.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+      <RailIcon name="check" size={13} />
     {:else}
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M8 2.8v6.4M5.2 6.6L8 9.4l2.8-2.8M3 12.6h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+      <RailIcon name="download" size={13} />
     {/if}
   </button>
 {/snippet}
@@ -483,10 +475,7 @@
          alone would hide those sections entirely. -->
     <div class="drift-empty">
       <span class="drift-empty-check" aria-hidden="true">
-        <svg width="32" height="32" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.2" opacity="0.4" />
-          <path d="M5 8.2l2.2 2.2L11 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <RailIcon name="check-circle" size={32} />
       </span>
       <p>No drift detected. Locked core files match upstream {versionLabel}.</p>
     </div>
@@ -710,6 +699,7 @@
      (consistent with the menubar's no-severity-colour stance). The
      ring's lower opacity carries the "calm, just confirming" tone. */
   .drift-empty-check {
+    display: flex;
     color: var(--popover-text-muted, #a0a0a0);
   }
 

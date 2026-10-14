@@ -148,7 +148,7 @@
               aria-label="Close story details"
               onclick={closePanel}
             >
-              <span aria-hidden="true">×</span>
+              <RailIcon name="x" size={14} />
             </button>
           </header>
 
@@ -403,7 +403,9 @@
     gap: 6px;
     width: 100%;
     padding: 12px;
-    border: 1px solid var(--line);
+    /* Resting cards carry no outline; the border stays (transparent) so the
+       selected state can paint one without shifting a pixel. */
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised);
     color: inherit;
@@ -417,7 +419,6 @@
 
   .board-card:hover {
     background: var(--btn-bg);
-    border-color: var(--line2);
   }
 
   .board-card.selected {

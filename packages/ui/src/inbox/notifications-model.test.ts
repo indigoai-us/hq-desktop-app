@@ -24,7 +24,10 @@ import {
   type NotificationItem,
   type NotificationsFeedState,
   verbForKind,
+  NOTIFICATION_TYPE_RAIL_ICON,
+  typeIconForKind,
 } from "./notifications-model";
+import { LINE_ICONS } from "../common/button/rail-icons";
 import { classifyNotificationAck, composeLiveNotifications } from "./live-notifications";
 
 const NOW = Date.parse("2026-08-12T15:00:00.000Z");
@@ -559,5 +562,29 @@ describe("plan_limit rows (paused uploads, desktop-local)", () => {
     expect(feed.notifications.map((n) => n.id)).toEqual([row.id]);
     expect(feed.unreadCount).toBe(1);
     expect(classifyNotificationAck(row.id)).toEqual({ kind: "local", id: row.id });
+  });
+});
+
+describe("notification type icons (Phosphor)", () => {
+  it("maps every row type icon key to a Phosphor Regular registry icon", () => {
+    expect(NOTIFICATION_TYPE_RAIL_ICON).toEqual({
+      mention: "at",
+      agent: "robot",
+      review: "check-circle",
+      file: "file",
+      dm: "chat-circle",
+      flag: "flag",
+      generic: "circle-dot",
+    });
+    for (const name of Object.values(NOTIFICATION_TYPE_RAIL_ICON)) {
+      expect(LINE_ICONS[name as keyof typeof LINE_ICONS], name).toBeTruthy();
+    }
+  });
+
+  it("resolves a registry icon for each display kind", () => {
+    expect(NOTIFICATION_TYPE_RAIL_ICON[typeIconForKind("mention")]).toBe("at");
+    expect(NOTIFICATION_TYPE_RAIL_ICON[typeIconForKind("agent_finished_story")]).toBe("robot");
+    expect(NOTIFICATION_TYPE_RAIL_ICON[typeIconForKind("file_shared")]).toBe("file");
+    expect(NOTIFICATION_TYPE_RAIL_ICON[typeIconForKind("infra_flag")]).toBe("flag");
   });
 });

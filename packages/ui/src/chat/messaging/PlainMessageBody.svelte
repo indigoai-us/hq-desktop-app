@@ -90,7 +90,7 @@
   }
 
   .plain-body-toggle:hover {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   .plain-body-toggle:focus-visible {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * The Connect step on #welcome: before setup can run, at least one coding
    * agent (Claude Code or Codex) must be installed and signed in on this Mac.
@@ -255,7 +256,7 @@
             Run Setup with {tool.name}
           </SetupButton>
         {:else if connected(tool.id)}
-          <span class="provider-check" aria-hidden="true">✓</span>
+          <span class="provider-check" aria-hidden="true"><RailIcon name="check" size={14} /></span>
         {:else if available(tool.id) || api.providerInstall}
           <SetupButton
             variant="primary"
@@ -389,7 +390,8 @@
     font-size: 12px;
   }
   .provider-check {
-    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
   }
   .flow {
     display: flex;

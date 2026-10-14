@@ -22,6 +22,7 @@
     type LibraryOverlayTab,
   } from "./library-overlay-model.js";
   import PageHeader from "../shell/PageHeader.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -91,20 +92,7 @@
           onclick={() => selectTab(row.id)}
         >
           <span class="lo-nav-ic" aria-hidden="true">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-              <path
-                d="M3 5.5 8 2.5 13 5.5v5L8 13.5 3 10.5v-5Z"
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linejoin="round"
-              />
-              <path
-                d="M8 2.5v11M3 5.5l5 3 5-3"
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <RailIcon name="package" size={14} />
           </span>
           <span class="lo-nav-label">{row.label}</span>
           {#if row.count != null}
@@ -144,7 +132,17 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--v4-bg, var(--desktop-bg, #0c0c0c));
+    /* Neither `--v4-bg` nor `--desktop-bg` is defined anywhere in the shell,
+       so this always fell through to a #0c0c0c literal: a black page under
+       the light theme's near-black text. Paint the shell's own ground
+       (`--v4-ground`, the token `.desktop-shell` / `.desktop-main` paint:
+       #f2f2f2 light, #111111 dark) so the page reads as part of the shell.
+       The ground is layered over the opaque surface: identical at the
+       default opacity, and no bleed-through when the user turns window
+       transparency up. */
+    background:
+      linear-gradient(var(--v4-ground, #f2f2f2), var(--v4-ground, #f2f2f2)),
+      var(--v4-surface-solid, #f2f2f2);
     color: var(--t1);
     font: 400 13px/1.45 var(--font-ui);
   }

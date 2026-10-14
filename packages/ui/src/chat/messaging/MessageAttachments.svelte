@@ -1,13 +1,16 @@
 <script lang="ts">
   /**
    * Inline attachment strip on a chat message: image thumbs + file cards.
-   * Clicking opens the host's attachments tray (zero network here).
+   * Clicking either opens the host's lightbox (zero network here): an image
+   * full-window, a document in its preview, with Download in the lightbox
+   * bar (owner decision 2026-10-08).
    */
   import { onDestroy } from "svelte";
   import type { ImagePreviewCache } from "./image-preview-cache";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import { attachmentPreviewKind } from "./attachment-preview";
   import { fileTypeLabel } from "./chat-attachments";
+  import "./doc-card.css";
 
   interface Props {
     attachments: FileAttachmentModel[];
@@ -125,20 +128,27 @@
           {/if}
         </button>
       {:else}
+        <!-- Same shell as the artifact card (doc-card.css): both are the
+             "there is more here" handle under a message. No hover action:
+             the whole card opens the preview, and the lightbox bar carries
+             Download. -->
         <button
           type="button"
-          class="att-card"
+          class="doc-card is-compact att-card"
           data-testid="attachment-card"
           aria-label={`Open ${item.name}`}
           onclick={() => onopen?.(item)}
         >
-          <span class="att-icon" aria-hidden="true"
+          <span class="doc-card-icon" aria-hidden="true"
             >{fileTypeLabel(item.name, item.contentType)}</span
           >
-          <span class="att-copy">
-            <span class="att-name">{item.name}</span>
+          <span class="doc-card-copy">
+            <span class="doc-card-title">{item.name}</span>
+            <!-- The icon well already says PDF; the caption says how big. -->
             {#if item.sizeLabel}
-              <span class="att-meta">{item.sizeLabel}</span>
+              <span class="doc-card-meta" data-testid="attachment-card-meta"
+                >{item.sizeLabel}</span
+              >
             {/if}
           </span>
         </button>
@@ -169,10 +179,14 @@
     cursor: pointer;
   }
 
+  /* A lone image hugs its own artwork. The fixed 320x220 box letterboxed
+     anything that was not that shape — a portrait shot sat in a wide tile
+     with dead bands down both sides. The tile shrink-wraps the image and
+     only the cap (320 wide / 220 tall) constrains it. */
   .att-thumb.is-single {
-    width: min(320px, 100%);
-    height: 220px;
-    max-width: 100%;
+    width: auto;
+    height: auto;
+    max-width: min(320px, 100%);
   }
 
   .att-thumb img {
@@ -182,10 +196,21 @@
     object-fit: cover;
   }
 
+  /* The image is what gives the tile its size, so it is not stretched to
+     the tile: its natural box, capped. */
   .att-thumb.is-single img {
-    width: 100%;
-    height: 100%;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 220px;
     object-fit: contain;
+  }
+
+  /* Nothing to hug yet, so the placeholder keeps a box of the cap's size. */
+  .att-thumb.is-single .att-thumb-fallback {
+    width: 320px;
+    max-width: 100%;
+    height: 220px;
   }
 
   .att-thumb-fallback {
@@ -197,57 +222,13 @@
     font: 400 13px/1.4 var(--font-ui);
   }
 
-  .att-card {
-    appearance: none;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 160px;
-    max-width: 240px;
-    padding: 8px 10px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
-    border-radius: 8px;
-    background: var(--sel, rgba(255, 255, 255, 0.05));
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .att-card:hover,
   .att-thumb:hover {
     background: var(--hover, rgba(255, 255, 255, 0.08));
   }
 
-  .att-icon {
-    flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--t2);
-    font: 700 9px/1 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.04em;
-  }
-
-  .att-copy {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .att-name {
-    overflow: hidden;
-    color: var(--t1);
-    font: 500 12px/1.3 var(--font-ui);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .att-meta {
-    color: var(--t3, var(--t2));
-    font: 400 11px/1.2 var(--font-ui);
+  /* The file card's shell, type and buttons live in `doc-card.css`, shared
+     with the artifact card. The strip's own gap spaces it, not a margin. */
+  .att-card {
+    margin-top: 0;
   }
 </style>

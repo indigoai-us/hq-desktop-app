@@ -179,8 +179,9 @@
     overflow-y: auto;
     contain: layout paint;
     padding: 0 8px 12px;
-    scrollbar-color: var(--line) transparent;
-    scrollbar-width: thin;
+    /* Bar comes from the shell's shared rule (chat/scrollbars.css). No
+       scrollbar-width/-color: the standard properties beat
+       ::-webkit-scrollbar and draw an ~11px bar through the 4px one. */
   }
 
   .sidepane-footer {

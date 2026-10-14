@@ -20,7 +20,7 @@
 <div class="sf-sheet" role="dialog" aria-modal="true" aria-label="Share" data-testid="file-share-sheet" use:dismissable={{ onclose }}>
   <header class="sf-head">
     <h2>Share</h2>
-    <button type="button" class="sf-x" aria-label="Close" onclick={onclose}>✕</button>
+    <button type="button" class="sf-x" aria-label="Close" onclick={onclose}><RailIcon name="x" size={14} /></button>
   </header>
   <p class="sf-path" data-testid="file-share-path">{target.path}</p>
   {#if target.company}<p class="sf-meta">{target.company} vault</p>{/if}
@@ -66,6 +66,9 @@
     font-weight: 600;
   }
   .sf-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border: 0;
     background: transparent;
     color: var(--v4-text-2);

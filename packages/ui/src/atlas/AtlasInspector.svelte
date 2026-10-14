@@ -1,5 +1,6 @@
 <script lang="ts">
   import RailIcon from "../common/button/RailIcon.svelte";
+  import type { RailIconName } from "../common/button/rail-icons.js";
   import { PersonName, identityFromTelemetry } from "../common/people/index.js";
   import { compactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
@@ -88,6 +89,20 @@
   function groupRows(g: AtlasTodayGroup) {
     return todayOpenGroups[g.key] ? g.rows : g.rows.slice(0, ATLAS_TODAY_ROWS);
   }
+  /** Phosphor Regular icon per Today row kind. */
+  const KIND_ICON: Record<AtlasTodayKind, RailIconName> = {
+    project: "circle",
+    prd: "file-text",
+    brainstorm: "brain",
+    policy: "shield-check",
+    meeting: "chat-circle",
+    source: "code",
+    repo: "code",
+    worker: "robot",
+    skill: "star",
+    knowledge: "file",
+  };
+
   const KIND_LABEL: Record<AtlasTodayKind, string> = {
     prd: "PRD",
     brainstorm: "Brainstorm",
@@ -113,27 +128,7 @@
 </script>
 
 {#snippet kindIcon(kind: AtlasTodayKind)}
-  <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-    {#if kind === "project"}
-      <circle cx="8" cy="8" r="4.5" />
-    {:else if kind === "prd"}
-      <path d="M4 2.5h8v11H4z M6.5 6h3 M6.5 8.5h3 M6.5 11h2" />
-    {:else if kind === "brainstorm"}
-      <path d="M8 2.5a4 4 0 0 0-2.3 7.3V11h4.6V9.8A4 4 0 0 0 8 2.5z M6.3 13.5h3.4" />
-    {:else if kind === "policy"}
-      <path d="M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z" />
-    {:else if kind === "meeting"}
-      <path d="M2.5 4h11v7h-6l-3 2.5V11h-2z" />
-    {:else if kind === "source" || kind === "repo"}
-      <path d="M6 5L3 8l3 3 M10 5l3 3-3 3" />
-    {:else if kind === "worker"}
-      <path d="M3.5 4.5h9v8h-9z M6 8h.01 M10 8h.01 M8 2v2.5" />
-    {:else if kind === "skill"}
-      <path d="M8 2.5l1.6 3.4 3.6.4-2.7 2.5.8 3.6L8 10.6l-3.3 1.8.8-3.6-2.7-2.5 3.6-.4z" />
-    {:else}
-      <path d="M4 2.5h5.5L12 5v8.5H4z M9.5 2.5V5H12" />
-    {/if}
-  </svg>
+  <RailIcon name={KIND_ICON[kind] ?? "file"} size={14} />
 {/snippet}
 
 <aside class="inspector" data-testid="atlas-inspector" aria-label="Atlas inspector">
@@ -377,7 +372,7 @@
   .trow { width: calc(100% + 10px); margin: 0 -10px 0 0; padding: 5px 10px 5px 0; }
   .trows .more { margin: 0 -10px 0 0; padding: 5px 10px 5px 24px; }
   .ticon { display: inline-grid; place-items: center; width: 14px; height: 14px; margin-top: 2px; }
-  .ticon svg { fill: none; stroke: var(--v4-text-3); stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; }
+  .ticon { color: var(--v4-text-3); }
   .tbody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .ttitle { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .tname { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 500; color: var(--v4-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -421,7 +416,8 @@
   /* Share of the top person's tokens: one quiet rule under the row. */
   .pmain::after { content: ""; display: block; height: 2px; margin-top: 6px; width: var(--share, 0%); min-width: 2px; background: var(--v4-text-3); opacity: 0.35; }
   .spark path { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0.7; }
-  .link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; min-height: 28px; }
+  .link { background: none; border: 0; padding: 0; color: inherit; text-decoration: none; cursor: pointer; font: inherit; min-height: 28px; }
+  .link:hover { opacity: 0.7; }
   .inspector {
     width: 340px;
     box-sizing: border-box;

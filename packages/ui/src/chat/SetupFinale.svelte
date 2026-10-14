@@ -12,6 +12,7 @@
   import { SETUP_RESOURCES } from "./setup-channel";
   import { SETUP_HERO_ART } from "./setup-welcome-art";
   import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
+  import RailIcon from "../common/button/RailIcon.svelte";
 
   const SETUP_FINALE_EYEBROW = "Setup complete";
   const SETUP_FINALE_TITLE = "You're set up.";
@@ -99,20 +100,7 @@
                 data-testid={`setup-finale-resource-${resource.id}`}
                 onclick={(event) => openResourceLink(event, resource.href)}
               >
-                <svg
-                  class="resource-glyph"
-                  viewBox="0 0 16 16"
-                  width="16"
-                  height="16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.25"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
-                </svg>
+                <span class="resource-glyph" aria-hidden="true"><RailIcon name={SETUP_RESOURCE_GLYPHS[resource.kind]} size={16} /></span>
                 <span>{resource.title}</span>
               </a>
             </li>
@@ -295,6 +283,7 @@
     outline-offset: 2px;
   }
   .resource-glyph {
+    display: inline-flex;
     flex: 0 0 auto;
     opacity: 0.85;
   }

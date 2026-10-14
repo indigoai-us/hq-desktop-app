@@ -84,7 +84,7 @@
       aria-label="Close profile"
       onclick={() => onclose?.()}
     >
-      ×
+      <RailIcon name="x" size={14} />
     </button>
   </header>
 
@@ -323,7 +323,8 @@
     flex-direction: column;
     gap: 2px;
     padding: 10px 12px;
-    border: 1px solid var(--line);
+    /* Filled tile, no resting outline (border kept transparent for geometry). */
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised);
   }
@@ -348,7 +349,7 @@
   }
 
   .pp-email:hover {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   .pp-close:focus-visible,

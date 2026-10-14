@@ -89,7 +89,7 @@
         data-testid="meetings-filter-button"
         onclick={() => (filterOpen = !filterOpen)}
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
+        <RailIcon name="filter" size={15} />
       </button>
       {#if oninvite}
         <button
@@ -100,30 +100,30 @@
           data-testid="meetings-invite-notetaker"
           onclick={() => oninvite?.()}
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          <RailIcon name="plus" size={15} />
         </button>
       {/if}
       {#if filterOpen}
         <div class="popover" role="dialog" aria-label="Filter meetings" data-testid="meetings-filter-popover">
           <div class="pop-sec">Company</div>
           <button type="button" class="pop-row" aria-pressed={!filter.companyUid} onclick={() => onfilter?.({ ...filter, companyUid: null })}>
-            <span class="ck">{!filter.companyUid ? "✓" : ""}</span><span class="t">All companies</span>
+            <span class="ck">{#if !filter.companyUid}<RailIcon name="check" size={11} />{/if}</span><span class="t">All companies</span>
           </button>
           {#each companies as c (c.uid)}
             <button type="button" class="pop-row" aria-pressed={filter.companyUid === c.uid} onclick={() => onfilter?.({ ...filter, companyUid: c.uid })}>
-              <span class="ck">{filter.companyUid === c.uid ? "✓" : ""}</span>
+              <span class="ck">{#if filter.companyUid === c.uid}<RailIcon name="check" size={11} />{/if}</span>
               <span class="t"><CompanyLabel name={c.label} companyUid={c.uid} /></span><span class="count">{c.count}</span>
             </button>
           {/each}
           <div class="pop-sec">Show</div>
           <button type="button" class="pop-row" aria-pressed={filter.hasRecording} onclick={() => toggle("hasRecording")}>
-            <span class="ck">{filter.hasRecording ? "✓" : ""}</span><span class="t">Has recording</span>
+            <span class="ck">{#if filter.hasRecording}<RailIcon name="check" size={11} />{/if}</span><span class="t">Has recording</span>
           </button>
           <button type="button" class="pop-row" aria-pressed={filter.hasRecap} onclick={() => toggle("hasRecap")}>
-            <span class="ck">{filter.hasRecap ? "✓" : ""}</span><span class="t">Has recap</span>
+            <span class="ck">{#if filter.hasRecap}<RailIcon name="check" size={11} />{/if}</span><span class="t">Has recap</span>
           </button>
           <button type="button" class="pop-row" aria-pressed={filter.liveOnly} onclick={() => toggle("liveOnly")}>
-            <span class="ck">{filter.liveOnly ? "✓" : ""}</span><span class="t">Live now</span>
+            <span class="ck">{#if filter.liveOnly}<RailIcon name="check" size={11} />{/if}</span><span class="t">Live now</span>
             {#if liveCount}<span class="live-chip"><i class="ldot"></i>{liveCount}</span>{/if}
           </button>
           <div class="pop-foot">
@@ -179,7 +179,7 @@
           {:else if row.companyMark}<span class="mark" title={row.companyUid ?? undefined} aria-hidden="true">{row.companyMark}</span>{/if}
           {#if row.hasRecap}
             <span class="notes" aria-label="Recap saved" data-testid="meetings-row-recap">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h7l5 5v13H7z" /><path d="M14 3v5h5M9 13h6M9 17h6" /></svg>
+              <RailIcon name="file-text" size={13} />
             </span>
           {/if}
           {#if row.live}<span class="meta">{row.time}</span>
@@ -188,7 +188,7 @@
       {/each}
     {/each}
     {#if sections.some((s) => s.id === "past")}
-      <button type="button" class="sec earlier" onclick={() => onearlier?.()}>Earlier <span aria-hidden="true">›</span></button>
+      <button type="button" class="sec earlier" onclick={() => onearlier?.()}>Earlier <RailIcon name="caret-right" size={10} /></button>
     {/if}
   {/if}
 </Sidepane>
@@ -272,6 +272,9 @@
   }
 
   .sec.earlier {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     cursor: pointer;
   }
 
@@ -449,6 +452,8 @@
   }
 
   .ck {
+    display: inline-flex;
+    align-items: center;
     flex: 0 0 12px;
     color: var(--t1);
     font-size: 11px;

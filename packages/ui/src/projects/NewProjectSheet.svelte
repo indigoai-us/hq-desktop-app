@@ -122,7 +122,7 @@
     New project
     <span class="sub"><CompanyLabel name={company} companyUid={company} /> · board</span>
     <span class="grow"></span>
-    <button type="button" class="icon" aria-label="Close" onclick={() => close()}>✕</button>
+    <button type="button" class="icon" aria-label="Close" onclick={() => close()}><RailIcon name="x" size={14} /></button>
   </header>
   {#if draftRestored}
     <div class="restored" data-testid="new-project-draft-restored">
@@ -272,7 +272,7 @@
   }
   .sub { font-size: 13px; font-weight: 400; color: var(--v4-text-3); }
   .grow { flex: 1; }
-  .icon { border: 0; background: transparent; color: var(--v4-text-3); }
+  .icon { display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--v4-text-3); }
   .sb { overflow: auto; min-height: 0; }
   .fr {
     display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; align-items: start;
@@ -316,7 +316,8 @@
     display: flex; align-items: center; gap: 4px; padding: 6px 20px; font-size: 13px;
     color: var(--v4-text-3); border-bottom: 1px solid var(--v4-hairline);
   }
-  .link { border: 0; padding: 0; background: transparent; color: var(--v4-text-1); font: inherit; text-decoration: underline; }
+  .link { border: 0; padding: 0; background: transparent; color: var(--v4-text-1); font: inherit; text-decoration: none; }
+  .link:hover { opacity: 0.7; }
   .confirm {
     flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 20px;
     border-top: 1px solid var(--v4-hairline); background: var(--v4-control-faint); font-size: 13px;

@@ -891,19 +891,17 @@
     margin: 0 -6px;
     padding: 0 6px;
     overflow-y: auto;
-    scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--t1) 18%, transparent) transparent;
+    /* The app's 4px bar (chat/scrollbars.css contract): no scrollbar-width
+       or -color, which would draw the wider standard bar over it. */
   }
 
   .forward-list::-webkit-scrollbar {
-    width: 8px;
+    width: 4px;
   }
 
   .forward-list::-webkit-scrollbar-thumb {
-    border: 2px solid transparent;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--t1) 18%, transparent);
-    background-clip: padding-box;
+    border-radius: 2px;
+    background: var(--scrollbar-thumb, color-mix(in srgb, var(--t1) 18%, transparent));
   }
 
   .forward-list::-webkit-scrollbar-track {

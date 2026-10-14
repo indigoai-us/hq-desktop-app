@@ -336,7 +336,7 @@
         data-testid="task-detail-close"
         onclick={onclose}
       >
-        ×
+        <RailIcon name="x" size={14} />
       </button>
     </header>
 
@@ -478,7 +478,7 @@
             {#each acItems as item, index (index)}
               <li class:is-done={currentPasses}>
                 <span class="ac-mark" aria-hidden="true">
-                  {currentPasses ? "✓" : "·"}
+                  {#if currentPasses}<RailIcon name="check" size={11} />{:else}·{/if}
                 </span>
                 <p>{item}</p>
               </li>
@@ -753,6 +753,9 @@
   }
 
   .icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 28px;
     height: 28px;
     border: 0;

@@ -161,9 +161,11 @@ function scopeOf(id: string): HTMLElement | null {
   );
 }
 
-function revealOf(id: string): HTMLElement | null {
-  return host.querySelector(
-    `[data-conversation-id="${id}"] [data-testid="chat-row-reveal"]`,
+function liOf(id: string): HTMLElement | null {
+  return (
+    host
+      .querySelector(`[data-conversation-id="${id}"]`)
+      ?.closest<HTMLElement>(".chat-li") ?? null
   );
 }
 
@@ -268,7 +270,7 @@ describe("ChatSidebar company / email labels", () => {
     expect(scopeOf("dm:prs_ada")).toBeNull();
   });
 
-  it("long names truncate with ellipsis styles and hover reveal keeps the full text", async () => {
+  it("long names truncate with ellipsis styles and the label shows only on hover or keyboard focus", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {
       expect(row("ch:long-name")).toBeTruthy();
@@ -283,7 +285,6 @@ describe("ChatSidebar company / email labels", () => {
       "a-very-long-channel-name-that-should-truncate-in-the-narrow-rail",
     );
     expect(scope?.className).toMatch(/chat-row-scope/);
-    expect(revealOf("ch:long-name")?.textContent).toBe("Liverecover");
 
     expect(src).toMatch(
       /\.chat-row-copy\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?\}/,
@@ -291,44 +292,56 @@ describe("ChatSidebar company / email labels", () => {
     expect(src).toMatch(
       /\.chat-row-copy \.chat-row-title\s*\{[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;/,
     );
+    // Hidden at rest; one copy only, revealed in place on hover or keyboard
+    // focus — the old absolutely-positioned overlay duplicate is gone.
     expect(src).toMatch(
-      /\.chat-row-scope\s*\{[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;[\s\S]*?font-size:\s*12px;[\s\S]*?font-weight:\s*400;/,
+      /\.chat-row-scope\s*\{\s*display:\s*none;[^}]*?text-overflow:\s*ellipsis;[^}]*?white-space:\s*nowrap;[^}]*?font-weight:\s*400;/,
     );
     expect(src).toMatch(
-      /\.chat-li:hover \.chat-row:not\(\.has-badge\) \.chat-row-reveal/,
+      /\.chat-conv-li:hover \.chat-row-scope,\s*\n\s*\.chat-conv-li:has\(:global\(:focus-visible\)\) \.chat-row-scope\s*\{\s*display:\s*inline;/,
     );
-    expect(src).toMatch(
-      /\.chat-li:focus-within \.chat-row:not\(\.has-badge\) \.chat-row-reveal/,
-    );
-    expect(src).toMatch(
-      /\.chat-li:hover \.chat-row:not\(\.has-badge\) \.chat-row-scope/,
-    );
-    expect(src).toMatch(
-      /\.chat-row-reveal\s*\{[\s\S]*?display:\s*none;[\s\S]*?right:\s*8px;/,
-    );
-
-    const li = row("ch:long-name").closest(".chat-li");
-    expect(li).toBeTruthy();
-    li?.dispatchEvent(new Event("mouseenter", { bubbles: true }));
-    expect(revealOf("ch:long-name")?.textContent).toBe("Liverecover");
+    expect(src).not.toMatch(/chat-row-reveal/);
+    expect(host.querySelector('[data-testid="chat-row-reveal"]')).toBeNull();
   });
 
-  it("keeps unread badges and pin controls; hides the hover reveal when a badge is present", async () => {
+  it("keeps unread badges and puts the pin to their left, inside the row's fill", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {
       expect(row("ch:unread-desk")).toBeTruthy();
     });
     const unread = row("ch:unread-desk");
     expect(unread.classList.contains("has-badge")).toBe(true);
-    expect(
-      unread.querySelector('[data-testid="chat-unread-badge"]')?.textContent,
-    ).toBe("3");
-    expect(
-      unread.parentElement?.querySelector('[data-testid="chat-pin"]'),
-    ).toBeTruthy();
-    expect(src).toMatch(
-      /\.chat-li:hover \.chat-row:not\(\.has-badge\) \.chat-row-reveal/,
+    const li = liOf("ch:unread-desk");
+    expect(li).toBeTruthy();
+    expect(li?.classList.contains("chat-conv-li")).toBe(true);
+
+    const badge = li?.querySelector<HTMLElement>(
+      '[data-testid="chat-unread-badge"]',
     );
+    const pin = li?.querySelector<HTMLElement>('[data-testid="chat-pin"]');
+    expect(badge?.textContent?.trim()).toBe("3");
+    // Badge and pin are siblings of the row button in the box that carries
+    // the fill — never inside the button, never outside the highlight.
+    expect(badge?.parentElement).toBe(li);
+    expect(pin?.parentElement).toBe(li);
+    expect(unread.contains(badge ?? null)).toBe(false);
+    // Order: row button, then pin, then count.
+    const kids = [...(li?.children ?? [])];
+    expect(kids.indexOf(unread)).toBeLessThan(kids.indexOf(pin!));
+    expect(kids.indexOf(pin!)).toBeLessThan(kids.indexOf(badge!));
+
+    // `.chat-conv-li` — not `.chat-row` — carries the hover / selected fill.
+    expect(src).toMatch(/\.chat-conv-li:hover\s*\{\s*background:\s*var\(--hover\);/);
+    expect(src).toMatch(/\.chat-conv-li\.active\s*\{\s*background:\s*var\(--sel\);/);
+  });
+
+  it("marks the open conversation's row box active, not just its button", async () => {
+    component = mountSidebar();
+    await vi.waitFor(() => {
+      expect(row("ch:hq-desktop").classList.contains("active")).toBe(true);
+    });
+    expect(liOf("ch:hq-desktop")?.classList.contains("active")).toBe(true);
+    expect(liOf("ch:unread-desk")?.classList.contains("active")).toBe(false);
   });
 
   it("toggle off hides all company and email labels", async () => {
@@ -340,9 +353,6 @@ describe("ChatSidebar company / email labels", () => {
       expect(row("dm:prs_ada")).toBeTruthy();
     });
     expect(host.querySelectorAll('[data-testid="chat-row-scope"]').length).toBe(
-      0,
-    );
-    expect(host.querySelectorAll('[data-testid="chat-row-reveal"]').length).toBe(
       0,
     );
   });

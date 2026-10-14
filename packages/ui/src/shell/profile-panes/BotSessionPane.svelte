@@ -91,7 +91,7 @@
     <b>{name}</b>
     <span>Session</span>
     {#if phase === "ended"}<span class="ended">ended</span>{/if}
-    <button type="button" class="icon" data-testid="bot-session-close" aria-label="Close session" onclick={() => onclose?.()}>✕</button>
+    <button type="button" class="icon" data-testid="bot-session-close" aria-label="Close session" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
   </header>
   <div class="sbar" data-testid="bot-session-stats">
     <span><b>{totals.elapsed}</b> {phase === "ended" ? "total" : "elapsed"}</span>
@@ -126,7 +126,7 @@
           onclick={() => (openTools[line.id] = !openTools[line.id])}
         >
           <span class="ts">{line.at}</span>
-          <span class="chv">{openTools[line.id] ? "▾" : "▸"}</span>
+          <span class="chv" aria-hidden="true"><RailIcon name={openTools[line.id] ? "chevron-down" : "caret-right"} size={10} /></span>
           <span class="t">{line.name} <span class="mono">{line.detail}</span></span>
           <span class="r">{line.running ? "running" : (line.result ?? "")}</span>
         </button>
@@ -181,7 +181,7 @@
   .phead b { color: var(--v4-text-1); font-size: var(--type-body, 14px); }
   .mark { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; background: var(--v4-control-bg); color: var(--v4-text-1); font-size: 11px; }
   .ended { color: var(--v4-text-3); font-size: 11px; }
-  .icon { margin-left: auto; width: 24px; height: 24px; border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
+  .icon { display: inline-grid; place-items: center; margin-left: auto; width: 24px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
   .sbar { display: flex; gap: 14px; padding: 10px 16px 0; font-size: 12px; color: var(--v4-text-3); overflow: auto; }
   .sbar b { font-weight: 500; color: var(--v4-text-1); font-family: var(--font-mono, "Geist Mono", monospace); }
   .ctx { padding: 6px 16px 10px; font-size: 12px; color: var(--v4-text-3); border-bottom: 1px solid var(--v4-rowline, var(--line)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -199,6 +199,7 @@
     font: inherit; font-size: 12px; color: var(--v4-text-2); text-align: left; cursor: pointer;
   }
   .tc:hover { background: var(--v4-hover); }
+  .chv { display: grid; place-items: center; }
   .tc .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mono { font-family: var(--font-mono, "Geist Mono", monospace); font-size: 11px; }
   .tc .r { font-family: var(--font-mono, "Geist Mono", monospace); font-size: 11px; color: var(--v4-text-3); }

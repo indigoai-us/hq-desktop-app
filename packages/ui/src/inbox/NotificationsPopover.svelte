@@ -389,7 +389,10 @@
     display: inline-block;
     margin-top: 4px;
     font-size: 13px;
-    text-decoration: underline;
+  }
+
+  .upgrade:hover {
+    opacity: 0.7;
   }
 
   .nfoot {

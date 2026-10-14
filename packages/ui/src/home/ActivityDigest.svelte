@@ -59,7 +59,7 @@
         disabled={openingLog}
         aria-busy={openingLog}
       >
-        {openingLog ? "opening event log…" : "raw event log →"}
+        {#if openingLog}opening event log…{:else}raw event log<RailIcon name="arrow-right" size={12} />{/if}
       </button>
     </p>
   </div>
@@ -101,7 +101,7 @@
               class:open={isExpanded(group.id, index)}
               aria-hidden="true"
             >
-              ›
+              <RailIcon name="caret-right" size={12} />
             </span>
           </button>
           {#if isExpanded(group.id, index)}
@@ -151,6 +151,9 @@
   }
 
   .v4-digest-log {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     padding: 0;
     border: none;
     background: none;
@@ -273,10 +276,10 @@
   }
 
   .v4-chevron {
+    display: inline-flex;
+    align-items: center;
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 1;
     transition: transform 120ms ease;
   }
 

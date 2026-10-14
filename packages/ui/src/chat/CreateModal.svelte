@@ -2274,28 +2274,64 @@
     <!-- `inert` while the cross-company question is up: the alertdialog asks
          about the very workspace this form edits, so nothing under it may be
          tabbed to, clicked, or read out as if it were live. -->
+    <!-- A titled head row with the standard 24px icon close (and back),
+         then — on the finder — a labelled "To" row carrying the one field
+         that both finds an existing conversation and names a new channel.
+         The field used to sit in the title's slot with the title hidden, so
+         its 15px query line read as the heading. -->
     <div class="create-head" inert={confirmSubject !== null}>
-      {#if step === "find"}
-        <span class="create-search-ic" aria-hidden="true">
-          <svg viewBox="0 0 16 16" fill="none">
-            <circle
-              cx="7"
-              cy="7"
-              r="4.5"
-              stroke="currentColor"
-              stroke-width="1.25"
-            />
-            <path
-              d="m10.5 10.5 3 3"
-              stroke="currentColor"
-              stroke-width="1.25"
-              stroke-linecap="round"
-            />
-          </svg>
-        </span>
-        <h2 id="create-modal-title" class="create-sr">
-          New message or channel
-        </h2>
+      {#if step === "create" || step === "bot" || step === "company" || (step === "email" && !emailOutcome)}
+        <button
+          type="button"
+          class="create-back"
+          data-testid="chat-create-back"
+          aria-label="Back to search"
+          disabled={creating || emailSending || entryBusy !== null || companyBusy}
+          onclick={() => {
+            if (step === "bot") {
+              botOpenedDirect = false;
+              entryError = null;
+              step = "find";
+            } else if (step === "company") backFromCompany();
+            else if (step === "email") backFromEmail();
+            else backToFind();
+          }}
+        >
+          <RailIcon name="caret-left" size={14} />
+        </button>
+      {/if}
+      <h2 id="create-modal-title" class="create-title">
+        {step === "find"
+          ? "New message or channel"
+          : step === "create"
+            ? "New channel"
+            : step === "company"
+              ? "New company"
+              : step === "bot"
+                ? "New bot"
+                : step === "email"
+                  ? emailOutcome
+                    ? emailOutcome.state === "delivered"
+                      ? "Message sent"
+                      : "Request sent"
+                    : `Message ${emailTarget}`
+                  : "Channel created"}
+      </h2>
+      <span class="create-spacer"></span>
+      <button
+        type="button"
+        class="create-close"
+        aria-label="Close"
+        disabled={creating || emailSending}
+        onclick={closeAll}
+      >
+        <RailIcon name="x" size={14} />
+      </button>
+    </div>
+
+    {#if step === "find"}
+      <div class="create-to" inert={confirmSubject !== null}>
+        <span class="create-to-label" aria-hidden="true">To</span>
         <input
           class="create-query"
           type="text"
@@ -2313,54 +2349,8 @@
           bind:value={query}
           onkeydown={onFindKey}
         />
-      {:else}
-        {#if step === "create" || step === "bot" || step === "company" || (step === "email" && !emailOutcome)}
-          <button
-            type="button"
-            class="create-back"
-            data-testid="chat-create-back"
-            aria-label="Back to search"
-            disabled={creating || emailSending || entryBusy !== null || companyBusy}
-            onclick={() => {
-              if (step === "bot") {
-                botOpenedDirect = false;
-                entryError = null;
-                step = "find";
-              } else if (step === "company") backFromCompany();
-              else if (step === "email") backFromEmail();
-              else backToFind();
-            }}
-          >
-            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3.5 5 7l3.5 3.5" /></svg>
-          </button>
-        {/if}
-        <h2 id="create-modal-title" class="create-title">
-          {step === "create"
-            ? "New channel"
-            : step === "company"
-              ? "New company"
-              : step === "bot"
-                ? "New bot"
-                : step === "email"
-                  ? emailOutcome
-                    ? emailOutcome.state === "delivered"
-                      ? "Message sent"
-                      : "Request sent"
-                    : `Message ${emailTarget}`
-                  : "Channel created"}
-        </h2>
-        <span class="create-spacer"></span>
-      {/if}
-      <button
-        type="button"
-        class="create-close"
-        aria-label="Close"
-        disabled={creating || emailSending}
-        onclick={closeAll}
-      >
-        <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
-      </button>
-    </div>
+      </div>
+    {/if}
 
     {#if step === "find"}
       <div
@@ -2500,14 +2490,7 @@
               onclick={() => newCompany(queryDebounced.trim())}
             >
               <span class="create-entry-ic" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M3 13.5V4.5l5-2 5 2v9M6 7h1M9 7h1M6 9.5h1M9 9.5h1M6.5 13.5v-2h3v2"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    stroke-linejoin="round"
-                  />
-                </svg>
+                <RailIcon name="buildings" size={16} />
               </span>
               <span class="create-entry-label">New company</span>
               <span class="create-entry-hint">
@@ -2527,23 +2510,7 @@
               onclick={newBot}
             >
               <span class="create-entry-ic" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <rect
-                    x="3"
-                    y="5"
-                    width="10"
-                    height="8"
-                    rx="1.5"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                  />
-                  <path
-                    d="M8 2.5V5M6 8.5h.5M9.5 8.5h.5M6 11h4"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    stroke-linecap="round"
-                  />
-                </svg>
+                <RailIcon name="robot" size={16} />
               </span>
               <span class="create-entry-label">New bot</span>
               <span class="create-entry-hint">
@@ -2658,7 +2625,7 @@
                         disabled={companyBusy}
                         onclick={() => removeCompanyInvite(invite.email)}
                       >
-                        <span aria-hidden="true">×</span>
+                        <RailIcon name="x" size={12} />
                       </button>
                     </span>
                   {/each}
@@ -2954,7 +2921,6 @@
           <div class="create-field">
             <span class="create-label" id="create-company-label">Company</span>
             <Dropdown
-              block
               testid="chat-channel-scope"
               label="Company"
               disabled={creating}
@@ -3040,7 +3006,7 @@
                         disabled={creating}
                         onclick={() => removeChip(chip.key)}
                       >
-                        <span aria-hidden="true">×</span>
+                        <RailIcon name="x" size={12} />
                       </button>
                     </span>
                   {/each}
@@ -3296,16 +3262,19 @@
 {/if}
 
 <style>
+  /* The card hangs from the top of the window, so the conversation stays
+     legible behind it, under a lighter scrim that dims rather than washes (a
+     text-1 scrim BRIGHTENS the app in dark mode). No backdrop blur: overlay
+     files carry none (OWNER-006 overlay-surface guard). */
   .create-overlay {
     position: fixed;
     inset: 0;
     z-index: 60;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    padding: 12px;
-    /* Dim, never wash: a text-1 scrim BRIGHTENS the app in dark mode. */
-    background: rgba(0, 0, 0, 0.45);
+    padding: 72px 12px 12px;
+    background: rgba(0, 0, 0, 0.28);
   }
 
   /* One width for every step so the card never jumps between them. */
@@ -3313,11 +3282,11 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    width: min(520px, 100%);
-    max-height: min(78vh, 620px);
+    width: min(560px, 100%);
+    max-height: min(76vh, 620px);
     overflow: hidden;
     border: 1px solid var(--v4-hairline);
-    border-radius: 14px;
+    border-radius: 12px;
     /* Never --v4-ground here — that token is glass and lets timeline text
        bleed through. */
     background: var(--overlay-bg);
@@ -3329,38 +3298,37 @@
   .create-head {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 14px 16px;
-    border-bottom: 1px solid var(--v4-hairline);
-  }
-
-  .create-search-ic {
-    display: grid;
-    place-items: center;
+    flex-shrink: 0;
+    gap: 10px;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--line, var(--v4-hairline));
     color: var(--t3);
-  }
-
-  .create-search-ic svg {
-    width: 16px;
-    height: 16px;
-  }
-
-  .create-sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
   }
 
   .create-title {
     margin: 0;
+    overflow: hidden;
     color: var(--t1);
     font-size: 13px;
     font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The finder's labelled recipient row, under the title. */
+  .create-to {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 10px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--line, var(--v4-hairline));
+  }
+
+  .create-to-label {
+    flex-shrink: 0;
+    color: var(--t3);
+    font-size: 13px;
   }
 
   .create-spacer {
@@ -3370,11 +3338,11 @@
   .create-query {
     flex: 1 1 auto;
     min-width: 0;
+    padding: 4px 0;
     border: none;
     background: transparent;
     color: var(--t1);
-    font: inherit;
-    font-size: 13px;
+    font: 400 13px var(--font-ui);
     outline: none;
   }
 
@@ -3382,9 +3350,12 @@
     color: var(--t3);
   }
 
+  /* The same 24px quiet square every other panel close in the shell uses,
+     drawn as icons rather than the `‹` / `×` text glyphs. */
   .create-back,
   .create-close {
     display: grid;
+    flex-shrink: 0;
     place-items: center;
     width: 24px;
     height: 24px;
@@ -3392,9 +3363,12 @@
     border: none;
     border-radius: 6px;
     background: transparent;
-    color: var(--t2);
-    line-height: 1;
+    color: var(--t3);
+    line-height: 0;
     cursor: pointer;
+    transition:
+      color 0.12s,
+      background 0.12s;
   }
 
   .create-back:hover,
@@ -3408,7 +3382,11 @@
   .create-row:focus-visible,
   .create-submit:focus-visible,
   .create-inline-btn:focus-visible,
-  .create-chip-x:focus-visible,
+  .create-chip-x:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: var(--v4-focus-offset, 2px);
+  }
+
   .create-kind {
     display: inline-flex;
     gap: 4px;
@@ -3440,13 +3418,17 @@
     outline-offset: var(--v4-focus-offset, 2px);
   }
 
+  /* The extra right margin floats the 4px thumb clear of the card edge, the
+     way every other scroller in the shell does. */
   .create-list {
     display: flex;
     flex-direction: column;
     gap: 1px;
+    min-height: 0;
     max-height: 320px;
     overflow-y: auto;
-    padding: 6px;
+    margin-right: 8px;
+    padding: 8px 6px 8px 8px;
   }
 
   .create-body {
@@ -3578,11 +3560,6 @@
     flex: 0 0 auto;
   }
 
-  .create-entry-ic svg {
-    width: 16px;
-    height: 16px;
-  }
-
   .create-entry-label {
     flex: 1 1 auto;
     min-width: 0;
@@ -3650,11 +3627,6 @@
     outline: none;
   }
 
-  .create-select {
-    appearance: none;
-    -webkit-appearance: none;
-    cursor: pointer;
-  }
   .create-input::placeholder {
     color: var(--t3);
   }
@@ -3710,9 +3682,10 @@
     background: transparent;
     color: var(--accent, inherit);
     font: inherit;
-    text-decoration: underline;
+    text-decoration: none;
     cursor: pointer;
   }
+  .create-slug-suggestion:hover { opacity: 0.7; }
 
   .create-slug-suggestion:disabled {
     cursor: default;
@@ -3765,10 +3738,10 @@
   .create-chip {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 3px 4px 3px 4px;
-    border-radius: 999px;
-    background: var(--v4-control-bg);
+    gap: 5px;
+    padding: 3px 5px 3px 4px;
+    border-radius: 6px;
+    background: var(--btn-bg, var(--v4-control-bg));
     color: var(--t1);
     font-size: 13px;
   }
@@ -3779,7 +3752,7 @@
     width: 16px;
     height: 16px;
     border-radius: 999px;
-    background: var(--hover);
+    background: var(--line2, var(--hover));
     color: var(--t2);
     font-size: 8px;
     font-weight: 500;
@@ -3956,10 +3929,10 @@
     background: transparent;
     color: var(--t1);
     font: 500 13px/1.4 var(--font-ui);
-    text-decoration: underline;
-    text-underline-offset: 2px;
+    text-decoration: none;
     cursor: pointer;
   }
+  .create-inline-btn:hover { opacity: 0.7; }
 
   .create-summary-lead {
     margin: 0;

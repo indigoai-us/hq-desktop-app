@@ -27,10 +27,20 @@
     label?: string | null;
     /** Hover dwell before showing, in ms. Focus always shows immediately. */
     delay?: number;
-    /** Horizontal alignment of the bubble relative to the trigger. */
+    /**
+     * Preferred horizontal alignment of the bubble relative to the trigger.
+     * If the preferred placement would run off a window edge, the bubble
+     * flips to edge alignment with the trigger on that side instead.
+     */
     align?: "center" | "start" | "end";
     /** Which side of the trigger the bubble opens on. The app rail uses right. */
     side?: "bottom" | "right";
+    /**
+     * Silence the tooltip while the trigger owns something else on screen.
+     * A pill that opens a menu must not also describe itself: the bubble
+     * would cover the first row of the menu it just opened.
+     */
+    suppressed?: boolean;
     /** The control this tooltip describes. Receives the tooltip element id. */
     trigger: Snippet<[string]>;
   }
@@ -40,6 +50,7 @@
     delay = 400,
     align = "center",
     side = "bottom",
+    suppressed = false,
     trigger,
   }: Props = $props();
 
@@ -53,6 +64,66 @@
   function controlExpanded(): boolean {
     return wrap?.querySelector('[aria-expanded="true"]') != null;
   }
+  let bubbleEl = $state<HTMLElement | null>(null);
+  /** px to move the bubble from its `align` position to stay in the window. */
+  let shift = $state(0);
+
+  /** Keep the bubble this far from either window edge. */
+  const WINDOW_MARGIN = 8;
+
+  /**
+   * Keep the bubble inside the window. When the preferred placement (`align`)
+   * would run off a window edge, the bubble does NOT merely slide as far as it
+   * has to — it flips to edge alignment with the TRIGGER (right edge to right
+   * edge near the right of the window, left to left near the left). A bubble
+   * nudged just far enough to fit reads as accidentally off-centre; one
+   * aligned to the button's own edge reads as deliberate. The window margin
+   * is applied last, as a backstop for a bubble wider than the room beside
+   * its trigger.
+   */
+  function keepInsideWindow(): void {
+    const el = bubbleEl;
+    const anchor = el?.parentElement;
+    if (!el || !anchor || typeof window === "undefined") return;
+    const width = el.getBoundingClientRect().width;
+    const trigger = anchor.getBoundingClientRect();
+    const viewport = window.innerWidth;
+
+    const preferredLeft =
+      align === "start"
+        ? trigger.left
+        : align === "end"
+          ? trigger.right - width
+          : trigger.left + trigger.width / 2 - width / 2;
+
+    let left = preferredLeft;
+    if (left + width > viewport - WINDOW_MARGIN) left = trigger.right - width;
+    else if (left < WINDOW_MARGIN) left = trigger.left;
+
+    const maxLeft = viewport - WINDOW_MARGIN - width;
+    if (left > maxLeft) left = maxLeft;
+    if (left < WINDOW_MARGIN) left = WINDOW_MARGIN;
+
+    shift = Math.round(left - preferredLeft);
+  }
+
+  $effect(() => {
+    // The rail's right-side bubble opens away from the window edge; only
+    // the below-the-trigger placement can run off the left/right edge.
+    if (!open || !bubbleEl || side !== "bottom") {
+      shift = 0;
+      return;
+    }
+    void label;
+    void align;
+    keepInsideWindow();
+  });
+
+  // Opening the menu hides the bubble; it comes back on the next hover/focus
+  // rather than popping up again the instant the menu closes.
+  $effect(() => {
+    if (suppressed) hide();
+  });
 
   function clearTimer(): void {
     if (timer !== null) {
@@ -62,7 +133,7 @@
   }
 
   function showAfterDelay(): void {
-    if (!label || controlExpanded()) return;
+    if (!label || suppressed || controlExpanded()) return;
     clearTimer();
     timer = setTimeout(() => {
       open = !controlExpanded();
@@ -72,7 +143,7 @@
 
   /** Focus is intentional — no dwell delay. */
   function showNow(): void {
-    if (!label || controlExpanded()) return;
+    if (!label || suppressed || controlExpanded()) return;
     clearTimer();
     open = true;
   }
@@ -100,13 +171,15 @@
   onfocusout={hide}
   onkeydown={onKeyDown}
 >
-  {@render trigger(label ? id : "")}
-  {#if open && label}
+  {@render trigger(label && !suppressed ? id : "")}
+  {#if open && label && !suppressed}
     <span
+      bind:this={bubbleEl}
       class="tooltip-bubble"
       class:align-start={align === "start"}
       class:align-end={align === "end"}
       class:side-right={side === "right"}
+      style={shift === 0 ? undefined : `--tooltip-nudge: ${shift}px`}
       role="tooltip"
       {id}
       data-testid="tooltip-bubble"
@@ -132,7 +205,12 @@
     position: absolute;
     top: calc(100% + 6px);
     left: 50%;
-    transform: translateX(-50%);
+    /* `--tooltip-base` is the alignment offset; `--tooltip-nudge` is set only
+       when a window edge forces the bubble off its preferred placement. */
+    --tooltip-base: -50%;
+    transform: translateX(
+      calc(var(--tooltip-base) + var(--tooltip-nudge, 0px))
+    );
     z-index: 10001;
     max-width: 220px;
     padding: 4px 8px;
@@ -151,18 +229,20 @@
 
   .tooltip-bubble.align-start {
     left: 0;
-    transform: none;
+    --tooltip-base: 0px;
   }
 
   .tooltip-bubble.align-end {
     left: auto;
     right: 0;
-    transform: none;
+    --tooltip-base: 0px;
   }
 
+  /* Rail buttons sit about 8px in from the rail's right edge: 18px keeps
+     the bubble about 8px clear of the rail's border. */
   .tooltip-bubble.side-right {
     top: 50%;
-    left: calc(100% + 8px);
+    left: calc(100% + 18px);
     right: auto;
     transform: translateY(-50%);
     animation-name: tooltip-in-right;
@@ -178,13 +258,11 @@
   @keyframes tooltip-in {
     from {
       opacity: 0;
-      transform: translateX(var(--tooltip-shift, -50%)) translateY(-2px);
+      transform: translateX(
+          calc(var(--tooltip-base) + var(--tooltip-nudge, 0px))
+        )
+        translateY(-2px);
     }
-  }
-
-  .tooltip-bubble.align-start,
-  .tooltip-bubble.align-end {
-    --tooltip-shift: 0;
   }
 
   @media (prefers-reduced-motion: reduce) {

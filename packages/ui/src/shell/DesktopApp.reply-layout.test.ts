@@ -7,6 +7,8 @@
  * than the narrow overlay. Assertions stay on classes/attributes — not
  * computed styles.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { failure, ok, type PlatformAdapter } from "@hq/platform";
@@ -90,6 +92,7 @@ function notificationsApi(): NotificationsApi {
 function adapter(options: {
   thread?: unknown;
   threadError?: { code?: string; message?: string };
+  messages?: unknown[];
 }): PlatformAdapter {
   return {
     kind: "web",
@@ -97,7 +100,7 @@ function adapter(options: {
     messaging: {
       fetchChannel: async () =>
         ok({
-          messages: [root],
+          messages: options.messages ?? [root],
           nextCursor: null,
         }),
       fetchDmThread: async () => ok({ messages: [], nextCursor: null }),
@@ -235,5 +238,99 @@ describe("DesktopApp reply-column layout", () => {
       ).toBe("false");
       expect(host.querySelector("[data-testid=reply-column]")).toBeNull();
     });
+  });
+
+  it("closes the thread when the open thread's own replies pill is clicked", async () => {
+    await mountShell({ initialReplyRootEventId: null });
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="message-replies"]')).not.toBeNull(),
+    );
+    const pill = () =>
+      host.querySelector('[data-testid="message-replies"]') as HTMLButtonElement;
+
+    pill().click();
+    await tick();
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid=reply-column]")).not.toBeNull();
+      expect(pill().getAttribute("aria-expanded")).toBe("true");
+    });
+
+    // Same pill again: a toggle, through the pane's own close path.
+    pill().click();
+    await tick();
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid=reply-column]")).toBeNull();
+      expect(
+        host
+          .querySelector('[data-testid="chat-stage"]')
+          ?.getAttribute("data-reply-open"),
+      ).toBe("false");
+    });
+    expect(pill().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("paints no second ground under the thread and keeps one divider", async () => {
+    await mountShell({ initialReplyRootEventId: "evt_root" });
+    await vi.waitFor(() =>
+      expect(host.querySelector("[data-testid=reply-column]")).not.toBeNull(),
+    );
+    const column = host.querySelector("[data-testid=reply-column]")!;
+    expect(column.classList.contains("thread-column")).toBe(true);
+
+    const style = (
+      readFileSync(resolve("src/shell/DesktopApp.svelte"), "utf8").split(
+        "<style>",
+      )[1] ?? ""
+    ).replace(/\/\*[\s\S]*?\*\//g, "");
+    const rule = (selector: string) => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return style.match(new RegExp(`\\n  ${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+    };
+    // Side by side the shell root's ground plus ReplyPanel's --side-bg is the
+    // whole stack; the narrow overlay keeps an opaque fill of its own.
+    expect(rule(".reply-column.thread-column:not(.overlay)")).toMatch(
+      /background:\s*none/,
+    );
+    expect(rule(".reply-column.overlay")).toMatch(/background:/);
+    // The column owns the divider (ReplyPanel no longer draws its own).
+    expect(rule(".reply-column")).toMatch(/border-left:\s*1px solid var\(--line\)/);
+  });
+
+  it("toggles the second thread shut instead of walking back into the first", async () => {
+    const second = {
+      eventId: "evt_root_2",
+      body: "second root",
+      createdAt: "2026-08-17T01:05:00.000Z",
+      fromDisplayName: "Bob",
+      replyCount: 1,
+    };
+    await mountShell(
+      { initialReplyRootEventId: null },
+      { messages: [root, second] },
+    );
+    const pill = (id: string) =>
+      host.querySelector(
+        `[data-event-id="${id}"] [data-testid="message-replies"]`,
+      ) as HTMLButtonElement;
+    await vi.waitFor(() => expect(pill("evt_root_2")).not.toBeNull());
+
+    pill("evt_root").click();
+    await tick();
+    await vi.waitFor(() =>
+      expect(pill("evt_root").getAttribute("aria-expanded")).toBe("true"),
+    );
+    pill("evt_root_2").click();
+    await tick();
+    await vi.waitFor(() =>
+      expect(pill("evt_root_2").getAttribute("aria-expanded")).toBe("true"),
+    );
+
+    pill("evt_root_2").click();
+    await tick();
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid=reply-column]")).toBeNull();
+    });
+    expect(pill("evt_root").getAttribute("aria-expanded")).toBe("false");
+    expect(pill("evt_root_2").getAttribute("aria-expanded")).toBe("false");
   });
 });

@@ -394,11 +394,11 @@
 
 <header class="channel-header" data-tauri-drag-region>
   <div class="channel-title">
-    {#if !isGroup}<span class="channel-hash" aria-hidden="true">#</span>{/if}
+    {#if !isGroup}<span class="channel-hash" aria-hidden="true"><RailIcon name="hash" size={13} /></span>{/if}
     <h2>{title}</h2>
     <span class="scope-chip" class:personal={isPersonal} title={`Scope: ${chip}`}>
       {#if isPersonal}
-        <span class="scope-glyph" aria-hidden="true">◐</span>
+        <span class="scope-glyph" aria-hidden="true"><RailIcon name="circle-half" size={13} /></span>
       {/if}
       {chip}
     </span>
@@ -515,8 +515,7 @@
   }
 
   .channel-hash {
-    font-size: var(--text-base);
-    font-weight: 600;
+    display: flex;
     color: var(--muted, var(--pop-muted));
   }
 
@@ -551,8 +550,7 @@
   }
 
   .scope-glyph {
-    font-size: var(--text-base);
-    line-height: 1;
+    display: flex;
   }
 
   .member-count-btn {

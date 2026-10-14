@@ -63,7 +63,7 @@
     <header class="sh">
       Edit bot
       <span class="sub">{name}</span>
-      <button type="button" class="icon" aria-label="Close" data-testid="edit-bot-close" onclick={() => onclose?.()}>✕</button>
+      <button type="button" class="icon" aria-label="Close" data-testid="edit-bot-close" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
     </header>
     <div class="stabs" role="tablist">
       {#each EDIT_BOT_TABS as id (id)}
@@ -157,7 +157,7 @@
   }
   .sf { border-bottom: 0; border-top: 1px solid var(--v4-hairline, var(--line)); font-weight: 400; }
   .sub, .note { font-weight: 400; font-size: 12px; color: var(--v4-text-3); }
-  .icon { margin-left: auto; border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
+  .icon { display: inline-grid; place-items: center; margin-left: auto; border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
   .stabs { display: flex; gap: 2px; padding: 8px 12px; border-bottom: 1px solid var(--v4-rowline, var(--line)); overflow: auto; }
   .tab {
     border: 0; background: transparent; color: var(--v4-text-2); font: inherit; font-size: 13px;

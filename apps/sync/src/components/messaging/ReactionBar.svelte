@@ -11,6 +11,7 @@
   // narrow widths; every interactive element is a >=28px tap target.
   import { type ReactionAggregate } from '../../lib/reactions';
   import EmojiPicker from './EmojiPicker.svelte';
+  import RailIcon from '@hq/ui/rail-icon';
 
   interface Props {
     // This bubble's eventId — bubbled back with the chosen emoji so the host can
@@ -73,8 +74,8 @@
       aria-label="Add a reaction"
       title="Add a reaction"
     >
-      <span class="reaction-add-glyph" aria-hidden="true">☺</span>
-      <span class="reaction-add-plus" aria-hidden="true">+</span>
+      <span class="reaction-add-glyph" aria-hidden="true"><RailIcon name="smiley" size={13} /></span>
+      <span class="reaction-add-plus" aria-hidden="true"><RailIcon name="plus" size={10} /></span>
     </button>
     {#if pickerOpen}
       <EmojiPicker anchor={addButtonEl} onpick={pick} onclose={() => (pickerOpen = false)} />
@@ -172,15 +173,9 @@
     outline: none;
   }
 
-  .reaction-add-glyph {
-    font-size: var(--text-base);
-    line-height: 1;
-  }
-
+  .reaction-add-glyph,
   .reaction-add-plus {
-    font-size: var(--text-base);
-    font-weight: 600;
-    line-height: 1;
+    display: flex;
   }
 
   /* ── Compact mode (dense feed rows) ─────────────────────────────────────

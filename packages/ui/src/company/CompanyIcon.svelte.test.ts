@@ -27,7 +27,7 @@ describe("CompanyIcon", () => {
     render({ iconUrl: ICON });
     const img = host.querySelector("img.company-icon-img");
     expect(img?.getAttribute("src")).toBe(ICON);
-    expect(host.querySelector("svg.company-icon-glyph")).toBeNull();
+    expect(host.querySelector(".company-icon-glyph")).toBeNull();
     expect(
       host.querySelector("[data-testid='company-icon']")?.getAttribute(
         "data-company-icon",
@@ -38,8 +38,12 @@ describe("CompanyIcon", () => {
   it("draws the building glyph when there is no icon", () => {
     render({ iconUrl: null });
     expect(host.querySelector("img.company-icon-img")).toBeNull();
-    const glyph = host.querySelector("svg.company-icon-glyph");
+    const glyph = host.querySelector(".company-icon-glyph");
     expect(glyph).not.toBeNull();
+    // The fallback is the Phosphor Regular "buildings" mark, not a hand-drawn svg.
+    const svg = glyph?.querySelector("svg");
+    expect(svg?.getAttribute("data-rail-icon")).toBe("buildings");
+    expect(svg?.getAttribute("viewBox")).toBe("0 0 256 256");
     expect(
       host.querySelector("[data-testid='company-icon']")?.getAttribute(
         "data-company-icon",
@@ -49,7 +53,7 @@ describe("CompanyIcon", () => {
 
   it("draws the glyph for an absent iconUrl prop", () => {
     render({});
-    expect(host.querySelector("svg.company-icon-glyph")).not.toBeNull();
+    expect(host.querySelector(".company-icon-glyph")).not.toBeNull();
   });
 
   it("falls back to the glyph when the image fails to load", async () => {
@@ -60,7 +64,7 @@ describe("CompanyIcon", () => {
     img.dispatchEvent(new Event("error"));
     await tick();
     expect(host.querySelector("img.company-icon-img")).toBeNull();
-    expect(host.querySelector("svg.company-icon-glyph")).not.toBeNull();
+    expect(host.querySelector(".company-icon-glyph")).not.toBeNull();
   });
 
   it("retries a NEW icon url after a previous one failed", async () => {
@@ -72,7 +76,7 @@ describe("CompanyIcon", () => {
     (host.querySelector("img.company-icon-img") as HTMLImageElement)
       .dispatchEvent(new Event("error"));
     await tick();
-    expect(host.querySelector("svg.company-icon-glyph")).not.toBeNull();
+    expect(host.querySelector(".company-icon-glyph")).not.toBeNull();
 
     props.iconUrl = ICON.replace("favicon.png", "favicon.ico");
     await tick();
@@ -89,7 +93,7 @@ describe("CompanyIcon", () => {
         "https://hqapi.hq.computer/company-settings/brand/favicon?companyUid=cmp_acme&ext=png",
     });
     expect(host.querySelector("img.company-icon-img")).toBeNull();
-    expect(host.querySelector("svg.company-icon-glyph")).not.toBeNull();
+    expect(host.querySelector(".company-icon-glyph")).not.toBeNull();
   });
 
   it("refuses an off-host image and a non-branding path on the assets host", () => {
@@ -110,6 +114,14 @@ describe("CompanyIcon", () => {
     expect(mark?.getAttribute("style")).toContain("--company-icon-size: 24px");
     expect(mark?.getAttribute("aria-hidden")).toBe("true");
     expect(host.querySelector("img")?.getAttribute("alt")).toBe("");
+  });
+
+  it("sizes the glyph to the requested edge and names it when not decorative", () => {
+    render({ iconUrl: null, size: 22, label: "Acme", decorative: false });
+    const glyph = host.querySelector(".company-icon-glyph");
+    expect(glyph?.getAttribute("role")).toBe("img");
+    expect(glyph?.getAttribute("aria-label")).toBe("Acme");
+    expect(glyph?.querySelector("svg")?.getAttribute("width")).toBe("22");
   });
 
   it("names the company when it is NOT decorative", () => {

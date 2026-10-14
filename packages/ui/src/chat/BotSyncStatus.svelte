@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * The file sync status in the header of a cloud bot's direct message: a
    * small still glyph and one short line, to the right of "Direct message",
@@ -75,26 +76,12 @@
   >
     <span class="bot-sync-status-icon" data-testid="bot-sync-status-icon" aria-hidden="true">
       {#if view.state === "done"}
-        <svg viewBox="0 0 16 16" width="12" height="12"><path d="M6.5 11L3.5 8l1-1 2 2 5-5 1 1z" fill="currentColor" /></svg>
+        <RailIcon name="check" size={12} />
       {:else if view.state === "failed"}
-        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-          <path d="M8 4.5v4.2M8 11.3v.2" /><circle cx="8" cy="8" r="6.2" />
-        </svg>
+        <RailIcon name="warning-circle" size={12} />
       {:else}
         <!-- The sync glyph: two arrows round a circle. Still in every state. -->
-        <svg
-          viewBox="0 0 16 16"
-          width="12"
-          height="12"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M13.2 6.2A5.5 5.5 0 0 0 3.4 5M2.8 9.8A5.5 5.5 0 0 0 12.6 11" />
-          <path d="M13.4 2.8v3.4H10M2.6 13.2V9.8H6" />
-        </svg>
+        <RailIcon name="arrows-clockwise" size={12} />
       {/if}
     </span>
     <!-- Only the words are announced. -->

@@ -108,7 +108,7 @@
 <div class="scrim" data-testid="new-goal-sheet" role="presentation" onclick={onclose}></div>
 <div class="sheet" role="dialog" aria-label="New objective" use:dismissable={{ onclose }}>
   <div class="sh">New objective <span class="grow"></span>
-    <button class="x" type="button" aria-label="Close" onclick={onclose}>✕</button>
+    <button class="x" type="button" aria-label="Close" onclick={onclose}><RailIcon name="x" size={14} /></button>
   </div>
   <div class="sb">
     <label class="fr"><span class="lb">Objective</span>
@@ -144,7 +144,7 @@
         {#each visibleLinks as link (`${link.kr}:${link.projectId}`)}
           <div class="lk" data-testid="new-goal-linked">
             <span>{link.projectName} → {keyResults[link.kr].title}</span>
-            <button type="button" class="x" aria-label="Remove link" onclick={() => removeLink(link)}>✕</button>
+            <button type="button" class="x" aria-label="Remove link" onclick={() => removeLink(link)}><RailIcon name="x" size={12} /></button>
           </div>
         {/each}
         <RailButton icon="link" data-testid="new-goal-link" onclick={() => (linking = true)}>Link</RailButton>
@@ -221,7 +221,7 @@
   .krb { border: 1px solid var(--v4-control-border, var(--v4-rowline)); border-radius: 6px; padding: 8px; margin-bottom: 6px; }
   .nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
   .add { border: 0; color: var(--v4-text-2); padding: 4px 8px; }
-  .x { border: 0; }
+  .x { display: inline-flex; align-items: center; justify-content: center; border: 0; }
   .lk { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--v4-text-2); padding: 2px 0 6px; }
   .lk span { flex: 1; }
 </style>

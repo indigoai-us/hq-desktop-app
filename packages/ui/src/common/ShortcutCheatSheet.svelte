@@ -295,9 +295,8 @@
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 6px;
-    scrollbar-color: var(--pop-muted) transparent;
+    /* Bar comes from the shell's shared rule (chat/scrollbars.css). */
     scrollbar-gutter: stable;
-    scrollbar-width: thin;
   }
 
   .cheat-section + .cheat-section {

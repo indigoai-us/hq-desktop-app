@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 
@@ -184,5 +186,43 @@ describe("ArtifactPanel controls", () => {
     component = null;
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(onclose).not.toHaveBeenCalled();
+  });
+});
+
+describe("ArtifactPanel header and body type", () => {
+  const css = (
+    readFileSync(join(import.meta.dirname, "ArtifactPanel.svelte"), "utf8")
+      .split("<style>")[1] ?? ""
+  ).replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = (selector: string): string =>
+    css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+
+  // The body opens with its own heading, so a rule under the header drew a
+  // line between a title and a repeat of it.
+  it("draws no rule under the header and opens 8px between title and tag", () => {
+    expect(rule(".artifact-panel-head")).not.toMatch(/border-bottom/);
+    expect(rule(".artifact-panel-titles")).toMatch(/gap:\s*8px;/);
+  });
+
+  // Same words, same size on both sides of the divider.
+  it("sizes the body with the chat body token, not a hard-coded size", () => {
+    const content = rule(".artifact-panel-content");
+    expect(content).toMatch(/font-size:\s*var\(--msg-body-font-size\b/);
+    expect(content).not.toMatch(/font-size:\s*\d/);
+  });
+
+  it("renders Copy as an icon button with a tooltip", () => {
+    mountPanel();
+    const copy = host.querySelector<HTMLButtonElement>(
+      "[data-testid='artifact-panel-copy']",
+    )!;
+    expect(copy.textContent?.trim()).toBe("");
+    expect(copy.querySelector("svg")).not.toBeNull();
+    expect(copy.getAttribute("aria-label")).toBe("Copy artifact");
+    copy.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    flushSync();
+    const tip = host.querySelector("[data-testid='tooltip-bubble']");
+    expect(tip?.textContent?.trim()).toBe("Copy");
+    expect(copy.getAttribute("aria-describedby")).toBe(tip?.id);
   });
 });

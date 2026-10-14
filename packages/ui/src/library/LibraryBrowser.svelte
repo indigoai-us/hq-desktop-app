@@ -27,6 +27,7 @@
   import SubmitPanel from "../marketplace/SubmitPanel.svelte";
   import ProfilePanel from "../marketplace/ProfilePanel.svelte";
   import Caret from "../common/Caret.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
 
   type Filter =
     | "all"
@@ -262,7 +263,7 @@
                       class:checked={selectedFacets.has(facet)}
                       aria-hidden="true"
                     >
-                      {selectedFacets.has(facet) ? "✓" : ""}
+                      {#if selectedFacets.has(facet)}<RailIcon name="check" size={11} />{/if}
                     </span>
                     <span class="scope-option-label" data-facet={facet}
                       >{facetLabel(facet)}</span
@@ -506,7 +507,7 @@
   }
 
   .scope-menu-actions button:hover {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   .scope-option {

@@ -174,7 +174,7 @@
   .v4-card-action.primary:hover:not(:disabled) {
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
-    opacity: 0.86;
+    opacity: 0.85;
   }
 
   .v4-card-action:disabled {

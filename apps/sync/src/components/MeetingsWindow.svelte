@@ -1735,9 +1735,7 @@
           onclick={() => (filterOpen = !filterOpen)}
         >
           <span>{filterButtonLabel}</span>
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
+          <RailIcon name="chevron-down" size={10} />
         </button>
       {/if}
       <!-- Link-only filter chip. Default ON so the list focuses on
@@ -1753,16 +1751,7 @@
           : 'Showing all meetings — click to filter to those with join links'}
         onclick={() => (showOnlyWithUrl = !showOnlyWithUrl)}
       >
-        <svg width="11" height="11" viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M6.5 9.5l-2 2a2.5 2.5 0 1 1-3.5-3.5l3-3a2.5 2.5 0 0 1 3.5 0M9.5 6.5l2-2a2.5 2.5 0 1 1 3.5 3.5l-3 3a2.5 2.5 0 0 1-3.5 0"
-            stroke="currentColor"
-            stroke-width="1.4"
-            fill="none"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <RailIcon name="link" size={11} />
         <span>{showOnlyWithUrl ? 'With link' : 'All'}</span>
       </button>
     </div>
@@ -1774,12 +1763,7 @@
       title="Refresh"
       aria-label="Refresh meetings"
     >
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+      <RailIcon name="arrows-clockwise" size={13} />
     </button>
       {#if filterOpen}
         <div class="filter-menu" role="listbox" aria-label="Filter by calendar">
@@ -1862,6 +1846,7 @@
                 <span class="active-status">Detected</span>
               {/if}
             </div>
+            <span class="select-wrap select-wrap-active">
             <select
               class="active-company"
               aria-label="Attribute recording to"
@@ -1882,6 +1867,8 @@
                 <option value={c.companyUid}>{recordingCompanyLabel(c)}</option>
               {/each}
             </select>
+            <span class="select-caret" aria-hidden="true"><RailIcon name="chevron-down" size={10} /></span>
+            </span>
             {#if meeting.state === 'recording'}
               <button
                 type="button"
@@ -1924,6 +1911,7 @@
     {#snippet companyAssign(bot: ScheduledBot)}
       {@const companyPending = attributionPending.has(bot.botId)}
       <div class="attribution-control">
+        <span class="select-wrap">
         <select
           class="meeting-company"
           aria-label="Assign meeting company"
@@ -1940,6 +1928,8 @@
             <option value={option.companyUid}>{option.label}</option>
           {/each}
         </select>
+        <span class="select-caret" aria-hidden="true"><RailIcon name="chevron-down" size={10} /></span>
+        </span>
         {#if canShowSeriesControl(bot)}
           <label class="series-control">
             <input
@@ -2043,12 +2033,7 @@
                   </span>
                   {#if recurring}
                     <span class="series-chip" title="series" aria-label="series" role="img">
-                      <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                        <path d="M3.5 4.5h5.8c.95 0 1.7.76 1.7 1.7v.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-                        <path d="M8.8 2.8 11 4.5 8.8 6.2" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-                        <path d="M10.5 9.5H4.7C3.76 9.5 3 8.74 3 7.8v-.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-                        <path d="M5.2 11.2 3 9.5l2.2-1.7" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
-                      </svg>
+                      <RailIcon name="repeat" size={12} />
                     </span>
                   {/if}
                 </span>
@@ -2074,9 +2059,7 @@
                     {#if openingMeetingIds.has(evt.id)}
                       <span class="row-icon-spinner" aria-hidden="true"></span>
                     {:else}
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                        <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-                      </svg>
+                      <RailIcon name="external" size={12} />
                     {/if}
                   </button>
                 {/if}
@@ -2098,9 +2081,7 @@
                     {#if pending}
                       <span class="row-icon-spinner" aria-hidden="true"></span>
                     {:else}
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                        <path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-                      </svg>
+                      <RailIcon name="plus" size={12} />
                     {/if}
                   </button>
                 {:else if kind === 'invited'}
@@ -2115,9 +2096,7 @@
                     {#if pending}
                       <span class="row-icon-spinner" aria-hidden="true"></span>
                     {:else}
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                        <path d="M2.5 6.5L5 9L9.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
-                      </svg>
+                      <RailIcon name="check" size={12} />
                     {/if}
                   </button>
                 {:else if kind === 'in-call'}
@@ -2151,19 +2130,13 @@
                        cancellable — bot isn't holding a Recall slot
                        anymore. Muted blue tint, ellipsis glyph. -->
                   <span class="row-icon-btn row-icon-processing" title="Processing transcript">
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-                      <circle cx="2.5" cy="6" r="1" />
-                      <circle cx="6" cy="6" r="1" />
-                      <circle cx="9.5" cy="6" r="1" />
-                    </svg>
+                    <RailIcon name="dots-three" size={12} />
                   </span>
                 {:else}
                   <!-- done: pipeline finished, transcript + notes stored.
                        Past events fall out on the next 30s poll. -->
                   <span class="row-icon-btn row-icon-done" title="Done — transcript saved">
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                      <path d="M2.5 6.5L5 9L9.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
+                    <RailIcon name="check" size={12} />
                   </span>
                 {/if}
                 <!-- Bot-join-now — the third row icon. Force the bot to
@@ -2186,15 +2159,7 @@
                     {#if pending}
                       <span class="row-icon-spinner" aria-hidden="true"></span>
                     {:else}
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                        <!-- antenna -->
-                        <line x1="6" y1="1" x2="6" y2="2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-                        <!-- head -->
-                        <rect x="2" y="3" width="8" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4" />
-                        <!-- eyes -->
-                        <circle cx="4.6" cy="6.5" r="0.7" fill="currentColor" />
-                        <circle cx="7.4" cy="6.5" r="0.7" fill="currentColor" />
-                      </svg>
+                      <RailIcon name="robot" size={12} />
                     {/if}
                   </button>
                 {/if}
@@ -2374,7 +2339,7 @@
     font: inherit;
     font-size: var(--text-base);
     line-height: 18px;
-    text-decoration: underline;
+    text-decoration: none;
     cursor: pointer;
   }
   .refresh-report:hover:not(:disabled) {
@@ -2492,6 +2457,26 @@
     70%  { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
     100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
   }
+  /* Phosphor caret drawn over the custom-styled selects (replaces the old
+     hand-drawn data-URI chevron). */
+  .select-wrap {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    min-width: 0;
+  }
+  .select-wrap-active {
+    max-width: 160px;
+  }
+  .select-caret {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    color: #a0a0b0;
+    pointer-events: none;
+  }
   .active-company {
     flex: 0 0 auto;
     max-width: 160px;
@@ -2507,9 +2492,6 @@
     overflow: hidden;
     appearance: none;
     -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg width='8' height='6' viewBox='0 0 8 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a0a0b0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 6px center;
   }
   .active-company:hover:not(:disabled) {
     background-color: var(--c-field-border);
@@ -2643,11 +2625,6 @@
     line-height: 1;
     opacity: 0.76;
   }
-  .series-chip svg {
-    display: block;
-    width: 12px;
-    height: 12px;
-  }
   .series-chip:hover {
     color: var(--c-muted);
     opacity: 1;
@@ -2681,9 +2658,6 @@
     overflow: hidden;
     appearance: none;
     -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg width='8' height='6' viewBox='0 0 8 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a0a0b0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 6px center;
   }
   .meeting-company:hover:not(:disabled) {
     background-color: var(--pop-hover);
@@ -2719,7 +2693,7 @@
     padding: 0;
     margin-left: 4px;
     color: var(--c-text);
-    text-decoration: underline;
+    text-decoration: none;
     cursor: pointer;
     font: inherit;
   }

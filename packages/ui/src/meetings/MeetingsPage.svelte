@@ -806,38 +806,10 @@
 <!-- DESKTOP meetings native: compact toolbar, Live now → Up next → bot health → agenda. -->
 <div class="meetings" aria-label="Meetings" data-testid="desktop-alt-meetings">
   {#snippet iconCalendar()}
-    <svg
-      viewBox="0 0 24 24"
-      width="13"
-      height="13"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="3" y="4" width="18" height="18" rx="2" />
-      <path d="M16 2v4M8 2v4M3 10h18" />
-    </svg>
+    <RailIcon name="calendar-blank" size={13} />
   {/snippet}
   {#snippet iconSync()}
-    <svg
-      viewBox="0 0 24 24"
-      width="13"
-      height="13"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M21 12a9 9 0 0 0-15-6.7L3 8" />
-      <path d="M3 12a9 9 0 0 0 15 6.7L21 16" />
-      <path d="M3 3v5h5" />
-      <path d="M21 21v-5h-5" />
-    </svg>
+    <RailIcon name="arrows-clockwise" size={13} />
   {/snippet}
 
   <PageHeader
@@ -920,14 +892,7 @@
     <div class="url-invite-bar">
       <div class="url-field">
         <span class="url-lead" aria-hidden="true">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-            <path
-              d="M6.4 9.6a3.2 3.2 0 0 1 0-4.53l1.7-1.7a3.2 3.2 0 1 1 4.53 4.53l-.85.85M9.6 6.4a3.2 3.2 0 0 1 0 4.53l-1.7 1.7a3.2 3.2 0 1 1-4.53-4.53l.85-.85"
-              stroke="currentColor"
-              stroke-width="1.3"
-              stroke-linecap="round"
-            />
-          </svg>
+          <RailIcon name="link" size={13} />
         </span>
         <input
           type="url"
@@ -959,7 +924,7 @@
             disabled={urlInviting}
             options={[{ value: "", label: "Personal" }, ...[...companyNamesByUid.entries()].map(([uid, name]) => ({ value: uid, label: name }))]}
           />
-          <span class="url-invite-company-chevron" aria-hidden="true">›</span>
+          <span class="url-invite-company-chevron" aria-hidden="true"><RailIcon name="chevron-down" size={12} /></span>
         </span>
       {/if}
       <button
@@ -1375,7 +1340,7 @@
     font: inherit;
     font-size: var(--type-secondary, 13px);
     line-height: 16px;
-    text-decoration: underline;
+    text-decoration: none;
     cursor: pointer;
   }
   .report-link:hover:not(:disabled) {
@@ -1573,10 +1538,9 @@
   .url-invite-company-chevron {
     position: absolute;
     right: 8px;
+    display: inline-flex;
+    align-items: center;
     color: var(--v4-text-3);
-    font-size: 13px;
-    line-height: 1;
-    transform: rotate(90deg);
     pointer-events: none;
   }
   .url-invite-company:disabled {

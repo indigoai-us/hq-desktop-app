@@ -1,5 +1,6 @@
 <script lang="ts">
   import CompanyLabel from "../company/CompanyLabel.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * ProjectsHome: the Projects page. One company at a time, picked from the
    * companies this person belongs to that have a folder on this Mac, with that
@@ -130,9 +131,7 @@
             <span class="ph-name"
               ><CompanyLabel name={current.displayName || current.slug} companyUid={current.slug} /></span
             >
-            <svg viewBox="0 0 16 16" class="ph-caret" aria-hidden="true">
-              <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
+            <span class="ph-caret" aria-hidden="true"><RailIcon name="chevron-down" size={14} /></span>
           </button>
           {#if menuOpen}
             <div class="ph-menu" role="menu" aria-label="Companies">
@@ -212,6 +211,8 @@
     background: var(--v4-control-faint);
   }
   .ph-caret {
+    display: inline-flex;
+    flex: none;
     width: 14px;
     height: 14px;
     color: var(--v4-text-3);

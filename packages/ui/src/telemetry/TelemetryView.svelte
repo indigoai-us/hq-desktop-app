@@ -328,7 +328,7 @@
               {@const open = openFamilies.includes(f.family)}
               {#if f.models.length}
                 <button class="trow fam" aria-expanded={open} data-family={f.family} title={tokenTypes(f)} onclick={() => toggleFamily(f.family)}>
-                  <span class="nm"><span class="chev" class:open aria-hidden="true">›</span><ProviderMark provider={vizSlotFor(f.family).provider} color={vizColor(f.family)} />{f.family}<span class="m">{familyNote(f.family) || `${f.models.length} ${f.models.length === 1 ? "model" : "models"}`}</span></span>
+                  <span class="nm"><span class="chev" class:open aria-hidden="true"><RailIcon name="caret-right" size={10} /></span><ProviderMark provider={vizSlotFor(f.family).provider} color={vizColor(f.family)} />{f.family}<span class="m">{familyNote(f.family) || `${f.models.length} ${f.models.length === 1 ? "model" : "models"}`}</span></span>
                   <span class="n" title={f.total.toLocaleString("en-US")}>{compactNumber(f.total)}</span>
                   <span class="bar"><i style:width="{sharePercent(f.total, tokenTotal)}%" style:background={vizColor(f.family)}></i></span>
                   <span class="n">{sharePercent(f.total, tokenTotal)}%</span>
@@ -522,7 +522,7 @@
   .n { font-variant-numeric: tabular-nums; text-align: right; color: var(--t1, var(--v4-text-1)); }
   .pr, .m { color: var(--t3, var(--v4-text-3)); }
   .m { margin-left: 6px; }
-  .chev { display: inline-block; width: 12px; color: var(--t3, var(--v4-text-3)); transition: transform 120ms ease; }
+  .chev { display: inline-flex; align-items: center; justify-content: center; width: 12px; color: var(--t3, var(--v4-text-3)); transition: transform 120ms ease; }
   .chev.open { transform: rotate(90deg); }
   .sk { display: grid; align-items: center; gap: 10px; height: 31px; padding: 0 8px; grid-template-columns: minmax(0, 1fr) 44px 90px; }
   .sk > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

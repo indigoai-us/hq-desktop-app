@@ -548,6 +548,7 @@
   }
   .primary-btn:hover {
     background: var(--c-btn-bg);
+    opacity: 0.85;
   }
 
   .perm-list {
