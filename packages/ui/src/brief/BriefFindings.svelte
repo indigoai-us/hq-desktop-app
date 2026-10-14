@@ -149,7 +149,7 @@
             >
               <span class="kind">{sampleKindLabel(s.kind)}</span>
               <span class="title">{s.title}</span>
-              <span class="co"><CompanyLabel name={s.co.name} companyUid={s.co.uid} iconUrl={s.co.iconUrl} size={12} /></span>
+              <span class="co"><CompanyLabel name={s.co.name} companyUid={s.co.uid} iconUrl={s.co.iconUrl} size={16} /></span>
             </li>
           {/each}
         </ul>
@@ -428,8 +428,16 @@
   .co {
     min-width: 0;
     display: flex;
-    font-size: 11px;
+    font-size: 12px;
     color: rgba(255, 255, 255, 0.82);
+  }
+  /* The logo as on the cards (BriefLogo): a round glass circle in the white ink, never the app's grey tile. */
+  .co :global(.company-label-initials) {
+    border-radius: 50%;
+    color: inherit;
+    background: rgba(255, 255, 255, 0.16);
+    font-size: 7px;
+    letter-spacing: 0.02em;
   }
   .s-masthead .co {
     flex: none;
