@@ -80,94 +80,128 @@
           : "meetings"}</span
     >
   </div>
-  {#each shown as m (m.id)}
-    <div
-      class="row"
-      role="group"
-      aria-label={m.title}
-      data-testid="brief-meeting-row"
-      use:peek={{ state: brief, content: () => content(m) }}
-    >
-      <span class="bul" style="background:var(--b-ice)"></span>
-      <div class="mt">
-        <div class="tt">{m.title} {#if m.with}<em>{m.with}</em>{/if}</div>
-        {#if m.decided?.[0]}<div class="first" data-testid="brief-meeting-first">{m.decided[0]}</div>{/if}
+  <div class="list" class:footed={rows > 1 && !!foot}>
+    {#each shown as m (m.id)}
+      {@const first = m.decided?.[0]}
+      <div
+        class="row"
+        role="group"
+        aria-label={m.title}
+        data-testid="brief-meeting-row"
+        use:peek={{ state: brief, content: () => content(m) }}
+      >
+        <div class="mt">
+          <div class="tt">{m.title} {#if m.with}<em>{m.with}</em>{/if}</div>
+          {#if first}<div class="first" data-testid="brief-meeting-first">{first}</div>{/if}
+        </div>
+        <!-- The decision count, only when the first decision under the title doesn't already say it. -->
+        {#if m.decisions > (first ? 1 : 0)}<span class="dec" data-testid="brief-meeting-decided">{m.decisions} decided</span>{/if}
       </div>
-      {#if m.decisions}<span class="dd" aria-hidden="true">{#each Array.from({ length: Math.min(3, m.decisions) }, (_, i) => i) as i (i)}<i></i>{/each}</span>{/if}
-    </div>
-  {/each}
-  {#if rest.length}
-    <div class="row more" role="button" tabindex="0" data-testid="brief-meetings-more" use:peek={{ state: brief, content: morePeek }}>+{rest.length} more</div>
-  {/if}
+    {/each}
+    {#if rest.length}
+      <div class="row more" role="button" tabindex="0" data-testid="brief-meetings-more" use:peek={{ state: brief, content: morePeek }}>+{rest.length} more</div>
+    {/if}
+  </div>
   {#if rows > 1 && foot}
     <div class="foot" data-testid="brief-meetings-foot"><span>{foot}</span></div>
   {/if}
 </div>
 
 <style>
+  /* The count, calmly: the number, then its caption on one line beside it. */
   .hd {
     display: flex;
     align-items: baseline;
     gap: 8px;
-    margin-top: 6px;
+    min-width: 0;
+    margin: 2px 0 10px;
   }
-  .row {
-    padding: 2px 6px;
-    margin-left: -6px;
-    margin-right: -6px;
-    border-radius: 6px;
-    transition: background 0.25s;
+  .hd .big {
+    flex: none;
+    font-size: 32px;
+    font-weight: 400;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
-  .row:hover {
-    background: rgb(var(--b-ink) / 0.045);
+  .hd .sub {
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.3;
+    color: rgb(var(--b-ink) / 0.7);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+  }
+  /* Air between the last row and the footer's hairline. */
+  .list.footed {
+    margin-bottom: 12px;
+  }
+  /* Glass rows: the meeting, its first decision under it, the count at the end when there is more. */
+  .list > .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 10px;
+    font-size: var(--b-row-fs, 13px);
+    line-height: 1.3;
+    background: var(--b-row-bg, rgb(var(--b-ink) / 0.12));
+    border: 0;
+    transition: background 0.2s;
+  }
+  .list > .row:hover,
+  .list > .row:focus-visible {
+    background: var(--b-row-hover, rgb(var(--b-ink) / 0.2));
+    outline: none;
   }
   .mt {
     min-width: 0;
     flex: 1;
   }
   .tt {
+    font-weight: 500;
+    line-height: 1.25;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .tt em {
+    font-style: normal;
+    font-weight: 400;
+    color: rgb(var(--b-ink) / 0.7);
+  }
   .first {
     margin-top: 1px;
     font-size: 11px;
+    line-height: 1.3;
     color: var(--b-t3);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .dd {
-    margin-left: auto;
-    display: flex;
-    gap: 3px;
-    align-self: center;
+  .dec {
     flex: none;
+    margin-left: auto;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: rgb(var(--b-ink) / 0.7);
+    white-space: nowrap;
   }
-  .dd i {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--b-ice);
-    opacity: 0.8;
-  }
-  /* "+N more": a flat glass row, lit from the top. No inner shadow. */
-  .more {
+  /* "+N more": a plain glass row, no rim. */
+  .list > .more {
     justify-content: center;
-    margin-top: 10px;
-    margin-left: 0;
-    margin-right: 0;
-    padding: 4px 10px;
-    font-size: 13px;
-    color: var(--b-t2);
-    background: rgb(var(--b-ink) / 0.05);
-    border: 0;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: rgb(var(--b-ink) / 0.7);
     cursor: default;
-  }
-  .more:hover,
-  .more:focus-visible {
-    background: rgb(var(--b-ink) / 0.09);
-    outline: none;
   }
 </style>
