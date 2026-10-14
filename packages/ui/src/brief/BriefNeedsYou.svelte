@@ -369,9 +369,12 @@
   .it.done::before {
     display: none;
   }
+  /* A clean 1px strike in the text's own colour; no shadow, which would double the line. */
   .it.done .t {
     text-decoration: line-through;
-    text-decoration-color: rgb(var(--b-ink) / 0.4);
+    text-decoration-color: currentColor;
+    text-decoration-thickness: 1px;
+    text-shadow: none;
   }
   .ic {
     width: 30px;
