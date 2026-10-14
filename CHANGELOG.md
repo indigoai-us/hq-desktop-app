@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Notes to self: your own direct messages now show in the sidebar as
+  "<your name> (you)". Open it to read what you (and tools acting as you)
+  sent yourself, or write yourself a note. It never shows an unread badge,
+  and it appears in search.
 - Linux: an outpost now signs in as itself. On a computer that has outpost credentials and no saved person sign-in, HQ signs in as that outpost when it starts, and the account shows as the outpost with its owner's email. A person who signs in on the same computer still wins, and a person whose saved sign-in was cancelled sees the usual sign-in screen, where a new "Use this outpost's identity" button switches to the outpost. Signing out while running as the outpost only shows the sign-in screen; it does not remove or cancel anything, and the same button brings the outpost back. Person-only features such as invites, connection requests and pack management say to sign in as a person instead of failing. Fleet agent credentials are still refused. macOS and Windows are unchanged.
 - Linux: the `.deb` package now includes the app's screens. Before, the installed app opened to a blank window because every page came back "not found"; the screens were only present in the macOS and Windows installers. The app now finds them under the package's own library folder.
 - Linux: HQ's managed toolchain (Node, Git, the HQ command line tool) now installs under `~/.local/share/IndigoHQ/toolchain`, or under `$XDG_DATA_HOME/IndigoHQ/toolchain` when that variable is set to a full path, which is where the HQ installer puts it on Linux. Before, it used the macOS "Library/Application Support" folder on Linux too. macOS is unchanged.
@@ -1414,10 +1418,6 @@ This release brings the new HQ interface. A rail on the left holds your companie
   home channel, and you can choose which companies show there.
 - Company home channels show Chat only — the Office tab is hidden for
   company channels for now (the underlying calling code is unchanged).
-- Notes to self: your own direct messages now show in the sidebar as
-  "<your name> (you)". Open it to read what you (and tools acting as you)
-  sent yourself, or write yourself a note. It never shows an unread badge,
-  and it appears in search.
 
 ## [0.10.321] — 2026-09-24
 
