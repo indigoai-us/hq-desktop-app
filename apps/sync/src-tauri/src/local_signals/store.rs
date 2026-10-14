@@ -103,6 +103,15 @@ pub struct ParsedObservation {
     pub citations: Vec<Citation>,
     #[serde(default)]
     pub entities: Vec<EntityRef>,
+    /// action_item: who owns the action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// decision: why it was decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// participant_contribution: the speaker credited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -182,6 +191,12 @@ pub struct ObservationFrontmatter {
     pub classification: String,
     pub job_id: String,
     pub extracted_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -428,6 +443,11 @@ fn validate_shape(parsed: &ParsedResult) -> Result<(), String> {
         if o.entities.len() > MAX_ENTITIES {
             return Err("Observation has too many entities".into());
         }
+        for v in [&o.owner, &o.reasoning, &o.speaker].into_iter().flatten() {
+            if !bounded(v) {
+                return Err("Observation detail is empty or too long".into());
+            }
+        }
         for e in &o.entities {
             if !bounded(&e.name) || e.entity_id.as_deref().is_some_and(|id| !bounded(id)) {
                 return Err("Invalid entity reference".into());
@@ -662,6 +682,9 @@ fn finish(
             classification: ctx.classification.clone(),
             job_id: ctx.job_id.clone(),
             extracted_at: ctx.extracted_at.clone(),
+            owner: o.owner.clone(),
+            reasoning: o.reasoning.clone(),
+            speaker: o.speaker.clone(),
         };
         let yaml = serde_yaml::to_string(&fm).map_err(|_| "Cannot encode observation")?;
         let doc = format!("---\n{yaml}---\n\n{}\n", fm.content);

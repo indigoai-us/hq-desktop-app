@@ -101,3 +101,131 @@ pub async fn local_signals_resume(
     let root = hq_root()?;
     blocking(move || store::resume(&root, &company_uid, &job_id, &transcript)).await
 }
+
+// ── US-007: interactive extractor ────────────────────────────────────────────
+
+use crate::local_signals::extractor::{
+    self, ExtractOutcome, PromptInput, ProviderFailure, Recovery, SessionPlan,
+};
+use crate::local_signals::ontology_tools::{Projection, ToolHost};
+use crate::local_signals::store::valid_segment;
+
+fn projection_for(
+    root: &std::path::Path,
+    company_slug: &str,
+    ctx: &RunContext,
+) -> Result<Projection, String> {
+    if !valid_segment(company_slug) || !valid_segment(&ctx.member_uid) {
+        return Err("Invalid company or member".into());
+    }
+    let dir = root
+        .join("companies")
+        .join(company_slug)
+        .join("ontology/projections/members")
+        .join(&ctx.member_uid)
+        .join("v1");
+    Ok(Projection::load(&dir, &ctx.company_uid, &ctx.member_uid))
+}
+
+fn host_for(
+    root: &std::path::Path,
+    company_slug: &str,
+    ctx: &RunContext,
+) -> Result<(ToolHost, std::path::PathBuf), String> {
+    let projection = projection_for(root, company_slug, ctx)?;
+    let mut host = ToolHost::new(
+        root,
+        &ctx.company_uid,
+        &ctx.job_id,
+        &ctx.source_ref,
+        projection,
+        chrono::Utc::now().timestamp_millis(),
+    )?;
+    let ledger = ToolHost::ledger_path(root, &ctx.company_uid, &ctx.job_id)?;
+    host.load_ledger(&ledger)?;
+    Ok((host, ledger))
+}
+
+/// Write the prompt and open a fresh, visible Claude Code or Codex session.
+#[tauri::command]
+pub async fn local_signals_launch_session(
+    company_slug: String,
+    provider: runs::Provider,
+    context: RunContext,
+    transcript_markdown: String,
+) -> Result<SessionPlan, String> {
+    let root = hq_root()?;
+    blocking(move || {
+        context.validate()?;
+        let (host, _) = host_for(&root, &company_slug, &context)?;
+        let prompt = extractor::build_prompt(&PromptInput {
+            ctx: &context,
+            transcript_markdown: &transcript_markdown,
+            projection: &host.status(),
+        });
+        let path = extractor::prompt_path(&root, &context.company_uid, &context.job_id)?;
+        crate::local_signals::store::write_atomic(&path, prompt.as_bytes())?;
+        let kickoff = extractor::kickoff_prompt(&context.job_id, &path);
+        let plan = extractor::plan_session(provider, &root, &kickoff)?;
+        extractor::launch_session(&plan, &kickoff)?;
+        Ok(plan)
+    })
+    .await
+}
+
+/// The bridge for model tool calls. Only the four registered tools run.
+#[tauri::command]
+pub async fn local_signals_tool_call(
+    company_slug: String,
+    context: RunContext,
+    tool: String,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let root = hq_root()?;
+    blocking(move || {
+        context.validate()?;
+        let (mut host, ledger) = host_for(&root, &company_slug, &context)?;
+        let out = host.call(&tool, &input).map_err(|e| e.to_string())?;
+        host.save_ledger(&ledger)?;
+        Ok(out)
+    })
+    .await
+}
+
+/// Validate the stored session output and write it to the personal store.
+#[tauri::command]
+pub async fn local_signals_extract(
+    account_id: String,
+    company_slug: String,
+    context: RunContext,
+    transcript: LocalTranscript,
+) -> Result<ExtractOutcome, String> {
+    let dir = runs::runs_dir(&account_id)?;
+    let root = hq_root()?;
+    blocking(move || {
+        context.validate()?;
+        let output = runs::read_parsed_result(&dir, &context.job_id)?
+            .ok_or("No session output stored for this run")?;
+        let (host, _) = host_for(&root, &company_slug, &context)?;
+        extractor::extract_and_store(&root, context, &output, &transcript, &host)
+    })
+    .await
+}
+
+/// Provider logout or transport loss: keep the run recoverable and return the
+/// single plain-language recovery action for Meetings.
+#[tauri::command]
+pub async fn local_signals_provider_failure(
+    account_id: String,
+    job_id: String,
+    session_id: String,
+    provider: runs::Provider,
+    failure: ProviderFailure,
+) -> Result<Recovery, String> {
+    let dir = runs::runs_dir(&account_id)?;
+    blocking(move || {
+        extractor::handle_provider_failure(&dir, &job_id, &session_id, provider, failure)
+            .map(|(_, r)| r)
+    })
+    .await
+}

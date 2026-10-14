@@ -71,6 +71,9 @@ fn parsed() -> ParsedResult {
                         status: EntityStatus::Provisional,
                     },
                 ],
+                owner: None,
+                reasoning: None,
+                speaker: None,
             })
             .collect(),
     }

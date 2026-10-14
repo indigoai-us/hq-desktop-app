@@ -595,7 +595,7 @@ fn claude_args(permission_mode: Option<&str>, prompt: Option<&str>, quote: fn(&s
 }
 
 /// The macOS `claude` command line: `claude [--permission-mode <mode>] ['<prompt>']`.
-fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
+pub(crate) fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
     let args = claude_args(permission_mode, prompt, sh_single_quote)?;
     Ok(if args.is_empty() { "claude".to_string() } else { format!("claude {args}") })
 }

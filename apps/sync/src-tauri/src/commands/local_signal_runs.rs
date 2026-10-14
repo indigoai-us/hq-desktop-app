@@ -518,6 +518,34 @@ pub fn cancel(dir: &Path, job_id: &str, session_id: Option<&str>) -> Result<RunR
     Ok(rec)
 }
 
+/// signals-local-meetings-v1 US-007: the provider session logged out or its
+/// transport dropped. The owner is released so any compatible session can
+/// recover the run. Without a stored parse the run goes back to `pending`;
+/// with one it keeps its stage. `status` must be plain member-facing text.
+pub fn release_for_provider_loss(
+    dir: &Path,
+    job_id: &str,
+    session_id: &str,
+    status: &str,
+) -> Result<RunRecord, String> {
+    let mut rec = load(dir, job_id)?;
+    if rec.provider_session_id.is_some() {
+        require_owner(&rec, session_id)?;
+    }
+    if rec.state.is_terminal() && rec.state != RunState::Failed {
+        return Ok(rec);
+    }
+    release_owner(&mut rec);
+    let state = if rec.parsed_result_digest.is_none() {
+        RunState::Pending
+    } else {
+        rec.state
+    };
+    transition(&mut rec, state, Some(status));
+    save(dir, &rec)?;
+    Ok(rec)
+}
+
 /// Resume an interrupted or cancelled run for `session`. Allowed when the run
 /// is pending/cancelled, when this session already owns it, or when the
 /// previous owner process is gone. After a parsed result is stored the plan
