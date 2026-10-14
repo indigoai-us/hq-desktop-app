@@ -1,12 +1,12 @@
 <script lang="ts">
   /**
-   * The brief header's run controls: Create brief with its progress, and the
-   * history navigator over index.jsonl. Briefs are made on demand, so every
+   * The brief header's run row: the history navigator over index.jsonl, the
+   * "viewing an older brief" chip and missing files. Create brief / Refresh
+   * sits on the title row (BriefCreateButton). Briefs are made on demand, so every
    * label is the time a brief was created, never "today".
    */
   import LazyDropdown from "../common/LazyDropdown.svelte";
-  import type { BriefCreateRun } from "./brief-create.svelte.js";
-  import { BRIEF_FIX_LABEL, relativeRunLabel, stepRun, type BriefIndexEntry } from "./brief-runs.js";
+  import { relativeRunLabel, stepRun, type BriefIndexEntry } from "./brief-runs.js";
 
   interface Props {
     entries: readonly BriefIndexEntry[];
@@ -14,19 +14,14 @@
     latestRunId: string | null;
     now: Date;
     onselect: (runId: string) => void;
-    create?: BriefCreateRun | null;
     /** Files the shown run is missing, by name. */
     missing?: readonly string[];
-    oncreate?: () => void;
   }
-  let { entries, selectedRunId, latestRunId, now, onselect, create = null, missing = [], oncreate }: Props = $props();
+  let { entries, selectedRunId, latestRunId, now, onselect, missing = [] }: Props = $props();
 
   const step = $derived(stepRun(entries, selectedRunId));
   const selected = $derived(entries.find((e) => e.runId === selectedRunId) ?? null);
   const viewingOld = $derived(selectedRunId != null && latestRunId != null && selectedRunId !== latestRunId);
-  const phase = $derived(create?.phase ?? { kind: "idle" as const });
-  let fixError = $state<string | null>(null);
-  let fixing = $state(false);
 
   function countsLabel(e: BriefIndexEntry): string {
     const parts = [
@@ -43,12 +38,6 @@
   }
   function dateLabel(iso: string): string {
     return new Date(iso).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  }
-  async function runFix(): Promise<void> {
-    if (!create || fixing) return;
-    fixing = true;
-    fixError = await create.fix();
-    fixing = false;
   }
 </script>
 
@@ -94,27 +83,6 @@
     <span class="miss" data-testid="brief-missing">Missing from this brief: {missing.join(", ")}</span>
   {/if}
 
-  {#if create}
-    <div class="create" aria-live="polite">
-      {#if phase.kind === "blocked"}
-        <span class="msg" data-testid="brief-blocked">{phase.message}</span>
-        <button type="button" class="btn" onclick={() => void runFix()} disabled={fixing} data-testid="brief-fix">
-          {fixing ? "Working…" : BRIEF_FIX_LABEL[phase.fix]}
-        </button>
-        {#if fixError}<span class="msg">{fixError}</span>{/if}
-      {/if}
-      {#if phase.kind !== "blocked"}
-        <button
-          type="button"
-          class="btn primary"
-          disabled={create.busy}
-          aria-busy={create.busy}
-          onclick={() => (oncreate ? oncreate() : void create?.start())}
-          data-testid="brief-create"
-        >{create.busy ? "Creating…" : "Create brief"}</button>
-      {/if}
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -133,7 +101,6 @@
     min-width: 0;
   }
   .step,
-  .btn,
   .chip button {
     font: inherit;
     font-size: 13px;
@@ -148,17 +115,9 @@
     width: 26px;
     height: 26px;
   }
-  .step:disabled,
-  .btn:disabled {
+  .step:disabled {
     opacity: 0.4;
     cursor: default;
-  }
-  .btn {
-    padding: 6px 12px;
-  }
-  .btn.primary {
-    color: #1b1b1e;
-    background: var(--b-sun);
   }
   .tag,
   .chip {
@@ -175,11 +134,5 @@
   }
   .miss {
     color: var(--b-warn);
-  }
-  .create {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-left: auto;
   }
 </style>

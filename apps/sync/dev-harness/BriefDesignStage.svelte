@@ -5,6 +5,11 @@
   // Shift+A on the page toggles review mode (every card in the catalogue).
   //   &theme=dark|light|system  appearance (sets data-force-theme on <html>, as the QA override does).
   //   &at=HH:MM  pin the Oct 8 day's clock (default 14:10, a call in progress).
+  //   &state=waiting   the first-visit empty state (the full-bleed sunrise card with Create brief)
+  //   &state=creating  the Create brief scene: a simulated ~20 s run that hands off to the day
+  //                    (&over=brief plays it as the band over today's brief; &state=failed stops
+  //                    at 45%; &briefDemoAt=0..1 freezes a frame). See BriefCreatingStage.svelte.
+  import BriefCreatingStage from './BriefCreatingStage.svelte';
   import DailyBrief from '../../../packages/ui/src/brief/DailyBrief.svelte';
   import { octoberEightBrief } from '../../../packages/ui/src/brief/brief-fixture';
   import {
@@ -100,6 +105,20 @@
     history.replaceState(null, '', url);
   });
 
+  type Scene = 'brief' | 'creating' | 'failed' | 'waiting';
+  const s0 = params.get('state');
+  let scene = $state<Scene>(s0 === 'creating' || s0 === 'failed' || s0 === 'waiting' ? s0 : 'brief');
+  const over = params.get('over') === 'brief';
+  let replay = $state(0);
+  function pickScene(next: Scene) {
+    scene = next;
+    replay = 0;
+    const url = new URL(location.href);
+    if (next === 'brief') url.searchParams.delete('state');
+    else url.searchParams.set('state', next);
+    history.replaceState(null, '', url);
+  }
+
   function pick(next: Day) {
     day = next;
     const url = new URL(location.href);
@@ -133,11 +152,23 @@
     {#each Object.entries(DAYS) as [key, d] (key)}
       <button class:on={day === key} onclick={() => pick(key as Day)}>{d.label}</button>
     {/each}
+    <span class="sep"></span>
+    <button class:on={scene === 'waiting'} onclick={() => (scene === 'waiting' ? replay++ : pickScene('waiting'))} title="The first-visit empty state">Waiting</button>
+    <button class:on={scene === 'creating'} onclick={() => (scene === 'creating' ? replay++ : pickScene('creating'))} title="Play the Create brief scene; click again to replay"
+      >{scene === 'creating' ? 'Replay creating' : 'Creating'}</button
+    >
+    {#if scene !== 'brief'}<button onclick={() => pickScene('brief')}>Brief</button>{/if}
     <span class="hint">Shift+A · every card</span>
   </nav>
-  {#key day}
-    <DailyBrief {input} {companies} />
-  {/key}
+  {#if scene === 'brief'}
+    {#key day}
+      <DailyBrief {input} {companies} />
+    {/key}
+  {:else}
+    {#key `${scene}|${day}`}
+      <BriefCreatingStage {input} {companies} mode={scene} {over} {replay} />
+    {/key}
+  {/if}
 </div>
 
 <style>

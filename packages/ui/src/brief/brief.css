@@ -956,9 +956,7 @@
 }
 /* Dark islands keep white ink in both appearances. */
 .daily-brief :is(.c-violet, .c-red, .dawn, .w.dawn),
-.daily-brief .slot[data-field] > .w,
-.daily-brief-dawn-page,
-.masthead-wrap {
+.daily-brief .slot[data-field] > .w {
   --b-ink: 255 255 255;
   --b-t1: rgba(255, 255, 255, 0.92);
   --b-t2: rgba(255, 255, 255, 0.7);

@@ -68,8 +68,10 @@
     companies?: readonly BriefCompanyLogo[];
     /** Opens a session with the prompt pre-filled. Defaults to copying it. */
     onlaunch?: BriefLaunch;
-    /** Run controls (Create brief, history) shown in the header. */
+    /** Run controls (history, the band of a run in flight) under the header. */
     header?: Snippet;
+    /** Controls on the title row, right-aligned (Create brief / Refresh). */
+    tools?: Snippet;
     /** The shown run's housekeeping.json, when it has one. */
     housekeeping?: BriefHousekeepingData | null;
     /** Live DM reads for the Team card. */
@@ -81,7 +83,7 @@
     /** Records what the person did with an item (dismiss, launch) in the brief log. */
     onlog?: (event: BriefItemEvent) => void;
   }
-  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog }: Props = $props();
+  let { input, companies = [], onlaunch, header, tools, housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog }: Props = $props();
 
   const briefState = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
@@ -286,6 +288,7 @@
       {#if allCards}<span class="leadchip pill" data-testid="brief-lead" role="group" aria-label="Why these cards" use:peek={{ state: briefState, content: whyPeek }}
           >Why these cards</span
         >{/if}
+      {#if tools}{@render tools()}{/if}
     </div>
   </header>
   {#if header}<div class="b-runs">{@render header()}</div>{/if}
