@@ -367,4 +367,14 @@ describe("BriefHandoffs card", () => {
     expect(st).toMatch(/padding:\s*0/);
     expect(st).toMatch(/background:\s*none/);
   });
+
+  it("narrow card: the Acknowledge word steps aside on hover so the button fits the row; the arrow is Phosphor's", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/brief/BriefHandoffs.svelte"), "utf8");
+    const narrow = src.match(/@container hlist \(max-width: 299px\) \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+    expect(narrow).toMatch(/\.hr \.verb \{[^}]*display:\s*none/);
+    render({});
+    const arrow = row("h-pluto").querySelector('[data-testid="brief-handoff-arrow"]')!;
+    expect(arrow.getAttribute("viewBox")).toBe("0 0 256 256");
+    expect(arrow.querySelector("path")!.getAttribute("d")).toMatch(/^M221\.66,133\.66/);
+  });
 });

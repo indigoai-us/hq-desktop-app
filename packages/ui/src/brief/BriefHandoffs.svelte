@@ -112,7 +112,7 @@
           </span>
           <span class="pp">
             <span class="ini" title={h.from} data-testid="brief-handoff-from">{initial(h.from)}</span>
-            <svg class="ar" viewBox="0 0 12 12" aria-hidden="true" data-testid="brief-handoff-arrow" data-acked={acked(h)}><path d="M2 6h8M7 3l3 3-3 3" /></svg>
+            <svg class="ar" viewBox="0 0 256 256" aria-hidden="true" data-testid="brief-handoff-arrow" data-acked={acked(h)}><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z" /></svg>
             <span class="ini" title={h.to} data-testid="brief-handoff-to">{initial(h.to)}</span>
           </span>
           <span class="st" class:hot={st.hot} data-testid="brief-handoff-status" data-status={st.key}>
@@ -244,6 +244,10 @@
     .steps {
       display: none;
     }
+    /* No room for the "Acknowledge" word beside the button: the button alone, the peek says what it does. */
+    .hr .verb {
+      display: none;
+    }
   }
   /* Wide card: on hover the logo steps aside and a long name stops short of the actions. */
   @container hlist (min-width: 300px) {
@@ -306,15 +310,12 @@
     color: #fff;
     background: rgba(255, 255, 255, 0.2);
   }
+  /* Phosphor arrow-right (regular), the same icon family as the card labels. */
   .ar {
-    width: 12px;
-    height: 12px;
+    width: 13px;
+    height: 13px;
     flex: none;
-    fill: none;
-    stroke: rgba(255, 255, 255, 0.7);
-    stroke-width: 1.5;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    fill: rgba(255, 255, 255, 0.7);
   }
   /* One status: a small glass pill. */
   .st {
