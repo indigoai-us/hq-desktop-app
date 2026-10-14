@@ -231,7 +231,16 @@
     .hr:focus-within .pp {
       opacity: 0;
     }
-    /* No room beside the people for "· 1 of 3": the word stays, the peek lists the receipts. */
+    .hr {
+      column-gap: 6px;
+    }
+    /* No room beside the people for a pill: the status is plain words with its dot, and the peek lists the receipts. */
+    .hr .st {
+      height: auto;
+      padding: 0;
+      background: none;
+      color: rgba(255, 255, 255, 0.82);
+    }
     .steps {
       display: none;
     }
