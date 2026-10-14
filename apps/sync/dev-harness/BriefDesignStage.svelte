@@ -10,6 +10,10 @@
   //                    (&over=brief plays it as the band over today's brief; &state=failed stops
   //                    at 45%; &briefDemoAt=0..1 freezes a frame). See BriefCreatingStage.svelte.
   import BriefCreatingStage from './BriefCreatingStage.svelte';
+  import BriefCreateButton from '../../../packages/ui/src/brief/BriefCreateButton.svelte';
+  import { BriefCreateRun } from '../../../packages/ui/src/brief/brief-create.svelte';
+  import { briefDemoFromUrl } from '../../../packages/ui/src/brief/brief-demo';
+  import type { BriefIndexEntry } from '../../../packages/ui/src/brief/brief-runs';
   import DailyBrief from '../../../packages/ui/src/brief/DailyBrief.svelte';
   import { octoberEightBrief } from '../../../packages/ui/src/brief/brief-fixture';
   import {
@@ -108,16 +112,33 @@
   type Scene = 'brief' | 'creating' | 'failed' | 'waiting';
   const s0 = params.get('state');
   let scene = $state<Scene>(s0 === 'creating' || s0 === 'failed' || s0 === 'waiting' ? s0 : 'brief');
-  const over = params.get('over') === 'brief';
+  let over = $state(params.get('over') === 'brief');
   let replay = $state(0);
-  function pickScene(next: Scene) {
+  function pickScene(next: Scene, overBrief = false) {
     scene = next;
     replay = 0;
+    over = overBrief;
     const url = new URL(location.href);
     if (next === 'brief') url.searchParams.delete('state');
     else url.searchParams.set('state', next);
+    if (overBrief) url.searchParams.set('over', 'brief');
+    else url.searchParams.delete('over');
     history.replaceState(null, '', url);
   }
+
+  // The brief scene shows the page's real Refresh control (today's brief exists), as the
+  // app does; pressing it plays the creating scene as the band over today's brief.
+  const today: BriefIndexEntry = {
+    runId: 'brief-design-today',
+    createdAt: new Date().toISOString(),
+    window: null,
+    state: 'ready',
+    catchUp: false,
+    lead: 'decisions',
+    counts: { decisions: 4, shipped: 9, incidents: 1 },
+    headline: 'Four decisions before sunrise',
+  };
+  const idleRun = new BriefCreateRun({ creator: briefDemoFromUrl('?briefDemo=1')!.creator, read: async () => null, storage: null });
 
   function pick(next: Day) {
     day = next;
@@ -154,14 +175,17 @@
     {/each}
     <span class="sep"></span>
     <button class:on={scene === 'waiting'} onclick={() => (scene === 'waiting' ? replay++ : pickScene('waiting'))} title="The first-visit empty state">Waiting</button>
-    <button class:on={scene === 'creating'} onclick={() => (scene === 'creating' ? replay++ : pickScene('creating'))} title="Play the Create brief scene; click again to replay"
+    <button class:on={scene === 'creating'} onclick={() => (scene === 'creating' ? replay++ : pickScene('creating', over))} title="Play the Create brief scene; click again to replay"
       >{scene === 'creating' ? 'Replay creating' : 'Creating'}</button
     >
     {#if scene !== 'brief'}<button onclick={() => pickScene('brief')}>Brief</button>{/if}
   </nav>
+  {#snippet refreshTool()}
+    <BriefCreateButton entries={[today]} now={new Date()} create={idleRun} oncreate={() => pickScene('creating', true)} />
+  {/snippet}
   {#if scene === 'brief'}
     {#key day}
-      <DailyBrief {input} {companies} />
+      <DailyBrief {input} {companies} tools={refreshTool} />
     {/key}
   {:else}
     {#key `${scene}|${day}`}
