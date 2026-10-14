@@ -407,6 +407,9 @@
     top: calc(var(--room) + var(--trk) * (1 - var(--avg)) - 1px);
     height: 2px;
     background: radial-gradient(circle, rgb(var(--b-ink) / 0.4) 0.8px, transparent 1.2px) 0 50% / 5px 2px repeat-x;
+    /* Fades out at both ends, like the day timeline's rail. */
+    -webkit-mask: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+    mask: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
     pointer-events: none;
     animation: fade 0.6s 0.7s ease-out both;
   }

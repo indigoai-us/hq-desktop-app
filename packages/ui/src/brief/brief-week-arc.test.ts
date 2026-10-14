@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import Harness from "./BriefWeekArcHarness.test-support.svelte";
@@ -375,5 +377,12 @@ describe("BriefWeekArc", () => {
     expect(cols[0]!.querySelector(".stub")).not.toBeNull();
     expect(cols[0]!.querySelector(".bar")).toBeNull();
     expect(cols[1]!.querySelector(".bar")).not.toBeNull();
+  });
+});
+
+describe("BriefWeekArc average line", () => {
+  it("fades out at both ends like the day timeline's rail", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/brief/BriefWeekArc.svelte"), "utf8");
+    expect(src).toMatch(/\.avg \{[^}]*mask: linear-gradient\(90deg, transparent, #000 \d+%, #000 \d+%, transparent\)/);
   });
 });
