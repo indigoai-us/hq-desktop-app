@@ -149,6 +149,7 @@
   } from "./app-step.js";
   import type { FirstRunAppsHandoff } from "./visual-first-run.js";
   import type { FirstRunAppsHost, FirstRunSettled, FirstRunTeamHost } from "./first-run-hosts.js";
+  import { createScreenTimer, type FirstRunTimingSink } from "./first-run-timing.js";
   import "../create-bot/new-bot-takeover.css";
 
 
@@ -219,6 +220,8 @@
     initialWorkScan?: FoundWorkApps | null;
     /** Every change to what "Your team" and the app screens settled. */
     onsettled?: ((settled: FirstRunSettled) => void) | null;
+    /** Receives the `kind=screen surface=takeover` timing lines (see first-run-timing.ts). */
+    timingLog?: FirstRunTimingSink | null;
   }
 
   let {
@@ -255,6 +258,7 @@
     onopenintegrations = null,
     initialWorkScan = null,
     onsettled = null,
+    timingLog = null,
   }: Props = $props();
 
   /**
@@ -699,6 +703,12 @@
   });
 
   let step = $state<FirstRunStepId>(untrack(() => initialStep));
+  /** One enter and one leave timing line per step shown. Instrumentation only. */
+  const screenTimer = createScreenTimer("takeover", (message) => timingLog?.(message));
+  $effect(() => {
+    const shown = step;
+    untrack(() => screenTimer.show(shown));
+  });
   /** The name as typed or confirmed. */
   let name = $state(untrack(() => initialName));
   /** The coding tool card that is picked. Starts on the first ready one. */
@@ -863,6 +873,7 @@
     if (untrack(() => importHost)) firstRunImportDoor.preload();
   });
   onDestroy(() => {
+    screenTimer.close();
     appsAbort.abort();
     yourAppsAbort.abort();
     importRunner.dispose();

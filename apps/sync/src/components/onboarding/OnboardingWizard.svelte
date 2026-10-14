@@ -1,12 +1,18 @@
 <script lang="ts">
   import RailIcon from '@hq/ui/rail-icon';
   import { BRAND_ICONS } from '@hq/ui/rail-icons';
+  import {
+    FIRST_RUN_TIMING_TAG,
+    createScreenTimer,
+    startInstallTimer,
+    type InstallTimer,
+  } from '@hq/ui/first-run-timing';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
   import { safeUnlisten } from '../../lib/listener-registry';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
-  import { onDestroy, onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import '../../styles/design-system.css';
   import './welcome/welcome.css';
   import { createWelcomeController, type WelcomeController } from './welcome/controller';
@@ -356,6 +362,20 @@
   let router = $state(createWizardRouter());
   let currentStep = $state(DEFAULT_STEP);
   let furthestStep = $state(DEFAULT_STEP);
+
+  // First-run timing lines (format in @hq/ui/first-run-timing). Replay and
+  // consent-only runs are not a first run, so they write none.
+  function firstRunTimingLog(message: string): void {
+    if (replay || consentOnly) return;
+    Promise.resolve()
+      .then(() => invoke('frontend_log', { tag: FIRST_RUN_TIMING_TAG, message }))
+      .catch((error) => console.warn('[first-run] timing line was not written', error));
+  }
+  const screenTimer = createScreenTimer('welcome', firstRunTimingLog);
+  $effect(() => {
+    const shown = stepIdFor(currentStep);
+    untrack(() => screenTimer.show(shown));
+  });
   let reducedMotion = $state(false);
 
   // ─── Welcome flow screens ───────────────────────────────────────────────
@@ -1081,6 +1101,7 @@
   });
 
   onDestroy(() => {
+    screenTimer.close();
     recordOnboardingAbandonment();
     mounted = false;
     currentSignInCall += 1;
@@ -2609,6 +2630,11 @@
     // own sub-steps.
     if (setupRetry?.stageId === id) setupRetry = null;
     stages = setStageStatus(stages, id, 'running');
+    // The deps items are timed per tool in Rust; these three are timed here.
+    const installTimer: InstallTimer | null =
+      id === 'content' || id === 'initial-sync' || id === 'indexing'
+        ? startInstallTimer(id, firstRunTimingLog)
+        : null;
     await journalStageStart(id);
 
     const result = await invokeStageCommand(
@@ -2619,6 +2645,9 @@
     ).then(
       () => ({ kind: 'done' as const }),
       (err) => ({ kind: 'failed' as const, err }),
+    );
+    installTimer?.finish(
+      !isCurrentRun(runId) ? 'cancelled' : result.kind === 'done' ? 'ok' : 'failed',
     );
 
     if (!isCurrentRun(runId)) {

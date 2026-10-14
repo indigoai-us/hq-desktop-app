@@ -24,6 +24,7 @@ import type { RuntimeStatus } from "../create-bot/runtime-status.js";
 import type { BotRuntime } from "../create-bot/create-bot-model.js";
 import type { AdapterPromise } from "@hq/platform";
 import { readProbeAnswer, type RuntimeProbeState } from "../create-bot/runtime-probe.js";
+import { formatProbe, type FirstRunTimingSink, type ProbeResult } from "./first-run-timing.js";
 
 /** The coding tools the first run helps sign in to. */
 export type SignInTool = "claude" | "codex";
@@ -445,6 +446,8 @@ export interface SignInCheckerOptions {
   probe: ((tool: SignInTool) => AdapterPromise<unknown>) | null;
   onchange: (checks: ToolSignInChecks) => void;
   deadlineMs?: number;
+  /** Receives one `kind=probe` timing line per probe run (see first-run-timing.ts). */
+  timingLog?: FirstRunTimingSink | null;
 }
 
 export interface SignInChecker {
@@ -482,6 +485,15 @@ export function createSignInChecker(options: SignInCheckerOptions): SignInChecke
     options.onchange(checks);
   }
 
+  function logProbe(tool: SignInTool, result: ProbeResult, elapsedMs: number): void {
+    if (!options.timingLog) return;
+    try {
+      options.timingLog(formatProbe(tool, result, elapsedMs));
+    } catch (error) {
+      console.warn("[first-run] probe timing line could not be written", error);
+    }
+  }
+
   async function run(tool: SignInTool, token: number): Promise<void> {
     const probe = options.probe;
     let check: ToolSignInCheck;
@@ -489,12 +501,15 @@ export function createSignInChecker(options: SignInCheckerOptions): SignInChecke
       check = "unverified";
     } else {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const startedAt = Date.now();
+      let probeResult: ProbeResult = "failed";
       const deadline = new Promise<"timeout">((resolve) => {
         timer = setTimeout(() => resolve("timeout"), deadlineMs);
       });
       try {
         const result = await Promise.race([Promise.resolve().then(() => probe(tool)), deadline]);
         if (result === "timeout") {
+          probeResult = "timeout";
           console.warn(`[first-run] sign-in check for ${tool} did not answer in time; using the stored login`);
           check = "unverified";
         } else if (!result.ok) {
@@ -503,6 +518,8 @@ export function createSignInChecker(options: SignInCheckerOptions): SignInChecke
         } else {
           const answer = readProbeAnswer(result.value, null);
           check = signInCheckOf(answer);
+          if (check === "passed") probeResult = "passed";
+          else if (check === "signedOut") probeResult = "signed-out";
           if (check === "unverified") {
             console.warn(`[first-run] sign-in check for ${tool} was not conclusive; using the stored login`, answer);
           }
@@ -512,6 +529,7 @@ export function createSignInChecker(options: SignInCheckerOptions): SignInChecke
         check = "unverified";
       } finally {
         clearTimeout(timer);
+        logProbe(tool, probeResult, Date.now() - startedAt);
       }
     }
     if (disposed || generation[tool] !== token) return;

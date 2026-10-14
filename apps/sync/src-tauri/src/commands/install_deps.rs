@@ -3606,15 +3606,18 @@ async fn install_jq_macos(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub async fn install_jq(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_jq")?;
-    #[cfg(not(windows))]
-    {
-        install_jq_macos(app).await
-    }
-    #[cfg(windows)]
-    {
-        let _ = app;
-        Err("jq is not provisioned by the Windows installer yet".to_string())
-    }
+    time_command_install("jq", async move {
+        #[cfg(not(windows))]
+        {
+            install_jq_macos(app).await
+        }
+        #[cfg(windows)]
+        {
+            let _ = app;
+            Err("jq is not provisioned by the Windows installer yet".to_string())
+        }
+    })
+    .await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4275,17 +4278,33 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
 // Shared install command wrappers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// First-run timing for a direct install command (see `crate::first_run_timing`).
+/// Inside the `install_deps` batch, `install_deps` times each dependency itself,
+/// so this adds no lines there and nothing is counted twice.
+async fn time_command_install<T, F>(id: &str, install: F) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, String>>,
+{
+    if ACTIVE_SETUP_DEPENDENCY.try_with(|_| ()).is_ok() {
+        return install.await;
+    }
+    crate::first_run_timing::time_install(id, install).await
+}
+
 #[tauri::command]
 pub async fn install_node<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_node")?;
-    #[cfg(not(windows))]
-    {
-        install_node_macos(app).await
-    }
-    #[cfg(windows)]
-    {
-        install_node_windows(app, false).await
-    }
+    time_command_install("node", async move {
+        #[cfg(not(windows))]
+        {
+            install_node_macos(app).await
+        }
+        #[cfg(windows)]
+        {
+            install_node_windows(app, false).await
+        }
+    })
+    .await
 }
 
 /// Provision managed Node as part of the bounded repair flow. Native crashes
@@ -4309,53 +4328,65 @@ pub(crate) async fn install_node_for_repair<R: tauri::Runtime>(
 #[tauri::command]
 pub async fn install_git(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_git")?;
-    #[cfg(not(windows))]
-    {
-        install_git_macos(app).await
-    }
-    #[cfg(windows)]
-    {
-        install_git_windows(app).await
-    }
+    time_command_install("git", async move {
+        #[cfg(not(windows))]
+        {
+            install_git_macos(app).await
+        }
+        #[cfg(windows)]
+        {
+            install_git_windows(app).await
+        }
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn install_gh(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_gh")?;
-    #[cfg(not(windows))]
-    {
-        install_gh_macos(app).await
-    }
-    #[cfg(windows)]
-    {
-        install_gh_windows(app).await
-    }
+    time_command_install("gh", async move {
+        #[cfg(not(windows))]
+        {
+            install_gh_macos(app).await
+        }
+        #[cfg(windows)]
+        {
+            install_gh_windows(app).await
+        }
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn install_yq(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_yq")?;
-    #[cfg(not(windows))]
-    {
-        install_yq_macos(app).await
-    }
-    #[cfg(windows)]
-    {
-        install_yq_windows(app).await
-    }
+    time_command_install("yq", async move {
+        #[cfg(not(windows))]
+        {
+            install_yq_macos(app).await
+        }
+        #[cfg(windows)]
+        {
+            install_yq_windows(app).await
+        }
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_claude_code")?;
-    #[cfg(not(windows))]
-    {
-        install_claude_code_macos(app).await
-    }
-    #[cfg(windows)]
-    {
-        install_claude_code_windows(app).await
-    }
+    time_command_install("claude-code", async move {
+        #[cfg(not(windows))]
+        {
+            install_claude_code_macos(app).await
+        }
+        #[cfg(windows)]
+        {
+            install_claude_code_windows(app).await
+        }
+    })
+    .await
 }
 
 /// npm spec + bin name for a sessions provider. Unknown tools fail closed.
@@ -4478,14 +4509,17 @@ async fn install_npm_cli_windows(
 pub async fn install_codex(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_codex")?;
     let (spec, bin) = session_provider_npm_spec("codex")?;
-    #[cfg(not(windows))]
-    {
-        install_npm_cli_macos(app, spec, bin, "codex").await
-    }
-    #[cfg(windows)]
-    {
-        install_npm_cli_windows(app, spec, bin, "codex").await
-    }
+    time_command_install("codex", async move {
+        #[cfg(not(windows))]
+        {
+            install_npm_cli_macos(app, spec, bin, "codex").await
+        }
+        #[cfg(windows)]
+        {
+            install_npm_cli_windows(app, spec, bin, "codex").await
+        }
+    })
+    .await
 }
 
 /// Install the Grok CLI via `npm install -g @xai-official/grok`.
@@ -4515,14 +4549,18 @@ pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<St
         }
         "codex" | "grok" => {
             let (spec, bin) = session_provider_npm_spec(&tool)?;
-            #[cfg(not(windows))]
-            {
-                install_npm_cli_macos(app, spec, bin, &tool).await
-            }
-            #[cfg(windows)]
-            {
-                install_npm_cli_windows(app, spec, bin, &tool).await
-            }
+            // The claude arm needs no timer here: install_claude_code times itself.
+            time_command_install(&tool, async {
+                #[cfg(not(windows))]
+                {
+                    install_npm_cli_macos(app, spec, bin, &tool).await
+                }
+                #[cfg(windows)]
+                {
+                    install_npm_cli_windows(app, spec, bin, &tool).await
+                }
+            })
+            .await
         }
         _ => Err("Unknown agent. Choose Claude, Codex, or Grok.".into()),
     }
@@ -4531,27 +4569,33 @@ pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<St
 #[tauri::command]
 pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_qmd")?;
-    #[cfg(not(windows))]
-    {
-        install_qmd_macos(app).await
-    }
-    #[cfg(windows)]
-    {
-        install_qmd_windows(app).await
-    }
+    time_command_install("qmd", async move {
+        #[cfg(not(windows))]
+        {
+            install_qmd_macos(app).await
+        }
+        #[cfg(windows)]
+        {
+            install_qmd_windows(app).await
+        }
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn install_hq_cli(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_hq_cli")?;
-    #[cfg(not(windows))]
-    {
-        install_hq_cli_macos(app).await
-    }
-    #[cfg(windows)]
-    {
-        install_hq_cli_windows(app).await
-    }
+    time_command_install("hq-cli", async move {
+        #[cfg(not(windows))]
+        {
+            install_hq_cli_macos(app).await
+        }
+        #[cfg(windows)]
+        {
+            install_hq_cli_windows(app).await
+        }
+    })
+    .await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8026,9 +8070,36 @@ fn finish_orchestrated_dep_install(
     }
 }
 
-async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), String> {
+/// Whether `install_orchestrated_dep` ran an installer, for the first-run
+/// timing line (`outcome=ok` versus `outcome=skipped`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrchestratedDepRun {
+    Installed,
+    AlreadySatisfied,
+}
+
+/// First-run timing outcome for one dependency in the `install_deps` batch.
+/// An error with a recorded cancellation is `cancelled`; any other error is
+/// `failed`.
+fn orchestrated_dep_timing_outcome(
+    result: &Result<OrchestratedDepRun, String>,
+    cancelled: bool,
+) -> crate::first_run_timing::InstallOutcome {
+    use crate::first_run_timing::InstallOutcome;
+    match result {
+        Ok(OrchestratedDepRun::Installed) => InstallOutcome::Ok,
+        Ok(OrchestratedDepRun::AlreadySatisfied) => InstallOutcome::Skipped,
+        Err(_) if cancelled => InstallOutcome::Cancelled,
+        Err(_) => InstallOutcome::Failed,
+    }
+}
+
+async fn install_orchestrated_dep(
+    app: &AppHandle,
+    dep: &DepDef,
+) -> Result<OrchestratedDepRun, String> {
     if dep_is_satisfied(app, dep) {
-        return Ok(());
+        return Ok(OrchestratedDepRun::AlreadySatisfied);
     }
 
     let install_result = match dep.id {
@@ -8057,13 +8128,14 @@ async fn install_orchestrated_dep(app: &AppHandle, dep: &DepDef) -> Result<(), S
                     });
                     Err(format!("{} did not pass the post-install check", dep.label))
                 } else {
-                    Ok(())
+                    Ok(OrchestratedDepRun::Installed)
                 }
             }
         };
     }
 
     finish_orchestrated_dep_install(dep.label, install_result, dep_is_satisfied(app, dep))
+        .map(|()| OrchestratedDepRun::Installed)
 }
 
 #[tauri::command]
@@ -8099,6 +8171,7 @@ pub async fn install_deps(
             async move {
                 let collector = SetupDiagnosticCollector::new();
                 let cancellation_collector = InstallCancellationCollector::new();
+                let timer = crate::first_run_timing::InstallTimer::start(dep.id);
                 let install_result = ACTIVE_SETUP_DEPENDENCY
                     .scope(dep.id, async {
                         match failure_scope {
@@ -8131,6 +8204,11 @@ pub async fn install_deps(
                     })
                     .await;
                 let cancellation = cancellation_collector.take();
+                timer.finish(orchestrated_dep_timing_outcome(
+                    &install_result,
+                    cancellation.is_some(),
+                ));
+                let install_result = install_result.map(|_| ());
                 let cleanup_reported = cancellation_collector.cleanup_failure_reported();
                 (
                     result_from_install(dep, install_result, cancellation.as_ref()),
@@ -8249,6 +8327,73 @@ pub async fn install_deps(
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn orchestrated_dep_timing_outcome_covers_every_result() {
+        use crate::first_run_timing::InstallOutcome;
+        assert_eq!(
+            orchestrated_dep_timing_outcome(&Ok(OrchestratedDepRun::Installed), false),
+            InstallOutcome::Ok
+        );
+        assert_eq!(
+            orchestrated_dep_timing_outcome(&Ok(OrchestratedDepRun::AlreadySatisfied), false),
+            InstallOutcome::Skipped
+        );
+        assert_eq!(
+            orchestrated_dep_timing_outcome(&Err("qmd did not pass".to_string()), false),
+            InstallOutcome::Failed
+        );
+        assert_eq!(
+            orchestrated_dep_timing_outcome(&Err("stopped".to_string()), true),
+            InstallOutcome::Cancelled
+        );
+    }
+
+    fn first_run_lines(path: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                line.split_once(" [first-run] ")
+                    .map(|(_, rest)| rest.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn command_install_timing_logs_outside_the_batch_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("hq-sync.log");
+        let _guard = hq_desktop_core::logfile::LogOverrideGuard::new(log.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime builds");
+
+        let inside = runtime.block_on(ACTIVE_SETUP_DEPENDENCY.scope(
+            "node",
+            time_command_install("node", async { Ok::<_, String>("inside") }),
+        ));
+        assert_eq!(inside, Ok("inside"));
+        assert!(
+            first_run_lines(&log).is_empty(),
+            "the batch times its own deps, so the command adds no lines"
+        );
+
+        let outside: Result<&str, String> = runtime.block_on(time_command_install(
+            "codex",
+            async { Err("npm failed".to_string()) },
+        ));
+        assert_eq!(outside, Err("npm failed".to_string()));
+        let lines = first_run_lines(&log);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[0], "kind=install event=start id=codex");
+        assert!(
+            lines[1].starts_with("kind=install event=end id=codex outcome=failed elapsed_ms="),
+            "{}",
+            lines[1]
+        );
+    }
 
     #[test]
     fn path_persistence_failure_remains_fatal_after_the_managed_binary_is_visible() {
@@ -8495,7 +8640,6 @@ mod install_deps_planner_tests {
         }
     }
 
-    #[test]
     #[test]
     fn parse_dep_node_major_reads_versions() {
         assert_eq!(parse_dep_node_major("v14.21.3"), Some(14));

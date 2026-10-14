@@ -318,6 +318,7 @@
     type SignInTool,
     type ToolSignInChecks,
   } from "../chat/first-run/tools-signin.js";
+  import { FIRST_RUN_TIMING_TAG } from "../chat/first-run/first-run-timing.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
@@ -3673,7 +3674,17 @@
    * Sign in, which then replaces it. A check that cannot tell does not block.
    */
   let firstRunSignInChecks = $state<ToolSignInChecks>({});
+  /** Writes one first-run timing line to the hq-sync log. Never throws into the flow it measures. */
+  function firstRunTimingLog(message: string): void {
+    Promise.resolve()
+      .then(() => adapter.appShell.logToFile(FIRST_RUN_TIMING_TAG, message))
+      .then((result) => {
+        if (!result.ok) console.warn("[first-run] timing line was not written", result.message);
+      })
+      .catch((error) => console.warn("[first-run] timing line was not written", error));
+  }
   const firstRunSignInChecker = createSignInChecker({
+    timingLog: firstRunTimingLog,
     probe:
       adapter.bots?.probe && !firstRunDev.dry
         ? (tool) =>
@@ -16199,6 +16210,7 @@
       runtimeReady={localBotRuntimeReady}
       runtimeStatus={localBotRuntimeStatus}
       signInChecks={firstRunSignInChecks}
+      timingLog={firstRunTimingLog}
       signInApi={botSignIn}
       onsignedin={onFirstRunToolSignedIn}
       onrecheck={recheckLocalBotRuntimes}

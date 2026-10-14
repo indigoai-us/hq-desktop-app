@@ -51,6 +51,7 @@ mod app_version;
 mod deep_link;
 mod events;
 mod fd_limit;
+mod first_run_timing;
 #[cfg(target_os = "macos")]
 mod glass;
 mod intro_window;

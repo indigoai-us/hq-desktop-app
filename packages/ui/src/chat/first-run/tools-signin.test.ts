@@ -395,4 +395,86 @@ describe("the real sign-in check", () => {
     expect(checkedReadiness(STORED, null)).toBe(STORED);
     expect(toolRowKinds({ claude: IN, codex: OUT }, STORED, null, null).claude).toBe("signedIn");
   });
+
+  describe("probe timing lines", () => {
+    function timedChecker(probe: ((tool: "claude" | "codex") => Promise<unknown>) | null) {
+      const lines: string[] = [];
+      const c = createSignInChecker({
+        probe: probe as never,
+        onchange: () => {},
+        timingLog: (line) => lines.push(line),
+      });
+      return { c, lines };
+    }
+
+    it("logs one passed line per probe, with the time the probe took", async () => {
+      const probe = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return ok({ ok: true, class: null });
+      });
+      const { c, lines } = timedChecker(probe);
+      c.sync({ claude: true, codex: true, grok: false });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(lines).toEqual([
+        "kind=probe tool=claude result=passed elapsed_ms=300",
+        "kind=probe tool=codex result=passed elapsed_ms=300",
+      ]);
+    });
+
+    it("logs signed-out for a dead login", async () => {
+      const { c, lines } = timedChecker(async () => ok({ ok: false, class: "signed-out", detail: "expired" }));
+      c.sync(STORED);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lines).toEqual(["kind=probe tool=claude result=signed-out elapsed_ms=0"]);
+    });
+
+    it("logs failed when the host call fails or throws", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const failing = timedChecker(async () => ({ ok: false as const, error: { message: "no hq" } }));
+      failing.c.sync(STORED);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(failing.lines).toEqual(["kind=probe tool=claude result=failed elapsed_ms=0"]);
+
+      const throwing = timedChecker(async () => {
+        throw new Error("bridge gone");
+      });
+      throwing.c.sync(STORED);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(throwing.lines).toEqual(["kind=probe tool=claude result=failed elapsed_ms=0"]);
+    });
+
+    it("logs timeout at the deadline for a probe that never answers", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { c, lines } = timedChecker(() => new Promise(() => {}));
+      c.sync(STORED);
+      await vi.advanceTimersByTimeAsync(TOOL_SIGNIN_CHECK_DEADLINE_MS - 1);
+      expect(lines).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(lines).toEqual([
+        `kind=probe tool=claude result=timeout elapsed_ms=${TOOL_SIGNIN_CHECK_DEADLINE_MS}`,
+      ]);
+    });
+
+    it("logs nothing when the host has no probe", async () => {
+      const { c, lines } = timedChecker(null);
+      c.sync(STORED);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lines).toEqual([]);
+    });
+
+    it("a timing sink that throws does not change the check", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const c = createSignInChecker({
+        probe: (async () => ok({ ok: true, class: null })) as never,
+        onchange: () => {},
+        timingLog: () => {
+          throw new Error("log is gone");
+        },
+      });
+      c.sync(STORED);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(c.current()).toEqual({ claude: "passed" });
+      expect(warn).toHaveBeenCalledWith("[first-run] probe timing line could not be written", expect.any(Error));
+    });
+  });
 });
