@@ -47,6 +47,7 @@ mod meet_native;
 
 mod boot_watchdog;
 mod commands;
+mod local_signals;
 mod app_version;
 mod deep_link;
 mod events;
@@ -723,6 +724,9 @@ fn main() {
             commands::local_signal_runs::local_signal_run_recover,
             commands::local_signal_runs::local_signal_run_dispatch,
             commands::local_signal_runs::local_signal_run_result,
+            commands::local_signals::local_signals_enqueue,
+            commands::local_signals::local_signals_commit,
+            commands::local_signals::local_signals_resume,
             commands::meet_transcription::meet_transcription_status,
             commands::meet_transcription::meet_transcribe_pcm,
             commands::app::quit_app,

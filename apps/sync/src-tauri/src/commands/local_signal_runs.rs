@@ -572,7 +572,7 @@ pub fn recover(
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
-fn runs_dir(account_id: &str) -> Result<PathBuf, String> {
+pub(crate) fn runs_dir(account_id: &str) -> Result<PathBuf, String> {
     if !valid_id(account_id) {
         return Err("Invalid account".into());
     }

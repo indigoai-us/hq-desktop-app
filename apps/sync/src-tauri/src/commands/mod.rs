@@ -117,5 +117,6 @@ pub mod meet_transcription;
 pub mod meet_transcript_outbox;
 
 pub mod local_signal_runs;
+pub mod local_signals;
 
 pub mod meet_transcript_projection;
