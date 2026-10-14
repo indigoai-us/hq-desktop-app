@@ -4,7 +4,7 @@
   //   ?view=brief-design&day=oct8|oct11|quiet|catchup|everything
   // Shift+A on the page toggles review mode (every card in the catalogue).
   //   &theme=dark|light|system  appearance (sets data-force-theme on <html>, as the QA override does).
-  //   &at=HH:MM  pin the Oct 8 day's clock, e.g. at=14:10 to see a call in progress.
+  //   &at=HH:MM  pin the Oct 8 day's clock (default 14:10, a call in progress).
   import DailyBrief from '../../../packages/ui/src/brief/DailyBrief.svelte';
   import { octoberEightBrief } from '../../../packages/ui/src/brief/brief-fixture';
   import {
@@ -24,10 +24,10 @@
   type Day = keyof typeof DAYS;
 
   const params = new URLSearchParams(location.search);
-  // &at=14:10 pins the Oct 8 day's clock (default: the real time, so the page moves through the day).
+  // The Oct 8 day's clock: 14:10 by default, mid-way through the 2 PM advisory call, so the
+  // preview always shows a meeting in progress. &at=HH:MM pins another time.
   function pinnedNow(): Date {
-    const m = /^(\d{1,2}):(\d{2})$/.exec(params.get('at') ?? '');
-    if (!m) return new Date();
+    const m = /^(\d{1,2}):(\d{2})$/.exec(params.get('at') ?? '') ?? [null, '14', '10'];
     const d = new Date();
     d.setHours(Number(m[1]), Number(m[2]), 0, 0);
     return d;
