@@ -1474,3 +1474,8 @@
 .daily-brief .slot[data-size="S"] :is(.lede, .facts b, .name, .go:not(.launch .go)) {
   font-size: 12px;
 }
+
+/* Your day: the footer sits under the tiles without a divider. */
+.daily-brief .slot [data-testid="brief-focus-foot"] {
+  border-top: 0;
+}
