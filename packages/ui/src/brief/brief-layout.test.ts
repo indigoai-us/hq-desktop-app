@@ -125,11 +125,16 @@ describe("todayStats", () => {
     ]);
   });
 
-  it("says when a call is on now or the day's calls are done, and drops zero counts", () => {
+  it("says when a call is on now or the day's calls are done, and keeps zero counts with a plain caption", () => {
     expect(todayStats({ ...base, now: at(14, 10) }).find((s) => s.key === "calls")!.caption).toBe("on one now");
     expect(todayStats({ ...base, now: at(17) }).find((s) => s.key === "calls")!.caption).toBe("all done");
-    const quiet = todayStats({ ...base, decisions: [], dmCount: 0, risks: [], timeToClearMin: null });
-    expect(quiet.map((s) => s.key)).toEqual(["calls"]);
+    const quiet = todayStats({ ...base, decisions: [], dmCount: 0, risks: [], calendarToday: [], timeToClearMin: null });
+    expect(quiet.map((s) => [s.key, s.n, s.caption])).toEqual([
+      ["decide", 0, "all clear"],
+      ["calls", 0, "clear calendar"],
+      ["dms", 0, "inbox clear"],
+      ["risks", 0, "none to watch"],
+    ]);
   });
 
   it("formats short clears in minutes and clock times without :00", () => {

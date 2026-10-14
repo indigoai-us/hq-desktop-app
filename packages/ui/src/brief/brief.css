@@ -946,6 +946,9 @@
    the empty corner. No grain, no inner shadows, no backdrop-filter.
    ------------------------------------------------------------------------ */
 .daily-brief .slot[data-field] > .w {
+  /* On a colour field all ink is white with transparency (never the page's dark ink, which
+     reads as solid grey on colour), in light and dark alike. */
+  --b-ink: 255 255 255;
   /* Ink for things drawn on the card (glass rows, pills): white on a colour field. */
   --b-on: 255 255 255;
   --b-t1: #fff;
@@ -1405,6 +1408,7 @@
    no corner motif and no white text shadow. Kept for the cards that are background
    to the day, so colour stays on what needs you. */
 .daily-brief .slot[data-field="mono"] > .w {
+  --b-ink: inherit;
   --b-on: var(--b-ink);
   --b-t1: inherit;
   --b-t2: inherit;
@@ -1443,4 +1447,9 @@
 /* Small (one-column) cards set their rows a size down. */
 .daily-brief .slot[data-size="S"] {
   --b-row-fs: 12px;
+}
+
+/* A zero stat keeps its place on a quiet day, just quieter. */
+.daily-brief .stat.zero .num {
+  color: var(--b-t3);
 }

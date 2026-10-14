@@ -195,8 +195,8 @@ export interface TodayStat {
 
 /**
  * The counts under the greeting, all about today: what to decide, the calls on
- * the calendar, the DMs to read and the risks to watch. A count of zero is left
- * out rather than shown as an empty stat.
+ * the calendar, the DMs to read and the risks to watch. All four always show;
+ * a zero says so plainly ("all clear"), so a quiet day keeps its shape.
  */
 export function todayStats(input: {
   now: string;
@@ -217,16 +217,20 @@ export function todayStats(input: {
       key: "decide",
       label: "To decide",
       n: input.decisions.length,
-      caption: clear > 0 ? `about ${clear < 60 ? `${clear} min` : `${Math.floor(clear / 60)}h${clear % 60 ? ` ${clear % 60}m` : ""}`} to clear` : "for today",
+      caption: !input.decisions.length
+        ? "all clear"
+        : clear > 0
+          ? `about ${clear < 60 ? `${clear} min` : `${Math.floor(clear / 60)}h${clear % 60 ? ` ${clear % 60}m` : ""}`} to clear`
+          : "for today",
     },
     {
       key: "calls",
       label: "Calls",
       n: calls.length,
-      caption: next ? (next.live ? "on one now" : `next at ${clockLabel(next.event.start)}`) : "all done",
+      caption: !calls.length ? "clear calendar" : next ? (next.live ? "on one now" : `next at ${clockLabel(next.event.start)}`) : "all done",
     },
-    { key: "dms", label: "DMs", n: input.dmCount ?? 0, caption: topDm ? `most from ${topDm.name}` : "to read" },
-    { key: "risks", label: "Risks", n: input.risks.length, caption: live ? `${live} live incident${live === 1 ? "" : "s"}` : "to watch" },
+    { key: "dms", label: "DMs", n: input.dmCount ?? 0, caption: !input.dmCount ? "inbox clear" : topDm ? `most from ${topDm.name}` : "to read" },
+    { key: "risks", label: "Risks", n: input.risks.length, caption: !input.risks.length ? "none to watch" : live ? `${live} live incident${live === 1 ? "" : "s"}` : "to watch" },
   ];
-  return stats.filter((s) => s.n > 0);
+  return stats;
 }
