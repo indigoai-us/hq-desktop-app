@@ -1058,14 +1058,14 @@
 /* One quiet motif on every field (not the sunrise, which has its sun): a glass
    shape and a dotted line in the bottom-right corner, drawn from the card's
    content (brief-deco.ts, set per slot as --b-deco). Sized to the card's height
-   up to 240px, so it reads the same on every card and stays clear of the text. */
+   (250-300px), drawn faint (DECO_OPACITY) so it reads as a backdrop, never over the text. */
 .daily-brief .slot[data-field]:not([data-field="dusk"]) > .w {
   /* The motif, then the field: one soft bloom (two for teal) over a two-hue base, smooth like the reference. */
   background-image: var(--b-deco), var(--b-edge), var(--b-dim), var(--b-field-bg);
   background-position: right bottom, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
   /* The motif is capped, so on the big cards it stays a corner accent instead of running under the rows. */
   /* Near one size on every card, so the motifs read as a family whatever the card's height. */
-  background-size: auto clamp(190px, 100%, 220px), 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
+  background-size: auto clamp(250px, 120%, 300px), 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
   background-repeat: no-repeat;
   box-shadow: 0 1px 2px rgba(30, 20, 60, 0.06), 0 14px 28px -20px var(--b-field-glow, rgba(60, 30, 110, 0.4));
   background-repeat: no-repeat;

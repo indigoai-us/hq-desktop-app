@@ -95,9 +95,12 @@ export const DECO: Record<string, string> = {
   focus: `<circle cx='176' cy='168' r='56' ${G}/><path d='M176 112 V 260 M116 168 H 260' ${D}/><circle cx='176' cy='168' r='16' ${G}/>`,
 };
 
-/** The motif's SVG for a card kind (the plain orb when the kind has none). */
+/** How strongly every motif shows: a quiet backdrop, never competing with the card's content. */
+export const DECO_OPACITY = 0.45;
+
+/** The motif's SVG for a card kind (the plain orb when the kind has none), drawn at DECO_OPACITY. */
 export function decoSvg(kind: string): string {
-  return `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'>${DEFS}${DECO[kind] ?? ORB}</svg>`;
+  return `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'>${DEFS}<g opacity='${DECO_OPACITY}'>${DECO[kind] ?? ORB}</g></svg>`;
 }
 
 /** Kinds that deliberately have no motif (their corner holds action buttons). */

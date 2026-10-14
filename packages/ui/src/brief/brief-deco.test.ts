@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { DECO, decoSvg, decoUrl, hasDeco } from "./brief-deco.js";
+import { DECO, DECO_OPACITY, decoSvg, decoUrl, hasDeco } from "./brief-deco.js";
 import { FIELD } from "./brief-layout.js";
 
 describe("card corner motifs", () => {
@@ -23,6 +23,11 @@ describe("card corner motifs", () => {
     }
     expect(DECO.needs).toContain("mask='url(#fade)'");
     expect(DECO.needs).not.toContain("url(#o)");
+  });
+
+  it("every motif is drawn muted, at one shared opacity", () => {
+    expect(DECO_OPACITY).toBeLessThanOrEqual(0.5);
+    for (const k of Object.keys(DECO)) if (hasDeco(k)) expect(decoSvg(k), k).toContain(`<g opacity='${DECO_OPACITY}'>`);
   });
 
   it("falls back to the orb and encodes as a CSS url", () => {
