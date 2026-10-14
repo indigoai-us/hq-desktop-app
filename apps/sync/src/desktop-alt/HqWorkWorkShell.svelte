@@ -144,6 +144,7 @@
   const adapter = createSyncPlatformAdapter({
     invoke: (command, args) => invokeFn(command, args),
     primeMirrorQuarantineGate: true,
+    primeIdleSyncOptimizations: true,
   });
   /**
    * US-005: wire SetupInstallGuide's four callbacks to real Tauri commands so

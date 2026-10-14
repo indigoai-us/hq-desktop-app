@@ -49,6 +49,15 @@ pub fn set_mirror_quarantine_move_not_deletion(generation: u64, revision: u64, e
     );
 }
 
+/// Cache the default-on desktop idle-sync optimization kill switch for native
+/// mirror and core-state workers.
+#[tauri::command]
+pub fn set_desktop_idle_sync_optimizations(generation: u64, revision: u64, enabled: bool) {
+    hq_desktop_core::git_mirror::set_desktop_idle_sync_optimizations_enabled(
+        generation, revision, enabled,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use std::{

@@ -772,6 +772,7 @@ fn main() {
             commands::git_mirror::register_mirror_quarantine_move_not_deletion_generation,
             commands::git_mirror::unregister_mirror_quarantine_move_not_deletion_generation,
             commands::git_mirror::set_mirror_quarantine_move_not_deletion,
+            commands::git_mirror::set_desktop_idle_sync_optimizations,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
             commands::first_run::is_first_run,

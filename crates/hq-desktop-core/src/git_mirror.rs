@@ -87,8 +87,14 @@ static MIRROR_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 struct ScopeQuarantineGateState {
-    generations: HashMap<u64, Option<(u64, bool)>>,
+    generations: HashMap<u64, ScopeQuarantineGenerationFlags>,
     first_mirror_decision: Option<bool>,
+}
+
+#[derive(Default)]
+struct ScopeQuarantineGenerationFlags {
+    scope_quarantine: Option<(u64, bool)>,
+    idle_sync_optimizations: Option<(u64, bool)>,
 }
 
 /// Sticky hq-flags snapshot shared by manual and daemon mirror passes. The
@@ -112,20 +118,51 @@ impl ScopeQuarantineGate {
         if generation == 0 || state.generations.contains_key(&generation) {
             return false;
         }
-        state.generations.insert(generation, None);
+        state
+            .generations
+            .insert(generation, ScopeQuarantineGenerationFlags::default());
         self.snapshot_ready.notify_all();
         true
     }
 
-    fn set_snapshot(&self, generation: u64, revision: u64, enabled: bool) -> bool {
+    fn set_scope_quarantine_snapshot(
+        &self,
+        generation: u64,
+        revision: u64,
+        enabled: bool,
+    ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let Some(current) = state.generations.get_mut(&generation) else {
             return false;
         };
-        if current.is_some_and(|(current_revision, _)| revision <= current_revision) {
+        if current
+            .scope_quarantine
+            .is_some_and(|(current_revision, _)| revision <= current_revision)
+        {
             return false;
         }
-        *current = Some((revision, enabled));
+        current.scope_quarantine = Some((revision, enabled));
+        self.snapshot_ready.notify_all();
+        true
+    }
+
+    #[cfg(test)]
+    fn set_snapshot(&self, generation: u64, revision: u64, enabled: bool) -> bool {
+        self.set_scope_quarantine_snapshot(generation, revision, enabled)
+    }
+
+    fn set_idle_sync_snapshot(&self, generation: u64, revision: u64, enabled: bool) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(current) = state.generations.get_mut(&generation) else {
+            return false;
+        };
+        if current
+            .idle_sync_optimizations
+            .is_some_and(|(current_revision, _)| revision <= current_revision)
+        {
+            return false;
+        }
+        current.idle_sync_optimizations = Some((revision, enabled));
         self.snapshot_ready.notify_all();
         true
     }
@@ -144,7 +181,11 @@ impl ScopeQuarantineGate {
             && state
                 .generations
                 .values()
-                .all(|snapshot| snapshot.is_some_and(|(_, enabled)| enabled))
+                .all(|snapshot| {
+                    snapshot
+                        .scope_quarantine
+                        .is_some_and(|(_, enabled)| enabled)
+                })
     }
 
     fn has_resolved_snapshot(state: &ScopeQuarantineGateState) -> bool {
@@ -152,8 +193,27 @@ impl ScopeQuarantineGate {
             && (state
                 .generations
                 .values()
-                .any(|snapshot| snapshot.is_some_and(|(_, enabled)| !enabled))
-                || state.generations.values().all(Option::is_some))
+                .any(|snapshot| {
+                    snapshot
+                        .scope_quarantine
+                        .is_some_and(|(_, enabled)| !enabled)
+                })
+                || state
+                    .generations
+                    .values()
+                    .all(|snapshot| snapshot.scope_quarantine.is_some()))
+    }
+
+    fn idle_sync_optimizations_enabled(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        // This flag is a default-on kill switch. A window without a resolved
+        // snapshot keeps the feature enabled; any explicit false value disables
+        // it for the process.
+        state.generations.values().all(|snapshot| {
+            snapshot
+                .idle_sync_optimizations
+                .map_or(true, |(_, enabled)| enabled)
+        })
     }
 
     fn resolve_first_mirror(&self, timeout: Duration) -> ScopeQuarantineGateDecision {
@@ -241,7 +301,23 @@ pub fn set_scope_quarantine_move_not_deletion_enabled(
     revision: u64,
     enabled: bool,
 ) {
-    SCOPE_QUARANTINE_GATE.set_snapshot(generation, revision, enabled);
+    SCOPE_QUARANTINE_GATE.set_scope_quarantine_snapshot(generation, revision, enabled);
+}
+
+/// Update the cached hq-flags kill-switch value for desktop idle-sync
+/// optimizations. Missing or unreadable flag state remains enabled by default.
+pub fn set_desktop_idle_sync_optimizations_enabled(
+    generation: u64,
+    revision: u64,
+    enabled: bool,
+) {
+    SCOPE_QUARANTINE_GATE.set_idle_sync_snapshot(generation, revision, enabled);
+}
+
+/// Return the process-wide default-on optimization state. Explicitly disabling
+/// the flag in any live window turns the optimization off for this process.
+pub fn desktop_idle_sync_optimizations_enabled() -> bool {
+    SCOPE_QUARANTINE_GATE.idle_sync_optimizations_enabled()
 }
 
 /// Guards pushes independently from local snapshots. Only one push may run at
@@ -2936,7 +3012,12 @@ fn mirror_after_sync_with_gate(hq_folder: &str, timeout: Duration, gate: &ScopeQ
         }
     };
 
-    let outcome = match run_mirror(hq_folder, &git_dir, gate_decision.enabled) {
+    let outcome = match run_mirror_with_personal_scope(
+        hq_folder,
+        &git_dir,
+        gate_decision.enabled,
+        desktop_idle_sync_optimizations_enabled(),
+    ) {
         Ok(outcome) => outcome,
         Err(e) => {
             log(LOG_TAG, &format!("{hq_folder}: {e}"));
@@ -2992,7 +3073,7 @@ fn human_bytes(bytes: u64) -> String {
 /// empty index still measures 0 via the success path (`write-tree` returns the
 /// empty-tree id and `ls-tree` yields no rows). Non-blob entries (submodule /
 /// knowledge gitlinks, mode 160000) carry a `-` size column and are skipped.
-fn staged_content_bytes(hq_folder: &str) -> Result<u64, String> {
+fn staged_content_bytes(hq_folder: &str, path_scope: Option<&str>) -> Result<u64, String> {
     let tree = git_output(hq_folder, &["write-tree"], GIT_INDEX_TIMEOUT)?;
     if !tree.status.success() {
         return Err(format!(
@@ -3024,6 +3105,9 @@ fn staged_content_bytes(hq_folder: &str) -> Result<u64, String> {
             Some(i) => i,
             None => continue,
         };
+        if path_scope.is_some_and(|scope| !git_path_is_within_scope(&record[meta_end + 1..], scope)) {
+            continue;
+        }
         let meta = String::from_utf8_lossy(&record[..meta_end]);
         let mut fields = meta.split_whitespace();
         let _mode = fields.next();
@@ -3040,6 +3124,11 @@ fn staged_content_bytes(hq_folder: &str) -> Result<u64, String> {
     Ok(total)
 }
 
+fn git_path_is_within_scope(path: &[u8], scope: &str) -> bool {
+    let scope = scope.as_bytes();
+    path == scope || (path.starts_with(scope) && path.get(scope.len()) == Some(&b'/'))
+}
+
 /// Refuse the pass and latch the mirror off when the staged snapshot has
 /// crossed [`resolve_mirror_size_cap`].
 ///
@@ -3052,9 +3141,13 @@ fn staged_content_bytes(hq_folder: &str) -> Result<u64, String> {
 /// Returns `true` when the pass must be abandoned. Fails **closed** — an
 /// unmeasurable index refuses the pass without latching, since a measurement
 /// error is not evidence of size.
-fn size_latch_tripped(hq_folder: &str, git_dir: &Path) -> Result<bool, String> {
+fn size_latch_tripped(
+    hq_folder: &str,
+    git_dir: &Path,
+    path_scope: Option<&str>,
+) -> Result<bool, String> {
     let cap = resolve_mirror_size_cap();
-    let staged = staged_content_bytes(hq_folder)?;
+    let staged = staged_content_bytes(hq_folder, path_scope)?;
     if staged <= cap {
         return Ok(false);
     }
@@ -3143,10 +3236,20 @@ fn unpushed_history_over_cap(hq_folder: &str) -> Option<u64> {
     (bytes > resolve_mirror_size_cap()).then_some(bytes)
 }
 
+#[cfg(test)]
 fn run_mirror(
     hq_folder: &str,
     git_dir: &Path,
     scope_quarantine_moves_enabled: bool,
+) -> Result<MirrorOutcome, String> {
+    run_mirror_with_personal_scope(hq_folder, git_dir, scope_quarantine_moves_enabled, false)
+}
+
+fn run_mirror_with_personal_scope(
+    hq_folder: &str,
+    git_dir: &Path,
+    scope_quarantine_moves_enabled: bool,
+    personal_only: bool,
 ) -> Result<MirrorOutcome, String> {
     // Re-check the latch now that the mirror lock is held. `mirror_after_sync`
     // already checked, but that check happens *before* the lock, and the push
@@ -3163,11 +3266,45 @@ fn run_mirror(
     // this cycle isn't the third one in a row to fail for the same reason.
     reap_index_lock_if_stale(hq_folder, git_dir, STALE_LOCK_MIN_AGE, SystemTime::now());
 
+    // The optimized mirror only observes `personal/`; unrelated files and
+    // already-staged selections remain outside its commit. `git status`
+    // includes staged, unstaged, and untracked paths, so a clean personal tree
+    // can return before touching the index.
+    if personal_only {
+        let status = git_output(
+            hq_folder,
+            &[
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--",
+                "personal",
+            ],
+            GIT_INDEX_TIMEOUT,
+        )?;
+        if !status.status.success() {
+            return Err(format!(
+                "git status for personal mirror scope failed: {}",
+                String::from_utf8_lossy(&status.stderr).trim()
+            ));
+        }
+        if status.stdout.is_empty() {
+            log(LOG_TAG, &format!("{hq_folder}: no personal changes to mirror"));
+            return Ok(MirrorOutcome::NoPush);
+        }
+    }
+
+    let path_scope = personal_only.then_some("personal");
+
     // Stage the working tree first, then measure the *staged snapshot*, so a
     // newly-added oversized file is caught before it is committed — measuring
     // HEAD instead would let this pass commit and push it into history, where
     // nothing short of a history rewrite could remove it again.
-    run_git_in_git_dir(hq_folder, git_dir, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
+    if personal_only {
+        run_git_in_git_dir(hq_folder, git_dir, &["add", "--", "personal"], GIT_INDEX_TIMEOUT)?;
+    } else {
+        run_git_in_git_dir(hq_folder, git_dir, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
+    }
 
     // The scope-shrink path preserves clean out-of-scope files under
     // `.hq/scope-quarantine/<journalSlug>/<original path>`. `.hq` is ignored,
@@ -3175,7 +3312,7 @@ fn run_mirror(
     // gate is enabled, restore only matching source entries in the index; the
     // worktree remains untouched and later mirror passes repeat this check.
     if scope_quarantine_moves_enabled {
-        let restored = restore_scope_quarantine_move_index_entries(hq_folder)?;
+        let restored = restore_scope_quarantine_move_index_entries_in_scope(hq_folder, path_scope)?;
         if restored > 0 {
             log(
                 LOG_TAG,
@@ -3199,21 +3336,22 @@ fn run_mirror(
     // separate temporary index, and seeding one per pass would re-hash the whole
     // working tree every cycle; on the repo sizes this guard exists for, that
     // cost is worse than the thing it avoids.
-    if size_latch_tripped(hq_folder, git_dir)? {
+    if size_latch_tripped(hq_folder, git_dir, path_scope)? {
         return Ok(MirrorOutcome::NoPush);
     }
 
     // `diff --cached --quiet` exits 0 when index == HEAD, 1 when staged
     // changes exist. Anything else is unexpected (signal, missing HEAD on
     // a brand-new repo, etc.) and gets logged but isn't fatal.
-    let staged = git_output(
-        hq_folder,
-        &["diff", "--cached", "--quiet"],
-        GIT_INDEX_TIMEOUT,
-    )?;
+    let staged_args = if let Some(scope) = path_scope {
+        vec!["diff", "--cached", "--quiet", "--", scope]
+    } else {
+        vec!["diff", "--cached", "--quiet"]
+    };
+    let staged = git_output(hq_folder, &staged_args, GIT_INDEX_TIMEOUT)?;
     match staged.status.code() {
         Some(0) => {
-            log(LOG_TAG, &format!("{hq_folder}: nothing to commit"));
+            log(LOG_TAG, &format!("{hq_folder}: nothing to commit in mirror scope"));
             // A clean pass ends any refusal episode: the condition was
             // transient, so the next one deserves its own confirmation.
             note_mirror_recovered(hq_folder, git_dir);
@@ -3233,7 +3371,7 @@ fn run_mirror(
     // carries no drain; a settled drain rides its facts through to the commit,
     // where the acceptance is billed and the wedge cleared ONLY if the commit
     // lands — so a drain whose commit fails keeps its wedge and warns instead.
-    let drain = match guard_bulk_deletions(hq_folder, git_dir)? {
+    let drain = match guard_bulk_deletions_in_scope(hq_folder, git_dir, path_scope)? {
         BulkGuard::Refuse => return Ok(MirrorOutcome::NoPush),
         BulkGuard::Allow => None,
         BulkGuard::AcceptSettled(drain) => Some(drain),
@@ -3248,12 +3386,11 @@ fn run_mirror(
     // dies with "gpg: signing failed: No pinentry" → "fatal: failed to write
     // commit object". Observed in the wild: dozens of silently lost mirror
     // commits a day. An automated snapshot gains nothing from a signature.
-    match run_git_in_git_dir(
-        hq_folder,
-        git_dir,
-        &["commit", "--no-gpg-sign", "--no-verify", "-m", &msg],
-        GIT_INDEX_TIMEOUT,
-    ) {
+    let mut commit_args = vec!["commit", "--no-gpg-sign", "--no-verify", "-m", &msg];
+    if let Some(scope) = path_scope {
+        commit_args.extend(["--only", "--", scope]);
+    }
+    match run_git_in_git_dir(hq_folder, git_dir, &commit_args, GIT_INDEX_TIMEOUT) {
         Ok(()) => {
             log(LOG_TAG, &format!("{hq_folder}: committed \"{msg}\""));
             if let Some(drain) = drain {
@@ -3454,7 +3591,7 @@ fn push_with_backoff(hq_folder: &str, git_dir: &Path, now: DateTime<Utc>) {
 
 /// The facts a settled drain hands back to [`run_mirror`] so the acceptance can
 /// be billed — and the durable wedge clock cleared — only *after* `git commit`
-/// has actually succeeded. Carrying them out of [`guard_bulk_deletions`] rather
+/// has actually succeeded. Carrying them out of [`guard_bulk_deletions_in_scope`] rather
 /// than acting on them inside it is the whole reopen fix: a drain whose commit
 /// fails must keep its wedge and warn, never silently clear.
 struct SettledDrain {
@@ -3466,7 +3603,7 @@ struct SettledDrain {
     tree_present: bool,
 }
 
-/// What [`guard_bulk_deletions`] decided, richer than [`BulkDeleteVerdict`] so the
+/// What [`guard_bulk_deletions_in_scope`] decided, richer than [`BulkDeleteVerdict`] so the
 /// settled-drain case can defer its side effects to the commit. [`Self::Allow`]
 /// and [`Self::Refuse`] mean exactly what the verdict's variants do;
 /// [`Self::AcceptSettled`] additionally carries the [`SettledDrain`] the caller
@@ -3493,12 +3630,16 @@ enum BulkGuard {
 ///     deferred to [`run_mirror`], which runs them only after `git commit`
 ///     succeeds and reports a failed drain as an aged refusal instead. The facts
 ///     that deferred bookkeeping needs ride out in the [`SettledDrain`].
-fn guard_bulk_deletions(hq_folder: &str, git_dir: &Path) -> Result<BulkGuard, String> {
-    let deletions = count_staged_deletions(hq_folder)?;
+fn guard_bulk_deletions_in_scope(
+    hq_folder: &str,
+    git_dir: &Path,
+    path_scope: Option<&str>,
+) -> Result<BulkGuard, String> {
+    let deletions = count_staged_deletions_in_scope(hq_folder, path_scope)?;
     if deletions.count == 0 {
         return Ok(BulkGuard::Allow);
     }
-    let tracked = count_tracked_at_head(hq_folder)?;
+    let tracked = count_tracked_at_head_in_scope(hq_folder, path_scope)?;
     let override_on = is_bulk_override_set();
 
     // Resolve the durable wedge age once, before any reporting, so the settle
@@ -3617,7 +3758,12 @@ fn guard_bulk_deletions(hq_folder: &str, git_dir: &Path) -> Result<BulkGuard, St
             // the index for the next writer (ours or the autocommit hook) to
             // commit. This only rewinds the index to HEAD; the working tree is
             // untouched.
-            if let Err(e) = run_git_in_git_dir(hq_folder, git_dir, &["reset", "-q"], GIT_INDEX_TIMEOUT) {
+            let reset_args = if let Some(scope) = path_scope {
+                vec!["reset", "-q", "HEAD", "--", scope]
+            } else {
+                vec!["reset", "-q"]
+            };
+            if let Err(e) = run_git_in_git_dir(hq_folder, git_dir, &reset_args, GIT_INDEX_TIMEOUT) {
                 log(
                     LOG_TAG,
                     &format!("{hq_folder}: index reset after refusal failed: {e}"),
@@ -3694,7 +3840,7 @@ struct RefusalReport<'a> {
     has_upstream: bool,
     /// Whether the HQ working tree is still present — one half of
     /// [`settle_eligible`], carried from the single `hq_folder_present` probe
-    /// [`guard_bulk_deletions`] already runs, so the reporter's settle-hold reads
+    /// [`guard_bulk_deletions_in_scope`] already runs, so the reporter's settle-hold reads
     /// the same presence the accept decision did without a second filesystem probe.
     tree_present: bool,
     /// `Some(error)` when this "refusal" is actually a settled drain whose
@@ -4443,19 +4589,27 @@ fn repo_has_upstream(hq_folder: &str) -> bool {
 
 /// Staged deletions, rename-aware. `-M` matters: a large directory move is
 /// content-preserving and must not read as a mass delete.
+#[cfg(test)]
 fn count_staged_deletions(hq_folder: &str) -> Result<StagedDeletions, String> {
-    let out = git_output(
-        hq_folder,
-        &[
-            "diff",
-            "--cached",
-            "--name-only",
-            "--diff-filter=D",
-            "-M",
-            "-z",
-        ],
-        GIT_INDEX_TIMEOUT,
-    )?;
+    count_staged_deletions_in_scope(hq_folder, None)
+}
+
+fn count_staged_deletions_in_scope(
+    hq_folder: &str,
+    path_scope: Option<&str>,
+) -> Result<StagedDeletions, String> {
+    let mut args = vec![
+        "diff",
+        "--cached",
+        "--name-only",
+        "--diff-filter=D",
+        "-M",
+        "-z",
+    ];
+    if let Some(scope) = path_scope {
+        args.extend(["--", scope]);
+    }
+    let out = git_output(hq_folder, &args, GIT_INDEX_TIMEOUT)?;
     if !out.status.success() {
         return Err(format!(
             "git diff --cached --diff-filter=D failed: {}",
@@ -4519,12 +4673,36 @@ struct ScopeQuarantineFilterContext {
 /// containing that path. A file that returned to scope and was committed has a
 /// newer path commit than its old quarantine directory, so a later deliberate
 /// deletion remains staged for the existing bulk-delete guard.
+#[cfg(test)]
 fn restore_scope_quarantine_move_index_entries(hq_folder: &str) -> Result<usize, String> {
     restore_scope_quarantine_move_index_entries_with_hasher(hq_folder, hash_quarantined_copy)
 }
 
+fn restore_scope_quarantine_move_index_entries_in_scope(
+    hq_folder: &str,
+    path_scope: Option<&str>,
+) -> Result<usize, String> {
+    restore_scope_quarantine_move_index_entries_with_scope_and_hasher(
+        hq_folder,
+        path_scope,
+        hash_quarantined_copy,
+    )
+}
+
+#[cfg(test)]
 fn restore_scope_quarantine_move_index_entries_with_hasher<H>(
     hq_folder: &str,
+    hash_copy: H,
+) -> Result<usize, String>
+where
+    H: FnMut(&str, &str, &Path) -> Option<String>,
+{
+    restore_scope_quarantine_move_index_entries_with_scope_and_hasher(hq_folder, None, hash_copy)
+}
+
+fn restore_scope_quarantine_move_index_entries_with_scope_and_hasher<H>(
+    hq_folder: &str,
+    path_scope: Option<&str>,
     mut hash_copy: H,
 ) -> Result<usize, String>
 where
@@ -4535,7 +4713,12 @@ where
         return Ok(0);
     }
 
-    let records = staged_deletion_records(hq_folder)?;
+    let records = staged_deletion_records(hq_folder)?
+        .into_iter()
+        .filter(|record| {
+            path_scope.is_none_or(|scope| git_path_is_within_scope(record.path.as_bytes(), scope))
+        })
+        .collect::<Vec<_>>();
     if records.is_empty() {
         return Ok(0);
     }
@@ -5396,12 +5579,15 @@ fn hash_quarantined_copy(hq_folder: &str, original_path: &str, copy: &Path) -> O
 
 /// Size of the tree at HEAD — the denominator. An unborn HEAD (brand-new repo,
 /// first mirror commit) has no tree and yields 0.
-fn count_tracked_at_head(hq_folder: &str) -> Result<usize, String> {
-    let out = git_output(
-        hq_folder,
-        &["ls-tree", "-r", "--name-only", "-z", "HEAD"],
-        GIT_INDEX_TIMEOUT,
-    )?;
+fn count_tracked_at_head_in_scope(
+    hq_folder: &str,
+    path_scope: Option<&str>,
+) -> Result<usize, String> {
+    let mut args = vec!["ls-tree", "-r", "--name-only", "-z", "HEAD"];
+    if let Some(scope) = path_scope {
+        args.extend(["--", scope]);
+    }
+    let out = git_output(hq_folder, &args, GIT_INDEX_TIMEOUT)?;
     if !out.status.success() {
         return Ok(0);
     }
@@ -9090,6 +9276,16 @@ mod tests {
         Ok(())
     }
 
+    fn run_mirror_at_personal_only(dir: &Path) -> Result<(), String> {
+        let hq = dir.to_str().unwrap();
+        let git_dir = resolve_git_dir(hq)?;
+        let outcome = run_mirror_with_personal_scope(hq, &git_dir, false, true)?;
+        if outcome == MirrorOutcome::Push {
+            push_after_mirror(hq, &git_dir);
+        }
+        Ok(())
+    }
+
     fn git_dir_of(dir: &Path) -> PathBuf {
         resolve_git_dir(dir.to_str().unwrap()).expect("git dir resolves")
     }
@@ -9123,6 +9319,71 @@ mod tests {
         run_mirror_at(tmp.path()).expect("mirror ok");
         let after = rev_count(tmp.path());
         assert_eq!(before, after, "no-change mirror must not add commits");
+    }
+
+    #[test]
+    fn personal_only_mirror_commits_only_personal_changes() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::create_dir_all(tmp.path().join("personal")).unwrap();
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        fs::write(tmp.path().join("personal/profile.md"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"]).status.success());
+
+        fs::write(tmp.path().join("README"), "outside personal").unwrap();
+        fs::write(tmp.path().join("personal/profile.md"), "personal update").unwrap();
+        run_mirror_at_personal_only(tmp.path()).expect("personal-only mirror succeeds");
+
+        assert_eq!(rev_count(tmp.path()), 2);
+        let readme = git(tmp.path(), &["show", "HEAD:README"]);
+        assert_eq!(String::from_utf8_lossy(&readme.stdout), "seed");
+        let profile = git(tmp.path(), &["show", "HEAD:personal/profile.md"]);
+        assert_eq!(String::from_utf8_lossy(&profile.stdout), "personal update");
+        let status = git(tmp.path(), &["status", "--porcelain"]);
+        assert!(String::from_utf8_lossy(&status.stdout).contains(" M README"));
+    }
+
+    #[test]
+    fn personal_only_mirror_skips_when_only_other_paths_changed() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::create_dir_all(tmp.path().join("personal")).unwrap();
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        fs::write(tmp.path().join("personal/profile.md"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"]).status.success());
+
+        fs::write(tmp.path().join("README"), "outside personal").unwrap();
+        let before = rev_count(tmp.path());
+        run_mirror_at_personal_only(tmp.path()).expect("personal-only mirror succeeds");
+
+        assert_eq!(rev_count(tmp.path()), before);
+        let status = git(tmp.path(), &["status", "--porcelain"]);
+        assert!(String::from_utf8_lossy(&status.stdout).contains(" M README"));
+    }
+
+    #[test]
+    fn personal_only_mirror_preserves_unrelated_staged_changes() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        fs::create_dir_all(tmp.path().join("personal")).unwrap();
+        fs::write(tmp.path().join("README"), "seed").unwrap();
+        fs::write(tmp.path().join("personal/profile.md"), "seed").unwrap();
+        assert!(git(tmp.path(), &["add", "-A"]).status.success());
+        assert!(git(tmp.path(), &["commit", "-q", "-m", "seed"]).status.success());
+
+        fs::write(tmp.path().join("README"), "staged unrelated update").unwrap();
+        assert!(git(tmp.path(), &["add", "--", "README"]).status.success());
+        fs::write(tmp.path().join("personal/profile.md"), "personal update").unwrap();
+        run_mirror_at_personal_only(tmp.path()).expect("personal-only mirror succeeds");
+
+        let readme = git(tmp.path(), &["show", "HEAD:README"]);
+        assert_eq!(String::from_utf8_lossy(&readme.stdout), "seed");
+        let staged = git(tmp.path(), &["diff", "--cached", "--name-only"]);
+        assert!(String::from_utf8_lossy(&staged.stdout).contains("README"));
+        let profile = git(tmp.path(), &["show", "HEAD:personal/profile.md"]);
+        assert_eq!(String::from_utf8_lossy(&profile.stdout), "personal update");
     }
 
     #[test]
@@ -9692,6 +9953,21 @@ mod tests {
     }
 
     #[test]
+    fn desktop_idle_optimizations_default_on_and_only_explicit_false_disables_them() {
+        let gate = ScopeQuarantineGate::new();
+        assert!(gate.idle_sync_optimizations_enabled());
+        assert!(gate.register_generation(1));
+        assert!(
+            gate.idle_sync_optimizations_enabled(),
+            "an unresolved or unavailable registry snapshot keeps the default-on behavior"
+        );
+        assert!(gate.set_idle_sync_snapshot(1, 1, false));
+        assert!(!gate.idle_sync_optimizations_enabled());
+        assert!(gate.set_idle_sync_snapshot(1, 2, true));
+        assert!(gate.idle_sync_optimizations_enabled());
+    }
+
+    #[test]
     fn zero_timeout_without_a_snapshot_keeps_the_first_pass_flag_off() {
         let gate = ScopeQuarantineGate::new();
         assert!(gate.register_generation(1));
@@ -10184,7 +10460,8 @@ mod tests {
             .status
             .success());
 
-        fs::write(work.path().join("new"), "data").unwrap();
+        fs::create_dir_all(work.path().join("personal")).unwrap();
+        fs::write(work.path().join("personal/new"), "data").unwrap();
         run_mirror_at(work.path()).expect("mirror ok");
 
         // Remote (bare repo) should now have the same HEAD as local.
@@ -10233,7 +10510,8 @@ mod tests {
         *LAST_MIRROR_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let push_guard = PUSH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let before = rev_count(work.path());
-        fs::write(work.path().join("while-pushing"), "new snapshot").unwrap();
+        fs::create_dir_all(work.path().join("personal")).unwrap();
+        fs::write(work.path().join("personal/while-pushing"), "new snapshot").unwrap();
 
         mirror_after_sync(work.path().to_str().unwrap());
 
@@ -10470,8 +10748,9 @@ mod tests {
         );
         let before = rev_count(tmp.path());
 
-        // Ordinary, well-under-cap work that a healthy mirror would commit.
-        fs::write(tmp.path().join("note.md"), "new").unwrap();
+        // Ordinary, well-under-cap personal work that a healthy mirror would commit.
+        fs::create_dir_all(tmp.path().join("personal")).unwrap();
+        fs::write(tmp.path().join("personal/note.md"), "new").unwrap();
         *LAST_MIRROR_AT.lock().unwrap_or_else(|e| e.into_inner()) = None;
         mirror_after_sync(tmp.path().to_str().unwrap());
 

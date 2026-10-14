@@ -109,6 +109,7 @@
   const traySyncAdapter = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
     primeMirrorQuarantineGate: true,
+    primeIdleSyncOptimizations: true,
   });
   const firstLaunchSignInReachReporter = createFirstLaunchSignInReachReporter({
     isFirstRun: () => invoke<boolean>('is_first_run'),
