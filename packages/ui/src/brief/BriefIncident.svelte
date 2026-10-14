@@ -110,7 +110,7 @@
         <!-- One dot per workflow on main, the red ones lit: the count at a glance instead of a sentence. -->
         <div class="wf" role="img" aria-label={ci.note} data-testid="brief-incident-workflows">
           <span class="wf-dots" aria-hidden="true">{#each Array.from({ length: wf.total }, (_, i) => i) as i (i)}<i class:on={i < wf.red}></i>{/each}</span>
-          <span class="wf-label" aria-hidden="true">{wf.red} of {wf.total} workflows red</span>
+          <span class="wf-label" aria-hidden="true">{wf.red} of {wf.total} red</span>
         </div>
       {:else if ci.note && ci.note !== ci.workflow}<p class="lede">{ci.note}</p>{/if}
     {:else}
@@ -320,20 +320,28 @@
     align-items: center;
     gap: 10px;
   }
+  /* Square cells in the sunrise strip's style: 8px, 1.5px corners, 3px apart; a cell grows a little on hover. */
   .wf-dots {
+    flex: none;
     display: inline-flex;
-    gap: 5px;
+    gap: 3px;
   }
   .wf-dots i {
     width: 8px;
     height: 8px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.3);
+    border-radius: 1.5px;
+    background: rgba(255, 255, 255, 0.16);
+    transition: scale 0.15s, background 0.15s;
   }
   .wf-dots i.on {
+    background: rgba(255, 255, 255, 0.92);
+  }
+  .wf-dots i:hover {
+    scale: 1.35;
     background: #fff;
   }
   .wf-label {
+    white-space: nowrap;
     font-family: var(--b-code);
     font-size: 10px;
     font-weight: 500;
