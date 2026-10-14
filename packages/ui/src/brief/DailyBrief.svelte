@@ -336,7 +336,7 @@
     <div class="b-review" data-testid="brief-review" role="status">
       <span class="rv-mode">Review mode</span>
       <span class="rv-txt">Every card with evidence, by group</span>
-      <span class="rv-keys" aria-label="Shift+A to go back"><kbd>⇧</kbd><kbd>A</kbd><span>to go back</span></span>
+      <span class="rv-keys" aria-label="Shift+A to go back"><kbd>Shift</kbd><kbd>A</kbd><span>to go back</span></span>
     </div>
   {/if}
   <main
