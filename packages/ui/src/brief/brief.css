@@ -92,6 +92,8 @@
   /* Neutral glass panels (Next call, monochrome cards): light transparent white in dark mode,
      so they read as lit glass rather than dimmed holes. */
   --b-panel: rgba(255, 255, 255, 0.12);
+  /* Dark mode tones the colour cards down a step: a thin dark veil over each field. */
+  --b-dim: linear-gradient(rgba(14, 10, 28, 0.22), rgba(14, 10, 28, 0.22));
   --b-panel-line: rgba(255, 255, 255, 0.14);
   --b-field-drop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 18px 36px -16px rgba(0, 0, 0, 0.7);
   /* One padding and one type scale for every card. */
@@ -888,6 +890,7 @@
   --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
   --b-peek-shadow: 0 1px 3px rgba(20, 20, 40, 0.06), 0 16px 40px -10px rgba(20, 20, 40, 0.2);
   --b-panel: rgba(255, 255, 255, 0.55);
+  --b-dim: linear-gradient(transparent, transparent);
   --b-panel-line: rgba(255, 255, 255, 0.9);
   --b-knob: rgba(255, 255, 255, 0.75);
   --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
@@ -922,6 +925,7 @@
   --b-go-ring: inset 0 0 0 1px rgb(17 17 17 / 0.14);
   --b-peek-shadow: 0 1px 3px rgba(20, 20, 40, 0.06), 0 16px 40px -10px rgba(20, 20, 40, 0.2);
   --b-panel: rgba(255, 255, 255, 0.55);
+  --b-dim: linear-gradient(transparent, transparent);
   --b-panel-line: rgba(255, 255, 255, 0.9);
   --b-knob: rgba(255, 255, 255, 0.75);
   --b-field-drop: 0 1px 2px rgba(30, 20, 60, 0.08), 0 18px 34px -18px rgba(60, 30, 110, 0.45);
@@ -1008,6 +1012,7 @@
 .daily-brief .slot[data-field="dusk"] > .w {
   /* Dawn sky: violet overhead warming through rose to a peach horizon. */
   background:
+    var(--b-dim),
     radial-gradient(70% 45% at 70% 100%, #ffb27a 0%, rgba(255, 178, 122, 0) 72%),
     linear-gradient(180deg, #7442c4 0%, #a64aa8 40%, #e2628c 72%, #ff9e6a 100%);
   --b-field-glow: rgba(200, 90, 140, 0.45);
@@ -1057,11 +1062,11 @@
    up to 240px, so it reads the same on every card and stays clear of the text. */
 .daily-brief .slot[data-field]:not([data-field="dusk"]) > .w {
   /* The motif, then the field: one soft bloom (two for teal) over a two-hue base, smooth like the reference. */
-  background-image: var(--b-deco), var(--b-edge), var(--b-field-bg);
-  background-position: right bottom, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
+  background-image: var(--b-deco), var(--b-edge), var(--b-dim), var(--b-field-bg);
+  background-position: right bottom, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
   /* The motif is capped, so on the big cards it stays a corner accent instead of running under the rows. */
   /* Near one size on every card, so the motifs read as a family whatever the card's height. */
-  background-size: auto clamp(190px, 100%, 220px), 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
+  background-size: auto clamp(190px, 100%, 220px), 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%;
   background-repeat: no-repeat;
   box-shadow: 0 1px 2px rgba(30, 20, 60, 0.06), 0 14px 28px -20px var(--b-field-glow, rgba(60, 30, 110, 0.4));
   background-repeat: no-repeat;
@@ -1433,6 +1438,7 @@
   --b-well-bg: rgb(var(--b-ink) / 0.04);
   --b-deco: linear-gradient(transparent, transparent);
   --b-field-bg: linear-gradient(var(--b-panel), var(--b-panel));
+  --b-dim: linear-gradient(transparent, transparent);
   --b-field-glow: rgba(40, 40, 70, 0.35);
   --b-edge: linear-gradient(transparent, transparent);
   /* Glass rows in page ink are much lighter than white glass on colour. */
