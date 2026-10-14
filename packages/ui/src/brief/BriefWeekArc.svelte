@@ -1,11 +1,12 @@
 <script lang="ts">
   /**
    * Your week: the shape of the last days in your own companies. One stacked
-   * glass bar per day (sessions, meetings, merged), a white line over the tops
-   * that draws oldest to today, and up to four beat discs (crisis red,
-   * resolution green, push violet, turn white) that pop in day order. Today's
-   * column is dashed and breathes: the day is still running. Hover a day or a
-   * disc for the detail; at two rows the beats also list under the chart.
+   * bar per day in page-ink tints (sessions faintest at the base, meetings,
+   * merged darkest on top) on a shared baseline, a thin smooth line over the
+   * tops that reveals oldest to today, and up to four small beat markers in
+   * ink (the record day alone in the brand terracotta) that pop in day order.
+   * The step into today is dashed: the day is still running. Hover a day or a
+   * marker for the detail; at two rows the beats also list under the chart.
    * Hidden under three days of data, like the picker. No other-company count.
    */
   import { peek, useBrief } from "./brief-context.svelte.js";
@@ -54,13 +55,13 @@
 
 {#if shown}
   <div class="w" data-testid="brief-week-arc" data-days={days.length} data-today={today}>
-    <div class="hd">
-      <div class="eyebrow">
-        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 15c3 0 3-6 6-6s3 6 6 6 3-6 6-6" /></svg> Your week
-      </div>
+    <div class="eyebrow">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 15c3 0 3-6 6-6s3 6 6 6 3-6 6-6" /></svg> Your week
+    </div>
+    <div class="ttl">
+      <h3 data-testid="brief-week-arc-title">{sentence}</h3>
       {#if range}<span class="rng" data-testid="brief-week-range">{range}</span>{/if}
     </div>
-    <h3 data-testid="brief-week-arc-title">{sentence}</h3>
 
     <div class="chart" style="--h:{chartHeight}px">
       <div class="cols">
@@ -88,14 +89,14 @@
         {/each}
       </div>
       <svg class="line" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        {#if solid.includes(" ")}<path class="ln" d={solid} pathLength="100" />{/if}
-        {#if projected}<path class="proj" d={projected} pathLength="20" data-testid="brief-week-projection" />{/if}
+        {#if solid.includes(" ")}<path class="ln" d={solid} />{/if}
+        {#if projected}<path class="proj" d={projected} data-testid="brief-week-projection" />{/if}
       </svg>
       {#each discs as b, i (b.date)}
         <button
           type="button"
           class="disc"
-          style="left:{b.x}%;top:{b.y}%;--c:{BEAT_STYLE[b.kind].color};animation-delay:{1.3 + i * 0.18}s"
+          style="left:{b.x}%;top:{b.y}%;animation-delay:{1.3 + i * 0.18}s"
           aria-label="{BEAT_STYLE[b.kind].name} · {dayLabel(b.date)} · {b.label}"
           data-testid="brief-week-beat"
           data-kind={b.kind}
@@ -111,12 +112,12 @@
       <div class="beats">
         {#each picked.shown as b (b.date)}
           <div class="bt" role="group" aria-label="{BEAT_STYLE[b.kind].name} · {b.label}" data-testid="brief-week-beat-row" use:peek={{ state: brief, content: () => beatPeek(b) }}>
-            <i style="--c:{BEAT_STYLE[b.kind].color}"></i><b>{b.label}</b><span>{dayLabel(b.date)}</span>
+            <i class="mk" data-kind={b.kind}></i><b>{b.label}</b><span>{dayLabel(b.date)}</span>
           </div>
         {/each}
         {#if picked.rest.length}
           <div class="bt more" role="group" aria-label="More turning points" data-testid="brief-week-more" use:peek={{ state: brief, content: () => restPeek(picked.rest) }}>
-            <i></i><b>+{picked.rest.length} more</b>
+            <i class="mk"></i><b>+{picked.rest.length} more</b>
           </div>
         {/if}
       </div>
@@ -136,30 +137,55 @@
 {/if}
 
 <style>
-  .hd {
+  /* Monochrome card: page ink only. The brand terracotta (--b-hot) marks the record day and nothing else. */
+  .w {
+    --t-sessions: rgb(var(--b-ink) / 0.12);
+    --t-meetings: rgb(var(--b-ink) / 0.3);
+    --t-merged: rgb(var(--b-ink) / 0.55);
+    --mk: rgb(var(--b-ink) / 0.8);
+  }
+  .ttl {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 10px;
+    align-items: baseline;
+    gap: 12px;
+    margin-top: 8px;
   }
-  .rng {
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    color: var(--b-t3);
-    white-space: nowrap;
-  }
-  h3 {
+  .w h3 {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 1.3;
+    letter-spacing: -0.012em;
     overflow: hidden;
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
   }
+  .rng {
+    flex: none;
+    font-family: var(--b-ui);
+    font-size: 11px;
+    letter-spacing: 0;
+    color: var(--b-t3);
+    white-space: nowrap;
+  }
   .chart {
     position: relative;
     height: var(--h);
-    margin-top: 14px;
+    margin-top: 16px;
+  }
+  /* The shared baseline every bar stands on. */
+  .chart::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: rgb(var(--b-ink) / 0.1);
   }
   .cols {
     position: absolute;
@@ -177,20 +203,23 @@
     flex-direction: column;
     justify-content: flex-end;
     align-items: center;
-    border-radius: 6px;
+    border-radius: 6px 6px 0 0;
     cursor: default;
     transition: background 0.2s;
   }
   .day:hover {
-    background: rgb(var(--b-ink) / 0.04);
+    background: rgb(var(--b-ink) / 0.035);
   }
+  /* One block per day: square on the baseline, 4px at the top, 1px seams between the parts. */
   .bar {
     width: 100%;
-    max-width: 38px;
+    max-width: 32px;
     height: calc(var(--share) * 84%);
     display: flex;
     flex-direction: column-reverse;
-    gap: 2px;
+    gap: 1px;
+    border-radius: 4px 4px 0 0;
+    overflow: hidden;
     transform-origin: bottom;
     animation: grow 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
   }
@@ -199,47 +228,29 @@
       transform: scaleY(0);
     }
   }
-  /* Glass segments: lit from the top, hairline rim, a tint by meaning. No backdrop-filter. */
   .seg {
     display: block;
     flex: var(--n) 0 0;
-    min-height: 3px;
-    border-radius: 4px;
-    border: 0;
+    min-height: 2px;
     background: var(--c);
   }
   .sessions {
-    --c: rgba(201, 214, 228, 0.5);
+    --c: var(--t-sessions);
   }
   .meetings {
-    --c: rgba(20, 184, 166, 0.55);
+    --c: var(--t-meetings);
   }
   .merged {
-    --c: rgba(52, 199, 89, 0.5);
+    --c: var(--t-merged);
   }
   .stub {
     display: block;
     width: 100%;
-    max-width: 38px;
+    max-width: 32px;
     height: 2px;
-    border-radius: 2px;
     background: rgb(var(--b-ink) / 0.12);
   }
-  /* Today: still running, so dashed and breathing. */
-  .today .seg {
-    border-style: dashed;
-    border-color: rgb(var(--b-ink) / 0.55);
-  }
-  .today .bar {
-    animation:
-      grow 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both,
-      breathe 3s 1.2s ease-in-out infinite;
-  }
-  @keyframes breathe {
-    50% {
-      opacity: 0.55;
-    }
-  }
+  /* Today: still running. The step of the line into it is dashed and its label is set in full ink. */
   .line {
     position: absolute;
     inset: 0;
@@ -247,52 +258,58 @@
     height: 100%;
     overflow: visible;
     pointer-events: none;
+    animation: reveal 1.2s 0.3s ease-out both;
+  }
+  /* Reveal oldest to today with a clip, so the stroke itself stays one unbroken path. */
+  @keyframes reveal {
+    from {
+      clip-path: inset(-8px 100% -8px -8px);
+    }
+    to {
+      clip-path: inset(-8px -8px -8px -8px);
+    }
   }
   .line path {
     fill: none;
+    stroke: rgb(var(--b-ink) / 0.35);
+    stroke-width: 1.5;
     stroke-linecap: round;
     stroke-linejoin: round;
     vector-effect: non-scaling-stroke;
   }
-  .ln {
-    stroke: rgb(var(--b-ink) / 0.85);
-    stroke-width: 1.5;
-    stroke-dasharray: 100;
-    animation: draw 1.2s 0.3s ease-out both;
-  }
-  @keyframes draw {
-    from {
-      stroke-dashoffset: 100;
-    }
-  }
   .proj {
-    stroke: rgb(var(--b-ink) / 0.55);
-    stroke-width: 1.4;
-    stroke-dasharray: 2 2;
-    animation: breathe 3s 1.5s ease-in-out infinite;
+    stroke-dasharray: 2 3;
   }
+  /* Beat markers: a 6px dot in a 16px hit area, all one ink except the record day. */
   .disc {
     all: unset;
     box-sizing: border-box;
     position: absolute;
-    width: 12px;
-    height: 12px;
-    margin: -6px 0 0 -6px;
+    width: 16px;
+    height: 16px;
+    margin: -8px 0 0 -8px;
     border-radius: 50%;
-    background: var(--c);
-    border: 2px solid var(--b-card);
-    box-shadow: none;
     cursor: default;
     transition: transform 0.2s;
     animation: pop 0.3s cubic-bezier(0.3, 1.6, 0.5, 1) both;
+  }
+  .disc::after {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border-radius: 50%;
+    background: var(--mk);
   }
   .disc:hover,
   .disc:focus-visible {
     transform: scale(1.35);
   }
   .disc:focus-visible {
-    outline: 2px solid rgb(var(--b-ink) / 0.7);
-    outline-offset: 2px;
+    outline: 1.5px solid rgb(var(--b-ink) / 0.5);
+    outline-offset: -2px;
+  }
+  [data-kind="push"] {
+    --mk: var(--b-hot);
   }
   @keyframes pop {
     from {
@@ -308,7 +325,7 @@
     flex: 1;
     min-width: 0;
     text-align: center;
-    font-family: var(--b-mono);
+    font-family: var(--b-ui);
     font-size: 11px;
     color: var(--b-t3);
     white-space: nowrap;
@@ -317,17 +334,18 @@
   }
   .lbls .today {
     color: var(--b-t1);
+    font-weight: 500;
   }
   .beats {
     display: flex;
     flex-direction: column;
     gap: 2px;
-    margin-top: 10px;
+    margin-top: 12px;
   }
   .bt {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: 10px;
     padding: 5px 8px;
     margin: 0 -8px;
     border-radius: 6px;
@@ -339,13 +357,15 @@
   .bt:hover {
     background: rgb(var(--b-ink) / 0.045);
   }
-  .bt i {
+  .mk {
     flex: none;
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    background: var(--c, rgb(var(--b-ink) / 0.2));
-    box-shadow: none;
+    background: var(--mk);
+  }
+  .bt.more .mk {
+    background: rgb(var(--b-ink) / 0.2);
   }
   .bt b {
     flex: 1;
@@ -356,31 +376,29 @@
     white-space: nowrap;
   }
   .bt span {
-    font-family: var(--b-mono);
+    font-family: var(--b-ui);
     font-size: 11px;
-    letter-spacing: 0;
     color: var(--b-t3);
     white-space: nowrap;
   }
   .bt.more b {
-    font-family: var(--b-mono);
     font-size: 11px;
     color: var(--b-t3);
   }
   .key {
     margin-top: auto;
-    padding-top: 10px;
+    padding-top: 12px;
     display: flex;
     align-items: center;
-    gap: 7px;
-    font-family: var(--b-mono);
+    gap: 6px;
+    font-family: var(--b-ui);
     font-size: 11px;
-    letter-spacing: 0;
+    line-height: 1;
     color: var(--b-t3);
     white-space: nowrap;
   }
   .key .dot {
-    color: var(--b-line);
+    color: rgb(var(--b-ink) / 0.2);
   }
   .sw {
     display: inline-block;
@@ -388,18 +406,16 @@
     height: 8px;
     border-radius: 2px;
     margin-right: 5px;
-    vertical-align: -1px;
+    vertical-align: -0.5px;
     background: var(--c);
   }
   .key .more {
     margin-left: auto;
     padding: 2px 7px;
     border-radius: 6px;
-    text-transform: none;
-    letter-spacing: 0;
+    border: 1px solid rgb(var(--b-ink) / 0.12);
     font-size: 11px;
     color: var(--b-t2);
-    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.12);
     cursor: default;
   }
 </style>
