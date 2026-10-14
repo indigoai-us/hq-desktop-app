@@ -91,8 +91,8 @@
   --b-glass: rgb(var(--b-ink) / 0.04);
   /* Neutral glass panels (Next call, monochrome cards): light transparent white in dark mode,
      so they read as lit glass rather than dimmed holes. */
-  --b-panel: rgba(255, 255, 255, 0.08);
-  --b-panel-line: rgba(255, 255, 255, 0.1);
+  --b-panel: rgba(255, 255, 255, 0.12);
+  --b-panel-line: rgba(255, 255, 255, 0.14);
   --b-field-drop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 18px 36px -16px rgba(0, 0, 0, 0.7);
   /* One padding and one type scale for every card. */
   --b-pad: 18px 20px;
