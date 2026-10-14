@@ -485,3 +485,15 @@ export function redAge(ci: NonNullable<BriefRisk["ci"]>, nowIso: string): string
   const since = ci.note?.match(/since\s+([A-Z][a-z]{2}\s+\d{1,2})/)?.[1];
   return since ? `Red since ${since}` : null;
 }
+
+/**
+ * A red main's "N of M workflows red on main." note as numbers, so the card can
+ * draw it (M dots, N lit) instead of a sentence. Null for any other note.
+ */
+export function workflowsRed(note: string | null | undefined): { red: number; total: number } | null {
+  const m = /^(\d+) of (\d+) workflows? red on main\.?$/i.exec((note ?? "").trim());
+  if (!m) return null;
+  const red = Number(m[1]);
+  const total = Number(m[2]);
+  return total > 0 && red <= total && total <= 12 ? { red, total } : null;
+}

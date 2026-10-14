@@ -35,6 +35,7 @@
     redHoursOf,
     riskPeek,
     watchTitle,
+    workflowsRed,
   } from "./brief-peeks.js";
   import type { BriefRisk } from "./brief-types.js";
 
@@ -104,7 +105,14 @@
         </div>
       </div>
     {:else if ci}
-      {#if ci.note && ci.note !== ci.workflow}<p class="lede">{ci.note}</p>{/if}
+      {@const wf = workflowsRed(ci.note)}
+      {#if wf}
+        <!-- One dot per workflow on main, the red ones lit: the count at a glance instead of a sentence. -->
+        <div class="wf" role="img" aria-label={ci.note} data-testid="brief-incident-workflows">
+          <span class="wf-dots" aria-hidden="true">{#each Array.from({ length: wf.total }, (_, i) => i) as i (i)}<i class:on={i < wf.red}></i>{/each}</span>
+          <span class="wf-label" aria-hidden="true">{wf.red} of {wf.total} workflows red</span>
+        </div>
+      {:else if ci.note && ci.note !== ci.workflow}<p class="lede">{ci.note}</p>{/if}
     {:else}
       <h3>{risk.summary}</h3>
     {/if}
@@ -306,6 +314,32 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .wf {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .wf-dots {
+    display: inline-flex;
+    gap: 5px;
+  }
+  .wf-dots i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+  }
+  .wf-dots i.on {
+    background: #fff;
+  }
+  .wf-label {
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.78);
   }
   .lede {
     margin: 0;

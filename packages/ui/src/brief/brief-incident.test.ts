@@ -15,6 +15,7 @@ import {
   riskPeek,
   shortHours,
   watchTitle,
+  workflowsRed,
 } from "./brief-peeks.js";
 import type { BriefOrigin, BriefRisk } from "./brief-types.js";
 
@@ -339,5 +340,18 @@ describe("Incident card", () => {
     expect(q("brief-peek-origin")!.textContent).toContain("HQ core");
     expect(q("brief-peek")!.textContent).toContain("Red for 5h");
     expect(q("brief-peek-prompt")!.textContent).toBe("Look at the gate.");
+  });
+
+  it("a red main's 'N of M workflows red' note is drawn as M dots with N lit, not a sentence", () => {
+    expect(workflowsRed("1 of 3 workflows red on main.")).toEqual({ red: 1, total: 3 });
+    expect(workflowsRed("Failing since Oct 9.")).toBeNull();
+    expect(workflowsRed(null)).toBeNull();
+    render([{ ...SYNC, ci: { ...SYNC.ci!, note: "1 of 3 workflows red on main." } }], { rows: 1 });
+    const wf = q("brief-incident-workflows")!;
+    expect(wf.getAttribute("aria-label")).toBe("1 of 3 workflows red on main.");
+    const dots = [...wf.querySelectorAll(".wf-dots i")];
+    expect(dots).toHaveLength(3);
+    expect(dots.filter((d) => d.classList.contains("on"))).toHaveLength(1);
+    expect(target.querySelector(".lede")).toBeNull();
   });
 });
