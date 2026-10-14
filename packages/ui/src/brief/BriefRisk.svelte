@@ -68,7 +68,7 @@
     {/if}
   </div>
   {#if health}
-    <!-- Main health: a mono label, one cell per product (red ones in coral), and the count. -->
+    <!-- Main health: a mono label, one cell per product (the red ones lit), and the count under the cells. -->
     <div class="foot hl" data-testid="brief-risk-foot" role="group" aria-label="Main health" use:peek={{ state: brief, content: () => mainHealthPeek(mainHealth ?? []) }}>
       <span class="hl-l">{mainHealthLabel(health).split(" · ")[0]}</span>{" "}
       <span class="hl-v">
@@ -191,17 +191,21 @@
     text-transform: uppercase;
     color: rgba(255, 255, 255, 0.62);
   }
-  /* Cells then the count; on a narrow card the count drops under the cells instead of wrapping beside them. */
+  /* Cells, then the count under them in mono caps: the same look as the incident card's workflow cells. */
   .hl-v {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px 10px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
     white-space: nowrap;
-    font-size: var(--b-row-fs, 13px);
+    font-family: var(--b-code);
+    font-size: 10px;
     font-weight: 500;
-    color: #fff;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.78);
   }
+  /* The sunrise strip's squares: 8px, 1.5px corners, 3px apart; healthy ones faint, red ones lit; a cell grows a little on hover. */
   .cells {
     display: inline-flex;
     gap: 3px;
@@ -210,13 +214,14 @@
     width: 8px;
     height: 8px;
     border-radius: 1.5px;
-    background: rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.16);
+    transition: scale 0.15s, background 0.15s;
   }
   .cells i.bad {
-    background: #ff6b5e;
-    box-shadow: 0 0 6px rgba(255, 107, 94, 0.8);
+    background: rgba(255, 255, 255, 0.92);
   }
-  .foot .bad {
-    color: #fff;
+  .cells i:hover {
+    scale: 1.35;
+    background: #fff;
   }
 </style>
