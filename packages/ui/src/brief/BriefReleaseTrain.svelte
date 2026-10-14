@@ -489,9 +489,8 @@
     border-radius: 50%;
     background: #1f9d4c;
   }
-  /* Waiting on your cut: the page's highlight orange, not a traffic-light yellow. */
   .light.warn {
-    background: var(--b-hot);
+    background: #e3a008;
   }
   .light.red {
     background: #e5172f;

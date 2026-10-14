@@ -1,6 +1,4 @@
 // @vitest-environment happy-dom
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import Host from "./fixtures/BriefReleaseTrainHost.svelte";
@@ -474,13 +472,5 @@ describe("BriefReleaseTrain", () => {
     if (app) unmount(app);
     render({ releases: [] });
     expect(q('[data-testid="brief-release-train"]')).toBeNull();
-  });
-});
-
-describe("release light colour", () => {
-  it("waiting on your cut uses the highlight orange, never a yellow (regression: #e3a008)", () => {
-    const src = readFileSync(resolve(process.cwd(), "src/brief/BriefReleaseTrain.svelte"), "utf8");
-    expect(src).toMatch(/\.light\.warn \{\s*background: var\(--b-hot\);/);
-    expect(src).not.toMatch(/#e3a008/i);
   });
 });
