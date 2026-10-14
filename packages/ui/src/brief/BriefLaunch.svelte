@@ -105,10 +105,12 @@
   }
   /* The two answers as a segmented control inside the white pill: equal segments, 6px
      corners, the one under the pointer on a soft grey, no divider and no heavy fill. */
-  .go.choice:is(:hover, :focus-within) {
+  /* Open: the two segments fill the pill edge to edge, 2px inside it. */
+  .launch .go.choice:is(:hover, :focus-within) {
     padding: 0 2px;
   }
   .alt {
+    flex: 1;
     gap: 2px;
   }
   .alt button {
@@ -118,7 +120,7 @@
     font: inherit;
     font-weight: 500;
     color: #3f3f46;
-    min-width: 60px;
+    flex: 1 1 0;
     height: 24px;
     padding: 0 10px;
     display: inline-grid;
