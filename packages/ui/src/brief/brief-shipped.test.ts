@@ -73,9 +73,8 @@ describe("BriefShipped", () => {
     expect(tiles.map((t) => text(t.querySelector('[data-testid="brief-shipped-headline"]')))).toEqual(["1 merged", "4 merged", "3 merged", "1 merged", "1 merged"]);
     // Company logo on every tile.
     for (const t of tiles) expect(t.querySelector('[data-testid="brief-logo"]')).not.toBeNull();
-    // FIRST foil only where earned.
-    expect(qa('[data-testid="brief-shipped-first"]')).toHaveLength(1);
-    expect(tiles[0]!.querySelector('[data-testid="brief-shipped-first"]')).not.toBeNull();
+    // No FIRST tag on the tile face (it crowded the product name); the peek says "a first".
+    expect(qa('[data-testid="brief-shipped-first"]')).toHaveLength(0);
     // Highlights fill the tile, in plain words: no PR numbers, no conventional prefixes, no repo slugs on the face.
     const desk = tiles[1]!;
     expect([...desk.querySelectorAll('[data-testid="brief-shipped-highlight"]')].map(text).slice(0, 2)).toEqual(["Rich card icons", "Login item for installed HQ only"]);

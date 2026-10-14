@@ -3,7 +3,7 @@
    * What you shipped yesterday: one glass tile per product (never per repo),
    * each with the product's logo, how much merged, and a plain line worth
    * knowing. Holographic foil = an achievement; the edge follows your pointer.
-   * A FIRST badge marks a first-of-its-kind ship; the flame counts consecutive
+   * A first-of-its-kind ship says so in its peek (the Firsts card celebrates it); the flame counts consecutive
    * landing days. At most five tiles, then a "+N more" tile peeking the rest.
    */
   import BriefOrigin from "./BriefOrigin.svelte";
@@ -142,7 +142,6 @@
         >
           <div class="hd">
             <BriefOrigin origin={t.origin} product />
-            {#if t.first}<span class="first" data-testid="brief-shipped-first">★ FIRST</span>{/if}
           </div>
           <div class="v" data-testid="brief-shipped-headline">{t.headline}</div>
           {#each t.highlights.slice(0, lines) as h, i (i)}
@@ -263,24 +262,6 @@
     .hd :global(.org b) {
       display: none;
     }
-  }
-  /* FIRST: the shared highlight label (terracotta, white, fully rounded), in the mono caps label style. */
-  .first {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 20px;
-    padding: 0 8px;
-    border-radius: 999px;
-    font-family: var(--b-code);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--b-on-hot, #fff);
-    background: var(--b-hot, #c9765a);
-    text-shadow: none;
   }
   /* Hover: light follows the pointer across the tile and catches its rim (white glass, no foil). */
   .run::before {

@@ -28,7 +28,7 @@
     <p class="muted" data-testid="brief-peek-dms-loading">Loading messages…</p>
   {:else if load.state === "error"}
     <p class="muted" data-testid="brief-peek-dms-error">{load.message}</p>
-    <button type="button" class="link" onclick={() => void brief.loadDms(uid, true)}>Try again</button>
+    <button type="button" class="ghost" onclick={() => void brief.loadDms(uid, true)}>Try again</button>
   {:else if !dms.length}
     <p class="muted" data-testid="brief-peek-dms-empty">No recent messages from {name}.</p>
   {:else}
@@ -50,11 +50,11 @@
       <button type="button" class="link" onclick={() => (showAll = true)}>Show {dms.length - 5} more</button>
     {/if}
   {/if}
-  <div class="acts">
-    {#if brief.canOpenThread}
+  {#if brief.canOpenThread}
+    <div class="acts">
       <button type="button" class="primary" onclick={() => brief.openThread(uid)} data-testid="brief-peek-open-thread">Open thread</button>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
 {#if load.state === "ready"}
   <div class="sec">
@@ -66,6 +66,7 @@
 
 <style>
   .muted {
+    margin: 0;
     color: var(--b-t2);
   }
   .dms {
@@ -82,8 +83,8 @@
     width: 100%;
     box-sizing: border-box;
     padding: 8px 10px;
-    border-radius: 6px;
-    box-shadow: var(--b-well);
+    border-radius: 8px;
+    background: rgb(var(--b-ink) / 0.04);
   }
   .meta {
     display: flex;
@@ -124,14 +125,34 @@
     font-size: 13px;
     color: var(--b-sun);
   }
-  .primary {
+  /* Buttons match the other hover cards: 30px, 8px corners; primary filled in page ink, Try again outlined. */
+  .primary,
+  .ghost {
     all: unset;
+    box-sizing: border-box;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 8px;
     font-size: 13px;
     font-weight: 500;
-    padding: 6px 14px;
-    border-radius: 8px;
-    color: #1b1b1e;
+    transition: background 0.15s;
+  }
+  .primary {
+    color: var(--b-bg);
     background: rgb(var(--b-ink) / 0.92);
+  }
+  .primary:hover {
+    background: rgb(var(--b-ink) / 0.8);
+  }
+  .ghost {
+    margin-top: 12px;
+    color: var(--b-t1);
+    box-shadow: inset 0 0 0 1px rgb(var(--b-ink) / 0.14);
+  }
+  .ghost:hover {
+    background: rgb(var(--b-ink) / 0.05);
   }
 </style>
