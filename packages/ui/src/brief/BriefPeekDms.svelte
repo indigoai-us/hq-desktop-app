@@ -125,7 +125,7 @@
     font-size: 13px;
     color: var(--b-sun);
   }
-  /* Buttons match the other hover cards: 30px, 8px corners; primary filled in page ink, Try again outlined. */
+  /* Buttons at the app's one button height, 8px corners; primary filled in page ink, Try again outlined. */
   .primary,
   .ghost {
     all: unset;
@@ -133,7 +133,7 @@
     cursor: pointer;
     display: inline-flex;
     align-items: center;
-    height: 30px;
+    height: var(--hq-btn-h, 30px);
     padding: 0 12px;
     border-radius: 8px;
     font-family: var(--b-code);

@@ -345,7 +345,6 @@
     outline: none;
   }
   .hero .btn {
-    height: 26px;
     padding: 0 11px;
   }
   /* The hero's line has room for both: its actions keep their place at the end, so the source line stays put. */
