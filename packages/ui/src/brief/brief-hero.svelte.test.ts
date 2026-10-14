@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 // The two hero cards on the page: Welcome back on a catch-up day (tiles, +N
 // more, lead line, peeks with a launch) and Sunrise's meter.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import DailyBrief from "./DailyBrief.svelte";
@@ -274,5 +276,17 @@ describe("Sunrise meter", () => {
     expect(q("brief-sunrise")).not.toBeNull();
     expect(q("brief-sunrise-eta")).toBeNull();
     expect(q("brief-sunrise")!.textContent).toContain("2 decisions before sunrise.");
+  });
+});
+
+describe("BriefCatchUp spacing", () => {
+  it("the numbers, the featured block and the list share one 6px rhythm (regression: 18px and a stray row margin)", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/brief/BriefCatchUp.svelte"), "utf8");
+    expect(src).toMatch(/  \.cu \{[^}]*gap: 6px/);
+    expect(src).toMatch(/\.items \{[^}]*gap: 6px/);
+    expect(src).toMatch(/\.list > \.row \{[^}]*margin: 0/);
+    // The days-away band has 28px above it and 28px before the numbers.
+    expect(src).toMatch(/\.away \{[^}]*margin-top: 28px/);
+    expect(src).toMatch(/\.stats \{[^}]*margin: 28px 0 0/);
   });
 });

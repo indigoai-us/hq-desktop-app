@@ -207,12 +207,13 @@
   .w {
     container: catchup / inline-size;
   }
+  /* The numbers, the featured block and the list share one 6px rhythm, the same as the gaps inside them. */
   .cu {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 6px;
   }
   .sum {
     flex: 1 1 auto;
@@ -232,7 +233,8 @@
     position: relative;
     flex: 1 1 auto;
     min-height: 96px;
-    margin-top: 12px;
+    /* Room above and below the days-away band, so it reads as its own block. */
+    margin-top: 28px;
     display: flex;
     align-items: flex-end;
   }
@@ -375,7 +377,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
     gap: 6px;
-    margin: 16px 0 0;
+    margin: 28px 0 0;
   }
   .st {
     min-width: 0;
@@ -577,6 +579,10 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  /* The page's shared .row margin would add to the 6px rhythm here. */
+  .list > .row {
+    margin: 0;
   }
   .row {
     position: relative;
