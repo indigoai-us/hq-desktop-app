@@ -103,16 +103,15 @@
         </button>
         {#if fixError}<span class="msg">{fixError}</span>{/if}
       {/if}
-      {#if phase.kind !== "blocked"}
-        <button
-          type="button"
-          class="btn primary"
-          disabled={create.busy}
-          aria-busy={create.busy}
-          onclick={() => (oncreate ? oncreate() : void create?.start())}
-          data-testid="brief-create"
-        >{create.busy ? "Creating…" : "Create brief"}</button>
-      {/if}
+      <!-- Stays visible while blocked: pressing it checks the assistant again. -->
+      <button
+        type="button"
+        class="btn primary"
+        disabled={create.busy}
+        aria-busy={create.busy}
+        onclick={() => (oncreate ? oncreate() : void create?.start())}
+        data-testid="brief-create"
+      >{create.busy ? "Creating…" : "Create brief"}</button>
     </div>
   {/if}
 </div>

@@ -52,7 +52,12 @@ export interface YourAppsHostDeps {
   detectWorkApps?: (() => Promise<AdapterResult<FoundWorkApps>>) | null;
   catalogLookup?: CatalogLookupApi["catalogLookup"] | null;
   listConnections?: ((companyUid: string) => Promise<AdapterResult<Json>>) | null;
-  startOAuth?: ((input: IntegrationAppRef & { discoveryReceiptId?: string }) => Promise<AdapterResult<IntegrationOAuthStart>>) | null;
+  startOAuth?: ((input: IntegrationAppRef & { discoveryReceiptId?: string; redirectUri?: string }) => Promise<AdapterResult<IntegrationOAuthStart>>) | null;
+  /**
+   * The hq-pro browser callback the provider returns to. The browser has no
+   * HQ session, so the default console callback cannot finish the sign-in.
+   */
+  oauthRedirectUri?: (() => Promise<string | null>) | null;
   install?: ((input: IntegrationInstallInput) => Promise<AdapterResult<Json>>) | null;
   discoverDocs?: ((input: { companyUid: string; docsUrl: string }) => Promise<AdapterResult<Json>>) | null;
   uninstall?: ((input: { companyUid: string; installationId: string }) => Promise<AdapterResult<Json>>) | null;
@@ -205,7 +210,14 @@ export function createYourAppsHost(deps: YourAppsHostDeps): YourAppsHost {
     // connection would look new: stop with a retry instead of guessing.
     const before = await ids(companyUid, tile.domain);
     if (!before) return { ok: false, reason: `Could not check on ${tile.name}. Try again.`, retry: true };
-    const started = deps.startOAuth ? await deps.startOAuth(ref).catch(() => null) : null;
+    const redirectUri = deps.oauthRedirectUri
+      ? await deps.oauthRedirectUri().catch((err: unknown) => {
+          console.warn("[your-apps] could not resolve the OAuth callback address", err);
+          return null;
+        })
+      : null;
+    const input = redirectUri?.trim() ? { ...ref, redirectUri: redirectUri.trim() } : ref;
+    const started = deps.startOAuth ? await deps.startOAuth(input).catch(() => null) : null;
     if (!started?.ok || !isHttpsUrl(started.value.authorizationUrl)) {
       const why = connectFailureSentence(started && !started.ok ? started : null, tile.name);
       return { ok: false, reason: why.sentence, retry: why.retry };

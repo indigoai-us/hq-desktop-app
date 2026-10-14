@@ -14,7 +14,6 @@ test('names a company, picks Workforce, opens checkout, and finishes on the retu
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await expect(page.getByTestId('onboarding-company-field-slug')).toHaveCount(0);
   await expect(page.getByText('Company handle')).toHaveCount(0);
-  await page.getByTestId('onboarding-company-invites').fill('pat@acme.com');
   await page.getByTestId('onboarding-company-create').click();
 
   await page.getByTestId('onboarding-plan-choose-workforce').click();
@@ -24,6 +23,12 @@ test('names a company, picks Workforce, opens checkout, and finishes on the retu
   ]);
 
   await page.getByTestId('company-preview-return').click();
+  // Invites moved off the name form onto their own screen after checkout.
+  await page.getByTestId('onboarding-company-invite-input').fill('pat@acme.com');
+  await page.getByTestId('onboarding-company-invite-send').click();
+  await expect(page.getByTestId('onboarding-company-invite-row')).toHaveText('pat@acme.com');
+  await expect(page.getByTestId('onboarding-company-ready')).toHaveText('Acme Studio is ready.');
+  await page.getByTestId('onboarding-company-ready-continue').click();
   await expect(page.getByTestId('company-preview-result')).toContainText('"paid":true');
   expect(errors).toEqual([]);
 });
@@ -53,12 +58,13 @@ test('centers the company form, plan cards and buttons under the heading', async
   };
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   const heading = await centerOf('[data-scene-heading]');
-  expect(Math.abs((await centerOf('form.company-form')) - heading)).toBeLessThanOrEqual(1);
+  expect(Math.abs((await centerOf('form.cs-form')) - heading)).toBeLessThanOrEqual(1);
   const actions = page.getByTestId('onboarding-company-actions');
   const first = await actions.locator('.btn').first().boundingBox();
   const last = await actions.locator('.btn').last().boundingBox();
-  // The button pair is centered as a group.
-  expect(Math.abs((first!.x + last!.x + last!.width) / 2 - heading)).toBeLessThanOrEqual(1);
+  // "Skip for now" stacks under "Create company": each button sits on the heading's centre line.
+  expect(Math.abs(first!.x + first!.width / 2 - heading)).toBeLessThanOrEqual(1);
+  expect(Math.abs(last!.x + last!.width / 2 - heading)).toBeLessThanOrEqual(1);
 
   await page.getByTestId('onboarding-company-create').click();
   await expect(page.getByTestId('onboarding-plan-choose-starter')).toBeVisible();
@@ -72,6 +78,11 @@ test('skips "Choose a plan" when a plan was already picked on the website', asyn
   await page.goto(`${base}&plan=starter`);
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await page.getByTestId('onboarding-company-create').click();
+  // Straight from create to the invite screen, then the ready screen.
+  await expect(page.getByTestId('onboarding-company-invite-input')).toBeVisible();
+  await expect(page.getByText('Choose how your HQ runs.')).toHaveCount(0);
+  await page.getByTestId('onboarding-company-invite-skip').click();
+  await page.getByTestId('onboarding-company-ready-continue').click();
   await expect(page.getByTestId('company-preview-result')).toContainText('"plan":"starter"');
   await expect(page.getByText('Choose how your HQ runs.')).toHaveCount(0);
 });
@@ -123,7 +134,7 @@ test('shows "Setting up your company…" until provisioning is ready', async ({ 
   await page.goto(`${base}&scenario=slow`);
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await page.getByTestId('onboarding-company-create').click();
-  await expect(page.getByRole('heading', { name: 'Setting up your company…' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Setting up Acme Studio' })).toBeVisible();
   await expect(page.getByTestId('onboarding-plan-choose-starter')).toBeVisible();
 });
 
@@ -131,7 +142,9 @@ test('retries provisioning, not create, after a failed step', async ({ page }) =
   await page.goto(`${base}&scenario=provisioning-failed`);
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await page.getByTestId('onboarding-company-create').click();
-  await expect(page.getByTestId('onboarding-company-provisioning-failed')).toContainText('step: kms-create');
+  await expect(page.getByTestId('onboarding-company-provisioning-failed')).toContainText(
+    'Acme Studio is saved, but setting it up did not finish.',
+  );
   await page.getByTestId('onboarding-company-provisioning-retry').click();
   await expect(page.getByTestId('onboarding-plan-choose-starter')).toBeVisible();
   const calls = await page.evaluate(
@@ -143,7 +156,7 @@ test('retries provisioning, not create, after a failed step', async ({ page }) =
 
 test('resumes a half-finished company at "Setting up…"', async ({ page }) => {
   await page.goto(`${base}&scenario=resume`);
-  await expect(page.getByRole('heading', { name: 'Setting up your company…' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Setting up Preview Co' })).toBeVisible();
   await expect(page.getByTestId('onboarding-plan-choose-starter')).toBeVisible();
 });
 

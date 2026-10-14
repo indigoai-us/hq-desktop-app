@@ -33,7 +33,7 @@
  */
 
 import type { AdapterPromise, Json, WhoAmI } from "@hq/platform";
-import { parseRecordedMeetings, signalBodyText } from "../meetings/recorded-meetings.js";
+import { ownRecordedMeetings, parseRecordedMeetings, signalBodyText, type RecordedMeeting } from "../meetings/recorded-meetings.js";
 import { localSessionsFromNative } from "../telemetry/telemetry-local-sessions.js";
 import { eventEnd, eventMeetingUrl, eventStart, type MeetingEvent } from "../meetings/meetings-model.js";
 import { digest } from "./brief-catalogue.js";
@@ -63,11 +63,13 @@ export interface BriefAdapter {
   identity?: { whoami?(): AdapterPromise<WhoAmI> } | null;
   meetings?: {
     listUpcoming?(): AdapterPromise<Json[]>;
+    /** The caller's own notetaker bots: which recordings are theirs. */
+    listScheduledBots?(): AdapterPromise<Json[]>;
     listRecorded?(companyId?: string | null): AdapterPromise<Json>;
     getRecorded?(meetingId: string, companyId?: string | null): AdapterPromise<Json>;
     readRecordedBody?(url: string): AdapterPromise<string>;
   } | null;
-  files?: { getFileContent?(path: string): AdapterPromise<string> } | null;
+  files?: { getFileContent?(path: string): AdapterPromise<string>; appendBriefLog?(line: string): AdapterPromise<void> } | null;
   /** Live DM thread reads for the Team card. */
   messaging?: { fetchDmThread?(args: { withPersonUid: string; limit?: number }): AdapterPromise<Json> } | null;
   notifications?: { fetchDmThreads?(opts?: Json): AdapterPromise<Json> } | null;
@@ -334,16 +336,19 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
     fail("identity", err);
   }
 
+  // The signed-in person's own calendar feed, read once: the Today row and
+  // the test for which recordings are theirs.
+  const rawCalendar: Json[] = await (async () => {
+    try {
+      return await unwrap("calendar", adapter.meetings?.listUpcoming?.());
+    } catch (err) {
+      fail("calendar", err);
+      return [] as Json[];
+    }
+  })();
   const [calendar, meetings, dms, sessions] = await Promise.all([
-    (async () => {
-      try {
-        return calendarToday(await unwrap("calendar", adapter.meetings?.listUpcoming?.()), now, selfEmail);
-      } catch (err) {
-        fail("calendar", err);
-        return [] as BriefCalendarEvent[];
-      }
-    })(),
-    readMeetings(adapter, companies, yesterday, fail),
+    Promise.resolve(calendarToday(rawCalendar, now, selfEmail)),
+    readMeetings(adapter, companies, yesterday, fail, rawCalendar),
     readDms(adapter, now, yesterday, selfUid, fail),
     (async () => {
       try {
@@ -766,6 +771,7 @@ async function readMeetings(
   companies: readonly BriefCompanyRef[],
   yesterday: Date,
   fail: (name: string, err: unknown) => void,
+  rawCalendar: readonly Json[] = [],
 ): Promise<{
   meetings: BriefMeeting[];
   decisions: BriefDecision[];
@@ -784,6 +790,20 @@ async function readMeetings(
     fail("meetings", new SourceError("meetings: unavailable on this host"));
     return { meetings, decisions, actionItems, risks, todayRecorded };
   }
+  // hq-pro's recorded list is ACL-filtered, so an owner or admin reads every
+  // member's recordings. Only the person's own (their notetaker bots, or an
+  // event on their own calendar) may stand in for their calendar on the Today row.
+  let botIds: string[] = [];
+  if (api.listScheduledBots) {
+    try {
+      const bots = await unwrap("notetaker bots", api.listScheduledBots());
+      botIds = (Array.isArray(bots) ? bots : []).map((b) => str(rec(b).botId) || str(rec(b).id)).filter(Boolean);
+    } catch (err) {
+      fail("notetaker bots", err);
+    }
+  }
+  const own = (rows: readonly RecordedMeeting[]) =>
+    ownRecordedMeetings(rows, { botIds, calendarEvents: rawCalendar as unknown as MeetingEvent[] });
   let reads = BODY_READS;
   const body = async (url: string | null, fallback: string | null): Promise<string | null> => {
     if (fallback) return fallback;
@@ -806,7 +826,7 @@ async function readMeetings(
       continue;
     }
     // The calendar feed only lists what is still ahead; recorded meetings fill in today's earlier calls.
-    for (const m of rows.filter((r) => sameLocalDay(r.startTime, today))) {
+    for (const m of own(rows.filter((r) => sameLocalDay(r.startTime, today)))) {
       todayRecorded.push({ id: `rec:${m.meetingId}`, title: m.title, start: m.startTime, end: m.endTime ?? null, kind: "team" });
     }
     const mine = rows.filter((m) => sameLocalDay(m.startTime, yesterday)).slice(0, MEETINGS_PER_COMPANY);

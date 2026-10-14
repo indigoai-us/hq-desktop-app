@@ -17,6 +17,7 @@ import {
   connectionGrantBody,
   failure,
   integrationAppRefBody,
+  integrationOAuthStartBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
@@ -51,6 +52,7 @@ import {
   DESKTOP_AGENT_CREATION_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
+  FIRST_RUN_FOUND_APPS_FLAG,
   type ScopedFeatureFlagGates,
 } from "../flags.js";
 import {
@@ -533,7 +535,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       flag === "agents.claude-provider" ||
       flag === DESKTOP_AGENT_CREATION_FLAG ||
       flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
-      flag === PERSONAL_TRANSCRIPTS_FLAG
+      flag === PERSONAL_TRANSCRIPTS_FLAG ||
+      flag === FIRST_RUN_FOUND_APPS_FLAG
     ) {
       return Promise.resolve(ok(false));
     }
@@ -1142,9 +1145,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
-    // No redirectUri: the server's default lands on the console's callback.
+    // redirectUri only when the caller passes one; without it the server's
+    // default lands on the console's callback.
     startOAuth: (input) =>
-      this.postWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+      this.postWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationOAuthStartBody(input)),
     // The key goes in the body only, and is taken out of any failure's text.
     install: async (input) =>
       withoutSecret(await this.postWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),

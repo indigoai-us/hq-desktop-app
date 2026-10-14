@@ -169,6 +169,12 @@ export const RAIL_DEPLOYMENTS_ACTIONS_FLAG =
 export const RAIL_SHORTCUT_EDITING_FLAG = "desktop.rail-shortcut-editing-v1";
 export const RAIL_WORKFORCE_LIMITS_FLAG = "desktop.rail-workforce-limits-v1";
 export const RAIL_ATLAS_FLAG = "desktop.rail-atlas-v1";
+/**
+ * Daily Brief rail entry and page (owner hold 2026-10-14): Indigo members
+ * only until the writer skill ships for every company. Default off; a
+ * configured `true` opens it to everyone.
+ */
+export const RAIL_BRIEF_FLAG = "desktop.rail-brief-v1";
 
 /**
  * Value each rail gate takes for non-Indigo companies when the registry has
@@ -182,6 +188,7 @@ export const RAIL_GATE_EVERYONE_DEFAULT: Readonly<Record<string, boolean>> = {
   [RAIL_SHORTCUT_EDITING_FLAG]: false,
   [RAIL_WORKFORCE_LIMITS_FLAG]: false,
   [RAIL_ATLAS_FLAG]: true,
+  [RAIL_BRIEF_FLAG]: false,
 };
 
 /** Caller-visible names that may consult the registry. */
@@ -205,6 +212,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,
   [PERSONAL_TRANSCRIPTS_FLAG]: PERSONAL_TRANSCRIPTS_FLAG,
   [VISUAL_FIRST_RUN_FLAG]: VISUAL_FIRST_RUN_FLAG,
+  [FIRST_RUN_FOUND_APPS_FLAG]: FIRST_RUN_FOUND_APPS_FLAG,
   [BOT_INTEGRATION_CONTROL_FLAG]: BOT_INTEGRATION_CONTROL_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
@@ -214,6 +222,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [RAIL_SHORTCUT_EDITING_FLAG]: RAIL_SHORTCUT_EDITING_FLAG,
   [RAIL_WORKFORCE_LIMITS_FLAG]: RAIL_WORKFORCE_LIMITS_FLAG,
   [RAIL_ATLAS_FLAG]: RAIL_ATLAS_FLAG,
+  [RAIL_BRIEF_FLAG]: RAIL_BRIEF_FLAG,
 };
 
 

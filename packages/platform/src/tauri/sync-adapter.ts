@@ -21,9 +21,11 @@ import {
   OUTPOST_PATHS,
   PERSONAL_INTEGRATION_PATHS,
   COMPANY_INTEGRATION_PATHS,
+  REDACTION_PATHS,
   SLACK_ATTACH_BODY,
   INTEGRATION_PATHS,
   integrationAppRefBody,
+  integrationOAuthStartBody,
   type IntegrationOAuthStart,
   buildSendReplyRequest,
   connectionGrantBody,
@@ -60,6 +62,7 @@ import {
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   VISUAL_FIRST_RUN_FLAG,
+  FIRST_RUN_FOUND_APPS_FLAG,
   createHqProFlagFetch,
   createHqProRestFetch,
   createScopedFeatureFlagGates,
@@ -263,6 +266,12 @@ export function createSyncPlatformAdapter(
     if (flag === VISUAL_FIRST_RUN_FLAG) {
       // Visual first-run setup is a rollout: off until the hq-flags registry
       // holds an explicit enabled value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === FIRST_RUN_FOUND_APPS_FLAG) {
+      // The first-run "Your apps" step is a rollout: off until the hq-flags
+      // registry holds an explicit enabled value. GET /v1/identity/features
+      // does not exist on hq-pro, so never fall through to it.
       return Promise.resolve(ok(false));
     }
     if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
@@ -1341,9 +1350,15 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
       catalogSearch: (companyUid, query, limit) =>
         hqProRequestWithStatus('GET', INTEGRATION_PATHS.catalog(companyUid, query, limit)),
-      // No redirectUri: the server's default lands on the console's callback.
+      // redirectUri only when the caller passes one; without it the server's
+      // default lands on the console's callback.
       startOAuth: (input) =>
-        hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+        hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationOAuthStartBody(input)),
+      // The API base comes from the native side, the same one hq_pro_fetch uses.
+      oauthCallbackUrl: async () => {
+        const base = await call<string>('hq_pro_api_base');
+        return base.ok ? ok(`${base.value}${INTEGRATION_PATHS.oauthCallback}`) : base;
+      },
       // The key goes in the body only, and is taken out of any failure's text.
       install: async (input) =>
         withoutSecret(await hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ''),
@@ -1361,6 +1376,10 @@ export function createSyncPlatformAdapter(
       getDeployments: (slug) => call('get_company_deployments', { slug }),
       listIntegrations: (companyUid) =>
         hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid), undefined, COMPANY_INTEGRATIONS_TIMEOUT_SECS),
+      getRedaction: (companyUid, connectionId) =>
+        hqProRequestWithStatus('GET', REDACTION_PATHS.read(companyUid, connectionId)),
+      putRedaction: (companyUid, connectionId, presets) =>
+        hqProRequestWithStatus('PUT', REDACTION_PATHS.write, { companyUid, connectionId, presets: [...presets] }),
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
       deployAppPreview: (appId, url, deployedAt, refresh) =>
         call('deploy_app_preview', { appId, url, deployedAt, refresh }),
@@ -1476,6 +1495,7 @@ export function createSyncPlatformAdapter(
         readFrontmatter: (path) => call('read_vault_note_frontmatter', { path }),
       },
       getFileContent: (path) => call('get_company_file_content', { path }),
+      appendBriefLog: (line) => call('append_brief_log', { line }),
       createFile: (path, contents) => call('create_project_file', { path, contents }),
       listVaultPrefix: (companyUid, prefix, cursor) =>
         hqProJson(

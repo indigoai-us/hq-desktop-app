@@ -334,6 +334,7 @@
   <OnboardingWizard
     initialStep={onboardingStep}
     mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
+    wallpaper={params.get('wallpaper') === 'none' ? null : (params.get('wallpaper') ?? '/wallpaper.jpg')}
     onfinish={() => {}}
   />
 {:else if view === 'marketplace'}
@@ -347,7 +348,7 @@
 {:else if view === 'onboarding-company'}
   <!-- The first-run company step on its own: ?scenario=create|join|paused.
        Size the viewport to ~800x900 like the welcome window. -->
-  <div class="fake-desktop" aria-hidden="true"></div>
+  <div class="fake-desktop fake-desktop--image" aria-hidden="true"></div>
   <CompanyStepPreview />
 {:else if view === 'global-error'}
   <!-- Deterministic render failure for visually verifying the production
@@ -390,6 +391,11 @@
 {/if}
 
 <style>
+  .fake-desktop--image {
+    background: #000 url('/wallpaper.jpg') center / cover no-repeat !important;
+    filter: blur(34px) saturate(125%) brightness(0.45) !important;
+    transform: scale(1.08);
+  }
   .fake-desktop {
     position: fixed;
     inset: 0;

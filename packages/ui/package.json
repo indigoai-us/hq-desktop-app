@@ -24,6 +24,7 @@
       "svelte": "./src/common/button/RailIcon.svelte",
       "default": "./src/common/button/RailIcon.svelte"
     },
+    "./rail-icons": "./src/common/button/rail-icons.ts",
     "./brand": {
       "svelte": "./src/brand/index.ts",
       "default": "./src/brand/index.ts"

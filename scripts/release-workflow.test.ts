@@ -137,12 +137,24 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
 interface ReleasePolicyCase {
   advanceMainAfterReleaseBranch?: boolean;
   branch: string;
+  /** Prerelease channel; defaults to beta. Ignored for stable cases. */
+  channel?: "alpha" | "beta";
   expectedCode: number;
   expectedOutput: string;
   name: string;
   prerelease: boolean;
   releaseBranch?: string;
+  /**
+   * Model today's release shape: a same-tree "chore(release): <tag>" commit
+   * on top of main, pushed to release/<tag>, and tagged there.
+   */
+  releaseCommitOnTopOfMain?: boolean;
   tagAtForkPoint?: boolean;
+}
+
+function releasePolicyTag(testCase: ReleasePolicyCase): string {
+  if (!testCase.prerelease) return "v0.11.0";
+  return `v0.11.0-${testCase.channel ?? "beta"}.1`;
 }
 
 async function releasePolicyRepository(testCase: ReleasePolicyCase): Promise<{
@@ -153,7 +165,7 @@ async function releasePolicyRepository(testCase: ReleasePolicyCase): Promise<{
   const origin = join(repoRoot, "origin.git");
   const source = join(repoRoot, "source");
   const runner = join(repoRoot, "runner");
-  const tag = testCase.prerelease ? "v0.11.0-beta.1" : "v0.11.0";
+  const tag = releasePolicyTag(testCase);
 
   await git(repoRoot, "init", "--bare", "--quiet", origin);
   await git(repoRoot, "init", "--initial-branch=main", "--quiet", source);
@@ -188,7 +200,11 @@ async function releasePolicyRepository(testCase: ReleasePolicyCase): Promise<{
     }
   }
 
-  if (testCase.branch !== "main" && testCase.branch !== testCase.releaseBranch) {
+  if (testCase.releaseCommitOnTopOfMain) {
+    await git(source, "switch", "--quiet", "-c", testCase.branch);
+    await git(source, "commit", "--quiet", "--allow-empty", "-m", `chore(release): ${tag}`);
+    await git(source, "push", "--quiet", "origin", `HEAD:refs/heads/${testCase.branch}`);
+  } else if (testCase.branch !== "main" && testCase.branch !== testCase.releaseBranch) {
     await git(source, "switch", "--quiet", "-c", testCase.branch);
     await writeFile(join(source, "release.txt"), `${testCase.branch}\n`);
     await git(source, "add", "release.txt");
@@ -219,7 +235,7 @@ async function invokeReleasePolicy(testCase: ReleasePolicyCase): Promise<Command
   return runCommand(runner, "bash", ["-c", script], {
     GITHUB_WORKSPACE: runner,
     TAG: tag,
-    CHANNEL: testCase.prerelease ? "beta" : "stable",
+    CHANNEL: testCase.prerelease ? (testCase.channel ?? "beta") : "stable",
     PRERELEASE: String(testCase.prerelease),
   });
 }
@@ -395,6 +411,44 @@ describe("release workflow channel contract", () => {
         advanceMainAfterReleaseBranch: true,
         releaseBranch: "release/1.0",
         tagAtForkPoint: true,
+      },
+      {
+        name: "rejects a beta tag on the main tip",
+        branch: "main",
+        prerelease: true,
+        channel: "beta",
+        expectedCode: 1,
+        expectedOutput:
+          "beta prerelease tag v0.11.0-beta.1 is contained in origin/main",
+      },
+      {
+        name: "rejects an alpha tag on the main tip",
+        branch: "main",
+        prerelease: true,
+        channel: "alpha",
+        expectedCode: 1,
+        expectedOutput:
+          "alpha prerelease tag v0.11.0-alpha.1 is contained in origin/main",
+      },
+      {
+        name: "accepts a beta tag on a chore(release) commit on top of main in release/<tag>",
+        branch: "release/v0.11.0-beta.1",
+        prerelease: true,
+        channel: "beta",
+        releaseCommitOnTopOfMain: true,
+        expectedCode: 0,
+        expectedOutput:
+          "beta prerelease v0.11.0-beta.1 is contained in origin/release/* — allowed.",
+      },
+      {
+        name: "accepts an alpha tag on a chore(release) commit on top of main in release/<tag>",
+        branch: "release/v0.11.0-alpha.1",
+        prerelease: true,
+        channel: "alpha",
+        releaseCommitOnTopOfMain: true,
+        expectedCode: 0,
+        expectedOutput:
+          "alpha prerelease v0.11.0-alpha.1 is contained in origin/release/* — allowed.",
       },
       {
         name: "accepts a stable tag contained in origin/main",

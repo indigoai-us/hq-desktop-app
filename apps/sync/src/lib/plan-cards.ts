@@ -11,7 +11,9 @@
  * - the Custom Implementation card's CTA links to `/call#book`.
  * Copied from indigo-marketing 328831025 (2026-10-03). Change the website
  * first, then this file; `plan-cards.test.ts` pins the key strings so drift
- * is a deliberate edit.
+ * is a deliberate edit. The app's copy drops the website's internal product
+ * names (hosted MCP, Atlas, ontology & signals) for plain words (design
+ * review, 2026-10-12); the website should follow.
  *
  * The Starter numbers are hq-pro's PLAN_LIMITS.free ceilings. hq-pro
  * publishes them at GET /v1/pricing (plan id "free"), and the picker reads
@@ -107,7 +109,7 @@ function starterCard(limits: StarterAllowances): PlanCardCopy {
       { label: 'Company brain', value: 'Vault, sync, secrets & deploy', state: 'on' },
       {
         label: 'Limits',
-        value: `${count(limits.secrets, 'secret', 'secrets')} · ${gigabytes(limits.storageBytes)} · ${count(limits.integrations, 'integration', 'integrations')}, no MCP or Atlas`,
+        value: `${count(limits.secrets, 'secret', 'secrets')} · ${gigabytes(limits.storageBytes)} · ${count(limits.integrations, 'integration', 'integrations')}`,
         detail: `${limits.deployments} lifetime deploys. Over a limit, new files and new secrets stop until you are back under`,
         state: 'capped',
       },
@@ -173,7 +175,7 @@ const WORKFORCE_CARD: PlanCardCopy = {
       detail: 'From $100/mo per box · self-run bots free',
       state: 'on',
     },
-    { label: 'Company brain', value: '+ hosted MCP, meetings, ontology & signals', state: 'on' },
+    { label: 'Company brain', value: '+ meeting notes, a company knowledge map and an AI tool connection', state: 'on' },
     { label: 'Limits', value: 'Unlimited secrets, storage & deploys', state: 'on' },
     { label: 'Launch & support', value: 'One onboarding session + private Slack', state: 'on' },
   ],

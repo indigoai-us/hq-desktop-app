@@ -57,9 +57,23 @@ function context2d(canvas: HTMLCanvasElement | null): CanvasRenderingContext2D |
   }
 }
 
-/** Screens 01-03 share one title position so the heading never shifts. */
+/**
+ * Where a screen's title starts while its block is laid out. Each screen then
+ * moves its whole block (title, content, button) down with `centreShift` so
+ * it sits in the middle of the window, however tall the window is.
+ */
 function copyTop(height = vh()): number {
   return Math.max(56, Math.round(height * 0.13));
+}
+
+/**
+ * How far to move a block laid out from `top` down to `bottom` so it sits
+ * centred in the window, never pushing its bottom past `limit` (the room kept
+ * for Back / the install card, or the skyline's band).
+ */
+function centreShift(top: number, bottom: number, limit: number, height = vh()): number {
+  const want = Math.max(56, Math.round((height - (bottom - top)) / 2)) - top;
+  return Math.max(0, Math.min(want, limit - bottom));
 }
 
 /**
@@ -307,6 +321,8 @@ export function createMarkEngine(
 const SKY = 0.3;
 /** Skyline cell (px): one character per cell. */
 const SKY_CELL = 11;
+/** The skyline's characters: white with a little blue. */
+const SKYLINE_TINT = 'rgb(206, 222, 255)';
 /** Clear space kept between the content block and the towers under it. */
 const SKY_PAD = 28;
 
@@ -429,7 +445,8 @@ function createSkyline(cv: HTMLCanvasElement, keepOut: () => KeepOut, RISE0: num
     ctx.font = `${FONT}px ui-monospace, Menlo, Monaco, monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#fff';
+    // A cool blue tint, the night-city partner to the company step's warm blossoms.
+    ctx.fillStyle = SKYLINE_TINT;
     for (let i = 0; i < city.length; i += 1) {
       const m = city[i]!;
       let g = clamp01((t - m.rise) / 1.5);
@@ -532,7 +549,10 @@ export function createFolderEngine(refs: FolderRefs, options: { reveal: () => vo
         at = place(gap);
       }
     }
-    const { y, th, treeTop } = at;
+    const shift = centreShift(at.y, at.bottom, limit, H);
+    const y = at.y + shift;
+    const th = at.th;
+    const treeTop = at.treeTop + shift;
     copy.style.top = `${y}px`;
     tree.style.top = `${treeTop}px`;
     placeNav(refs.nav, treeTop + th + navGap);
@@ -710,7 +730,11 @@ export function createOrbitEngine(refs: OrbitRefs, options: { reveal: () => void
     const block = orbitH + GAP2 + rh + navGap + NAVH;
     const start = placeUnder(top, bottom, block, 30);
     cy = Math.round(start + orbitH / 2);
-    const railTop = Math.round(cy + orbitH / 2 + GAP2);
+    const laidRailTop = Math.round(cy + orbitH / 2 + GAP2);
+    const shift = centreShift(y, laidRailTop + rh + navGap + NAVH, bottom, H);
+    copy.style.top = `${y + shift}px`;
+    cy += shift;
+    const railTop = laidRailTop + shift;
     rail.style.bottom = 'auto';
     rail.style.top = `${railTop}px`;
     placeNav(refs.nav, railTop + rh + navGap);
@@ -846,7 +870,9 @@ export function createKeyboardEngine(refs: KeyboardRefs, options: { reveal: () =
     const top = y + ch + GAP1;
     const bottom = H - FLOOR;
     const block = kh + GAP2 + lh + NAVGAP + NAVH;
-    const start = placeUnder(top, bottom, block, 30);
+    const shift = centreShift(y, placeUnder(top, bottom, block, 30) + block, bottom, H);
+    copy.style.top = `${y + shift}px`;
+    const start = placeUnder(top, bottom, block, 30) + shift;
     kb.style.top = `${start}px`;
     line.style.top = `${Math.round(start + kh + GAP2)}px`;
     placeNav(refs.nav, start + kh + GAP2 + lh + NAVGAP);
@@ -982,7 +1008,10 @@ export function createConsentEngine(refs: ConsentRefs, options: { reveal: () => 
     const ch = rect(refs.copy).height;
     const fh = rect(refs.form).height;
     refs.copy.style.top = `${y}px`;
-    const ft = placeUnder(y + ch + GAP1, H - FLOOR, fh + NAVGAP + NAVH, 30);
+    const laidFt = placeUnder(y + ch + GAP1, H - FLOOR, fh + NAVGAP + NAVH, 30);
+    const shift = centreShift(y, laidFt + fh + NAVGAP + NAVH, H - FLOOR, H);
+    refs.copy.style.top = `${y + shift}px`;
+    const ft = laidFt + shift;
     refs.form.style.top = `${ft}px`;
     placeNav(refs.nav, ft + fh + NAVGAP);
   }
@@ -1088,16 +1117,25 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
 // tutorial steps): centred, no timeline beyond the copy's own fade.
 // ---------------------------------------------------------------------------
 
+function reducedMotionPreferred(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    : false;
+}
+
 export function createPanelEngine(block: HTMLElement, options: { reveal: () => void }): SceneEngine {
   let t0 = 0;
   let revealed = false;
   let active = false;
   let placedHeight = -1;
   let observer: ResizeObserver | null = null;
-  function size() {
+  function size(glide = false) {
     const H = vh();
     const bh = rect(block).height;
     placedHeight = bh;
+    // A re-centre after the content changed glides; entering or resizing
+    // the window places it at once.
+    block.style.transition = glide ? 'top 0.5s cubic-bezier(0.23, 1, 0.32, 1)' : 'none';
     block.style.top = `${Math.max(56, Math.round((H - bh) / 2))}px`;
   }
   // A panel's content can change height after it is shown (the company step
@@ -1105,15 +1143,23 @@ export function createPanelEngine(block: HTMLElement, options: { reveal: () => v
   // Centre it again whenever that happens, not only on enter and window
   // resize; otherwise it keeps the short block's position and runs off the
   // bottom of the window.
+  // A panel that swaps one screen for another (the company step) asks for
+  // the next re-centre to land at once: its new screen is still rising in,
+  // and gliding the block under it at the same time reads as a wobble.
+  let snapUntil = 0;
+  block.addEventListener('hq-panel-snap', () => {
+    snapUntil = performance.now() + 700;
+  });
   function watch() {
     if (observer || typeof ResizeObserver === 'undefined') return;
     observer = new ResizeObserver(() => {
-      if (active && rect(block).height !== placedHeight) size();
+      if (active && rect(block).height !== placedHeight)
+        size(!reducedMotionPreferred() && performance.now() > snapUntil);
     });
     observer.observe(block);
   }
   return {
-    size,
+    size: () => size(),
     skip() {
       t0 -= 30000;
     },
@@ -1136,6 +1182,426 @@ export function createPanelEngine(block: HTMLElement, options: { reveal: () => v
     destroy() {
       observer?.disconnect();
       observer = null;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The company step's ASCII art: two flowering trees in the skyline's
+// characters. A pink cherry bough reaches in from the top-left corner and a
+// coral tree's crown fills the bottom-right, their diagonal twin. Each crown
+// is packed with shaded blossom clusters (dense #HQ* at a cluster's heart,
+// sparse .,/ at its rim, ':' on the lit side), with a trunk and a few limbs
+// showing in the gaps and leaves behind. Petals drift down. Nothing is drawn
+// over the content (a padded box around it). Designer prototype:
+// workspace/drafts/hq-company-art-concepts ("Flower trees").
+// ---------------------------------------------------------------------------
+
+type Rgb = readonly [number, number, number];
+
+export interface FlowerCell {
+  x: number;
+  y: number;
+  kind: 'branch' | 'leaf' | 'bloom';
+  ch: string;
+  rgb: Rgb;
+  /** Resting alpha. */
+  a: number;
+  /** When it grows in, on the tree's 0-1+ timeline. */
+  t: number;
+  /** Blossoms: distance from the cluster's centre (0-1), for the opening. */
+  d: number;
+  seed: number;
+  /** Which tree: 'pink' (top-left) or 'coral' (bottom-right). */
+  tree: 'pink' | 'coral';
+}
+
+export interface FlowerPetal {
+  x0: number;
+  speed: number;
+  phase: number;
+  spin: number;
+  rgb: Rgb;
+}
+
+export interface FlowerTrees {
+  cells: FlowerCell[];
+  petals: FlowerPetal[];
+}
+
+export interface KeepOutBox {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+const FLOWER_CORAL: Rgb = [255, 112, 92];
+const FLOWER_CORAL_HI: Rgb = [255, 176, 150];
+const FLOWER_PINK: Rgb = [246, 160, 196];
+const FLOWER_PINK_HI: Rgb = [255, 222, 234];
+const FLOWER_LEAF: Rgb = [70, 140, 138];
+const FLOWER_LEAF_COOL: Rgb = [70, 110, 160];
+const FLOWER_BARK: Rgb = [176, 146, 170];
+const FLOWER_SHADE: Rgb = [40, 20, 50];
+const FLOWER_SPARSE = '.,/';
+const FLOWER_LIT_RIM = '.,:';
+/** H and Q are the accent, not the fill: about one dense character in seven. */
+const FLOWER_HEART = '#*#**#*#*#*#HQ';
+const FLOWER_CHURN = '.,/#HQ*';
+const FLOWER_PETALS = 12;
+const FLOWER_PAD = 34;
+
+function mixRgb(a: Rgb, b: Rgb, k: number): Rgb {
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * k),
+    Math.round(a[1] + (b[1] - a[1]) * k),
+    Math.round(a[2] + (b[2] - a[2]) * k),
+  ];
+}
+
+interface Ellipse {
+  x: number;
+  y: number;
+  rx: number;
+  ry: number;
+}
+
+/**
+ * The two trees as character cells for a W x H window, keeping clear of
+ * `keep` (the content). Pure apart from the seeded noise, so tests can read it.
+ */
+export function flowerTreesLayout(W: number, H: number, keep: KeepOutBox | null): FlowerTrees {
+  const CELL = SKY_CELL;
+  const ground = skylineGround(H);
+  const blocked = (x: number, y: number) =>
+    keep !== null &&
+    x > keep.left - FLOWER_PAD &&
+    x < keep.right + FLOWER_PAD &&
+    y > keep.top - FLOWER_PAD &&
+    y < keep.bottom + FLOWER_PAD;
+  interface Seg { x0: number; y0: number; x1: number; y1: number; w: number; t: number; a: number }
+  interface Puff { x: number; y: number; r: number; tree: 'pink' | 'coral'; t: number }
+  const segs: Seg[] = [];
+  const puffs: Puff[] = [];
+  const inEllipses = (list: Ellipse[], x: number, y: number) =>
+    list.some((e) => ((x - e.x) / e.rx) ** 2 + ((y - e.y) / e.ry) ** 2 <= 1);
+
+  // Canopy first: a crown (a few overlapping ellipses) packed with blossom
+  // clusters, gaps left here and there; a trunk into the crown and limbs to
+  // some of the clusters, so branches show in the gaps.
+  function crown(
+    ellipses: Ellipse[],
+    trunk: { from: { x: number; y: number }; to: { x: number; y: number }; w: number; bend: number },
+    tree: 'pink' | 'coral',
+    seed: number,
+    step: number,
+    rmin: number,
+    rmax: number,
+    t0: number,
+  ) {
+    const pts: { x: number; y: number }[] = [];
+    let i = 0;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const e of ellipses) {
+      minX = Math.min(minX, e.x - e.rx);
+      maxX = Math.max(maxX, e.x + e.rx);
+      minY = Math.min(minY, e.y - e.ry);
+      maxY = Math.max(maxY, e.y + e.ry);
+    }
+    for (let y = minY; y <= maxY; y += step * 0.82)
+      for (let x = minX; x <= maxX; x += step) {
+        i += 1;
+        const jx = x + (rnd(seed + i * 1.3) - 0.5) * step * 0.7 + (Math.round(y / step) % 2 ? step / 2 : 0);
+        const jy = y + (rnd(seed + i * 2.7) - 0.5) * step * 0.6;
+        if (!inEllipses(ellipses, jx, jy) || blocked(jx, jy)) continue;
+        if (rnd(seed + i * 4.1) < 0.2) continue;
+        pts.push({ x: jx, y: jy });
+      }
+    const heart = trunk.to;
+    const angle = Math.atan2(heart.y - trunk.from.y, heart.x - trunk.from.x);
+    const mid = { x: (trunk.from.x + heart.x) / 2 + trunk.bend, y: (trunk.from.y + heart.y) / 2 };
+    segs.push({ x0: trunk.from.x, y0: trunk.from.y, x1: mid.x, y1: mid.y, w: trunk.w, t: t0, a: angle });
+    segs.push({ x0: mid.x, y0: mid.y, x1: heart.x, y1: heart.y, w: trunk.w * 0.72, t: t0 + 0.15, a: angle });
+    pts.forEach((pt, k) => {
+      const d = Math.hypot(pt.x - heart.x, pt.y - heart.y);
+      const tt = t0 + 0.3 + Math.min(0.5, d / 900);
+      const r = rmin + rnd(seed + k * 5.9) * (rmax - rmin);
+      puffs.push({ x: pt.x, y: pt.y, r, tree, t: tt + 0.25 });
+      // Only some clusters show a limb, or the gaps fill with hatching.
+      if (rnd(seed + k * 6.1) < 0.6) return;
+      const mx = (heart.x + pt.x) / 2 + (rnd(seed + k * 3.3) - 0.5) * 30;
+      const my = (heart.y + pt.y) / 2 - 10;
+      const w = Math.max(2, trunk.w * 0.38 * (1 - Math.min(0.8, d / 500)));
+      segs.push({ x0: heart.x, y0: heart.y, x1: mx, y1: my, w, t: tt, a: Math.atan2(my - heart.y, mx - heart.x) });
+      segs.push({ x0: mx, y0: my, x1: pt.x, y1: pt.y, w: Math.max(1.5, w * 0.6), t: tt + 0.1, a: Math.atan2(pt.y - my, pt.x - mx) });
+    });
+  }
+
+  const s = Math.min(1.2, Math.max(0.8, H / 860));
+  // Bottom-right: a coral tree whose crown fills the corner.
+  crown(
+    [
+      { x: W * 0.95, y: H * 0.6, rx: W * 0.17, ry: H * 0.24 },
+      { x: W * 0.85, y: H * 0.8, rx: W * 0.15, ry: H * 0.17 },
+      { x: W * 0.98, y: H * 0.88, rx: W * 0.1, ry: H * 0.14 },
+    ],
+    { from: { x: W * 0.93, y: H + 10 }, to: { x: W * 0.91, y: H * 0.68 }, w: 24 * s, bend: 14 },
+    'coral',
+    17,
+    58 * s,
+    22 * s,
+    33 * s,
+    0,
+  );
+  // Top-left: a cherry bough reaching in from the corner, a drooping spray.
+  crown(
+    [
+      { x: W * 0.03, y: H * 0.08, rx: W * 0.13, ry: H * 0.14 },
+      { x: W * 0.14, y: H * 0.05, rx: W * 0.11, ry: H * 0.08 },
+      { x: W * 0.08, y: H * 0.22, rx: W * 0.08, ry: H * 0.1 },
+      { x: W * 0.24, y: H * 0.1, rx: W * 0.06, ry: H * 0.06 },
+      { x: W * 0.015, y: H * 0.36, rx: W * 0.045, ry: H * 0.09 },
+    ],
+    { from: { x: -12, y: -12 }, to: { x: W * 0.1, y: H * 0.12 }, w: 22 * s, bend: -10 },
+    'pink',
+    53,
+    56 * s,
+    20 * s,
+    32 * s,
+    0.05,
+  );
+
+  // Rasterise: branches, then leaves behind the blossoms, then blossoms.
+  const grid = new Map<string, FlowerCell & { z: number }>();
+  const put = (c: number, r: number, cell: FlowerCell & { z: number }) => {
+    const key = `${c}:${r}`;
+    const old = grid.get(key);
+    if (!old || cell.z >= old.z) grid.set(key, cell);
+  };
+  const cellXY = (c: number, r: number) => ({ x: c * CELL + CELL / 2, y: (ground - 1 - r) * CELL + CELL / 2 });
+  const cellOf = (x: number, y: number) => ({
+    c: Math.round((x - CELL / 2) / CELL),
+    r: ground - 1 - Math.round((y - CELL / 2) / CELL),
+  });
+  const treeOf = (x: number): 'pink' | 'coral' => (x < W / 2 ? 'pink' : 'coral');
+  for (const sg of segs) {
+    const len = Math.hypot(sg.x1 - sg.x0, sg.y1 - sg.y0);
+    const n = Math.max(1, Math.ceil(len / 3));
+    for (let i = 0; i <= n; i += 1) {
+      const x = sg.x0 + ((sg.x1 - sg.x0) * i) / n;
+      const y = sg.y0 + ((sg.y1 - sg.y0) * i) / n;
+      const rad = sg.w / 2;
+      const c0 = cellOf(x - rad, y).c;
+      const c1 = cellOf(x + rad, y).c;
+      const r0 = cellOf(x, y + rad).r;
+      const r1 = cellOf(x, y - rad).r;
+      for (let c = c0; c <= c1; c += 1)
+        for (let r = r0; r <= r1; r += 1) {
+          const q = cellXY(c, r);
+          if (Math.hypot(q.x - x, q.y - y) > Math.max(rad, CELL * 0.55) || blocked(q.x, q.y)) continue;
+          if (q.x < 0 || q.x > W || q.y < 0 || q.y > H) continue;
+          const ca = Math.cos(sg.a);
+          const sa = Math.sin(sg.a);
+          const slant = ca * sa < 0 ? '/' : '\\';
+          const ch =
+            sg.w > 14
+              ? '#HQ'[Math.floor(rnd(c * 3 + r) * 3)]!
+              : sg.w > 7
+                ? Math.abs(ca) < 0.35 ? '|' : slant
+                : Math.abs(sa) < 0.35 ? '-' : slant;
+          put(c, r, { x: q.x, y: q.y, kind: 'branch', ch, rgb: FLOWER_BARK, a: sg.w > 7 ? 0.4 : 0.24, t: sg.t, d: 0, seed: rnd(c * 5 + r * 3), tree: treeOf(q.x), z: 1 });
+        }
+    }
+  }
+  puffs.forEach((pf, n) => {
+    const base = pf.tree === 'coral' ? FLOWER_CORAL : FLOWER_PINK;
+    const hi = pf.tree === 'coral' ? FLOWER_CORAL_HI : FLOWER_PINK_HI;
+    // A cauliflower cluster: a few overlapping round heads.
+    const heads = [{ x: pf.x, y: pf.y, r: pf.r }];
+    for (let h = 0; h < 4; h += 1) {
+      const ang = rnd(n * 7 + h) * 6.283;
+      const d = pf.r * (0.45 + rnd(n * 11 + h) * 0.25);
+      heads.push({ x: pf.x + Math.cos(ang) * d, y: pf.y + Math.sin(ang) * d * 0.8, r: pf.r * (0.5 + rnd(n * 5 + h) * 0.2) });
+    }
+    const big = pf.r * 1.6;
+    const a0 = cellOf(pf.x - big, pf.y + big);
+    const a1 = cellOf(pf.x + big, pf.y - big);
+    for (let c = a0.c; c <= a1.c; c += 1)
+      for (let r = a0.r; r <= a1.r; r += 1) {
+        const q = cellXY(c, r);
+        if (blocked(q.x, q.y) || q.x < 0 || q.x > W || q.y < 0 || q.y > H) continue;
+        let dmin = 9;
+        for (const hd of heads) dmin = Math.min(dmin, Math.hypot(q.x - hd.x, q.y - hd.y) / hd.r);
+        const s2 = c * 7 + r * 13 + n;
+        if (dmin < 1.45 && dmin >= 0.9) {
+          put(c, r, {
+            x: q.x + 3,
+            y: q.y + 4,
+            kind: 'leaf',
+            ch: FLOWER_SPARSE[Math.floor(rnd(s2) * FLOWER_SPARSE.length)]!,
+            rgb: pf.tree === 'coral' ? FLOWER_LEAF : FLOWER_LEAF_COOL,
+            a: 0.22,
+            t: pf.t,
+            d: dmin,
+            seed: rnd(s2 + 6),
+            tree: pf.tree,
+            z: 0.5,
+          });
+        }
+        if (dmin >= 1) continue;
+        if (rnd(s2 + 1) > 0.8 - dmin * 0.12) continue;
+        // Each cluster lit from the top-left: a bright crown, shadow beneath.
+        const light = clamp01(0.55 + ((pf.x - q.x) * 0.6 + (pf.y - q.y)) / (pf.r * 1.6));
+        const pick = (set: string, k: number) => set[Math.floor(rnd(s2 + k) * set.length)]!;
+        const rim = light > 0.5 ? FLOWER_LIT_RIM : FLOWER_SPARSE;
+        const ch =
+          dmin < 0.5 ? pick(FLOWER_HEART, 2) : dmin < 0.8 ? (rnd(s2 + 3) < 0.45 ? pick(FLOWER_HEART, 4) : pick(rim, 4)) : pick(rim, 5);
+        const tone =
+          light < 0.35 ? mixRgb(mixRgb(base, FLOWER_SHADE, 0.45), base, light / 0.35) : mixRgb(base, hi, (light - 0.35) / 0.65);
+        put(c, r, { x: q.x, y: q.y, kind: 'bloom', ch, rgb: tone, a: 0.2 + 0.4 * light, t: pf.t, d: dmin, seed: rnd(s2 + 5), tree: pf.tree, z: 2 });
+      }
+  });
+  const cells: FlowerCell[] = [...grid.values()].map(({ z: _z, ...cell }) => cell);
+  const petals: FlowerPetal[] = [];
+  for (let m = 0; m < FLOWER_PETALS; m += 1) {
+    petals.push({
+      x0: rnd(m * 3.1) < 0.45 ? rnd(m * 5.3) * W * 0.34 : W - rnd(m * 7.1) * W * 0.32,
+      speed: 12 + rnd(m * 2.7) * 16,
+      phase: rnd(m * 9.4) * 60,
+      spin: rnd(m * 4.4),
+      rgb: rnd(m) < 0.55 ? FLOWER_PINK_HI : FLOWER_CORAL_HI,
+    });
+  }
+  return { cells, petals };
+}
+
+export function createCompanyEngine(
+  block: HTMLElement,
+  cv: HTMLCanvasElement,
+  options: { reveal: () => void },
+): SceneEngine {
+  const panel = createPanelEngine(block, { reveal: options.reveal });
+  const ctx = context2d(cv);
+  let W = 0;
+  let H = 0;
+  let t0 = 0;
+  let trees: FlowerTrees | null = null;
+  let keptFor: KeepOutBox | null = null;
+  /** Once grown, a re-fit (the content changed height) does not grow them again. */
+  let grown = false;
+  let churn = 0;
+
+  function contentBox(): KeepOutBox {
+    const r = rect(block);
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  }
+  function moved(a: KeepOutBox, b: KeepOutBox): boolean {
+    return Math.abs(a.top - b.top) > SKY_CELL || Math.abs(a.bottom - b.bottom) > SKY_CELL || Math.abs(a.left - b.left) > SKY_CELL || Math.abs(a.right - b.right) > SKY_CELL;
+  }
+  function fit() {
+    keptFor = contentBox();
+    trees = flowerTreesLayout(W, H, keptFor);
+  }
+  function size() {
+    panel.size();
+    W = vw();
+    H = vh();
+    const k = dpr();
+    cv.width = W * k;
+    cv.height = H * k;
+    ctx?.setTransform(k, 0, 0, k, 0, 0);
+    fit();
+  }
+
+  function draw(t: number) {
+    if (!ctx || !trees) return;
+    // Each company screen has its own height; the trees step around it.
+    const box = contentBox();
+    if (keptFor && moved(box, keptFor)) fit();
+    const live = clamp01(1 - (performance.now() - pointer.lastMove) / 1000 / 0.9);
+    churn += (live - churn) * 0.035;
+    const tick = Math.floor(t * 7);
+    const reach = grown ? 9 : (t - 0.3) / 1.4;
+    if (reach > 2.5) grown = true;
+    ctx.clearRect(0, 0, W, H);
+    ctx.font = `10px ui-monospace, Menlo, Monaco, monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const put = (ch: string, x: number, y: number, a: number, rgb: Rgb) => {
+      if (a <= 0.004) return;
+      ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+      ctx.globalAlpha = Math.min(0.62, a);
+      ctx.fillText(ch, x, y);
+    };
+    const cells = trees.cells;
+    for (let i = 0; i < cells.length; i += 1) {
+      const m = cells[i]!;
+      const sway = Math.sin(t * 0.7 + m.x * 0.008) * (m.kind === 'branch' ? 0.4 : 1.4);
+      if (m.kind === 'branch') {
+        put(m.ch, m.x + sway, m.y, m.a * clamp01((reach - m.t) * 6), m.rgb);
+        continue;
+      }
+      const g = clamp01((reach - m.t) * 2.2);
+      if (g <= 0) continue;
+      if (m.kind === 'leaf') {
+        put(m.ch, m.x + sway, m.y, m.a * g, m.rgb);
+        continue;
+      }
+      if (m.d > g * 1.05) continue;
+      const pulse = 0.93 + 0.07 * Math.sin(t * 1.3 + m.seed * 30);
+      // As on the skyline: while the pointer moves, a few characters change
+      // (the lit ones most) and brighten a touch.
+      let ch = m.ch;
+      let lift = 0;
+      if (churn > 0.004) {
+        if (rnd(i * 53.1 + tick * 7.3) < churn * (m.a > 0.4 ? 0.5 : 0.18))
+          ch = FLOWER_CHURN[Math.floor(rnd(i * 29.7 + tick * 3.7) * FLOWER_CHURN.length)]!;
+        lift = churn * 0.06;
+      }
+      put(ch, m.x + sway, m.y, m.a * pulse + lift, m.rgb);
+    }
+    // Petals drift down, larger than the grid; never across the content.
+    const petalsOn = clamp01((t - 2) / 1.5);
+    if (petalsOn > 0) {
+      ctx.font = `15px ui-monospace, Menlo, Monaco, monospace`;
+      trees.petals.forEach((p) => {
+        const y = ((t * p.speed + p.phase * 20) % (H * 0.95)) + H * 0.04;
+        const x = p.x0 + Math.sin(t * 0.8 + p.phase) * 22 - y * 0.08;
+        if (keptFor && x > keptFor.left - 12 && x < keptFor.right + 12 && y > keptFor.top - 12 && y < keptFor.bottom + 12) return;
+        const phase = Math.floor(t * 2 + p.spin * 4) % 3;
+        put(phase === 0 ? '*' : phase === 1 ? '+' : '.', x, y, 0.7 * petalsOn, p.rgb);
+      });
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+  }
+
+  return {
+    size,
+    skip() {
+      panel.skip();
+      t0 -= 30000;
+      grown = true;
+    },
+    enter(now) {
+      t0 = now;
+      panel.enter(now);
+      size();
+    },
+    exit() {
+      panel.exit?.();
+    },
+    frame(now) {
+      panel.frame(now);
+      draw((now - t0) / 1000);
+    },
+    destroy() {
+      panel.destroy?.();
     },
   };
 }
