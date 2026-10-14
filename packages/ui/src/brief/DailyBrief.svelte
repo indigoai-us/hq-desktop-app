@@ -107,7 +107,7 @@
     nowDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }).replace(",", " ·"),
   );
   const timeLabel = $derived(nowDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
-  const leadForHero = $derived(plan.leadPriority ? { text: plan.leadPriority.text, because: plan.leadPriority.because } : null);
+  const leadForHero = $derived(plan.leadPriority ? { text: plan.leadPriority.text, because: plan.leadPriority.because, itemId: plan.leadPriority.itemId } : null);
 
   /** One line under the greeting, from what the day holds. */
   const sunSub = $derived.by(() => {
