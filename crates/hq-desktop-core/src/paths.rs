@@ -64,9 +64,10 @@ pub fn managed_toolchain_dir_in(home: &Path) -> PathBuf {
     managed_toolchain_dir(home)
 }
 
-/// [`managed_toolchain_dir`] with the `XDG_DATA_HOME` value passed in.
+/// [`managed_toolchain_dir`] with the `XDG_DATA_HOME` value passed in. Test
+/// fixtures pass `None` so they never resolve the process's real data home.
 #[cfg(not(target_os = "windows"))]
-fn managed_toolchain_dir_with(home: &Path, xdg_data_home: Option<&std::ffi::OsStr>) -> PathBuf {
+pub fn managed_toolchain_dir_with(home: &Path, xdg_data_home: Option<&std::ffi::OsStr>) -> PathBuf {
     if cfg!(target_os = "macos") {
         return home
             .join("Library")

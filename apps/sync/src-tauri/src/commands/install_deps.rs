@@ -2029,13 +2029,31 @@ pub fn shell_profile_path_in(home: &std::path::Path) -> PathBuf {
     home.join(profile_name)
 }
 
-/// Check whether the managed toolchain PATH block has already been written to
-/// a shell profile. Exposed for testing.
+/// The profile text to write so it carries `block`, or `None` when it already
+/// does. A profile without the marker gets the block appended. On Linux a
+/// marked block whose `export PATH=` line differs (written by a build that used
+/// the macOS toolchain path, or before `XDG_DATA_HOME` changed) has that line
+/// replaced; elsewhere a marked profile is left alone, as before.
 #[cfg(not(windows))]
-pub fn is_shell_path_configured(profile_path: &std::path::Path) -> bool {
-    std::fs::read_to_string(profile_path)
-        .map(|contents| contents.contains(SHELL_PATH_MARKER))
-        .unwrap_or(false)
+fn shell_profile_with_block(contents: &str, block: &str, replace_stale: bool) -> Option<String> {
+    let Some(marker_at) = contents.find(SHELL_PATH_MARKER) else {
+        return Some(format!("{contents}{block}"));
+    };
+    if !replace_stale {
+        return None;
+    }
+    let wanted = block.lines().find(|line| line.starts_with("export PATH="))?;
+    let after_marker = marker_at + SHELL_PATH_MARKER.len();
+    let rest = &contents[after_marker..];
+    let line_start = after_marker + rest.find('\n')? + 1;
+    let line_end = contents[line_start..]
+        .find('\n')
+        .map_or(contents.len(), |end| line_start + end);
+    let current = &contents[line_start..line_end];
+    if current == wanted || !current.starts_with("export PATH=") {
+        return None;
+    }
+    Some(format!("{}{wanted}{}", &contents[..line_start], &contents[line_end..]))
 }
 
 /// Build the block that gets appended to the shell profile. Exposed for
@@ -2121,17 +2139,31 @@ pub(crate) fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHand
     }
     let block = shell_path_block();
     for profile_path in shell_profile_paths_in(home) {
-        if is_shell_path_configured(&profile_path) {
+        let existing = match std::fs::read_to_string(&profile_path) {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                emit_preflight_line(
+                    app,
+                    &format!("[path] failed to read {}: {e}", profile_path.display()),
+                );
+                continue;
+            }
+        };
+        let Some(updated) =
+            shell_profile_with_block(&existing, &block, cfg!(target_os = "linux"))
+        else {
             continue;
-        }
+        };
         match std::fs::OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(true)
             .open(&profile_path)
         {
             Ok(mut f) => {
                 use std::io::Write;
-                if let Err(e) = f.write_all(block.as_bytes()) {
+                if let Err(e) = f.write_all(updated.as_bytes()) {
                     emit_preflight_line(
                         app,
                         &format!("[path] failed to write to {}: {e}", profile_path.display()),
@@ -11081,6 +11113,35 @@ mod shell_path_block_tests {
         assert!(idx("toolchain/git-shim") < idx("$HOME/.local/bin"));
         assert!(idx("$HOME/.local/bin") < idx(":$PATH"));
         assert!(block.contains(SHELL_PATH_MARKER));
+    }
+
+    #[test]
+    fn profile_without_the_marker_gets_the_block_appended() {
+        let block = "\n# Indigo HQ managed toolchain\nexport PATH=\"/new:$PATH\"\n";
+        assert_eq!(
+            shell_profile_with_block("alias ll='ls -l'\n", block, true).as_deref(),
+            Some("alias ll='ls -l'\n\n# Indigo HQ managed toolchain\nexport PATH=\"/new:$PATH\"\n")
+        );
+    }
+
+    #[test]
+    fn stale_marked_block_is_replaced_in_place_on_linux_only() {
+        let block = "\n# Indigo HQ managed toolchain\nexport PATH=\"$HOME/.local/share/IndigoHQ/toolchain/node/bin:$PATH\"\n";
+        let stale = "a\n# Indigo HQ managed toolchain\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$PATH\"\nb\n";
+        assert_eq!(
+            shell_profile_with_block(stale, block, true).as_deref(),
+            Some("a\n# Indigo HQ managed toolchain\nexport PATH=\"$HOME/.local/share/IndigoHQ/toolchain/node/bin:$PATH\"\nb\n")
+        );
+        assert_eq!(shell_profile_with_block(stale, block, false), None);
+    }
+
+    #[test]
+    fn current_or_hand_edited_marked_block_is_left_alone() {
+        let block = "\n# Indigo HQ managed toolchain\nexport PATH=\"/new:$PATH\"\n";
+        let current = format!("x\n{}", &block[1..]);
+        assert_eq!(shell_profile_with_block(&current, block, true), None);
+        let edited = "# Indigo HQ managed toolchain\n# my note\nexport PATH=\"/old:$PATH\"\n";
+        assert_eq!(shell_profile_with_block(edited, block, true), None);
     }
 
     #[test]
