@@ -288,6 +288,8 @@
       {#if allCards}<span class="leadchip pill" data-testid="brief-lead" role="group" aria-label="Why these cards" use:peek={{ state: briefState, content: whyPeek }}
           >Why these cards</span
         >{/if}
+      <!-- A quiet pointer to review mode, left of the run button; review mode has its own bar. -->
+      {#if !allCards}<span class="b-hint" data-testid="brief-review-hint">Shift+A to view every card</span>{/if}
       {#if tools}{@render tools()}{/if}
     </div>
   </header>
@@ -524,6 +526,12 @@
   /* Review mode, said once and quietly: a soft bar with a mono caps chip, a plain line and the key to leave. */
   .daily-brief {
     --b-page-ink: var(--b-ink);
+  }
+  .b-hint {
+    margin-right: 8px;
+    font-size: 12px;
+    color: var(--b-t3);
+    white-space: nowrap;
   }
   .b-review {
     margin-top: 14px;

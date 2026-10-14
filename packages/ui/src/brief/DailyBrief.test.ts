@@ -39,9 +39,12 @@ describe("DailyBrief", () => {
   it("Shift+A toggles review mode: the catalogue by group, every scored card rendered, then back to the plan", () => {
     render({});
     const planned = qa("[data-widget]").length;
+    // The live page points to review mode in the title row; review mode has its own bar instead.
+    expect(q('[data-testid="brief-review-hint"]')!.textContent).toBe("Shift+A to view every card");
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
     flushSync();
     expect(q('[data-testid="brief-review"]')).not.toBeNull();
+    expect(q('[data-testid="brief-review-hint"]')).toBeNull();
     expect(qa("[data-widget]").length).toBeGreaterThanOrEqual(planned);
     const groups = qa('[data-testid="brief-review-group"]').map((el) => el.textContent?.trim());
     expect(groups[0]).toBe("Hero");
