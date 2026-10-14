@@ -285,9 +285,8 @@
         </div>
         {#if manage && !account.legacy && signInFor !== account.id && confirmRemove !== account.id}
           <span class="ctl">
-            {#if account.status === "needs_auth"}
-              <button type="button" class="link" data-testid="bot-account-sign-in" onclick={() => void beginSignIn(account.id)}><RailIcon name="key" />Sign in</button>
-            {/if}
+            <!-- Sign-in stays reachable in every state so a resting or expired login can be redone. -->
+            <button type="button" class="link" data-testid="bot-account-sign-in" onclick={() => void beginSignIn(account.id)}><RailIcon name="key" />{account.status === "needs_auth" ? "Sign in" : "Sign in again"}</button>
             <button
               type="button"
               class="link"

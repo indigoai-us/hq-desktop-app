@@ -183,6 +183,22 @@ describe("BotAccountsSection", () => {
     expect(q('[data-testid="bot-accounts-add"]')).not.toBeNull();
   });
 
+  it("keeps sign-in reachable on active and resting accounts", async () => {
+    const list = accountsFromStatusPayload({
+      accounts: [
+        { id: "acct_1", provider: "codex", label: "Main", status: "active" },
+        { id: "acct_2", provider: "claude", label: "Spare", status: "benched" },
+        { id: "acct_3", provider: "codex", label: "New", status: "needs_auth" },
+      ],
+    })!;
+    mountSection(list, { canManage: true, client: clientWith() });
+    await settle();
+    const label = (id: string) => q(`[data-account-id="${id}"] [data-testid="bot-account-sign-in"]`)?.textContent?.trim();
+    expect(label("acct_1")).toBe("Sign in again");
+    expect(label("acct_2")).toBe("Sign in again");
+    expect(label("acct_3")).toBe("Sign in");
+  });
+
   it("disables remove on the only account", async () => {
     const one = accountsFromStatusPayload({ accounts: [{ id: "acct_1", provider: "grok", label: "Solo" }] })!;
     mountSection(one, { canManage: true, client: clientWith() });
