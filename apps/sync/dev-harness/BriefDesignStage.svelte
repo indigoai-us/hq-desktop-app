@@ -158,7 +158,6 @@
       >{scene === 'creating' ? 'Replay creating' : 'Creating'}</button
     >
     {#if scene !== 'brief'}<button onclick={() => pickScene('brief')}>Brief</button>{/if}
-    <span class="hint">Shift+A · every card</span>
   </nav>
   {#if scene === 'brief'}
     {#key day}
@@ -271,9 +270,5 @@
   .days button.on {
     color: var(--bar-ink-on);
     background: var(--bar-on);
-  }
-  .hint {
-    color: var(--bar-hint);
-    padding: 0 10px 0 6px;
   }
 </style>

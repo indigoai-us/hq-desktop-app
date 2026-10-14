@@ -40,7 +40,10 @@ describe("DailyBrief", () => {
     render({});
     const planned = qa("[data-widget]").length;
     // The live page points to review mode in the title row; review mode has its own bar instead.
-    expect(q('[data-testid="brief-review-hint"]')!.textContent).toBe("Shift+A to view every card");
+    const hint = q('[data-testid="brief-review-hint"]')!;
+    expect(hint.getAttribute("aria-label")).toBe("Shift+A to view every card");
+    // The same key chips as the review bar.
+    expect([...hint.querySelectorAll("kbd")].map((k) => k.textContent)).toEqual(["Shift", "A"]);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
     flushSync();
     expect(q('[data-testid="brief-review"]')).not.toBeNull();

@@ -289,7 +289,7 @@
           >Why these cards</span
         >{/if}
       <!-- A quiet pointer to review mode, left of the run button; review mode has its own bar. -->
-      {#if !allCards}<span class="b-hint" data-testid="brief-review-hint">Shift+A to view every card</span>{/if}
+      {#if !allCards}<span class="b-hint" data-testid="brief-review-hint" aria-label="Shift+A to view every card"><kbd>Shift</kbd><kbd>A</kbd><span>to view every card</span></span>{/if}
       {#if tools}{@render tools()}{/if}
     </div>
   </header>
@@ -527,11 +527,18 @@
   .daily-brief {
     --b-page-ink: var(--b-ink);
   }
+  /* Same keys and words as the review bar's "Shift A to go back". */
   .b-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     margin-right: 8px;
     font-size: 12px;
-    color: var(--b-t3);
+    color: rgb(var(--b-page-ink) / 0.42);
     white-space: nowrap;
+  }
+  .b-hint span {
+    margin-left: 4px;
   }
   .b-review {
     margin-top: 14px;
@@ -545,7 +552,8 @@
     background: rgb(var(--b-page-ink) / 0.05);
   }
   .rv-mode,
-  .b-review kbd {
+  .b-review kbd,
+  .b-hint kbd {
     font-family: var(--b-code);
     font-size: 10px;
     font-weight: 500;
@@ -571,7 +579,8 @@
   .rv-keys span {
     margin-left: 4px;
   }
-  .b-review kbd {
+  .b-review kbd,
+  .b-hint kbd {
     min-width: 22px;
     height: 22px;
     padding: 0 6px;
@@ -581,6 +590,16 @@
     border-radius: 6px;
     color: rgb(var(--b-page-ink) / 0.8);
     background: rgb(var(--b-page-ink) / 0.08);
+  }
+  /* The hint is quieter than the review bar: smaller, fainter keys. */
+  .b-hint kbd {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 5px;
+    font-size: 9px;
+    color: rgb(var(--b-page-ink) / 0.48);
+    background: rgb(var(--b-page-ink) / 0.05);
   }
   .review .slot {
     position: relative;
