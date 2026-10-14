@@ -216,7 +216,18 @@ describe('US-009 ac5: existing layout only, Corey UI constraints', () => {
 
   it('color only carries semantic tone', () => {
     const colorRules = [...css.matchAll(/\.signals-line\[data-tone='([a-z]+)'\]/g)].map((m) => m[1]);
-    expect(colorRules.sort()).toEqual(['active', 'danger', 'ok', 'warn']);
+    expect(colorRules.sort()).toEqual(['active', 'ok', 'warn']);
+  });
+
+  it('recoverable failures are muted with Tap to retry, never red', () => {
+    const markup = SRC.slice(SRC.indexOf('{#snippet localSignals'), SRC.indexOf('{/snippet}', SRC.indexOf('{#snippet signalsResults')));
+    const style = SRC.slice(SRC.indexOf('.signals-line {'), SRC.indexOf('.series-chip {'));
+    expect(markup + style).not.toMatch(/danger/);
+    const failed = signalsRowView(status({ run: run('failed') }), ui());
+    expect(failed.tone).toBe('muted');
+    expect(failed.actions.map((a) => a.label)).toEqual(['Tap to retry']);
+    expect(signalsRowView(status(), ui({ error: 'Could not reach HQ.' })).tone).toBe('muted');
+    expect(signalsRowView(status(), ui({ error: 'Could not reach HQ.', autoRetrying: true })).tone).toBe('muted');
   });
 });
 
@@ -245,6 +256,16 @@ describe('US-009 ac6: flag-off, missing flag, ineligible, and private never expo
 });
 
 describe('US-007 ac7 (Meetings half): provider loss shows one named plain action', () => {
+  it('Resume and Sign in re-open the named provider for the same durable run', () => {
+    const handler = SRC.slice(SRC.indexOf('async function runSignalsAction'), SRC.indexOf('// Load status for completed rows'));
+    expect(handler).toMatch(/case 'open_claude':\s*case 'sign_in_claude':\s*await invoke\('meeting_signals_open_session', \{ \.\.\.args, provider: 'claude' \}\)/);
+    expect(handler).toMatch(/case 'open_codex':\s*case 'sign_in_codex':\s*await invoke\('meeting_signals_open_session', \{ \.\.\.args, provider: 'codex' \}\)/);
+    const resume = handler.slice(handler.indexOf("case 'resume':"));
+    expect(resume).toContain("signalsProviderName(status.run) === 'Codex' ? 'codex' : 'claude'");
+    expect(resume).toContain("await invoke('meeting_signals_open_session', { ...args, provider });");
+    expect(resume.slice(0, resume.indexOf('}\n'))).not.toContain('meeting_signals_generate');
+  });
+
   it('sign-in and resume actions', () => {
     expect(labels(status({ run: run('pending', { recovery: 'sign_in_again', status: 'Claude signed out. Sign in again to continue.' }) }))).toEqual([
       'Sign in to Claude',

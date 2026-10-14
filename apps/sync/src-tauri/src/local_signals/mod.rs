@@ -1,6 +1,7 @@
 //! signals-local-meetings-v1 — personal, on-device meeting signal storage.
 pub mod eligibility;
 pub mod extractor;
+pub mod mcp_server;
 pub mod ontology_tools;
 pub mod receipt;
 pub mod results;

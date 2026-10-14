@@ -171,19 +171,22 @@ mod ac0_interactive_only {
     #[test]
     fn claude_and_codex_plans_are_visible_interactive_sessions() {
         let ws = Path::new("/tmp/hq");
-        let kick = kickoff_prompt(JOB, Path::new("/tmp/hq/p.prompt.md"));
+        let kick = kickoff_prompt(JOB);
+        let mcp = Path::new("/tmp/hq/p.mcp.json");
         let SessionPlan::ClaudeTerminal { command, .. } =
-            plan_session(Provider::Claude, ws, &kick).unwrap()
+            plan_session(Provider::Claude, ws, &kick, mcp).unwrap()
         else {
             panic!()
         };
-        assert!(command.starts_with("claude '"), "{command}");
-        let program = command.split(" '").next().unwrap();
+        assert!(command.starts_with("claude --mcp-config "), "{command}");
+        let words = shell_words(&command);
+        let flags: Vec<&String> = words.iter().take_while(|w| *w != "--").collect();
         for bad in FORBIDDEN_INVOCATIONS {
-            assert!(!program.split_whitespace().any(|a| a == bad), "{bad}");
+            assert!(!flags.iter().any(|a| *a == bad), "{bad}");
         }
+        let codex_kick = codex_kickoff_prompt(JOB, Path::new("/tmp/hq/p.prompt.md"));
         let SessionPlan::CodexApp { thread_url, .. } =
-            plan_session(Provider::Codex, ws, &kick).unwrap()
+            plan_session(Provider::Codex, ws, &codex_kick, mcp).unwrap()
         else {
             panic!()
         };
@@ -197,10 +200,13 @@ mod ac0_interactive_only {
             "claude --print 'go'",
             "claude --output-format json 'go'",
             "codex exec 'go'",
+            "claude --mcp-config /x --strict-mcp-config --tools '' -p -- 'go'",
+            "claude --mcp-config /x --strict-mcp-config --tools '' --print -- 'go'",
         ] {
             let plan = SessionPlan::ClaudeTerminal {
                 workspace: "/tmp".into(),
                 command: command.into(),
+                args: vec![],
             };
             assert!(assert_interactive(&plan).is_err(), "{command}");
         }

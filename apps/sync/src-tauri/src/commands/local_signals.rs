@@ -62,6 +62,20 @@ pub async fn local_signals_enqueue(
     blocking(move || enqueue(&root, &dir, &source_id, input)).await
 }
 
+/// The run context must describe exactly the durable job it names.
+pub fn context_matches(job: &JobRecord, context: &RunContext) -> Result<(), String> {
+    if job.request.company_uid != context.company_uid
+        || job.request.member_uid != context.member_uid
+        || job.request.source_ref != context.source_ref
+        || job.request.source_digest != context.source_digest
+        || job.request.prompt_version != context.prompt_version
+        || job.request.schema_version != context.schema_version
+    {
+        return Err("Run context does not match the signal run".into());
+    }
+    Ok(())
+}
+
 /// Write the stored parsed result for `context.job_id` to the personal store.
 #[tauri::command]
 pub async fn local_signals_commit(
@@ -72,16 +86,7 @@ pub async fn local_signals_commit(
     let dir = runs::runs_dir(&account_id)?;
     let root = hq_root()?;
     blocking(move || {
-        let job = runs::load(&dir, &context.job_id)?;
-        if job.request.company_uid != context.company_uid
-            || job.request.member_uid != context.member_uid
-            || job.request.source_ref != context.source_ref
-            || job.request.source_digest != context.source_digest
-            || job.request.prompt_version != context.prompt_version
-            || job.request.schema_version != context.schema_version
-        {
-            return Err("Run context does not match the signal run".into());
-        }
+        context_matches(&runs::load(&dir, &context.job_id)?, &context)?;
         let value = runs::read_parsed_result(&dir, &context.job_id)?
             .ok_or("No parsed result stored for this run")?;
         let parsed: ParsedResult = serde_json::from_value(value)
@@ -110,7 +115,7 @@ use crate::local_signals::extractor::{
 use crate::local_signals::ontology_tools::{Projection, ToolHost};
 use crate::local_signals::store::valid_segment;
 
-fn projection_for(
+pub(crate) fn projection_for(
     root: &std::path::Path,
     company_slug: &str,
     ctx: &RunContext,
@@ -127,7 +132,7 @@ fn projection_for(
     Ok(Projection::load(&dir, &ctx.company_uid, &ctx.member_uid))
 }
 
-fn host_for(
+pub(crate) fn host_for(
     root: &std::path::Path,
     company_slug: &str,
     ctx: &RunContext,
@@ -146,31 +151,104 @@ fn host_for(
     Ok((host, ledger))
 }
 
-/// Write the prompt and open a fresh, visible Claude Code or Codex session.
-#[tauri::command]
-pub async fn local_signals_launch_session(
+/// Write the prompt, the MCP job config, and the MCP client config, then
+/// plan a fresh, visible Claude Code or Codex session. Pure file work plus
+/// planning; [`local_signals_launch_session`] opens it.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_session(
+    root: &std::path::Path,
+    runs_dir: &std::path::Path,
+    exe: &std::path::Path,
+    company_slug: &str,
+    bot_id: &str,
+    provider: runs::Provider,
+    context: &RunContext,
+    transcript_markdown: &str,
+) -> Result<(SessionPlan, String), String> {
+    use crate::local_signals::mcp_server::{JobConfig, JOB_SCHEMA};
+    context.validate()?;
+    if !valid_segment(bot_id) {
+        return Err("Invalid meeting".into());
+    }
+    context_matches(&runs::load(runs_dir, &context.job_id)?, context)?;
+    let (host, _) = host_for(root, company_slug, context)?;
+    let prompt = extractor::build_prompt(&PromptInput {
+        ctx: context,
+        transcript_markdown,
+        projection: &host.status(),
+    });
+    let path = extractor::prompt_path(root, &context.company_uid, &context.job_id)?;
+    crate::local_signals::store::write_atomic(&path, prompt.as_bytes())?;
+    let workspace = path.parent().ok_or("Invalid run directory")?.to_path_buf();
+    match provider {
+        runs::Provider::Claude => {
+            let job = JobConfig {
+                schema: JOB_SCHEMA.into(),
+                hq_root: root.to_path_buf(),
+                company_slug: company_slug.into(),
+                bot_id: bot_id.into(),
+                runs_dir: runs_dir.to_path_buf(),
+                provider,
+                context: context.clone(),
+            };
+            let job_path = extractor::job_config_path(root, &context.company_uid, &context.job_id)?;
+            let bytes = serde_json::to_vec_pretty(&job).map_err(|_| "Cannot encode job")?;
+            crate::local_signals::store::write_atomic(&job_path, &bytes)?;
+            let mcp_path = extractor::mcp_config_path(root, &context.company_uid, &context.job_id)?;
+            let cfg = extractor::mcp_client_config(exe, &job_path);
+            let bytes = serde_json::to_vec_pretty(&cfg).map_err(|_| "Cannot encode MCP config")?;
+            crate::local_signals::store::write_atomic(&mcp_path, &bytes)?;
+            let kickoff = extractor::kickoff_prompt(&context.job_id);
+            let plan = extractor::plan_session(provider, &workspace, &kickoff, &mcp_path)?;
+            Ok((plan, kickoff))
+        }
+        runs::Provider::Codex => {
+            let kickoff = extractor::codex_kickoff_prompt(&context.job_id, &path);
+            let plan = extractor::plan_session(provider, root, &kickoff, &path)?;
+            Ok((plan, kickoff))
+        }
+    }
+}
+
+/// Prepare and open a fresh, visible Claude Code or Codex session.
+pub async fn launch_session_in(
+    runs_dir: std::path::PathBuf,
     company_slug: String,
+    bot_id: String,
     provider: runs::Provider,
     context: RunContext,
     transcript_markdown: String,
 ) -> Result<SessionPlan, String> {
     let root = hq_root()?;
+    let exe = std::env::current_exe().map_err(|_| "Cannot resolve the HQ app binary")?;
     blocking(move || {
-        context.validate()?;
-        let (host, _) = host_for(&root, &company_slug, &context)?;
-        let prompt = extractor::build_prompt(&PromptInput {
-            ctx: &context,
-            transcript_markdown: &transcript_markdown,
-            projection: &host.status(),
-        });
-        let path = extractor::prompt_path(&root, &context.company_uid, &context.job_id)?;
-        crate::local_signals::store::write_atomic(&path, prompt.as_bytes())?;
-        let kickoff = extractor::kickoff_prompt(&context.job_id, &path);
-        let plan = extractor::plan_session(provider, &root, &kickoff)?;
+        let (plan, kickoff) = prepare_session(
+            &root,
+            &runs_dir,
+            &exe,
+            &company_slug,
+            &bot_id,
+            provider,
+            &context,
+            &transcript_markdown,
+        )?;
         extractor::launch_session(&plan, &kickoff)?;
         Ok(plan)
     })
     .await
+}
+
+#[tauri::command]
+pub async fn local_signals_launch_session(
+    account_id: String,
+    company_slug: String,
+    bot_id: String,
+    provider: runs::Provider,
+    context: RunContext,
+    transcript_markdown: String,
+) -> Result<SessionPlan, String> {
+    let dir = runs::runs_dir(&account_id)?;
+    launch_session_in(dir, company_slug, bot_id, provider, context, transcript_markdown).await
 }
 
 /// The bridge for model tool calls. Only the four registered tools run.

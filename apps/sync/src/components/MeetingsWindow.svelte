@@ -37,6 +37,7 @@
     plainError,
     shouldUpload,
     signalsRowView,
+    providerName as signalsProviderName,
     type MeetingSignalsStatus,
     type SignalsAction,
     type SignalsRowUi,
@@ -1645,7 +1646,10 @@
           await invoke('meeting_signals_open_session', { ...args, provider: 'codex' });
           return null;
         case 'resume': {
-          const provider = status?.run?.request.provider === 'codex' ? 'codex' : 'claude';
+          // Re-open the provider named on the row. The new session's MCP
+          // server recovers the same durable run (no new job, no re-parse
+          // after a stored result).
+          const provider = status?.run && signalsProviderName(status.run) === 'Codex' ? 'codex' : 'claude';
           await invoke('meeting_signals_open_session', { ...args, provider });
           return null;
         }
@@ -2173,7 +2177,7 @@
             {#if live && openCitation[bot.botId]?.key.startsWith(`${item.observationId}:`)}
               {@const cite = openCitation[bot.botId]}
               {#if cite.error}
-                <p class="signals-meta" data-tone="danger">{cite.error}</p>
+                <p class="signals-meta">{cite.error}</p>
               {:else if cite.lines}
                 <blockquote class="signals-excerpt">
                   {#each cite.lines as line, i (i)}<span>{line}</span>{/each}
@@ -2953,9 +2957,6 @@
   .signals-line[data-tone='warn'] {
     color: var(--c-warning, #fbbf24);
   }
-  .signals-line[data-tone='danger'] {
-    color: var(--c-danger, #f87171);
-  }
   .signals-text {
     min-width: 0;
     max-width: 320px;
@@ -3005,9 +3006,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-  }
-  .signals-meta[data-tone='danger'] {
-    color: var(--c-danger, #f87171);
   }
   .signals-item {
     display: flex;

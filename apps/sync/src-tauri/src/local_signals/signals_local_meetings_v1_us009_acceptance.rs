@@ -765,3 +765,27 @@ mod real_data {
         println!("real-data eligibility: scanned={scanned} {counts:?}");
     }
 }
+
+/// US-008 AC8 + `indigo-feature-flags-default-on-as-fail-safes`: the
+/// `desktop.signals-local-meetings-v1` reader keeps the feature ON when the
+/// flag row is absent, archived (omitted by resolve), or unreadable; only an
+/// explicit `false` turns it off. Supersedes the older US-009 AC7 wording.
+mod flag_is_a_default_on_kill_switch {
+    use crate::commands::meeting_signals::{flag_on_from, SIGNALS_FLAG};
+
+    #[test]
+    fn only_explicit_false_turns_it_off() {
+        assert_eq!(SIGNALS_FLAG, "desktop.signals-local-meetings-v1");
+        assert!(flag_on_from(Ok(Some(true))));
+        assert!(flag_on_from(Ok(None)), "absent or archived row stays on");
+        assert!(flag_on_from(Err(())), "unreadable stays on");
+        assert!(!flag_on_from(Ok(Some(false))), "explicit false is the kill switch");
+    }
+
+    #[test]
+    fn every_command_reads_the_flag_through_the_kill_switch_reader() {
+        let src = include_str!("../commands/meeting_signals.rs");
+        assert!(src.contains("flag_on_from(super::hq_pro::feature_flag_read_for_company(SIGNALS_FLAG, company_uid).await)"));
+        assert!(!src.contains("feature_flag_enabled_for_company"));
+    }
+}

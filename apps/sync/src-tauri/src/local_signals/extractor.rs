@@ -27,8 +27,15 @@ pub const OUTPUT_SCHEMA: &str = "hq-local-meeting-extraction/v1";
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum SessionPlan {
-    /// A new Terminal window running interactive `claude` with a kickoff prompt.
-    ClaudeTerminal { workspace: String, command: String },
+    /// A new Terminal window running interactive `claude` wired to the
+    /// desktop app's local-signals MCP server, with every built-in tool off.
+    /// `command` is the exact POSIX shell line; `args` is the same argv
+    /// after the program name, for platforms that quote differently.
+    ClaudeTerminal {
+        workspace: String,
+        command: String,
+        args: Vec<String>,
+    },
     /// `codex app <workspace>` then a new-thread deep link with the kickoff prompt.
     CodexApp {
         workspace: String,
@@ -46,24 +53,147 @@ pub const FORBIDDEN_INVOCATIONS: [&str; 6] = [
     "cloud",
 ];
 
-pub fn kickoff_prompt(job_id: &str, prompt_path: &Path) -> String {
+/// MCP server name the Claude session sees (`mcp__hq-local-signals__*`).
+pub const MCP_SERVER_NAME: &str = "hq-local-signals";
+
+/// MCP tool name -> registered ToolHost name. MCP tool names cannot contain
+/// dots, so `ontology.list` is exposed as `ontology_list`.
+pub const MCP_ONTOLOGY_TOOLS: [(&str, &str); 4] = [
+    ("ontology_list", "ontology.list"),
+    ("ontology_inspect", "ontology.inspect"),
+    ("ontology_search_alias", "ontology.search_alias"),
+    ("queue_entity_candidate", "queue_entity_candidate"),
+];
+/// Read-only: returns the extraction prompt (instructions plus transcript).
+pub const MCP_PROMPT_TOOL: &str = "get_meeting_prompt";
+/// Delivery: validates and stores the session's JSON result.
+pub const MCP_SUBMIT_TOOL: &str = "submit_signals";
+
+/// Every tool the MCP server exposes, in a stable order.
+pub fn mcp_tool_names() -> Vec<&'static str> {
+    let mut v = vec![MCP_PROMPT_TOOL];
+    v.extend(MCP_ONTOLOGY_TOOLS.iter().map(|(m, _)| *m));
+    v.push(MCP_SUBMIT_TOOL);
+    v
+}
+
+/// Claude kickoff: the session gets its instructions and transcript only
+/// through the MCP prompt tool, so no file path is handed over.
+pub fn kickoff_prompt(job_id: &str) -> String {
+    format!(
+        "HQ local meeting signals, job {job_id}. Call the {MCP_PROMPT_TOOL} tool and follow it exactly. Use only the {MCP_SERVER_NAME} tools, and deliver your JSON with {MCP_SUBMIT_TOOL}."
+    )
+}
+
+/// Codex kickoff. The Codex deep link cannot carry an MCP server, so a Codex
+/// session still reads the prompt file (see US-007 remaining work).
+pub fn codex_kickoff_prompt(job_id: &str, prompt_path: &Path) -> String {
     format!(
         "HQ local meeting signals, job {job_id}. Read {} and follow it. Use only the ontology.list, ontology.inspect, ontology.search_alias, and queue_entity_candidate tools.",
         prompt_path.display()
     )
 }
 
+/// `claude` argv (after the program name): the job's MCP server only, all
+/// built-in tools off (no Read, Bash, Grep, so no raw `ontology/entities/**`
+/// access), skills off, and the six MCP tools pre-approved.
+pub fn claude_mcp_args(mcp_config: &Path, kickoff: &str) -> Vec<String> {
+    let allowed = mcp_tool_names()
+        .iter()
+        .map(|t| format!("mcp__{MCP_SERVER_NAME}__{t}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let line = kickoff
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>();
+    vec![
+        "--mcp-config".into(),
+        mcp_config.display().to_string(),
+        "--strict-mcp-config".into(),
+        "--tools".into(),
+        String::new(),
+        "--allowedTools".into(),
+        allowed,
+        "--disable-slash-commands".into(),
+        "--".into(),
+        line,
+    ]
+}
+
+fn sh_word(a: &str) -> String {
+    if !a.is_empty()
+        && a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=,@".contains(c))
+    {
+        a.to_string()
+    } else {
+        format!("'{}'", a.replace('\'', "'\\''"))
+    }
+}
+
+/// Split a POSIX shell line into words (single quotes and backslashes only).
+pub fn shell_words(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut started = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                started = true;
+                for q in chars.by_ref() {
+                    if q == '\'' {
+                        break;
+                    }
+                    cur.push(q);
+                }
+            }
+            '\\' => {
+                started = true;
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            }
+            c if c.is_whitespace() => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            c => {
+                started = true;
+                cur.push(c);
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
+}
+
 pub fn plan_session(
     provider: Provider,
     workspace: &Path,
     kickoff: &str,
+    mcp_config: &Path,
 ) -> Result<SessionPlan, String> {
     let workspace = workspace.display().to_string();
     let plan = match provider {
-        Provider::Claude => SessionPlan::ClaudeTerminal {
-            command: crate::commands::launch::claude_command(None, Some(kickoff))?,
-            workspace,
-        },
+        Provider::Claude => {
+            let args = claude_mcp_args(mcp_config, kickoff);
+            let command = std::iter::once("claude".to_string())
+                .chain(args.iter().map(|a| sh_word(a)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            SessionPlan::ClaudeTerminal {
+                command,
+                args,
+                workspace,
+            }
+        }
         Provider::Codex => SessionPlan::CodexApp {
             thread_url: crate::commands::launch::codex_thread_url(kickoff),
             workspace,
@@ -73,16 +203,33 @@ pub fn plan_session(
     Ok(plan)
 }
 
-/// Refuse any plan whose program arguments would run a model non-interactively.
+/// Refuse any plan whose program arguments would run a model non-interactively,
+/// and any Claude plan that is not locked to the job's MCP server with every
+/// built-in tool off.
 pub fn assert_interactive(plan: &SessionPlan) -> Result<(), String> {
     let argv: Vec<String> = match plan {
         SessionPlan::ClaudeTerminal { command, .. } => {
-            // Only the program and its flags; the quoted kickoff prompt is data.
-            let program = command.split(" '").next().unwrap_or(command);
-            if !(program == "claude" || program.starts_with("claude ")) {
+            let words = shell_words(command);
+            if words.first().map(String::as_str) != Some("claude") {
                 return Err("Claude sessions must run the interactive claude program".into());
             }
-            program.split_whitespace().map(String::from).collect()
+            // Only the program and its flags; the kickoff prompt after `--` is data.
+            let flags: Vec<String> = words
+                .iter()
+                .take_while(|w| w.as_str() != "--")
+                .cloned()
+                .collect();
+            let has = |f: &str| flags.iter().any(|w| w == f);
+            let tools_off = flags
+                .windows(2)
+                .any(|w| w[0] == "--tools" && w[1].is_empty());
+            if !has("--mcp-config") || !has("--strict-mcp-config") || !tools_off {
+                return Err(
+                    "Claude sessions must use only the local signals tools with built-in tools off"
+                        .into(),
+                );
+            }
+            flags
         }
         SessionPlan::CodexApp { thread_url, .. } => {
             if !thread_url.starts_with("codex://threads/new?prompt=") {
@@ -100,22 +247,44 @@ pub fn assert_interactive(plan: &SessionPlan) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the planned session through the existing visible launchers only.
+/// Open the planned session through the visible Terminal / Codex launchers only.
 pub fn launch_session(plan: &SessionPlan, kickoff: &str) -> Result<(), String> {
     assert_interactive(plan)?;
     match plan {
-        SessionPlan::ClaudeTerminal { workspace, .. } => {
-            crate::commands::launch::launch_claude_code(
-                workspace.clone(),
-                None,
-                Some(kickoff.to_string()),
-            )
-        }
+        SessionPlan::ClaudeTerminal {
+            workspace,
+            command,
+            args,
+        } => crate::commands::launch::launch_claude_session_line(workspace, command, args),
         SessionPlan::CodexApp { workspace, .. } => crate::commands::launch::launch_codex_workspace(
             workspace.clone(),
             Some(kickoff.to_string()),
         ),
     }
+}
+
+/// The MCP client config Claude loads with `--mcp-config`: one stdio server,
+/// the desktop binary in `--local-signals-mcp` mode for this job.
+pub fn mcp_client_config(exe: &Path, job_config: &Path) -> Value {
+    serde_json::json!({
+        "mcpServers": {
+            MCP_SERVER_NAME: {
+                "type": "stdio",
+                "command": exe.display().to_string(),
+                "args": [super::mcp_server::MCP_ARG, job_config.display().to_string()],
+            }
+        }
+    })
+}
+
+/// `<run>.mcp-job.json`: the validated job the MCP server serves.
+pub fn job_config_path(hq_root: &Path, company_uid: &str, job_id: &str) -> Result<PathBuf, String> {
+    Ok(run_record_path(&company_root(hq_root, company_uid)?, job_id)?.with_extension("mcp-job.json"))
+}
+
+/// `<run>.mcp.json`: the MCP client config passed to Claude.
+pub fn mcp_config_path(hq_root: &Path, company_uid: &str, job_id: &str) -> Result<PathBuf, String> {
+    Ok(run_record_path(&company_root(hq_root, company_uid)?, job_id)?.with_extension("mcp.json"))
 }
 
 // ── prompt ───────────────────────────────────────────────────────────────────
@@ -480,6 +649,24 @@ pub enum ExtractOutcome {
     },
 }
 
+/// Record exact guard failures for a job (diagnostics only, never the UI).
+pub fn write_diagnostics(
+    hq_root: &Path,
+    ctx: &RunContext,
+    failures: &[GuardFailure],
+) -> Result<(), String> {
+    let d = Diagnostics {
+        job_id: ctx.job_id.clone(),
+        at: chrono::Utc::now().to_rfc3339(),
+        failures: failures.to_vec(),
+    };
+    let bytes = serde_json::to_vec_pretty(&d).map_err(|_| "Cannot encode diagnostics")?;
+    write_atomic(
+        &diagnostics_path(hq_root, &ctx.company_uid, &ctx.job_id)?,
+        &bytes,
+    )
+}
+
 /// Validate the session output and, only if it passes, commit it locally. The
 /// run context records the projection state and watermark the tools saw.
 pub fn extract_and_store(
@@ -494,16 +681,7 @@ pub fn extract_and_store(
     ctx.projection_watermark = status.watermark.clone().unwrap_or_else(|| "none".into());
     match validate_output(output, &ctx, transcript, host) {
         Err(failures) => {
-            let d = Diagnostics {
-                job_id: ctx.job_id.clone(),
-                at: chrono::Utc::now().to_rfc3339(),
-                failures: failures.clone(),
-            };
-            let bytes = serde_json::to_vec_pretty(&d).map_err(|_| "Cannot encode diagnostics")?;
-            write_atomic(
-                &diagnostics_path(hq_root, &ctx.company_uid, &ctx.job_id)?,
-                &bytes,
-            )?;
+            write_diagnostics(hq_root, &ctx, &failures)?;
             Ok(ExtractOutcome::Rejected { failures })
         }
         Ok(parsed) => Ok(ExtractOutcome::Stored {

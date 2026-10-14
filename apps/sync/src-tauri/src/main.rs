@@ -341,6 +341,11 @@ fn main() {
 
 #[cfg(not(feature = "meet-native-webdriver"))]
 fn main() {
+    // signals-local-meetings-v1 US-007: `--local-signals-mcp <job.json>` turns
+    // this binary into the stdio MCP server for one local signal run, opened
+    // by the visible Claude session Meetings launched. It must run before
+    // Sentry, single-instance, and Tauri; it exits and never returns.
+    local_signals::mcp_server::run_if_requested();
     // LaunchAgent work is delegated to the user's node installation while
     // launchd sees this Indigo-signed, stable app executable as argv[0].
     launchd_task::run_if_requested();

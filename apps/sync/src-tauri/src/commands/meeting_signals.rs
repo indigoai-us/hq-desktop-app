@@ -50,15 +50,23 @@ async fn blocking<T: Send + 'static>(
         .map_err(|_| "worker_failed".to_string())?
 }
 
+/// Kill-switch semantics for `desktop.signals-local-meetings-v1`, per
+/// `indigo-feature-flags-default-on-as-fail-safes` and US-008 AC8: the feature
+/// stays ON when the flag row is absent, archived, or unreadable; only an
+/// explicit `false` turns it off. (This supersedes the older US-009 AC7
+/// wording that hid the action for a missing or unreadable flag.)
+pub fn flag_on_from(read: Result<Option<bool>, ()>) -> bool {
+    !matches!(read, Ok(Some(false)))
+}
+
 async fn flag_on(company_uid: &str) -> bool {
-    // Fails closed: a missing or unreadable flag hides the action.
-    super::hq_pro::feature_flag_enabled_for_company(SIGNALS_FLAG, Some(company_uid)).await
+    flag_on_from(super::hq_pro::feature_flag_read_for_company(SIGNALS_FLAG, company_uid).await)
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingSignalsStatus {
-    /// False when the flag is off, missing, or unreadable. Nothing else is shown.
+    /// False only when the flag is explicitly off. Nothing else is shown.
     pub enabled: bool,
     pub eligible: bool,
     pub ineligible_reason: Option<IneligibleReason>,
@@ -286,6 +294,8 @@ pub async fn meeting_signals_open_session(
     }
     let hq = hq_root()?;
     let dir = runs_dir().await?;
+    let runs_for_launch = dir.clone();
+    let bot_for_launch = bot_id.clone();
     let (slug, ctx, body) = blocking(move || {
         let e = eligibility::evaluate(&hq, &company_uid, &member_uid, &bot_id);
         if !e.eligible {
@@ -303,7 +313,14 @@ pub async fn meeting_signals_open_session(
         ))
     })
     .await?;
-    super::local_signals::local_signals_launch_session(slug, provider, ctx, body)
+    super::local_signals::launch_session_in(
+        runs_for_launch,
+        slug,
+        bot_for_launch,
+        provider,
+        ctx,
+        body,
+    )
         .await
         .map(|_| ())
         .map_err(|e| {

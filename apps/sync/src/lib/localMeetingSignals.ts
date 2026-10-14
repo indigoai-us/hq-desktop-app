@@ -53,7 +53,8 @@ export type SignalsAction =
   | 'sign_in_codex'
   | 'resume';
 
-export type SignalsTone = 'muted' | 'active' | 'ok' | 'warn' | 'danger';
+/** Recoverable failures are muted, never red (indigo-ui-never-raw-errors-always-heal-path). */
+export type SignalsTone = 'muted' | 'active' | 'ok' | 'warn';
 
 export interface SignalsRowUi {
   /** True from the click until the backend answers. Blocks duplicates. */
@@ -125,7 +126,7 @@ export function nextRetryDelay(attempts: number): number | null {
   return attempts < RETRY_DELAYS_MS.length ? RETRY_DELAYS_MS[attempts] : null;
 }
 
-function providerName(run: NonNullable<MeetingSignalsStatus['run']>): 'Claude' | 'Codex' {
+export function providerName(run: NonNullable<MeetingSignalsStatus['run']>): 'Claude' | 'Codex' {
   if (/codex/i.test(run.status ?? '') || run.claimedBy === 'codex') return 'Codex';
   if (run.request.provider === 'codex') return 'Codex';
   return 'Claude';
@@ -175,8 +176,8 @@ export function signalsRowView(
   if (ui.submitting) return view('Starting…', 'active', [], true);
   if (ui.error) {
     return ui.autoRetrying
-      ? view(`${ui.error} Retrying…`, 'danger', [], true)
-      : view(ui.error, 'danger', [RETRY]);
+      ? view(`${ui.error} Retrying…`, 'muted', [], true)
+      : view(ui.error, 'muted', [RETRY]);
   }
   if (status.localComplete) {
     // US-010: a complete local run can always be read in place.
@@ -217,7 +218,7 @@ export function signalsRowView(
     case 'cancelled':
       return view('Cancelled.', 'muted', [GENERATE]);
     case 'failed':
-      return view('Signal generation stopped.', 'danger', [RETRY]);
+      return view('Signal generation stopped.', 'muted', [RETRY]);
     default:
       return HIDDEN;
   }

@@ -340,6 +340,26 @@ pub(crate) async fn feature_flag_read(flag: &str) -> Result<Option<bool>, ()> {
     .await
 }
 
+/// Company-scoped [`feature_flag_read`]: reads the company scope first and
+/// falls back to the unscoped resolve when the scoped read is unusable (older
+/// server, 403, transport). `Err(())` only when neither answer is trustworthy.
+pub(crate) async fn feature_flag_read_for_company(
+    flag: &str,
+    company_uid: &str,
+) -> Result<Option<bool>, ()> {
+    let scoped = feature_flag_resolve_path(Some(company_uid));
+    if scoped != "/v1/flags/resolve" {
+        let read = feature_flag_read_with_fetch(flag, || {
+            hq_pro_fetch(scoped.clone(), "GET".to_string(), None, None)
+        })
+        .await;
+        if read.is_ok() {
+            return read;
+        }
+    }
+    feature_flag_read(flag).await
+}
+
 async fn feature_flag_read_with_fetch<Fetch, FetchFuture>(
     flag: &str,
     fetch: Fetch,

@@ -45,7 +45,7 @@ pub enum ProviderChoice {
 }
 
 impl ProviderChoice {
-    fn accepts(self, p: Provider) -> bool {
+    pub fn accepts(self, p: Provider) -> bool {
         matches!(
             (self, p),
             (ProviderChoice::Any, _)
@@ -69,7 +69,7 @@ pub enum RunState {
 }
 
 impl RunState {
-    fn is_terminal(self) -> bool {
+    pub fn is_terminal(self) -> bool {
         matches!(
             self,
             RunState::Complete | RunState::Cancelled | RunState::Failed
@@ -622,13 +622,13 @@ pub(crate) fn runs_dir(account_id: &str) -> Result<PathBuf, String> {
 }
 
 #[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     // Signal 0 checks existence without delivering anything. EPERM still means alive.
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 #[cfg(not(unix))]
-fn pid_alive(_pid: u32) -> bool {
+pub(crate) fn pid_alive(_pid: u32) -> bool {
     // Conservative: without a liveness probe, treat the owner as alive so a
     // second session cannot take the run; the member can still cancel + resume.
     true
