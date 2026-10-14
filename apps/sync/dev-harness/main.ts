@@ -38,8 +38,14 @@ setBadgesEnabledSource(() => true);
 // over the shell, with the sample badges. `?launch=empty` shows it to someone
 // with no badges yet: three face-down cards and the badges they are closest to.
 const launch = new URLSearchParams(window.location.search).get('launch');
+// `&launchBadges=og,maker:2` shows it with exactly those badges (same format as ?earn).
+const launchBadges = new URLSearchParams(window.location.search).get('launchBadges');
 if (launch !== null) {
   if (launch === 'empty') setBadgeSource(() => []);
+  else if (launchBadges) {
+    const chosen = earnedFromUrl('?earn=' + encodeURIComponent(launchBadges));
+    setBadgeSource(() => chosen);
+  }
   setLaunchPreview(true);
 }
 
