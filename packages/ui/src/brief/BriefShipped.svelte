@@ -159,11 +159,15 @@
 </div>
 
 <style>
+  /* The title block and the totals share one centre line. */
   .top {
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
+    align-items: center;
     gap: 12px;
+  }
+  .top h3 {
+    margin-top: 0;
   }
   .win {
     margin-top: 4px;
