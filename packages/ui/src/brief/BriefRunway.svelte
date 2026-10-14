@@ -1,10 +1,11 @@
 <script lang="ts">
   /**
    * Focus time: where today's one clear block is, which priority fits it, and
-   * that it is worth protecting. The runway runs 8:00 to 18:00: every call is
-   * a glass pill (dashed when projected, hatched when a busy hold), and the
-   * padded gaps between them are classed deep / solid / shallow. The longest
-   * gap carries a soft outer glow and takes priority 1; the next gap takes
+   * that it is worth protecting. The runway runs 8 AM to 6 PM on one thin
+   * track: the padded gaps are filled segments in page ink (deep and solid
+   * full, shallow lighter), every call is empty track with a thin tick at its
+   * middle (fainter when projected or a busy hold). The longest gap is the
+   * one terracotta segment and takes priority 1; the next gap takes
    * priority 2, and so on. Hover a gap for its neighbours, the suggested
    * task, Start in <engine>, and an event draft that blocks it (copied to the
    * clipboard; the brief never writes the calendar).
@@ -13,7 +14,6 @@
   import { humanTitle } from "./brief-distill.js";
   import {
     calendarDraft,
-    clockMin,
     focusRunway,
     gapRange,
     gapWhere,
@@ -64,6 +64,8 @@
   };
   const promptFor = (p: BriefPriority, g: FocusGap): string => prompts[p.itemId ?? ""] ?? priorityPrompt(p, g);
   const gapLabel = (g: FocusGap) => `${minutesText(g.minutes)} · ${gapRange(g)}`;
+  /** A ruler hour in plain words: 8 AM, 12 PM, 2 PM. */
+  const hourLabel = (h: number) => `${h % 12 || 12} ${h >= 12 ? "PM" : "AM"}`;
 
   async function block(g: FocusGap): Promise<void> {
     if (await copyBriefPrompt(calendarDraft(g, task(g), dateLabel))) {
@@ -146,6 +148,7 @@
       ></div>
     {/each}
     {#each runway.pills as p (p.event.id)}
+      <!-- A call is empty track with a thin tick at its middle; the title is for the hover and screen readers. -->
       <div
         class="mt"
         class:proj={p.event.projected}
@@ -154,20 +157,20 @@
         role="group"
         aria-label="{p.event.busy ? 'Busy' : p.event.title}, {rangeText(p.event)}"
         data-testid="brief-runway-pill"
-        style="left:{pct(p.startMin)}%;width:{Math.max(2.2, pct(p.endMin) - pct(p.startMin))}%"
+        style="left:{pct(p.startMin)}%;width:{pct(p.endMin) - pct(p.startMin)}%"
         use:peek={{ state: brief, content: () => pillPeek(p) }}
-      >{#if !p.event.busy}<span>{p.event.title}</span>{/if}</div>
+      >{#if !p.event.busy}<span class="vh" aria-hidden="true">{p.event.title}</span>{/if}</div>
     {/each}
     {#if needle != null}<div class="ndl" data-testid="brief-runway-now" style="left:{needle}%"></div>{/if}
   </div>
   <div class="rul" aria-hidden="true">
     {#each RULER_HOURS as h (h)}
-      <span class:first={h === RULER_HOURS[0]} class:last={h === RULER_HOURS[RULER_HOURS.length - 1]} style="left:{pct(h * 60)}%">{clockMin(h * 60)}</span>
+      <span class:first={h === RULER_HOURS[0]} class:last={h === RULER_HOURS[RULER_HOURS.length - 1]} style="left:{pct(h * 60)}%">{hourLabel(h)}</span>
     {/each}
   </div>
 
   {#if shown.length}
-    <div class="gaps" style="--n:{rows > 1 ? 1 : shown.length}">
+    <div class="gaps" class:list={rows > 1} style="--n:{rows > 1 ? 1 : shown.length}">
       {#each shown as g (g.id)}
         {@const p = suggestionFor(priorities, g)}
         <div
@@ -181,10 +184,16 @@
           data-launch={p ? priorityLaunchId(p) : undefined}
           use:peek={{ state: brief, content: () => gapPeek(g) }}
         >
-          <b>{gapLabel(g)}{#if g.rank === 1}<em class="pr">protect</em>{/if}</b>
-          <div class="tk" data-testid="brief-runway-task">{task(g) ?? "Unassigned"}</div>
-          {#if rows > 1 && p?.because}<div class="fit">{p.because}</div>{/if}
-          {#if copied === g.id}<div class="note" role="status">Event draft copied</div>{/if}
+          <!-- What to do with the gap at the top; how long and when at the tile's foot. -->
+          <div class="tx">
+            <div class="tk" class:un={!p} data-testid="brief-runway-task">{task(g) ?? "Unassigned"}</div>
+            {#if p?.because}<div class="fit">{p.because}</div>{/if}
+            {#if copied === g.id}<div class="note" role="status">Event draft copied</div>{/if}
+          </div>
+          <div class="ft">
+            <span class="du">{minutesText(g.minutes)}</span><span class="rg"><span class="sep">{" · "}</span>{gapRange(g)}</span>
+            {#if g.rank === 1}<em class="pr">protect</em>{/if}
+          </div>
         </div>
       {/each}
     </div>
@@ -204,130 +213,131 @@
   .hdt {
     min-width: 0;
   }
+  /* Provisional: a mono caps chip, soft fill, no rim. */
   .tag {
     flex: none;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    padding: 3px 7px;
-    border-radius: 6px;
-    border: 1px solid var(--b-line);
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    margin-top: 8px;
+    padding: 0 7px;
+    border-radius: 999px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: var(--b-t3);
+    background: rgb(var(--b-ink) / 0.06);
+    border: 0;
     white-space: nowrap;
     cursor: default;
   }
 
-  /* The runway: a flat glass track. Shadows fall outward only; no blur filters. */
+  /* The runway: one thin track. Free time is filled in page ink, calls are the empty
+     stretches between, each marked by a thin tick. No rims, no blur filters. */
   .rw {
     position: relative;
-    height: 46px;
-    margin-top: 14px;
-    border-radius: 6px;
-    background: rgb(var(--b-ink) / 0.05);
-    border: 0;
+    flex: none;
+    height: 8px;
+    margin-top: 22px;
+    border-radius: 999px;
+    background: rgb(var(--b-ink) / 0.06);
   }
   .gp {
     position: absolute;
-    top: 5px;
-    bottom: 5px;
-    border-radius: 6px;
-    border: 0;
+    top: 0;
+    bottom: 0;
+    border-radius: 999px;
+    background: rgb(var(--b-ink) / 0.55);
     cursor: default;
-    transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+    transition: background 0.2s, filter 0.2s;
   }
-  .gp.deep {
-    background: rgb(var(--b-ink) / 0.06);
-  }
-  .gp.solid {
-    background: rgb(var(--b-ink) / 0.035);
+  /* A taller hit area than the 8 px it draws. */
+  .gp::after {
+    content: "";
+    position: absolute;
+    top: -8px;
+    bottom: -8px;
+    left: 0;
+    right: 0;
   }
   .gp.shallow {
-    background: transparent;
-    border-color: rgb(var(--b-ink) / 0.05);
+    background: rgb(var(--b-ink) / 0.3);
   }
   .gp:hover,
   .gp:focus-visible {
-    border-color: rgb(var(--b-ink) / 0.3);
+    background: rgb(var(--b-ink) / 0.8);
     outline: none;
   }
-  /* The one to protect: a green edge. */
+  /* The one to protect: the card's single accent. */
   .gp.pro {
-    border-color: rgba(52, 199, 89, 0.5);
-    box-shadow: none;
+    background: var(--b-hot, #c9765a);
   }
   .gp.pro:hover,
   .gp.pro:focus-visible {
-    border-color: rgba(52, 199, 89, 0.8);
-    box-shadow: none;
+    background: var(--b-hot, #c9765a);
+    filter: brightness(0.9);
   }
-  /* Calls: raised glass pills, no colour. */
+  /* A call: empty track, a thin dark tick at its middle. */
   .mt {
     position: absolute;
-    top: 9px;
-    bottom: 9px;
-    border-radius: 8px;
-    background: rgb(var(--b-ink) / 0.07);
-    border: 1px solid rgb(var(--b-ink) / 0.14);
-    box-shadow: none;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    color: var(--b-t2);
-    display: grid;
-    place-items: center;
-    overflow: hidden;
-    white-space: nowrap;
-    padding: 0 5px;
+    top: -8px;
+    bottom: -8px;
     cursor: default;
-    z-index: 1;
   }
-  .mt span {
+  .mt::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    translate: -50% 0;
+    border-radius: 1px;
+    background: rgb(var(--b-ink) / 0.5);
+    transition: background 0.2s;
+  }
+  .mt:hover::before {
+    background: rgb(var(--b-ink) / 0.9);
+  }
+  .mt.proj::before,
+  .mt.tent::before,
+  .mt.busy::before {
+    background: rgb(var(--b-ink) / 0.25);
+  }
+  .vh {
+    position: absolute;
+    width: 1px;
+    height: 1px;
     overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
-  }
-  /* A block too narrow for a readable label shows none; its hover still names the meeting. */
-  .mt {
-    container-type: inline-size;
-  }
-  @container (max-width: 52px) {
-    .mt span {
-      display: none;
-    }
-  }
-  .mt.proj {
-    background: rgb(var(--b-ink) / 0.03);
-    border: 1px dashed rgb(var(--b-ink) / 0.35);
-    box-shadow: none;
-    color: var(--b-t3);
-  }
-  .mt.tent {
-    border-style: dashed;
-  }
-  .mt.busy {
-    background: repeating-linear-gradient(135deg, rgb(var(--b-ink) / 0.1) 0 3px, transparent 3px 7px);
-    box-shadow: none;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
   .ndl {
     position: absolute;
-    top: -4px;
-    bottom: -4px;
+    top: -6px;
+    bottom: -6px;
     width: 1px;
-    background: var(--b-decision);
-    box-shadow: none;
+    translate: -50% 0;
+    background: var(--b-t1);
     z-index: 2;
     pointer-events: none;
   }
   .rul {
     position: relative;
+    flex: none;
     height: 14px;
-    margin-top: 4px;
-    font-family: var(--b-mono);
+    margin-top: 10px;
     font-size: 11px;
+    line-height: 14px;
+    font-variant-numeric: tabular-nums;
     color: var(--b-t3);
   }
   .rul span {
     position: absolute;
     translate: -50% 0;
+    white-space: nowrap;
   }
   .rul span.first {
     translate: 0 0;
@@ -336,87 +346,168 @@
     translate: -100% 0;
   }
 
-  /* Ranked gaps: glass tiles, three across in a one-row slot, a list in a tall one. */
+  /* Ranked gaps: glass tiles that fill the rest of the card, three across in a one-row
+     slot, a list in a tall one. */
   .gaps {
+    flex: 1;
     display: grid;
     grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr));
+    grid-auto-rows: 1fr;
     gap: 8px;
-    margin-top: 10px;
+    margin-top: 18px;
   }
   .g {
     position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
     min-width: 0;
-    padding: 8px 10px;
-    border-radius: 6px;
-    font-size: 11px;
-    line-height: 1.3;
-    background: rgb(var(--b-ink) / 0.04);
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--b-row-bg, rgb(var(--b-ink) / 0.12));
     border: 0;
     box-shadow: none;
     cursor: default;
-    transition: border-color 0.2s, background 0.2s;
+    transition: background 0.2s;
   }
   .g:hover,
   .g:focus-visible {
-    border-color: rgb(var(--b-ink) / 0.22);
+    background: var(--b-row-hover, rgb(var(--b-ink) / 0.2));
     outline: none;
   }
-  .g.pro {
-    border-color: rgba(52, 199, 89, 0.35);
-  }
-  .g b {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-weight: 500;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    white-space: nowrap;
-    overflow: hidden;
-  }
-  .pr {
-    font-style: normal;
-    font-size: 11px;
-    letter-spacing: 0;
-    color: var(--b-ok);
+  .tx {
+    min-width: 0;
   }
   .tk {
+    font-size: 13px;
+    line-height: 1.35;
     color: var(--b-t1);
-    margin-top: 2px;
     overflow: hidden;
-    white-space: normal;
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
     overflow-wrap: anywhere;
   }
+  .tk.un {
+    color: var(--b-t3);
+  }
   .fit {
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.35;
     color: var(--b-t2);
-    font-size: 11px;
-    margin-top: 2px;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
   .note {
-    margin-top: 3px;
+    margin-top: 4px;
     font-size: 11px;
-    color: var(--b-ok);
+    color: var(--b-t2);
+  }
+  /* The foot: how long, and when underneath, muted; the protected gap carries the
+     highlight label on the right. */
+  .ft {
+    margin-top: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+    align-items: center;
+    min-width: 0;
+    white-space: nowrap;
+  }
+  .du {
+    grid-area: 1 / 1;
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+    color: var(--b-t1);
+  }
+  .rg {
+    grid-area: 2 / 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+    font-size: 11px;
+    line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+    color: var(--b-t3);
+  }
+  /* The " · " joins duration and range for screen readers and copy; the line break does it here. */
+  .sep {
+    display: none;
+  }
+  .pr {
+    grid-area: 1 / 2;
+    justify-self: end;
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 7px;
+    border-radius: 999px;
+    font-family: var(--b-code);
+    font-style: normal;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--b-on-hot, #fff);
+    background: var(--b-hot, #c9765a);
+  }
+  /* A tall slot: one gap per row, the task on the left and the time on the right. */
+  .list .g {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+  .list .tx {
+    flex: 1;
+  }
+  .list .tk {
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+  .list .fit {
+    display: block;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  /* In a row the foot reads on one line: tag, duration, range. */
+  .list .ft {
+    flex: none;
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .list .pr {
+    order: -1;
+    align-self: center;
+    margin-right: 4px;
+  }
+  .list .rg {
+    margin: 0;
   }
   .more {
+    flex: none;
     margin-top: 8px;
     text-align: center;
-    padding: 5px 12px;
-    border-radius: 6px;
+    padding: 6px 10px;
+    border-radius: 10px;
     font-size: 13px;
-    color: rgb(var(--b-ink) / 0.78);
+    color: var(--b-t2);
+    background: var(--b-row-bg, rgb(var(--b-ink) / 0.12));
     cursor: default;
+    transition: background 0.2s;
   }
   .more:hover,
   .more:focus-visible {
-    background: rgb(var(--b-ink) / 0.045);
+    background: var(--b-row-hover, rgb(var(--b-ink) / 0.2));
     outline: none;
   }
 </style>

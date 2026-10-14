@@ -210,7 +210,7 @@ describe("BriefRunway", () => {
     expect(pro[0]!.dataset.rank).toBe("1");
     expect(q('[data-testid="brief-runway"]')!.dataset.protect).toBe(`${9 * 60 + 25}-${12 * 60 + 50}`);
     expect(q('[data-testid="brief-runway-now"]')).toBeNull(); // 7:42 is before the runway starts
-    expect(q(".rul")!.textContent).toBe("8:0010:0012:002:004:006:00");
+    expect(q(".rul")!.textContent).toBe("8 AM10 AM12 PM2 PM4 PM6 PM");
   });
 
   it("the needle sits at now inside the day", () => {
@@ -331,13 +331,13 @@ describe("BriefRunway", () => {
     expect(qa('[data-testid="brief-runway-task"]').map((t) => t.textContent)).toEqual(["Close out the SAFE allotment", "Unassigned", "Unassigned", "Unassigned"]);
   });
 
-  it("the component's CSS is flat: no inner shadow, no glow, no backdrop-filter; the protected block keeps a green edge", () => {
+  it("the component's CSS is flat: no inner shadow, no glow, no backdrop-filter; the protected block is the terracotta accent", () => {
     const src = readFileSync(resolve(process.cwd(), "src/brief/BriefRunway.svelte"), "utf8");
     const style = (src.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? "").replace(/\/\*[\s\S]*?\*\//g, "");
     expect(style.length).toBeGreaterThan(100);
     expect(style).not.toMatch(/inset/);
     expect(style).not.toMatch(/backdrop-filter/);
     expect(style).not.toMatch(/box-shadow:[^;]*\d+px rgba\(52, 199, 89/);
-    expect(style).toMatch(/\.gp\.pro\s*\{[^}]*border-color:\s*rgba\(52, 199, 89/);
+    expect(style).toMatch(/\.gp\.pro\s*\{[^}]*background:\s*var\(--b-hot/);
   });
 });
