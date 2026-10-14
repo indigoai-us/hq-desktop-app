@@ -485,15 +485,22 @@ pub async fn list_company_members(
 pub async fn get_unread_summary(app: AppHandle) -> Result<UnreadSummary, String> {
     let unread_dms = dm_notify::current_unread_dms(&app);
 
-    let pending_requests = match auth_and_base("MESSAGES_UNREAD").await {
-        Ok((base, token)) => {
-            let url = format!("{base}/v1/notify/connections/requests");
-            match get_json::<RequestsResponse>(&url, &token, "MESSAGES_UNREAD").await {
-                Ok(r) => r.requests.len() as u32,
-                Err(_) => 0, // already logged; degrade to 0 rather than fail the badge
+    // Connection requests are person-only on hq-pro; an outpost session has
+    // none and would only collect a 403 per badge refresh.
+    let pending_requests = if crate::commands::auth::skip_person_only_call("MESSAGES_UNREAD requests")
+    {
+        0
+    } else {
+        match auth_and_base("MESSAGES_UNREAD").await {
+            Ok((base, token)) => {
+                let url = format!("{base}/v1/notify/connections/requests");
+                match get_json::<RequestsResponse>(&url, &token, "MESSAGES_UNREAD").await {
+                    Ok(r) => r.requests.len() as u32,
+                    Err(_) => 0, // already logged; degrade to 0 rather than fail the badge
+                }
             }
+            Err(_) => 0,
         }
-        Err(_) => 0,
     };
 
     log(

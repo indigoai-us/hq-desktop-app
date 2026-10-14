@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 #[cfg(test)]
 pub(crate) static HQ_TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-mod expires_at_flexible {
+pub(crate) mod expires_at_flexible {
     use serde::{self, Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
@@ -100,6 +100,37 @@ impl CognitoRefreshFailureClass {
     }
 }
 
+/// Message returned when no credential of any kind is usable on this device.
+pub const NOT_SIGNED_IN_MESSAGE: &str = "Not signed in";
+
+/// Where a resolved session's tokens came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenSource {
+    /// The person token store: a person who signed in.
+    Person,
+    /// A session minted from the outpost machine credentials.
+    Machine,
+}
+
+/// Tokens plus the source that produced them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSession {
+    pub tokens: CognitoTokens,
+    pub source: TokenSource,
+}
+
+/// Why the machine identity fallback did not produce a usable session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineFailure {
+    /// Mint failed or timed out. Recoverable: try again later.
+    Unavailable,
+    /// The minted token is not an outpost token. `Some(Agent)` is a fleet
+    /// agent credential; `None` is a person-shaped token where a machine one
+    /// was expected. Neither is ever signed in.
+    Refused(Option<NonHumanPrincipal>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CognitoTokenResolutionError {
     pub message: String,
@@ -107,16 +138,35 @@ pub struct CognitoTokenResolutionError {
     pub requires_reauth: bool,
     /// Closed-set attribution only; never contains response text.
     pub rejection_class: &'static str,
+    /// Set only when the person store was empty and the machine identity
+    /// fallback ran but failed.
+    pub machine: Option<MachineFailure>,
 }
 
 impl CognitoTokenResolutionError {
-    fn plain(message: String) -> Self {
+    pub fn plain(message: String) -> Self {
         Self {
             message,
             refresh_failure_class: None,
             requires_reauth: false,
             rejection_class: "none",
+            machine: None,
         }
+    }
+
+    fn machine(message: String, failure: MachineFailure) -> Self {
+        Self {
+            machine: Some(failure),
+            ..Self::plain(message)
+        }
+    }
+
+    /// True when no credential of any kind was found: the plain signed-out
+    /// verdict, as opposed to a rejected or temporarily unusable one.
+    pub fn is_not_signed_in(&self) -> bool {
+        self.message == NOT_SIGNED_IN_MESSAGE
+            && self.refresh_failure_class.is_none()
+            && self.machine.is_none()
     }
 
     fn refresh(
@@ -130,6 +180,7 @@ impl CognitoTokenResolutionError {
             refresh_failure_class: Some(failure_class),
             requires_reauth,
             rejection_class,
+            machine: None,
         }
     }
 }
@@ -384,6 +435,9 @@ pub enum AuthSessionStatus {
     RefreshTemporarilyUnavailable,
     /// Usable credentials that belong to a fleet agent or outpost, not a person.
     NonHumanPrincipal,
+    /// No person session, and the outpost machine identity could not mint a
+    /// session (the `hq` CLI failed or timed out). Recoverable.
+    MachineUnavailable,
 }
 
 /// Classify a missing token-store result after startup resolution fails.
@@ -1328,22 +1382,111 @@ pub fn non_human_principal_from_tokens(tokens: &CognitoTokens) -> Option<NonHuma
 /// expired generation wins, resolution retries from that generation rather
 /// than returning an already-expired access token.
 pub async fn get_valid_tokens() -> Result<CognitoTokens, String> {
-    resolve_tokens(false, COGNITO_ENDPOINT).await
+    resolve_session(false).await.map(|session| session.tokens)
 }
 
 /// Return the same validated tokens as `get_valid_tokens`, preserving only a
 /// bounded refresh-failure class for startup diagnostics.
 pub async fn get_valid_tokens_classified() -> Result<CognitoTokens, CognitoTokenResolutionError> {
-    resolve_tokens_classified(false, COGNITO_ENDPOINT).await
+    resolve_session_classified(false)
+        .await
+        .map(|session| session.tokens)
 }
 
 /// Refresh Cognito tokens even when the current access token has not expired.
 /// Use this when a token claim may have changed after a server-side account
-/// update, such as email verification.
+/// update, such as email verification. In machine mode this mints a new
+/// session; it never calls `REFRESH_TOKEN_AUTH` for one.
 pub async fn refresh_tokens() -> Result<CognitoTokens, String> {
-    resolve_tokens(true, COGNITO_ENDPOINT).await
+    resolve_session(true).await.map(|session| session.tokens)
 }
 
+/// Resolve tokens together with their source. Same contract as
+/// [`get_valid_tokens`] (`force_refresh = false`) and [`refresh_tokens`]
+/// (`force_refresh = true`).
+pub async fn resolve_session(force_refresh: bool) -> Result<ResolvedSession, String> {
+    resolve_session_classified(force_refresh)
+        .await
+        .map_err(|error| error.message)
+}
+
+/// The person token store always wins. The outpost machine identity is
+/// consulted only when that store holds nothing at all: a rejected, expired
+/// or temporarily unrefreshable person session keeps its own verdict, so a
+/// person who was signed out by Cognito sees "signed out", not the outpost.
+pub async fn resolve_session_classified(
+    force_refresh: bool,
+) -> Result<ResolvedSession, CognitoTokenResolutionError> {
+    resolve_session_classified_at(force_refresh, COGNITO_ENDPOINT).await
+}
+
+async fn resolve_session_classified_at(
+    force_refresh: bool,
+    cognito_endpoint: &str,
+) -> Result<ResolvedSession, CognitoTokenResolutionError> {
+    let person_error = match resolve_tokens_classified(force_refresh, cognito_endpoint).await {
+        Ok(tokens) => {
+            return Ok(ResolvedSession {
+                tokens,
+                source: TokenSource::Person,
+            })
+        }
+        Err(error) if error.is_not_signed_in() => error,
+        Err(error) => return Err(error),
+    };
+    match resolve_machine_session_classified(force_refresh).await {
+        Ok(session) => Ok(session),
+        Err(None) => Err(person_error),
+        Err(Some(machine_error)) => Err(machine_error),
+    }
+}
+
+/// `Err(None)` means the machine identity is not in play (disabled, opted
+/// out, or no credentials file), so the caller keeps its person verdict.
+async fn resolve_machine_session_classified(
+    force_remint: bool,
+) -> Result<ResolvedSession, Option<CognitoTokenResolutionError>> {
+    use crate::machine_session::{self, MachineSessionError};
+
+    let session = match machine_session::resolve_machine_session(force_remint).await {
+        Ok(session) => session,
+        Err(MachineSessionError::Unavailable(_)) => {
+            return Err(Some(CognitoTokenResolutionError::machine(
+                MACHINE_UNAVAILABLE_MESSAGE.to_string(),
+                MachineFailure::Unavailable,
+            )))
+        }
+        Err(_) => return Err(None),
+    };
+    let tokens = session.into_tokens();
+    match non_human_principal_from_tokens(&tokens) {
+        Some(NonHumanPrincipal::Outpost) => Ok(ResolvedSession {
+            tokens,
+            source: TokenSource::Machine,
+        }),
+        Some(NonHumanPrincipal::Agent) => Err(Some(CognitoTokenResolutionError::machine(
+            MACHINE_AGENT_REFUSED_MESSAGE.to_string(),
+            MachineFailure::Refused(Some(NonHumanPrincipal::Agent)),
+        ))),
+        None => Err(Some(CognitoTokenResolutionError::machine(
+            MACHINE_PERSON_REFUSED_MESSAGE.to_string(),
+            MachineFailure::Refused(None),
+        ))),
+    }
+}
+
+/// Shown when the outpost identity exists but no session could be minted.
+pub const MACHINE_UNAVAILABLE_MESSAGE: &str =
+    "HQ Work could not reach HQ to sign in as this outpost.";
+/// A fleet agent credential is refused from every source.
+pub const MACHINE_AGENT_REFUSED_MESSAGE: &str =
+    "The HQ credentials saved on this device belong to a fleet agent, not to a person.";
+/// The machine credentials minted a person-shaped token; not an outpost.
+pub const MACHINE_PERSON_REFUSED_MESSAGE: &str =
+    "The machine credentials on this device did not identify an outpost.";
+
+/// Person-store-only resolution for endpoint-targeted tests.
+#[cfg(test)]
 async fn resolve_tokens(
     force_refresh: bool,
     cognito_endpoint: &str,
@@ -1382,7 +1525,7 @@ async fn resolve_tokens_classified(
         let (tokens, matching_invalidation) = get_tokens_for_resolution()
             .await
             .map_err(CognitoTokenResolutionError::plain)?
-            .ok_or_else(|| CognitoTokenResolutionError::plain("Not signed in".to_string()))?;
+            .ok_or_else(|| CognitoTokenResolutionError::plain(NOT_SIGNED_IN_MESSAGE.to_string()))?;
         let path = tokens_file_path().map_err(CognitoTokenResolutionError::plain)?;
         if refresh_rejection_recorded_at(&path, &tokens.access_token)
             .map_err(CognitoTokenResolutionError::plain)?
@@ -1481,7 +1624,7 @@ async fn resolve_tokens_classified(
             Some(_) => continue,
             None => {
                 return Err(CognitoTokenResolutionError::plain(
-                    "Not signed in".to_string(),
+                    NOT_SIGNED_IN_MESSAGE.to_string(),
                 ))
             }
         }
@@ -1892,6 +2035,42 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, 
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use super::HQ_TEST_HOME_LOCK;
+
+    /// Points `HQ_TEST_HOME` at a temp dir and serialises every test that
+    /// touches the shared token or settings stores.
+    pub struct TestHome {
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestHome {
+        pub fn set(path: &std::path::Path) -> Self {
+            let lock = HQ_TEST_HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::env::var_os("HQ_TEST_HOME");
+            std::env::set_var("HQ_TEST_HOME", path);
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for TestHome {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("HQ_TEST_HOME", previous);
+            } else {
+                std::env::remove_var("HQ_TEST_HOME");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2156,34 +2335,7 @@ mod tests {
         );
     }
 
-    struct TestHome {
-        previous: Option<std::ffi::OsString>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl TestHome {
-        fn set(path: &std::path::Path) -> Self {
-            let lock = HQ_TEST_HOME_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let previous = std::env::var_os("HQ_TEST_HOME");
-            std::env::set_var("HQ_TEST_HOME", path);
-            Self {
-                previous,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for TestHome {
-        fn drop(&mut self) {
-            if let Some(previous) = self.previous.take() {
-                std::env::set_var("HQ_TEST_HOME", previous);
-            } else {
-                std::env::remove_var("HQ_TEST_HOME");
-            }
-        }
-    }
+    use super::test_support::TestHome;
 
     #[tokio::test]
     async fn get_tokens_read_result_uses_typed_path_free_classes() {
@@ -3677,5 +3829,242 @@ if(pkg) {
                 .access_token,
             newer_login.access_token
         );
+    }
+}
+
+#[cfg(test)]
+mod session_source_tests {
+    use super::test_support::TestHome;
+    use super::*;
+    use crate::machine_session::test_support::{
+        session_body, EnvGuard, FakeMinter, MachineHome, MinterGuard,
+    };
+    use crate::machine_session::{MACHINE_IDENTITY_ENV, set_opted_out};
+
+    fn claims_jwt(payload: serde_json::Value) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let encoded =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("claims serialize"));
+        format!("header.{encoded}.signature")
+    }
+
+    fn far_future() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            + 10 * 60 * 60 * 1000
+    }
+
+    fn outpost_body() -> String {
+        session_body(
+            &claims_jwt(serde_json::json!({
+                "sub": "outpost-sub",
+                "email": "out-01abc@outposts.hq.computer",
+                "custom:entityType": "outpost",
+                "custom:entityUid": "out_01ABC",
+            })),
+            far_future(),
+        )
+    }
+
+    fn agent_body() -> String {
+        session_body(
+            &claims_jwt(serde_json::json!({
+                "sub": "agent-sub",
+                "custom:entityType": "agent",
+                "custom:entityUid": "agt_01ABC",
+            })),
+            far_future(),
+        )
+    }
+
+    fn person_body() -> String {
+        session_body(
+            &claims_jwt(serde_json::json!({ "sub": "person-sub", "email": "p@example.com" })),
+            far_future(),
+        )
+    }
+
+    fn person_tokens(payload: serde_json::Value) -> CognitoTokens {
+        CognitoTokens {
+            access_token: claims_jwt(serde_json::json!({ "sub": "access-sub" })),
+            id_token: Some(claims_jwt(payload)),
+            refresh_token: "refresh".to_string(),
+            expires_at: far_future(),
+        }
+    }
+
+    async fn write_person_tokens(tokens: &CognitoTokens) {
+        set_tokens(tokens).await.expect("person tokens written");
+    }
+
+    #[tokio::test]
+    async fn outpost_machine_session_signs_in_with_machine_source() {
+        let _home = MachineHome::new();
+        let minter = FakeMinter::writing(outpost_body());
+        let _guard = MinterGuard::install(minter.clone());
+
+        let session = resolve_session_classified(false)
+            .await
+            .expect("outpost session");
+        assert_eq!(session.source, TokenSource::Machine);
+        assert_eq!(
+            non_human_principal_from_tokens(&session.tokens),
+            Some(NonHumanPrincipal::Outpost)
+        );
+        assert_eq!(session.tokens.refresh_token, "");
+        assert_eq!(minter.calls(), 1);
+        // The person store is untouched: machine tokens never land there.
+        assert!(get_tokens().await.unwrap().is_none());
+        assert!(!tokens_file_path().unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn person_session_wins_over_machine_credentials() {
+        let _home = MachineHome::new();
+        let minter = FakeMinter::writing(outpost_body());
+        let _guard = MinterGuard::install(minter.clone());
+        let person = person_tokens(serde_json::json!({ "sub": "p", "email": "p@example.com" }));
+        write_person_tokens(&person).await;
+
+        let session = resolve_session_classified(false).await.expect("person session");
+        assert_eq!(session.source, TokenSource::Person);
+        assert_eq!(session.tokens, person);
+        assert_eq!(minter.calls(), 0, "no mint while a person is signed in");
+    }
+
+    #[tokio::test]
+    async fn agent_machine_session_is_refused() {
+        let _home = MachineHome::new();
+        let _guard = MinterGuard::install(FakeMinter::writing(agent_body()));
+
+        let error = resolve_session_classified(false)
+            .await
+            .expect_err("agent refused");
+        assert_eq!(
+            error.machine,
+            Some(MachineFailure::Refused(Some(NonHumanPrincipal::Agent)))
+        );
+        assert_eq!(error.message, MACHINE_AGENT_REFUSED_MESSAGE);
+        assert!(!error.is_not_signed_in());
+    }
+
+    #[tokio::test]
+    async fn person_shaped_machine_session_is_refused() {
+        let _home = MachineHome::new();
+        let _guard = MinterGuard::install(FakeMinter::writing(person_body()));
+
+        let error = resolve_session_classified(false)
+            .await
+            .expect_err("person-shaped machine token refused");
+        assert_eq!(error.machine, Some(MachineFailure::Refused(None)));
+        assert_eq!(error.message, MACHINE_PERSON_REFUSED_MESSAGE);
+    }
+
+    #[tokio::test]
+    async fn outpost_token_in_person_store_is_still_a_person_source() {
+        // The app layer refuses an outpost in the person cache; core must not
+        // relabel it as a machine session.
+        let _home = MachineHome::new();
+        let minter = FakeMinter::writing(outpost_body());
+        let _guard = MinterGuard::install(minter.clone());
+        let outpost_in_cache = person_tokens(serde_json::json!({
+            "custom:entityType": "outpost",
+            "custom:entityUid": "out_01ABC",
+        }));
+        write_person_tokens(&outpost_in_cache).await;
+
+        let session = resolve_session_classified(false).await.expect("resolved");
+        assert_eq!(session.source, TokenSource::Person);
+        assert_eq!(minter.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn env_off_keeps_the_plain_signed_out_verdict() {
+        let _home = MachineHome::new();
+        let minter = FakeMinter::writing(outpost_body());
+        let _guard = MinterGuard::install(minter.clone());
+        let _off = EnvGuard::set(MACHINE_IDENTITY_ENV, Some("off"));
+
+        let error = resolve_session_classified(false).await.expect_err("signed out");
+        assert!(error.is_not_signed_in());
+        assert_eq!(minter.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn local_opt_out_keeps_the_plain_signed_out_verdict() {
+        let _home = MachineHome::new();
+        let minter = FakeMinter::writing(outpost_body());
+        let _guard = MinterGuard::install(minter.clone());
+        set_opted_out(true).unwrap();
+
+        let error = resolve_session_classified(false).await.expect_err("signed out");
+        assert!(error.is_not_signed_in());
+        assert_eq!(minter.calls(), 0);
+
+        set_opted_out(false).unwrap();
+        let session = resolve_session_classified(false).await.expect("outpost again");
+        assert_eq!(session.source, TokenSource::Machine);
+    }
+
+    #[tokio::test]
+    async fn mint_failure_is_machine_unavailable() {
+        let _home = MachineHome::new();
+        let _guard = MinterGuard::install(FakeMinter::failing("exit 1"));
+
+        let error = resolve_session_classified(false).await.expect_err("unavailable");
+        assert_eq!(error.machine, Some(MachineFailure::Unavailable));
+        assert_eq!(error.message, MACHINE_UNAVAILABLE_MESSAGE);
+        assert!(!error.requires_reauth);
+    }
+
+    #[tokio::test]
+    async fn forced_refresh_in_machine_mode_remints_without_refresh_token_auth() {
+        let _home = MachineHome::new();
+        let minter = FakeMinter::writing(outpost_body());
+        let _guard = MinterGuard::install(minter.clone());
+
+        let first = resolve_session_classified(false).await.expect("minted");
+        assert_eq!(minter.calls(), 1);
+        let refreshed = refresh_tokens().await.expect("re-minted");
+        assert_eq!(minter.calls(), 2, "a forced refresh mints again");
+        assert_eq!(refreshed.refresh_token, "");
+        assert_eq!(first.source, TokenSource::Machine);
+    }
+
+    #[tokio::test]
+    async fn rejected_person_session_keeps_its_verdict_instead_of_the_outpost() {
+        let _home = MachineHome::new();
+        let minter = FakeMinter::writing(outpost_body());
+        let _guard = MinterGuard::install(minter.clone());
+        let person = person_tokens(serde_json::json!({ "sub": "p" }));
+        write_person_tokens(&person).await;
+        let path = tokens_file_path().unwrap();
+        record_rejected_refresh_at(&path, &person.access_token, Some("NotAuthorizedException"))
+            .unwrap();
+
+        let error = resolve_session_classified(false)
+            .await
+            .expect_err("rejected person session");
+        assert!(error.requires_reauth);
+        assert!(error.machine.is_none());
+        assert_eq!(minter.calls(), 0, "a revoked person never falls through to the outpost");
+    }
+
+    #[tokio::test]
+    async fn absent_machine_credentials_keep_the_plain_signed_out_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = TestHome::set(dir.path());
+        let _creds = EnvGuard::set(
+            crate::machine_session::MACHINE_CREDS_FILE_ENV,
+            Some(dir.path().join("missing-creds.json").to_string_lossy().as_ref()),
+        );
+        let minter = FakeMinter::writing(outpost_body());
+        let _guard = MinterGuard::install(minter.clone());
+
+        let error = resolve_session_classified(false).await.expect_err("signed out");
+        assert!(error.is_not_signed_in());
+        assert_eq!(minter.calls(), 0);
     }
 }

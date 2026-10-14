@@ -1187,6 +1187,15 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
             //
             // `Ok(None)` here means the person already exists server-side (409)
             // but couldn't be resolved — propagate the benign skip upward.
+            //
+            // Signed in as the outpost there is no person to create, and the
+            // cached-token read below would fail loudly. Same benign skip.
+            if crate::commands::auth::machine_session_is_active() {
+                eprintln!(
+                    "[personal] skipping person provisioning; this device is signed in as its outpost"
+                );
+                return Ok(None);
+            }
             match crate::commands::personal::create_person_entity_from_cognito(vault).await? {
                 Some(entity) => entity,
                 None => return Ok(None),
@@ -1248,6 +1257,12 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
 /// surfaces as `Err`, which the caller treats like any other upload failure.
 #[tauri::command]
 pub async fn ensure_person_entity(app: tauri::AppHandle) -> Result<bool, String> {
+    if crate::commands::auth::machine_session_is_active() {
+        return Err(
+            "Sign in as a person to set up a personal workspace. This device is signed in as its outpost."
+                .to_string(),
+        );
+    }
     let jwt = crate::commands::sync::resolve_jwt().await?;
     let vault_url = crate::commands::sync::resolve_vault_api_url()?;
     let vault = VaultClient::new(&vault_url, &jwt);
@@ -1259,6 +1274,11 @@ pub async fn ensure_person_entity(app: tauri::AppHandle) -> Result<bool, String>
 /// Read the signed-in person's HQ Anywhere opt-in through hq-pro's person-settings API.
 #[tauri::command]
 pub async fn get_hq_anywhere_person_setting() -> Result<bool, String> {
+    // Person settings are refused for an outpost principal (hq-pro
+    // `person-settings-human-only`); an outpost is never opted in.
+    if crate::commands::auth::skip_person_only_call("person-settings read") {
+        return Ok(false);
+    }
     let access_token = crate::commands::cognito::get_valid_access_token()
         .await
         .map_err(|error| {
@@ -1287,6 +1307,9 @@ async fn read_hq_anywhere_person_setting(vault: &VaultClient) -> Result<bool, St
 /// Store the signed-in person's HQ Anywhere opt-in through hq-pro's person-settings API.
 #[tauri::command]
 pub async fn put_hq_anywhere_person_setting(value: bool) -> Result<(), String> {
+    if crate::commands::auth::skip_person_only_call("person-settings write") {
+        return Err("HQ Anywhere is a personal setting. Sign in as yourself to change it.".to_string());
+    }
     let access_token = crate::commands::cognito::get_valid_access_token()
         .await
         .map_err(|error| {

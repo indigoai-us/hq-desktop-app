@@ -167,6 +167,66 @@
     }
   }
 
+  /**
+   * Outpost machine identity (Linux outposts only). The device can sign in as
+   * itself when `~/.hq-agent/machine-creds.json` is present and the person has
+   * not opted out locally. `active` means the app is already running as the
+   * outpost, so the action is hidden. A failed or missing probe reads as
+   * "no identity": the person providers stay the only path.
+   */
+  let machineIdentity = $state<{ available: boolean; active: boolean }>({
+    available: false,
+    active: false,
+  });
+  let usingMachineIdentity = $state(false);
+
+  async function probeMachineIdentity() {
+    try {
+      const status = await invoke<unknown>('get_machine_identity_status');
+      if (status && typeof status === 'object') {
+        const record = status as { available?: unknown; active?: unknown };
+        machineIdentity = {
+          available: record.available === true,
+          active: record.active === true,
+        };
+      } else {
+        machineIdentity = { available: false, active: false };
+      }
+    } catch (cause) {
+      console.warn('[signin] machine identity probe failed:', cause);
+      machineIdentity = { available: false, active: false };
+    }
+  }
+
+  /**
+   * "Use this outpost's identity". The native side clears the local opt-out,
+   * mints a session from the machine credentials and publishes the auth
+   * envelope. The host learns about it the same way it learns about any other
+   * valid native session: through `get_auth_state` and `onsuccess`.
+   */
+  async function handleUseMachineIdentity() {
+    if (usingMachineIdentity || loadingProvider !== null || quitting) return;
+    usingMachineIdentity = true;
+    error = '';
+    try {
+      await invoke('use_machine_identity');
+      const auth = await invoke<{ authenticated: boolean; expiresAt: string }>('get_auth_state');
+      if (auth?.authenticated) {
+        await acceptExistingSession(auth);
+      } else {
+        console.warn('[signin] outpost identity accepted but no native session followed');
+        error = 'We couldn’t sign in as this outpost. Try again.';
+      }
+    } catch (cause) {
+      // The native message is already plain (no token contents); the cause is
+      // kept in the log for diagnostics and never rendered.
+      console.warn('[signin] outpost identity sign-in failed:', cause);
+      error = 'We couldn’t sign in as this outpost. Try again.';
+    } finally {
+      usingMachineIdentity = false;
+    }
+  }
+
   let lastProvider = $state<SignInProvider | null>(null);
   let activeState = $state<string | null>(null);
   let authorizeUrl = $state<string | null>(null);
@@ -233,6 +293,7 @@
     };
 
     void recheck();
+    void probeMachineIdentity();
     const stopRecheck = startVisibleInterval(() => void recheck(), AUTH_RECHECK_INTERVAL_MS);
     return () => {
       disposed = true;
@@ -594,6 +655,23 @@
         aria-busy={cancelling}
       >
         {cancelling ? 'Going back…' : 'Back'}
+      </button>
+    {/if}
+
+    {#if machineIdentity.available && !machineIdentity.active}
+      <button
+        type="button"
+        class="sign-in-btn session-retry"
+        data-testid="sign-in-use-outpost"
+        onclick={() => void handleUseMachineIdentity()}
+        disabled={loadingProvider !== null || quitting || usingMachineIdentity}
+        aria-busy={usingMachineIdentity}
+      >
+        <svg class="provider-glyph" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="2" y="2.5" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5" />
+          <path d="M5.5 13.5h5M8 10.5v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+        {usingMachineIdentity ? 'Signing in as this outpost…' : "Use this outpost's identity"}
       </button>
     {/if}
 

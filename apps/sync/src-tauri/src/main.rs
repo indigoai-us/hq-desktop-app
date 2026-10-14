@@ -760,6 +760,8 @@ fn main() {
             commands::auth::begin_reauth,
             commands::auth::refresh_tokens,
             commands::auth::sign_out,
+            commands::auth::use_machine_identity,
+            commands::auth::get_machine_identity_status,
             commands::config::get_config,
             commands::hq_work::hq_work_installed,
             commands::hq_work::launch_hq_work,
