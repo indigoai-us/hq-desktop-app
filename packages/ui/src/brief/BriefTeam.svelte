@@ -126,7 +126,6 @@
         <span
           class="av"
           class:need={t.tone === "decision"}
-          class:bot={t.isAgent}
           class:on={focus === t.id}
           data-id={t.id}
           title={t.name}
@@ -264,9 +263,6 @@
     transition: opacity 0.25s, background 0.25s;
     cursor: default;
   }
-  .av.bot {
-    border-radius: 8px;
-  }
   /* Needs you: a thin accent ring a step off the circle, the card's one colour. */
   .av.need {
     color: var(--b-hot);
@@ -395,9 +391,11 @@
     stroke-linecap: round;
     stroke-linejoin: round;
   }
+  /* The count and buttons sit level with the whole text block (name and status), not just the name. */
   .side {
     grid-column: 2;
-    grid-row: 1;
+    grid-row: 1 / span 2;
+    align-self: center;
     position: relative;
     display: flex;
     justify-content: flex-end;
@@ -416,7 +414,7 @@
     transition: opacity 0.2s;
   }
   .d {
-    grid-column: 1 / -1;
+    grid-column: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

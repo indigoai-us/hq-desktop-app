@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import DailyBrief from "./DailyBrief.svelte";
@@ -281,5 +283,15 @@ describe("Team card", () => {
     expect(peek.textContent).toContain("Owes you");
     expect(peek.textContent).toContain("Pricing page numbers");
     expect(peek.textContent).toContain("Finance dashboard live; waiting on your signed-in check.");
+  });
+
+});
+
+describe("BriefTeam layout", () => {
+  it("every face is a circle (agents too), and the count/buttons sit level with the whole text block", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/brief/BriefTeam.svelte"), "utf8");
+    const style = src.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? "";
+    expect(style).not.toMatch(/\.av\.bot/);
+    expect(style).toMatch(/\.side \{[^}]*grid-row:\s*1 \/ span 2[^}]*align-self:\s*center/);
   });
 });
