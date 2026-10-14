@@ -1,16 +1,22 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import Harness from "./BriefBlockedByMeHarness.test-support.svelte";
 import {
-  MORE_KEY,
-  PARTY_CAP,
-  PILL_CAP,
+  CALL_CAP,
+  LINE_CAP,
+  NARROW_CALL_CAP,
+  NARROW_LINE_CAP,
   ageLabel,
   blockedHeadline,
   blockedLayout,
+  blockedStats,
   chainNodes,
   edgedDecisions,
+  initialOf,
+  isFreed,
   morePartiesPeek,
   partyPeek,
   summarizeBlocked,
@@ -110,6 +116,36 @@ describe("ageLabel", () => {
   });
 });
 
+describe("blockedStats, isFreed and initialOf", () => {
+  it("counts calls and who waits, and gives the oldest call's age, late past a day", () => {
+    expect(blockedStats(summarizeBlocked(day()))).toEqual([
+      { key: "calls", value: "3", label: "Calls" },
+      { key: "freed", value: "5", label: "Waiting on them" },
+      { key: "oldest", value: "3d", label: "Oldest call", late: true },
+    ]);
+    const one = blockedStats(summarizeBlocked([decision("a", "A", { ageHours: 5, blocks: [person("Jonathan")] })]));
+    expect(one.map((x) => [x.value, x.label])).toEqual([["1", "Call"], ["1", "Person waiting"], ["5h", "Oldest call"]]);
+    expect(one[2]!.late).toBe(false);
+    // No age known: no oldest stat. Work only never says people.
+    const workOnly = blockedStats(summarizeBlocked([decision("a", "A", { blocks: [work("Docs release"), work("Pricing page")] })]));
+    expect(workOnly.map((x) => x.label)).toEqual(["Call", "Things held"]);
+    const unlocks = blockedStats(summarizeBlocked([decision("a", "A", { detail: { why: "", unlocks: [unlock("x")], source: "" } })]));
+    expect(unlocks.map((x) => x.label)).toEqual(["Call", "Thing unlocked"]);
+    expect(blockedStats(summarizeBlocked([]))).toEqual([]);
+  });
+
+  it("a party is freed only once every call that holds it is made; initials are one letter", () => {
+    const s = summarizeBlocked([decision("a", "A", { blocks: [person("Blake")] }), decision("b", "B", { blocks: [person("Blake")] })]);
+    const blake = s.parties[0]!;
+    expect(isFreed(blake, {})).toBe(false);
+    expect(isFreed(blake, { a: true })).toBe(false);
+    expect(isFreed(blake, { a: true, b: true })).toBe(true);
+    expect(initialOf("Jonathan")).toBe("J");
+    expect(initialOf(" élodie")).toBe("É");
+    expect(initialOf("")).toBe("?");
+  });
+});
+
 describe("blockedLayout and chainNodes", () => {
   const many = () => [
     decision("d1", "One", { ageHours: 30, blocks: ["A", "B", "C", "D"].map((n) => person(n)) }),
@@ -119,23 +155,28 @@ describe("blockedLayout and chainNodes", () => {
     decision("d5", "Five", { blocks: [person("I")] }),
   ];
 
-  it("caps pills at three and parties at five; the rest fold into +N more with their edges", () => {
+  it("caps the list at three calls and five party lines; every call keeps one line before any gets a second, the rest folds into that call's +N more", () => {
     const lay = blockedLayout(summarizeBlocked(many()));
-    expect(PILL_CAP).toBe(3);
-    expect(PARTY_CAP).toBe(5);
-    expect(lay.pills.map((d) => d.id)).toEqual(["d1", "d2", "d3"]);
-    expect(lay.morePills.map((d) => d.id)).toEqual(["d4", "d5"]);
-    expect(lay.parties.map((p) => p.name)).toEqual(["A", "B", "C", "D", "E"]);
-    expect(lay.moreParties.map((p) => p.name)).toEqual(["F", "G", "H", "I"]);
-    // d2 frees E (shown) and F (folded): one edge to E, one to the more tile; d3's G is folded too.
-    const toMore = lay.edges.filter((e) => e.partyKey === MORE_KEY);
-    expect(toMore.map((e) => [e.decisionId, e.to])).toEqual([
-      ["d2", 5],
-      ["d3", 5],
-    ]);
-    expect(lay.edges.every((e) => e.from >= 0 && e.from < 3 && e.to <= 5)).toBe(true);
+    expect(CALL_CAP).toBe(3);
+    expect(LINE_CAP).toBe(5);
+    expect(lay.calls.map((c) => c.decision.id)).toEqual(["d1", "d2", "d3"]);
+    expect(lay.moreCalls.map((d) => d.id)).toEqual(["d4", "d5"]);
+    // First pass gives d1, d2, d3 one line each (A, E, G); the two left go to d1 (B, C).
+    expect(lay.calls.map((c) => c.parties.map((p) => p.name))).toEqual([["A", "B", "C"], ["E"], ["G"]]);
+    expect(lay.calls.map((c) => c.folded.map((p) => p.name))).toEqual([["D"], ["F"], []]);
+    expect(lay.calls.reduce((n, c) => n + c.parties.length, 0)).toBe(LINE_CAP);
     // Hidden calls draw nothing.
-    expect(lay.edges.some((e) => e.decisionId === "d4" || e.decisionId === "d5")).toBe(false);
+    expect(lay.calls.flatMap((c) => c.parties).some((p) => ["H", "I"].includes(p.name))).toBe(false);
+    // A one-column card: two calls, three lines.
+    const narrow = blockedLayout(summarizeBlocked(many()), NARROW_CALL_CAP, NARROW_LINE_CAP);
+    expect(narrow.calls.map((c) => c.parties.map((p) => p.name))).toEqual([["A", "B"], ["E"]]);
+    expect(narrow.moreCalls).toHaveLength(3);
+  });
+
+  it("a party freed by two shown calls is listed under both", () => {
+    const s = summarizeBlocked([decision("a", "Sign the contract", { ageHours: 26, blocks: [person("Blake")] }), decision("b", "Approve the budget", { blocks: [person("Blake"), work("Q4 plan")] })]);
+    const lay = blockedLayout(s);
+    expect(lay.calls.map((c) => c.parties.map((p) => p.name))).toEqual([["Blake", "Q4 plan"], ["Blake"]]);
   });
 
   it("the chain shows the top call's parties up to the cap and folds everything else", () => {
@@ -188,7 +229,11 @@ describe("BriefBlockedByMe", () => {
     target?.remove();
   });
 
-  it("two rows: the graph with one pill per call, one party per freed person or work, amber only past a day", () => {
+  const SRC = () => readFileSync(resolve(process.cwd(), "src/brief/BriefBlockedByMe.svelte"), "utf8");
+  /** The declarations of one CSS rule in the component's style block, by its exact selector. */
+  const rule = (src: string, selector: string) => src.match(new RegExp(`\\n  ${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`))?.[1] ?? "";
+
+  it("two rows: the list form, each call over who it frees, the age warm only past a day", () => {
     render({ decisions: day(), prompts: ALL_PROMPTS, cols: 2, rows: 2 });
     const root = q('[data-testid="brief-blocked"]')!;
     expect(root.getAttribute("data-form")).toBe("graph");
@@ -196,22 +241,34 @@ describe("BriefBlockedByMe", () => {
     expect(q('[data-testid="brief-blocked-headline"]')!.textContent).toBe("3 calls free 4 people and Docs release.");
     const pills = qa('[data-testid="brief-blocked-pill"]');
     expect(pills.map((p) => p.getAttribute("aria-label"))).toEqual(["Cut the hq-core release", "Fix the skill-metadata check", "Ack the Pluto handoff"]);
+    expect(pills.map((p) => p.querySelector('[data-testid="brief-blocked-title"]')!.textContent)).toEqual(["Cut the hq-core release", "Fix the skill-metadata check", "Ack the Pluto handoff"]);
+    expect(pills.map((p) => p.querySelector('[data-testid="brief-blocked-product"]')!.textContent)).toEqual(["HQ core", "Desktop app", "Desktop app"]);
     const ages = qa('[data-testid="brief-blocked-age"]');
     expect(ages.map((a) => a.textContent)).toEqual(["30h", "3d", "17h"]);
-    expect(ages.map((a) => a.classList.contains("amber"))).toEqual([true, true, false]);
+    expect(ages.map((a) => a.classList.contains("late"))).toEqual([true, true, false]);
     const parties = qa('[data-testid="brief-blocked-party"]');
     expect(parties.map((p) => p.getAttribute("aria-label"))).toEqual(["Jonathan", "Geoff", "Docs release", "Stefan", "Yousuf"]);
     expect(parties.map((p) => p.getAttribute("data-kind"))).toEqual(["person", "person", "work", "person", "person"]);
-    expect(target.querySelectorAll("path.edge")).toHaveLength(5);
-    expect(qa("path.edge.late")).toHaveLength(4); // d1 (30h) draws three, d3 (60h) one; d2 at 17h is not late
+    // Each party sits under the call that frees it, after a Phosphor arrow, with what they do next.
+    const under = (i: number) => [...pills[i]!.closest(".pair")!.querySelectorAll('[data-testid="brief-blocked-party"]')].map((p) => p.getAttribute("aria-label"));
+    expect([under(0), under(1), under(2)]).toEqual([["Jonathan", "Geoff", "Docs release"], ["Stefan"], ["Yousuf"]]);
+    expect(qa('[data-testid="brief-blocked-arrow"]')).toHaveLength(5);
+    expect(parties[0]!.textContent!.replace(/\s+/g, " ").trim()).toBe("J Jonathan ships the planning changes");
+    // Monochrome avatars: a person's initial in a glass circle, a cube for work; no company square, no hue.
+    expect(parties.map((p) => p.querySelector(".ini")!.textContent!.trim())).toEqual(["J", "G", "", "S", "Y"]);
+    expect(parties[2]!.querySelector('[data-testid="brief-blocked-work"]')).not.toBeNull();
+    expect(qa(".ini[style]")).toHaveLength(0);
     expect(q('[data-testid="brief-blocked-more"]')).toBeNull();
     expect(q('[data-testid="brief-blocked-more-pills"]')).toBeNull();
-    // Company logos sit on every pill and on the work tile.
+    // Company logos sit on every call's meta line.
     expect(qa('[data-testid="brief-blocked-pill"] [data-testid="brief-logo"]')).toHaveLength(3);
-    expect(q('[data-testid="brief-blocked-party"][data-kind="work"] [data-testid="brief-logo"]')).not.toBeNull();
+    // The numbers band: calls, who waits, the oldest call (late).
+    const stats = qa('[data-testid="brief-blocked-stat"]');
+    expect(stats.map((x) => x.textContent!.replace(/\s+/g, " ").trim())).toEqual(["3 Calls", "5 Waiting on them", "3d Oldest call"]);
+    expect(stats.map((x) => x.classList.contains("late"))).toEqual([false, false, true]);
   });
 
-  it("caps at three pills and five parties, then +N more tiles whose peeks list the rest", async () => {
+  it("caps at three calls and five party lines, then each call's +N more and +N more calls, whose peeks list the rest", async () => {
     const many = [
       decision("d1", "One", { ageHours: 30, blocks: ["Ava", "Ben", "Cal", "Dee"].map((n) => person(n)) }),
       decision("d2", "Two", { blocks: [person("Eli"), person("Fay")] }),
@@ -221,16 +278,23 @@ describe("BriefBlockedByMe", () => {
     ];
     render({ decisions: many, cols: 2, rows: 2 });
     expect(qa('[data-testid="brief-blocked-pill"]')).toHaveLength(3);
-    expect(qa('[data-testid="brief-blocked-party"]')).toHaveLength(5);
-    const moreParties = q('[data-testid="brief-blocked-more"]')!;
-    expect(moreParties.textContent!.trim()).toBe("+4 more");
+    expect(qa('[data-testid="brief-blocked-party"]').map((p) => p.getAttribute("aria-label"))).toEqual(["Ava", "Ben", "Cal", "Eli", "Gus"]);
+    const more = qa('[data-testid="brief-blocked-more"]');
+    expect(more.map((m) => m.textContent!.trim())).toEqual(["+1 more", "+1 more"]);
+    // The "+N more" rides on its call's last line.
+    expect(more[0]!.closest(".fr")!.querySelector('[data-testid="brief-blocked-party"]')!.getAttribute("aria-label")).toBe("Cal");
     const morePills = q('[data-testid="brief-blocked-more-pills"]')!;
     expect(morePills.textContent!.trim()).toBe("+2 more calls");
-    await hover(moreParties);
+    await hover(more[0]!);
     const peek = q('[data-testid="brief-peek"]')!;
-    expect(peek.textContent).toContain("4 more waiting on you");
-    for (const n of ["Fay", "Gus", "Hal", "Ivy"]) expect(peek.textContent).toContain(n);
-    moreParties.dispatchEvent(new MouseEvent("mouseleave"));
+    expect(peek.textContent).toContain("1 more waiting on you");
+    expect(peek.textContent).toContain("Dee");
+    more[0]!.dispatchEvent(new MouseEvent("mouseleave"));
+    await new Promise((r) => setTimeout(r, 200));
+    flushSync();
+    await hover(more[1]!);
+    expect(q('[data-testid="brief-peek"]')!.textContent).toContain("Fay");
+    more[1]!.dispatchEvent(new MouseEvent("mouseleave"));
     await new Promise((r) => setTimeout(r, 200));
     flushSync();
     await hover(morePills);
@@ -239,7 +303,7 @@ describe("BriefBlockedByMe", () => {
     expect(q('[data-testid="brief-peek"]')!.textContent).toContain("Five");
   });
 
-  it("a pill's hover opens the decision peek with its prompt and a Start button, and lights only its edges", async () => {
+  it("a call's hover opens the decision peek with its prompt and a Start button, dims the other calls, and starting it frees its parties", async () => {
     const launch = vi.fn(async () => null);
     render({ decisions: day(), prompts: ALL_PROMPTS, cols: 2, rows: 2, launch });
     const pill = qa('[data-testid="brief-blocked-pill"]')[2]!; // Ack the Pluto handoff
@@ -249,36 +313,92 @@ describe("BriefBlockedByMe", () => {
     expect(peek.textContent).toContain("Ack Pluto.");
     expect(peek.querySelector('[data-testid="brief-start"]')).not.toBeNull();
     expect(q('[data-testid="brief-blocked-graph"]')!.classList.contains("focus")).toBe(true);
-    expect(qa("path.edge.on")).toHaveLength(1);
-    const lifted = qa('[data-testid="brief-blocked-party"].lift');
+    const lifted = qa('.fr.lift [data-testid="brief-blocked-party"]');
     expect(lifted.map((p) => p.getAttribute("aria-label"))).toEqual(["Yousuf"]);
     expect(qa('[data-testid="brief-blocked-pill"].dim')).toHaveLength(2);
+    expect(pill.classList.contains("dim")).toBe(false);
     (peek.querySelector('[data-testid="brief-start"]') as HTMLButtonElement).click();
     await Promise.resolve();
     await Promise.resolve();
     flushSync();
     expect(launch).toHaveBeenCalledWith("claude", "Ack Pluto.");
     expect(pill.classList.contains("done")).toBe(true);
-    expect(qa('[data-testid="brief-blocked-age"]')[2]!.textContent).toBe("DONE");
+    expect(qa('[data-testid="brief-blocked-age"]')[2]!.textContent).toBe("Done");
+    const yousuf = qa('[data-testid="brief-blocked-party"]').find((p) => p.getAttribute("aria-label") === "Yousuf")!;
+    expect(yousuf.getAttribute("data-freed")).toBe("true");
+    expect(yousuf.closest(".fr")!.querySelector('[data-testid="brief-blocked-state"]')!.textContent).toBe("Freed");
+    const jonathan = qa('[data-testid="brief-blocked-party"]')[0]!;
+    expect(jonathan.getAttribute("data-freed")).toBe("false");
   });
 
-  it("one row: the chain form with the top call as the you node and one node per freed party up to the cap", () => {
+  it("each call carries its own Start button (revealed on hover in place of the age) that launches its prompt", async () => {
+    const launch = vi.fn(async () => null);
+    render({ decisions: day(), prompts: ALL_PROMPTS, cols: 2, rows: 2, launch });
+    const pills = qa('[data-testid="brief-blocked-pill"]');
+    expect(pills.map((p) => !!p.querySelector('[data-testid="brief-blocked-acts"] [data-testid="brief-start"]'))).toEqual([true, true, true]);
+    (pills[0]!.querySelector('[data-testid="brief-start"]') as HTMLButtonElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(launch).toHaveBeenCalledWith("claude", "Cut the release. Stop for my go.");
+    expect(pills[0]!.classList.contains("done")).toBe(true);
+    // Done: the age becomes Done and the button goes away.
+    expect(pills[0]!.querySelector('[data-testid="brief-blocked-acts"]')).toBeNull();
+    // No prompt, no button.
+    unmount(app!);
+    app = null;
+    target.remove();
+    render({ decisions: day(), prompts: {}, cols: 2, rows: 2 });
+    expect(qa('[data-testid="brief-blocked-acts"]')).toHaveLength(0);
+  });
+
+  it("one row: the chain form, the lead call then one arrow into a node per freed party up to the cap", () => {
     render({ decisions: day(), prompts: ALL_PROMPTS, cols: 3, rows: 1 });
     const root = q('[data-testid="brief-blocked"]')!;
     expect(root.getAttribute("data-form")).toBe("chain");
-    expect(q('[data-testid="brief-blocked-you"]')!.textContent!.replace(/\s+/g, " ").trim()).toBe("Cut the hq-core release YOU · 30h");
+    const you = q('[data-testid="brief-blocked-you"]')!;
+    expect(you.getAttribute("aria-label")).toBe("Cut the hq-core release");
+    expect(you.querySelector('[data-testid="brief-blocked-title"]')!.textContent).toBe("Cut the hq-core release");
+    expect(you.querySelector('[data-testid="brief-blocked-age"]')!.textContent).toBe("30h");
+    expect(you.querySelector('[data-testid="brief-blocked-age"]')!.classList.contains("late")).toBe(true);
     const nodes = qa('[data-testid="brief-blocked-node"]');
     expect(nodes.map((n) => n.getAttribute("aria-label"))).toEqual(["Jonathan", "Geoff", "Docs release"]);
-    expect(nodes.map((n) => n.querySelector("small")!.textContent)).toEqual(["WAITING", "WAITING", "HELD"]);
+    expect(nodes.map((n) => n.getAttribute("data-state"))).toEqual(["WAITING", "WAITING", "HELD"]);
+    expect(nodes.map((n) => n.querySelector(".ini")!.textContent!.trim())).toEqual(["J", "G", ""]);
     expect(q('[data-testid="brief-blocked-more"]')!.textContent).toContain("+2 more");
-    expect(qa(".link")).toHaveLength(4);
-    expect(qa(".link.stop")).toHaveLength(0);
+    expect(qa('[data-testid="brief-blocked-chain"] [data-testid="brief-blocked-arrow"]')).toHaveLength(1);
+    // No numbers band on a one-row card.
+    expect(q('[data-testid="brief-blocked-sum"]')).toBeNull();
     unmount(app!);
     app = null;
     target.remove();
     render({ decisions: day(), prompts: ALL_PROMPTS, cols: 2, rows: 1 });
     expect(qa('[data-testid="brief-blocked-node"]')).toHaveLength(2);
     expect(q('[data-testid="brief-blocked-more"]')!.textContent).toContain("+3 more");
+    unmount(app!);
+    app = null;
+    target.remove();
+    render({ decisions: day(), prompts: ALL_PROMPTS, cols: 1, rows: 1 });
+    expect(qa('[data-testid="brief-blocked-node"]')).toHaveLength(1);
+    expect(q('[data-testid="brief-blocked-more"]')!.textContent).toContain("+4 more");
+  });
+
+  it("one row: once the lead call is made its parties read freed", async () => {
+    const launch = vi.fn(async () => null);
+    render({ decisions: day(), prompts: ALL_PROMPTS, cols: 3, rows: 1, launch });
+    (q('[data-testid="brief-blocked-you"] [data-testid="brief-start"]') as HTMLButtonElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(q('[data-testid="brief-blocked-chain"]')!.classList.contains("done")).toBe(true);
+    expect(qa('[data-testid="brief-blocked-node"]').map((n) => n.getAttribute("data-state"))).toEqual(["FREED", "FREED", "FREED"]);
+  });
+
+  it("one column, two rows: two calls and three lines at most", () => {
+    render({ decisions: day(), prompts: ALL_PROMPTS, cols: 1, rows: 2 });
+    expect(qa('[data-testid="brief-blocked-pill"]')).toHaveLength(2);
+    expect(qa('[data-testid="brief-blocked-party"]')).toHaveLength(3);
+    expect(q('[data-testid="brief-blocked-more-pills"]')!.textContent!.trim()).toBe("+1 more call");
   });
 
   it("empty rule: with no edged decision the card has no headline and draws nothing", () => {
@@ -286,15 +406,22 @@ describe("BriefBlockedByMe", () => {
     expect(q('[data-testid="brief-blocked-headline"]')!.textContent).toBe("");
     expect(qa('[data-testid="brief-blocked-pill"]')).toHaveLength(0);
     expect(qa('[data-testid="brief-blocked-party"]')).toHaveLength(0);
-    expect(target.querySelectorAll("path.edge")).toHaveLength(0);
+    expect(qa('[data-testid="brief-blocked-arrow"]')).toHaveLength(0);
+    expect(q('[data-testid="brief-blocked-sum"]')).toBeNull();
   });
 
-  it("unlocks only: work tiles from the unlock lines, their mono states, and no word people", () => {
+  it("unlocks only: work lines from the unlock lines, their mono states, and no word people", () => {
     const only = [decision("d1", "Cut the hq-core release", { detail: { why: "", unlocks: [unlock("Docs PR 64 can merge"), unlock("Glossary rename reaches users", "RELEASE")], source: "" } })];
-    render({ decisions: only, cols: 3, rows: 1 });
+    render({ decisions: only, cols: 2, rows: 2 });
     expect(q('[data-testid="brief-blocked-headline"]')!.textContent).toBe("Your 1 call unlocks 2 things.");
     expect(q('[data-testid="brief-blocked"]')!.textContent).not.toMatch(/people/);
-    expect(qa('[data-testid="brief-blocked-node"]').map((n) => n.querySelector("small")!.textContent)).toEqual(["NEXT", "RELEASE"]);
+    expect(qa('[data-testid="brief-blocked-state"]').map((n) => n.textContent)).toEqual(["NEXT", "RELEASE"]);
+    unmount(app!);
+    app = null;
+    target.remove();
+    render({ decisions: only, cols: 3, rows: 1 });
+    expect(q('[data-testid="brief-blocked"]')!.textContent).not.toMatch(/people/);
+    expect(qa('[data-testid="brief-blocked-node"]').map((n) => n.getAttribute("data-state"))).toEqual(["NEXT", "RELEASE"]);
   });
 
   it("no repo slug or PR number reaches the page in either form", () => {
@@ -312,5 +439,41 @@ describe("BriefBlockedByMe", () => {
       app = null;
       target.remove();
     }
+  });
+
+  it("design rules: titles, names and what waits wrap and are never cut; the age warms past a day; mono labels are caps; no hue, glow or rim (regression: titles clipped at the card edge, names cut to 'the ro…', a solid violet avatar)", () => {
+    const src = SRC();
+    const style = src.slice(src.indexOf("<style>"));
+    for (const sel of [".ct", ".ptx", ".node .t", ".w h3"]) {
+      const body = rule(style, sel);
+      expect(body, sel).not.toBe("");
+      expect(body, sel).not.toMatch(/text-overflow|line-clamp|nowrap|overflow:\s*hidden/);
+    }
+    expect(style).not.toMatch(/text-overflow:\s*ellipsis|line-clamp/);
+    expect(rule(style, ".age.late")).toMatch(/color:\s*#ffe08a/);
+    // The hero numbers stay white; a late oldest call is a small warm dot, never a large yellow number.
+    expect(rule(style, ".stat b")).toMatch(/color:\s*#fff;/);
+    expect(style).not.toMatch(/\.stat[^{]*\bb\s*\{[^}]*#ffe08a/);
+    expect(rule(style, ".stat.late span::before")).toMatch(/width:\s*6px/);
+    expect(rule(style, ".stat.late span::before")).toMatch(/background:\s*#ffe08a/);
+    expect(rule(style, ".age.late")).toMatch(/background:\s*rgba\(255, 205, 110, 0\.32\)/);
+    expect(rule(style, ".ini")).toMatch(/border-radius:\s*50%/);
+    expect(rule(style, ".ini")).toMatch(/background:\s*rgba\(255, 255, 255, 0\.2\)/);
+    expect(style).not.toMatch(/hsl\(|backdrop-filter|box-shadow:(?!\s*none)|border:\s*1px|text-shadow|filter:\s*drop/);
+    for (const sel of [".prod", ".st", ".verb", ".stat span"]) {
+      const body = rule(style, sel);
+      expect(body, sel).toMatch(/font-family:\s*var\(--b-code\)/);
+      expect(body, sel).toMatch(/text-transform:\s*uppercase/);
+      expect(body, sel).toMatch(/letter-spacing:\s*0\.08em/);
+      expect(body, sel).toMatch(/font-size:\s*1[01]px/);
+    }
+    // The Start button hides until the call is hovered, in the age's place, so nothing moves.
+    expect(rule(style, ".acts")).toMatch(/position:\s*absolute/);
+    expect(rule(style, ".acts")).toMatch(/opacity:\s*0/);
+    // Phosphor arrow-right (regular).
+    render({ decisions: day(), prompts: ALL_PROMPTS, cols: 2, rows: 2 });
+    const arrow = q('[data-testid="brief-blocked-arrow"]')!;
+    expect(arrow.getAttribute("viewBox")).toBe("0 0 256 256");
+    expect(arrow.querySelector("path")!.getAttribute("d")).toMatch(/^M221\.66,133\.66l-72,72/);
   });
 });
