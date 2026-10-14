@@ -262,25 +262,23 @@
       display: none;
     }
   }
-  /* FIRST badge: warm foil, only on a first-of-its-kind ship. */
+  /* FIRST: the shared highlight label (terracotta, white, fully rounded), in the mono caps label style. */
   .first {
     flex: none;
     display: inline-flex;
     align-items: center;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    padding: 2px 6px;
-    border-radius: 99px;
-    color: #2a1408;
-    background: linear-gradient(110deg, #ffb580, #ffe2c4 40%, #ff809f 60%, #ffb580);
-    background-size: 220% 100%;
-    animation: foil 3.5s ease-in-out infinite;
-  }
-  @keyframes foil {
-    50% {
-      background-position: 100% 0;
-    }
+    gap: 4px;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 999px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--b-on-hot, #fff);
+    background: var(--b-hot, #c9765a);
+    text-shadow: none;
   }
   /* Hover: light follows the pointer across the tile and catches its rim (white glass, no foil). */
   .run::before {

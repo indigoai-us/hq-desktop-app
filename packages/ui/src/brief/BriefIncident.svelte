@@ -80,7 +80,7 @@
         </div>
       {/if}
     </div>
-    <div class="sub" data-testid="brief-incident-sub"><span class="unit">{m.unit} stuck · {m.cause}</span><br />{risk.summary}</div>
+    <div class="sub" data-testid="brief-incident-sub"><span class="unit">{m.unit} stuck · {m.cause}</span><span class="sum">{risk.summary}</span></div>
   {:else if ci}
     {#if ci.note && ci.note !== ci.workflow}<p class="lede">{ci.note}</p>{/if}
     <!-- The details as label / value rows at the card's foot. -->
@@ -158,9 +158,9 @@
     right: 20px;
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     height: 20px;
-    padding: 0 8px;
+    padding: 0 9px 0 8px;
     border-radius: 999px;
     font-family: var(--b-code);
     font-size: 10px;
@@ -190,7 +190,7 @@
       box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7);
     }
     70% {
-      box-shadow: 0 0 0 6px rgba(255, 255, 255, 0);
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0);
     }
     100% {
       box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
@@ -283,10 +283,10 @@
   }
   /* Other live incidents: glass rows under a small label. */
   .also {
-    margin-top: 10px;
+    margin-top: 16px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
   }
   .also-l {
     font-family: var(--b-code);
@@ -347,11 +347,12 @@
     overflow: hidden;
   }
   /* The count and its stuck units: lit cells in the mosaic style, beside the number. */
+  /* Title, then the count and its cells, then what is stuck and why: each with room to breathe. */
   .count {
     display: flex;
     align-items: center;
     gap: 14px;
-    margin-top: 2px;
+    margin-top: 12px;
   }
   .dots {
     display: flex;
@@ -371,8 +372,19 @@
   .dots i:hover {
     scale: 1.4;
   }
+  [data-testid="brief-incident-sub"] {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+    font-size: var(--b-row-fs, 13px);
+    line-height: 1.4;
+  }
   .sub .unit {
     color: #fff;
     font-weight: 500;
+  }
+  .sub .sum {
+    color: rgba(255, 255, 255, 0.78);
   }
 </style>
