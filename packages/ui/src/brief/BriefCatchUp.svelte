@@ -41,15 +41,16 @@
 
 <div class="w" data-testid="brief-catchup">
   <div class="eyebrow">Welcome back · {away}</div>
-  <div class="greet">Morning{input.userName ? `, ${input.userName}` : ""}.<br /><span class="line" data-testid="brief-catchup-greet">{greet}</span></div>
+  <!-- The page already says good morning; the card leads with what changed. -->
+  <div class="greet"><span class="line" data-testid="brief-catchup-greet">{greet}</span></div>
   {#if because}<div class="first" data-testid="brief-catchup-first">{because}</div>{/if}
   {#if cells}
-    <div class="cu" style="--cols:{cells > 4 ? 3 : 2}">
+    <div class="cu" style="--cols:{Math.min(cells, 3)}">
       {#each shown as t (t.id)}
         <div class="tile" role="group" aria-label={t.text} data-testid="brief-catchup-tile" data-tone={t.tone} use:peek={{ state: brief, content: () => t.peek }}>
           <span class="tag tone-{t.tone}">{t.tag}</span>
           <div class="tx">{t.text}</div>
-          {#if t.sub}<div class="ts">{t.sub}</div>{/if}
+          {#if t.sub && !t.origins.some((o) => o.product === t.sub || o.repo === t.sub)}<div class="ts">{t.sub}</div>{/if}
           {#if t.origins.length}
             <div class="orgs">{#each t.origins.slice(0, 3) as o, i (`${o.companyUid ?? ""}:${o.repo ?? ""}:${o.product ?? ""}:${i}`)}<BriefOrigin origin={o} product />{/each}</div>
           {/if}
@@ -68,80 +69,84 @@
 </div>
 
 <style>
-  .greet .line {
-    color: var(--b-sun);
-  }
+  /* What changed, as the card's title. */
   .greet {
-    font-size: var(--b-fs-display);
+    margin-top: 0;
+    font-size: var(--b-fs-title-lg);
     font-weight: 500;
-    letter-spacing: var(--b-display-track);
-    line-height: 1;
-    margin-top: 12px;
+    letter-spacing: -0.015em;
+    line-height: 1.25;
   }
-
+  .greet .line {
+    color: #fff;
+  }
   .first {
-    margin-top: 10px;
+    margin-top: 6px;
     max-width: 560px;
     font-size: 13px;
-    line-height: 1.35;
-    color: rgb(var(--b-ink) / 0.86);
+    line-height: 1.4;
+    color: rgb(var(--b-ink) / 0.78);
   }
+  /* Tiles fill the card: a row of glass tiles, label and title at the top, the product at the foot. */
   .cu {
+    flex: 1;
+    min-height: 0;
     display: grid;
     grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+    grid-auto-rows: minmax(120px, 1fr);
     gap: 10px;
-    margin-top: 16px;
+    margin-top: 18px;
   }
-  /* Glass tile: lit from the top, hairline rim, soft drop. No inner shadow,
-     no backdrop-filter (WKWebView draws it as a square that ignores the radius). */
   .tile {
     position: relative;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 6px;
     min-width: 0;
-    padding: 11px 12px 10px;
-    border-radius: 6px;
-    background: rgb(var(--b-ink) / 0.04);
+    padding: 14px;
+    border-radius: 10px;
+    background: rgb(var(--b-ink) / 0.12);
     border: 0;
     box-shadow: none;
-    transition: background 0.3s, border-color 0.3s;
+    transition: background 0.3s;
   }
   .tile:hover,
   .tile:focus-visible {
-    background: rgb(var(--b-ink) / 0.07);
-    border-color: rgb(var(--b-ink) / 0.14);
+    background: rgb(var(--b-ink) / 0.2);
     outline: none;
   }
   .tag {
     display: block;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    margin-bottom: 3px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgb(var(--b-ink) / 0.7);
+    margin-bottom: 2px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .tag.tone-neutral {
-    color: var(--b-t2);
+    color: rgb(var(--b-ink) / 0.7);
   }
   .tx {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     line-height: 1.3;
     display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
     overflow: hidden;
     overflow-wrap: anywhere;
   }
   .ts {
-    font-size: 11px;
-    line-height: 1.3;
-    color: var(--b-t2);
+    font-size: 12px;
+    line-height: 1.35;
+    color: rgb(var(--b-ink) / 0.75);
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
@@ -154,24 +159,26 @@
     flex-wrap: wrap;
     gap: 4px 10px;
     margin-top: auto;
-    padding-top: 6px;
+    padding-top: 8px;
   }
   .orgs :global(.org.product b) {
-    font-size: 11px;
-    color: var(--b-t2);
+    font-size: 12px;
+    color: rgb(var(--b-ink) / 0.85);
   }
   .more {
     justify-content: center;
     align-items: center;
-    font-size: 13px;
+    font-size: 12px;
     color: rgb(var(--b-ink) / 0.78);
+    background: transparent;
     cursor: default;
   }
   .quiet {
     margin-top: 16px;
   }
   .end {
-    margin: auto 0 0;
-    padding-top: 12px;
+    margin: 0;
+    padding-top: 16px;
+    color: rgb(var(--b-ink) / 0.78);
   }
 </style>

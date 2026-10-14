@@ -329,9 +329,9 @@
     min-height: 0;
   }
   /* Glass row: lit from the top, hairline rim, soft drop. No backdrop-filter, no well. */
+  /* Rows keep their natural height; with few calls the list stays compact and the footer sits at the bottom. */
   .it {
-    flex: 1 1 auto;
-    max-height: 132px;
+    flex: none;
     position: relative;
     overflow: hidden;
     display: flex;
