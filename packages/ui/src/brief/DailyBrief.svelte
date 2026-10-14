@@ -420,7 +420,7 @@
               catchUp={plan.dayType === "catch-up"}
             />
           {:else if w.kind === "handoffs"}
-            <BriefHandoffs handoffs={input.handoffs ?? []} prompts={plan.prompts} now={input.now} rows={w.rows} />
+            <BriefHandoffs handoffs={input.handoffs ?? []} prompts={plan.prompts} now={input.now} rows={w.rows} cols={w.cols} />
           {:else if w.kind === "shipped"}
             <BriefShipped
               shipped={input.shipped}

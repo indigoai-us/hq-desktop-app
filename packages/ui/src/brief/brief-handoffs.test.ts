@@ -5,6 +5,7 @@ import Harness from "./BriefHandoffsHarness.test-support.svelte";
 import {
   HANDOFF_ROWS,
   HANDOFF_ROWS_SHORT,
+  HANDOFF_ROWS_NARROW,
   ackPrompt,
   ageText,
   handoffHeadline,
@@ -203,36 +204,49 @@ describe("BriefHandoffs card", () => {
     target?.remove();
   });
 
-  it("eyebrow, headline, and rows in rank order; the row that is yours comes first with the amber receiving ring", () => {
+  it("eyebrow, headline, and rows in rank order; the row that is yours comes first with a warm Needs you status", () => {
     render({});
     expect(q(".eyebrow")!.textContent!.trim()).toBe("Ownership moved");
     expect(q('[data-testid="brief-handoffs-title"]')!.textContent).toBe("1 handoff is yours to acknowledge");
     expect(qa('[data-testid="brief-handoff"]').map((el) => el.dataset.handoff)).toEqual(["h-pluto", "h-memo", "h-liveops"]);
     const first = row("h-pluto");
     expect(first.classList.contains("me")).toBe(true);
-    expect(first.querySelector(".ar .ring.hot")).not.toBeNull();
-    expect(row("h-memo").querySelector(".ar .ring.hot")).toBeNull();
-    expect(row("h-memo").querySelector(".ar .ring")).not.toBeNull();
+    const mine = first.querySelector<HTMLElement>('[data-testid="brief-handoff-status"]')!;
+    expect(mine.dataset.status).toBe("needs-you");
+    expect(mine.textContent!.trim()).toBe("Needs you");
+    expect(mine.classList.contains("hot")).toBe(true);
+    const theirs = row("h-memo").querySelector<HTMLElement>('[data-testid="brief-handoff-status"]')!;
+    expect(theirs.dataset.status).toBe("waiting");
+    expect(theirs.classList.contains("hot")).toBe(false);
     expect(first.querySelector('[data-testid="brief-handoff-from"]')!.textContent).toBe("Y");
     expect(first.querySelector('[data-testid="brief-handoff-to"]')!.textContent).toBe("C");
     expect(q('[data-testid="brief-handoffs-foot"]')!.textContent).toContain("1 of 3 landed");
   });
 
-  it("dashed arrow with a travelling baton until acked, then solid with an arrowhead", () => {
-    render({});
-    const inAir = row("h-memo").querySelector('[data-testid="brief-handoff-arrow"]')!;
-    expect(inAir.getAttribute("data-acked")).toBe("false");
-    expect(inAir.querySelector(".track")!.getAttribute("stroke-dasharray")).toBe("3 3");
-    expect(inAir.querySelector(".baton")).not.toBeNull();
-    expect(inAir.querySelector(".head")).toBeNull();
-    const done = row("h-liveops").querySelector('[data-testid="brief-handoff-arrow"]')!;
-    expect(done.getAttribute("data-acked")).toBe("true");
-    expect(done.querySelector(".track")!.hasAttribute("stroke-dasharray")).toBe(false);
-    expect(done.querySelector(".head")).not.toBeNull();
-    expect(done.querySelector(".baton")).toBeNull();
+  it("one status per row in place of the receipt dots: waiting or acked with the receipts in, landed, warm when a receipt is late", () => {
+    const acked: BriefHandoff = { ...memo, id: "h-acked", object: "Acked thing", receipts: { access: true, ack: true, active: null } };
+    const late: BriefHandoff = { ...memo, id: "h-late", object: "Late thing", since: hoursAgo(25) };
+    render({ handoffs: [memo, acked, late, billing, liveops] });
+    const status = (id: string) => row(id).querySelector<HTMLElement>('[data-testid="brief-handoff-status"]')!;
+    // memo: access in, ack and active missing, 6h, not production.
+    expect(status("h-memo").dataset.status).toBe("waiting");
+    expect(status("h-memo").textContent!.replace(/\s+/g, " ").trim()).toBe("Waiting · 1 of 3");
+    expect(status("h-memo").classList.contains("hot")).toBe(false);
+    // Acknowledged but not yet active: unknown never counts as in.
+    expect(status("h-acked").dataset.status).toBe("acked");
+    expect(status("h-acked").textContent!.replace(/\s+/g, " ").trim()).toBe("Acked · 2 of 3");
+    // Overdue (> 24h) and production rows with a missing receipt are warm.
+    expect(status("h-late").classList.contains("hot")).toBe(true);
+    expect(status("h-billing").classList.contains("hot")).toBe(true);
+    expect(status("h-liveops").dataset.status).toBe("landed");
+    expect(status("h-liveops").textContent!.trim()).toBe("Landed");
+    expect(status("h-liveops").classList.contains("hot")).toBe(false);
+    // The arrow still says whether the receiver acknowledged.
+    expect(row("h-memo").querySelector('[data-testid="brief-handoff-arrow"]')!.getAttribute("data-acked")).toBe("false");
+    expect(row("h-acked").querySelector('[data-testid="brief-handoff-arrow"]')!.getAttribute("data-acked")).toBe("true");
   });
 
-  it("receipt dots: unknown renders '?' and is never green; missing ones on a production row ring amber", () => {
+  it("receipts (read out per row): unknown is its own state and never done; missing ones on a production row are hot", () => {
     render({});
     const dots = [...row("h-pluto").querySelectorAll<HTMLElement>('[data-testid="brief-receipt"]')];
     expect(dots.map((d) => d.dataset.receipt)).toEqual(["access", "ack", "active"]);
@@ -268,6 +282,12 @@ describe("BriefHandoffs card", () => {
     expect(qa('[data-testid="brief-handoff"]')).toHaveLength(HANDOFF_ROWS_SHORT);
     expect(q('[data-testid="brief-handoffs-more"]')!.textContent!.trim()).toBe("+5 more");
     expect(q('[data-testid="brief-handoffs-foot"]')).toBeNull();
+  });
+
+  it("a one-column, one-row card shows one two-line row, then '+N more' for the rest", () => {
+    render({ handoffs: many(4), rows: 1, cols: 1 });
+    expect(qa('[data-testid="brief-handoff"]')).toHaveLength(HANDOFF_ROWS_NARROW);
+    expect(q('[data-testid="brief-handoffs-more"]')!.textContent!.trim()).toBe("+3 more");
   });
 
   it("the object carries its company logo and product name via BriefLogo / BriefOrigin", () => {
