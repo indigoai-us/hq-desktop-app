@@ -1,0 +1,64 @@
+# Dependabot (SOC 2 CC7.1). Alerts first, low noise.
+#
+# Security updates: grouped into one PR per ecosystem when GitHub raises an
+# alert (needs "Dependabot alerts" and "Dependabot security updates" enabled in
+# repo settings; this file does not turn them on).
+# Version updates: monthly, minor and patch only, grouped into one PR per
+# ecosystem, at most 2 open PRs. Major bumps are left to deliberate upgrades.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directories:
+      - "/"
+      - "/apps/sync"
+      - "/apps/sync/sidecar/recall-sdk-bridge"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "cargo"
+    directories:
+      - "/"
+      - "/apps/sync/src-tauri"
+      - "/apps/work/src-tauri"
+      - "/apps/intro/src-tauri"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      cargo-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      cargo-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]
