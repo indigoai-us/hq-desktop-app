@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import Harness from "./BriefHealthHarness.test-support.svelte";
@@ -353,5 +355,9 @@ describe("Incident card", () => {
     expect(dots).toHaveLength(3);
     expect(dots.filter((d) => d.classList.contains("on"))).toHaveLength(1);
     expect(target.querySelector(".lede")).toBeNull();
+    // The count sits under the cells, from the same left edge.
+    expect([...wf.children].map((c) => c.className.split(" ")[0])).toEqual(["wf-dots", "wf-label"]);
+    const src = readFileSync(resolve(process.cwd(), "src/brief/BriefIncident.svelte"), "utf8");
+    expect(src).toMatch(/\.wf \{[^}]*flex-direction: column[^}]*align-items: flex-start/);
   });
 });

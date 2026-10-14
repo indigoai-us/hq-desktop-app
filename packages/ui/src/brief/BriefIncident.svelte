@@ -315,10 +315,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* The cells, then their count under them, both from the left edge. */
   .wf {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
   }
   /* Square cells in the sunrise strip's style: 8px, 1.5px corners, 3px apart; a cell grows a little on hover. */
   .wf-dots {
