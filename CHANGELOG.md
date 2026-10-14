@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Linux outposts: four sign-in fixes for signing in as the outpost. "Use this outpost's identity" now works when the person's saved sign-in was cancelled; before, the old sign-in stayed on disk and the button did nothing. If the outpost cannot sign in (for example the HQ command line tool is broken or the outpost's credentials were revoked), HQ Work shows the sign-in screen, where you can try the outpost again or sign in with your account; before, it stayed on "Reconnecting" with only a Retry button. Signing out now also removes a person sign-in that the HQ command line tool saved while the app was running as the outpost, so the app no longer signs straight back in as that person. The Messages "Requests" list is empty while signed in as an outpost, and accepting or declining says requests need a person sign-in, instead of showing a load error.
 - Notes to self: your own direct messages now show in the sidebar as
   "<your name> (you)". Open it to read what you (and tools acting as you)
   sent yourself, or write yourself a note. It never shows an unread badge,

@@ -1437,11 +1437,37 @@ pub async fn fetch_dm_thread(
 // the held first message into a live DM_EVENT, so the conversation pane can swap
 // the request card for the standard thread on the next thread load.
 
+/// The empty requests list an outpost session gets without a server call.
+fn outpost_requests(site: &'static str) -> Option<RequestsListResponse> {
+    crate::commands::auth::skip_person_only_call(site).then(|| RequestsListResponse {
+        requests: Vec::new(),
+        next_cursor: None,
+    })
+}
+
+/// Accept/decline is person-only. An outpost session gets a plain message
+/// without calling the endpoint that would answer 403.
+fn outpost_refuses_request_action(site: &'static str) -> Result<(), String> {
+    if crate::commands::auth::skip_person_only_call(site) {
+        return Err(OUTPOST_REQUESTS_UNAVAILABLE.to_string());
+    }
+    Ok(())
+}
+
+const OUTPOST_REQUESTS_UNAVAILABLE: &str =
+    "Connection requests are not available while signed in as this outpost.";
+
 /// Tauri command: list the caller's pending incoming connection requests.
 /// `GET /v1/notify/connections/requests`. Surfaces failures to the caller so the
 /// Requests segment can show a load error.
 #[tauri::command]
 pub async fn list_dm_requests() -> Result<RequestsListResponse, String> {
+    // Connection requests belong to people; hq-pro refuses them for an
+    // outpost principal. The Requests segment shows an empty list instead of
+    // a 403 load error, matching the background poll.
+    if let Some(empty) = outpost_requests("DM_NOTIFY_REQUESTS_LIST") {
+        return Ok(empty);
+    }
     let access_token = cognito::get_valid_access_token().await.map_err(|e| {
         log(LOG_TAG, &format!("DM_NOTIFY_REQUESTS_FAIL auth: {e}"));
         format!("Not signed in: {e}")
@@ -1601,6 +1627,7 @@ pub async fn respond_dm_request(
     pair_key: String,
     action: String,
 ) -> Result<(), String> {
+    outpost_refuses_request_action("DM_NOTIFY_REQUESTS_RESPOND")?;
     let auth = current_notification_auth_snapshot(&app)
         .await
         .ok_or_else(|| "Not signed in".to_string())?;
@@ -3975,6 +4002,33 @@ pub async fn open_dm_detail(app: AppHandle, event: DmEvent) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interactive_request_commands_step_aside_for_an_outpost() {
+        use crate::commands::auth::{
+            reset_skipped_person_only_calls, set_active_session_source_for_test,
+            SOURCE_TEST_LOCK,
+        };
+        use hq_desktop_core::cognito::TokenSource;
+        let _serial = SOURCE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_skipped_person_only_calls();
+
+        set_active_session_source_for_test(Some(TokenSource::Person));
+        assert!(outpost_requests("T_LIST").is_none());
+        assert!(outpost_refuses_request_action("T_RESPOND").is_ok());
+
+        set_active_session_source_for_test(Some(TokenSource::Machine));
+        let empty = outpost_requests("T_LIST").expect("an outpost gets an empty list");
+        assert!(empty.requests.is_empty());
+        assert!(empty.next_cursor.is_none());
+        assert_eq!(
+            outpost_refuses_request_action("T_RESPOND").unwrap_err(),
+            OUTPOST_REQUESTS_UNAVAILABLE
+        );
+
+        set_active_session_source_for_test(None);
+        reset_skipped_person_only_calls();
+    }
 
     fn mk_channel(id: &str, unread: u32) -> crate::commands::messages::Channel {
         crate::commands::messages::Channel {

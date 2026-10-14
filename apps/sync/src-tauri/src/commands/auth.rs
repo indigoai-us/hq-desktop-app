@@ -885,7 +885,13 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
         hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
     );
     let cache_account_id = active_auth_session_snapshot().and_then(|session| session.account_id);
-    if machine_session_is_active() {
+    // Choose from the token store as it is now, not from the source the last
+    // probe cached: the hq CLI may have written a person session since then.
+    let plan = sign_out_plan(
+        machine_session_is_active(),
+        cognito::stored_token_presence().await,
+    );
+    if plan.opt_out_machine && !plan.clear_person {
         // Machine mode: nothing is revoked and nothing is deleted. The
         // outpost's machine credentials and its minted session stay on disk
         // for the CLI and for a later "Use this outpost's identity". This
@@ -898,6 +904,11 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
         crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     } else {
         record_last_auth_transition("sign_out");
+        if plan.opt_out_machine {
+            // A person session appeared while the outpost was active. Clear
+            // it, and keep the outpost from signing straight back in.
+            hq_desktop_core::machine_session::set_opted_out(true)?;
+        }
         set_active_session_source(None);
         crate::commands::dm_notify::clear_notification_credentials(&app).await?;
         crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
@@ -974,7 +985,9 @@ pub async fn use_machine_identity(app: AppHandle) -> Result<AuthSessionEnvelope,
         return Err("This device has no outpost identity.".to_string());
     }
     machine_session::set_opted_out(false)?;
-    if cognito::get_tokens().await?.is_some() {
+    // Read the raw store: get_tokens hides a generation whose refresh was
+    // rejected, which is exactly the revoked person session to clear here.
+    if person_session_needs_check_before_outpost(cognito::stored_token_presence().await) {
         match cognito::resolve_session_classified(false).await {
             Ok(_) => {}
             Err(error) if error.requires_reauth => {
@@ -991,6 +1004,31 @@ pub async fn use_machine_identity(app: AppHandle) -> Result<AuthSessionEnvelope,
     Ok(envelope)
 }
 
+/// Whether "Use this outpost's identity" must check the saved person session
+/// first. Any token on disk counts, including one marked invalidated.
+fn person_session_needs_check_before_outpost(presence: cognito::StoredTokenPresence) -> bool {
+    presence == cognito::StoredTokenPresence::Present
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SignOutPlan {
+    /// Record the local outpost opt-out.
+    opt_out_machine: bool,
+    /// Revoke and delete the person session on disk.
+    clear_person: bool,
+}
+
+/// Decide what sign-out does from the cached source and the token store.
+/// A person token on disk is always cleared; an active outpost is always
+/// opted out. With neither, the person path runs (a no-op clear).
+fn sign_out_plan(machine_active: bool, person_tokens: cognito::StoredTokenPresence) -> SignOutPlan {
+    let person_present = person_tokens != cognito::StoredTokenPresence::Absent;
+    SignOutPlan {
+        opt_out_machine: machine_active,
+        clear_person: person_present || !machine_active,
+    }
+}
+
 /// Clear this device's stale session and open the desktop workspace so the
 /// user can sign in there. The compact popover is not the sign-in surface.
 #[tauri::command]
@@ -1003,6 +1041,37 @@ pub async fn begin_reauth(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn use_outpost_checks_a_revoked_person_session_still_on_disk() {
+        use cognito::StoredTokenPresence::*;
+        assert!(person_session_needs_check_before_outpost(Present));
+        assert!(!person_session_needs_check_before_outpost(Absent));
+        assert!(!person_session_needs_check_before_outpost(Unreadable));
+    }
+
+    #[test]
+    fn sign_out_clears_a_person_session_written_while_the_outpost_was_active() {
+        use cognito::StoredTokenPresence::*;
+        assert_eq!(
+            sign_out_plan(true, Present),
+            SignOutPlan { opt_out_machine: true, clear_person: true }
+        );
+        assert_eq!(
+            sign_out_plan(true, Absent),
+            SignOutPlan { opt_out_machine: true, clear_person: false }
+        );
+        assert_eq!(
+            sign_out_plan(false, Present),
+            SignOutPlan { opt_out_machine: false, clear_person: true }
+        );
+        assert_eq!(
+            sign_out_plan(false, Absent),
+            SignOutPlan { opt_out_machine: false, clear_person: true }
+        );
+        // An unreadable store is not proof there is no person session.
+        assert!(sign_out_plan(true, Unreadable).clear_person);
+    }
 
     #[test]
     fn startup_command_does_not_conclude_signed_out_for_temporary_refresh_failure() {
