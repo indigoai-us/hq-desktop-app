@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- HQ sync snapshots of your HQ folder now carry an `HQ-Fingerprint` line that records which person and machine saved them, when the HQ command line is installed. If it is missing, slow to answer, or turned off with `enabled: false` in `personal/settings/fingerprint.yaml`, snapshots are saved exactly as before.
+
 ## [0.11.9] — 2026-10-14
 
 - Daily Brief is now only shown to Indigo members. For everyone else the Daily Brief entry is gone from the side rail and the command palette, and an open Daily Brief page goes back to the company's landing page, or Home. It can be opened to everyone later from HQ's flag registry (`desktop.rail-brief-v1`) without a new release.
