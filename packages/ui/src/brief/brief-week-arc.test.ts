@@ -3,22 +3,27 @@ import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import Harness from "./BriefWeekArcHarness.test-support.svelte";
 import {
+  addDays,
   arcSentence,
-  BAR_SCALE,
-  bars,
+  averageShare,
   beatPeek,
   beats,
   dayLabel,
   dayPeek,
   dayTip,
-  linePath,
-  linePoints,
+  futureDays,
   MAX_BEATS,
+  mergedAverage,
   mergeTrend,
   pickBeats,
   rangeLabel,
+  recordIndex,
   restPeek,
+  weekColumns,
   weekdayName,
+  weekdayShort,
+  weekMix,
+  weekTotals,
 } from "./brief-week-arc.js";
 import type { BriefDay } from "./brief-types.js";
 
@@ -47,6 +52,14 @@ describe("week arc: day labels from the date string", () => {
     expect(weekdayName("2026-10-17")).toBe("Saturday");
     expect(dayLabel("2026-10-08")).toBe("Thu 8");
     expect(dayLabel("2026-11-01")).toBe("Sun 1");
+    expect(weekdayShort("2026-10-08")).toBe("Thu");
+  });
+
+  it("adds days across month and year ends by arithmetic on the string", () => {
+    expect(addDays("2026-10-08", 1)).toBe("2026-10-09");
+    expect(addDays("2026-10-30", 3)).toBe("2026-11-02");
+    expect(addDays("2026-12-31", 1)).toBe("2027-01-01");
+    expect(addDays("2028-02-28", 1)).toBe("2028-02-29");
   });
 
   it("writes the tip and the range in plain words", () => {
@@ -124,17 +137,51 @@ describe("week arc: beats and the sentence", () => {
 });
 
 describe("week arc: geometry and peeks", () => {
-  it("bars share the busiest day; the line runs through the column centres", () => {
-    const b = bars(WEEK);
-    expect(b.map((x) => x.total)).toEqual([4, 15, 31, 33, 42]);
-    expect(b[4]!.share).toBe(1);
-    expect(b[0]!.share).toBeCloseTo(4 / 42);
-    expect(bars([day("2026-10-04", 0, 0, 0)])[0]!.share).toBe(0);
-    const pts = linePoints(WEEK);
-    expect(pts.map((p) => p.x)).toEqual([10, 30, 50, 70, 90]);
-    expect(pts[4]!.y).toBeCloseTo(100 - BAR_SCALE * 100, 1);
-    expect(linePath(pts)).toMatch(/^M10,\d+(\.\d+)? C20,/);
-    expect(linePath([])).toBe("");
+  it("sums the week: merges for the hero number, sessions and meetings for the quiet line", () => {
+    expect(weekTotals(WEEK)).toEqual({ merged: 87, sessions: 8, meetings: 30 });
+    expect(weekMix(WEEK)).toBe("8 sessions · 30 meetings");
+    expect(weekMix([day("2026-10-04", 1, 1, 0), day("2026-10-05", 0, 0, 0)])).toBe("1 session · 1 meeting");
+  });
+
+  it("one capsule per day, its height the day's merges against the busiest day", () => {
+    const c = weekColumns(WEEK, "2026-10-08");
+    expect(c.map((x) => x.merged)).toEqual([2, 3, 21, 27, 34]);
+    expect(c[4]!.share).toBe(1);
+    expect(c[0]!.share).toBeCloseTo(2 / 34, 2);
+    expect(c.map((x) => x.today)).toEqual([false, false, false, false, true]);
+    expect(c.filter((x) => x.record).map((x) => x.date)).toEqual(["2026-10-08"]);
+    // An all-zero week stays flat instead of dividing by zero, and has no record.
+    const flat = weekColumns([day("2026-10-04", 1, 0, 0), day("2026-10-05", 0, 2, 0), day("2026-10-06", 0, 0, 0)]);
+    expect(flat.map((x) => x.share)).toEqual([0, 0, 0]);
+    expect(flat.some((x) => x.record)).toBe(false);
+  });
+
+  it("the record is the push beat when there is one, else the full day with the most merges", () => {
+    // The push beat wins even when another day merged more.
+    const pushLow = [day("2026-10-04", 1, 1, 30), day("2026-10-05", 1, 1, 9, { kind: "push", label: "Push" }), day("2026-10-06", 1, 1, 4)];
+    expect(recordIndex(pushLow)).toBe(1);
+    // No push: most merges, the later day on a tie; today's partial column does not count while a full day merged.
+    expect(recordIndex([day("2026-10-04", 1, 1, 9), day("2026-10-05", 1, 1, 9), day("2026-10-06", 1, 1, 4)])).toBe(1);
+    expect(recordIndex([day("2026-10-04", 1, 1, 5), day("2026-10-05", 1, 1, 9), day("2026-10-06", 1, 1, 40)], "2026-10-06")).toBe(1);
+    expect(recordIndex([day("2026-10-04", 1, 1, 0), day("2026-10-05", 1, 1, 0), day("2026-10-06", 1, 1, 3)], "2026-10-06")).toBe(2);
+    expect(recordIndex([day("2026-10-04", 1, 1, 0), day("2026-10-05", 1, 1, 0), day("2026-10-06", 1, 1, 0)])).toBe(-1);
+  });
+
+  it("the dotted average is the mean full day, today's partial column left out", () => {
+    expect(mergedAverage(WEEK, "2026-10-08")).toBe(13.3);
+    expect(mergedAverage(WEEK)).toBe(17.4);
+    expect(averageShare(WEEK, "2026-10-08")).toBeCloseTo(13.3 / 34, 2);
+    expect(mergedAverage([day("2026-10-04", 1, 1, 4)])).toBeNull();
+    expect(averageShare([day("2026-10-04", 1, 1, 0), day("2026-10-05", 1, 1, 0), day("2026-10-06", 1, 1, 0)])).toBeNull();
+  });
+
+  it("the rest of the week shows as ghost days only when the data reaches today", () => {
+    expect(futureDays(WEEK, "2026-10-08")).toEqual(["2026-10-09", "2026-10-10"]);
+    // A morning brief before today has any work: today is the first ghost.
+    expect(futureDays(WEEK, "2026-10-09")).toEqual(["2026-10-09", "2026-10-10"]);
+    expect(futureDays(WEEK, "2026-10-20")).toEqual([]);
+    const seven = Array.from({ length: 7 }, (_, i) => day(addDays("2026-10-02", i), 1, 1, 1));
+    expect(futureDays(seven, "2026-10-08")).toEqual([]);
   });
 
   it("peeks say what happened in the writer's words, with evidence when there is some", () => {
@@ -174,7 +221,7 @@ describe("BriefWeekArc", () => {
     target?.remove();
   });
 
-  it("renders the eyebrow, the sentence, one column per day and the key row", () => {
+  it("renders the eyebrow, the hero number, the sentence, the totals and one capsule per day", () => {
     render({ days: WEEK, today: "2026-10-08" });
     const card = q('[data-testid="brief-week-arc"]')!;
     expect(card.classList.contains("w")).toBe(true);
@@ -183,20 +230,54 @@ describe("BriefWeekArc", () => {
     expect(q('[data-testid="brief-week-arc-title"]')!.textContent).toBe("Outage Tuesday, recovery Wednesday.");
     expect(qa('[data-testid="brief-week-day"]')).toHaveLength(5);
     expect(qa('[data-testid="brief-week-day"]').map((d) => d.getAttribute("aria-label"))[4]).toBe("Thu 8: 2 sessions, 6 meetings, 34 merged");
-    expect(q('[data-testid="brief-week-key"]')!.textContent!.replace(/\s+/g, " ").trim()).toBe("Sessions · Meetings · Merged");
-    expect(card.querySelectorAll(".seg")).toHaveLength(15);
+    expect(q('[data-testid="brief-week-total"]')!.textContent).toBe("87merged");
+    expect(q('[data-testid="brief-week-total"]')!.getAttribute("aria-label")).toBe("87 merged this week");
+    expect(q('[data-testid="brief-week-mix"]')!.textContent).toBe("8 sessions · 30 meetings");
+    // Every day merged something, so every column has a capsule sized to its share of the busiest day.
+    const bars = qa('[data-testid="brief-week-day"] .bar');
+    expect(bars).toHaveLength(5);
+    expect(bars.map((b) => b.style.getPropertyValue("--share"))).toEqual(["0.06", "0.09", "0.62", "0.79", "1"]);
+    // The dotted average sits at the mean full day's share.
+    expect(q('[data-testid="brief-week-avg"]')!.style.getPropertyValue("--avg")).toBe("0.39");
   });
 
-  it("today's column is dashed and comes from the today prop, not the machine clock", () => {
+  it("the record day alone carries the accent and its count in a pill", () => {
+    render({ days: WEEK, today: "2026-10-08" });
+    const record = qa('[data-testid="brief-week-day"]').filter((d) => d.classList.contains("record"));
+    expect(record.map((d) => d.getAttribute("data-date"))).toEqual(["2026-10-08"]);
+    expect(qa('[data-testid="brief-week-record"]')).toHaveLength(1);
+    expect(record[0]!.querySelector('[data-testid="brief-week-record"]')!.textContent).toBe("34 merged");
+    // The disc under the record day is the push beat's.
+    expect(record[0]!.querySelector('[data-testid="brief-week-beat"]')!.getAttribute("data-kind")).toBe("push");
+    // Without a push beat the busiest full day takes it, never today's partial column.
+    unmount(app!);
+    app = null;
+    target.remove();
+    render({ days: [day("2026-10-04", 1, 1, 5), day("2026-10-05", 1, 1, 12), day("2026-10-06", 1, 1, 30)], today: "2026-10-06" });
+    expect(qa(".day.record").map((d) => d.getAttribute("data-date"))).toEqual(["2026-10-05"]);
+    expect(q('[data-testid="brief-week-record"]')!.textContent).toBe("12 merged");
+  });
+
+  it("today's column is still running (a hatched capsule) and comes from the today prop, not the machine clock", () => {
     render({ days: WEEK, today: "2026-10-08" });
     const today = qa('[data-testid="brief-week-day"]').filter((d) => d.classList.contains("today"));
     expect(today).toHaveLength(1);
     expect(today[0]!.getAttribute("data-date")).toBe("2026-10-08");
     expect(q('[data-testid="brief-week-arc"]')!.getAttribute("data-today")).toBe("2026-10-08");
-    expect(q('[data-testid="brief-week-projection"]')).not.toBeNull();
-    const labels = qa(".lbls span");
-    expect(labels.map((l) => l.textContent)).toEqual(["Sun 4", "Mon 5", "Tue 6", "Wed 7", "Thu 8"]);
-    expect(labels[4]!.classList.contains("today")).toBe(true);
+    // The in-progress capsule is today's, and only today's.
+    const live = qa('[data-testid="brief-week-projection"]');
+    expect(live).toHaveLength(1);
+    expect(live[0]!.closest('[data-testid="brief-week-day"]')!.getAttribute("data-date")).toBe("2026-10-08");
+    expect(live[0]!.classList.contains("live")).toBe(true);
+    expect(qa(".bar.live")).toHaveLength(1);
+    const labels = qa('[data-testid="brief-week-day"] .lbl');
+    expect(labels.map((l) => l.textContent)).toEqual(["Sun", "Mon", "Tue", "Wed", "Thu"]);
+    expect(labels[4]!.closest(".day")!.classList.contains("today")).toBe(true);
+    // The rest of the week is ghost days: no data, no peek, hidden from assistive tech.
+    const ghosts = qa('[data-testid="brief-week-ghost"]');
+    expect(ghosts.map((g) => g.getAttribute("data-date"))).toEqual(["2026-10-09", "2026-10-10"]);
+    expect(ghosts.map((g) => g.querySelector(".lbl")!.textContent)).toEqual(["Fri", "Sat"]);
+    expect(ghosts.every((g) => g.getAttribute("aria-hidden") === "true" && !g.querySelector(".bar"))).toBe(true);
     // A brief for a day not in the data marks nothing as today and draws no projection.
     unmount(app!);
     app = null;
@@ -204,6 +285,14 @@ describe("BriefWeekArc", () => {
     render({ days: WEEK, today: "2026-10-20" });
     expect(qa(".today")).toHaveLength(0);
     expect(q('[data-testid="brief-week-projection"]')).toBeNull();
+    expect(q('[data-testid="brief-week-ghost"]')).toBeNull();
+  });
+
+  it("today with nothing merged yet keeps its in-progress mark on the stub", () => {
+    render({ days: [day("2026-10-04", 1, 1, 5), day("2026-10-05", 1, 1, 12), day("2026-10-06", 2, 1, 0)], today: "2026-10-06" });
+    const live = q('[data-testid="brief-week-projection"]')!;
+    expect(live.classList.contains("stub")).toBe(true);
+    expect(live.closest(".day")!.classList.contains("today")).toBe(true);
   });
 
   it("hides itself under three days of data", () => {
@@ -216,7 +305,7 @@ describe("BriefWeekArc", () => {
     expect(q('[data-testid="brief-week-arc"]')).not.toBeNull();
   });
 
-  it("shows at most four beat discs plus a +N more row whose peek lists the rest", async () => {
+  it("shows at most four beat discs plus a +N more chip whose peek lists the rest", async () => {
     const seven: BriefDay[] = Array.from({ length: 7 }, (_, i) =>
       day(`2026-10-${String(5 + i).padStart(2, "0")}`, 1, 1, 1, { kind: i === 1 ? "crisis" : i === 3 ? "resolution" : i === 4 ? "push" : "turn", label: `Beat ${i + 1}` }),
     );
@@ -224,6 +313,9 @@ describe("BriefWeekArc", () => {
     expect(qa('[data-testid="brief-week-beat"]')).toHaveLength(4);
     expect(qa('[data-testid="brief-week-beat"]').map((b) => b.getAttribute("data-kind"))).toEqual(["crisis", "resolution", "push", "turn"]);
     expect(qa('[data-testid="brief-week-beat-row"]')).toHaveLength(4);
+    expect(qa('[data-testid="brief-week-more"]')).toHaveLength(1);
+    // Two lines of beats: the tracks give up height so the card keeps its size.
+    expect(q('[data-testid="brief-week-arc"]')!.classList.contains("dense")).toBe(true);
     const more = q('[data-testid="brief-week-more"]')!;
     expect(more.textContent!.trim()).toBe("+3 more");
     await hover(more);
@@ -233,12 +325,21 @@ describe("BriefWeekArc", () => {
     expect(lines).toEqual(["Beat 1 · MON 5", "Beat 3 · WED 7", "Beat 6 · SAT 10"]);
   });
 
-  it("a one-row card keeps the discs and puts +N more in the key row", () => {
+  it("a one-row card keeps the discs, lists no beat rows and puts +N more beside the totals", () => {
     const six: BriefDay[] = Array.from({ length: 6 }, (_, i) => day(`2026-10-${String(5 + i).padStart(2, "0")}`, 1, 0, 2, { kind: "turn", label: `Turn ${i + 1}` }));
     render({ days: six, today: "2026-10-10", cols: 3, rows: 1 });
     expect(qa('[data-testid="brief-week-beat"]')).toHaveLength(4);
     expect(qa('[data-testid="brief-week-beat-row"]')).toHaveLength(0);
-    expect(q('[data-testid="brief-week-key"] [data-testid="brief-week-more"]')!.textContent).toBe("+2 more");
+    expect(q('.meta [data-testid="brief-week-more"]')!.textContent).toBe("+2 more");
+    // Three columns wide, the number and sentence sit beside the chart; two wide, over it.
+    expect(q('[data-testid="brief-week-arc"]')!.classList.contains("side")).toBe(true);
+    unmount(app!);
+    app = null;
+    target.remove();
+    render({ days: six, today: "2026-10-10", cols: 2, rows: 1 });
+    const card = q('[data-testid="brief-week-arc"]')!;
+    expect(card.classList.contains("flat")).toBe(true);
+    expect(card.classList.contains("side")).toBe(false);
   });
 
   it("hovering a disc opens its card: the beat in the writer's words, the day, the evidence", async () => {
