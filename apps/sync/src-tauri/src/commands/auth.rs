@@ -1,5 +1,8 @@
 pub use super::cognito::AuthSessionStatus;
-use super::cognito::{self, AuthState, CognitoRefreshFailureClass, CognitoTokens};
+use super::cognito::{
+    self, AuthState, CognitoRefreshFailureClass, CognitoTokens, MachineFailure, NonHumanPrincipal,
+    TokenSource,
+};
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
@@ -30,6 +33,90 @@ pub struct AuthSessionEnvelope {
     pub generation: u64,
     pub status: AuthSessionStatus,
     pub reason: Option<String>,
+}
+
+/// Whether this device can sign in as its outpost, and whether it currently
+/// is. Carries no credential material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineIdentityStatus {
+    /// Machine identity is enabled and the machine credentials are readable.
+    /// A local opt-out (machine-mode sign-out) does not clear this.
+    pub available: bool,
+    /// This process is signed in as the outpost right now.
+    pub active: bool,
+}
+
+static ACTIVE_SESSION_SOURCE: OnceLock<Mutex<Option<TokenSource>>> = OnceLock::new();
+
+fn active_session_source_cell() -> &'static Mutex<Option<TokenSource>> {
+    ACTIVE_SESSION_SOURCE.get_or_init(|| Mutex::new(None))
+}
+
+/// Record where the active session's tokens come from. Returns true when the
+/// source changed, so a transition is logged once and not on every read.
+fn set_active_session_source(source: Option<TokenSource>) -> bool {
+    let mut guard = active_session_source_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let changed = *guard != source;
+    *guard = source;
+    changed
+}
+
+pub(crate) fn active_session_source() -> Option<TokenSource> {
+    *active_session_source_cell()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// True while this device is signed in as its outpost rather than as a
+/// person. Person-only flows (invites, person provisioning, pack admin)
+/// check this and step aside instead of failing on a missing person entity.
+pub(crate) fn machine_session_is_active() -> bool {
+    active_session_source() == Some(TokenSource::Machine)
+}
+
+static SKIPPED_PERSON_ONLY_CALLS: OnceLock<Mutex<std::collections::BTreeSet<&'static str>>> =
+    OnceLock::new();
+
+/// True when a person-only server call must be skipped because this device is
+/// signed in as its outpost. hq-pro answers these calls with 403 for an
+/// outpost principal (person settings, connection requests, invites by
+/// email), so polling them would only log a refusal every cycle. The skip is
+/// logged once per call site, never per poll.
+pub(crate) fn skip_person_only_call(site: &'static str) -> bool {
+    if !machine_session_is_active() {
+        return false;
+    }
+    let cell = SKIPPED_PERSON_ONLY_CALLS.get_or_init(|| Mutex::new(Default::default()));
+    let first_time = cell
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(site);
+    if first_time {
+        eprintln!("[auth] {site} skipped: an outpost session has no person entity");
+    }
+    true
+}
+
+/// Serializes tests that flip the process-wide session source, in this
+/// module and in the modules whose person-only skips depend on it.
+#[cfg(test)]
+pub(crate) static SOURCE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn set_active_session_source_for_test(source: Option<TokenSource>) {
+    set_active_session_source(source);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_skipped_person_only_calls() {
+    if let Some(cell) = SKIPPED_PERSON_ONLY_CALLS.get() {
+        cell.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
 }
 
 static AUTH_SESSION_ENVELOPE: OnceLock<Mutex<Option<AuthSessionEnvelope>>> = OnceLock::new();
@@ -73,6 +160,7 @@ fn auth_session_status_tag(status: &AuthSessionStatus) -> &'static str {
         AuthSessionStatus::CredentialsInvalid => "credentials_invalid",
         AuthSessionStatus::RefreshTemporarilyUnavailable => "refresh_temporarily_unavailable",
         AuthSessionStatus::NonHumanPrincipal => "non_human_principal",
+        AuthSessionStatus::MachineUnavailable => "machine_unavailable",
     }
 }
 
@@ -195,6 +283,11 @@ pub(crate) fn publish_auth_session(
             AUTH_SESSION_CHANGED_EVENT,
             &current.0,
         );
+        // The welcome wizard in the main window re-checks the session on this
+        // event: the machine identity resolves in the background at launch, so
+        // its session can land after the sign-in screen mounted. Same
+        // envelope, no bearer material.
+        let _ = app.emit_to("main", AUTH_SESSION_CHANGED_EVENT, &current.0);
     }
     current.0
 }
@@ -220,6 +313,88 @@ pub(crate) fn set_sentry_user_from_tokens(tokens: &CognitoTokens) {
 
 pub(crate) fn clear_sentry_user() {
     sentry::Hub::main().configure_scope(|scope| scope.set_user(None));
+}
+
+/// Sentry user for an outpost session: the outpost's uid and a fixed
+/// `outpost` username. The owner's email is deliberately not attached, so
+/// crash reports from an outpost are never filed under a person.
+fn set_sentry_user_for_outpost(tokens: &CognitoTokens) {
+    let id = outpost_entity_uid(tokens);
+    sentry::Hub::main().configure_scope(|scope| {
+        scope.set_user(Some(sentry::User {
+            id,
+            username: Some("outpost".to_string()),
+            ..Default::default()
+        }))
+    });
+}
+
+fn claims_in_order<'a>(
+    tokens: &'a CognitoTokens,
+    id_token_first: bool,
+) -> impl Iterator<Item = cognito::IdTokenClaims> + 'a {
+    let (first, second) = if id_token_first {
+        (tokens.id_token.as_deref(), Some(tokens.access_token.as_str()))
+    } else {
+        (Some(tokens.access_token.as_str()), tokens.id_token.as_deref())
+    };
+    [first, second]
+        .into_iter()
+        .flatten()
+        .filter_map(|token| cognito::decode_id_token_claims(token).ok())
+}
+
+fn outpost_entity_uid(tokens: &CognitoTokens) -> Option<String> {
+    claims_in_order(tokens, true).find_map(|claims| {
+        claims
+            .entity_uid
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+/// The owner's email rides on the outpost's access token; the id token only
+/// carries the outpost's own `out-…@outposts.hq.computer` address, which is
+/// the fallback.
+fn outpost_owner_email(tokens: &CognitoTokens) -> Option<String> {
+    claims_in_order(tokens, false).find_map(|claims| {
+        claims
+            .email
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn outpost_display_name(tokens: &CognitoTokens) -> String {
+    match outpost_entity_uid(tokens) {
+        Some(uid) => format!("Outpost {uid}"),
+        None => "Outpost".to_string(),
+    }
+}
+
+/// Auth state for a session minted from the outpost machine identity. Shown
+/// as "Outpost out_…" with the owner's email; no person claims are involved.
+pub(crate) fn machine_state_from_tokens(tokens: &CognitoTokens) -> AuthState {
+    AuthState {
+        authenticated: true,
+        expires_at: Some(cognito::expires_at_iso(tokens)),
+        account_id: Some(notification_identity_from_tokens(tokens)),
+        email: outpost_owner_email(tokens),
+        display_name: Some(outpost_display_name(tokens)),
+        startup_token_read_result: None,
+    }
+}
+
+/// `whoami` for an outpost session. The outpost's uid stands in for the
+/// person uid so account-partitioned renderer state stays keyed per identity;
+/// there is no vault person lookup, because an outpost has no person entity.
+fn outpost_identity_from_tokens(tokens: &CognitoTokens) -> Option<WhoAmIIdentity> {
+    let uid = outpost_entity_uid(tokens)?;
+    Some(WhoAmIIdentity {
+        person_uid: uid.clone(),
+        email: outpost_owner_email(tokens).unwrap_or_default(),
+        display_name: Some(format!("Outpost {uid}")),
+    })
 }
 
 pub(crate) fn notification_identity_from_tokens(tokens: &CognitoTokens) -> String {
@@ -362,9 +537,18 @@ fn oldest_person_entity(
 /// `/v1/identity/whoami` does not exist on the real API.
 #[tauri::command]
 pub async fn whoami(app: AppHandle) -> Result<WhoAmIIdentity, String> {
-    let (tokens, _) = crate::commands::dm_notify::resolve_notification_credentials(&app)
+    let (session, _) = crate::commands::dm_notify::resolve_notification_session_classified(&app)
         .await
         .map_err(|_| "Not signed in".to_string())?;
+    let tokens = session.tokens;
+    // Signed in as the outpost: the identity comes from the token claims and
+    // nothing is looked up in the vault. Core only labels a session `Machine`
+    // after confirming it is an outpost, so the refusal below cannot apply.
+    if session.source == TokenSource::Machine {
+        if let Some(identity) = outpost_identity_from_tokens(&tokens) {
+            return Ok(identity);
+        }
+    }
     // Same gate as `resolve_authoritative_auth_session`, repeated because this
     // command is reachable on its own from the renderer. Without it the person
     // lookup below fails with "no person entity for this account", which reads
@@ -441,8 +625,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
         );
     }
     let before = first_token_read.ok().flatten();
-    let outcome =
-        crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
+    let outcome = crate::commands::dm_notify::resolve_notification_session_classified(app).await;
     let (state, status, account_id, reason, refresh_failure_class, rejection_class) = match outcome
     {
         // Refuse to adopt a machine identity as the signed-in person. The
@@ -455,30 +638,59 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
         // The tokens are deliberately left on disk. They may belong to an agent
         // that is legitimately running on this machine, and deleting another
         // process's credentials to fix our own display is not ours to do.
-        Ok((tokens, _)) => {
+        Ok((session, _)) => {
+            let tokens = session.tokens;
             if before
                 .as_ref()
                 .is_some_and(|previous| previous.access_token != tokens.access_token)
             {
                 record_last_auth_transition("refresh_ok");
             }
-            match cognito::non_human_principal_from_tokens(&tokens) {
-                Some(principal) => (
-                    signed_out_state(),
-                    AuthSessionStatus::NonHumanPrincipal,
-                    Some(notification_identity_from_tokens(&tokens)),
-                    Some(match principal {
-                        cognito::NonHumanPrincipal::Outpost => {
-                            "The HQ credentials saved on this device belong to an outpost, not to a person."
-                        }
-                        cognito::NonHumanPrincipal::Agent => {
-                            "The HQ credentials saved on this device belong to a fleet agent, not to a person."
-                        }
-                    }),
-                    None,
-                    "none",
-                ),
-                None => {
+            match (
+                session.source,
+                cognito::non_human_principal_from_tokens(&tokens),
+            ) {
+                // The outpost machine identity, minted from this device's own
+                // machine credentials. Signed in as the outpost, never as a
+                // person. Only the machine source may carry an outpost: an
+                // outpost token sitting in the person cache is refused below
+                // exactly as before.
+                (TokenSource::Machine, Some(NonHumanPrincipal::Outpost)) => {
+                    if set_active_session_source(Some(TokenSource::Machine)) {
+                        eprintln!(
+                            "[auth] signed in as the outpost machine identity; source=machine"
+                        );
+                    }
+                    set_sentry_user_for_outpost(&tokens);
+                    (
+                        machine_state_from_tokens(&tokens),
+                        AuthSessionStatus::Active,
+                        Some(notification_identity_from_tokens(&tokens)),
+                        None,
+                        None,
+                        "none",
+                    )
+                }
+                (_, Some(principal)) => {
+                    set_active_session_source(None);
+                    (
+                        signed_out_state(),
+                        AuthSessionStatus::NonHumanPrincipal,
+                        Some(notification_identity_from_tokens(&tokens)),
+                        Some(match principal {
+                            NonHumanPrincipal::Outpost => {
+                                "The HQ credentials saved on this device belong to an outpost, not to a person."
+                            }
+                            NonHumanPrincipal::Agent => {
+                                "The HQ credentials saved on this device belong to a fleet agent, not to a person."
+                            }
+                        }),
+                        None,
+                        "none",
+                    )
+                }
+                (_, None) => {
+                    set_active_session_source(Some(TokenSource::Person));
                     set_sentry_user_from_tokens(&tokens);
                     let state = authenticated_state_from_tokens(&tokens);
                     (
@@ -492,7 +704,47 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 }
             }
         }
+        // The machine identity fallback ran and failed. Checked before the
+        // "no credentials saved" arm because `before` is empty in machine
+        // mode as well. A mint failure is recoverable and keeps the sign-in
+        // screen's outpost action available; a fleet-agent credential is
+        // refused the same way as from the person cache.
+        Err(error) if error.machine.is_some() => {
+            set_active_session_source(None);
+            match error.machine {
+                Some(MachineFailure::Unavailable) => {
+                    eprintln!(
+                        "[auth] outpost machine session unavailable; auth_session_status=machine_unavailable"
+                    );
+                    (
+                        signed_out_state(),
+                        AuthSessionStatus::MachineUnavailable,
+                        None,
+                        Some(cognito::MACHINE_UNAVAILABLE_MESSAGE),
+                        None,
+                        "none",
+                    )
+                }
+                Some(MachineFailure::Refused(Some(NonHumanPrincipal::Agent))) => (
+                    signed_out_state(),
+                    AuthSessionStatus::NonHumanPrincipal,
+                    None,
+                    Some(cognito::MACHINE_AGENT_REFUSED_MESSAGE),
+                    None,
+                    "none",
+                ),
+                _ => (
+                    signed_out_state(),
+                    AuthSessionStatus::CredentialsAbsent,
+                    None,
+                    Some(cognito::MACHINE_PERSON_REFUSED_MESSAGE),
+                    None,
+                    "none",
+                ),
+            }
+        }
         Err(error) if before.is_none() && (!error.requires_reauth || first_token_read_failed) => {
+            set_active_session_source(None);
             let status = cognito::classify_startup_refresh_failure(
                 false,
                 first_token_read_failed,
@@ -518,6 +770,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 record_last_auth_transition("refresh_rejected_requires_reauth");
             }
             let after = cognito::get_tokens().await.ok().flatten();
+            set_active_session_source(after.as_ref().map(|_| TokenSource::Person));
             let refresh_failure_class = error.refresh_failure_class;
             let preserved_account = before
                 .as_ref()
@@ -530,6 +783,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 after.is_some(),
             );
             if status == AuthSessionStatus::CredentialsInvalid {
+                set_active_session_source(None);
                 (
                     signed_out_state(),
                     AuthSessionStatus::CredentialsInvalid,
@@ -578,7 +832,9 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
 #[tauri::command]
 pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
     let (state, envelope) = resolve_authoritative_auth_session(&app).await;
-    if state.authenticated {
+    // Onboarding receipts and referrals describe a person's sign-up. An
+    // outpost session has neither, so the flush waits for a person session.
+    if state.authenticated && active_session_source() != Some(TokenSource::Machine) {
         // A prior process may have stopped between queueing an onboarding
         // receipt and sending it. Retries are native and non-blocking, so the
         // renderer never receives a bearer token or waits on analytics.
@@ -628,10 +884,24 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     crate::commands::desktop_auth::note_auth_transition(
         hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
     );
-    record_last_auth_transition("sign_out");
     let cache_account_id = active_auth_session_snapshot().and_then(|session| session.account_id);
-    crate::commands::dm_notify::clear_notification_credentials(&app).await?;
-    crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
+    if machine_session_is_active() {
+        // Machine mode: nothing is revoked and nothing is deleted. The
+        // outpost's machine credentials and its minted session stay on disk
+        // for the CLI and for a later "Use this outpost's identity". This
+        // device only records a local opt-out so the next launch shows the
+        // sign-in screen instead of signing back in as the outpost.
+        record_last_auth_transition("sign_out_machine");
+        hq_desktop_core::machine_session::set_opted_out(true)?;
+        set_active_session_source(None);
+        crate::commands::dm_notify::detach_notification_session(&app).await?;
+        crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
+    } else {
+        record_last_auth_transition("sign_out");
+        set_active_session_source(None);
+        crate::commands::dm_notify::clear_notification_credentials(&app).await?;
+        crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
+    }
     clear_sentry_user();
     // The next account must not inherit this one's plan-limit upload pause.
     crate::commands::uploads_paused::clear(&app);
@@ -661,8 +931,13 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
 pub async fn refresh_tokens(app: AppHandle) -> Result<AuthState, String> {
     let current_tokens = crate::commands::dm_notify::refresh_notification_credentials(&app).await?;
     record_last_auth_transition("refresh_ok");
-    set_sentry_user_from_tokens(&current_tokens);
-    let state = authenticated_state_from_tokens(&current_tokens);
+    let state = if machine_session_is_active() {
+        set_sentry_user_for_outpost(&current_tokens);
+        machine_state_from_tokens(&current_tokens)
+    } else {
+        set_sentry_user_from_tokens(&current_tokens);
+        authenticated_state_from_tokens(&current_tokens)
+    };
     publish_auth_session(
         &app,
         AuthSessionEnvelope {
@@ -673,6 +948,47 @@ pub async fn refresh_tokens(app: AppHandle) -> Result<AuthState, String> {
         },
     );
     Ok(state)
+}
+
+/// Whether the sign-in screen should offer "Use this outpost's identity".
+#[tauri::command]
+pub async fn get_machine_identity_status() -> MachineIdentityStatus {
+    use hq_desktop_core::machine_session;
+    MachineIdentityStatus {
+        available: machine_session::machine_identity_enabled()
+            && machine_session::machine_creds_readable(),
+        active: machine_session_is_active(),
+    }
+}
+
+/// "Use this outpost's identity" on the sign-in screen. Clears the local
+/// opt-out and resolves the session again. A valid person session keeps
+/// winning. A revoked person session is signed out first, with today's
+/// sign-out semantics (revoke and clear), so the machine fallback can run. A
+/// person session that merely cannot be checked right now is left alone.
+#[tauri::command]
+pub async fn use_machine_identity(app: AppHandle) -> Result<AuthSessionEnvelope, String> {
+    use hq_desktop_core::machine_session;
+    if !machine_session::machine_identity_enabled() || !machine_session::machine_creds_readable()
+    {
+        return Err("This device has no outpost identity.".to_string());
+    }
+    machine_session::set_opted_out(false)?;
+    if cognito::get_tokens().await?.is_some() {
+        match cognito::resolve_session_classified(false).await {
+            Ok(_) => {}
+            Err(error) if error.requires_reauth => {
+                crate::commands::dm_notify::clear_notification_credentials(&app).await?;
+                record_last_auth_transition("sign_out");
+            }
+            Err(error) if error.refresh_failure_class.is_some() => {
+                return Err("Your saved sign-in could not be checked. Try again.".to_string());
+            }
+            Err(_) => {}
+        }
+    }
+    let (_, envelope) = resolve_authoritative_auth_session(&app).await;
+    Ok(envelope)
 }
 
 /// Clear this device's stale session and open the desktop workspace so the
@@ -733,6 +1049,112 @@ mod tests {
             auth_session_status_tag(&AuthSessionStatus::CredentialsReadError),
             "credentials_read_error"
         );
+    }
+
+    #[test]
+    fn machine_unavailable_uses_a_distinct_diagnostic_tag() {
+        assert_eq!(
+            auth_session_status_tag(&AuthSessionStatus::MachineUnavailable),
+            "machine_unavailable"
+        );
+    }
+
+    #[test]
+    fn machine_unavailable_still_reaches_the_sign_in_screen() {
+        let result = startup_auth_state_result(
+            signed_out_state(),
+            &AuthSessionStatus::MachineUnavailable,
+        )
+        .expect("a failed outpost mint shows sign-in with the outpost action, not a retry loop");
+        assert!(!result.authenticated);
+    }
+
+    fn outpost_tokens() -> CognitoTokens {
+        tokens(
+            Some(jwt_with_claims(serde_json::json!({
+                "sub": "outpost-sub",
+                "email": "out-01abc@outposts.hq.computer",
+                "custom:entityType": "outpost",
+                "custom:entityUid": "out_01ABC",
+            }))),
+            jwt_with_claims(serde_json::json!({
+                "sub": "outpost-sub",
+                "email": "owner@example.com",
+            })),
+            "",
+        )
+    }
+
+    #[test]
+    fn outpost_session_shows_the_outpost_name_and_the_owner_email() {
+        let state = machine_state_from_tokens(&outpost_tokens());
+        assert!(state.authenticated);
+        assert_eq!(state.display_name.as_deref(), Some("Outpost out_01ABC"));
+        assert_eq!(state.email.as_deref(), Some("owner@example.com"));
+        assert_eq!(state.account_id.as_deref(), Some("outpost-sub"));
+    }
+
+    #[test]
+    fn outpost_identity_needs_no_person_entity() {
+        let identity = outpost_identity_from_tokens(&outpost_tokens()).expect("outpost identity");
+        assert_eq!(identity.person_uid, "out_01ABC");
+        assert_eq!(identity.email, "owner@example.com");
+        assert_eq!(identity.display_name.as_deref(), Some("Outpost out_01ABC"));
+        assert!(
+            outpost_identity_from_tokens(&tokens(None, jwt_with_sub("person"), "r")).is_none(),
+            "a person token has no outpost uid"
+        );
+    }
+
+    #[test]
+    fn outpost_owner_email_falls_back_to_the_outpost_address() {
+        let only_id_token = tokens(
+            Some(jwt_with_claims(serde_json::json!({
+                "sub": "outpost-sub",
+                "email": "out-01abc@outposts.hq.computer",
+                "custom:entityType": "outpost",
+                "custom:entityUid": "out_01ABC",
+            }))),
+            jwt_with_sub("outpost-sub"),
+            "",
+        );
+        assert_eq!(
+            machine_state_from_tokens(&only_id_token).email.as_deref(),
+            Some("out-01abc@outposts.hq.computer")
+        );
+    }
+
+    #[test]
+    fn session_source_tracking_reports_each_transition_once() {
+        let _serial = SOURCE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        set_active_session_source(None);
+        assert!(!machine_session_is_active());
+        assert!(set_active_session_source(Some(TokenSource::Machine)));
+        assert!(machine_session_is_active());
+        assert!(!set_active_session_source(Some(TokenSource::Machine)));
+        assert!(set_active_session_source(Some(TokenSource::Person)));
+        assert!(!machine_session_is_active());
+        assert!(set_active_session_source(None));
+    }
+
+    #[test]
+    fn person_only_calls_run_for_a_person_and_are_skipped_for_an_outpost() {
+        let _serial = SOURCE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_skipped_person_only_calls();
+        set_active_session_source(Some(TokenSource::Person));
+        assert!(!skip_person_only_call("test-site"));
+        set_active_session_source(None);
+        assert!(!skip_person_only_call("test-site"));
+
+        set_active_session_source(Some(TokenSource::Machine));
+        assert!(skip_person_only_call("test-site"));
+        // The second skip of the same site is still a skip; the once-per-site
+        // log is bookkeeping only.
+        assert!(skip_person_only_call("test-site"));
+        assert!(skip_person_only_call("another-site"));
+
+        set_active_session_source(None);
+        reset_skipped_person_only_calls();
     }
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};

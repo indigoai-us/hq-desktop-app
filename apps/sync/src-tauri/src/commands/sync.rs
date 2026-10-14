@@ -1204,44 +1204,27 @@ enum ResolveJwtError {
     Other(String),
 }
 
-fn resolve_jwt_refresh_failure(error: cognito::CognitoRefreshError) -> ResolveJwtError {
-    if error.requires_reauth {
+/// Only a rejected person session, or no credential of any kind, routes to
+/// reauth. A refresh transport failure and a failed outpost mint are
+/// operational failures that keep whatever credential exists on disk.
+fn resolve_jwt_failure(error: cognito::CognitoTokenResolutionError) -> ResolveJwtError {
+    if error.requires_reauth || error.is_not_signed_in() {
         ResolveJwtError::NeedsReauth
     } else {
         ResolveJwtError::Other(error.message)
     }
 }
 
-/// Fetch the current JWT from the on-disk token cache, refreshing and
-/// persisting it if expired. Terminal refresh rejection invalidates only the
-/// rejected token generation. A temporary failure preserves it and returns
+/// Fetch the current JWT through the shared session resolver: the person
+/// token cache first (refreshed and persisted if expired, invalidated on a
+/// terminal rejection), then the outpost machine identity when no person is
+/// signed in. A temporary failure preserves the stored credential and returns
 /// the diagnostic to the sync failure surface without starting reauth.
 async fn resolve_jwt_classified() -> Result<String, ResolveJwtError> {
-    let tokens = cognito::get_tokens()
+    cognito::resolve_session_classified(false)
         .await
-        .map_err(ResolveJwtError::Other)?
-        .ok_or(ResolveJwtError::NeedsReauth)?;
-    if !cognito::is_expired(&tokens) {
-        return Ok(tokens.access_token);
-    }
-
-    match cognito::refresh_access_token_classified(&tokens.refresh_token).await {
-        Ok(refreshed) => {
-            let access_token = refreshed.access_token.clone();
-            cognito::set_tokens(&refreshed)
-                .await
-                .map_err(ResolveJwtError::Other)?;
-            Ok(access_token)
-        }
-        Err(err) => {
-            if err.requires_reauth {
-                cognito::invalidate_tokens(&tokens)
-                    .await
-                    .map_err(ResolveJwtError::Other)?;
-            }
-            Err(resolve_jwt_refresh_failure(err))
-        }
-    }
+        .map(|session| session.tokens.access_token)
+        .map_err(resolve_jwt_failure)
 }
 
 /// Shared auth helper used by non-sync commands. Keep the long-standing
@@ -3763,17 +3746,50 @@ mod tests {
 
     #[test]
     fn invalid_client_refresh_failure_does_not_route_sync_to_reauth() {
-        let result = resolve_jwt_refresh_failure(cognito::CognitoRefreshError {
+        let result = resolve_jwt_failure(cognito::CognitoTokenResolutionError {
             message: "Cognito returned status=400 code=invalid_client".to_string(),
+            refresh_failure_class: Some(cognito::CognitoRefreshFailureClass::Http4xx),
             requires_reauth: false,
-            status_code: Some(400),
-            error_code: Some("invalid_client".to_string()),
-            failure_class: cognito::CognitoRefreshFailureClass::Http4xx,
             rejection_class: "unknown",
+            machine: None,
         });
         assert_eq!(
             result,
             ResolveJwtError::Other("Cognito returned status=400 code=invalid_client".to_string())
+        );
+    }
+
+    #[test]
+    fn no_credential_of_any_kind_routes_sync_to_reauth() {
+        let result = resolve_jwt_failure(cognito::CognitoTokenResolutionError::plain(
+            cognito::NOT_SIGNED_IN_MESSAGE.to_string(),
+        ));
+        assert_eq!(result, ResolveJwtError::NeedsReauth);
+    }
+
+    #[test]
+    fn rejected_person_session_routes_sync_to_reauth() {
+        let result = resolve_jwt_failure(cognito::CognitoTokenResolutionError {
+            message: cognito::REAUTH_MESSAGE.to_string(),
+            refresh_failure_class: Some(cognito::CognitoRefreshFailureClass::Http4xx),
+            requires_reauth: true,
+            rejection_class: "not_authorized",
+            machine: None,
+        });
+        assert_eq!(result, ResolveJwtError::NeedsReauth);
+    }
+
+    #[test]
+    fn failed_outpost_mint_is_an_operational_failure_not_reauth() {
+        let result = resolve_jwt_failure(cognito::CognitoTokenResolutionError {
+            machine: Some(cognito::MachineFailure::Unavailable),
+            ..cognito::CognitoTokenResolutionError::plain(
+                cognito::MACHINE_UNAVAILABLE_MESSAGE.to_string(),
+            )
+        });
+        assert_eq!(
+            result,
+            ResolveJwtError::Other(cognito::MACHINE_UNAVAILABLE_MESSAGE.to_string())
         );
     }
 
