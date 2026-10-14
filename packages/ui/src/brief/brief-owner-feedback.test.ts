@@ -218,7 +218,9 @@ describe("incident card (12) and grid rows (13)", () => {
     expect(q("brief-incident-title")!.textContent).toBe("Recheck hq-core release gate");
     const facts = q("brief-incident-facts")!.textContent!;
     expect(facts).toContain("verify-release");
-    expect(facts).toContain("Red for 5h");
+    // The red age is drawn as the "red for" track with its pill.
+    expect(q("brief-incident-duration")!.getAttribute("aria-label")).toBe("Red for 5 hours");
+    expect(q("brief-incident-duration-pill")!.textContent).toBe("5 HOURS");
   });
 
   it("the facts grid adds the changes merged on top of the red main when the writer counted them", () => {

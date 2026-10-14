@@ -4,7 +4,10 @@ import { flushSync, mount, unmount } from "svelte";
 import Harness from "./BriefHealthHarness.test-support.svelte";
 import {
   affectedOf,
+  durationLabel,
+  durationTrack,
   incidentEyebrow,
+  incidentHoursOf,
   incidentShortState,
   mergesOnTopText,
   moreIncidentsPeek,
@@ -116,6 +119,50 @@ describe("incident wording", () => {
     expect(riskPeek({ ...FLEET, severity: "watch" }, undefined).eyebrow).toBe("Watch");
   });
 
+  it("an incident's duration: a red main's age, else the span the writer gave a measured one; never invented", () => {
+    expect(incidentHoursOf(SYNC, NOW)).toBe(48);
+    expect(incidentHoursOf(GATE, NOW)).toBe(5);
+    expect(incidentHoursOf(FLEET, NOW)).toBe(72);
+    expect(incidentHoursOf({ ...FLEET, summary: "Twelve agents have been stuck for the past 2 weeks." }, NOW)).toBe(336);
+    expect(incidentHoursOf({ ...FLEET, summary: "One agent has looped for an hour." }, NOW)).toBe(1);
+    // No span in the summary: the title is read next, then nothing.
+    expect(incidentHoursOf({ ...FLEET, summary: "Five agents keep failing setup.", title: "Agents stuck for 4 days" }, NOW)).toBe(96);
+    expect(incidentHoursOf({ ...FLEET, summary: "Five agents keep failing setup." }, NOW)).toBeNull();
+    expect(incidentHoursOf({ ...SYNC, ci: { ...SYNC.ci!, ageHours: null, since: null } }, NOW)).toBeNull();
+    expect(durationLabel(0.4)).toBe("UNDER 1 HOUR");
+    expect(durationLabel(1)).toBe("1 HOUR");
+    expect(durationLabel(5)).toBe("5 HOURS");
+    expect(durationLabel(30)).toBe("30 HOURS");
+    expect(durationLabel(72)).toBe("3 DAYS");
+  });
+
+  it("the duration track: past a day, this week's seven days with today last; under a day, the last 24 hours", () => {
+    const week = durationTrack(72, NOW)!;
+    expect(week.scale).toBe("days");
+    expect(week.label).toBe("3 DAYS");
+    expect(week.ticks).toHaveLength(7);
+    // Initials of the seven local calendar days ending today, today marked.
+    const letters = Array.from({ length: 7 }, (_, i) => "SMTWTFS"[new Date(Date.parse(NOW) - (6 - i) * 86_400_000).getDay()]);
+    expect(week.ticks.map((t) => t.label)).toEqual(letters);
+    expect(week.ticks.map((t) => t.now)).toEqual([false, false, false, false, false, false, true]);
+    // The stretch ends at now inside today's cell and spans three of the seven days.
+    expect(week.to).toBeGreaterThan(6 / 7);
+    expect(week.to).toBeLessThanOrEqual(1);
+    expect((week.to - week.from) * 7).toBeCloseTo(3, 1);
+    expect(week.clipped).toBe(false);
+    const old = durationTrack(14 * 24, NOW)!;
+    expect(old.from).toBe(0);
+    expect(old.clipped).toBe(true);
+    expect(old.label).toBe("14 DAYS");
+    const day = durationTrack(6, NOW)!;
+    expect(day.scale).toBe("hours");
+    expect(day.from).toBeCloseTo(0.75);
+    expect(day.to).toBe(1);
+    expect(day.ticks.map((t) => t.label)).toEqual(["24H AGO", "12H", "NOW"]);
+    expect(durationTrack(null, NOW)).toBeNull();
+    expect(durationTrack(5, "not a time")).toBeNull();
+  });
+
   it("the +N more peek lists the remaining incidents with their state", () => {
     const p = moreIncidentsPeek([SYNC, FLEET], NOW);
     expect(p.title).toBe("2 more live");
@@ -154,9 +201,13 @@ describe("Incident card", () => {
     expect(q("brief-incident-title")!.textContent).toBe("nightly sync");
     const facts = q("brief-incident-facts")!.textContent!;
     expect(facts).toContain("vault-step");
-    expect(facts).toContain("Red for 2 days");
     expect(facts).toContain("3 changes merged on top");
     expect(facts).toContain("1 in review");
+    // The red age is drawn as the "red for" track with its pill, not repeated as a fact.
+    const dur = q("brief-incident-duration")!;
+    expect(dur.getAttribute("aria-label")).toBe("Red for 2 days");
+    expect(q("brief-incident-duration-pill")!.textContent).toBe("2 DAYS");
+    expect(facts).not.toContain("Since");
     // One-row: the whole face is free of repo slugs.
     expect(q("brief-incident")!.textContent).not.toMatch(SLUG);
     expect(q("brief-incident-also")).toBeNull();
@@ -197,19 +248,54 @@ describe("Incident card", () => {
     expect(peek.textContent).not.toMatch(SLUG);
   });
 
-  it("a measured incident draws one dot per affected unit, never the whole fleet, and keeps the total off the face", () => {
+  it("a measured incident leads with the affected count and how long it has been stuck, never the whole fleet", () => {
     render([FLEET], { rows: 2 });
     expect(q("brief-incident-eyebrow")!.textContent!.trim()).toBe("Fleet incident · live");
-    const dots = q("brief-incident-dots")!;
-    expect(dots.querySelectorAll("i")).toHaveLength(5);
-    expect(dots.getAttribute("aria-label")).toBe("5 agents stuck");
-    expect(q("brief-incident-sub")!.textContent).toContain("agents stuck · setup phase");
-    expect(q("brief-incident-sub")!.textContent).toContain(FLEET.summary);
+    expect(q("brief-incident-count")!.getAttribute("aria-label")).toBe("5 agents stuck");
+    const cap = q("brief-incident-sub")!.textContent!;
+    expect(cap).toContain("agents stuck");
+    expect(cap).toContain("setup phase");
+    // The three days the summary mentions get their own track and pill.
+    expect(q("brief-incident-duration")!.getAttribute("aria-label")).toBe("Stuck for 3 days");
+    expect(q("brief-incident-duration-pill")!.textContent).toBe("3 DAYS");
+    expect(q("brief-incident-duration-pill")!.classList.contains("red")).toBe(true);
+    const fill = q("brief-incident-duration-fill")!;
+    expect(parseFloat(fill.style.width)).toBeCloseTo((3 / 7) * 100, 0);
+    // Tall: the summary stays on the face.
+    expect(q("brief-incident-summary")!.textContent).toBe(FLEET.summary);
     expect(q("brief-incident")!.textContent).not.toContain("95");
-    expect(q("brief-incident")!.textContent).toContain("HOVER ONE TO INSPECT");
-    dots.querySelectorAll("i")[2]!.dispatchEvent(new MouseEvent("mouseenter"));
-    flushSync();
-    expect(q("brief-incident")!.textContent).toContain("AGENT 3 OF 5 · SETUP PHASE");
+    // No per-unit markers or hover probe: they only repeated the count.
+    expect(q("brief-incident-dots")).toBeNull();
+    expect(q("brief-incident")!.textContent).not.toContain("HOVER ONE TO INSPECT");
+  });
+
+  it("one row: the track carries the duration and the summary moves to the card's peek; without a duration the summary stays", async () => {
+    render([FLEET], { rows: 1 });
+    expect(q("brief-incident-duration")).not.toBeNull();
+    expect(q("brief-incident-summary")).toBeNull();
+    await hover(q("brief-incident")!);
+    expect(q("brief-peek")!.textContent).toContain(FLEET.summary);
+    unmount(app!);
+    target.remove();
+    render([{ ...FLEET, summary: "Five agents keep failing setup." }], { rows: 1 });
+    expect(q("brief-incident-duration")).toBeNull();
+    expect(q("brief-incident-summary")!.textContent).toBe("Five agents keep failing setup.");
+  });
+
+  it("a red main whose age is only a date in the note keeps it as a 'Since' fact, with no track", () => {
+    render([{ ...SYNC, ci: { ...SYNC.ci!, ageHours: null, since: null, note: "Failing since Oct 9." } }], { rows: 1 });
+    expect(q("brief-incident-duration")).toBeNull();
+    expect(q("brief-incident-facts")!.textContent).toContain("Red since Oct 9");
+  });
+
+  it("each other incident shows its state as an age pill, tinted by how long it has been red", () => {
+    render([FLEET, SYNC, GATE], { rows: 1 });
+    const rows = qa("brief-incident-other");
+    const pill = (row: HTMLElement) => row.querySelector<HTMLElement>(".pill-age")!;
+    expect(pill(rows[0]!).textContent).toBe("2d red");
+    expect(pill(rows[0]!).classList.contains("warn")).toBe(true);
+    expect(pill(rows[1]!).textContent).toBe("5h red");
+    expect(pill(rows[1]!).classList.contains("warn") || pill(rows[1]!).classList.contains("red")).toBe(false);
   });
 
   it("other live incidents list under 'Also live' with their own peeks; the lead stays first", async () => {
@@ -244,6 +330,8 @@ describe("Incident card", () => {
   it("the card's own peek opens on hover with the launch prompt", async () => {
     render([GATE], { rows: 2, prompts: { "ci:hq-core-staging": "Look at the gate." } });
     expect(q("brief-incident-eyebrow")!.textContent!.trim()).toBe("HQ core main is red · live");
+    // Under a day the track is the last 24 hours.
+    expect(q("brief-incident-duration")!.getAttribute("aria-label")).toBe("Red for 5 hours");
     // Tall: the fix chip and the launch pill render on the face.
     expect(q("brief-incident")!.querySelector('[data-testid="brief-launch"]')).not.toBeNull();
     await hover(q("brief-incident")!);
