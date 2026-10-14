@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * The Daily Brief page over brief runs. Reads workspace/brief/index.jsonl,
    * shows the newest ready run (or, with no runs yet, the per-day sweep and
@@ -332,12 +333,13 @@
 {#snippet failedActions()}
   {#if run?.duplicatePrompt}
     <p class="blocked" data-testid="brief-duplicate-prompt">Your last brief is still being written. Wait for it?</p>
+    <!-- The app's standard buttons: the way forward primary, the other a quiet ghost. -->
     <!-- svelte-ignore a11y_autofocus -->
-    <button type="button" class="cta" autofocus onclick={() => run?.waitForLast()} data-testid="brief-wait">Wait for it</button>
-    <button type="button" class="ghost" onclick={() => { bloomDone = false; void run?.start({ force: true }); }} data-testid="brief-start-new">Start a new one</button>
+    <RailButton icon="check" variant="primary" autofocus onclick={() => run?.waitForLast()} data-testid="brief-wait">Wait for it</RailButton>
+    <RailButton icon="play" variant="ghost" onclick={() => { bloomDone = false; void run?.start({ force: true }); }} data-testid="brief-start-new">Start a new one</RailButton>
   {:else}
-    <button type="button" class="cta" onclick={createBrief} data-testid="brief-retry">Try again</button>
-    <button type="button" class="ghost" onclick={() => run?.dismiss()}>Dismiss</button>
+    <RailButton icon="refresh" variant="primary" onclick={createBrief} data-testid="brief-retry">Try again</RailButton>
+    <RailButton icon="x" variant="ghost" onclick={() => run?.dismiss()} data-testid="brief-dismiss">Dismiss</RailButton>
   {/if}
 {/snippet}
 
@@ -383,8 +385,7 @@
     width: 100%;
     min-width: 0;
   }
-  .cta,
-  .ghost {
+  .cta {
     font: inherit;
     font-size: 13px;
     border: 0;
@@ -445,10 +446,6 @@
     .cta.big :global(svg) {
       transition: none;
     }
-  }
-  .ghost {
-    color: rgb(var(--b-ink) / 0.7);
-    background: transparent;
   }
   .blocked {
     margin: 0;

@@ -203,6 +203,31 @@ describe("BriefRunsPage", () => {
     }
   });
 
+  it("a stopped run offers Try again and Dismiss as the app's standard buttons", async () => {
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => {
+        throw new Error("offline");
+      },
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render({}, { creator });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    const retry = q("brief-retry")!;
+    const dismiss = q("brief-dismiss")!;
+    expect(retry.hasAttribute("data-rail-btn")).toBe(true);
+    expect(retry.classList.contains("primary")).toBe(true);
+    expect(retry.textContent).toContain("Try again");
+    expect(dismiss.hasAttribute("data-rail-btn")).toBe(true);
+    expect(dismiss.classList.contains("ghost")).toBe(true);
+    expect(dismiss.textContent).toContain("Dismiss");
+    expect(target.querySelector(".cta:not(.big)")).toBeNull();
+  });
+
   it("a shared run survives the page unmounting and shows its progress on return", async () => {
     const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
     const f: Record<string, string> = {};
