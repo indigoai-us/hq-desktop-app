@@ -42,7 +42,7 @@ function agentsApi() {
 }
 
 describe("bot sidepane controls", () => {
-  it("shows the UID with Copy, the runtime chip, scheduled jobs and 30-day usage", async () => {
+  it("local bots: shows the UID with Copy, the runtime chip, scheduled jobs and 30-day usage", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     const writeText = vi.fn(async () => {});
@@ -50,13 +50,13 @@ describe("bot sidepane controls", () => {
     const agents = agentsApi();
     mount(ProfilePaneHost, {
       target: host,
-      props: { kind: "bot", name: "deacon", live: true, agentUid: "agt_01DEACON", runtimeKind: "cloud", companyUid: "cmp_indigo", agents: agents as never },
+      props: { kind: "bot", name: "deacon", live: true, agentUid: "agt_01DEACON", runtimeKind: "local", companyUid: "cmp_indigo", agents: agents as never },
     });
     await tick();
     // First frame: cached profile plus a usage skeleton, before any reply.
     expect(q('[data-testid="bot-profile-usage"]')?.getAttribute("data-state")).toBe("loading");
     expect(q('[data-testid="bot-profile-uid"]')?.textContent).toContain("agt_01DEACON");
-    expect(q('[data-testid="bot-profile-runtime-chip"]')?.textContent).toBe("Cloud");
+    expect(q('[data-testid="bot-profile-runtime-chip"]')?.textContent).toBe("Local");
     await settle();
     expect(agents.listJobs).toHaveBeenCalledWith("agt_01DEACON");
     expect(q('[data-testid="bot-profile-usage"]')?.getAttribute("data-state")).toBe("ready");
@@ -183,7 +183,7 @@ describe("bot sidepane controls", () => {
       const agents = { ...agentsApi(), getStatus: vi.fn(async () => ({ ok: true as const, value: status })) };
       mount(ProfilePaneHost, {
         target: host,
-        props: { kind: "bot", name: "dr-love", agentUid: "agt_01DRLOVE", runtimeKind: "cloud", ...viewing, agents: agents as never },
+        props: { kind: "bot", name: "dr-love", agentUid: "agt_01DRLOVE", runtimeKind: "local", ...viewing, agents: agents as never },
       });
       await tick();
       // Cached first frame only knows this company: no count is claimed.

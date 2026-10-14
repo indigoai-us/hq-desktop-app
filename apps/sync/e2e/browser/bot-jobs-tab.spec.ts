@@ -1,13 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Bot profile pane Profile | Jobs: the Jobs tab lists the bot's scheduled
- * jobs failing-first, the chips filter them, and a row opens the detail
- * with the full prompt and schedule. The pane is the same one the bot DM
- * shows on the right.
+ * Local bot profile pane Profile | Jobs: the Jobs tab lists the bot's
+ * scheduled jobs failing-first, the chips filter them, and a row opens the
+ * detail with the full prompt and schedule. Cloud bots open the tabbed
+ * control pane instead (cloud-bot-pane.spec.ts).
  */
 
-const SHELL = '/desktop-alt.html?window=desktop-alt&persona=indigo';
+const SHELL = '/desktop-alt.html?window=desktop-alt&persona=indigo&bots=table';
 
 async function openJobs(page: Page): Promise<void> {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -15,6 +15,7 @@ async function openJobs(page: Page): Promise<void> {
   await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
   await page.locator('[data-testid="rail-company"]').first().click();
   await page.locator('[data-row-id="bots"]').first().click();
+  await page.getByTestId('bot-row').filter({ hasText: 'Scout' }).click();
   await expect(page.getByTestId('bot-pane-tab-jobs')).toContainText('Jobs5');
   await page.getByTestId('bot-pane-tab-jobs').click();
   await expect(page.getByTestId('bot-job-row').first()).toBeVisible();

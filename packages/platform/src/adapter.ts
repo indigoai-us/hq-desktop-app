@@ -22,6 +22,7 @@
  * error (bad arguments).
  */
 
+import type { AgentControlApi } from "./agent-control.js";
 import type { Capabilities, Capability } from "./capabilities.js";
 import type { BadgesPayload } from "./badges.js";
 import type {
@@ -3116,6 +3117,8 @@ export interface PlatformAdapter {
   readonly files: FilesApi;
   readonly agency: AgencyApi;
   readonly agents: AgentsApi;
+  /** Optional: cloud bot channels, routines, persona and brain, written to the bot's box. */
+  readonly agentControl?: AgentControlApi;
   readonly integrations: IntegrationsApi;
   readonly feedback: FeedbackApi;
   readonly sync: SyncApi;

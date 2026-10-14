@@ -83,6 +83,7 @@ import {
   type RequestPolicyOptions,
 } from '../request-policy.js';
 import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
+import { createAgentControlApi } from '../agent-control.js';
 import { scrubTransportFailure } from '../api-error.js';
 import { dispatchPostReadyAction } from '../post-ready-actions.js';
 
@@ -1338,6 +1339,10 @@ export function createSyncPlatformAdapter(
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
       listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
     },
+
+    agentControl: createAgentControlApi((method, path, body) =>
+      hqProAttemptWithRetries<unknown>(method, path, body),
+    ),
 
     integrations: {
       listConnections: (companyUid) =>

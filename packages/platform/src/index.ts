@@ -1,5 +1,7 @@
 // Full platform adapter surface (US-004).
 export * from "./adapter.js";
+// Cloud bot control: channels, routines, persona and brain on the box.
+export * from "./agent-control.js";
 // Accomplishment badges from hq-pro: wire types and the defensive parser.
 export * from "./badges.js";
 export * from "./capabilities.js";

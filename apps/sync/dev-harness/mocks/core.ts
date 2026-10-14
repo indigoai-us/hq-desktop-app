@@ -732,6 +732,39 @@ function previewBotJobs(): Array<Record<string, unknown>> {
   ];
 }
 
+/**
+ * A cloud bot's control view (`GET /v1/agents/{uid}/control`), shaped like
+ * the hq-pro-agents control API, so the cloud bot pane's tabs have data.
+ */
+function previewBotControl(url: string): Record<string, unknown> {
+  const uid = decodeURIComponent(url.split('/')[3] ?? 'agt_preview');
+  const at = (min: number) => new Date(Date.now() + min * 60000).toISOString();
+  // The roster's name for this uid (agt_preview_herald -> Herald).
+  const slug = uid.replace(/^agt_preview_(local_)?/, '');
+  const name = slug ? slug.charAt(0).toUpperCase() + slug.slice(1) : 'Atlas';
+  return {
+    agent: { uid, displayName: name, title: 'Research analyst', avatarUrl: null, online: true, lastSeenAt: at(-1) },
+    channels: [
+      { kind: 'hq', enabled: true, status: 'connected', detail: null },
+      { kind: 'slack', enabled: true, status: 'connected', detail: '#research' },
+      { kind: 'telegram', enabled: false, status: 'not_connected', detail: null },
+      { kind: 'email', enabled: false, status: 'connected', detail: null },
+    ],
+    routines: [
+      { id: 'rt_preview_brief', name: 'Morning brief', schedule: '0 9 * * 1-5', timezone: 'America/Denver', prompt: 'Summarize overnight messages and post the brief in #ops.', enabled: true, lastRunAt: at(-60 * 20), nextRunAt: at(60 * 3), lastStatus: 'ok', deliver: 'hqdm' },
+      { id: 'rt_preview_scan', name: 'Competitor scan', schedule: '0 14 * * 1', timezone: 'America/Denver', prompt: 'Check competitor changelogs.', enabled: false, lastRunAt: null, nextRunAt: null, lastStatus: null, deliver: null },
+    ],
+    persona: { displayName: name, title: 'Research analyst', description: 'Tracks the market for the team.', instructions: 'Keep answers short.\nLead with the finding.', instructionsPath: '/home/ec2-user/.hq-fleet/SOUL.md', updatedAt: null },
+    brain: {
+      model: 'claude-opus-5-5',
+      provider: 'anthropic',
+      availableModels: [{ id: 'claude-opus-5-5', label: 'Opus 5.5' }, { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' }],
+    },
+    source: 'live',
+    fetchedAt: at(0),
+  };
+}
+
 function botsTablePreviewEnabled(): boolean {
   if (typeof window === 'undefined') return false;
   return new URLSearchParams(window.location.search).get('bots') === 'table';
@@ -1826,6 +1859,9 @@ This final paragraph verifies spacing after a thematic break.
   hq_pro_fetch: (args) => /^\/files\/[^/]+\/members\/[^/]+\/access$/.test(String(args?.url ?? '')) ? ({
     status: 200,
     body: JSON.stringify(harnessMemberAccess(String(args?.url ?? ''))),
+  }) : /^\/v1\/agents\/[^/]+\/control$/.test(String(args?.url ?? '')) && (args?.method ?? 'GET') === 'GET' ? ({
+    status: 200,
+    body: JSON.stringify(previewBotControl(String(args?.url ?? ''))),
   }) : /^\/v1\/agents\/[^/]+\/jobs$/.test(String(args?.url ?? '')) ? ({
     status: 200,
     // A bot's scheduled jobs, shaped like hq-pro-agents JobControlListRow:
