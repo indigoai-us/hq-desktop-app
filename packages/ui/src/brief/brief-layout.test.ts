@@ -1,6 +1,6 @@
 // The priorities card takes the hero's slot; the sunrise takes the priorities card's slot.
 import { describe, expect, it } from "vitest";
-import { clockLabel, inLabel, nextCall, peekTop, placePeek, placePeekBelow, promoteMain, stackPeek, todayStats, withLine } from "./brief-layout.js";
+import { BAND_ROW_PX, bandRows, clockLabel, inLabel, nextCall, peekTop, placePeek, placePeekBelow, promoteMain, stackPeek, todayStats, withLine } from "./brief-layout.js";
 import type { BriefWidget } from "./brief-generate.js";
 
 const w = (kind: string, cols: number, rows: number, size = "M"): BriefWidget =>
@@ -168,5 +168,16 @@ describe("stackPeek", () => {
     // 264 below vs 270 above: above, capped to that space.
     expect(p).toEqual({ top: 16, maxH: 270 });
     expect(p.top + p.maxH).toBeLessThanOrEqual(300 - 14);
+  });
+});
+
+describe("bandRows", () => {
+  it("gives the hero band's two rows one minimum so the band keeps its height day to day", () => {
+    expect(bandRows(["s s n n i w", "s s n n a r", "x x x f f f"], 120)).toBe(`grid-template-rows:repeat(2, minmax(${BAND_ROW_PX}px, auto)) repeat(1, minmax(120px, auto))`);
+  });
+  it("leaves other shapes alone: a hero over three rows, or fewer than three rows", () => {
+    expect(bandRows(["c c c n n m", "c c c n n k", "c c c n n w"], 120)).toBe("");
+    expect(bandRows(["s s n n i w", "s s n n a r"], 120)).toBe("");
+    expect(bandRows(["a a b b c d", "e e b b c d", "f f f g g g"], 120)).toBe("");
   });
 });

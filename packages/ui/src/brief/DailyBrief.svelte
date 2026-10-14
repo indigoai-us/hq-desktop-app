@@ -49,14 +49,14 @@
     type BriefLaunch,
   } from "./brief-context.svelte.js";
   import { peek, type PeekContent } from "./brief-context.svelte.js";
-  import { generateBrief, gridStyle, leadLabel, type BriefWidget } from "./brief-generate.js";
+  import { BRIEF_ROW_MIN_PX, generateBrief, gridStyle, leadLabel, type BriefWidget } from "./brief-generate.js";
   import { CATALOGUE, SPAN, buildContext, entryOf, rankDecisions, reasonFor, type Scored, type WidgetGroup } from "./brief-catalogue.js";
   import { briefPriorities, watchTitle } from "./brief-peeks.js";
   import type { BriefInput, BriefRisk as BriefRiskRow } from "./brief-types.js";
   import { effortMinutes } from "./brief-hero.js";
   import { briefHover } from "./brief-hover.js";
   import { decoUrl } from "./brief-deco.js";
-  import { FIELD, clockLabel, inLabel, nextCall, promoteMain, todayStats, withLine, type TodayStatKey } from "./brief-layout.js";
+  import { FIELD, bandRows, clockLabel, inLabel, nextCall, promoteMain, todayStats, withLine, type TodayStatKey } from "./brief-layout.js";
   import { CARD_TAG, cardTag, tagIconWidth, tagViewBox } from "./brief-card-tags.js";
   /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
   const NO_HOVER_KINDS = new Set(["sunrise", "catchup"]);
@@ -336,7 +336,7 @@
   <main
     class="b-grid"
     class:review={allCards}
-    style={gridStyle(allCards ? plan.areas : placed.areas, allCards)}
+    style={allCards ? gridStyle(plan.areas, true) : [gridStyle(placed.areas, false), bandRows(placed.areas, BRIEF_ROW_MIN_PX)].filter(Boolean).join(";")}
   >
     {#each tiles as t, i (t.key)}
       {#if t.type === "label"}

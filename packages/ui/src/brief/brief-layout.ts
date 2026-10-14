@@ -255,3 +255,22 @@ export function todayStats(input: {
   ];
   return stats;
 }
+
+/** The top band's row minimum: two of these make the hero band the same height from day to day. */
+export const BAND_ROW_PX = 284;
+
+/**
+ * Rows for the live grid, appended after the generator's own: when the hero
+ * spans exactly the first two rows (the sunrise and priorities band), those
+ * rows get a taller minimum so the band keeps one height whatever sits beside
+ * it; a card that needs more still grows it. Other shapes (a catch-up hero
+ * over three rows, a single row) keep the generator's rows. Empty when it
+ * does not apply.
+ */
+export function bandRows(areas: readonly string[], rowMin: number): string {
+  if (areas.length < 3) return "";
+  const lead = (row: string) => row.trim().split(/\s+/)[0];
+  const hero = lead(areas[0]!);
+  if (lead(areas[1]!) !== hero || areas.slice(2).some((r) => r.split(/\s+/).includes(hero))) return "";
+  return `grid-template-rows:repeat(2, minmax(${BAND_ROW_PX}px, auto)) repeat(${areas.length - 2}, minmax(${rowMin}px, auto))`;
+}
