@@ -191,8 +191,8 @@
     border-radius: 10px;
     font-size: var(--b-row-fs, 13px);
     color: rgb(var(--b-on, 255 255 255) / 0.85);
-    background: rgb(var(--b-on, 255 255 255) / 0.1);
-    border: 1px solid rgb(var(--b-on, 255 255 255) / 0.14);
+    background: var(--b-row-bg, rgb(var(--b-on, 255 255 255) / 0.1));
+    border: 0;
     cursor: default;
   }
   .more:hover,

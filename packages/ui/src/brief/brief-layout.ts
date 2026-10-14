@@ -146,8 +146,29 @@ export function placePeek(anchor: Box, view: { w: number; h: number }, width = 3
  * Below the hovered thing, left edges aligned: for a row of neighbours (the
  * stats) where a peek on the side would cover the next one.
  */
-export function placePeekBelow(anchor: Box, view: { w: number; h: number }, width = 340, gap = 14): { x: number; anchorTop: number; side: "b" } {
-  return { x: Math.max(8, Math.min(view.w - width - 8, anchor.left)), anchorTop: anchor.bottom + gap + 6, side: "b" };
+export function placePeekBelow(anchor: Box, view: { w: number; h: number }, width = 340): { x: number; anchorTop: number; anchorBottom: number; side: "b" } {
+  return { x: Math.max(8, Math.min(view.w - width - 8, anchor.left)), anchorTop: anchor.top, anchorBottom: anchor.bottom, side: "b" };
+}
+
+/**
+ * Where a below-placed peek goes once its natural height is known: under the
+ * thing when it fits, else above it, else on the roomier side with its height
+ * capped to that space (it scrolls). Never over the thing it describes.
+ */
+export function stackPeek(
+  anchor: { top: number; bottom: number },
+  height: number,
+  viewH: number,
+  cap = 460,
+  gap = 14,
+): { top: number; maxH: number } {
+  const max = Math.min(cap, viewH - 32);
+  const h = Math.min(height, max);
+  const below = viewH - (anchor.bottom + gap) - 16;
+  const above = anchor.top - gap - 16;
+  if (h <= below) return { top: anchor.bottom + gap, maxH: max };
+  if (h <= above) return { top: anchor.top - gap - h, maxH: max };
+  return below >= above ? { top: anchor.bottom + gap, maxH: Math.max(120, below) } : { top: 16, maxH: Math.max(120, above) };
 }
 
 /** The box of what an element actually shows (its text and inline content), within the element; the element's own box when empty. */

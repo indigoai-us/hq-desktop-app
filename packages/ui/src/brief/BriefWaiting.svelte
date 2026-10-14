@@ -51,7 +51,7 @@
 
 <div class="w c-amber" data-testid="brief-waiting">
   <!-- The total sits in the top-right corner, level with the card label. -->
-  <div class="big total" use:countUp={rows.length}>0</div>
+  <div class="total" aria-label="{rows.length} waiting" use:countUp={rows.length}>0</div>
   <div class="list">
     {#each shown as w (w.id)}
       {@const age = waitingAge(w.ageHours)}
@@ -68,13 +68,25 @@
 </div>
 
 <style>
+  /* The total, quietly: a small glass count in the top-right corner, level with the card label. */
   .total {
     position: absolute;
     z-index: 4;
-    top: 12px;
+    top: 18px;
     right: 20px;
-    font-size: var(--b-fs-num);
-    line-height: 1;
+    display: inline-grid;
+    place-items: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 7px;
+    box-sizing: border-box;
+    border-radius: 999px;
+    font-family: var(--b-code);
+    font-size: 11px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: rgba(255, 255, 255, 0.86);
+    background: rgba(255, 255, 255, 0.14);
   }
   .list {
     display: flex;
@@ -149,8 +161,10 @@
     color: #fff4d6;
     background: rgba(255, 205, 110, 0.32);
   }
+  /* "+N more": a plain glass pill, no rim. */
   .more {
     justify-content: center;
+    border: 0;
     padding: 6px 10px;
     font-size: var(--b-row-fs, 13px);
     color: rgba(255, 255, 255, 0.85);

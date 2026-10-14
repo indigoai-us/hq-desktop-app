@@ -1,6 +1,6 @@
 // The priorities card takes the hero's slot; the sunrise takes the priorities card's slot.
 import { describe, expect, it } from "vitest";
-import { clockLabel, inLabel, nextCall, peekTop, placePeek, placePeekBelow, promoteMain, todayStats, withLine } from "./brief-layout.js";
+import { clockLabel, inLabel, nextCall, peekTop, placePeek, placePeekBelow, promoteMain, stackPeek, todayStats, withLine } from "./brief-layout.js";
 import type { BriefWidget } from "./brief-generate.js";
 
 const w = (kind: string, cols: number, rows: number, size = "M"): BriefWidget =>
@@ -148,8 +148,25 @@ describe("todayStats", () => {
 describe("placePeekBelow", () => {
   it("opens under the hovered stat, left-aligned, so it never covers the stats beside it", () => {
     const view = { w: 1400, h: 900 };
-    expect(placePeekBelow({ left: 200, right: 260, top: 300, bottom: 380 }, view)).toEqual({ x: 200, anchorTop: 400, side: "b" });
+    expect(placePeekBelow({ left: 200, right: 260, top: 300, bottom: 380 }, view)).toEqual({ x: 200, anchorTop: 300, anchorBottom: 380, side: "b" });
     // Kept inside the window at the right edge.
     expect(placePeekBelow({ left: 1300, right: 1360, top: 300, bottom: 380 }, view).x).toBe(1400 - 340 - 8);
+  });
+});
+
+describe("stackPeek", () => {
+  const tile = { top: 500, bottom: 600 };
+  it("goes under the tile when it fits, 14px below", () => {
+    expect(stackPeek(tile, 200, 900)).toEqual({ top: 614, maxH: 460 });
+  });
+  it("goes above the tile when there is no room below, never over it", () => {
+    const p = stackPeek(tile, 400, 900);
+    expect(p.top + 400).toBe(tile.top - 14);
+  });
+  it("takes the roomier side and scrolls when neither fits", () => {
+    const p = stackPeek({ top: 300, bottom: 420 }, 460, 700);
+    // 264 below vs 270 above: above, capped to that space.
+    expect(p).toEqual({ top: 16, maxH: 270 });
+    expect(p.top + p.maxH).toBeLessThanOrEqual(300 - 14);
   });
 });

@@ -9,12 +9,25 @@
   import BriefLogo from "./BriefLogo.svelte";
   import BriefPeekDms from "./BriefPeekDms.svelte";
   import { ENGINES, copyBriefPrompt, useBrief } from "./brief-context.svelte.js";
-  import { peekTop } from "./brief-layout.js";
+  import { peekTop, stackPeek } from "./brief-layout.js";
 
   const brief = useBrief();
   // Level with the hovered thing; moved up only as far as its measured height needs to stay on screen.
   let peekH = $state(0);
-  const top = $derived(brief.peek ? peekTop(brief.peek.anchorTop, peekH, typeof window === "undefined" ? 900 : window.innerHeight) : 0);
+  // A below-placed peek decides from its natural (unscrolled) height, so capping it never flips the choice.
+  let el = $state<HTMLDivElement | null>(null);
+  let natH = $state(0);
+  $effect(() => {
+    void brief.peek;
+    if (el) natH = el.scrollHeight;
+  });
+  const viewH = () => (typeof window === "undefined" ? 900 : window.innerHeight);
+  const pos = $derived.by(() => {
+    const p = brief.peek;
+    if (!p) return { top: 0, maxH: 460 };
+    if (p.side === "b" && p.anchorBottom != null) return stackPeek({ top: p.anchorTop, bottom: p.anchorBottom }, natH || peekH, viewH());
+    return { top: peekTop(p.anchorTop, peekH, viewH()), maxH: Math.min(460, viewH() - 32) };
+  });
   const engine = $derived(ENGINES.find((e) => e.id === brief.engine)!);
   let copied = $state(false);
 
@@ -33,10 +46,11 @@
     tabindex="-1"
     aria-label={p.content.title}
     data-testid="brief-peek"
+    bind:this={el}
     bind:offsetHeight={peekH}
     style:left="{p.x}px"
-    style:top="{top}px"
-    style:max-height="min(460px, calc(100vh - 32px))"
+    style:top="{pos.top}px"
+    style:max-height="{pos.maxH}px"
     onmouseenter={() => brief.keepPeek()}
     onmouseleave={() => brief.hidePeekSoon()}
   >

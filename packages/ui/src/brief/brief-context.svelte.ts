@@ -77,7 +77,7 @@ export async function launchBriefPromptViaClipboard(engine: BriefEngine, prompt:
 
 export class BriefState {
   /** `anchorTop` is the hovered thing's top; the peek measures itself and keeps on screen (peekTop). */
-  peek = $state<{ content: PeekContent; x: number; anchorTop: number; side: "r" | "l" | "b" } | null>(null);
+  peek = $state<{ content: PeekContent; x: number; anchorTop: number; side: "r" | "l" | "b"; anchorBottom?: number } | null>(null);
   engine = $state<BriefEngine>("claude");
   cleared = $state<Record<string, boolean>>({});
   notes = $state<Record<string, string>>({});

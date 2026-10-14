@@ -169,6 +169,7 @@
   }
   .rk.more {
     justify-content: center;
+    border: 0;
     font-size: var(--b-row-fs, 13px);
     color: rgba(255, 255, 255, 0.85);
     cursor: default;
