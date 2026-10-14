@@ -104,7 +104,7 @@
     padding: 11px 12px 10px;
     border-radius: 6px;
     background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid rgb(var(--b-ink) / 0.09);
+    border: 0;
     box-shadow: none;
     transition: background 0.3s, border-color 0.3s;
   }

@@ -103,24 +103,33 @@
   .choice:focus-within > .alt {
     display: inline-flex;
   }
+  /* The two answers as a segmented control inside the white pill: equal segments, 6px
+     corners, the one under the pointer on a soft grey, no divider and no heavy fill. */
+  .go.choice:is(:hover, :focus-within) {
+    padding: 0 2px;
+  }
+  .alt {
+    gap: 2px;
+  }
   .alt button {
     all: unset;
+    box-sizing: border-box;
     cursor: pointer;
     font: inherit;
     font-weight: 500;
-    color: inherit;
-    padding: 1px 9px;
-    border-radius: 6px 0 0 6px;
-    transition: background 0.2s, color 0.2s;
-  }
-  .alt button + button {
-    border-left: 1px solid rgba(42, 26, 92, 0.2);
-    border-radius: 0 6px 6px 0;
+    color: #3f3f46;
+    min-width: 60px;
+    height: 24px;
+    padding: 0 10px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 6px;
+    transition: background 0.15s, color 0.15s;
   }
   .alt button:hover,
   .alt button:focus-visible {
-    background: #2a1a5c;
-    color: #fff;
+    background: rgba(24, 24, 27, 0.08);
+    color: #18181b;
     outline: none;
   }
 </style>

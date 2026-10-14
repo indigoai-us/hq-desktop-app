@@ -231,7 +231,7 @@
         }
       }
       if (ghost > 0.01) {
-        ctx!.fillStyle = `rgba(255,255,255,${0.85 * ghost})`;
+        ctx!.fillStyle = `rgba(255,255,255,${0.55 * ghost})`;
         ctx!.font = "500 10px 'Geist Mono', ui-monospace, monospace";
         ctx!.textAlign = "center";
         ctx!.textBaseline = "middle";

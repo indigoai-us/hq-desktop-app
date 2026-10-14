@@ -36,8 +36,13 @@
   const cells = $derived(shown.length + (rest.length ? 1 : 0));
   // One-row cards keep every tile on one line; tall cards wrap at three (L) or two (M) columns.
   const gridCols = $derived(Math.max(1, tall ? Math.min(cols >= 3 ? 3 : 2, cells) : cells));
-  // L shows two highlight lines, M one; one-row sizes show none.
-  const lines = $derived(tall ? (cols >= 3 ? 2 : 1) : 0);
+  // Each tile shows what was worth knowing under its count: two lines on wide or tall cards, one otherwise.
+  const lines = $derived(tall || cols >= 3 ? 2 : 1);
+  /** "Oct 4 – Oct 8" from two YYYY-MM-DD dates. */
+  const dayRange = (from: string, to: string) => {
+    const f = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return `${f(from)} – ${f(to)}`;
+  };
   const streak = $derived(shippedStreak(landedDays, today));
   const total = $derived(merged ?? tiles.reduce((n, t) => n + t.merged, 0));
 
@@ -113,7 +118,7 @@
               sections: [{ label: "By product", lines: byProduct(win) }],
             }),
           }}
-        >{win.from.slice(5)} to {win.to.slice(5)} · {win.total} PRs · {win.merged} merged</div>
+        >{dayRange(win.from, win.to)} · {win.total} PRs</div>
       {/if}
     </div>
     <div class="tot">
@@ -162,9 +167,7 @@
   }
   .win {
     margin-top: 4px;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
+    font-size: 13px;
     color: var(--b-t3);
   }
   .tot {
@@ -219,23 +222,21 @@
     grid-auto-rows: 1fr;
     min-height: 0;
   }
+  /* One row of tiles still fills the card's height, so there is no empty band under them. */
   .runs.one {
-    flex: none;
-    margin-top: 10px;
-    grid-auto-rows: auto;
+    margin-top: 14px;
   }
   .run {
     position: relative;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    border-radius: 6px;
-    padding: 10px 12px;
+    border-radius: 10px;
+    padding: 12px 14px;
     container-type: inline-size;
-    /* Glass: lit from the top, hairline rim, soft drop. No inner shadow and no
-       backdrop-filter (WKWebView draws it as a square that ignores the radius). */
-    background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid rgb(var(--b-ink) / 0.09);
+    /* Glass tile, no rim (no backdrop-filter: WKWebView draws it as a square). */
+    background: rgb(var(--b-ink) / 0.12);
+    border: 0;
     box-shadow: none;
     min-width: 0;
   }

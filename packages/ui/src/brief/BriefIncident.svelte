@@ -308,7 +308,7 @@
     line-height: 1.3;
     color: #fff;
     background: rgba(255, 255, 255, 0.14);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    border: 0;
     transition: background 0.2s;
   }
   .arow:hover,

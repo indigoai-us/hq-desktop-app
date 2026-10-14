@@ -133,7 +133,7 @@
     padding: 9px 10px 9px 12px;
     border-radius: 6px;
     background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid rgb(var(--b-ink) / 0.09);
+    border: 0;
     box-shadow: none;
     transition: background 0.25s, opacity 0.5s;
   }

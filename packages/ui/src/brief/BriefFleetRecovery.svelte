@@ -349,7 +349,7 @@
     cursor: default;
     /* Glass: lit from the top, hairline rim. No inner shadow, no backdrop-filter. */
     background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid rgb(var(--b-ink) / 0.08);
+    border: 0;
     transition: background 0.2s, border-color 0.2s;
   }
   .ag:hover,

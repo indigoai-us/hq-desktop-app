@@ -826,7 +826,7 @@
   position: relative;
   border-radius: 8px;
   background: var(--b-glass);
-  border: 1px solid var(--b-line);
+  border: 0;
   min-width: 0;
 }
 .daily-brief .b-more {
@@ -1088,9 +1088,9 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* Just the icon and the words, no chip behind them; lines up with the content's left edge. */
   height: 20px;
-  padding: 0 7px 0 6px;
-  border-radius: 6px;
+  padding: 0;
   font-family: var(--b-code);
   font-size: 10px;
   font-weight: 500;
@@ -1099,9 +1099,9 @@
   text-transform: uppercase;
   white-space: nowrap;
   color: rgba(255, 255, 255, 0.86);
-  background: rgba(255, 255, 255, 0.14);
+  background: none;
   cursor: default;
-  transition: background 0.15s, color 0.15s;
+  transition: color 0.15s;
 }
 .daily-brief .slot > .why svg {
   height: 12px;
@@ -1109,7 +1109,6 @@
   fill: currentColor;
 }
 .daily-brief .slot > .why:hover {
-  background: rgba(255, 255, 255, 0.24);
   color: #fff;
 }
 
@@ -1426,7 +1425,7 @@
   --b-field-glow: rgba(40, 40, 70, 0.35);
   --b-edge: linear-gradient(transparent, transparent);
   /* Glass rows in page ink are much lighter than white glass on colour. */
-  --b-row-bg: rgb(var(--b-ink) / 0.035);
+  --b-row-bg: rgb(var(--b-ink) / 0.05);
   --b-row-line: rgb(var(--b-ink) / 0.08);
   --b-row-hover: rgb(var(--b-ink) / 0.07);
   color: var(--b-t1);
@@ -1437,11 +1436,10 @@
   display: none;
 }
 .daily-brief .slot[data-field="mono"] > .w .b-glass {
-  border-color: rgb(var(--b-ink) / 0.08);
+  background: rgb(var(--b-ink) / 0.05);
 }
 .daily-brief .slot[data-field="mono"] > .why {
   color: var(--b-t2);
-  background: rgb(var(--b-ink) / 0.06);
 }
 
 /* Small (one-column) cards set their rows a size down. */
@@ -1452,4 +1450,16 @@
 /* A zero stat keeps its place on a quiet day, just quieter. */
 .daily-brief .stat.zero .num {
   color: var(--b-t3);
+}
+
+/* Monochrome cards: footers in page ink (the colour-field footer is white). */
+.daily-brief .slot[data-field="mono"] .foot {
+  border-top-color: rgb(var(--b-ink) / 0.1);
+}
+.daily-brief .slot[data-field="mono"] .foot > span {
+  color: rgb(var(--b-ink) / 0.6);
+}
+/* One-column cards: every body line a size down, not just the rows. */
+.daily-brief .slot[data-size="S"] :is(.lede, .facts b, .name, .go:not(.launch .go)) {
+  font-size: 12px;
 }

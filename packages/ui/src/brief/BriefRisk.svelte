@@ -98,7 +98,7 @@
     border-radius: 10px;
     color: #fff;
     background: rgba(255, 255, 255, 0.14);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    border: 0;
     transition: background 0.2s;
   }
   .rk:hover,
@@ -191,10 +191,13 @@
     text-transform: uppercase;
     color: rgba(255, 255, 255, 0.62);
   }
+  /* Cells then the count; on a narrow card the count drops under the cells instead of wrapping beside them. */
   .hl-v {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 10px;
+    gap: 6px 10px;
+    white-space: nowrap;
     font-size: var(--b-row-fs, 13px);
     font-weight: 500;
     color: #fff;

@@ -214,7 +214,7 @@
   .node,
   .tile {
     background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid rgb(var(--b-ink) / 0.09);
+    border: 0;
     box-shadow: none;
   }
 

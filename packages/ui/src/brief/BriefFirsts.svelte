@@ -123,7 +123,7 @@
     padding: 4px 8px;
     border-radius: 8px;
     color: var(--b-t2);
-    border: 1px solid rgb(var(--b-ink) / 0.09);
+    border: 0;
     white-space: nowrap;
     cursor: default;
     transition: color 0.2s, border-color 0.2s;
@@ -155,7 +155,7 @@
     /* Glass: lit from the top, hairline rim, soft drop. No inset shadow and no
        backdrop-filter (WKWebView draws it as a square that ignores the radius). */
     background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid rgb(var(--b-ink) / 0.09);
+    border: 0;
     box-shadow: none;
   }
   /* Holographic foil: only on a true first. Follows the pointer; glints once on load. */

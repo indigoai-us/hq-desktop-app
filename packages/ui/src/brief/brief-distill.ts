@@ -152,6 +152,19 @@ export function releaseLine(rows: readonly BriefShipped[]): string | null {
  * Highlights: named ships, the writer's highlights, a list-like `why`, then
  * the PR digest; never a "#n feat(...)" label.
  */
+/**
+ * A highlight with its PR references taken out: "(cherry-pick of #1219)",
+ * "dropped by #4823" and bare "#123" never reach the page.
+ */
+export function withoutPrRefs(text: string): string {
+  return text
+    .replace(/\s*\((?:cherry[- ]?pick(?:ed)?(?:\s+of)?\s*)?#\d+\)/gi, "")
+    .replace(/\s+(?:by|in|from|of|via|see)\s+#\d+\b/gi, "")
+    .replace(/\s*#\d+\b/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export function shippedTiles(rows: readonly BriefShipped[]): ShippedTile[] {
   const groups = new Map<string, BriefShipped[]>();
   for (const row of rows) {
@@ -171,7 +184,7 @@ export function shippedTiles(rows: readonly BriefShipped[]): ShippedTile[] {
     const seen = new Set<string>([headline.toLowerCase()]);
     const highlights: BriefLine[] = [];
     const push = (label: string, state = "") => {
-      const text = label.trim();
+      const text = withoutPrRefs(label);
       const k = text.toLowerCase();
       if (!text || seen.has(k) || highlights.length >= MAX_HIGHLIGHTS) return;
       seen.add(k);

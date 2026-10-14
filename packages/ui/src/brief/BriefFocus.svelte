@@ -84,7 +84,6 @@
             <BriefLogo company={brief.company(g.company)} fallback={g.company ?? g.name} size={18} />
             <b>{g.name}</b>
           </div>
-          <span class="n">{plural(g.count, "session")}</span>
           <div class="ss">
             {#each g.sessions.slice(0, FOCUS_CAP) as s, j (s.id)}
               <button type="button" class="st" data-testid="brief-focus-session" use:peek={{ state: brief, content: () => titlePeek(g, s, j) }}>{sessionLabel(s.title)}</button>
@@ -95,6 +94,8 @@
               >
             {/if}
           </div>
+          <!-- The count at the tile's foot; on the lead tile a hairline shows its share of the day. -->
+          <span class="n"><b>{g.count}</b> {g.count === 1 ? "session" : "sessions"}</span>
           {#if i === 0}<i class="bar" style="width:{Math.round(g.share * 100)}%" data-testid="brief-focus-bar" aria-hidden="true"></i>{/if}
         </div>
       {/each}
@@ -132,25 +133,24 @@
   .tall .tm {
     grid-template-rows: repeat(var(--tm-rows, 2), minmax(78px, 1fr));
   }
+  /* Glass tile: product, its session titles, and the count at the foot. No rim, no backdrop-filter. */
   .tile {
     position: relative;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 6px;
     min-width: 0;
-    border-radius: 6px;
-    padding: 9px 11px 10px;
-    /* Glass: lit from the top, hairline rim, soft drop. No inner shadow and no
-       backdrop-filter (WKWebView draws it as a square that ignores the radius). */
-    background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid rgb(var(--b-ink) / 0.09);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: var(--b-row-bg, rgb(var(--b-ink) / 0.12));
+    border: 0;
     box-shadow: none;
     transition: background 0.3s;
   }
   .tile:hover,
   .tile:focus-within {
-    background: rgb(var(--b-ink) / 0.07);
+    background: var(--b-row-hover, rgb(var(--b-ink) / 0.2));
   }
   .tile.lead {
     grid-row: span 2;
@@ -161,7 +161,7 @@
   .id {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
     min-width: 0;
   }
   .id b {
@@ -172,46 +172,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .n {
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    color: var(--b-t3);
-    transition: opacity 0.3s;
-  }
-  /* The session titles slide in over the count line; the name and logo stay. */
+  /* Session titles, always shown, as many as the tile has room for. */
   .ss {
-    position: absolute;
-    left: 11px;
-    right: 11px;
-    top: 30px;
-    bottom: 8px;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    opacity: 0;
-    translate: 0 6px;
-    pointer-events: none;
-    transition: opacity 0.3s, translate 0.3s;
-  }
-  .tile:hover .ss,
-  .tile:focus-within .ss {
-    opacity: 1;
-    translate: 0 0;
-    pointer-events: auto;
-  }
-  .tile:hover .n,
-  .tile:focus-within .n {
-    opacity: 0;
+    gap: 2px;
   }
   .st {
     all: unset;
     display: block;
     max-width: 100%;
     font-size: 11px;
-    line-height: 1.35;
-    color: var(--b-t2);
+    line-height: 1.4;
+    color: var(--b-t3);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -223,14 +199,29 @@
   }
   .st.more {
     color: var(--b-t3);
+    opacity: 0.8;
   }
+  .n {
+    flex: none;
+    font-size: 11px;
+    color: var(--b-t3);
+  }
+  .n b {
+    margin-right: 2px;
+    font-size: 20px;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    color: var(--b-t1);
+  }
+  /* The lead product's share of the day: a hairline along the tile's foot. */
   .bar {
     position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 3px;
-    background: var(--b-ice);
-    opacity: 0.6;
+    left: 14px;
+    bottom: 8px;
+    max-width: calc(100% - 28px);
+    height: 2px;
+    border-radius: 2px;
+    background: rgb(var(--b-ink) / 0.3);
     pointer-events: none;
   }
   .rest {

@@ -298,7 +298,7 @@
     font-size: 13px;
     color: var(--b-t2);
     background: rgb(var(--b-ink) / 0.05);
-    border: 1px solid rgb(var(--b-ink) / 0.08);
+    border: 0;
     cursor: default;
   }
   .more:hover,

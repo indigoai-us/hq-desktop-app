@@ -205,7 +205,7 @@
     flex: var(--n) 0 0;
     min-height: 3px;
     border-radius: 4px;
-    border: 1px solid rgb(var(--b-ink) / 0.1);
+    border: 0;
     background: var(--c);
   }
   .sessions {

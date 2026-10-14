@@ -132,7 +132,7 @@
     min-width: 0;
     color: var(--b-t1, #fff);
     background: var(--b-row-bg, rgb(var(--b-on, 255 255 255) / 0.14));
-    border: 1px solid var(--b-row-line, rgb(var(--b-on, 255 255 255) / 0.18));
+    border: 0;
     box-shadow: none;
     cursor: default;
     transition: background 0.2s, opacity 0.2s;

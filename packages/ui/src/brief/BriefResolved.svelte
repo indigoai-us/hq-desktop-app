@@ -258,7 +258,7 @@
     border-radius: 6px;
     min-width: 0;
     background: rgb(var(--b-ink) / 0.07);
-    border: 1px solid rgb(var(--b-ink) / 0.14);
+    border: 0;
     transition: background 0.2s;
   }
   .rec:hover {

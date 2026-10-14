@@ -118,14 +118,15 @@ describe("BriefShipped", () => {
     ]);
   });
 
-  it("on the Oct 8 fixture (one-row W slot) the card shows two product tiles, no highlight lines, and folds the rest", () => {
+  it("on the Oct 8 fixture (one-row W slot) the card shows two product tiles, one highlight line each at most, and folds the rest", () => {
     const input = { ...octoberEightBrief(new Date(2026, 9, 8, 7, 42)), today: "2026-10-08" };
     const w = generateBrief(input).widgets.find((x) => x.kind === "shipped")!;
     expect(w.rows).toBe(1);
     render(input);
     const tiles = qa('[data-testid="brief-shipped-tile"]');
     expect(tiles).toHaveLength(w.cols >= 3 ? 3 : 2);
-    expect(qa('[data-testid="brief-shipped-highlight"]')).toHaveLength(0);
+    // Tiles fill the card's height, so each shows what was worth knowing (one line on a two-column card).
+    for (const t of tiles) expect(t.querySelectorAll('[data-testid="brief-shipped-highlight"]').length).toBeLessThanOrEqual(w.cols >= 3 ? 2 : 1);
     const products = new Set(input.shipped.map((s) => s.origin.repo));
     expect(text(q('[data-testid="brief-shipped-more"]'))).toBe(`+${products.size - tiles.length} more`);
     const labels = tiles.map((t) => text(t.querySelector('[data-testid="brief-origin-label"]')));

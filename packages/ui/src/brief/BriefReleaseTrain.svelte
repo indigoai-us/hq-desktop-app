@@ -285,7 +285,7 @@
     border-radius: 6px;
     min-width: 0;
     background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid var(--b-line);
+    border: 0;
     box-shadow: none;
     transition: border-color 0.2s, background 0.2s;
   }

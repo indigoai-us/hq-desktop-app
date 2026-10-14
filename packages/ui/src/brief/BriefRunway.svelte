@@ -224,14 +224,14 @@
     margin-top: 14px;
     border-radius: 6px;
     background: rgb(var(--b-ink) / 0.05);
-    border: 1px solid rgb(var(--b-ink) / 0.06);
+    border: 0;
   }
   .gp {
     position: absolute;
     top: 5px;
     bottom: 5px;
     border-radius: 6px;
-    border: 1px solid rgb(var(--b-ink) / 0.07);
+    border: 0;
     cursor: default;
     transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
   }
@@ -351,7 +351,7 @@
     font-size: 11px;
     line-height: 1.3;
     background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid rgb(var(--b-ink) / 0.09);
+    border: 0;
     box-shadow: none;
     cursor: default;
     transition: border-color 0.2s, background 0.2s;

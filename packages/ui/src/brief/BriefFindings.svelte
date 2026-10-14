@@ -193,7 +193,7 @@
     border-radius: 6px;
     background: rgb(var(--b-ink) / 0.04);
     /* Hairline rim as a real border, never an inset shadow (the glass-tile rule). */
-    border: 1px solid rgb(var(--b-ink) / 0.06);
+    border: 0;
     font-size: 13px;
   }
   .kind {
