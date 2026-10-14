@@ -1,6 +1,14 @@
 import { mount } from 'svelte';
 import Harness from './Harness.svelte';
-import { announceBadgesEarned, configureBriefSeed, octoberEightBrief, setBadgeProgressSource, setBadgeSource } from '@hq/ui';
+import {
+  announceBadgesEarned,
+  configureBriefSeed,
+  octoberEightBrief,
+  setBadgeProgressSource,
+  setBadgeSource,
+  setBadgesEnabledSource,
+  setLaunchPreview,
+} from '@hq/ui';
 import { earnedFromUrl, sampleBadges, sampleProgress } from './badge-fixtures';
 // Load the base design tokens (the --pop-* / --c-* primitives + light/dark
 // blocks) the same way the real app entry (src/main.ts) does, then the popover
@@ -24,6 +32,16 @@ if (!new URLSearchParams(window.location.search).get('briefRun')) {
 // production loader (hq-pro GET /v1/badges) stays out of the harness.
 setBadgeSource(sampleBadges);
 setBadgeProgressSource(sampleProgress);
+setBadgesEnabledSource(() => true);
+
+// ?launch: the launch announcement (badges/BadgeLaunchAnnouncement.svelte)
+// over the shell, with the sample badges. `?launch=empty` shows it to someone
+// with no badges yet: three face-down cards and the badges they are closest to.
+const launch = new URLSearchParams(window.location.search).get('launch');
+if (launch !== null) {
+  if (launch === 'empty') setBadgeSource(() => []);
+  setLaunchPreview(true);
+}
 
 mount(Harness, { target: document.getElementById('app')! });
 

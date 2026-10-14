@@ -351,12 +351,15 @@ export { octoberEightBrief } from "./brief/brief-fixture.js";
 export {
   setBadgeSource,
   setBadgeProgressSource,
+  setBadgesEnabledSource,
   type BadgeSource,
   type BadgeSubject,
   type BadgeProgress,
   type BadgeProgressSource,
 } from "./badges/badge-source.js";
 export type { EarnedBadge } from "./badges/badge-catalog.js";
+// The launch announcement: the design harness shows it with ?launch.
+export { setLaunchPreview } from "./badges/badge-launch.js";
 // The rule for the tiers a badge can be earned at, which the loader reads
 // hq-pro's badges by; the design harness's ?earn= switch follows it too.
 export { BADGE_BY_ID, earnedTier } from "./badges/badge-catalog.js";
