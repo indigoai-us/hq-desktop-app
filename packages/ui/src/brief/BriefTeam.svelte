@@ -243,11 +243,19 @@
     color: var(--b-t2);
   }
   /* Initial circles, side by side; agents are rounded squares. */
+  /* The faces overlap as one stack. Each face is cut where the next one sits (a 2px gap around it), so the
+     stack reads cleanly on the card's translucent panel without painting a ring in a guessed colour. */
   .strip {
     display: flex;
     align-items: center;
-    gap: 9px;
     flex: none;
+  }
+  .strip .av + .av {
+    margin-left: -8px;
+  }
+  .strip .av:not(:last-child) {
+    -webkit-mask: radial-gradient(circle 16px at calc(100% + 6px) 50%, transparent 15.5px, #000 16px);
+    mask: radial-gradient(circle 16px at calc(100% + 6px) 50%, transparent 15.5px, #000 16px);
   }
   .av {
     width: 28px;
@@ -264,11 +272,15 @@
     cursor: default;
   }
   /* Needs you: a thin accent ring a step off the circle, the card's one colour. */
+  /* Who needs you: the accent ring drawn inside the face's own circle, so the stack's cut never clips it. */
   .av.need {
     color: var(--b-hot);
-    background: color-mix(in srgb, var(--b-hot) 9%, transparent);
-    outline: 1.25px solid var(--b-hot);
-    outline-offset: 2px;
+    background: radial-gradient(
+      circle closest-side,
+      color-mix(in srgb, var(--b-hot) 9%, transparent) 0 calc(100% - 3.5px),
+      transparent calc(100% - 3.5px) calc(100% - 1.25px),
+      var(--b-hot) calc(100% - 1.25px)
+    );
   }
   .av.plus {
     font-family: var(--b-code);
@@ -285,7 +297,12 @@
     background: rgb(var(--b-ink) / 0.12);
   }
   .strip .av.need.on {
-    background: color-mix(in srgb, var(--b-hot) 20%, transparent);
+    background: radial-gradient(
+      circle closest-side,
+      color-mix(in srgb, var(--b-hot) 20%, transparent) 0 calc(100% - 3.5px),
+      transparent calc(100% - 3.5px) calc(100% - 1.25px),
+      var(--b-hot) calc(100% - 1.25px)
+    );
   }
 
   /* The list: open, grouped by what each person asks of you; no boxes. */
