@@ -72,11 +72,11 @@
 
   const rowPeek = (r: AgendaRow): PeekContent => (r.kind === "busy" ? busyPeek(r) : eventPeek(r.e));
 
+  // Same card as the timeline's "+N more": "Also today", then the calls.
   const morePeek = (): PeekContent => ({
     sample,
-    title: `${rest.length} more`,
-    status: "Also today",
-    sections: [{ label: "Later", lines: rest.map((r) => ({ label: label(r), state: r.kind === "busy" ? "" : rangeText(r.e) })) }],
+    title: "Also today",
+    sections: [{ label: "", lines: rest.map((r) => ({ label: label(r), state: r.kind === "busy" ? "" : rangeText(r.e) })) }],
     actions: actions(),
   });
 </script>

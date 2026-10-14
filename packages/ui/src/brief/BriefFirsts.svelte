@@ -167,21 +167,20 @@
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.3s;
-    background: linear-gradient(115deg, transparent 20%, rgba(255, 120, 200, 0.22) 35%, rgba(120, 220, 255, 0.22) 50%, rgba(180, 255, 150, 0.2) 62%, transparent 78%);
-    background-size: 250% 250%;
-    background-position: var(--hx, 50%) var(--hy, 50%);
-    mix-blend-mode: var(--b-foil-blend, color-dodge);
+    /* A soft white light under the pointer, the same glass light the cards use; no colour. */
+    background: radial-gradient(180px circle at var(--hx, 50%) var(--hy, 50%), rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 70%);
   }
   .med::after {
     content: "";
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    padding: 1.2px;
+    padding: 1px;
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.3s;
-    background: conic-gradient(from var(--ang, 0deg), #ff7ac6, #7ad7ff, #b6ff8a, #ffd36e, #ff7ac6);
+    /* The rim catches the light on the pointer's side and fades away from it, in white. */
+    background: conic-gradient(from var(--ang, 0deg), rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.2) 22%, rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0.2) 78%, rgba(255, 255, 255, 0.75));
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor;

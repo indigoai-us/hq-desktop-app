@@ -340,8 +340,8 @@
     padding: 9px 10px 9px 12px;
     border-radius: var(--b-r, 12px);
     background: linear-gradient(180deg, rgb(var(--b-ink) / 0.11), rgb(var(--b-ink) / 0.06));
-    border: 1px solid rgb(var(--b-ink) / 0.1);
-    border-top-color: rgb(var(--b-ink) / 0.18);
+    /* No rim: the glass fill alone sets the row apart. */
+    border: 0;
     box-shadow: 0 6px 14px rgba(90, 30, 140, 0.18);
     transition: background 0.25s, opacity 0.5s;
   }
@@ -384,7 +384,7 @@
     display: grid;
     place-items: center;
     background: rgb(var(--b-ink) / 0.13);
-    border: 1px solid rgb(var(--b-ink) / 0.14);
+    border: 0;
     box-shadow: none;
   }
   /* A priority leads with its rank, light and large, like a step in a list. */
