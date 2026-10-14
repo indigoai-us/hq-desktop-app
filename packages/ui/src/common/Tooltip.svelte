@@ -144,7 +144,7 @@
     box-shadow: var(--panel-shadow, 0 4px 12px rgba(0, 0, 0, 0.22));
     color: var(--t1);
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 400;
     line-height: 1.35;
     white-space: normal;
     overflow-wrap: break-word;

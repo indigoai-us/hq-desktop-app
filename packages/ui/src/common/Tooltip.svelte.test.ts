@@ -70,4 +70,9 @@ describe("Tooltip bubble text", () => {
     expect(style).toMatch(/white-space: normal/);
     expect(style).not.toMatch(/white-space: nowrap/);
   });
+
+  it("reads in the regular weight (owner, 2026-10-14: tooltips are regular, not medium)", () => {
+    const style = readFileSync(resolve(process.cwd(), "src/common/Tooltip.svelte"), "utf8").match(/\.tooltip-bubble \{([^}]*)\}/)![1]!;
+    expect(style).toMatch(/font-weight: 400;/);
+  });
 });
