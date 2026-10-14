@@ -803,12 +803,11 @@
 }
 
 /* The highlight label: one style for every orange label on the page (the first stat,
-   the Sample marker, review-mode tags). Fully rounded, terracotta, white 11px text. */
+   the Sample marker). Fully rounded, terracotta, white 11px text. */
 .daily-brief .hot-label,
 .daily-brief .stat .pill.hot,
 .daily-brief .peek .sample,
-.daily-brief .sample-tag,
-.daily-brief .kind-tag {
+.daily-brief .sample-tag {
   display: inline-flex;
   align-items: center;
   font-family: var(--b-ui);

@@ -332,7 +332,13 @@
     </aside>
   </section>
 
-  {#if allCards}<div class="b-review" data-testid="brief-review">Review mode · every card with evidence, by group · Shift+A to go back</div>{/if}
+  {#if allCards}
+    <div class="b-review" data-testid="brief-review" role="status">
+      <span class="rv-mode">Review mode</span>
+      <span class="rv-txt">Every card with evidence, by group</span>
+      <span class="rv-keys" aria-label="Shift+A to go back"><kbd>⇧</kbd><kbd>A</kbd><span>to go back</span></span>
+    </div>
+  {/if}
   <main
     class="b-grid"
     class:review={allCards}
@@ -362,7 +368,7 @@
           <span class="why" role="note" aria-label="{tag.label}. Why this card: {w.reason}" data-testid="brief-why" use:peek={{ state: briefState, content: () => ({ title: entry.name, status: "Why it is here today", sections: [{ label: "Reason", text: w.reason }] }) }}
             >{#if tag.d}<svg viewBox={tagViewBox(tag)} style:width="{tagIconWidth(tag)}px" aria-hidden="true"><path d={tag.d} /></svg>{/if}{tag.label}</span
           >
-          {#if allCards}<span class="kind-tag">{w.kind} · {w.size} · T{w.tier} · {w.score}</span>{/if}
+          {#if allCards}<span class="kind-tag" title="kind · size · tier · score">{w.kind}<i>{" · "}</i>{w.size}<i>{" · "}</i>T{w.tier}<i>{" · "}</i>{w.score}</span>{/if}
           {#if !entry.ready}
             <div class="w placeholder" data-testid="brief-placeholder">
               <div class="eyebrow">{entry.name}</div>
@@ -506,33 +512,118 @@
   .prov:hover {
     background: rgb(var(--b-ink) / 0.06);
   }
+  /* Review mode, said once and quietly: a soft bar with a mono caps chip, a plain line and the key to leave. */
+  .daily-brief {
+    --b-page-ink: var(--b-ink);
+  }
   .b-review {
-    margin-top: 12px;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    color: var(--b-sun);
+    margin-top: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 8px 8px 8px;
+    border-radius: 12px;
+    font-size: 13px;
+    color: rgb(var(--b-page-ink) / 0.62);
+    background: rgb(var(--b-page-ink) / 0.05);
+  }
+  .rv-mode,
+  .b-review kbd {
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .rv-mode {
+    height: 22px;
+    padding: 0 9px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 7px;
+    color: rgb(var(--b-page-ink) / 0.86);
+    background: rgb(var(--b-page-ink) / 0.08);
+  }
+  .rv-keys {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding-right: 4px;
+  }
+  .rv-keys span {
+    margin-left: 4px;
+  }
+  .b-review kbd {
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    box-sizing: border-box;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 6px;
+    color: rgb(var(--b-page-ink) / 0.8);
+    background: rgb(var(--b-page-ink) / 0.08);
   }
   .review .slot {
     position: relative;
   }
   /* A label row is its own short row: review mode flows in source order (never dense), so a later
      group's card cannot climb above an earlier label, and the row minimum lives on the cards. */
+  /* Group title: mono caps in the page ink with a hairline running to the edge. */
   .b-review-group {
     grid-column: 1 / -1;
     align-self: end;
-    padding: 10px 2px 0;
-    color: var(--b-sun);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 2px 2px;
+    font-family: var(--b-code);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgb(var(--b-page-ink) / 0.55);
+  }
+  .b-review-group::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: rgb(var(--b-page-ink) / 0.1);
   }
   .review .slot {
     min-height: 120px;
   }
+  /* The hero keeps its live proportions in review: as tall as the live hero band (two rows at their minimum). */
+  .review .slot[data-size="XL"] {
+    min-height: 568px;
+  }
+  /* The card's review tag: a small mono caps chip in the page's own ink, on the card's top edge at the right,
+     clear of the card label and anything inside the card. */
   .kind-tag {
     position: absolute;
     z-index: 3;
-    top: -8px;
-    left: 14px;
-    /* Look: the shared highlight label (brief.css). */
+    top: -9px;
+    right: 14px;
+    height: 18px;
+    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--b-bg);
+    background: rgb(var(--b-page-ink) / 0.86);
+    pointer-events: none;
+  }
+  .kind-tag i {
+    font-style: normal;
+    white-space: pre;
+    opacity: 0.45;
   }
   .b-runs {
     margin: -6px 0 14px;
