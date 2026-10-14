@@ -10,6 +10,9 @@
   //                    (&over=brief plays it as the band over today's brief; &state=failed stops
   //                    at 45%; &briefDemoAt=0..1 freezes a frame). See BriefCreatingStage.svelte.
   import BriefCreatingStage from './BriefCreatingStage.svelte';
+  // The app mounts the brief inside the desktop shell's `chat-shell` token scope; the stage
+  // does the same so shared controls (RailButton's fill, hover and border) render as in the app.
+  import '../../../packages/ui/src/chat/chat-tokens.css';
   import BriefCreateButton from '../../../packages/ui/src/brief/BriefCreateButton.svelte';
   import { BriefCreateRun } from '../../../packages/ui/src/brief/brief-create.svelte';
   import { briefDemoFromUrl } from '../../../packages/ui/src/brief/brief-demo';
@@ -148,7 +151,7 @@
   }
 </script>
 
-<div class="brief-stage">
+<div class="brief-stage chat-shell">
   <nav class="days" aria-label="Fixture day">
     <span class="seg" role="group" aria-label="Appearance">
       {#each THEMES as t (t)}
