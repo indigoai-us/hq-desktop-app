@@ -577,7 +577,8 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 18px 2px 2px;
+    /* Room under the title for the card tags that sit on the cards' top edge. */
+    padding: 18px 2px 14px;
     font-family: var(--b-code);
     font-size: 11px;
     font-weight: 500;
