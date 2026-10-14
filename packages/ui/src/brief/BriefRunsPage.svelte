@@ -7,7 +7,6 @@
    * and starts new ones through the host's `creator`.
    */
   import { onDestroy, onMount } from "svelte";
-  import { slide } from "svelte/transition";
   import ReadLoader from "../common/ReadLoader.svelte";
   import DailyBrief from "./DailyBrief.svelte";
   import BriefRunBar from "./BriefRunBar.svelte";
@@ -51,8 +50,6 @@
   let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp }: Props = $props();
 
   const LAST_KEY = "hq.brief.lastOpenedAt";
-  /** Reduced motion: the band over the brief opens and closes in place. */
-  const calm = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
   // Fixed for the page's life; the host remounts the page for a new adapter.
   const demo = typeof location === "undefined" ? null : briefDemoFromUrl(location.search);
   // svelte-ignore state_referenced_locally
@@ -187,7 +184,8 @@
       case "ready":
         // Hold "Your brief is ready" until the new run's brief is loaded, so
         // the page swaps once and never flashes a placeholder brief.
-        return bloomDone && shownRunId === cp.runId ? null : { phase: "ready", progress: 1, step: "Your brief is ready" };
+        // A scene that cannot draw has no bloom to wait for.
+        return (bloomDone || !pageLive) && shownRunId === cp.runId ? null : { phase: "ready", progress: 1, step: "Your brief is ready" };
       case "failed":
         return { phase: "failed", progress: lastProgress, step: cp.message };
       default:
@@ -352,13 +350,12 @@
   {/if}
 {/snippet}
 
-<!-- Over a brief, a new run's scene is a band under the run controls, inside the brief's own page. -->
 {#snippet briefHeader()}
   {#if entries.length || run}{@render runBar()}{/if}
-  {#if dawn}<div class="masthead-wrap" transition:slide={{ duration: calm ? 0 : 420 }}>{@render dawnScene("masthead")}</div>{/if}
 {/snippet}
 
-{#if (empty || (dawn && (!input || entries.length === 0 || shownRunId === null || (pageLive && dawn.phase === "ready")))) && (input || run)}
+<!-- Any run in flight, first brief or a refresh, plays on the full-page scene in place of the brief, then hands off to it. -->
+{#if (empty || dawn) && (input || run)}
   <!-- The brief's own stage (.daily-brief: tokens, light and dark), so the scene and the brief it becomes match. -->
   <div class="daily-brief daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
@@ -376,9 +373,6 @@
   .daily-brief-dawn-page {
     display: flex;
     flex-direction: column;
-  }
-  .masthead-wrap {
-    margin-top: 14px;
   }
   .loader {
     display: flex;

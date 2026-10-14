@@ -203,6 +203,29 @@ describe("BriefRunsPage", () => {
     }
   });
 
+  it("Refresh over today's brief plays the full-page scene in its place, not a band on top", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    const f = files();
+    f["workspace/brief/index.jsonl"] = entry(NEW, new Date().toISOString());
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: true, bot }),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render(f, { creator });
+    await settle();
+    expect(target.querySelector('[data-testid="daily-brief"]')).not.toBeNull();
+    expect(q("brief-create")?.getAttribute("data-control")).toBe("refresh");
+    q("brief-create")!.click();
+    await settle();
+    expect(target.querySelector('[data-testid="daily-brief"]')).toBeNull();
+    expect(target.querySelector(".daily-brief-dawn-page")).not.toBeNull();
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("running");
+    expect(target.textContent).not.toContain("Newest call");
+  });
+
   it("a stopped run offers Try again and Dismiss as the app's standard buttons", async () => {
     const creator: BriefCreator = {
       company: () => "indigo",
