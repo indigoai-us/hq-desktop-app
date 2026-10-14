@@ -63,6 +63,8 @@
     /** Job count beside the Jobs tab; null while unknown. */
     jobsCount?: number | null;
     jobsPanel?: Snippet;
+    /** Accounts the bot runs on; shown under Runtime. None hides the section. */
+    accountsPanel?: Snippet;
   }
 
   let {
@@ -87,6 +89,7 @@
     ontab,
     jobsCount = null,
     jobsPanel,
+    accountsPanel,
   }: Props = $props();
 
   const phase = $derived(profilePhase(snapshot?.name));
@@ -189,6 +192,7 @@
           {/each}
         </div>
       </section>
+      {#if accountsPanel}{@render accountsPanel()}{/if}
       {#if snapshot.companies.length}
         <section class="g">
           <div class="k" data-testid="bot-profile-companies-label">{#if snapshot.companiesScope === "all"}Companies <span class="count">{snapshot.companies.length}</span>{:else}In this company{/if} <button type="button" class="link" data-testid="bot-profile-edit-membership" onclick={() => onedit?.("membership")}><RailIcon name="pencil" />Edit</button></div>

@@ -15932,6 +15932,8 @@
                       runtimeKind: "local",
                       companyUid: profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      selfUid: self?.uid ?? null,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -15975,6 +15977,8 @@
                       runtimeKind: "cloud",
                       companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? profileCompanyUid,
                       agents: adapter.agents ?? null,
+                      selfUid: self?.uid ?? null,
+                      onopenurl,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}

@@ -621,6 +621,19 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("POST", AGENT_PATHS.reauth(agentUid), { brain }),
     submitClaudeLoginCode: (agentUid, code) =>
       this.hqProJson("POST", AGENT_PATHS.loginCode(agentUid), { code }),
+    // Account writes keep their HTTP status: the Accounts section tells a
+    // refusal (403 not the owner, 409 last account or a stale save) from a
+    // write whose fate is not known.
+    addAccount: (agentUid, input) =>
+      this.hqProPostWithStatus(AGENT_PATHS.accounts(agentUid), input),
+    removeAccount: (agentUid, accountId) =>
+      this.hqProRequestWithStatus("DELETE", AGENT_PATHS.account(agentUid, accountId)),
+    startAccountSignIn: (agentUid, accountId) =>
+      this.hqProPostWithStatus(AGENT_PATHS.accountSignIn(agentUid, accountId)),
+    getAccountSignIn: (agentUid, accountId) =>
+      this.hqProRequestWithStatus("GET", AGENT_PATHS.accountSignIn(agentUid, accountId)),
+    submitAccountLoginCode: (agentUid, accountId, code) =>
+      this.hqProPostWithStatus(AGENT_PATHS.accountLoginCode(agentUid, accountId), { code }),
     attachSlack: (agentUid) =>
       this.hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
     // The token goes in the body only. The path names the bot, nothing else.

@@ -1296,6 +1296,19 @@ export function createSyncPlatformAdapter(
         if (!attempted.result.ok && attempted.result.code === 'network') return attempted.result;
         return withHttpStatus(attempted.result, attempted.status);
       },
+      // Account writes keep their HTTP status: the Accounts section tells a
+      // refusal (403 not the owner, 409 last account or a stale save) from a
+      // write whose fate is not known.
+      addAccount: (agentUid, input) =>
+        hqProRequestWithStatus('POST', AGENT_PATHS.accounts(agentUid), input),
+      removeAccount: (agentUid, accountId) =>
+        hqProRequestWithStatus('DELETE', AGENT_PATHS.account(agentUid, accountId)),
+      startAccountSignIn: (agentUid, accountId) =>
+        hqProRequestWithStatus('POST', AGENT_PATHS.accountSignIn(agentUid, accountId)),
+      getAccountSignIn: (agentUid, accountId) =>
+        hqProRequestWithStatus('GET', AGENT_PATHS.accountSignIn(agentUid, accountId)),
+      submitAccountLoginCode: (agentUid, accountId, code) =>
+        hqProRequestWithStatus('POST', AGENT_PATHS.accountLoginCode(agentUid, accountId), { code }),
       attachSlack: (agentUid) =>
         hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
       // The token goes in the body only. The path names the bot, nothing else.

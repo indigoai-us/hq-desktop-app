@@ -7,6 +7,8 @@
   import BotProfilePane, { type BotPaneTab } from "./BotProfilePane.svelte";
   import BotJobsPane from "./BotJobsPane.svelte";
   import { botJobsFromPayload, type BotJob } from "./bot-jobs.js";
+  import BotAccountsSection from "./BotAccountsSection.svelte";
+  import { accountsClientFor, accountsFromStatusPayload, type BotAccount } from "./bot-accounts.js";
   import BotSessionPane from "./BotSessionPane.svelte";
   import EditBotSheet from "./EditBotSheet.svelte";
   import UserProfilePane from "./UserProfilePane.svelte";
@@ -19,6 +21,7 @@
   import {
     defaultTelemetryRange,
     jobsFromPayload,
+    ownersIncludePerson,
     unavailableMessage,
     usageFromCompanyTelemetry,
   } from "../../chat/agent-detail-model.js";
@@ -59,6 +62,10 @@
     runtimeKind?: "local" | "cloud" | null;
     companyUid?: string | null;
     agents?: AgentsApi | null;
+    /** The signed-in person; an owner of the bot gets the account controls. */
+    selfUid?: string | null;
+    /** Host opener for the account sign-in page. */
+    onopenurl?: (url: string) => void;
     /** Where it opens: the profile, or straight to the Badges page ("See all"). */
     view?: "profile" | "badges";
     /** Opens straight to this earned badge's detail. */
@@ -86,6 +93,8 @@
     runtimeKind = null,
     companyUid = null,
     agents = null,
+    selfUid = null,
+    onopenurl,
     view = "profile",
     badgeId = null,
     openKey = 0,
@@ -106,6 +115,35 @@
   let paused = $state(false);
   let controlBusy = $state(false);
   let actionError = $state<string | null>(null);
+  /** Null until the status read lands, and on a server without accounts. */
+  let accounts = $state<BotAccount[] | null>(null);
+  let ownsBot = $state(false);
+  const accountsClient = $derived(accountsClientFor(agents, agentUid));
+
+  // Only an owner gets account controls. Anyone else, or a failed owner read,
+  // gets the read-only list; the server refuses non-owner writes anyway.
+  $effect(() => {
+    const uid = (agentUid ?? "").trim();
+    const api = agents;
+    const company = companyUid ?? null;
+    const me = selfUid ?? null;
+    ownsBot = false;
+    if (!uid || !api || !company || !me) return;
+    let cancelled = false;
+    void Promise.resolve()
+      .then(() => api.listOwners(company, uid))
+      .then((res) => {
+        if (cancelled) return;
+        if (res.ok) ownsBot = ownersIncludePerson(res.value, me);
+        else console.warn("[hq-desktop] bot owners read failed", res.message ?? res.reason);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) console.warn("[hq-desktop] bot owners read failed", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   // Jobs and usage refresh behind the cached first frame; the usage row paints
   // a skeleton until the telemetry call settles.
@@ -117,6 +155,7 @@
     botJobs = null;
     jobsUnavailable = null;
     memberships = null;
+    accounts = null;
     refreshedName = "";
     actionError = null;
     if (!uid || !api) {
@@ -135,6 +174,7 @@
         if (cancelled) return;
         if (res.ok) {
           memberships = botMembershipsFromPayload(res.value);
+          accounts = accountsFromStatusPayload(res.value);
           refreshedName = botNameFromPayload(res.value);
         }
         else console.warn("[hq-desktop] bot memberships refresh failed", res.message ?? res.reason);
@@ -335,9 +375,19 @@
       ontab={(next) => (paneTab = next)}
       jobsCount={botJobs ? botJobs.length : null}
       jobsPanel={agentUid && agents ? jobsPanel : undefined}
+      accountsPanel={accounts && accounts.length ? accountsPanel : undefined}
     />
     {#snippet jobsPanel()}
       <BotJobsPane jobs={botJobs} unavailable={jobsUnavailable} onpause={pauseJob} />
+    {/snippet}
+    {#snippet accountsPanel()}
+      <BotAccountsSection
+        accounts={accounts ?? []}
+        canManage={ownsBot}
+        client={accountsClient}
+        onaccounts={(next) => (accounts = next)}
+        {onopenurl}
+      />
     {/snippet}
   {:else}
     <UserProfilePane snapshot={personView} {personUid} {badges} onbadge={(b) => (openBadge = b)} onbadges={() => (badgesPage = true)} {onclose} {onmessage} {onatlas} {onmanage} />

@@ -200,6 +200,70 @@ describe("bot sidepane controls", () => {
     }
   });
 
+  it("shows the accounts section with owner controls when the viewer owns the bot", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const status = {
+      agentUid: "agt_01DEACON",
+      accounts: [{ id: "legacy", provider: "codex", label: "", authKind: "subscription", status: "active" }],
+    };
+    const agents = {
+      ...agentsApi(),
+      getStatus: vi.fn(async () => ({ ok: true as const, value: status })),
+      listOwners: vi.fn(async () => ({ ok: true as const, value: { owners: [{ personUid: "prs_owner", status: "active" }] } })),
+      addAccount: vi.fn(async () => ({ ok: true as const, value: {} })),
+      removeAccount: vi.fn(async () => ({ ok: true as const, value: {} })),
+      startAccountSignIn: vi.fn(async () => ({ ok: true as const, value: {} })),
+      getAccountSignIn: vi.fn(async () => ({ ok: true as const, value: {} })),
+    };
+    mount(ProfilePaneHost, {
+      target: host,
+      props: { kind: "bot", name: "deacon", agentUid: "agt_01DEACON", companyUid: "cmp_indigo", selfUid: "prs_owner", agents: agents as never },
+    });
+    await settle();
+    expect(agents.listOwners).toHaveBeenCalledWith("cmp_indigo", "agt_01DEACON");
+    expect(host.querySelectorAll('[data-testid="bot-account"]').length).toBe(1);
+    expect(q('[data-testid="bot-account"]')?.textContent).toContain("Default");
+    expect(q('[data-testid="bot-accounts-add"]')).not.toBeNull();
+  });
+
+  it("shows a non-owner the accounts read-only", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const status = { accounts: [{ id: "legacy", provider: "codex" }, { id: "acct_2", provider: "claude", label: "Work" }] };
+    const agents = {
+      ...agentsApi(),
+      getStatus: vi.fn(async () => ({ ok: true as const, value: status })),
+      listOwners: vi.fn(async () => ({ ok: true as const, value: { owners: [{ personUid: "prs_owner", status: "active" }] } })),
+      addAccount: vi.fn(async () => ({ ok: true as const, value: {} })),
+      removeAccount: vi.fn(async () => ({ ok: true as const, value: {} })),
+      startAccountSignIn: vi.fn(async () => ({ ok: true as const, value: {} })),
+      getAccountSignIn: vi.fn(async () => ({ ok: true as const, value: {} })),
+    };
+    mount(ProfilePaneHost, {
+      target: host,
+      props: { kind: "bot", name: "deacon", agentUid: "agt_01DEACON", companyUid: "cmp_indigo", selfUid: "prs_someone", agents: agents as never },
+    });
+    await settle();
+    expect(host.querySelectorAll('[data-testid="bot-account"]').length).toBe(2);
+    expect(q('[data-testid="bot-accounts-add"]')).toBeNull();
+    expect(q('[data-testid="bot-account-remove"]')).toBeNull();
+  });
+
+  it("leaves a bot without an accounts list exactly as before", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const status = { agentUid: "agt_01DEACON", codexAuthMode: "subscription" };
+    const agents = { ...agentsApi(), getStatus: vi.fn(async () => ({ ok: true as const, value: status })) };
+    mount(ProfilePaneHost, {
+      target: host,
+      props: { kind: "bot", name: "deacon", agentUid: "agt_01DEACON", companyUid: "cmp_indigo", selfUid: "prs_owner", agents: agents as never },
+    });
+    await settle();
+    expect(q('[data-testid="bot-accounts"]')).toBeNull();
+    expect(host.textContent).toContain("Runtime");
+  });
+
   it("keeps the in-this-company label when the status has no membership list", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
