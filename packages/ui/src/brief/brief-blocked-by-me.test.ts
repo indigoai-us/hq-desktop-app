@@ -233,6 +233,15 @@ describe("BriefBlockedByMe", () => {
   /** The declarations of one CSS rule in the component's style block, by its exact selector. */
   const rule = (src: string, selector: string) => src.match(new RegExp(`\\n  ${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`))?.[1] ?? "";
 
+  it("one row: the chain sits under the headline, its parties in one aligned column, '+N more' as quiet text (regression: pushed to the foot, ragged lines, a pill)", () => {
+    const src = SRC();
+    expect(rule(src, ".chain")).not.toMatch(/margin-top:\s*auto/);
+    expect(rule(src, ".flow")).toMatch(/display: grid/);
+    expect(rule(src, ".flow > .node,\n  .flow > .more")).toMatch(/grid-column: 2/);
+    expect(rule(src, ".flow .more")).toMatch(/background: none/);
+    expect(rule(src, ".flow .more")).toMatch(/text-transform: uppercase/);
+  });
+
   it("two rows: the list form, each call over who it frees, the age warm only past a day", () => {
     render({ decisions: day(), prompts: ALL_PROMPTS, cols: 2, rows: 2 });
     const root = q('[data-testid="brief-blocked"]')!;

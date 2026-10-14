@@ -603,12 +603,12 @@
   }
 
   /* ---- one-row card: the lead call, then the chain it frees ---- */
+  /* Right under the headline, not pushed to the foot: the card reads top-down with no empty middle. */
   .chain {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    margin-top: auto;
-    padding-top: 10px;
+    gap: 10px;
+    margin-top: 18px;
     min-width: 0;
   }
   .chain .call {
@@ -617,15 +617,22 @@
   .chain .cm {
     min-height: 22px;
   }
+  /* One arrow, then what it frees in a single column: every line starts at the same edge. */
   .flow {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr);
     align-items: center;
-    gap: 6px 12px;
+    gap: 8px 10px;
     min-width: 0;
   }
   .flow .ar {
+    grid-column: 1;
+    grid-row: 1;
     margin-top: 0;
+  }
+  .flow > .node,
+  .flow > .more {
+    grid-column: 2;
   }
   .node {
     display: inline-flex;
@@ -648,7 +655,23 @@
   .chain.done .flow {
     opacity: 0.62;
   }
+  /* "+N more": a quiet mono caps line under the list, not another pill. */
   .flow .more {
+    justify-self: start;
+    height: auto;
+    padding: 0;
+    background: none;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.7);
     cursor: default;
+  }
+  .flow .more:hover,
+  .flow .more:focus-visible {
+    background: none;
+    color: #fff;
   }
 </style>
