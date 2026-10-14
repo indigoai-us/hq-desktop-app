@@ -129,7 +129,7 @@ describe('US-009 ac2: no provider session stays pending and names Claude or Code
     const block = SRC.slice(SRC.indexOf('// ── signals-local-meetings-v1 US-009'), SRC.indexOf('// Load status for completed rows'));
     const invoked = [...block.matchAll(/invoke(?:<[^>]+>)?\('([a-z_]+)'/g)].map((m) => m[1]);
     expect(new Set(invoked)).toEqual(
-      new Set(['meeting_signals_status', 'meeting_signals_upload', 'meeting_signals_generate', 'meeting_signals_cancel', 'meeting_signals_open_session']),
+      new Set(['meeting_signals_status', 'meeting_signals_results', 'meeting_signals_citation', 'meeting_signals_upload', 'meeting_signals_generate', 'meeting_signals_cancel', 'meeting_signals_open_session']),
     );
     expect(block).not.toMatch(/fetch\(|\/v1\/signals|claude -p|codex exec/);
   });
@@ -200,7 +200,7 @@ describe('US-009 ac5: existing layout only, Corey UI constraints', () => {
     const last = style.indexOf('.signals-action:disabled', start);
     return style.slice(start, style.indexOf('}', last) + 1);
   })();
-  const snippet = SRC.slice(SRC.indexOf('{#snippet localSignals'), SRC.indexOf('{#snippet companyAssign'));
+  const snippet = SRC.slice(SRC.indexOf('{#snippet localSignals'), SRC.indexOf('{#snippet signalsVersion'));
 
   it('adds no new screen, panel, modal, banner, or accent bar', () => {
     for (const bad of ['<dialog', 'modal', 'banner', 'panel', 'sheet', 'toast', '<div']) {
@@ -276,10 +276,10 @@ describe('US-008 ac5/ac6 (Meetings half): automatic upload and repair from the l
       signalsRowView(status({ localComplete: true, upload: upload(u) }), ui(extra));
     expect(v({ uploaded: 3, created: 2, unchanged: 1 }).text).toBe('Signals ready.');
     expect(v({ uploaded: 2, repaired: 1, blocked: 1 }).text).toBe('Signals ready. 1 stay private on this device.');
-    expect(v({ disabled: 3 })).toMatchObject({ text: 'Saved on this device. Sharing is off for this company.', actions: [{ label: 'Tap to retry' }] });
+    expect(v({ disabled: 3 })).toMatchObject({ text: 'Saved on this device. Sharing is off for this company.', actions: [{ label: 'Tap to retry' }, { label: 'View signals' }] });
     expect(v({ ineligible: 3 }).text).toBe('Saved on this device. This meeting can’t be shared.');
     expect(v({ uploaded: 2, conflict: 1 }).text).toBe('Saved on this device. A different copy is already shared.');
-    expect(v({ uploaded: 2, retryable: 1 }).actions.map((a) => a.label)).toEqual(['Tap to retry']);
+    expect(v({ uploaded: 2, retryable: 1 }).actions.map((a) => a.label)).toEqual(['Tap to retry', 'View signals']);
     expect(v({ uploaded: 2, retryable: 1 }, { autoRetrying: true }).busy).toBe(true);
     expect(v({}, { uploading: true }).text).toBe('Sharing with your company…');
   });

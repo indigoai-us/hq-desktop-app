@@ -43,6 +43,7 @@ export interface MeetingSignalsStatus {
 }
 
 export type SignalsAction =
+  | 'view'
   | 'generate'
   | 'cancel'
   | 'retry'
@@ -164,7 +165,11 @@ function uploadView(u: UploadSummary | null, ui: SignalsRowUi): SignalsRowView {
   return view('Signals ready.', 'ok');
 }
 
-export function signalsRowView(status: MeetingSignalsStatus | null, ui: SignalsRowUi): SignalsRowView {
+export function signalsRowView(
+  status: MeetingSignalsStatus | null,
+  ui: SignalsRowUi,
+  expanded = false,
+): SignalsRowView {
   // Flag off, missing, or unreadable; ineligible or private source: nothing at all.
   if (!status || !status.enabled || !status.eligible) return HIDDEN;
   if (ui.submitting) return view('Starting…', 'active', [], true);
@@ -173,7 +178,11 @@ export function signalsRowView(status: MeetingSignalsStatus | null, ui: SignalsR
       ? view(`${ui.error} Retrying…`, 'danger', [], true)
       : view(ui.error, 'danger', [RETRY]);
   }
-  if (status.localComplete) return uploadView(status.upload, ui);
+  if (status.localComplete) {
+    // US-010: a complete local run can always be read in place.
+    const v = uploadView(status.upload, ui);
+    return { ...v, actions: [...v.actions, { id: 'view', label: expanded ? 'Hide signals' : 'View signals' }] };
+  }
 
   const run = status.run;
   if (!run) return view('', 'muted', [GENERATE]);
@@ -212,4 +221,182 @@ export function signalsRowView(status: MeetingSignalsStatus | null, ui: SignalsR
     default:
       return HIDDEN;
   }
+}
+
+// ── US-010: cited local results inside the Meetings row ─────────────────────
+
+export type SignalType =
+  | 'summary'
+  | 'key_point'
+  | 'decision'
+  | 'action_item'
+  | 'participant_contribution'
+  | 'risk'
+  | 'commitment'
+  | 'question';
+
+export const SIGNAL_TYPE_ORDER: readonly SignalType[] = [
+  'summary',
+  'key_point',
+  'decision',
+  'action_item',
+  'participant_contribution',
+  'risk',
+  'commitment',
+  'question',
+];
+
+export const SIGNAL_TYPE_LABELS: Record<SignalType, string> = {
+  summary: 'Summary',
+  key_point: 'Key points',
+  decision: 'Decisions',
+  action_item: 'Action items',
+  participant_contribution: 'Contributions',
+  risk: 'Risks',
+  commitment: 'Commitments',
+  question: 'Questions',
+};
+
+export type UploadBadge = 'pending' | 'uploaded' | 'private' | 'ineligible' | 'retry' | 'off' | 'conflict';
+
+/** Plain upload copy. Never names server reasons or what sanitizing removed. */
+export const UPLOAD_BADGE_LABELS: Record<UploadBadge, string> = {
+  pending: 'Not shared yet',
+  uploaded: 'Shared with your company',
+  private: 'Stays on this device',
+  ineligible: 'Can’t be shared',
+  retry: 'Sharing will retry',
+  off: 'Sharing is off',
+  conflict: 'A different copy is shared',
+};
+
+export interface ResultCitation {
+  startMs: number;
+  endMs: number;
+  label: string;
+  valid: boolean;
+}
+
+export interface ResultEntity {
+  name: string;
+  entityId: string | null;
+  provisional: boolean;
+}
+
+export interface ResultItem {
+  observationId: string;
+  signalType: SignalType;
+  content: string;
+  citations: ResultCitation[];
+  entities: ResultEntity[];
+  owner: string | null;
+  reasoning: string | null;
+  speaker: string | null;
+  provider: string;
+  model: string;
+  projectionState: string;
+  upload: UploadBadge;
+}
+
+export interface ResultVersion {
+  status: 'pending' | 'complete' | 'superseded';
+  promptVersion: string;
+  schemaVersion: string;
+  currentTranscript: boolean;
+  groups: Array<{ signalType: SignalType; items: ResultItem[] }>;
+  missing: number;
+}
+
+export interface MeetingResults {
+  current: ResultVersion | null;
+  history: ResultVersion[];
+}
+
+export interface ResultGroupView {
+  signalType: SignalType;
+  label: string;
+  items: ResultItemView[];
+}
+
+export interface ResultItemView {
+  observationId: string;
+  content: string;
+  detail: string | null;
+  citations: ResultCitation[];
+  entities: Array<{ label: string; title: string; provisional: boolean }>;
+  source: string;
+  upload: string;
+  uploadTone: SignalsTone;
+}
+
+function providerLabel(provider: string): string {
+  if (provider === 'claude') return 'Claude';
+  if (provider === 'codex') return 'Codex';
+  return 'Interactive session';
+}
+
+function projectionLabel(state: string): string | null {
+  switch (state) {
+    case 'ready':
+      return null;
+    case 'stale':
+      return 'stale company context';
+    case 'disabled':
+      return 'company context off';
+    case 'missing':
+      return 'no company context';
+    default:
+      return 'company context unknown';
+  }
+}
+
+const BADGE_TONE: Record<UploadBadge, SignalsTone> = {
+  pending: 'muted',
+  uploaded: 'ok',
+  private: 'muted',
+  ineligible: 'warn',
+  retry: 'warn',
+  off: 'muted',
+  conflict: 'warn',
+};
+
+export function resultItemView(item: ResultItem): ResultItemView {
+  const detail =
+    item.signalType === 'action_item' && item.owner
+      ? `Owner: ${item.owner}`
+      : item.signalType === 'decision' && item.reasoning
+        ? `Why: ${item.reasoning}`
+        : item.signalType === 'participant_contribution' && item.speaker
+          ? `Speaker: ${item.speaker}`
+          : null;
+  const projection = projectionLabel(item.projectionState);
+  return {
+    observationId: item.observationId,
+    content: item.content,
+    detail: detail ? bounded(detail) : null,
+    citations: item.citations,
+    entities: item.entities.map((e) => ({
+      label: e.provisional ? `${e.name} (new)` : e.name,
+      title: e.provisional ? 'Not yet in your company’s records' : (e.entityId ?? ''),
+      provisional: e.provisional,
+    })),
+    source: [providerLabel(item.provider), projection].filter(Boolean).join(' · '),
+    upload: UPLOAD_BADGE_LABELS[item.upload] ?? UPLOAD_BADGE_LABELS.pending,
+    uploadTone: BADGE_TONE[item.upload] ?? 'muted',
+  };
+}
+
+/** All eight types in canonical order, each with its items. */
+export function resultGroupsView(version: ResultVersion | null): ResultGroupView[] {
+  if (!version) return [];
+  return SIGNAL_TYPE_ORDER.map((type) => ({
+    signalType: type,
+    label: SIGNAL_TYPE_LABELS[type],
+    items: (version.groups.find((g) => g.signalType === type)?.items ?? []).map(resultItemView),
+  }));
+}
+
+/** Plain copy when a citation cannot be shown. */
+export function citationError(_err: unknown): string {
+  return 'This citation can’t be shown.';
 }

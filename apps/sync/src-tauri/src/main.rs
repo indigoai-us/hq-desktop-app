@@ -736,6 +736,8 @@ fn main() {
             commands::meeting_signals::meeting_signals_open_session,
             commands::meeting_signals::meeting_signals_cancel,
             commands::meeting_signals::meeting_signals_upload,
+            commands::meeting_signals::meeting_signals_results,
+            commands::meeting_signals::meeting_signals_citation,
             commands::meet_transcription::meet_transcription_status,
             commands::meet_transcription::meet_transcribe_pcm,
             commands::app::quit_app,

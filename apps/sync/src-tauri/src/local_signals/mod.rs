@@ -3,6 +3,7 @@ pub mod eligibility;
 pub mod extractor;
 pub mod ontology_tools;
 pub mod receipt;
+pub mod results;
 pub mod sanitize;
 pub mod store;
 pub mod upload;
@@ -18,3 +19,7 @@ mod us007_acceptance;
 #[cfg(test)]
 #[path = "signals_local_meetings_v1_us009_acceptance.rs"]
 mod us009_acceptance;
+
+#[cfg(test)]
+#[path = "signals_local_meetings_v1_us010_acceptance.rs"]
+mod us010_acceptance;

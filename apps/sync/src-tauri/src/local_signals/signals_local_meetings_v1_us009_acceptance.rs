@@ -15,13 +15,13 @@ use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::path::Path;
 
-const CO: &str = "cmp_a";
-const SLUG: &str = "co-a";
-const ME: &str = "prs_alice";
-const BOT: &str = "bot-abc";
-const BODY: &str = "**Ava** [00:00]: Ship the Atlas beta on November 3.\n**Ben** [01:30]: I will draft the checklist.\n";
+pub(super) const CO: &str = "cmp_a";
+pub(super) const SLUG: &str = "co-a";
+pub(super) const ME: &str = "prs_alice";
+pub(super) const BOT: &str = "bot-abc";
+pub(super) const BODY: &str = "**Ava** [00:00]: Ship the Atlas beta on November 3.\n**Ben** [01:30]: I will draft the checklist.\n";
 
-fn seed(hq: &Path, fm_extra: &str, roster: &[&str], body_override: Option<&str>) {
+pub(super) fn seed(hq: &Path, fm_extra: &str, roster: &[&str], body_override: Option<&str>) {
     let dir = hq.join("companies").join(SLUG).join("sources/meetings");
     std::fs::create_dir_all(&dir).unwrap();
     let digest = eligibility::sha256_digest(BODY);
@@ -45,14 +45,18 @@ fn seed(hq: &Path, fm_extra: &str, roster: &[&str], body_override: Option<&str>)
     std::fs::write(dir.join(format!("{BOT}.md")), md).unwrap();
 }
 
-fn eligible_hq() -> tempfile::TempDir {
+pub(super) fn eligible_hq() -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     seed(d.path(), "", &[ME, "prs_bob"], None);
     d
 }
 
 /// Drive a run to a complete local receipt, as a session plus extraction would.
-fn complete_local_run(hq: &Path, runs_dir: &Path, contents: &[(&str, SignalType)]) -> RunContext {
+pub(super) fn complete_local_run(
+    hq: &Path,
+    runs_dir: &Path,
+    contents: &[(&str, SignalType)],
+) -> RunContext {
     generate_in(hq, runs_dir, CO, ME, BOT, ProviderChoice::Any).unwrap();
     let e = eligibility::evaluate(hq, CO, ME, BOT);
     let run = latest_run(runs_dir, CO, ME, &e).unwrap().unwrap();
@@ -90,7 +94,7 @@ fn complete_local_run(hq: &Path, runs_dir: &Path, contents: &[(&str, SignalType)
     ctx
 }
 
-fn local_receipt(hq: &Path, ctx: &RunContext) -> receipt::Receipt {
+pub(super) fn local_receipt(hq: &Path, ctx: &RunContext) -> receipt::Receipt {
     let root = company_root(hq, CO).unwrap();
     receipt::read(
         &receipt::receipt_path(
@@ -126,7 +130,7 @@ impl FakeServer {
     }
 }
 
-fn block_on<F: std::future::Future>(f: F) -> F::Output {
+pub(super) fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tauri::async_runtime::block_on(f)
 }
 

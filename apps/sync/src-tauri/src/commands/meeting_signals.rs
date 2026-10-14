@@ -395,6 +395,58 @@ pub async fn meeting_signals_upload(
     .await
 }
 
+/// US-010: cited local results for one meeting, read from the personal store.
+#[tauri::command]
+pub async fn meeting_signals_results(
+    company_uid: String,
+    bot_id: String,
+    member_uid: String,
+) -> Result<crate::local_signals::results::MeetingResults, String> {
+    if !flag_on(&company_uid).await {
+        return Err("disabled".into());
+    }
+    let hq = hq_root()?;
+    blocking(move || {
+        let e = eligibility::evaluate(&hq, &company_uid, &member_uid, &bot_id);
+        if !e.eligible {
+            return Err("not_eligible".to_string());
+        }
+        crate::local_signals::results::results_for(&hq, &company_uid, &bot_id, &e)
+    })
+    .await
+}
+
+/// US-010: transcript lines for one citation of a current observation. The UI
+/// sends only ids; the transcript path comes from the eligibility gate.
+#[tauri::command]
+pub async fn meeting_signals_citation(
+    company_uid: String,
+    bot_id: String,
+    member_uid: String,
+    observation_id: String,
+    index: usize,
+) -> Result<Vec<String>, String> {
+    if !flag_on(&company_uid).await {
+        return Err("disabled".into());
+    }
+    let hq = hq_root()?;
+    blocking(move || {
+        let e = eligibility::evaluate(&hq, &company_uid, &member_uid, &bot_id);
+        if !e.eligible {
+            return Err("not_eligible".to_string());
+        }
+        crate::local_signals::results::open_citation(
+            &hq,
+            &company_uid,
+            &bot_id,
+            &e,
+            &observation_id,
+            index,
+        )
+    })
+    .await
+}
+
 trait UiTerminal {
     fn is_terminal_for_ui(self) -> bool;
 }
