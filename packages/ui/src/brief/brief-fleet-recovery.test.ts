@@ -9,10 +9,19 @@ import {
   agentPromptKey,
   fleetGeometry,
   fleetRecoveryVisible,
+  heroMeta,
+  initialOf,
   inspectPrompt,
+  monoWidth,
   peakOf,
+  pillSpot,
+  pillText,
+  placeAxisLabels,
+  placePinLabels,
+  readingDots,
   stuckFor,
   stuckList,
+  stuckOld,
   verdictTitle,
 } from "./brief-fleet-recovery.js";
 import type { BriefFleetIncident, BriefOrigin } from "./brief-types.js";
@@ -179,6 +188,144 @@ describe("stuck list", () => {
   });
 });
 
+describe("hero", () => {
+  it("says where the count came down from and how long the incident has run, never a total", () => {
+    const nowMs = Date.parse(NOW);
+    expect(heroMeta(incident(), nowMs)).toBe("down from 86 · open 28h");
+    expect(heroMeta(incident({ incidentEnd: ago(2), stillStuck: [] }), nowMs)).toBe("down from 86 · closed 2h ago");
+    // Still at the top of the curve: no "down from".
+    expect(heroMeta(incident({ series: [{ at: ago(3), stuck: 2 }], stillStuck: incident().stillStuck.slice(0, 2) }), nowMs)).toBe("at its peak · open 28h");
+    expect(heroMeta(incident({ series: [], incidentStart: null }), nowMs)).toBe("");
+    expect(heroMeta(incident(), nowMs)).not.toMatch(/\bof \d+/);
+  });
+
+  it("marks an agent old once it has been stuck a day, and draws an initial for its circle", () => {
+    const nowMs = Date.parse(NOW);
+    expect(stuckOld(ago(24), nowMs)).toBe(true);
+    expect(stuckOld(ago(23), nowMs)).toBe(false);
+    expect(stuckOld(null, nowMs)).toBe(false);
+    expect(stuckOld("junk", nowMs)).toBe(false);
+    expect(initialOf("scout")).toBe("S");
+    expect(initialOf("  _atlas")).toBe("A");
+    expect(initialOf("")).toBe("?");
+  });
+});
+
+describe("chart layout", () => {
+  const overlap = (a: { left: number; w: number }, b: { left: number; w: number }) => a.left < b.left + b.w && b.left < a.left + a.w;
+
+  it("pins now to the right edge and drops a weekday that would touch it", () => {
+    const w = 300;
+    const labels = placeAxisLabels([{ x: 120, label: "Tue" }, { x: 285, label: "Wed" }], w);
+    expect(labels.map((l) => l.label)).toEqual(["Tue", "now"]);
+    const now = labels[labels.length - 1]!;
+    expect(now.left + now.w).toBe(w);
+    // A tick at the very left edge is held inside the axis.
+    expect(placeAxisLabels([{ x: 0, label: "Mon" }], w)[0]!.left).toBe(0);
+  });
+
+  it("never lets two axis labels share an x or overlap, at any width", () => {
+    const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let width = 80; width <= 640; width += 17) {
+      for (let k = 0; k < 12; k += 1) {
+        const ticks = Array.from({ length: 1 + Math.floor(rnd() * 4) }, (_, i) => ({ x: rnd() * width, label: DAYS[(k + i) % 7]! }));
+        const labels = placeAxisLabels(ticks, width);
+        expect(labels[labels.length - 1]!.label).toBe("now");
+        for (const l of labels) {
+          expect(l.left).toBeGreaterThanOrEqual(0);
+          expect(l.left + l.w).toBeLessThanOrEqual(Math.max(width, l.w) + 0.001);
+        }
+        for (let i = 0; i < labels.length; i += 1)
+          for (let j = i + 1; j < labels.length; j += 1) {
+            const a = labels[i]!;
+            const b = labels[j]!;
+            expect(overlap({ left: a.left - 5, w: a.w + 10 }, b), `${a.label}@${a.left} vs ${b.label}@${b.left} in ${width}px`).toBe(false);
+          }
+      }
+    }
+  });
+
+  it("stacks fix labels in two lines, keeps them off a reserved box, and leaves a pin bare when there is no room", () => {
+    const w = 300;
+    const two = placePinLabels([{ x: 100, label: "Fix 12 PM" }, { x: 114, label: "Fix 3 PM" }], w);
+    expect(two.map((s) => s.row)).toEqual([0, 1]);
+    // Near the right edge a label ends left of its pin instead of running off the plot.
+    const edge = placePinLabels([{ x: 296, label: "Fix 3 PM" }], w)[0]!;
+    expect(edge.left + edge.w).toBeLessThanOrEqual(296);
+    // The value pill holds the first line: the label moves down a line.
+    expect(placePinLabels([{ x: 100, label: "Fix 12 PM" }], w, [{ left: 90, w: 80 }])[0]!.row).toBe(1);
+    const crowd = placePinLabels([{ x: 100, label: "Fix 12 PM" }, { x: 104, label: "Fix 1 PM" }, { x: 108, label: "Fix 2 PM" }], w);
+    expect(crowd.map((s) => s.row)).toEqual([0, 1, null]);
+    // Labels on one line never overlap.
+    for (const set of [two, crowd])
+      for (const r of [0, 1]) {
+        const line = set.filter((s) => s.row === r);
+        for (let i = 0; i < line.length; i += 1) for (let j = i + 1; j < line.length; j += 1) expect(overlap(line[i]!, line[j]!)).toBe(false);
+      }
+    expect(two[0]!.w).toBe(monoWidth("Fix 12 PM"));
+  });
+
+  it("keeps a dot per reading, thinned so dots never touch, always the latest and the peak", () => {
+    const g = fleetGeometry(incident(), NOW);
+    const dots = readingDots(g, incident().series, 300);
+    expect(dots[dots.length - 1]!.current).toBe(true);
+    expect(dots[dots.length - 1]!.stuck).toBe(9);
+    expect(dots.filter((d) => d.peak)).toHaveLength(1);
+    expect(dots.find((d) => d.peak)!.stuck).toBe(86);
+    // Hourly readings across 48h on a narrow plot: thinned, never closer than the gap.
+    const dense = incident({ series: Array.from({ length: 49 }, (_, i) => ({ at: ago(48 - i), stuck: 49 - i })) });
+    const gd = fleetGeometry(dense, NOW);
+    const thin = readingDots(gd, dense.series, 200);
+    expect(thin.length).toBeLessThan(49);
+    const xs = thin.map((d) => (d.x / CHART.w) * 200);
+    for (let i = 1; i < xs.length; i += 1) expect(xs[i]! - xs[i - 1]!).toBeGreaterThanOrEqual(14 - 0.001);
+    expect(thin[thin.length - 1]!.current).toBe(true);
+    expect(thin[0]!.peak).toBe(true);
+  });
+
+  it("writes the pill as the latest reading, with its age when it is an hour or more old", () => {
+    const nowMs = Date.parse(NOW);
+    expect(pillText({ at: Date.parse(ago(2)), stuck: 3 }, nowMs)).toBe("3 · 2h ago");
+    expect(pillText({ at: nowMs, stuck: 1 }, nowMs)).toBe("1 now");
+    expect(pillText({ at: nowMs - 20 * 60_000, stuck: 1.4 }, nowMs)).toBe("1 now");
+  });
+
+  it("puts the pill where the line never runs through it", () => {
+    const plot = { w: 300, h: 90 };
+    const pill = { w: 80, h: 18 };
+    const lineY = (line: { x: number; y: number }[], x: number) => {
+      for (let i = 1; i < line.length; i += 1) if (x <= line[i]!.x) return line[i - 1]!.y + ((line[i]!.y - line[i - 1]!.y) * (x - line[i - 1]!.x)) / (line[i]!.x - line[i - 1]!.x);
+      return line[line.length - 1]!.y;
+    };
+    const clearOf = (line: { x: number; y: number }[], s: { left: number; top: number }) => {
+      for (let x = s.left; x <= s.left + pill.w; x += 1) {
+        const y = lineY(line, x);
+        if (y > s.top - 1 && y < s.top + pill.h + 1) return false;
+      }
+      return true;
+    };
+    // Falling to a low "now": the pill sits above the end of the line, inside the plot.
+    const falling = [{ x: 0, y: 10 }, { x: 300, y: 80 }];
+    const a = pillSpot(falling, { x: 300, y: 80 }, pill, plot);
+    expect(a.side).toBe("above");
+    expect(a.left + pill.w).toBeLessThanOrEqual(plot.w);
+    expect(clearOf(falling, a)).toBe(true);
+    // Rising to the top at "now": no room above, so it goes below.
+    const rising = [{ x: 0, y: 80 }, { x: 300, y: 4 }];
+    const b = pillSpot(rising, { x: 300, y: 4 }, pill, plot);
+    expect(b.side).toBe("below");
+    expect(clearOf(rising, b)).toBe(true);
+    // A line that crosses the whole height under the pill: up into the strip, with a leader.
+    const zig = [{ x: 0, y: 80 }, { x: 225, y: 80 }, { x: 240, y: 2 }, { x: 260, y: 88 }, { x: 300, y: 45 }];
+    const c = pillSpot(zig, { x: 300, y: 45 }, pill, plot);
+    expect(c.side).toBe("strip");
+    expect(c.top).toBeLessThan(0);
+    expect(c.leader).toBe(true);
+  });
+});
+
 describe("BriefFleetRecovery", () => {
   let app: ReturnType<typeof mount> | null = null;
   let target: HTMLElement;
@@ -210,6 +357,10 @@ describe("BriefFleetRecovery", () => {
     expect(root.getAttribute("data-live")).toBe("true");
     expect(q('[data-testid="brief-fleet-eyebrow"]')!.textContent!.replace(/\s+/g, " ").trim()).toBe("Fleet recovery · 48h");
     expect(q('[data-testid="brief-fleet-verdict"]')!.textContent).toBe("Healing · 9 agents still stuck");
+    expect(q('[data-testid="brief-fleet-verdict"]')!.getAttribute("aria-label")).toBe("Healing · 9 agents still stuck");
+    // The hero: the still-stuck count, large, with where it came down from and how long it has run.
+    expect(q('[data-testid="brief-fleet-count"]')!.textContent).toBe("9");
+    expect(q('[data-testid="brief-fleet-meta"]')!.textContent!.replace(/\s+/g, " ").trim()).toBe("down from 86 · open 28h");
     expect(q('[data-testid="brief-origin"]')).not.toBeNull();
     const text = root.textContent!;
     expect(text).not.toMatch(/\bof \d+\b/);
@@ -225,6 +376,11 @@ describe("BriefFleetRecovery", () => {
     expect(dots).toHaveLength(5);
     expect(dots.map((d) => d.querySelector(".nm")!.textContent)).toEqual(["scout", "atlas", "nimbus", "ember", "orbit"]);
     expect(dots.every((d) => d.querySelector(".dot.breathe"))).toBe(true);
+    // Open rows: initial circle, name, phase, and an age pill that turns warm past a day.
+    expect(dots.map((d) => d.querySelector(".dot")!.textContent)).toEqual(["S", "A", "N", "E", "O"]);
+    expect(dots[0]!.querySelector(".rs")!.textContent).toBe("disk_full");
+    expect(dots.map((d) => d.querySelector(".age")!.textContent)).toEqual(["27h", "26h", "25h", "20h", "18h"]);
+    expect(dots.map((d) => d.querySelector(".age")!.classList.contains("old"))).toEqual([true, true, true, false, false]);
     const more = q('[data-testid="brief-fleet-more"]')!;
     expect(more.textContent!.replace(/\s+/g, " ").trim()).toBe("+4 more");
     await hover(more);
@@ -278,19 +434,33 @@ describe("BriefFleetRecovery", () => {
     expect(peek.textContent).not.toMatch(/#\d+/);
   });
 
-  it("draws the 48h curve with the red area, dashed fix pins with plain labels, and a weekday axis ending in now", () => {
+  it("draws the 48h curve with the incident fill, dashed fix pins with plain labels, and a weekday axis ending in now", () => {
     render({ reducedMotion: false });
     expect(q('[data-testid="brief-fleet-chart"]')).not.toBeNull();
     expect(q('[data-testid="brief-fleet-area"]')).not.toBeNull();
     expect(q('[data-testid="brief-fleet-line"]')!.classList.contains("draw")).toBe(true);
     const pins = qa('[data-testid="brief-fleet-pin"]');
     expect(pins).toHaveLength(2);
-    for (const p of pins) expect(p.textContent).toMatch(/^Fix landed \d{1,2}(:\d{2})? (AM|PM)$/);
+    for (const p of pins) expect(p.textContent).toMatch(/^Fix \d{1,2}(:\d{2})? (AM|PM)$/);
+    // The pin names the fix in plain words for assistive tech and in its peek, never a PR.
+    expect(pins.map((p) => p.getAttribute("aria-label")!.split(",")[0])).toEqual(["Free the disk on setup boxes", "Retry setup after a disk rescue"]);
     const axis = q('[data-testid="brief-fleet-axis"]')!;
     const labels = [...axis.querySelectorAll("span")].map((s) => s.textContent);
     expect(labels[labels.length - 1]).toBe("now");
     expect(labels.slice(0, -1).length).toBeGreaterThanOrEqual(1);
     for (const l of labels.slice(0, -1)) expect(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]).toContain(l);
+    // Axis labels never collide: each sits at its own x, apart from the next.
+    const boxes = [...axis.querySelectorAll<HTMLElement>("span")].map((s) => ({ left: parseFloat(s.style.left), w: parseFloat(s.style.width) }));
+    for (let i = 1; i < boxes.length; i += 1) expect(boxes[i]!.left).toBeGreaterThanOrEqual(boxes[i - 1]!.left + boxes[i - 1]!.w);
+  });
+
+  it("marks each reading with a dot, the latest filled and breathing while live, with its value in a pill", () => {
+    render();
+    expect(qa('[data-testid="brief-fleet-reading"]').length).toBeGreaterThan(0);
+    const cur = q('[data-testid="brief-fleet-now"]')!;
+    expect(cur.classList.contains("cur")).toBe(true);
+    expect(cur.classList.contains("live")).toBe(true);
+    expect(q('[data-testid="brief-fleet-pill"]')!.textContent).toBe("9 · 1h ago");
   });
 
   it("reduced motion turns the draw-in off", () => {
@@ -298,17 +468,28 @@ describe("BriefFleetRecovery", () => {
     expect(q('[data-testid="brief-fleet-line"]')!.classList.contains("draw")).toBe(false);
   });
 
-  it("at S there is no curve, only the verdict and the dots; at W the curve returns", () => {
+  it("at S there is no curve, only the hero and the agents as initial chips; at W the curve returns", () => {
     render({ cols: 1, rows: 1 });
     expect(q('[data-testid="brief-fleet-chart"]')).toBeNull();
     expect(q('[data-testid="brief-fleet-eyebrow"]')!.textContent!.replace(/\s+/g, " ").trim()).toBe("Fleet recovery");
+    expect(q('[data-testid="brief-fleet-count"]')!.textContent).toBe("9");
     expect(qa('[data-testid="brief-fleet-agent"]')).toHaveLength(5);
     expect(qa('[data-testid="brief-fleet-agent"]')[0]!.textContent).not.toContain("27h");
+    // Five chips: just the initial (the name is in the label and the peek), then "+4 more".
+    expect(qa('[data-testid="brief-fleet-agent"]').map((a) => a.textContent!.trim())).toEqual(["S", "A", "N", "E", "O"]);
+    expect(qa('[data-testid="brief-fleet-agent"]')[0]!.getAttribute("aria-label")).toBe("scout, disk_full");
+    expect(q('[data-testid="brief-fleet-more"]')!.textContent!.replace(/\s+/g, " ").trim()).toBe("+4 more");
     if (app) unmount(app);
     app = null;
     target.remove();
     render({ cols: 2, rows: 1 });
     expect(q('[data-testid="brief-fleet-chart"]')).not.toBeNull();
+    if (app) unmount(app);
+    app = null;
+    target.remove();
+    // Two or fewer still stuck: the chips carry the names.
+    render({ cols: 1, rows: 1, stillStuck: incident().stillStuck.slice(0, 2) });
+    expect(qa('[data-testid="brief-fleet-agent"]').map((a) => a.querySelector(".nm")?.textContent)).toEqual(["scout", "atlas"]);
   });
 
   it("hides itself once the incident has been closed for more than 24 hours", () => {
@@ -322,6 +503,8 @@ describe("BriefFleetRecovery", () => {
     const root = q('[data-testid="brief-fleet-recovery"]')!;
     expect(root.getAttribute("data-live")).toBe("false");
     expect(root.querySelector(".live")).toBeNull();
+    expect(q('[data-testid="brief-fleet-now"]')!.classList.contains("live")).toBe(false);
+    expect(q('[data-testid="brief-fleet-count"]')!.textContent).toBe("0");
     expect(root.querySelector(".dot.breathe")).toBeNull();
     expect(q('[data-testid="brief-fleet-verdict"]')!.textContent).toBe("Healed · no agent still stuck");
     expect(q('[data-testid="brief-fleet-stuck"]')!.textContent).toContain("No agent still stuck.");
