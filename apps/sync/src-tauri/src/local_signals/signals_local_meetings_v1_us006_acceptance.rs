@@ -302,6 +302,28 @@ mod ac2_observation_id {
         assert_eq!(names(a.path()), names(b.path()));
     }
 
+    /// Shared vector with hq-pro `computeObservationId` (US-008 upload validation,
+    /// `__tests__/stories/signals-local-meetings-v1-US-008.test.ts`). Both sides
+    /// must keep producing this exact id or server-side recompute breaks.
+    #[test]
+    fn id_matches_the_hq_pro_upload_validator_vector() {
+        let aa = format!("sha256:{}", "aa".repeat(32));
+        let d1 = format!("sha256:{}", "d1".repeat(32));
+        assert_eq!(
+            observation_id(
+                "prs_alice",
+                "sources/meetings/bot-abc.md",
+                &d1,
+                SignalType::Decision,
+                &aa,
+                "Ship  the Atlas beta\n on November 3.",
+                "local-signals-prompt/v1",
+                "local-signal/v1",
+            ),
+            "b4db14d3deaa20643d84d97664784de1a49ef3a09859adafa4899a94cf541060"
+        );
+    }
+
     #[test]
     fn id_is_sha256_hex_and_normalizes_whitespace_and_case() {
         let c = ctx();
