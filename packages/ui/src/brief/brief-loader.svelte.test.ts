@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 // The Create brief loader: idle line, fixed layout, and the single swap to the finished brief.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { flushSync, mount, tick, unmount } from "svelte";
+import { createRawSnippet, flushSync, mount, tick, unmount } from "svelte";
 import type { LocalBotRow } from "@hq/platform";
 import BriefActivity from "./BriefActivity.svelte";
 import BriefDawn from "./BriefDawn.svelte";
@@ -224,6 +224,13 @@ describe("the creating scene", () => {
     app = mount(BriefDawn, { target, props: { progress: 0.4, phase: "running", step: "Sweeping your day", headline: "Your first brief is on its way" } });
     flushSync();
     expect(target.querySelector("header [data-testid='brief-dawn-step']")?.textContent).toContain("Sweeping your day");
+    expect(target.querySelector("header h2")?.textContent).toBe("Your first brief is on its way");    // With the card's status row showing the step, the header does not repeat it.
+    unmount(app);
+    const status = createRawSnippet(() => ({ render: () => `<div data-testid="row">Sweeping your day · 7s</div>` }));
+    app = mount(BriefDawn, { target, props: { progress: 0.4, phase: "running", step: "Sweeping your day", headline: "Your first brief is on its way", status } });
+    flushSync();
+    // Still read out for screen readers, but not drawn twice.
+    expect(target.querySelector("header [data-testid='brief-dawn-step']")?.closest(".step-wrap")?.classList.contains("sr")).toBe(true);
     expect(target.querySelector("header h2")?.textContent).toBe("Your first brief is on its way");
   });
 

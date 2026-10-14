@@ -245,7 +245,8 @@
     <header class="head">
       <span class="kicker" data-testid="brief-dawn-kicker">{kicker}</span>
       {#if headline}<h2>{headline}</h2>{/if}
-      {@render stepLine()}
+      <!-- The step shows once on screen: when the card has its own status row, this line is read out but not drawn. -->
+      <div class="step-wrap" class:sr={!!status}>{@render stepLine()}</div>
       {#if actions}<div class="actions">{@render actions()}</div>{/if}
     </header>
     </div>
@@ -377,6 +378,14 @@
     line-height: 1.08;
     letter-spacing: -0.04em;
     color: rgb(var(--b-ink) / 0.92);
+  }
+  .step-wrap.sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
   .step {
     display: flex;
