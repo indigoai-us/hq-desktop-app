@@ -14,7 +14,7 @@
    */
   import BriefLogo from "./BriefLogo.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
-  import { FOCUS_CAP, focusSummary, hasFocus, sessionLabel, tileLayout, type FocusGroup } from "./brief-focus.js";
+  import { FOCUS_CAP, FOCUS_ONE_ROW_CAP, focusSummary, hasFocus, sessionLabel, tileLayout, type FocusGroup } from "./brief-focus.js";
   import { clockLabel } from "./brief-time.js";
   import { sessionPeek } from "./brief-timeline.js";
   import type { BriefSession } from "./brief-types.js";
@@ -34,11 +34,14 @@
 
   const sum = $derived(focusSummary(sessions, companies, now));
   const show = $derived(hasFocus(sum));
-  const shown = $derived(sum.groups.slice(0, FOCUS_CAP));
-  const rest = $derived(sum.groups.slice(FOCUS_CAP));
+  // A one-row slot keeps the tiles on one line, so the card stays as short as its neighbours.
+  const oneRow = $derived(rows === 1);
+  const cap = $derived(oneRow ? (sum.groups.length === FOCUS_ONE_ROW_CAP + 1 ? FOCUS_ONE_ROW_CAP + 1 : FOCUS_ONE_ROW_CAP) : FOCUS_CAP);
+  const shown = $derived(sum.groups.slice(0, cap));
+  const rest = $derived(sum.groups.slice(cap));
   const restSessions = $derived(rest.reduce((n, g) => n + g.count, 0));
   const tiles = $derived(shown.length + (rest.length ? 1 : 0));
-  const layout = $derived(tileLayout(tiles));
+  const layout = $derived(tileLayout(tiles, oneRow, rest.length > 0));
   // A one-row slot (W) keeps the tiles shallower; the card still sets its own height.
   const tall = $derived(rows > 1 || cols >= 3);
 

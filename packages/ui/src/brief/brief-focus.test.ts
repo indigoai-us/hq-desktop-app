@@ -4,6 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import BriefFocusHost from "./fixtures/BriefFocusHost.svelte";
 import {
   FOCUS_CAP,
+  FOCUS_ONE_ROW_CAP,
   contextSwitches,
   focusGroups,
   focusHeadline,
@@ -256,5 +257,21 @@ describe("BriefFocus", () => {
     expect(q('[data-testid="brief-focus"]')!.classList.contains("tall")).toBe(false);
     expect(qa('[data-testid="brief-focus-tile"]')).toHaveLength(2);
     expect(q('[data-testid="brief-focus-foot"]')!.textContent).toContain("3 context switches");
+  });
+
+  it("in a one-row slot keeps the tiles on one line: three products and a slim '+N more', or four when there is no fifth", () => {
+    expect(tileLayout(4, true, true)).toEqual({ columns: "2fr 1fr 1fr 76px", rows: 1, spanFirst: false, spanLast: false });
+    expect(tileLayout(4, true, false)).toEqual({ columns: "2fr 1fr 1fr 1fr", rows: 1, spanFirst: false, spanLast: false });
+    seq = 0;
+    const five = [session("Desktop app", 20), session("Desktop app", 19), session("HQ Cloud", 18), session("HQ core", 17), session("CLI", 16), session("Fleet", 15)];
+    render(five, { cols: 3, rows: 1 });
+    expect(qa('[data-testid="brief-focus-tile"]')).toHaveLength(FOCUS_ONE_ROW_CAP);
+    expect(q('[data-testid="brief-focus-more"]')!.textContent!.replace(/\s+/g, " ").trim()).toBe("+2 more 2 sessions");
+    if (app) unmount(app);
+    target.remove();
+    seq = 0;
+    render(five.slice(0, 5), { cols: 3, rows: 1 });
+    expect(qa('[data-testid="brief-focus-tile"]')).toHaveLength(FOCUS_ONE_ROW_CAP + 1);
+    expect(q('[data-testid="brief-focus-more"]')).toBeNull();
   });
 });
