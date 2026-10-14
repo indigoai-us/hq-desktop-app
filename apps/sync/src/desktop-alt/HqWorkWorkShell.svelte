@@ -233,7 +233,9 @@
     reason: string | null;
   }
   let lifecycle = $state<Lifecycle>('loading');
-  let signedOutReason = $state<'signed-out' | 'expired' | 'invalid' | 'non-human'>(
+  let signedOutReason = $state<
+    'signed-out' | 'expired' | 'invalid' | 'non-human' | 'machine-unavailable'
+  >(
     'signed-out',
   );
   let identityError = $state<string | null>(null);
@@ -1483,7 +1485,9 @@
               ? 'Your saved sign-in is no longer valid.'
               : signedOutReason === 'non-human'
                 ? 'The sign-in saved here belongs to an agent, not a person.'
-                : undefined}
+                : signedOutReason === 'machine-unavailable'
+                  ? 'We couldn’t sign in as this outpost. Try again, or sign in with your account.'
+                  : undefined}
           reauth={signedOutReason === 'expired' ||
             signedOutReason === 'invalid' ||
             signedOutReason === 'non-human'}

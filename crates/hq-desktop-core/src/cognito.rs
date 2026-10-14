@@ -3094,6 +3094,31 @@ mod tests {
     }
 
     #[test]
+    fn rejected_person_session_is_hidden_from_reads_but_still_present_on_disk() {
+        // "Use this outpost's identity" must see a revoked person session so it
+        // can clear it before the machine fallback runs (PR 1612 review).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let access = "revoked-person-access";
+        std::fs::write(
+            &path,
+            serde_json::to_string(&CognitoTokens {
+                access_token: access.into(),
+                id_token: None,
+                refresh_token: "rt".into(),
+                expires_at: i64::MAX,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        record_rejected_refresh_at(&path, access, Some("NotAuthorizedException")).unwrap();
+
+        assert!(read_tokens_from_path(&path).unwrap().is_none());
+        assert_eq!(stored_token_presence_at(&path), StoredTokenPresence::Present);
+        assert!(refresh_rejection_recorded_at(&path, access).unwrap());
+    }
+
+    #[test]
     fn refresh_rejection_marker_accepts_legacy_and_code_formats() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cognito-tokens.json");

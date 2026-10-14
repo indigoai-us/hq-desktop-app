@@ -12,10 +12,14 @@ describe('lifecycleForAuthStatus', () => {
     expect(lifecycleForAuthStatus('refresh_temporarily_unavailable')).toEqual({ lifecycle: 'recovery' });
   });
 
-  it('keeps an outpost whose machine session could not be minted in recovery', () => {
-    // No person session and the outpost identity failed to mint (CLI down,
-    // HQ unreachable). The device still has an identity, so this is a retry.
-    expect(lifecycleForAuthStatus('machine_unavailable')).toEqual({ lifecycle: 'recovery' });
+  it('sends an outpost whose machine session could not be minted to the sign-in screen', () => {
+    // PR 1612 review: recovery renders only "Retry now". A persistent mint
+    // failure (broken CLI, revoked machine credentials) must still let the
+    // person sign in with a provider or retry the outpost.
+    expect(lifecycleForAuthStatus('machine_unavailable')).toEqual({
+      lifecycle: 'signed-out',
+      reason: 'machine-unavailable',
+    });
   });
 
   it('signs out only on definitive verdicts', () => {

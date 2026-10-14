@@ -823,6 +823,12 @@ const handlers: Record<string, Handler> = {
   is_indigo_user: () => harnessPersona()?.isIndigo ?? true,
   get_auth_session: () => {
     const persona = harnessPersona();
+    // `?authStatus=machine_unavailable` (or any native status) renders that
+    // auth lifecycle screen, e.g. the outpost mint failure sign-in screen.
+    const authStatus = new URLSearchParams(window.location.search).get('authStatus');
+    if (authStatus && authStatus !== 'active') {
+      return { accountId: null, generation: 1, status: authStatus, reason: null };
+    }
     return {
       accountId: persona?.accountId ?? 'cognito-sub-ada',
       generation: 1,
@@ -830,6 +836,11 @@ const handlers: Record<string, Handler> = {
       reason: null,
     };
   },
+  // `?outpost=1` offers "Use this outpost's identity" on the sign-in screen.
+  get_machine_identity_status: () => ({
+    available: new URLSearchParams(window.location.search).get('outpost') === '1',
+    active: false,
+  }),
   // Company-board path (?view=company)
   list_syncable_workspaces: () => ({
     workspaces: harnessPersona()?.workspaces ?? HARNESS_WORKSPACES,
