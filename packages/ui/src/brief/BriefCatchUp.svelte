@@ -148,7 +148,7 @@
           >
             <div class="lh">
               <span class="kick">Start here</span>
-              <span class="tag tone-{t.tone}">{t.tag}</span>
+              <span class="tag sr tone-{t.tone}">{t.tag}</span>
               {#if t.origins.length}<span class="lo"><BriefOrigin origin={t.origins[0]!} product /></span>{/if}
             </div>
             <div class="lt" data-testid="brief-catchup-lead">{top.text}</div>
@@ -184,9 +184,9 @@
                 {#if showSub(t)}<span class="ts">{t.sub}</span>{/if}
               </span>
               {#if t.origins.length}
-                <span class="orgs">{#each t.origins.slice(0, 2) as o, j (`${o.companyUid ?? ""}:${o.repo ?? ""}:${o.product ?? ""}:${j}`)}<BriefOrigin origin={o} product />{/each}</span>
+                <span class="orgs"><BriefOrigin origin={t.origins[0]!} product /></span>
               {/if}
-              <span class="tag tone-{t.tone}">{t.tag}</span>
+              <span class="tag sr tone-{t.tone}">{t.tag}</span>
             </div>
           {/each}
           {#if rest.length}
@@ -370,25 +370,27 @@
   }
 
   /* What moved: label over a big light number; the calls waiting on you read first, the rest quieter. */
+  /* The numbers in soft boxes, flush with the card's content edges; quieter than the featured block. */
   .stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
-    gap: 4px;
-    margin: 16px -12px 0;
+    gap: 6px;
+    margin: 16px 0 0;
   }
   .st {
     min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 6px;
-    padding: 10px 12px 12px;
+    padding: 12px 14px 14px;
     border-radius: 10px;
     outline: none;
+    background: rgb(var(--b-ink) / 0.08);
     transition: background 0.2s;
   }
   .st[role="button"]:hover,
   .st[role="button"]:focus-visible {
-    background: rgb(var(--b-ink) / 0.12);
+    background: rgb(var(--b-ink) / 0.13);
   }
   .sl {
     font-family: var(--b-code);
@@ -577,8 +579,9 @@
     gap: 6px;
   }
   .row {
+    position: relative;
     display: grid;
-    grid-template-columns: 22px minmax(0, 1fr) auto auto;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
     align-items: center;
     column-gap: 12px;
     min-height: 44px;
@@ -624,11 +627,20 @@
     gap: 10px;
     min-width: 0;
   }
-  .row .tag {
+  /* The tag is read out, not shown: the product sits at the row's end instead. */
+  .tag.sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .orgs {
     justify-self: end;
   }
-  /* A live incident is the one row that earns the hot dot. */
-  .row[data-tone="red"] .tag::before {
+  /* A live incident is the one row that earns the hot dot, before its title. */
+  .row[data-tone="red"] .tx::before {
     content: "";
     display: inline-block;
     width: 6px;
@@ -665,9 +677,6 @@
 
   /* A narrower card: the row's product steps aside (its peek still names it). */
   @container catchup (max-width: 620px) {
-    .orgs {
-      display: none;
-    }
     .big {
       font-size: 60px;
     }

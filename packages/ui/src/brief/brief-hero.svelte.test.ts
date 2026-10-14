@@ -114,6 +114,9 @@ describe("Welcome back", () => {
     expect(tiles.slice(1).every((t) => !t.hasAttribute("data-featured"))).toBe(true);
     expect(tiles.map((t) => t.getAttribute("data-tone"))).toEqual(["decision", "red", "decision", "ok", "decision"]);
     expect(tiles.map((t) => t.querySelector(".tag")!.textContent!.split(" · ").pop())).toEqual(["WAITING ON YOU", "INCIDENT", "WAITING ON YOU", "FIXED", "NOW YOURS"]);
+    // The tag is read out but not shown; each list row shows its product instead.
+    expect(tiles.every((t) => t.querySelector(".tag")!.classList.contains("sr"))).toBe(true);
+    expect(tiles.slice(1).filter((t) => t.querySelector(".orgs [data-testid='brief-origin-label']")).length).toBeGreaterThan(0);
     // The two calls are the ones the catalogue ranked first; the third stays off the face.
     expect(tiles[0]!.textContent).toContain("Approve the Q4 plan");
     expect(tiles[2]!.textContent).toContain("Pick the launch date");
