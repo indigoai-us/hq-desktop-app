@@ -5780,7 +5780,12 @@ fn fingerprint_command(program: &str, hq_root: &Path) -> Command {
     for var in FINGERPRINT_SESSION_ENV {
         cmd.env_remove(var);
     }
+    // The mirror runs on every autosave. The child must never start an hq
+    // self-update check (network, re-exec) or touch the owner's keychain
+    // token item; the offline fingerprint needs neither.
     cmd.env("PATH", paths::child_path())
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .env("HQ_TOKEN_KEYCHAIN", "0")
         .current_dir(hq_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

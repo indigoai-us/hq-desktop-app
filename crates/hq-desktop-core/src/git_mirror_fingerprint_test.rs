@@ -110,6 +110,18 @@ fn fingerprint_command_strips_session_ids_and_uses_the_documented_argv() {
             "{var} must be removed from the child env"
         );
     }
+    // Hardening: the autosave child never runs the hq self-update check and
+    // never reads or writes the owner's keychain token item.
+    assert_eq!(
+        envs.get(std::ffi::OsStr::new("HQ_NO_UPDATE_CHECK")),
+        Some(&Some(std::ffi::OsStr::new("1"))),
+        "HQ_NO_UPDATE_CHECK=1 must be set on the child env"
+    );
+    assert_eq!(
+        envs.get(std::ffi::OsStr::new("HQ_TOKEN_KEYCHAIN")),
+        Some(&Some(std::ffi::OsStr::new("0"))),
+        "HQ_TOKEN_KEYCHAIN=0 must be set on the child env"
+    );
 }
 
 // ── kill switch ──────────────────────────────────────────────────────────
