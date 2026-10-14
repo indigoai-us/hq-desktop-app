@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import Harness from "./BriefHandoffsHarness.test-support.svelte";
 import {
   HANDOFF_ROWS,
@@ -355,5 +357,14 @@ describe("BriefHandoffs card", () => {
     if (app) unmount(app);
     render({ handoffs: [] });
     expect(q('[data-testid="brief-handoffs"]')).toBeNull();
+  });
+
+  it("on a narrow card the status drops its pill so people and status fit one line (regression: the pill and logo spilled past the row)", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/brief/BriefHandoffs.svelte"), "utf8");
+    const narrow = src.match(/@container hlist \(max-width: 299px\) \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+    // The rule must out-rank the base .st rule that follows it in the file.
+    const st = narrow.match(/\.hr \.st \{([^}]*)\}/)?.[1] ?? "";
+    expect(st).toMatch(/padding:\s*0/);
+    expect(st).toMatch(/background:\s*none/);
   });
 });
