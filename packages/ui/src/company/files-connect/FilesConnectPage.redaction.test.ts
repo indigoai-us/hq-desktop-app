@@ -105,7 +105,7 @@ describe("US-005 Hidden from AI row on the US-004 API", () => {
     expect(target.querySelector("[data-testid='redaction-row']")).toBeNull();
   });
 
-  it("reads each connection and shows four switches, all on by default", async () => {
+  it("reads each connection and shows four switches as the server answers them", async () => {
     const api = hqPro();
     const target = mountWith("owner", api);
     await settle();

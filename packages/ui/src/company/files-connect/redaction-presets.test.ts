@@ -56,8 +56,12 @@ describe("US-005 redaction presets model (US-004 contract)", () => {
     expect(enabledPresetIds(s)).toEqual(["personal-ids", "financial"]);
   });
 
-  it("treats a missing list as all on and [] as all off", () => {
-    expect(parseRedactionAnswer({}).presets.every((p) => p.enabled)).toBe(true);
+  it("treats a missing list as all off (opt-in) and [] as all off", () => {
+    expect(parseRedactionAnswer({}).presets).toHaveLength(4);
+    expect(parseRedactionAnswer({}).presets.some((p) => p.enabled)).toBe(false);
+    expect(parseRedactionAnswer({ availablePresets: ["legal"] }).presets).toEqual([
+      { id: "legal", label: "Legal matters", enabled: false },
+    ]);
     expect(parseRedactionAnswer({}).canEdit).toBeNull();
     expect(parseRedactionAnswer({ presets: [] }).presets.some((p) => p.enabled)).toBe(false);
   });
