@@ -6,8 +6,10 @@
 //!
 //! Dev: serves from `<CARGO_MANIFEST_DIR>/../dist` (the Vite build output).
 //! Prod (macOS): serves from `<bundle>/Contents/Resources/ui/`.
-//! Prod (other platforms): serves from `<exe_dir>/ui/` (mirrors
-//! `hq_desktop_core::runtime_version::resources_dir_from_current_exe`).
+//! Prod (Linux package): serves from `/usr/lib/<productName>/ui/`, where
+//! `tauri.linux.conf.json` ships `../dist/` as a bundle resource.
+//! Prod (Windows, bare Linux binary): serves from `<exe_dir>/ui/`. All of
+//! these mirror `crate::app_version::resources_dir`.
 //!
 //! The window loads this origin instead of the built-in `tauri://localhost`
 //! asset protocol, so replacing only `Resources/ui/` on disk changes what the
@@ -54,7 +56,7 @@ pub fn builtin_ui_root_dir() -> Option<PathBuf> {
     // is what lets a UI-only change be dropped into a bundle without a Rust
     // rebuild). The dev `../dist` is only a fallback for `tauri dev` / bare
     // `cargo run`, where no bundle exists.
-    if let Some(resources) = hq_desktop_core::runtime_version::resources_dir_from_current_exe() {
+    if let Some(resources) = crate::app_version::resources_dir() {
         let ui_dir = resources.join("ui");
         if ui_dir.is_dir() {
             return ui_dir.canonicalize().ok();

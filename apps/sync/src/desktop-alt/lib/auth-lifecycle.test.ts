@@ -12,6 +12,12 @@ describe('lifecycleForAuthStatus', () => {
     expect(lifecycleForAuthStatus('refresh_temporarily_unavailable')).toEqual({ lifecycle: 'recovery' });
   });
 
+  it('keeps an outpost whose machine session could not be minted in recovery', () => {
+    // No person session and the outpost identity failed to mint (CLI down,
+    // HQ unreachable). The device still has an identity, so this is a retry.
+    expect(lifecycleForAuthStatus('machine_unavailable')).toEqual({ lifecycle: 'recovery' });
+  });
+
   it('signs out only on definitive verdicts', () => {
     expect(lifecycleForAuthStatus('credentials_absent')).toEqual({ lifecycle: 'signed-out', reason: 'signed-out' });
     expect(lifecycleForAuthStatus('credentials_invalid')).toEqual({ lifecycle: 'signed-out', reason: 'invalid' });

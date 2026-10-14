@@ -224,7 +224,8 @@
     | 'credentials_read_error'
     | 'credentials_invalid'
     | 'refresh_temporarily_unavailable'
-    | 'non_human_principal';
+    | 'non_human_principal'
+    | 'machine_unavailable';
   interface AuthSessionEnvelope {
     accountId: string | null;
     generation: number;
@@ -511,7 +512,8 @@
       value === 'credentials_read_error' ||
       value === 'credentials_invalid' ||
       value === 'refresh_temporarily_unavailable' ||
-      value === 'non_human_principal'
+      value === 'non_human_principal' ||
+      value === 'machine_unavailable'
     );
   }
 

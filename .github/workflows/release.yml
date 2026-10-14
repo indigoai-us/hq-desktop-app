@@ -3321,18 +3321,196 @@ jobs:
           if-no-files-found: error
           path: release-artifacts-${{ matrix.target }}/
 
+  linux:
+    name: Build Linux x86_64 (.deb + AppImage)
+    needs: validate
+    # Linux has no prebuilt shell lane yet: one job builds the Rust binary,
+    # the UI (tauri's beforeBuildCommand) and both bundles from the tag on
+    # every dispatch path, legacy or not.
+    if: ${{ !cancelled() && needs.validate.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    environment: release
+    defaults:
+      run:
+        working-directory: apps/sync
+    env:
+      RUST_BACKTRACE: 1
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
+      HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # The AppImage bundler downloads linuxdeploy and appimagetool as
+      # AppImages and runs them; this makes them self-extract instead of
+      # needing FUSE, which is also what the Docker simulation relies on.
+      APPIMAGE_EXTRACT_AND_RUN: 1
+
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl wget file pkg-config \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev \
+            patchelf libfuse2 desktop-file-utils xdg-utils
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/sync/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/sync/src-tauri
+          shared-key: release-x86_64-unknown-linux-gnu
+          # Reader. This workflow runs only on tags, and a cache saved by one
+          # tag cannot be restored by another. Saving it only consumes budget
+          # and evicts main-scoped entries other lanes restore.
+          save-if: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Recall sidecar dependencies
+        run: pnpm run sidecar:install
+
+      # The tag checkout still carries whatever version was committed. Overwrite
+      # the five version files with the bytes the validate job stamped from the
+      # tag, so both bundles and the updater artifacts all carry it.
+      - name: Apply release version stamp
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-version-stamp
+          path: ${{ github.workspace }}
+
+      - name: Verify stamped version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$actual" != "$RELEASE_VERSION" ]; then
+            echo "::error::tauri.conf.json is $actual, expected $RELEASE_VERSION"
+            exit 1
+          fi
+          echo "Building version $actual"
+
+      # version.json must ship INSIDE both bundles, in the resource dir
+      # (/usr/lib/HQ in the .deb, usr/lib/HQ inside the AppImage), where the
+      # runtime version resolver reads it. The checked-in
+      # tauri.linux.conf.json keeps createUpdaterArtifacts off so local and
+      # container builds never need a signing key; this generated overlay
+      # turns it on for the release and adds version.json to the resources
+      # (tauri merges --config files as a JSON merge patch; the ui/ mapping
+      # is repeated so the overlay stands on its own). Linux has no cached
+      # shell, so there is no shell-key.txt to bundle.
+      - name: Write runtime version.json and release overlay
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          STAMP_DIR="src-tauri/assemble-stamp"
+          rm -rf "$STAMP_DIR"
+          mkdir -p "$STAMP_DIR"
+          node ../../scripts/stamp-version.mjs --version "$RELEASE_VERSION" --resources-dir "$STAMP_DIR"
+          test -s "$STAMP_DIR/version.json"
+          CONFIG="$RUNNER_TEMP/tauri.linux.release.conf.json"
+          cat > "$CONFIG" <<'JSON'
+          {"bundle":{"createUpdaterArtifacts":true,"resources":{"../dist/":"ui/","assemble-stamp/version.json":"version.json"}}}
+          JSON
+          echo "TAURI_LINUX_RELEASE_CONFIG=$CONFIG" >> "$GITHUB_ENV"
+
+      - name: Stamp build commit identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Tauri build (x86_64-unknown-linux-gnu)
+        env:
+          RECALL_SIDECAR_TARGET: x86_64-unknown-linux-gnu
+        run: pnpm tauri build --bundles deb appimage --config src-tauri/tauri.linux.conf.json --config "$TAURI_LINUX_RELEASE_CONFIG"
+
+      - name: Stage Linux artifacts
+        shell: bash
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          STAGE="$GITHUB_WORKSPACE/release-artifacts-x86_64-unknown-linux-gnu"
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+          mkdir -p "$STAGE"
+          DEB="$(find "$BUNDLE_DIR/deb" -maxdepth 1 -type f -name '*.deb' | head -n 1)"
+          APPIMAGE="$(find "$BUNDLE_DIR/appimage" -maxdepth 1 -type f -name '*.AppImage' | head -n 1)"
+          test -n "$DEB" && test -n "$APPIMAGE"
+          cp "$DEB" "$STAGE/HQ_${VERSION}_amd64.deb"
+          cp "$APPIMAGE" "$STAGE/HQ_${VERSION}_amd64.AppImage"
+          for SOURCE in "$DEB" "$APPIMAGE"; do
+            if [ ! -s "$SOURCE.sig" ]; then
+              echo "::error::Required updater signature is missing: $SOURCE.sig"
+              exit 1
+            fi
+          done
+          cp "$DEB.sig" "$STAGE/HQ_${VERSION}_amd64.deb.sig"
+          cp "$APPIMAGE.sig" "$STAGE/HQ_${VERSION}_amd64.AppImage.sig"
+          # Both bundles must carry the UI and version.json in the resource
+          # dir; a bundle without them boots to a blank window. Read the
+          # listing into a variable first: under pipefail, `grep -q` closing
+          # the pipe early kills dpkg-deb's tar subprocess (Broken pipe) and
+          # fails the step even when the file is present. Member names come
+          # out as `usr/...` (tauri-bundler's tar) or `./usr/...` (dpkg's own).
+          DEB_CONTENTS="$(dpkg-deb --contents "$STAGE/HQ_${VERSION}_amd64.deb")"
+          grep -qE ' (\./)?usr/lib/HQ/ui/index.html$' <<< "$DEB_CONTENTS"
+          grep -qE ' (\./)?usr/lib/HQ/version.json$' <<< "$DEB_CONTENTS"
+          EXTRACT="$RUNNER_TEMP/appimage-check"
+          rm -rf "$EXTRACT" && mkdir -p "$EXTRACT"
+          (cd "$EXTRACT" && "$STAGE/HQ_${VERSION}_amd64.AppImage" --appimage-extract >/dev/null)
+          test -f "$EXTRACT/squashfs-root/usr/lib/HQ/ui/index.html"
+          test -f "$EXTRACT/squashfs-root/usr/lib/HQ/version.json"
+          ls -la "$STAGE"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hq-linux-x86_64-unknown-linux-gnu
+          if-no-files-found: error
+          path: release-artifacts-x86_64-unknown-linux-gnu/
+
   publish:
     name: Publish GitHub release
-    needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64]
+    needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64, linux]
     concurrency:
       # Serialize all tags, not only reruns of one tag. Otherwise two stable
       # builds can finish out of order and the older one can replace latest.
       group: release-publication
       cancel-in-progress: false
     # A desktop release is one cross-platform product. Never publish a partial
-    # release or updater manifest: macOS and the complete Windows matrix must
-    # both finish successfully.
-    if: ${{ !cancelled() && needs.validate.result == 'success' && (needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && (needs.windows.result == 'success' || (needs.assemble-windows-x64.result == 'success' && needs.assemble-windows-arm64.result == 'success')) }}
+    # release or updater manifest: macOS, the complete Windows matrix and
+    # Linux must all finish successfully.
+    if: ${{ !cancelled() && needs.validate.result == 'success' && (needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && (needs.windows.result == 'success' || (needs.assemble-windows-x64.result == 'success' && needs.assemble-windows-arm64.result == 'success')) && needs.linux.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -3378,6 +3556,12 @@ jobs:
           name: hq-windows-aarch64-pc-windows-msvc
           path: artifacts/hq-windows-aarch64-pc-windows-msvc
 
+      - name: Download Linux release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: hq-linux-x86_64-unknown-linux-gnu
+          path: artifacts/hq-linux-x86_64-unknown-linux-gnu
+
       - name: Flatten artifacts
         run: |
           set -euo pipefail
@@ -3407,6 +3591,10 @@ jobs:
             `HQ_${version}_x64-setup.exe.sig`,
             `HQ_${version}_x64.msi`,
             `HQ_${version}_x64.msi.sig`,
+            `HQ_${version}_amd64.deb`,
+            `HQ_${version}_amd64.deb.sig`,
+            `HQ_${version}_amd64.AppImage`,
+            `HQ_${version}_amd64.AppImage.sig`,
           ].sort();
           const actual = fs.readdirSync("release").sort();
           const missing = expected.filter((name) => !actual.includes(name));
@@ -3516,7 +3704,8 @@ jobs:
           BASE="https://github.com/${REPOSITORY}/releases/download/${TAG}"
 
           # The preceding completeness gate guarantees one signed universal
-          # macOS archive and both signed Windows updater installers.
+          # macOS archive, both signed Windows updater installers and the
+          # signed Linux .deb and AppImage.
           MAC_TAR_PATH="release/HQ_${VERSION}_universal.app.tar.gz" \
           MAC_SIG_PATH="release/HQ_${VERSION}_universal.app.tar.gz.sig" \
           WIN_X64_EXE_PATH="release/HQ_${VERSION}_x64-setup.exe" \
@@ -3556,6 +3745,20 @@ jobs:
             },
           };
 
+          // Linux — tauri-plugin-updater looks up `{os}-{arch}-{bundle}`
+          // first and falls back to `{os}-{arch}`. An installed .deb
+          // updates through dpkg (pkexec prompt); an AppImage replaces
+          // itself. The bare key is the fallback for a bundle type the
+          // updater cannot classify and points at the AppImage.
+          const appImageSig = readSig(`release/HQ_${version}_amd64.AppImage.sig`);
+          const appImageUrl = `${base}/HQ_${version}_amd64.AppImage`;
+          platforms["linux-x86_64-deb"] = {
+            signature: readSig(`release/HQ_${version}_amd64.deb.sig`),
+            url: `${base}/HQ_${version}_amd64.deb`,
+          };
+          platforms["linux-x86_64-appimage"] = { signature: appImageSig, url: appImageUrl };
+          platforms["linux-x86_64"] = { signature: appImageSig, url: appImageUrl };
+
           const manifest = {
             version,
             notes: `See https://github.com/${process.env.GITHUB_REPOSITORY}/releases/tag/${tag}`,
@@ -3587,6 +3790,8 @@ jobs:
           cp "HQ_${VERSION}_universal.dmg" HQ.dmg
           cp "HQ_${VERSION}_x64-setup.exe" HQ_x64-setup.exe
           cp "HQ_${VERSION}_arm64-setup.exe" HQ_arm64-setup.exe
+          cp "HQ_${VERSION}_amd64.deb" HQ_amd64.deb
+          cp "HQ_${VERSION}_amd64.AppImage" HQ_amd64.AppImage
 
       # Creating a public release before all files finish uploading can expose
       # a partial product if the runner dies mid-upload. Resolve the tag across
@@ -4173,7 +4378,7 @@ jobs:
   # upstream (except a cancellation) so a failed build is reported, not silent.
   announce-result:
     name: Announce the outcome in #hq-dev
-    needs: [validate, macos, assemble-macos, windows, publish]
+    needs: [validate, macos, assemble-macos, windows, linux, publish]
     if: ${{ !cancelled() && inputs.shelltest != true }}
     runs-on: ubuntu-latest
     permissions:
@@ -4217,7 +4422,7 @@ jobs:
   # shelltest only: delete the throwaway release and tag, whatever happened.
   shelltest-cleanup:
     name: Delete shelltest release and tag
-    needs: [shelltest-tag, validate, shell-key, shell-macos, ui, assemble-macos, macos, windows, publish]
+    needs: [shelltest-tag, validate, shell-key, shell-macos, ui, assemble-macos, macos, windows, linux, publish]
     if: ${{ always() && inputs.shelltest == true }}
     runs-on: ubuntu-latest
     permissions:

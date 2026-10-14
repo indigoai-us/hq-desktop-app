@@ -331,6 +331,17 @@ describe("auth session envelope parsing", () => {
     ).toMatchObject({ status: "credentials_read_error" });
   });
 
+  it("preserves an unavailable outpost machine session as a distinct auth status", () => {
+    expect(
+      parseAuthSessionEnvelope({
+        accountId: null,
+        generation: 3,
+        status: "machine_unavailable",
+        reason: "HQ Work could not reach HQ to sign in as this outpost.",
+      }),
+    ).toMatchObject({ status: "machine_unavailable" });
+  });
+
   it("refuses malformed payloads rather than trusting them", () => {
     for (const bad of [
       null,

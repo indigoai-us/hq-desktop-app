@@ -1050,6 +1050,162 @@ describe('first-run sign-in screen', () => {
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'sign_out')).toBe(false);
   });
 
+  /** Mocks for a machine that holds its own outpost identity. */
+  function stubOutpostInvoke(state: { active: boolean; available?: boolean }) {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const fallback = tauri.invoke.getMockImplementation();
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'is_first_run':
+          // A menubar.json from an earlier run: the launch is not FirstRun.
+          return false;
+        case 'get_machine_identity_status':
+          return { available: state.available ?? true, active: state.active };
+        case 'get_auth_state':
+          return state.active
+            ? { authenticated: true, email: 'hassaan@getindigo.ai' }
+            : { authenticated: false };
+        case 'whoami':
+          return state.active
+            ? {
+                personUid: 'out_01HZOUTPOST',
+                email: 'hassaan@getindigo.ai',
+                displayName: 'Outpost out_01HZOUTPOST',
+              }
+            : undefined;
+        case 'use_machine_identity':
+          state.active = true;
+          return undefined;
+        default:
+          return fallback?.(command, args);
+      }
+    });
+  }
+
+  const signedInLine = () => host.querySelector('[data-testid="onboarding-signed-in-as"]');
+
+  it('names this outpost, not its owner, when the session is the machine identity', async () => {
+    stubOutpostInvoke({ active: true });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => Boolean(signedInLine()));
+    expect(signedInLine()?.textContent).toContain(
+      "You're signed in as this outpost (out_01HZOUTPOST · owner hassaan@getindigo.ai).",
+    );
+    expect(signedInLine()?.textContent).not.toContain("You're signed in as hassaan@getindigo.ai");
+    expect(host.querySelector('[data-testid="onboarding-signed-in-as-continue"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-signed-in-as-switch"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-use-outpost"]')).toBeNull();
+  });
+
+  it('shows the outpost session when it is minted after the welcome step mounts', async () => {
+    const state = { active: false };
+    stubOutpostInvoke(state);
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await revealSignIn();
+    expect(signedInLine()).toBeNull();
+
+    state.active = true;
+    emitTauriEvent('auth:session-changed', {
+      accountId: 'out_01HZOUTPOST',
+      generation: 1,
+      status: 'ready',
+      reason: 'machine',
+    });
+    await flushUntil(() => Boolean(signedInLine()));
+    expect(signedInLine()?.textContent).toContain("You're signed in as this outpost (out_01HZOUTPOST");
+  });
+
+  it('keeps looking for the machine session while the welcome step waits', async () => {
+    const state = { active: false };
+    stubOutpostInvoke(state);
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await revealSignIn();
+    expect(signedInLine()).toBeNull();
+
+    state.active = true;
+    for (let attempt = 0; attempt < 10 && !signedInLine(); attempt += 1) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flush();
+    }
+    expect(signedInLine()?.textContent).toContain("You're signed in as this outpost (out_01HZOUTPOST");
+  });
+
+  it("offers this outpost's identity when it is available but not in use", async () => {
+    const state = { active: false };
+    stubOutpostInvoke(state);
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-use-outpost"]')));
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="onboarding-use-outpost"]');
+    expect(button?.textContent).toContain("Use this outpost's identity");
+    expect(signedInLine()).toBeNull();
+
+    button?.click();
+    await flushUntil(() => Boolean(signedInLine()));
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'use_machine_identity')).toBe(true);
+    expect(signedInLine()?.textContent).toContain("You're signed in as this outpost (out_01HZOUTPOST");
+    expect(host.querySelector('[data-testid="onboarding-use-outpost"]')).toBeNull();
+  });
+
+  it('does not offer the outpost identity when the machine has none', async () => {
+    stubOutpostInvoke({ active: false, available: false });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await revealSignIn();
+    expect(host.querySelector('[data-testid="onboarding-use-outpost"]')).toBeNull();
+    expect(signedInLine()).toBeNull();
+  });
+
+  it('continues an outpost session into setup without asking which company it belongs to', async () => {
+    stubOutpostInvoke({ active: true });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-signed-in-as-continue"]')));
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-signed-in-as-continue"]')?.click();
+    await flushUntil(() => host.querySelector('.hq-welcome')?.getAttribute('data-current-scene') !== 'welcome');
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flush();
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'sign_out')).toBe(false);
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' &&
+          typeof (args as { url?: string })?.url === 'string' &&
+          (args as { url: string }).url.startsWith('/membership/me'),
+      ),
+    ).toBe(false);
+  });
+
+  it("finishes an outpost session's ready screen without the usage-data question", async () => {
+    const onfinish = mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX);
+    const fallback = tauri.invoke.getMockImplementation();
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'get_machine_identity_status':
+          return { available: true, active: true };
+        case 'get_auth_state':
+          return { authenticated: true, email: 'hassaan@getindigo.ai' };
+        case 'whoami':
+          return {
+            personUid: 'out_01HZOUTPOST',
+            email: 'hassaan@getindigo.ai',
+            displayName: 'Outpost out_01HZOUTPOST',
+          };
+        default:
+          return fallback?.(command, args);
+      }
+    });
+    await flush();
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-summary"]')?.classList.contains('on')),
+    );
+    expect(host.querySelector('[data-testid="ready-consent"]')).toBeNull();
+
+    primaryButton().click();
+    await flushUntil(() => onfinish.mock.calls.length === 1);
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(commands).not.toContain('post_telemetry_opt_in');
+    expect(commands).not.toContain('ensure_person_entity');
+    expect(host.querySelector('[data-testid="launcher-finish-error"]')).toBeNull();
+  });
+
   it('restarts sign-in once after an expired OAuth attempt', async () => {
     stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
     const attempts = stubOAuthAttempts('Timed out waiting for sign-in (5 minutes).');

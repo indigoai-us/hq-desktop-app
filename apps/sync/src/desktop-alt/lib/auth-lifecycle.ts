@@ -5,6 +5,10 @@
  * evidence that the store is empty, so it must not render "You are signed out"
  * with no automatic retry. It goes to `recovery`, which re-checks on focus and
  * when the connection returns, and keeps the saved session.
+ *
+ * `machine_unavailable` means there is no person session and the device's
+ * outpost identity could not mint one (the `hq` CLI failed or HQ was
+ * unreachable). The identity is still there, so this is also `recovery`.
  */
 export type NativeAuthStatus =
   | 'active'
@@ -12,7 +16,8 @@ export type NativeAuthStatus =
   | 'credentials_read_error'
   | 'credentials_invalid'
   | 'refresh_temporarily_unavailable'
-  | 'non_human_principal';
+  | 'non_human_principal'
+  | 'machine_unavailable';
 
 export type AuthLifecycleVerdict =
   | { lifecycle: 'signed-out'; reason: 'signed-out' | 'invalid' | 'non-human' }
@@ -29,6 +34,7 @@ export function lifecycleForAuthStatus(status: NativeAuthStatus): AuthLifecycleV
       return { lifecycle: 'signed-out', reason: 'non-human' };
     case 'credentials_read_error':
     case 'refresh_temporarily_unavailable':
+    case 'machine_unavailable':
       return { lifecycle: 'recovery' };
     case 'active':
       return { lifecycle: 'hydrate' };
