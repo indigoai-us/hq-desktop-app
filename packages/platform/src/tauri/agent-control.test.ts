@@ -42,11 +42,6 @@ describe("AGENT_CONTROL_PATHS", () => {
     expect(AGENT_CONTROL_PATHS.persona(UID)).toBe("/v1/agents/agt_01NOVA/control/persona");
     expect(AGENT_CONTROL_PATHS.brain(UID)).toBe("/v1/agents/agt_01NOVA/control/brain");
     expect(AGENT_CONTROL_PATHS.brainModel(UID)).toBe("/v1/agents/agt_01NOVA/control/brain/model");
-    expect(AGENT_CONTROL_PATHS.memory(UID)).toBe("/v1/agents/agt_01NOVA/control/brain/memory");
-    expect(AGENT_CONTROL_PATHS.memoryEntry(UID, "m/1")).toBe("/v1/agents/agt_01NOVA/control/brain/memory/m%2F1");
-    expect(AGENT_CONTROL_PATHS.knowledge(UID, "notes/a b.md")).toBe(
-      "/v1/agents/agt_01NOVA/control/brain/knowledge?path=notes%2Fa%20b.md",
-    );
   });
 });
 
@@ -64,13 +59,6 @@ describe("sync adapter agentControl", () => {
     ["updatePersona", (a) => a.updatePersona(UID, { instructions: "Be brief." }), "PUT", AGENT_CONTROL_PATHS.persona(UID), { instructions: "Be brief." }],
     ["getBrain", (a) => a.getBrain(UID), "GET", AGENT_CONTROL_PATHS.brain(UID), null],
     ["setModel", (a) => a.setModel(UID, "claude-opus-5-5"), "PATCH", AGENT_CONTROL_PATHS.brainModel(UID), { model: "claude-opus-5-5" }],
-    ["createMemory", (a) => a.createMemory(UID, { content: "Likes tea" }), "POST", AGENT_CONTROL_PATHS.memory(UID), { content: "Likes tea" }],
-    ["getMemory", (a) => a.getMemory(UID, "m1"), "GET", AGENT_CONTROL_PATHS.memoryEntry(UID, "m1"), null],
-    ["updateMemory", (a) => a.updateMemory(UID, "m1", "Likes coffee"), "PUT", AGENT_CONTROL_PATHS.memoryEntry(UID, "m1"), { content: "Likes coffee" }],
-    ["deleteMemory", (a) => a.deleteMemory(UID, "m1"), "DELETE", AGENT_CONTROL_PATHS.memoryEntry(UID, "m1"), null],
-    ["getKnowledge", (a) => a.getKnowledge(UID, "faq.md"), "GET", AGENT_CONTROL_PATHS.knowledge(UID, "faq.md"), null],
-    ["putKnowledge", (a) => a.putKnowledge(UID, "faq.md", "# FAQ"), "PUT", AGENT_CONTROL_PATHS.knowledge(UID, "faq.md"), { content: "# FAQ" }],
-    ["deleteKnowledge", (a) => a.deleteKnowledge(UID, "faq.md"), "DELETE", AGENT_CONTROL_PATHS.knowledge(UID, "faq.md"), null],
   ];
 
   it.each(cases)("%s sends %s to the contract path through hq_pro_fetch", async (_name, run, method, url, body) => {

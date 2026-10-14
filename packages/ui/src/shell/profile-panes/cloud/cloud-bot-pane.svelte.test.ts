@@ -25,8 +25,6 @@ const CONTROL = {
     model: "claude-opus-5-5",
     provider: "anthropic",
     availableModels: ["claude-opus-5-5", "claude-sonnet-5-5"],
-    memory: [{ id: "m1", title: "Prefers tea", preview: "Tea, not coffee", updatedAt: null }],
-    knowledge: [{ path: "faq.md", size: 2048, updatedAt: null }],
   },
   source: "live",
   fetchedAt: "2026-10-13T12:00:00Z",
@@ -72,26 +70,6 @@ function controlApi(over: Partial<Record<keyof AgentControlApi, (...a: never[]) 
       view.brain.model = model;
       return ok({ model });
     }),
-    createMemory: vi.fn(async (_u: string, input: { content: string }) => {
-      const title = input.content.split("\n")[0]!;
-      view.brain.memory.push({ id: "m2", title, preview: input.content, updatedAt: null });
-      return ok({ id: "m2", target: "memory", title, content: input.content, updatedAt: null });
-    }),
-    getMemory: vi.fn(async (_u: string, id: string) => ok({ id, title: "Prefers tea", content: "# Tea\n\nNot **coffee**." })),
-    updateMemory: vi.fn(async (_u: string, _id: string, content: string) => {
-      view.brain.memory = view.brain.memory.map((m) => (m.id === "m1" ? { ...m, id: "m1b" } : m));
-      return ok({ id: "m1b", target: "memory", title: "Prefers tea", content, updatedAt: null });
-    }),
-    deleteMemory: vi.fn(async (_u: string, id: string) => {
-      view.brain.memory = view.brain.memory.filter((m) => m.id !== id);
-      return ok(null);
-    }),
-    getKnowledge: vi.fn(async (_u: string, path: string) => ok({ path, content: "FAQ body" })),
-    putKnowledge: vi.fn(async (_u: string, path: string) => {
-      if (!view.brain.knowledge.some((k) => k.path === path)) view.brain.knowledge.push({ path, size: 10, updatedAt: null });
-      return ok({ path });
-    }),
-    deleteKnowledge: vi.fn(async () => ok(null)),
     ...over,
   };
   return { api: api as unknown as AgentControlApi & typeof api, view };
@@ -531,86 +509,26 @@ describe("Brain tab", () => {
     expect(q('[data-testid="cloud-brain-model-value"]')?.textContent).toBe("claude-sonnet-5-5");
   });
 
-  it("opens a memory as rendered Markdown, edits and saves it", async () => {
+  it("shows only the model: no memory or knowledge lists", async () => {
     const { api } = controlApi();
     await mountPane(api);
     await openTab("brain");
-    click('[data-testid="cloud-brain-memory-row"] button');
-    await settle();
-    expect(api.getMemory).toHaveBeenCalledWith(UID, "m1");
-    expect(q('[data-testid="cloud-brain-doc"] strong')?.textContent).toBe("coffee");
-    click('[data-testid="cloud-brain-edit"]');
-    await settle();
-    type('[data-testid="cloud-brain-editor"]', "Tea only.");
-    click('[data-testid="cloud-brain-save"]');
-    await settle();
-    expect(api.updateMemory).toHaveBeenCalledWith(UID, "m1", "Tea only.");
-    expect(api.getBrain).toHaveBeenCalled();
-    expect(api.getMemory).toHaveBeenLastCalledWith(UID, "m1b");
-    expect(q('[data-testid="cloud-brain-error"]')).toBeNull();
+    expect(q('[data-testid="cloud-brain-model"]')).not.toBeNull();
+    expect(q('[data-testid="cloud-bot-panel"]')?.textContent).not.toMatch(/Memory|Knowledge/);
   });
 
-  it("deletes a knowledge file after a confirm", async () => {
-    const { api } = controlApi();
+  it("keeps the picker open with the server message when the box refuses the model", async () => {
+    const { api } = controlApi({ setModel: async () => refused("readback_mismatch", "The box did not keep the model.", 502) });
     await mountPane(api);
     await openTab("brain");
-    click('[data-testid="cloud-brain-knowledge-row"] button');
+    click('[data-testid="cloud-brain-model-change"]');
     await settle();
-    expect(q('[data-testid="cloud-brain-doc"]')?.textContent).toContain("FAQ body");
-    click('[data-testid="cloud-brain-delete"]');
+    (qa('[data-testid="cloud-model-option"] input') as HTMLInputElement[])[1]!.click();
+    flushSync();
+    click('[data-testid="cloud-model-save"]');
     await settle();
-    click('[data-testid="confirm-dialog-ok"]');
-    await settle();
-    expect(api.deleteKnowledge).toHaveBeenCalledWith(UID, "faq.md");
-    expect(q('[data-testid="cloud-brain-dialog"]')).toBeNull();
-  });
-
-  it("adds a knowledge file only at a safe relative path", async () => {
-    const { api } = controlApi();
-    await mountPane(api);
-    await openTab("brain");
-    click('[data-testid="cloud-brain-knowledge-add"]');
-    await settle();
-    type('[data-testid="cloud-brain-path-input"]', "../escape.md");
-    type('[data-testid="cloud-brain-editor"]', "hello");
-    expect(q<HTMLButtonElement>('[data-testid="cloud-brain-save"]')?.disabled).toBe(true);
-    type('[data-testid="cloud-brain-path-input"]', "notes/pricing.md");
-    expect(q<HTMLButtonElement>('[data-testid="cloud-brain-save"]')?.disabled).toBe(false);
-    click('[data-testid="cloud-brain-save"]');
-    await settle();
-    expect(api.putKnowledge).toHaveBeenCalledWith(UID, "notes/pricing.md", "hello");
-    expect(qa('[data-testid="cloud-brain-knowledge-row"]').map((r) => r.textContent)).toEqual(
-      expect.arrayContaining([expect.stringContaining("notes/pricing.md")]),
-    );
-  });
-
-  it("adds a memory", async () => {
-    const { api } = controlApi();
-    await mountPane(api);
-    await openTab("brain");
-    click('[data-testid="cloud-brain-memory-add"]');
-    await settle();
-    type('[data-testid="cloud-brain-editor"]', "Works in Denver.");
-    click('[data-testid="cloud-brain-save"]');
-    await settle();
-    expect(api.createMemory).toHaveBeenCalledWith(UID, { content: "Works in Denver." });
-    expect(qa('[data-testid="cloud-brain-memory-row"]')).toHaveLength(2);
-  });
-
-  it("shows empty states for memory and knowledge", async () => {
-    const { api } = controlApi({ getControl: async () => ok({ ...CONTROL, brain: { ...CONTROL.brain, memory: [], knowledge: [] } }) });
-    await mountPane(api);
-    await openTab("brain");
-    expect(q('[data-testid="cloud-brain-memory-empty"]')).not.toBeNull();
-    expect(q('[data-testid="cloud-brain-knowledge-empty"]')).not.toBeNull();
-  });
-
-  it("shows the server's message when a memory cannot be read", async () => {
-    const { api } = controlApi({ getMemory: async () => refused("MEMORY_NOT_FOUND", "That memory is gone.", 404) });
-    await mountPane(api);
-    await openTab("brain");
-    click('[data-testid="cloud-brain-memory-row"] button');
-    await settle();
-    expect(q('[data-testid="cloud-brain-error"]')?.textContent).toBe("That memory is gone.");
+    expect(q('[data-testid="cloud-model-error"]')?.textContent).toBe("The box did not keep the model.");
+    expect(q('[data-testid="cloud-model-dialog"]')).not.toBeNull();
+    expect(api.getBrain).not.toHaveBeenCalled();
   });
 });

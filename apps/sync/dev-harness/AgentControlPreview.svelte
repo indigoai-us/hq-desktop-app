@@ -56,29 +56,11 @@
       model: "claude-opus-5-5",
       provider: "Anthropic",
       availableModels: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
-      memory: empty
-        ? []
-        : [
-            { id: "m1", title: "Team prefers short briefs", preview: "Three bullets, one link each.", updatedAt: iso(-26 * hour) },
-            { id: "m2", title: "Ops channel", preview: "Post daily updates in #ops, not #general.", updatedAt: iso(-5 * 24 * hour) },
-          ],
-      knowledge: empty
-        ? []
-        : [
-            { path: "pricing/2026-plans.md", size: 4812, updatedAt: iso(-2 * 24 * hour) },
-            { path: "competitors.md", size: 12034, updatedAt: iso(-9 * 24 * hour) },
-          ],
     },
     source: "live",
     fetchedAt: iso(0),
   };
 
-  const docs: Record<string, string> = {
-    m1: "# Team prefers short briefs\n\nThree bullets, one link each. Lead with the **finding**.",
-    m2: "Post daily updates in `#ops`, not `#general`.",
-    "pricing/2026-plans.md": "# 2026 plans\n\n- **Starter**: for small teams\n- **Pro**: adds cloud bots\n- **Business**: SSO and audit log\n\nPrices change on the first of the month.",
-    "competitors.md": "# Competitors\n\nTracked weekly by the Competitor scan routine.",
-  };
 
   const ok = (value: unknown) => Promise.resolve({ ok: true as const, value });
   const refuse = () =>
@@ -108,24 +90,6 @@
     updatePersona: (_u, patch) => write(() => ({ persona: Object.assign(state.persona, patch) })),
     getBrain: () => ok(state.brain),
     setModel: (_u, model) => write(() => ((state.brain.model = model), { model })),
-    createMemory: (_u, input) =>
-      write(() => {
-        const id = `m${state.brain.memory.length + 1}`;
-        docs[id] = input.content;
-        state.brain.memory.push({ id, title: input.title ?? input.content.slice(0, 40), preview: input.content, updatedAt: iso(0) });
-        return { id };
-      }),
-    getMemory: (_u, id) => ok({ id, title: state.brain.memory.find((m) => m.id === id)?.title ?? id, content: docs[id] ?? "" }),
-    updateMemory: (_u, id, content) => write(() => ((docs[id] = content), { id })),
-    deleteMemory: (_u, id) => write(() => void (state.brain.memory = state.brain.memory.filter((m) => m.id !== id))),
-    getKnowledge: (_u, path) => ok({ path, content: docs[path] ?? "" }),
-    putKnowledge: (_u, path, content) =>
-      write(() => {
-        docs[path] = content;
-        if (!state.brain.knowledge.some((k) => k.path === path)) state.brain.knowledge.push({ path, size: content.length, updatedAt: iso(0) });
-        return { path };
-      }),
-    deleteKnowledge: (_u, path) => write(() => void (state.brain.knowledge = state.brain.knowledge.filter((k) => k.path !== path))),
   };
 </script>
 

@@ -11,10 +11,6 @@ import type {
   AgentControlBrain,
   AgentControlChannel,
   AgentControlChannelKind,
-  AgentControlKnowledgeDoc,
-  AgentControlKnowledgeFile,
-  AgentControlMemoryDoc,
-  AgentControlMemoryEntry,
   AgentControlPersona,
   AgentControlRoutine,
   AgentControlView,
@@ -135,20 +131,6 @@ export function personaFromPayload(value: unknown): AgentControlPersona {
   };
 }
 
-function memoryEntryFromPayload(value: unknown): AgentControlMemoryEntry | null {
-  const r = rec(value);
-  const id = str(r?.id);
-  if (!r || !id) return null;
-  return { id, title: str(r.title) || id, preview: str(r.preview), updatedAt: strOrNull(r.updatedAt) };
-}
-
-function knowledgeFileFromPayload(value: unknown): AgentControlKnowledgeFile | null {
-  const r = rec(value);
-  const path = str(r?.path);
-  if (!r || !path) return null;
-  return { path, size: num(r.size), updatedAt: strOrNull(r.updatedAt) };
-}
-
 export function brainFromPayload(value: unknown): AgentControlBrain {
   const r = unwrap(value, "brain");
   const models = Array.isArray(r?.availableModels)
@@ -158,30 +140,6 @@ export function brainFromPayload(value: unknown): AgentControlBrain {
     model: str(r?.model),
     provider: strOrNull(r?.provider),
     availableModels: models,
-    memory: list(r?.memory, "memory").map(memoryEntryFromPayload).filter((m): m is AgentControlMemoryEntry => m !== null),
-    knowledge: list(r?.knowledge, "knowledge")
-      .map(knowledgeFileFromPayload)
-      .filter((k): k is AgentControlKnowledgeFile => k !== null),
-  };
-}
-
-export function memoryDocFromPayload(value: unknown, id: string): AgentControlMemoryDoc {
-  const r = unwrap(value, "memory");
-  return {
-    id: str(r?.id) || id,
-    title: str(r?.title) || str(r?.id) || id,
-    content: str(r?.content),
-    updatedAt: strOrNull(r?.updatedAt),
-  };
-}
-
-export function knowledgeDocFromPayload(value: unknown, path: string): AgentControlKnowledgeDoc {
-  const r = unwrap(value, "file");
-  return {
-    path: str(r?.path) || path,
-    content: str(r?.content),
-    size: num(r?.size),
-    updatedAt: strOrNull(r?.updatedAt),
   };
 }
 
@@ -306,23 +264,3 @@ export function relativeTime(iso: string | null, now: number = Date.now()): stri
   return diff > 0 ? `in ${n}${unit}` : `${n}${unit} ago`;
 }
 
-export function fileSize(bytes: number | null): string {
-  if (bytes === null) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/** A knowledge path the box will take: relative, no `..`, no empty parts. */
-export function validKnowledgePath(path: string): boolean {
-  const p = path.trim();
-  if (!p || p.startsWith("/") || p.includes("\\")) return false;
-  return p.split("/").every((part) => part !== "" && part !== "." && part !== "..");
-}
-
-/** What the brain pop-up shows: an entry on the box, or a new one. */
-export type BrainDocTarget =
-  | { kind: "memory"; id: string; title: string }
-  | { kind: "knowledge"; path: string }
-  | { kind: "new-memory" }
-  | { kind: "new-knowledge" };

@@ -8,7 +8,6 @@ import {
   relativeTime,
   routinesFromPayload,
   scheduleInWords,
-  validKnowledgePath,
 } from "./agent-control-model.js";
 
 describe("scheduleInWords", () => {
@@ -62,10 +61,9 @@ describe("readers", () => {
     expect(personaFromPayload({ persona: { displayName: "Nova", instructions: "Be brief." } })).toMatchObject({
       displayName: "Nova", title: "", instructions: "Be brief.", instructionsPath: null,
     });
-    const brain = brainFromPayload({ model: "m1", availableModels: ["m1", { id: "m2" }], memory: [{ id: "a", title: "A" }, {}], knowledge: [{ path: "x.md", size: 12 }] });
+    const brain = brainFromPayload({ model: "m1", availableModels: ["m1", { id: "m2", label: "M2" }] });
     expect(brain.availableModels).toEqual(["m1", "m2"]);
-    expect(brain.memory).toEqual([{ id: "a", title: "A", preview: "", updatedAt: null }]);
-    expect(brain.knowledge).toEqual([{ path: "x.md", size: 12, updatedAt: null }]);
+    expect(brain).toEqual({ model: "m1", provider: null, availableModels: ["m1", "m2"] });
   });
 
   it("reads the whole control view and falls back to the roster for the agent", () => {
@@ -98,16 +96,5 @@ describe("controlError", () => {
     expect(controlError({ ok: false, reason: "error", code: "network", message: "[invoke] boom" }).message).toContain("Could not reach HQ");
     expect(controlError({ ok: false, reason: "error", code: "http-403", status: 403 }).message).toContain("owners");
     expect(controlError({ ok: false, reason: "error", code: "http-404", status: 404 }).message).toContain("newer HQ server");
-  });
-});
-
-describe("validKnowledgePath", () => {
-  it("accepts relative paths and refuses escapes", () => {
-    expect(validKnowledgePath("notes/pricing.md")).toBe(true);
-    expect(validKnowledgePath("../secrets.md")).toBe(false);
-    expect(validKnowledgePath("a/../b.md")).toBe(false);
-    expect(validKnowledgePath("/etc/passwd")).toBe(false);
-    expect(validKnowledgePath("a//b.md")).toBe(false);
-    expect(validKnowledgePath("")).toBe(false);
   });
 });

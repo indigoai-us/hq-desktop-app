@@ -1,6 +1,6 @@
 /**
  * Cloud bot control (hq-pro-agents `/v1/agents/{uid}/control/*`): channels,
- * routines, persona and brain, read live from the bot's box and written back
+ * routines, persona and the brain's model, read live from the bot's box and written back
  * to it. Every write is relayed to the box and answered with the box's
  * read-back, or refused with `{ error: { code, message } }`.
  *
@@ -74,39 +74,10 @@ export type AgentControlPersonaPatch = Partial<
   Pick<AgentControlPersona, "displayName" | "title" | "description" | "instructions">
 >;
 
-export interface AgentControlMemoryEntry {
-  id: string;
-  title: string;
-  preview: string;
-  updatedAt: string | null;
-}
-
-export interface AgentControlMemoryDoc {
-  id: string;
-  title: string;
-  content: string;
-  updatedAt: string | null;
-}
-
-export interface AgentControlKnowledgeFile {
-  path: string;
-  size: number | null;
-  updatedAt: string | null;
-}
-
-export interface AgentControlKnowledgeDoc {
-  path: string;
-  content: string;
-  size: number | null;
-  updatedAt: string | null;
-}
-
 export interface AgentControlBrain {
   model: string;
   provider: string | null;
   availableModels: string[];
-  memory: AgentControlMemoryEntry[];
-  knowledge: AgentControlKnowledgeFile[];
 }
 
 export interface AgentControlView {
@@ -134,11 +105,6 @@ export const AGENT_CONTROL_PATHS = {
   persona: (agentUid: string) => `${base(agentUid)}/persona`,
   brain: (agentUid: string) => `${base(agentUid)}/brain`,
   brainModel: (agentUid: string) => `${base(agentUid)}/brain/model`,
-  memory: (agentUid: string) => `${base(agentUid)}/brain/memory`,
-  memoryEntry: (agentUid: string, memoryId: string) =>
-    `${base(agentUid)}/brain/memory/${encodeURIComponent(memoryId)}`,
-  knowledge: (agentUid: string, path: string) =>
-    `${base(agentUid)}/brain/knowledge?path=${encodeURIComponent(path)}`,
 } as const;
 
 /**
@@ -168,15 +134,6 @@ export interface AgentControlApi {
   updatePersona(agentUid: string, patch: AgentControlPersonaPatch): AdapterPromise<unknown>;
   getBrain(agentUid: string): AdapterPromise<unknown>;
   setModel(agentUid: string, model: string): AdapterPromise<unknown>;
-  /** The box titles a memory from its first line; `target` picks the memory or user store. */
-  createMemory(agentUid: string, input: { content: string; target?: "memory" | "user" }): AdapterPromise<unknown>;
-  getMemory(agentUid: string, memoryId: string): AdapterPromise<unknown>;
-  /** Memory ids are content hashes: the answer carries the entry's new id. */
-  updateMemory(agentUid: string, memoryId: string, content: string): AdapterPromise<unknown>;
-  deleteMemory(agentUid: string, memoryId: string): AdapterPromise<unknown>;
-  getKnowledge(agentUid: string, path: string): AdapterPromise<unknown>;
-  putKnowledge(agentUid: string, path: string, content: string): AdapterPromise<unknown>;
-  deleteKnowledge(agentUid: string, path: string): AdapterPromise<unknown>;
 }
 
 export type AgentControlMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -278,12 +235,5 @@ export function createAgentControlApi(request: AgentControlRequest): AgentContro
     updatePersona: (uid, patch) => send("PUT", P.persona(uid), patch),
     getBrain: (uid) => send("GET", P.brain(uid)),
     setModel: (uid, model) => send("PATCH", P.brainModel(uid), { model }),
-    createMemory: (uid, input) => send("POST", P.memory(uid), input),
-    getMemory: (uid, id) => send("GET", P.memoryEntry(uid, id)),
-    updateMemory: (uid, id, content) => send("PUT", P.memoryEntry(uid, id), { content }),
-    deleteMemory: (uid, id) => send("DELETE", P.memoryEntry(uid, id)),
-    getKnowledge: (uid, path) => send("GET", P.knowledge(uid, path)),
-    putKnowledge: (uid, path, content) => send("PUT", P.knowledge(uid, path), { content }),
-    deleteKnowledge: (uid, path) => send("DELETE", P.knowledge(uid, path)),
   };
 }
