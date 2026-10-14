@@ -185,7 +185,8 @@ export function shippedTiles(rows: readonly BriefShipped[]): ShippedTile[] {
     const highlights: BriefLine[] = [];
     const push = (label: string, state = "") => {
       const text = withoutPrRefs(label);
-      const k = text.toLowerCase();
+      // The same change shipped to beta and to stable reads once: "(beta)" does not make it new.
+      const k = text.replace(/\s*\((?:beta|stable|canary|staging)\)\s*$/i, "").toLowerCase();
       if (!text || seen.has(k) || highlights.length >= MAX_HIGHLIGHTS) return;
       seen.add(k);
       highlights.push({ label: text.length > 72 ? `${text.slice(0, 71)}…` : text, state, tone: "ok" });

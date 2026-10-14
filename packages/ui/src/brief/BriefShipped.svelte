@@ -36,8 +36,9 @@
   const cells = $derived(shown.length + (rest.length ? 1 : 0));
   // One-row cards keep every tile on one line; tall cards wrap at three (L) or two (M) columns.
   const gridCols = $derived(Math.max(1, tall ? Math.min(cols >= 3 ? 3 : 2, cells) : cells));
-  // Each tile shows what was worth knowing under its count: two lines on wide or tall cards, one otherwise.
-  const lines = $derived(tall || cols >= 3 ? 2 : 1);
+  // Each tile lists what was worth knowing under its count, as many as its height holds (up to five);
+  // a short card simply shows fewer.
+  const lines = 5;
   /** "Oct 4 – Oct 8" from two YYYY-MM-DD dates. */
   const dayRange = (from: string, to: string) => {
     const f = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -320,13 +321,17 @@
     font-weight: 500;
     line-height: 1.25;
   }
+  /* Highlights wrap to two lines each and stack; the tile clips whatever does not fit. */
   .s {
     font-size: 11px;
-    color: rgb(var(--b-ink) / 0.56);
-    margin-top: 3px;
+    line-height: 1.4;
+    color: rgb(var(--b-ink) / 0.72);
+    margin-top: 6px;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
   /* The rest of the products, in one quiet tile; no foil (nothing shipped here). */
   .run.more {

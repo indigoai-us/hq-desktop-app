@@ -223,3 +223,12 @@ describe("withoutPrRefs", () => {
     for (const h of t!.highlights) expect(h.label).not.toMatch(/#\d+/);
   });
 });
+
+describe("shipped highlights", () => {
+  it("list a change once when it shipped to beta and to stable", () => {
+    const [t] = shippedTiles([
+      { status: "shipped", title: "", lines: [], highlights: ["Wait for Apple's developer tools before setup runs git (beta)", "Wait for Apple's developer tools before setup runs git"], origin: { companyUid: "c", repo: "hq-desktop-app" } } as unknown as BriefShipped,
+    ]);
+    expect(t!.highlights.map((h) => h.label)).toEqual(["Wait for Apple's developer tools before setup runs git (beta)"]);
+  });
+});

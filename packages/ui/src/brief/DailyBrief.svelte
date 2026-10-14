@@ -316,7 +316,7 @@
         <div class="nx-time">Free</div>
         <div class="nx-detail"><div class="nx-who"><span class="names">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</span></div></div>
       {/if}
-      <!-- A quiet orbit: the day around you. On a call three nodes circle it and a soft ring pulses; otherwise it is still and empty. -->
+      <!-- A quiet orbit: the day around you. On a call two nodes circle it, half a turn apart, so only one is ever in view (the panel shows about a third of the ring); otherwise it is still and empty. -->
       <svg class="orbit" class:live={next?.live} class:idle={!next} viewBox="0 0 120 120" aria-hidden="true">
         <defs>
           <radialGradient id="b-orb-fill" cx="0.35" cy="0.3" r="0.8">
@@ -327,7 +327,7 @@
         {#if next?.live}<circle class="pulse" cx="60" cy="60" r="28" />{/if}
         <circle class="orb" cx="60" cy="60" r="28" fill="url(#b-orb-fill)" />
         <circle class="path" cx="60" cy="60" r="46" />
-        {#if next?.live}<g class="spin"><circle class="node" cx="60" cy="14" r="4.5" /><circle class="node trail" cx="99.8" cy="83" r="3.5" /><circle class="node trail" cx="20.2" cy="83" r="3.5" /></g>{/if}
+        {#if next?.live}<g class="spin"><circle class="node" cx="60" cy="14" r="3.5" /><circle class="node" cx="60" cy="106" r="3.5" /></g>{/if}
       </svg>
     </aside>
   </section>

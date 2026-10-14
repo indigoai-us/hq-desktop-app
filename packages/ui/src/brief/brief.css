@@ -750,16 +750,23 @@
 .daily-brief .peek .li + .li {
   border-top: 1px solid rgb(var(--b-ink) / 0.05);
 }
+/* A line's state (FIX, CHANGE, a time, a count): quiet meta text level with the line's first row,
+   so it never reads as a button. Only warning and red states take a colour. */
 .daily-brief .peek .li span {
   font-family: var(--b-ui);
   font-size: 11px;
+  line-height: 1.35;
   color: var(--b-t3);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  align-self: center;
+  align-self: flex-start;
+  margin-top: 1px;
 }
-.daily-brief .peek .li span[class^="tone-"]:not(.tone-neutral) {
-  color: inherit;
+.daily-brief .peek .li span.tone-warn {
+  color: var(--b-warn);
+}
+.daily-brief .peek .li span.tone-red {
+  color: var(--b-red);
 }
 /* Prompt text reads as prose, so it is in the UI face (mono is kept for all-caps labels). */
 .daily-brief .peek .prompt {
