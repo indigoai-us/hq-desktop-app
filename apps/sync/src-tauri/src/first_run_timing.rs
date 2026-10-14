@@ -73,6 +73,15 @@ pub fn format_install_end(id: &str, outcome: InstallOutcome, elapsed_ms: u128) -
     )
 }
 
+pub fn format_probe(tool: &str, result: &str, elapsed_ms: u128) -> String {
+    format!(
+        "kind=probe tool={} result={} elapsed_ms={}",
+        sanitize_value(tool),
+        sanitize_value(result),
+        elapsed_ms
+    )
+}
+
 /// Logs the start line on creation and the end line on `finish`. A timer
 /// dropped without `finish` (its install future was dropped mid-flight)
 /// logs `outcome=cancelled`, so every start line gets an end line.
@@ -174,6 +183,18 @@ mod tests {
         assert_eq!(
             format_install_end("hq-cli", InstallOutcome::Cancelled, 9),
             "kind=install event=end id=hq-cli outcome=cancelled elapsed_ms=9"
+        );
+    }
+
+    #[test]
+    fn probe_line_matches_the_documented_format() {
+        assert_eq!(
+            format_probe("scan", "passed", 812),
+            "kind=probe tool=scan result=passed elapsed_ms=812"
+        );
+        assert_eq!(
+            format_probe("scan", "", 0),
+            "kind=probe tool=scan result=unknown elapsed_ms=0"
         );
     }
 

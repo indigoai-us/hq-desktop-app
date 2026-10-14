@@ -320,6 +320,7 @@
   } from "../chat/first-run/tools-signin.js";
   import { FIRST_RUN_TIMING_TAG } from "../chat/first-run/first-run-timing.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
+  import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
   import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
@@ -3723,9 +3724,12 @@
   /**
    * "Bring in your context" (slice 4). The scan runs inside the takeover; the
    * host supplies the command (`adapter.contextImport`) and the event bus.
-   * Without either the flow has no context step.
+   * Without either the flow has no context step. The desktop host's native
+   * launch scan (`adapter.localScan`, counts and names only) comes first, so
+   * hq-cli is not on the critical path; the hq-cli import is the fallback.
    */
-  const firstRunImportHost = createImportScanHost(adapter.contextImport, syncEvents);
+  const firstRunImportHost =
+    createNativeScanHost(adapter.localScan) ?? createImportScanHost(adapter.contextImport, syncEvents);
   /** The finished scan's counts and report path, for the setup bot's handoff. */
   let firstRunImport: FirstRunImportHandoff | null = null;
   function recordFirstRunImport(result: FirstRunImportHandoff): void {

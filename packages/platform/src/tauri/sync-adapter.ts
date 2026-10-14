@@ -1833,6 +1833,10 @@ export function createSyncPlatformAdapter(
       scanCancel: (scanId) => call('import_scan_cancel', { scanId }),
     },
 
+    localScan: {
+      scan: () => call('scan_local_sessions'),
+    },
+
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),

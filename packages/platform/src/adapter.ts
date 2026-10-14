@@ -2556,6 +2556,60 @@ export interface ImportScanEndView {
   dropped?: number;
 }
 
+/** One coding tool's session history: counts and recency only. */
+export interface LocalToolSessionsView {
+  /** "claude-code" | "codex" */
+  tool: string;
+  sessions_total: number;
+  sessions_last_30d: number;
+  /** Unix ms of the newest session file, or null when there is none. */
+  last_active_at: number | null;
+  /** This tool's share of all sessions in the last 30 days, 0..1. */
+  share_last_30d: number;
+}
+
+/** A project the coding tools worked in, named from its folder. */
+export interface LocalSessionProjectView {
+  tool: string;
+  name: string;
+  sessions: number;
+  last_active_at: number | null;
+}
+
+export interface LocalRepoView {
+  path: string;
+  /** Unix ms of the last commit (or checkout), or null when unknown. */
+  last_commit_at: number | null;
+}
+
+/** "read" | "missing" | "unreadable" | "budget" | "unsupported" */
+export interface LocalScanSourceView {
+  source: string;
+  outcome: string;
+  count: number;
+}
+
+/**
+ * `scan_local_sessions`: what this computer's coding tools, repos and apps
+ * look like, read natively at launch. Names, counts and recency only; the
+ * host never reads session content.
+ */
+export interface LocalScanView {
+  tools: LocalToolSessionsView[];
+  projects: LocalSessionProjectView[];
+  repos: LocalRepoView[];
+  apps: string[];
+  mcp_servers: string[];
+  sources: LocalScanSourceView[];
+  truncated: boolean;
+  elapsed_ms: number;
+}
+
+/** Desktop-only: the native launch scan (no hq-cli). */
+export interface LocalScanApi {
+  scan(): AdapterPromise<LocalScanView>;
+}
+
 /**
  * Desktop-only (visual first run, "Bring in your context"): reads this
  * computer's coding-tool history with `hq import scan --json --stream`. The
@@ -3128,6 +3182,8 @@ export interface PlatformAdapter {
   readonly bots?: LocalBotsApi;
   /** Optional: only the desktop host can read this computer's context. */
   readonly contextImport?: ContextImportApi;
+  /** Optional: only the desktop host can scan this computer natively at launch. */
+  readonly localScan?: LocalScanApi;
   /** Optional: only the desktop host can read and prune local HQ backups. */
   readonly storage?: StorageApi;
   readonly settings: SettingsApi;
