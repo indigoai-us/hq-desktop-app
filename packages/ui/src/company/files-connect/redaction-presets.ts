@@ -72,7 +72,7 @@ function presetIdOf(value: unknown): string | null {
 
 /**
  * Read a US-004 answer. A missing `presets` list means no setting yet, which
- * is all on. `availablePresets` narrows which switches show (ids or `{ id }`);
+ * is all off: redaction is opt-in (hq-pro #4978). `availablePresets` narrows which switches show (ids or `{ id }`);
  * when it is missing or names none of the four, all four show. Unknown ids
  * are ignored.
  */
@@ -86,7 +86,7 @@ export function parseRedactionAnswer(body: unknown): RedactionSettings {
     : null;
   const shown = REDACTION_PRESETS.filter((p) => !available || available.size === 0 || available.has(p.id));
   return {
-    presets: shown.map((p) => ({ id: p.id, label: p.label, enabled: on ? on.has(p.id) : true })),
+    presets: shown.map((p) => ({ id: p.id, label: p.label, enabled: on ? on.has(p.id) : false })),
     canEdit: typeof rec.canEdit === "boolean" ? rec.canEdit : null,
   };
 }

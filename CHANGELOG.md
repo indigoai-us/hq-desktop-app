@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Company › Integrations: the "Hidden from AI" switches now show as off for a connection where no owner or admin has chosen yet, matching HQ's server, where hiding is opt-in. Before, the app showed all four switches on in that case. Choices already saved are unchanged.
+
 ## [0.11.8] — 2026-10-13
 
 - Settings > AI tools: a new "Connect AI apps to HQ" section lets Grok Bot, Claude, ChatGPT, Claude Code, Codex and the Grok command line read and write your HQ files and use your secrets and connected apps. Each app has a Copy button for its setup. Grok Bot's "Copy instructions" adds HQ, asks you to sign in, and teaches Grok Bot to pick the right company for each task. Claude shows the steps for its Connectors screen. One sign-in covers every company you belong to. If copying is blocked, the text appears so you can select it by hand.
