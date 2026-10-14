@@ -1188,15 +1188,23 @@
   color: var(--b-t2);
   white-space: nowrap;
 }
+/* "Why these cards" (review mode): muted text like the Shift+A hint, brightening on hover where its peek opens. */
 .daily-brief .b-tools .leadchip {
-  background: rgb(var(--b-ink) / 0.92);
-  color: var(--b-bg);
-  border-color: transparent;
+  height: auto;
+  margin-right: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  font-size: 12px;
+  background: none;
+  color: var(--b-t3);
   box-shadow: none;
+  cursor: default;
+  transition: color 0.2s;
 }
 .daily-brief .b-tools .leadchip:hover {
-  background: rgb(var(--b-ink) / 1);
-  color: var(--b-bg);
+  background: none;
+  color: var(--b-t1);
 }
 .daily-brief .b-mark {
   border-radius: 999px;
