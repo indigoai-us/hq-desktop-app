@@ -191,6 +191,172 @@ describe("hydrateLiveRail", () => {
     warn.mockRestore();
   });
 
+  describe("work feed paging (hq-pro #5004)", () => {
+    const SYNC = "s".repeat(40);
+    const directoryRow = (projectId: string) => ({
+      channelId: `chn_${projectId}`,
+      scope: "project",
+      projectId,
+      name: projectId,
+      createdAt: "2026-09-01T00:00:00.000Z",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+      lastActivityAt: "2026-09-01T00:00:00.000Z",
+    });
+    const workRow = (projectId: string, lastActivityAt: string) => ({
+      threadId: `thr_${projectId}`,
+      projectId,
+      threadStatus: "open",
+      lastActivityAt,
+    });
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status });
+    const activityByProject = (directory: Array<{ projectId?: string | null; lastActivityAt?: string | null }>) =>
+      Object.fromEntries(directory.map((r) => [r.projectId, r.lastActivityAt]));
+
+    it("follows nextCursor and merges open + changed from every page", async () => {
+      const adapter = stubAdapter(async () =>
+        ok({ rows: [directoryRow("proj_1"), directoryRow("proj_2")] }),
+      );
+      const feedFetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/v1/work-mesh/work") {
+          return json({
+            cursor: SYNC,
+            open: [workRow("proj_1", "2026-10-10T00:00:00.000Z")],
+            changed: [],
+            hasMore: true,
+            nextCursor: "page_2",
+          });
+        }
+        return json({
+          cursor: SYNC,
+          open: [],
+          changed: [workRow("proj_2", "2026-10-09T00:00:00.000Z")],
+          hasMore: false,
+        });
+      });
+
+      const rail = await hydrateLiveRail(adapter, [], "prs_paged", {
+        fetch: feedFetch as typeof fetch,
+      });
+
+      expect(feedFetch.mock.calls.map((c) => String(c[0]))).toEqual([
+        "/v1/work-mesh/work",
+        "/v1/work-mesh/work?pageCursor=page_2",
+      ]);
+      expect(activityByProject(rail.directory)).toMatchObject({
+        proj_1: "2026-10-10T00:00:00.000Z",
+        proj_2: "2026-10-09T00:00:00.000Z",
+      });
+    });
+
+    it("makes one request when the server sends no hasMore", async () => {
+      const adapter = stubAdapter(async () => ok({ rows: [directoryRow("proj_1")] }));
+      const feedFetch = vi.fn(async () =>
+        json({
+          cursor: SYNC,
+          open: [workRow("proj_1", "2026-10-10T00:00:00.000Z")],
+          changed: [],
+        }),
+      );
+
+      const rail = await hydrateLiveRail(adapter, [], "prs_legacy_feed", {
+        fetch: feedFetch as typeof fetch,
+      });
+
+      expect(feedFetch).toHaveBeenCalledTimes(1);
+      expect(activityByProject(rail.directory).proj_1).toBe(
+        "2026-10-10T00:00:00.000Z",
+      );
+    });
+
+    it("keeps the rows already fetched when a later page fails and logs no body", async () => {
+      const adapter = stubAdapter(async () =>
+        ok({ rows: [directoryRow("proj_1"), directoryRow("proj_2")] }),
+      );
+      const feedFetch = vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/v1/work-mesh/work") {
+          return json({
+            cursor: SYNC,
+            open: [workRow("proj_1", "2026-10-10T00:00:00.000Z")],
+            changed: [],
+            hasMore: true,
+            nextCursor: "page_2",
+          });
+        }
+        return json({ error: "private server detail" }, 500);
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const rail = await hydrateLiveRail(adapter, [], "prs_page_fail", {
+        fetch: feedFetch as typeof fetch,
+      });
+
+      expect(feedFetch).toHaveBeenCalledTimes(2);
+      expect(activityByProject(rail.directory)).toMatchObject({
+        proj_1: "2026-10-10T00:00:00.000Z",
+        proj_2: "2026-09-01T00:00:00.000Z",
+      });
+      expect(warn).toHaveBeenCalledWith(
+        "[hq-work-feed] request failed",
+        expect.objectContaining({ event: "http-error", status: 500, page: 2 }),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("private server detail");
+      warn.mockRestore();
+    });
+
+    it("prefers the last complete read when a later page fails", async () => {
+      vi.useFakeTimers();
+      const adapter = stubAdapter(async () =>
+        ok({ rows: [directoryRow("proj_1"), directoryRow("proj_2")] }),
+      );
+      const fullFetch = vi.fn(async () =>
+        json({
+          cursor: SYNC,
+          open: [
+            workRow("proj_1", "2026-10-01T00:00:00.000Z"),
+            workRow("proj_2", "2026-10-02T00:00:00.000Z"),
+          ],
+          changed: [],
+          hasMore: false,
+        }),
+      );
+      await hydrateLiveRail(adapter, [], "prs_page_fail_cached", {
+        fetch: fullFetch as typeof fetch,
+      });
+      vi.setSystemTime(Date.now() + 60_001);
+
+      const pagedFetch = vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/v1/work-mesh/work") {
+          return json({
+            cursor: SYNC,
+            open: [workRow("proj_1", "2026-10-10T00:00:00.000Z")],
+            changed: [],
+            hasMore: true,
+            nextCursor: "page_2",
+          });
+        }
+        throw new Error("network down");
+      });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const rail = await hydrateLiveRail(adapter, [], "prs_page_fail_cached", {
+        fetch: pagedFetch as typeof fetch,
+      });
+
+      expect(pagedFetch).toHaveBeenCalledTimes(2);
+      expect(activityByProject(rail.directory)).toMatchObject({
+        proj_1: "2026-10-01T00:00:00.000Z",
+        proj_2: "2026-10-02T00:00:00.000Z",
+      });
+      expect(warn).toHaveBeenCalledWith(
+        "[hq-work-feed] request failed",
+        expect.objectContaining({ event: "transport-error", page: 2 }),
+      );
+      warn.mockRestore();
+    });
+  });
+
   it("logs a bounded work-feed JSON failure and keeps the empty result", async () => {
     const adapter = stubAdapter(async () => ok({ rows: [] }));
     const response = new Response(null, { status: 200 });
