@@ -112,6 +112,20 @@ pub fn fetch_log_path(full_url: &str) -> String {
     }
 }
 
+/// The vault API base with surrounding whitespace and trailing slashes
+/// removed, so a caller can append a `/v1/...` path.
+pub fn api_base(raw: &str) -> String {
+    raw.trim().trim_end_matches('/').to_string()
+}
+
+/// The hq-pro API base this app talks to. The Your Apps step builds the
+/// public factory OAuth callback URL from it, so the provider redirect lands
+/// on the same API that started the sign-in. No token is involved.
+#[tauri::command]
+pub async fn hq_pro_api_base() -> Result<String, String> {
+    resolve_vault_api_url().map(|base| api_base(&base))
+}
+
 /// Longest per-request bound a caller may ask `hq_pro_fetch` for.
 const HQ_PRO_FETCH_MAX_TIMEOUT_SECS: u64 = 60;
 
@@ -410,6 +424,15 @@ fn parse_feature_flag_response(status: u16, body: &str) -> Option<HashMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Your Apps OAuth callback URL is `{api_base}/v1/...`, so the base
+    /// must come back without trailing slashes or whitespace.
+    #[test]
+    fn api_base_strips_whitespace_and_trailing_slashes() {
+        assert_eq!(api_base("https://hqapi.hq.computer"), "https://hqapi.hq.computer");
+        assert_eq!(api_base(" https://hqapi.hq.computer// \n"), "https://hqapi.hq.computer");
+        assert_eq!(api_base("https://stage.example.com/"), "https://stage.example.com");
+    }
 
     #[test]
     fn fetch_timeout_keeps_default_and_clamps_caller_bounds() {

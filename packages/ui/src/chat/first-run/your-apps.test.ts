@@ -195,9 +195,10 @@ describe("copy", () => {
 });
 
 describe("native providers, fallback and handoff", () => {
-  it("sends Slack and Google Workspace to Integrations when the company has neither", () => {
+  it("sends Google Workspace to Integrations, and tells Slack to connect later with no sign-in here", () => {
     const view = yourAppsView(input({ connections: [] }));
-    expect(view.ready.find((t) => t.domain === "slack.com")).toMatchObject({ action: "integrations", native: "slack" });
+    expect(view.ready.find((t) => t.domain === "slack.com")).toMatchObject({ action: "later", native: "slack", note: YOUR_APPS_COPY.later });
+    expect(YOUR_APPS_COPY.later).toBe("Connect later in Integrations");
   });
 
   it("lets an owner undo an earlier automatic connection, never a member", () => {

@@ -1773,6 +1773,8 @@ export const INTEGRATION_PATHS = {
     `&query=${encodeURIComponent(query)}` +
     (typeof limit === "number" && Number.isFinite(limit) ? `&limit=${Math.trunc(limit)}` : ""),
   oauthStart: "/v1/integrations/factory/oauth/start",
+  /** The public browser page the provider redirects to; it finishes the sign-in from the stored state. */
+  oauthCallback: "/v1/integrations/factory/oauth/callback",
   install: "/v1/integrations/factory/install",
   blueprint: "/v1/integrations/factory/blueprint",
   /** Which of a fixed list of domains are in the catalog (first-run "Your apps"). */
@@ -1816,6 +1818,28 @@ export function integrationAppRefBody(input: IntegrationAppRef): {
     companyUid: input.companyUid,
     ...(input.catalogEntryId ? { catalogEntryId: input.catalogEntryId } : {}),
     ...(input.domain && !input.catalogEntryId ? { domain: input.domain } : {}),
+  };
+}
+
+/**
+ * Names the app for OAuth start, plus an optional `redirectUri`. HQ Desktop
+ * passes the hq-pro public callback (`INTEGRATION_PATHS.oauthCallback` on its
+ * API base) so the provider's redirect lands on a page that finishes the
+ * sign-in without a session. Absent, the server's default redirect applies.
+ */
+export type IntegrationOAuthStartInput = IntegrationAppRef & { redirectUri?: string };
+
+/** The OAuth start body: {@link integrationAppRefBody} plus `redirectUri` when one is given. */
+export function integrationOAuthStartBody(input: IntegrationOAuthStartInput): {
+  companyUid: string;
+  domain?: string;
+  catalogEntryId?: string;
+  redirectUri?: string;
+} {
+  const redirectUri = typeof input.redirectUri === "string" ? input.redirectUri.trim() : "";
+  return {
+    ...integrationAppRefBody(input),
+    ...(redirectUri ? { redirectUri } : {}),
   };
 }
 
@@ -1955,14 +1979,20 @@ export interface IntegrationsApi {
   uninstall?(input: { companyUid: string; installationId: string }): AdapterPromise<Json>;
   /**
    * POST /v1/integrations/factory/oauth/start with `{ companyUid, domain }`
-   * or `{ companyUid, catalogEntryId }` and no `redirectUri`: the server's
-   * default redirect lands the browser on the console's callback. Answers
-   * {@link IntegrationOAuthStart}. A failure carries `status`, `code` (e.g.
-   * `OAUTH_DISCOVERY_FAILED`, `CLIENT_REGISTRATION_REFUSED`,
-   * `OAUTH_REGISTRATION_FAILED`, `INTEGRATION_FACTORY_FORBIDDEN`) and
-   * `upstreamCode` when the server sent one.
+   * or `{ companyUid, catalogEntryId }`, plus `redirectUri` when one is
+   * given. Without it the server's default redirect lands the browser on the
+   * console's callback. Answers {@link IntegrationOAuthStart}. A failure
+   * carries `status`, `code` (e.g. `OAUTH_DISCOVERY_FAILED`,
+   * `CLIENT_REGISTRATION_REFUSED`, `OAUTH_REGISTRATION_FAILED`,
+   * `INTEGRATION_FACTORY_FORBIDDEN`) and `upstreamCode` when the server sent one.
    */
-  startOAuth(input: IntegrationAppRef): AdapterPromise<IntegrationOAuthStart>;
+  startOAuth(input: IntegrationOAuthStartInput): AdapterPromise<IntegrationOAuthStart>;
+  /**
+   * The hq-pro public OAuth callback URL on this app's API base
+   * (`INTEGRATION_PATHS.oauthCallback`). Desktop only: a desktop app has no
+   * web callback page of its own. Optional.
+   */
+  oauthCallbackUrl?(): AdapterPromise<string>;
   /**
    * POST /v1/integrations/factory/install with the body passed through (see
    * {@link IntegrationInstallInput} for the three forms). A `bearerToken` is

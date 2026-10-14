@@ -3901,6 +3901,12 @@
             ? (uid) => adapter.integrations.listConnections(uid)
             : null,
           startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
+          oauthRedirectUri: adapter.integrations.oauthCallbackUrl
+            ? async () => {
+                const url = await adapter.integrations.oauthCallbackUrl!();
+                return url.ok ? url.value : null;
+              }
+            : null,
           install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
           discoverDocs: adapter.integrations.discoverDocs ? (input) => adapter.integrations.discoverDocs!(input) : null,
           uninstall: adapter.integrations.uninstall ? (input) => adapter.integrations.uninstall!(input) : null,
