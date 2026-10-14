@@ -341,10 +341,10 @@
   .greet :global(.accent-word) {
     font-weight: 400;
   }
-  /* Text stays left of the sun (drawn at 68% of the width, radius up to 14%), so it never runs over it. */
+  /* The full card width, like the lede under it, so a sentence only wraps at the card's edge. */
   .first {
     margin-top: 10px;
-    max-width: min(440px, calc(54% - 32px));
+    max-width: none;
     font-size: 13px;
     line-height: 1.35;
     color: rgb(var(--b-ink) / 0.86);
