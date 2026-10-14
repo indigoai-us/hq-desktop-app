@@ -223,6 +223,8 @@ describe("BriefRunsPage", () => {
     expect(target.querySelector('[data-testid="daily-brief"]')).toBeNull();
     expect(target.querySelector(".daily-brief-dawn-page")).not.toBeNull();
     expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("running");
+    // A title under the CREATING label, as the first brief has.
+    expect(target.querySelector("header h2")?.textContent).toBe("Your new brief is on its way");
     expect(target.textContent).not.toContain("Newest call");
   });
 

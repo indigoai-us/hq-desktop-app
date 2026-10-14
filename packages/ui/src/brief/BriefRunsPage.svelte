@@ -317,7 +317,7 @@
     phase={dawn?.phase ?? "idle"}
     progress={dawn?.progress ?? 0}
     step={dawn?.step ?? ""}
-    headline={!dawn ? "Your first brief is waiting" : firstRun && dawn.phase !== "failed" ? "Your first brief is on its way" : ""}
+    headline={!dawn ? "Your first brief is waiting" : dawn.phase === "failed" ? "" : firstRun ? "Your first brief is on its way" : "Your new brief is on its way"}
     onbloomdone={() => (bloomDone = true)}
     onlive={() => (pageLive = size === "page")}
     actions={!dawn ? idleActions : dawn.phase === "failed" ? failedActions : undefined}
