@@ -36,6 +36,8 @@
   const cells = $derived(shown.length + (rest.length ? 1 : 0));
   // One-row cards keep every tile on one line; tall cards wrap at three (L) or two (M) columns.
   const gridCols = $derived(Math.max(1, tall ? Math.min(cols >= 3 ? 3 : 2, cells) : cells));
+  // In one row, "+N more" is a slim column at the end rather than a full tile.
+  const gridTemplate = $derived(!tall && rest.length ? `repeat(${shown.length}, minmax(0, 1fr)) 76px` : `repeat(${gridCols}, minmax(0, 1fr))`);
   // Each tile lists what was worth knowing under its count, as many as its height holds (up to five);
   // a short card simply shows fewer.
   const lines = 5;
@@ -128,7 +130,7 @@
     </div>
   </div>
   {#if tiles.length}
-    <div class="runs" class:one={!tall} style="--cols:{gridCols}">
+    <div class="runs" class:one={!tall} style="grid-template-columns:{gridTemplate}">
       {#each shown as t (t.key)}
         <div
           class="run"
@@ -333,13 +335,19 @@
   .v + .s {
     margin-top: 10px;
   }
-  /* The rest of the products, in one quiet tile; no foil (nothing shipped here). */
+  /* The rest of the products: a slim, quiet column with no fill until hovered. */
   .run.more {
     justify-content: center;
     align-items: center;
-    font-size: 13px;
-    color: rgb(var(--b-ink) / 0.78);
+    padding: 0 6px;
+    background: transparent;
+    font-size: 12px;
+    color: rgb(var(--b-ink) / 0.72);
     cursor: default;
+    transition: background 0.2s;
+  }
+  .run.more:hover {
+    background: rgb(var(--b-ink) / 0.08);
   }
   .run.more::before,
   .run.more::after {

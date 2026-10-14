@@ -23,7 +23,6 @@
   }
   let { team, rows, cols = 2 }: Props = $props();
   const brief = useBrief();
-  const GRAD = ["#a855f7,#6d28d9", "#38bdf8,#1d4ed8", "#34d399,#047857", "#fb923c,#c2410c", "#f472b6,#be185d", "#a3e635,#4d7c0f"];
   const DOT: Record<string, string> = { ok: "var(--b-ok)", warn: "var(--b-warn)", decision: "var(--b-decision)", red: "var(--b-red)", neutral: "rgb(var(--b-ink) / .32)" };
   const shown = $derived(team.slice(0, teamLimit(rows, cols)));
   const rest = $derived(team.slice(shown.length));
@@ -104,7 +103,7 @@
       {@const line = status(t)}
       {@const m = latest(t)}
       <div class="p" role="group" aria-label={t.name} data-testid="brief-team-row" use:peek={{ state: brief, content: () => content(t) }}>
-        <div class="mono" style="background:{GRAD[i % GRAD.length].split(',')[1]};--s:{DOT[t.tone]}">{t.name[0]}</div>
+        <div class="mono" style="--s:{DOT[t.tone]}">{t.name[0]}</div>
         <div class="txt">
           <div class="n">
             <span class="nm">{t.name}</span>
@@ -124,9 +123,9 @@
         </div>
         <div class="acts">
           {#if t.thanks}
-            <button type="button" class="act" style="--g:#34d399,#047857" data-testid="brief-team-say-thanks" onclick={() => void brief.start(thanksId(t), thanksPrompt(t))}>THANKS</button>
+            <button type="button" class="act" data-testid="brief-team-say-thanks" onclick={() => void brief.start(thanksId(t), thanksPrompt(t))}>THANKS</button>
           {/if}
-          <button type="button" class="act" style="--g:{GRAD[i % GRAD.length]}" onclick={() => void draft(t)}>{copied === t.id ? "COPIED" : "DM"}</button>
+          <button type="button" class="act" onclick={() => void draft(t)}>{copied === t.id ? "COPIED" : "DM"}</button>
         </div>
       </div>
     {/each}
@@ -143,45 +142,47 @@
   .ppl {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-top: 16px;
+    gap: 6px;
+    margin-top: 14px;
   }
+  /* Glass rows, like the other cards' lists: a monochrome initial circle, the name, what they are on. */
   .p {
     position: relative;
     display: flex;
-    gap: 11px;
+    gap: 10px;
     align-items: center;
-    padding: 6px 8px;
-    margin: -6px -8px;
-    border-radius: 6px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--b-row-bg, rgb(var(--b-ink) / 0.12));
     transition: background 0.25s;
   }
   .p:hover {
-    background: rgb(var(--b-ink) / 0.045);
+    background: var(--b-row-hover, rgb(var(--b-ink) / 0.2));
   }
   .mono {
     position: relative;
-    width: 36px;
-    height: 36px;
+    width: 28px;
+    height: 28px;
     flex: none;
-    border-radius: 6px;
+    border-radius: 50%;
     display: grid;
     place-items: center;
     font-weight: 500;
-    font-size: 13px;
-    color: #fff;
+    font-size: 12px;
+    color: var(--b-t1);
+    background: rgb(var(--b-ink) / 0.08);
     box-shadow: none;
   }
+  /* Status: a small dot at the circle's edge; the only colour in the row. */
   .mono::after {
     content: "";
     position: absolute;
-    right: -2px;
-    bottom: -2px;
-    width: 10px;
-    height: 10px;
+    right: -1px;
+    bottom: -1px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--s);
-    border: 2px solid var(--b-card);
   }
   .txt {
     min-width: 0;
@@ -200,33 +201,32 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* Glass chips: flat translucent fill with a lit top edge, no inset wells. */
+  /* Chips in the mono caps label style, a soft fill, no rim. */
   .tag,
   .cnt,
   .load {
     flex: none;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    font-weight: 400;
-    letter-spacing: 0;
-    padding: 0 6px;
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 7px;
     border-radius: 999px;
-    line-height: 16px;
-    color: var(--b-t2);
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--b-t3);
     background: rgb(var(--b-ink) / 0.06);
-    border: 1px solid rgb(var(--b-ink) / 0.1);
-  }
-  .cnt {
-    text-transform: none;
-    font-size: 11px;
+    border: 0;
   }
   .load[data-load="heavy"] {
-    color: var(--b-warn);
-    border-color: rgba(255, 211, 122, 0.3);
+    color: #8a5a00;
+    background: rgba(255, 205, 110, 0.32);
   }
   .load[data-load="storm"] {
-    color: var(--b-red);
-    border-color: rgba(255, 69, 58, 0.35);
+    color: #a3271d;
+    background: rgba(255, 107, 94, 0.22);
   }
   .tick {
     flex: none;
@@ -268,33 +268,34 @@
     opacity: 1;
     translate: 0 -50%;
   }
+  /* DM / THANKS: small mono caps buttons, soft fill; filled in page ink on hover. */
   .act {
     all: unset;
     cursor: pointer;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    color: rgb(var(--b-ink) / 0.7);
-    padding: 5px 8px;
-    border-radius: 8px;
-    background: rgb(var(--b-ink) / 0.07);
-    border: 1px solid rgb(var(--b-ink) / 0.1);
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 9px;
+    border-radius: 6px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    color: var(--b-t2);
+    background: rgb(var(--b-ink) / 0.08);
     transition: background 0.2s, color 0.2s;
   }
-  /* Each action takes on its own colour: the teammate's for DM, green for thanks. */
   .act:hover,
   .act:focus-visible {
-    color: #fff;
-    background: var(--g);
-    border-color: transparent;
-    box-shadow: none;
+    color: var(--b-bg);
+    background: rgb(var(--b-ink) / 0.88);
     outline: none;
   }
   .more {
     align-self: stretch;
     text-align: center;
-    padding: 5px 10px;
-    border-radius: 6px;
+    padding: 6px 10px;
+    border-radius: 10px;
     font-size: 13px;
     color: var(--b-t2);
     background: rgb(var(--b-ink) / 0.05);
