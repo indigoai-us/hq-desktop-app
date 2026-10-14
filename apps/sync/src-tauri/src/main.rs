@@ -753,6 +753,7 @@ fn main() {
             commands::auth::whoami,
             commands::auth::get_auth_session,
             commands::hq_pro::hq_pro_fetch,
+            commands::hq_pro::hq_pro_api_base,
             commands::vault_s3::vault_s3_put,
             commands::vault_s3::vault_s3_get,
             commands::auth::has_stored_token,

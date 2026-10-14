@@ -17,6 +17,7 @@ import {
   connectionGrantBody,
   failure,
   integrationAppRefBody,
+  integrationOAuthStartBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
@@ -1144,9 +1145,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
-    // No redirectUri: the server's default lands on the console's callback.
+    // redirectUri only when the caller passes one; without it the server's
+    // default lands on the console's callback.
     startOAuth: (input) =>
-      this.postWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+      this.postWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationOAuthStartBody(input)),
     // The key goes in the body only, and is taken out of any failure's text.
     install: async (input) =>
       withoutSecret(await this.postWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),

@@ -112,9 +112,9 @@
     else onconnect(tile);
   }
 
-  /** Key and member tiles carry their reason in the note and show no button. */
+  /** Key, member and Slack tiles carry their reason in the note and show no button. */
   function hasButton(tile: AppTile): boolean {
-    return tile.action !== "needs-key" && tile.action !== "admin-only";
+    return tile.action !== "needs-key" && tile.action !== "admin-only" && tile.action !== "later";
   }
 
   function chipNote(chip: ConnectedChip): string {
