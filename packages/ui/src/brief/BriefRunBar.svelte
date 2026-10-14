@@ -104,8 +104,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px 14px;
-    min-height: 20px;
+    gap: 6px 10px;
     font-size: 12px;
     color: var(--b-t3);
   }
@@ -120,7 +119,7 @@
     display: grid;
     place-items: center;
     width: 11px;
-    height: 20px;
+    height: 16px;
     padding: 0;
     border: 0;
     background: none;

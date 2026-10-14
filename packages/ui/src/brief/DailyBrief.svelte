@@ -68,7 +68,7 @@
     companies?: readonly BriefCompanyLogo[];
     /** Opens a session with the prompt pre-filled. Defaults to copying it. */
     onlaunch?: BriefLaunch;
-    /** Run controls (history, the band of a run in flight) under the header. */
+    /** Run controls (the history squares), on the title's line after "Daily Brief". */
     header?: Snippet;
     /** Controls on the title row, right-aligned (Create brief / Refresh). */
     tools?: Snippet;
@@ -279,7 +279,8 @@
         <svg class="ico" viewBox="0 0 24 24"><path d="M3 17h18M6 17a6 6 0 0 1 12 0M12 5v2M5.6 8.6l1.4 1.4M18.4 8.6 17 10" /></svg>
       </div>
       <div class="b-title">
-        <span class="b-name">Daily Brief</span>
+        <!-- The run history's squares sit on the title's line, right after the name. -->
+        <span class="b-nameline"><span class="b-name">Daily Brief</span>{#if header}<span class="b-runs">{@render header()}</span>{/if}</span>
         <span class="b-when" data-testid="brief-when">{dateLabel} · {timeLabel}</span>
       </div>
     </div>
@@ -293,7 +294,6 @@
       {#if tools}{@render tools()}{/if}
     </div>
   </header>
-  {#if header}<div class="b-runs">{@render header()}</div>{/if}
 
   <section class="b-top">
     <div class="b-hello">
@@ -662,8 +662,17 @@
     white-space: pre;
     opacity: 0.45;
   }
+  /* One line high, so the squares never push the date down. */
+  .b-nameline {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 17px;
+  }
   .b-runs {
-    margin: -6px 0 14px;
+    display: flex;
+    align-items: center;
+    min-width: 0;
   }
   .slot {
     display: flex;
