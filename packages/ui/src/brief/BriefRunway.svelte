@@ -342,8 +342,12 @@
     cursor: default;
     transition: background 0.2s, color 0.2s;
   }
+  /* The provisional note is quiet text, not a chip. */
   .tag {
+    height: auto;
+    padding: 0;
     color: var(--b-t3);
+    background: none;
   }
   .more:hover,
   .more:focus-visible {

@@ -802,12 +802,10 @@
   }
 }
 
-/* The highlight label: one style for every orange label on the page (the first stat,
-   the Sample marker). Fully rounded, terracotta, white 11px text. */
+/* The highlight label: one style for every orange label on the page (the first stat).
+   Fully rounded, terracotta, white 11px text. */
 .daily-brief .hot-label,
-.daily-brief .stat .pill.hot,
-.daily-brief .peek .sample,
-.daily-brief .sample-tag {
+.daily-brief .stat .pill.hot {
   display: inline-flex;
   align-items: center;
   font-family: var(--b-ui);
@@ -823,7 +821,33 @@
   color: var(--b-on-hot);
   white-space: nowrap;
 }
-/* SAMPLE marker: content with no real source yet. */
+/* SAMPLE marker: content with no real source yet. Said once and quietly, in mono caps
+   page ink with a small hollow dot; never the orange highlight, which is kept for what matters. */
+.daily-brief .peek .sample,
+.daily-brief .sample-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--b-code);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--b-t3);
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.daily-brief .peek .sample::before,
+.daily-brief .sample-tag::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
 .daily-brief .peek .sample {
   margin-bottom: 10px;
 }
