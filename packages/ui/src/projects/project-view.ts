@@ -7,6 +7,7 @@
  */
 
 import type { Story, StoryAssigneeSource, StoryChange, StoryIdentity } from "./projects-model.js";
+import { registerAccountCache } from "../common/account-caches.js";
 
 export interface LiveStoryAssignment {
   id: string;
@@ -31,6 +32,7 @@ type ProjectViewGetter = (
 ) => Promise<{ ok: boolean; value?: unknown }>;
 
 const cache = new Map<string, LiveStoryAssignment[]>();
+registerAccountCache(() => cache.clear());
 
 function cacheKey(companyUid: string, projectId: string): string {
   return `${companyUid}\n${projectId}`;

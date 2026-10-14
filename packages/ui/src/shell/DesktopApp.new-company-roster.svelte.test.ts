@@ -3,11 +3,12 @@
 /**
  * A company created outside the app (the setup bot runs `hq company create`)
  * reaches the channel directory before the host's company roster, which only
- * reloaded on sync-runner events that can land many minutes later. Clicking
- * the new company's channel then showed "This destination is no longer
- * available." to its owner. The shell now re-reads the roster before calling
- * a company-scoped row unavailable, and asks for a fresh roster as soon as a
- * rail row names a company the roster lacks.
+ * reloaded on sync-runner events that can land many minutes later. Opening
+ * the new company's channel (from the command palette — company channels are
+ * not Home rows) then showed "This destination is no longer available." to
+ * its owner. The shell now re-reads the roster before calling a
+ * company-scoped row unavailable, and asks for a fresh roster as soon as the
+ * directory names a company the roster lacks.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -149,12 +150,39 @@ async function mountShell(serverRoster: Workspace[], withRefresh = true) {
   return { props, refresh };
 }
 
-function clickNewCompanyRow(): void {
-  const title = Array.from(
+async function openCommandPalette(): Promise<void> {
+  const mac = /Mac OS X|Macintosh/i.test(navigator.userAgent);
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "k",
+      code: "KeyK",
+      metaKey: mac,
+      ctrlKey: !mac,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  await settle(6);
+}
+
+/**
+ * In All, company channels sit in the date buckets with DMs. The owner
+ * opens a channel that arrived ahead of the roster from the command
+ * palette, which is what used to trip "no longer available".
+ */
+async function clickNewCompanyRow(): Promise<void> {
+  const allTitles = Array.from(
     host!.querySelectorAll<HTMLElement>(".chat-row-title"),
-  ).find((el) => el.textContent?.trim().includes(NEW_CHANNEL));
-  expect(title, "the new company's channel is in the rail").toBeTruthy();
-  title!.closest("button")!.click();
+  ).filter((el) => el.textContent?.trim().includes(NEW_CHANNEL));
+  expect(allTitles, "the company channel is listed once in All").toHaveLength(1);
+  await openCommandPalette();
+  const palette = document.querySelector('[data-testid="command-palette"]');
+  expect(palette, "command palette opens").toBeTruthy();
+  const item = Array.from(palette!.querySelectorAll<HTMLButtonElement>("button")).find(
+    (button) => button.textContent?.includes(NEW_CHANNEL),
+  );
+  expect(item, "the company channel is in the command palette").toBeTruthy();
+  item!.click();
 }
 
 const unavailable = () =>
@@ -172,7 +200,7 @@ describe("a company created outside the app", () => {
     props.companies = [PERSONAL];
     await settle();
     refresh.mockClear();
-    clickNewCompanyRow();
+    await clickNewCompanyRow();
     await settle(20);
     expect(refresh).toHaveBeenCalled();
     expect(unavailable()).toBeNull();
@@ -185,7 +213,7 @@ describe("a company created outside the app", () => {
   it("still says unavailable when the fresh roster really lacks the company", async () => {
     const { refresh } = await mountShell([PERSONAL]);
     await settle(40);
-    clickNewCompanyRow();
+    await clickNewCompanyRow();
     await settle(20);
     expect(refresh).toHaveBeenCalled();
     expect(unavailable()).not.toBeNull();
@@ -193,7 +221,7 @@ describe("a company created outside the app", () => {
 
   it("without a refresh seam the old rule holds", async () => {
     await mountShell([PERSONAL], false);
-    clickNewCompanyRow();
+    await clickNewCompanyRow();
     await settle(20);
     expect(unavailable()).not.toBeNull();
   });

@@ -66,7 +66,7 @@ describe("formatComposerSendError names the mentions", () => {
         "[INVALID_MENTIONS] Field 'mentions' supports at most 25 participants",
         false,
       ),
-    ).toBe("Couldn't send — field 'mentions' supports at most 25 participants");
+    ).toBe("Couldn't send — a message can tag at most 25 people. Remove some names and send again.");
   });
 
   it("keeps network failures unchanged", () => {

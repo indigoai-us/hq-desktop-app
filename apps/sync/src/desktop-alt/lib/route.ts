@@ -6,6 +6,8 @@
  *   inbox
  *   inbox:dm:<personUid>
  *   inbox:channel:<channelId>[:<messageId>]
+ *   conversation:channel:<channelId>:<messageId>
+ *   conversation:dm:<personUid>:<messageId>
  *
  * URL schemes (`hq://`, `hqwork://`, `hq-desktop://`) are handled by the
  * host before this parser runs. `hq://` maps onto these wire strings:
@@ -37,6 +39,12 @@ export type DesktopRoute =
       dm?: string;
       channelId?: string;
       messageId?: string;
+    }
+  | {
+      kind: 'conversation';
+      channelId?: string;
+      dm?: string;
+      messageId: string;
     }
   | { kind: 'messages' }
   | { kind: 'meetings' }
@@ -100,6 +108,18 @@ export function parseDesktopRoute(
           : { kind: 'inbox', channelId };
       }
       break;
+    case 'conversation': {
+      const messageId = trimSegment(rest[1]);
+      const peer = trimSegment(rest[0]);
+      if (!peer || !messageId || rest.length !== 2) break;
+      if (detail === 'channel') {
+        return { kind: 'conversation', channelId: peer, messageId };
+      }
+      if (detail === 'dm') {
+        return { kind: 'conversation', dm: peer, messageId };
+      }
+      break;
+    }
     case 'messages':
       if (!detail) return { kind: 'messages' };
       break;
@@ -122,6 +142,17 @@ export function parseDesktopRoute(
     }
     case 'atlas':
       if (!detail) return { kind: 'home' };
+      break;
+    // OWNER-R33: the page is the Marketplace. `marketplace[:installed|:submit]`
+    // is the route; the old `library[:tab]` route still parses and the shell
+    // redirects its retired Skills and Workers tabs to Browse.
+    case 'marketplace':
+      if (!hasExtraSegments && (!detail || detail === 'browse')) {
+        return { kind: 'library', tab: 'marketplace' };
+      }
+      if (!hasExtraSegments && (detail === 'installed' || detail === 'submit')) {
+        return { kind: 'library', tab: detail };
+      }
       break;
     case 'library':
       if (!hasExtraSegments && (!detail || detail === 'skills')) {
@@ -164,6 +195,10 @@ export function serializeDesktopRoute(route: DesktopRoute): string {
       }
       if (route.dm) return `inbox:dm:${route.dm}`;
       return 'inbox';
+    case 'conversation':
+      return route.channelId
+        ? `conversation:channel:${route.channelId}:${route.messageId}`
+        : `conversation:dm:${route.dm}:${route.messageId}`;
     case 'messages':
       return 'messages';
     case 'meetings':
@@ -175,6 +210,10 @@ export function serializeDesktopRoute(route: DesktopRoute): string {
     case 'atlas':
       return 'home';
     case 'library':
+      if (route.tab === 'installed' || route.tab === 'submit') return `marketplace:${route.tab}`;
+      // Retired tabs (skills, workers) and profile serialise by their old
+      // route so the shell's redirect handles them.
+      if (route.tab === 'marketplace') return 'marketplace';
       return route.tab === 'skills' ? 'library' : `library:${route.tab}`;
     case 'settings':
       return route.section ? `settings:${route.section}` : 'settings';
@@ -201,6 +240,19 @@ export function desktopRouteToEmbeddedTarget(
       if (route.messageId) target.messageId = route.messageId;
       return target;
     }
+    case 'conversation':
+      return route.channelId
+        ? {
+            kind: 'channel',
+            channelId: route.channelId,
+            replyRootEventId: route.messageId,
+            messageId: route.messageId,
+          }
+        : {
+            kind: 'dm',
+            personUid: route.dm!,
+            replyRootEventId: route.messageId,
+          };
     case 'messages':
       return { kind: 'messages' };
     case 'meetings':

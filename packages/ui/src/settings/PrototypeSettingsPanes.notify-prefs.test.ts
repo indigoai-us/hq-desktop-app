@@ -104,7 +104,10 @@ describe("Settings > Notifications server prefs", () => {
     q("notify-pref-mentions")!.click();
     await vi.waitFor(() => expect(q("notify-prefs-save-error")).not.toBeNull());
     expect(q("notify-pref-mentions")?.getAttribute("aria-checked")).toBe("true");
-    expect(q("notify-prefs-save-error")?.textContent).toBe("Server unavailable");
+    // AUDIT-3c: plain copy, not the server text.
+    expect(q("notify-prefs-save-error")?.textContent).toBe(
+      "Couldn't save notification settings. Try again.",
+    );
   });
 
   it("pauses indefinitely with pausedUntil forever", async () => {
@@ -165,5 +168,41 @@ describe("Settings > Notifications server prefs", () => {
       ),
     );
     await vi.waitFor(() => expect(q("notify-prefs-master-off")).not.toBeNull());
+  });
+
+  it("a raw load failure shows plain copy and logs the raw text (AUDIT-3c)", async () => {
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(makeAdapter({ getNotifyPrefs: async () => failure("invoke", RAW) }));
+    await vi.waitFor(() => expect(q("notify-prefs-error")).not.toBeNull());
+    expect(q("notify-prefs-error")?.textContent).toContain("Couldn't load notification settings. Try again.");
+    expect(host.textContent).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[settings] notification settings load failed", RAW);
+    warn.mockRestore();
+  });
+
+  it("a thrown load or save shows plain copy and logs the raw error (AUDIT-3c)", async () => {
+    const err = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(makeAdapter({ getNotifyPrefs: async () => { throw err; } }));
+    await vi.waitFor(() => expect(q("notify-prefs-error")).not.toBeNull());
+    expect(host.textContent).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[settings] notification settings load failed", err);
+    await unmount(component!);
+    component = null;
+    host.remove();
+    render(
+      makeAdapter({
+        getNotifyPrefs: async () => ok({ prefs: PREFS, paused: false }),
+        updateNotifyPrefs: async () => { throw err; },
+      }),
+    );
+    await vi.waitFor(() => expect(q("notify-pref-mentions")).not.toBeNull());
+    q("notify-pref-mentions")!.click();
+    await vi.waitFor(() => expect(q("notify-prefs-save-error")).not.toBeNull());
+    expect(q("notify-prefs-save-error")?.textContent).toBe("Couldn't save notification settings. Try again.");
+    expect(host.textContent).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[settings] notification settings save failed", err);
+    warn.mockRestore();
   });
 });

@@ -316,12 +316,10 @@ export function createSetupInstallGuideCallbacks(
         await deps.openUrl(url);
         return { ok: true };
       } catch (err) {
+        console.warn("[hq-desktop] open download page failed", err);
         return {
           ok: false,
-          reason:
-            err instanceof Error && err.message
-              ? err.message
-              : "HQ couldn't open the download page.",
+          reason: "HQ couldn't open the download page. Try again.",
         };
       }
     },
@@ -340,14 +338,10 @@ export function createSetupInstallGuideCallbacks(
         await deps.invoke<void>(command, { url });
         return { ok: true };
       } catch (err) {
+        console.warn(`[hq-desktop] open ${label} failed`, err);
         return {
           ok: false,
-          reason:
-            err instanceof Error && err.message
-              ? err.message
-              : typeof err === "string" && err.trim()
-                ? err.trim()
-                : `HQ couldn't open ${label} on this computer.`,
+          reason: `HQ couldn't open ${label} on this computer. Try again.`,
         };
       }
     },

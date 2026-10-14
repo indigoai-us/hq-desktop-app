@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Step C for a Cloud bot: the name, the @handle it is created under, and an
    * optional job title.
@@ -29,11 +30,9 @@
     claudeProviderEnabled: boolean;
     cloudProvisionOptions: AgentProvisionOptionsView | null;
     cloudQuoteStatus: "loading" | "ready" | "error";
-    apiKey: string;
     disabled?: boolean;
     autofocus?: boolean;
     onpatch: (patch: Partial<CreateBotDraft>) => void;
-    onapikey: (value: string) => void;
     onretryquote: () => void;
   }
 
@@ -43,11 +42,9 @@
     claudeProviderEnabled,
     cloudProvisionOptions,
     cloudQuoteStatus,
-    apiKey,
     disabled = false,
     autofocus = true,
     onpatch,
-    onapikey,
     onretryquote,
   }: Props = $props();
 
@@ -152,53 +149,13 @@
     </fieldset>
   </div>
 
-  <div class="cb-field">
-    <fieldset class="cloud-choice-group" disabled={disabled} data-testid="cloud-bot-auth-choice">
-      <legend class="cb-label">Authentication</legend>
-      <label class="cloud-choice">
-        <input
-          type="radio"
-          name="cloud-bot-auth-mode"
-          value="subscription"
-          checked={draft.authMode === "subscription"}
-          data-testid="cloud-bot-auth-subscription"
-          onchange={() => onpatch({ authMode: "subscription" })}
-        />
-        <span>Subscription</span>
-      </label>
-      <label class="cloud-choice">
-        <input
-          type="radio"
-          name="cloud-bot-auth-mode"
-          value="apiKey"
-          checked={draft.authMode === "apiKey"}
-          data-testid="cloud-bot-auth-api-key"
-          onchange={() => onpatch({ authMode: "apiKey" })}
-        />
-        <span>API key</span>
-      </label>
-    </fieldset>
-    {#if draft.runtime === "claude" && draft.authMode === "subscription"}
+  {#if draft.runtime === "claude"}
+    <div class="cb-field">
       <p class="cb-help" data-testid="cloud-bot-claude-subscription-help">
         After creation, HQ opens the Claude authorization page.
       </p>
-    {/if}
-    {#if draft.authMode === "apiKey"}
-      <label class="cb-label" for="cloud-bot-api-key">Provider API key</label>
-      <input
-        id="cloud-bot-api-key"
-        class="cb-input"
-        type="password"
-        autocomplete="new-password"
-        spellcheck="false"
-        data-testid="cloud-bot-api-key"
-        value={apiKey}
-        disabled={disabled}
-        oninput={(event) => onapikey((event.currentTarget as HTMLInputElement).value)}
-      />
-      <p class="cb-help">Sent with the create request and never shown in the bot profile.</p>
-    {/if}
-  </div>
+    </div>
+  {/if}
 
   <div class="cb-field">
     <fieldset class="cloud-size-options" disabled={disabled || cloudQuoteStatus !== "ready"} data-testid="cloud-bot-size-choice">
@@ -207,7 +164,7 @@
         <p class="cb-help" role="status" data-testid="cloud-bot-quote-loading">Loading your company’s price quote…</p>
       {:else if cloudQuoteStatus === "error"}
         <p class="cb-help error" role="alert" data-testid="cloud-bot-quote-error">Your company’s price quote couldn’t be loaded, so creation is paused.</p>
-        <button type="button" class="cloud-retry" disabled={disabled} data-testid="cloud-bot-quote-retry" onclick={onretryquote}>Try again</button>
+        <button type="button" class="cloud-retry" disabled={disabled} data-testid="cloud-bot-quote-retry" onclick={onretryquote}><RailIcon name="refresh" />Try again</button>
       {:else if cloudProvisionOptions?.options.length}
         {#each cloudProvisionOptions.options as option (option.key)}
           <label class="cloud-size-option" class:selected={draft.size === option.key} class:unavailable={!option.selectable || option.netMonthlyCents === null}>
@@ -233,7 +190,7 @@
           </label>
         {/each}
       {:else}
-        <p class="cb-help error" data-testid="cloud-bot-no-size">No agent sizes are available for this company right now.</p>
+        <p class="cb-help error" data-testid="cloud-bot-no-size">No bot sizes are available for this company right now.</p>
       {/if}
     </fieldset>
   </div>
@@ -321,7 +278,7 @@
     min-width: 0;
     padding: 8px 10px;
     border: 1px solid var(--v4-control-border, var(--border));
-    border-radius: 8px;
+    border-radius: 6px;
     background: var(--v4-control-bg, transparent);
     color: var(--t1);
     font-size: 13px;
@@ -329,7 +286,7 @@
   }
   .cloud-choice:has(input:checked),
   .cloud-size-option.selected {
-    background: color-mix(in srgb, var(--v4-brand-accent, #4c6fff) 9%, transparent);
+    background: var(--sel, var(--v4-active-row, rgba(127, 127, 127, 0.14)));
   }
   .cloud-choice input,
   .cloud-size-option input {
@@ -350,20 +307,22 @@
     min-width: 0;
   }
   .cloud-size-copy strong {
-    font-weight: 600;
+    font-weight: 500;
   }
   .cloud-size-copy small {
     color: var(--t3);
     font-size: 13px;
-    line-height: 1.35;
+    line-height: 1.45;
   }
   .cloud-retry {
-    padding: 5px 9px;
-    border: 1px solid var(--v4-control-border, var(--border));
-    border-radius: 7px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
+    border: 1px solid var(--panel-border, var(--v4-control-border, var(--border)));
+    border-radius: 6px;
     background: var(--v4-control-bg, transparent);
     color: var(--t1);
     font: inherit;
+    font-size: 13px;
     cursor: pointer;
   }
   .cloud-retry:disabled {
@@ -377,7 +336,7 @@
   }
   .handle-at {
     color: var(--t3);
-    font: 500 13px/1 var(--font-mono);
+    font-size: 13px;
   }
   .handle-row .cb-input {
     flex: 1 1 auto;

@@ -87,6 +87,22 @@ Block types: `stat` (label/value/delta/trend tiles), `table` (columns + rows +
 per-column align), `chart` (`line`|`bar`, one or more numeric series, optional
 categories), and `markdown` (routed through the same CSP-safe renderer).
 
+### Icons on title labels
+
+Every block that carries a title or label draws a small monochrome icon before
+it: `badge`, `callout`, `decision` (before the question), `progress` and each
+`stat` item. The agent may pick one with an optional `icon` field, a closed list
+of names: `user`, `folder`, `file`, `check`, `clock`, `flag`, `link`, `mail`, `alert`, `error`, `info`, `star`, `tag`, `send`, `calendar`, `chart`, `question`. The app draws its own icon for the name; the agent never
+sends markup, a path or a link. A missing or unknown name falls back to the
+default for that kind: `badge` → `tag`, `progress` and `stat` → `chart`,
+`decision` → `question`, `callout` → by tone (`info` → `info`, `success` →
+`check`, `warning` → `alert`, `danger` → `error`).
+
+`keyValue` items take the same optional `icon` on the key, with no default:
+keys show an icon only when the agent names one. A `keyValue` block renders as
+an inline, wrapping run of pairs (muted key, then value), not a two-column
+table. Long values wrap. Up to 50 pairs.
+
 ### How an agent emits a block (`hq-block` fence)
 
 The agent writes its normal terse answer, then appends a fenced block:

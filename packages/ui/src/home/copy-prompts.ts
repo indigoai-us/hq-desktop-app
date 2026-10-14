@@ -8,12 +8,11 @@
  * no plumbing changes.
  *
  * Prompts speak to an HQ-aware agent — they reference HQ skills
- * (`/resolve-conflicts`, `/hq-login`, `/update-hq`, `/setup`, etc.) and the
+ * (`/hq-login`, `/update-hq`, `/setup`, etc.) and the
  * hq CLI commands the agent has access to.
  */
 
 export type IssueKind =
-  | "sync-conflict"
   | "sync-failed"
   | "auth-expired"
   | "hq-cli-update-available"
@@ -68,20 +67,6 @@ function num(issue: Issue, key: string): number {
 }
 
 const builders: Record<IssueKind, (i: Issue) => string> = {
-  "sync-conflict": (i) => {
-    const count = num(i, "count");
-    const company = val(i, "company");
-    const countLine =
-      count > 0
-        ? `${count} file conflict${count === 1 ? "" : "s"}`
-        : "sync conflicts";
-    return [
-      `I'm seeing ${countLine} in my HQ menubar app${company ? ` (company: ${company})` : ""}.`,
-      "",
-      "Please run `/resolve-conflicts` to walk me through each one. Use the local file as the source of truth unless the remote is clearly newer + intentional. After resolving, run `hq sync` once to confirm the menubar shows zero conflicts.",
-    ].join("\n");
-  },
-
   "sync-failed": (i) => {
     const msg = val(i, "message");
     const company = val(i, "company");

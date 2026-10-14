@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 const app = read('src/App.svelte');
+const channelUnreadListeners = read('src/lib/channelUnreadListeners.ts');
 const tray = read('src-tauri/src/tray.rs');
 const mainRs = read('src-tauri/src/main.rs');
 const trayHelper = read('src-tauri/src/tray_helper.rs');
@@ -127,8 +128,9 @@ describe('PL-06: `main` keeps running as the controller while it renders nothing
     expect(script).toContain('Math.max(0, unreadSummary.pendingRequests)');
     expect(script).toContain('Math.max(0, unreadSummary.channelUnread)');
     expect(script).toContain("invoke<ChannelsUnreadResponse | null>('list_channels')");
-    expect(script).toContain("'channel:unread-changed'");
-    expect(script).toContain("'channel:updated'");
+    expect(script).toContain('registerChannelUnreadListeners({');
+    expect(channelUnreadListeners).toContain("listen('channel:unread-changed'");
+    expect(channelUnreadListeners).toContain("listen('channel:updated'");
     expect(markupCode).not.toContain('messagesUnreadCount');
   });
 

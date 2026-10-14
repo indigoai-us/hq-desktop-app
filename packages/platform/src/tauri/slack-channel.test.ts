@@ -186,7 +186,8 @@ describe("a bridge that fails before the server answers", () => {
     expect(result.ok).toBe(false);
     expect(JSON.stringify(result)).not.toContain(TOKEN);
     if (!result.ok) {
-      expect(result.code).toBe("invoke");
+      // The rail reports a bridge failure as a plain network failure.
+      expect(result.code).toBe("network");
       expect("status" in result).toBe(false);
     }
   });
@@ -202,7 +203,8 @@ describe("a bridge that fails before the server answers", () => {
     expect(result.ok).toBe(false);
     expect(JSON.stringify(result)).not.toContain(TOKEN);
     if (!result.ok) {
-      expect(result.code).toBe("invoke");
+      // The rail reports a bridge failure as a plain network failure.
+      expect(result.code).toBe("network");
       expect("status" in result).toBe(false);
     }
   });

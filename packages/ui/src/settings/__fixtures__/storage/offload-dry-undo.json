@@ -1,0 +1,20 @@
+{
+  "history": {
+    "uploaded": 6,
+    "bytes": 378535936,
+    "freed_bytes": 0,
+    "candidates": 6,
+    "candidate_bytes": 378535936,
+    "backup_ref": null,
+    "pending_reclaim_bytes": 378535936,
+    "reclaim_after": "2026-11-08T18:00:00Z"
+  },
+  "current": {
+    "offloaded": [],
+    "freed_bytes": 0,
+    "available": false,
+    "reason": "Offloading current files is not available yet: HQ sync would treat the replaced file as deleted."
+  },
+  "errors": [],
+  "dry_run": true
+}

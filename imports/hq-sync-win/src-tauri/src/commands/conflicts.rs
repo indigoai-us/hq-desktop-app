@@ -10,7 +10,7 @@ use crate::util::paths;
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Valid resolution strategies.
-const VALID_STRATEGIES: &[&str] = &["keep-local", "keep-remote"];
+const VALID_STRATEGIES: &[&str] = &["keep-local", "keep-remote", "discard"];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config resolution (same pattern as sync.rs / status.rs)

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildFindResults,
@@ -719,26 +719,32 @@ describe("parseCreateChannelError", () => {
     ).toBe("name-too-long");
   });
 
-  it("passes through a clean unknown message", () => {
-    expect(parseCreateChannelError("network unreachable")).toEqual({
+  it("never shows an unknown raw message; logs it and shows plain copy", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const failure = parseCreateChannelError(new Error(raw));
+    expect(failure).toEqual({
       code: "unknown",
-      message: "network unreachable",
+      message: "Could not create the channel. Try again.",
     });
+    expect(failure.message).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[create-channel] create failed", raw);
+    warn.mockRestore();
   });
 
   it("falls back when the unknown message carries a raw uid", () => {
     expect(
       parseCreateChannelError(new Error("boom for prs_01ABC")).message,
-    ).toBe("Could not create the channel.");
+    ).toBe("Could not create the channel. Try again.");
   });
 
   it("falls back on a non-Error throw and on an empty message", () => {
     expect(parseCreateChannelError({ nope: true }).code).toBe("unknown");
     expect(parseCreateChannelError(new Error("")).message).toBe(
-      "Could not create the channel.",
+      "Could not create the channel. Try again.",
     );
     expect(parseCreateChannelError(null).message).toBe(
-      "Could not create the channel.",
+      "Could not create the channel. Try again.",
     );
   });
 });

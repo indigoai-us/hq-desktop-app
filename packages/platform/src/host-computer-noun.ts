@@ -21,15 +21,36 @@ export type HostComputerNoun = "Mac" | "PC" | "computer";
  */
 export function hostComputerNoun(
   probe: HostProbe = readHostProbe(),
+  userAgent: string = defaultUserAgent(),
 ): HostComputerNoun {
   switch (probe.osPlatform) {
     case "macos":
       return "Mac";
     case "windows":
       return "PC";
+    case null:
+      // A native shell whose OS probe never lands. apps/sync registers no OS
+      // plugin and injects no __HQ_HOST_OS__, so without this every desktop
+      // window said "this computer" on a Mac. Its webview's user-agent names
+      // the host. A browser (no native shell) keeps the neutral noun.
+      return probe.tauri ? nounFromUserAgent(userAgent) : "computer";
     default:
       return "computer";
   }
+}
+
+function defaultUserAgent(): string {
+  return typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
+    ? navigator.userAgent
+    : "";
+}
+
+/** "Mac" for a macOS webview (not iPhone or iPad), "PC" for Windows, else "computer". */
+export function nounFromUserAgent(userAgent: string): HostComputerNoun {
+  if (/iPhone|iPad|iPod/i.test(userAgent)) return "computer";
+  if (/Macintosh|Mac OS X/i.test(userAgent)) return "Mac";
+  if (/Windows/i.test(userAgent)) return "PC";
+  return "computer";
 }
 
 /**

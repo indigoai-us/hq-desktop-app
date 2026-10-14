@@ -1,0 +1,287 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type { Workspace } from "../workspaces.js";
+import {
+  companyNameIssue,
+  companySlugFromName,
+  TEAM_ACTION_TIMEOUT_MS,
+  activeCloudCompanyBySlug,
+  TEAM_GENERIC_FAILURE,
+  createTeamActionRunner,
+  defaultTeamChoice,
+  defaultTeamPick,
+  teamHandoff,
+  teamOptionsFrom,
+  teamSummary,
+  type TeamActionResult,
+  type TeamActionState,
+} from "./team-step.js";
+
+function ws(slug: string, status: string | null, extra: Partial<Workspace> = {}): Workspace {
+  return {
+    slug,
+    displayName: slug.toUpperCase(),
+    kind: slug === "personal" ? "personal" : "company",
+    state: status === "pending" ? "cloud-only" : "synced",
+    cloudUid: `cmp_${slug}`,
+    bucketName: null,
+    hasLocalFolder: true,
+    localPath: null,
+    membershipStatus: status,
+    role: null,
+    lastSyncedAt: null,
+    brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
+    ...extra,
+  };
+}
+
+describe("team options from the roster", () => {
+  it("splits pending invites from companies the person belongs to, never offering the personal vault", () => {
+    const options = teamOptionsFrom([
+      ws("personal", null, { state: "personal" }),
+      ws("acme", "pending"),
+      ws("harbor", "active"),
+      ws("harbor", "active"),
+      ws("cedar", null, { state: "local-only", cloudUid: null }),
+      ws("personal", "active", { kind: "company", state: "cloud-only" }),
+    ]);
+    expect(options.invites.map((c) => c.slug)).toEqual(["acme"]);
+    expect(options.companies.map((c) => c.slug)).toEqual(["harbor", "cedar"]);
+    expect(options.companies[1]!.companyUid).toBeNull();
+    expect(teamOptionsFrom(null)).toEqual({ invites: [], companies: [] });
+  });
+
+  it("defaults to the one company the person is in, else Just me; an invite is never accepted by default", () => {
+    const one = teamOptionsFrom([ws("harbor", "active"), ws("acme", "pending")]);
+    expect(defaultTeamChoice(one)).toEqual({ kind: "company", how: "existing", company: one.companies[0] });
+    expect(defaultTeamPick(one)).toEqual({ kind: "existing", company: one.companies[0] });
+    expect(defaultTeamChoice(teamOptionsFrom([ws("acme", "pending")]))).toEqual({ kind: "personal" });
+    expect(defaultTeamChoice(teamOptionsFrom([ws("a", "active"), ws("b", "active")]))).toEqual({ kind: "personal" });
+  });
+
+  it("hands off and summarises each choice", () => {
+    const company = { companyUid: "cmp_a", slug: "acme", name: "Acme" };
+    expect(teamHandoff({ kind: "personal" })).toEqual({ kind: "personal" });
+    expect(teamHandoff({ kind: "company", how: "created", company })).toEqual({ kind: "company", how: "created", name: "Acme", slug: "acme" });
+    expect(teamSummary(null)).toBe("Just me");
+    expect(teamSummary({ kind: "company", how: "joined", company })).toBe("Joined Acme");
+    expect(teamSummary({ kind: "company", how: "created", company })).toBe("Started Acme");
+    expect(teamSummary({ kind: "company", how: "existing", company })).toBe("Acme");
+  });
+});
+
+describe("company names", () => {
+  it("makes the handle the create card needs from the typed name", () => {
+    expect(companySlugFromName("Pickle Works")).toBe("pickle-works");
+    expect(companySlugFromName("  Café  Olé!! ")).toBe("cafe-ole");
+    expect(companySlugFromName("42 Labs")).toBe("labs");
+    expect(companySlugFromName("A")).toBeNull();
+    expect(companySlugFromName("x".repeat(80))).toHaveLength(30);
+  });
+
+  it("makes handles the server accepts: a letter first, at most 30 long", () => {
+    // hq-pro src/lifecycle/actions/company-slug-availability.ts COMPANY_SLUG_RE.
+    const serverRule = /^[a-z][a-z0-9-]{0,29}$/;
+    for (const name of [
+      "Pickle Works",
+      "StefanTest123",
+      "42 Labs",
+      "The Very Long Company Name of Many Words Incorporated",
+      "Acme 2024 Holdings and Partners Worldwide",
+      "x".repeat(80),
+    ]) {
+      const slug = companySlugFromName(name);
+      expect(slug, name).not.toBeNull();
+      expect(slug!.length, name).toBeLessThanOrEqual(30);
+      expect(serverRule.test(slug!), `${name} -> ${slug}`).toBe(true);
+    }
+    expect(companySlugFromName("StefanTest123")).toBe("stefantest123");
+    // A cut that lands on a hyphen does not leave it trailing.
+    expect(companySlugFromName("abcdefghijklmnopqrstuvwxyzabc def")).toBe("abcdefghijklmnopqrstuvwxyzabc");
+    expect(companyNameIssue("StefanTest123")).toBeNull();
+  });
+
+  it("says why a name cannot be used", () => {
+    expect(companyNameIssue("")).toBe("Give your company a name.");
+    expect(companyNameIssue("Ok")).not.toBeNull();
+    expect(companyNameIssue("Acme Robotics")).toBeNull();
+    expect(companyNameIssue("a".repeat(61))).toBe("Keep the name under 60 characters.");
+  });
+});
+
+describe("one join or create at a time", () => {
+  it("shows running at once, ignores repeat presses, and does not run a finished card again", async () => {
+    const states: TeamActionState[] = [];
+    let resolve!: (r: TeamActionResult) => void;
+    const action = vi.fn(() => new Promise<TeamActionResult>((r) => (resolve = r)));
+    const runner = createTeamActionRunner((s) => states.push(s));
+    runner.run("invite:acme", "Joining Acme…", action);
+    expect(runner.current()).toEqual({ state: "running", key: "invite:acme", label: "Joining Acme…" });
+    runner.run("invite:acme", "Joining Acme…", action);
+    runner.run("create", "Starting X…", action);
+    await Promise.resolve();
+    expect(action).toHaveBeenCalledTimes(1);
+    resolve({ ok: true, choice: { kind: "personal" } });
+    await vi.waitFor(() => expect(runner.current().state).toBe("done"));
+    runner.run("invite:acme", "Joining Acme…", action);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(states.map((s) => s.state)).toEqual(["running", "done"]);
+  });
+
+  it("a failure keeps the reason; Retry runs the same action again; a throw is a plain sentence", async () => {
+    const action = vi
+      .fn<() => Promise<TeamActionResult>>()
+      .mockResolvedValueOnce({ ok: false, reason: "Your plan limit is reached." })
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce({ ok: true, choice: { kind: "personal" } });
+    const runner = createTeamActionRunner(() => undefined);
+    runner.run("invite:acme", "Joining Acme…", action);
+    await vi.waitFor(() => expect(runner.current()).toMatchObject({ state: "failed", reason: "Your plan limit is reached." }));
+    runner.retry();
+    await vi.waitFor(() => expect(runner.current()).toMatchObject({ state: "failed", reason: "That did not work. Try again in a moment." }));
+    runner.retry();
+    await vi.waitFor(() => expect(runner.current().state).toBe("done"));
+    expect(action).toHaveBeenCalledTimes(3);
+  });
+
+  it("clear forgets a failure when the person picks another card", async () => {
+    const runner = createTeamActionRunner(() => undefined);
+    runner.run("create", "Starting…", async () => ({ ok: false, reason: "No." }));
+    await vi.waitFor(() => expect(runner.current().state).toBe("failed"));
+    runner.clear();
+    expect(runner.current()).toEqual({ state: "idle" });
+  });
+
+  it("a join that never answers fails after 30 seconds, and its late answer is ignored", async () => {
+    vi.useFakeTimers();
+    try {
+      expect(TEAM_ACTION_TIMEOUT_MS).toBe(30_000);
+      const states: TeamActionState[] = [];
+      let resolveFirst!: (r: TeamActionResult) => void;
+      const action = vi
+        .fn<() => Promise<TeamActionResult>>()
+        .mockImplementationOnce(() => new Promise<TeamActionResult>((r) => (resolveFirst = r)))
+        .mockImplementationOnce(() => new Promise<TeamActionResult>(() => undefined));
+      const runner = createTeamActionRunner((s) => states.push(s));
+      runner.run("invite:acme", "Joining Acme…", action);
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS - 1);
+      expect(runner.current().state).toBe("running");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runner.current()).toEqual({ state: "failed", key: "invite:acme", label: "Joining Acme…", reason: TEAM_GENERIC_FAILURE });
+      // Retry runs it again; the first call's late answer then changes nothing.
+      runner.retry();
+      expect(runner.current().state).toBe("running");
+      resolveFirst({ ok: true, choice: { kind: "personal" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner.current().state).toBe("running");
+      expect(states.filter((s) => s.state === "done")).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS);
+      expect(runner.current().state).toBe("failed");
+      expect(action).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a late success after the timeout does not flip the failure", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolve!: (r: TeamActionResult) => void;
+      const runner = createTeamActionRunner(() => undefined, { timeoutMs: 1000 });
+      runner.run("create", "Starting X…", () => new Promise<TeamActionResult>((r) => (resolve = r)));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(runner.current().state).toBe("failed");
+      resolve({ ok: true, choice: { kind: "personal" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner.current().state).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("after dispose nothing is reported: no timeout, no warning, and a late answer is ignored", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const onchange = vi.fn();
+      let resolve!: (r: TeamActionResult) => void;
+      const runner = createTeamActionRunner(onchange);
+      runner.run("invite:acme", "Joining Acme…", () => new Promise<TeamActionResult>((r) => (resolve = r)));
+      expect(onchange).toHaveBeenCalledTimes(1);
+      runner.dispose();
+      await vi.advanceTimersByTimeAsync(TEAM_ACTION_TIMEOUT_MS * 2);
+      resolve({ ok: true, choice: { kind: "personal" } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onchange).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+      // A press after teardown runs nothing.
+      const action = vi.fn(async (): Promise<TeamActionResult> => ({ ok: true, choice: { kind: "personal" } }));
+      runner.run("create", "Starting X…", action);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(action).not.toHaveBeenCalled();
+      expect(onchange).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("after dispose a late throw is not reported or logged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const onchange = vi.fn();
+      let reject!: (e: unknown) => void;
+      const runner = createTeamActionRunner(onchange);
+      runner.run("create", "Starting X…", () => new Promise<TeamActionResult>((_r, j) => (reject = j)));
+      await Promise.resolve();
+      runner.dispose();
+      reject(new Error("late"));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onchange).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("an answer in time clears the timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const runner = createTeamActionRunner(() => undefined, { timeoutMs: 1000 });
+      runner.run("create", "Starting X…", async () => ({ ok: true, choice: { kind: "personal" } }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner.current().state).toBe("done");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(runner.current().state).toBe("done");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the company a Retry may find in the roster", () => {
+  it("uses an active cloud company with that slug", () => {
+    expect(activeCloudCompanyBySlug([ws("pickle-works", "active")], "pickle-works")).toEqual({
+      companyUid: "cmp_pickle-works",
+      slug: "pickle-works",
+      name: "PICKLE-WORKS",
+    });
+  });
+
+  it("ignores a local-only folder with the same slug", () => {
+    const local = ws("pickle-works", null, { cloudUid: null, state: "local-only", membershipStatus: null });
+    expect(activeCloudCompanyBySlug([local], "pickle-works")).toBeNull();
+    // Even when it claims to be active, no cloud id means no company.
+    expect(activeCloudCompanyBySlug([{ ...local, membershipStatus: "active", cloudUid: "  " }], "pickle-works")).toBeNull();
+  });
+
+  it("ignores a pending invite, a synced row without active membership, another slug and the personal vault", () => {
+    expect(activeCloudCompanyBySlug([ws("pickle-works", "pending")], "pickle-works")).toBeNull();
+    expect(activeCloudCompanyBySlug([ws("pickle-works", null)], "pickle-works")).toBeNull();
+    expect(activeCloudCompanyBySlug([ws("acme", "active")], "pickle-works")).toBeNull();
+    expect(activeCloudCompanyBySlug([ws("personal", "active")], "personal")).toBeNull();
+    expect(activeCloudCompanyBySlug(null, "pickle-works")).toBeNull();
+  });
+});

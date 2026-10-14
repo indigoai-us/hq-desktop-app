@@ -1,4 +1,6 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import { dismissable } from "../common/dismissable.js";
   import type { SettingsApi, UpdatesApi } from "@hq/platform";
   import type { SettingsUpdater } from "../common/settings-write";
   import UnavailableNote from "../common/UnavailableNote.svelte";
@@ -383,6 +385,7 @@
 
 <div
   class="version-popout"
+  use:dismissable={{ onclose, trap: false, autofocus: false }}
   class:below={placement === "below"}
   data-testid="version-popout"
   role="dialog"
@@ -454,7 +457,7 @@
         {#if checkingAnyUpdate}
           <span class="vp-inline-spinner" aria-hidden="true"></span>
           Checking app + Core…
-        {:else}
+        {:else}<RailIcon name="refresh" />
           Check all updates
         {/if}
       </button>
@@ -471,7 +474,7 @@
           {#if phase === "downloading"}
             <span class="vp-inline-spinner" aria-hidden="true"></span>
             Downloading…
-          {:else}
+          {:else}<RailIcon name="refresh" />
             Restart to update
           {/if}
         </button>
@@ -541,7 +544,7 @@
             class="vp-inline-retry"
             data-testid="version-popout-auto-retry"
             onclick={retryAutoUpdateSave}
-          >
+          ><RailIcon name="refresh" />
             Retry
           </button>
         </div>
@@ -560,7 +563,7 @@
             disabled={autoUpdateLoading}
             aria-busy={autoUpdateLoading}
             onclick={retryAutoUpdateLoad}
-          >
+          ><RailIcon name="refresh" />
             {autoUpdateLoading ? "Retrying…" : "Retry"}
           </button>
         </div>
@@ -595,14 +598,10 @@
     border-radius: var(--v4-radius-popover);
     opacity: 1;
     background: var(
-      --v4-popover-strong,
+      --overlay-bg,
+      var(--v4-popover-strong,
       var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.82)))
-    );
-    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    -webkit-backdrop-filter: var(
-      --v4-glass-filter-popover,
-      var(--v4-glass-filter)
-    );
+    ));
     box-shadow:
       var(--v4-shadow-popover, var(--pop-shadow)),
       inset 0 1px 0 var(--v4-glass-highlight);
@@ -721,17 +720,17 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: var(--hq-btn-gap);
     width: 100%;
-    min-height: 34px;
-    padding: 6px 12px;
+    min-height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--border-strong);
     border-radius: 6px;
     background: var(--row-active);
     color: var(--fg);
     font: inherit;
     font-size: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
   }

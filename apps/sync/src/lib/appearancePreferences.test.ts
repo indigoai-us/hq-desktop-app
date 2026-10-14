@@ -246,6 +246,41 @@ describe('appearance preferences', () => {
     cleanupNext();
   });
 
+  it('applies a Settings theme request natively and boots with it on the next launch', async () => {
+    const storage = memoryStorage();
+    const target = fakeTarget();
+    const { root } = fakeRoot();
+    const applyNativeTheme = vi.fn();
+    const cleanup = installAppearancePreferences({ target, storage, root, applyNativeTheme });
+    await Promise.resolve();
+    expect(applyNativeTheme).toHaveBeenLastCalledWith(null);
+
+    // packages/ui requestColorTheme: a whole preference with the live opacity.
+    target.dispatchEvent(
+      new CustomEvent(APPEARANCE_REQUEST_EVENT, {
+        detail: { colorTheme: 'dark', windowTransparency: 0 },
+      }),
+    );
+    expect(root.dataset.forceTheme).toBe('dark');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(applyNativeTheme).toHaveBeenLastCalledWith('dark');
+    cleanup();
+
+    const { root: nextRoot } = fakeRoot();
+    const nextNative = vi.fn();
+    const cleanupNext = installAppearancePreferences({
+      target: fakeTarget(),
+      storage,
+      root: nextRoot,
+      applyNativeTheme: nextNative,
+    });
+    await Promise.resolve();
+    expect(nextRoot.dataset.forceTheme).toBe('dark');
+    expect(nextNative).toHaveBeenCalledWith('dark');
+    cleanupNext();
+  });
+
   it('drives the native backdrop with each distinct transparency value', async () => {
     const storage = memoryStorage();
     const target = fakeTarget();

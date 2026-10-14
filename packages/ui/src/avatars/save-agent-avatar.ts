@@ -112,7 +112,8 @@ export async function saveAgentAvatar(
       itemId: selection.itemId,
     });
     if (!result.ok) {
-      throw new Error(result.message?.trim() || "Could not save the agent avatar.");
+      console.warn("[avatar] select agent avatar failed", result.message);
+      throw new Error("Could not save the agent avatar. Try again.");
     }
     const pack = deps.packs.find((entry) => entry.id === selection.packId);
     const item = pack?.items.find((entry) => entry.id === selection.itemId);
@@ -139,7 +140,8 @@ export async function saveAgentAvatar(
     avatarBase64: prepared.base64,
   });
   if (!result.ok) {
-    throw new Error(result.message?.trim() || "Could not save the agent avatar.");
+    console.warn("[avatar] update agent profile failed", result.message);
+    throw new Error("Could not save the agent avatar. Try again.");
   }
   return {
     previewDataUrl: prepared.previewDataUrl,

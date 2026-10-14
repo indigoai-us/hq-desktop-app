@@ -115,7 +115,36 @@ describe("saveAgentAvatar", () => {
           }),
         },
       ),
-    ).rejects.toThrow("not authorized");
+    ).rejects.toThrow("Could not save the agent avatar. Try again.");
+  });
+
+  it("never puts raw server text in the thrown message, and logs it", async () => {
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const deps = {
+      packs,
+      fetchBytes: async () => new Uint8Array([1]),
+      prepareAvatar: async () => ({ base64: "x", previewDataUrl: "data:image/jpeg;base64,x" }),
+      updateAgentProfile: async () => ({ ok: false as const, message: RAW }),
+      selectAgentAvatar: async () => ({ ok: false as const, message: RAW }),
+    };
+    for (const selection of [
+      { kind: "item" as const, packId: "hq-agent-mascots", itemId: "v2-dot" },
+    ]) {
+      const err = await saveAgentAvatar("agt_scout", selection, deps).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe("Could not save the agent avatar. Try again.");
+      expect((err as Error).message).not.toContain("boom");
+    }
+    const noSelect = { ...deps, selectAgentAvatar: undefined };
+    const err2 = await saveAgentAvatar(
+      "agt_scout",
+      { kind: "item", packId: "hq-agent-mascots", itemId: "v2-dot" },
+      noSelect as never,
+    ).catch((e: unknown) => e);
+    expect((err2 as Error).message).not.toContain("boom");
+    expect(warn.mock.calls.some((a) => a.some((x) => String(x).includes("boom")))).toBe(true);
+    warn.mockRestore();
   });
 });
 

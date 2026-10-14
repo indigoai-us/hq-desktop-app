@@ -494,6 +494,20 @@ describe("runCreateCloudBotOneShotEntry", () => {
     });
   });
 
+  it("never shows a transport error or its URL when the opening step cannot reach the server", async () => {
+    // The native command's own text for a request that did not complete. It
+    // is short, so the length check does not catch it.
+    const { api } = harness({
+      opened: new Error("Network error: error sending request for url (https://api.example.test/v1/tab)"),
+    });
+    const result = await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe(CLOUD_BOT_SERVER_FAILED_REASON);
+      expect(result.reason).not.toMatch(/https?:|sending request/);
+    }
+  });
+
   it("never shows a raw backend error: a plain line on screen, and only a code in the support log", async () => {
     // Regression (owner walkthrough 2026-10-02): a missing cloud permission
     // put the full "User: arn:aws:sts::... is not authorized to perform:

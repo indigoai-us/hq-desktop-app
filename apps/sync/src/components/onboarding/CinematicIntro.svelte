@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   /**
    * The cinematic first-run intro — the film that plays the first time
    * somebody opens HQ, before the setup wizard asks them for anything.

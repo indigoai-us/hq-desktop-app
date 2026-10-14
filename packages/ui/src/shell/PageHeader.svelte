@@ -4,9 +4,10 @@
    * same height and centre line as `V4TitleBar`, with the same leading
    * inset that clears macOS traffic lights.
    *
-   * `variant="window"` is the full-window chrome (Library, Settings): it
-   * reads `--titlebar-leading-inset` / `--titlebar-height` and is a Tauri
-   * drag region. `variant="embedded"` is the in-pane form (Meetings,
+   * `variant="window"` is the destination chrome (Marketplace, Settings,
+   * Files): it reads `--titlebar-height` and is a Tauri drag region. Its title
+   * starts on `--page-edge-inset`, the same edge as the page sidebar's item
+   * content. `variant="embedded"` is the in-pane form (Meetings,
    * Notifications) — same Back control, no traffic-light gutter.
    */
   import { startWindowDrag } from "../home/window-drag.js";
@@ -110,8 +111,10 @@
     cursor: default;
   }
 
+  /* Pages render right of the rail and under the top bar, so the title starts
+     on the shared page edge, not the traffic-light gutter. */
   .page-header.window {
-    padding: 0 16px 0 var(--titlebar-leading-inset, 96px);
+    padding: 0 16px 0 var(--page-edge-inset, 20px);
   }
 
   .page-header.embedded {
@@ -119,7 +122,7 @@
     min-height: var(--titlebar-height, 48px);
     flex: 0 0 auto;
     flex-wrap: wrap;
-    padding: 0 20px;
+    padding: 0 var(--page-edge-inset, 20px);
   }
 
   .page-header-back {
@@ -153,12 +156,13 @@
     outline-offset: 2px;
   }
 
+  /* One page title for every page: the canvas title token (20px/500). */
   .page-header h1 {
     margin: 0;
     color: var(--t1);
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 1.2;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
+    line-height: var(--type-title-line, 1.25);
     white-space: nowrap;
   }
 
@@ -166,9 +170,9 @@
     min-width: 0;
     overflow: hidden;
     color: var(--t3);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.45;
+    font-size: var(--type-ui, 13px);
+    font-weight: var(--type-ui-weight, 400);
+    line-height: var(--type-ui-line, 1.45);
     text-overflow: ellipsis;
     white-space: nowrap;
   }

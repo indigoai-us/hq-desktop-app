@@ -1,7 +1,7 @@
 //! Conflict resolution helpers.
 
 /// Valid resolution strategies.
-const VALID_STRATEGIES: &[&str] = &["keep-local", "keep-remote"];
+const VALID_STRATEGIES: &[&str] = &["keep-local", "keep-remote", "discard"];
 
 /// Validate that a strategy string is one of the accepted values.
 pub fn validate_strategy(strategy: &str) -> Result<(), String> {
@@ -166,8 +166,9 @@ mod tests {
 
     #[test]
     fn test_valid_strategies_list() {
-        assert_eq!(VALID_STRATEGIES.len(), 2);
+        assert_eq!(VALID_STRATEGIES.len(), 3);
         assert!(VALID_STRATEGIES.contains(&"keep-local"));
         assert!(VALID_STRATEGIES.contains(&"keep-remote"));
+        assert!(VALID_STRATEGIES.contains(&"discard"));
     }
 }

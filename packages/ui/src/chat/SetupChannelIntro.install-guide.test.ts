@@ -95,6 +95,42 @@ describe("SetupChannelIntro - guided install path (US-005)", () => {
     ).toBe("Install Claude");
   });
 
+  it("shows the guide up front when the host says no coding tool is signed in, without starting the bot", async () => {
+    const start = vi.fn(async () => ({ ok: true as const, existing: false }));
+    await render({
+      setupBot: { existing: true, ready: false, starting: false, error: null, needsCodingTool: true, start },
+      installGuide: {
+        oninstall: vi.fn(async () => ({ ok: true })),
+        onsignin: vi.fn(async () => ({ ok: true })),
+        onrefresh: vi.fn(async () => undefined),
+        downloadUrlFor: () => "https://claude.com/download",
+        onopen: () => undefined,
+      },
+    });
+    expect(host.querySelector('[data-testid="setup-bot-error"]')?.textContent).toContain(
+      "needs a coding tool signed in",
+    );
+    expect(host.querySelector('[data-testid="setup-install-guide"]')).toBeTruthy();
+    // No "Open Setup Agent" to click into a bot that cannot answer.
+    expect(host.querySelector('[data-testid="setup-run"]')).toBeNull();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("shows no guide while the host has not said (needsCodingTool unset)", async () => {
+    await render({
+      setupBot: { existing: false, ready: false, starting: false, error: null, start: vi.fn() },
+      installGuide: {
+        oninstall: vi.fn(async () => ({ ok: true })),
+        onsignin: vi.fn(async () => ({ ok: true })),
+        onrefresh: vi.fn(async () => undefined),
+        downloadUrlFor: () => "https://claude.com/download",
+        onopen: () => undefined,
+      },
+    });
+    expect(host.querySelector('[data-testid="setup-install-guide"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-run"]')).toBeTruthy();
+  });
+
   it("does not render the guided path when the host has not wired installGuide", async () => {
     await render({ installGuide: null });
     expect(host.querySelector('[data-testid="setup-bot-error"]')).toBeTruthy();

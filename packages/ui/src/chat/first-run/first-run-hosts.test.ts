@@ -1,0 +1,544 @@
+import { describe, expect, it, vi } from "vitest";
+import { ok, type AdapterResult, type Json } from "@hq/platform";
+
+import {
+  CATALOG_LIMIT,
+  CONNECT_ABORTED,
+  CREATE_UNAVAILABLE,
+  FIND_COMPANY_TIMEOUT_MS,
+  KEY_APPS,
+  createFirstRunAppsHost,
+  createFirstRunTeamHost,
+} from "./first-run-hosts.js";
+import type { FirstRunApp } from "./app-step.js";
+
+const ACME = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
+const app = (domain: string, authClass: FirstRunApp["authClass"]): FirstRunApp => ({
+  domain,
+  name: domain.split(".")[0]!,
+  description: "",
+  entryId: authClass === "oauth" ? `cat_${domain}` : null,
+  authClass,
+});
+
+describe("team host", () => {
+  it("joins through the invite claim, then pins and refreshes", async () => {
+    const claimInvite = vi.fn(async () => ok({ ok: true, claimedSlugs: ["acme"] }));
+    const joined = vi.fn();
+    const host = createFirstRunTeamHost({ claimInvite, joined, dry: false });
+    expect(await host.join(ACME)).toEqual({ ok: true, choice: { kind: "company", how: "joined", company: ACME } });
+    expect(claimInvite).toHaveBeenCalledWith("acme");
+    expect(joined).toHaveBeenCalledWith("cmp_acme");
+  });
+
+  it("a refused claim is a plain sentence, never the server's text", async () => {
+    const host = createFirstRunTeamHost({
+      claimInvite: async () => ({ ok: false, reason: "error", code: "http-500", message: "stack trace here" }),
+      dry: false,
+    });
+    expect(await host.join(ACME)).toEqual({ ok: false, reason: "Couldn't join the company. Try again." });
+  });
+
+  it("creates through the create card with a handle made from the name", async () => {
+    const createCompany = vi.fn(async () => ({ ok: true as const, companyUid: "cmp_new" }));
+    const host = createFirstRunTeamHost({ createCompany, dry: false });
+    expect(await host.create("Pickle Works")).toEqual({
+      ok: true,
+      choice: { kind: "company", how: "created", company: { companyUid: "cmp_new", slug: "pickle-works", name: "Pickle Works" } },
+    });
+    expect(createCompany).toHaveBeenCalledWith("Pickle Works", "pickle-works");
+    expect(await createFirstRunTeamHost({ dry: false }).create("Pickle Works")).toEqual({ ok: false, reason: CREATE_UNAVAILABLE });
+  });
+
+  it("a dry walk joins and creates nothing", async () => {
+    const claimInvite = vi.fn();
+    const createCompany = vi.fn();
+    const host = createFirstRunTeamHost({ claimInvite, createCompany, dry: true, delayMs: 0 });
+    expect((await host.join(ACME)).ok).toBe(true);
+    expect((await host.create("Pickle Works")).ok).toBe(true);
+    expect(claimInvite).not.toHaveBeenCalled();
+    expect(createCompany).not.toHaveBeenCalled();
+  });
+});
+
+describe("team host: a create or join that ran long", () => {
+  type CreateAnswer = { ok: true; companyUid: string | null } | { ok: false; reason: string };
+  function pendingCreate() {
+    const answers: Array<(a: CreateAnswer) => void> = [];
+    const createCompany = vi.fn(() => new Promise<CreateAnswer>((r) => answers.push(r)));
+    return { createCompany, answers };
+  }
+  const PICKLE = { companyUid: "cmp_pickle", slug: "pickle-works", name: "Pickle Works" };
+
+  it("a Retry while the first create still runs waits on that create instead of starting a second", async () => {
+    const { createCompany, answers } = pendingCreate();
+    const findCompany = vi.fn(async () => null);
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    const first = host.create("Pickle Works");
+    const retry = host.create("Pickle  Works");
+    expect(retry).toBe(first);
+    await Promise.resolve();
+    expect(createCompany).toHaveBeenCalledTimes(1);
+    answers[0]!({ ok: true, companyUid: "cmp_pickle" });
+    expect(await retry).toEqual({ ok: true, choice: { kind: "company", how: "created", company: PICKLE } });
+    expect(findCompany).not.toHaveBeenCalled();
+  });
+
+  it("after a create that answered late with success, a Retry keeps that company and creates nothing", async () => {
+    const { createCompany, answers } = pendingCreate();
+    const host = createFirstRunTeamHost({ createCompany, findCompany: vi.fn(async () => null), dry: false });
+    const first = host.create("Pickle Works");
+    await Promise.resolve();
+    answers[0]!({ ok: true, companyUid: "cmp_pickle" });
+    await first;
+    expect(await host.create("Pickle Works")).toEqual({ ok: true, choice: { kind: "company", how: "created", company: PICKLE } });
+    expect(createCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("after a failed create, a Retry re-reads the roster and settles on the company when it now exists", async () => {
+    const createCompany = vi.fn(async (): Promise<CreateAnswer> => ({ ok: false, reason: "That did not work." }));
+    const findCompany = vi.fn(async (slug: string) => (slug === "pickle-works" ? PICKLE : null));
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    expect((await host.create("Pickle Works")).ok).toBe(false);
+    // The first create does not ask the roster.
+    expect(findCompany).not.toHaveBeenCalled();
+    expect(await host.create("Pickle Works")).toEqual({ ok: true, choice: { kind: "company", how: "existing", company: PICKLE } });
+    expect(findCompany).toHaveBeenCalledWith("pickle-works");
+    expect(createCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("after a failed create, a Retry creates again when the roster has no such company", async () => {
+    const createCompany = vi
+      .fn<() => Promise<CreateAnswer>>()
+      .mockResolvedValueOnce({ ok: false, reason: "That did not work." })
+      .mockResolvedValueOnce({ ok: true, companyUid: "cmp_pickle" });
+    const findCompany = vi.fn(async () => null);
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    await host.create("Pickle Works");
+    expect(await host.create("Pickle Works")).toEqual({ ok: true, choice: { kind: "company", how: "created", company: PICKLE } });
+    expect(findCompany).toHaveBeenCalledTimes(1);
+    expect(createCompany).toHaveBeenCalledTimes(2);
+  });
+
+  it("after a create that threw, a Retry still checks the roster first", async () => {
+    const createCompany = vi.fn<() => Promise<CreateAnswer>>().mockRejectedValueOnce(new Error("network"));
+    const findCompany = vi.fn(async () => PICKLE);
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    await expect(host.create("Pickle Works")).rejects.toThrow("network");
+    expect((await host.create("Pickle Works")).ok).toBe(true);
+    expect(createCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("a roster read that never answers holds Retry for at most 10 seconds, then it creates as before", async () => {
+    vi.useFakeTimers();
+    try {
+      expect(FIND_COMPANY_TIMEOUT_MS).toBe(10_000);
+      const createCompany = vi
+        .fn<() => Promise<CreateAnswer>>()
+        .mockResolvedValueOnce({ ok: false, reason: "That did not work." })
+        .mockResolvedValueOnce({ ok: true, companyUid: "cmp_pickle" });
+      const findCompany = vi.fn(() => new Promise<null>(() => undefined));
+      const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+      await host.create("Pickle Works");
+      let answer: unknown = null;
+      void host.create("Pickle Works").then((r) => (answer = r));
+      await vi.advanceTimersByTimeAsync(FIND_COMPANY_TIMEOUT_MS - 1);
+      expect(findCompany).toHaveBeenCalledTimes(1);
+      expect(createCompany).toHaveBeenCalledTimes(1);
+      expect(answer).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(createCompany).toHaveBeenCalledTimes(2);
+      expect(answer).toEqual({ ok: true, choice: { kind: "company", how: "created", company: PICKLE } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a roster read that fails falls back to creating", async () => {
+    const createCompany = vi
+      .fn<() => Promise<CreateAnswer>>()
+      .mockResolvedValueOnce({ ok: false, reason: "That did not work." })
+      .mockResolvedValueOnce({ ok: true, companyUid: "cmp_pickle" });
+    const findCompany = vi.fn(async () => {
+      throw new Error("roster down");
+    });
+    const host = createFirstRunTeamHost({ createCompany, findCompany, dry: false });
+    await host.create("Pickle Works");
+    expect((await host.create("Pickle Works")).ok).toBe(true);
+    expect(createCompany).toHaveBeenCalledTimes(2);
+  });
+
+  it("a Retry while a join still runs waits on that join", async () => {
+    let answer!: (v: AdapterResult<Json>) => void;
+    const claimInvite = vi.fn(() => new Promise<AdapterResult<Json>>((r) => (answer = r)));
+    const host = createFirstRunTeamHost({ claimInvite, dry: false });
+    const first = host.join(ACME);
+    expect(host.join(ACME)).toBe(first);
+    await Promise.resolve();
+    answer(ok({ ok: true, claimedSlugs: ["acme"] }));
+    expect((await first).ok).toBe(true);
+    expect(claimInvite).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("apps host", () => {
+  const catalog = { ok: true, entries: [{ name: "Granola", domain: "granola.ai", authClass: "none" }, { name: "Linear", domain: "linear.app" }] };
+
+  it("reads the catalog once per screen and marks apps already connected", async () => {
+    const catalogSearch = vi.fn(async () => ok(catalog));
+    const listConnections = vi.fn(async () =>
+      ok({ connections: [{ id: "c1", provider: "factory:granola", status: "connected", createdAt: "2026-01-01", installation: { domain: "granola.ai" } }] }),
+    );
+    const host = createFirstRunAppsHost({ catalogSearch, listConnections, openUrl: vi.fn(), dry: false });
+    const notes = await host.catalog("cmp_acme", "notes");
+    expect(notes).toEqual({ ok: true, apps: [expect.objectContaining({ domain: "granola.ai" })], connected: ["granola.ai"] });
+    expect(catalogSearch).toHaveBeenCalledWith("cmp_acme", "", 100);
+  });
+
+  describe("key apps are read by domain", () => {
+    // The unfiltered read: the catalog's first 100 entries, without the key apps.
+    const first100: Json = {
+      ok: true,
+      entries: [
+        { name: "Granola", domain: "granola.ai", authClass: "none" },
+        { name: "Asana", domain: "asana.com", authClass: "oauth" },
+      ],
+    };
+    const byDomain: Record<string, Json> = {
+      "fireflies.ai": {
+        ok: true,
+        entries: [
+          { name: "Fireflies.ai", domain: "fireflies.ai", authClass: "oauth", entryId: "cat_ff" },
+          // Another app the same read returned is not added.
+          { name: "Zoom", domain: "zoom.us", authClass: "oauth" },
+          { name: "Fireflies Notes Clone", domain: "notfireflies.ai", authClass: "oauth" },
+        ],
+      },
+      "otter.ai": { ok: true, entries: [{ name: "otter.ai", domain: "otter.ai", authClass: "oauth" }] },
+      "read.ai": {
+        ok: true,
+        entries: [
+          { name: "read.ai", domain: "read.ai", authClass: "oauth" },
+          // Readwise and Thread are other apps, even though "read" is in their names.
+          { name: "Readwise", domain: "readwise.io", authClass: "oauth" },
+          { name: "Thread AI", domain: "thread.ai", authClass: "oauth" },
+        ],
+      },
+      // tl;dv is not in the catalog: its read finds nothing.
+      "tldv.io": { ok: true, entries: [] },
+      "linear.app": {
+        ok: true,
+        entries: [
+          { name: "Linear", domain: "linear.app", authClass: "oauth", entryId: "cat_linear" },
+          { name: "Jira", domain: "atlassian.com", authClass: "oauth" },
+          // A different app whose name starts with the key app's is not added.
+          { name: "LinearB", domain: "linearb.io", authClass: "oauth" },
+          { name: "Linear Clone", domain: "linear.app.example.com", authClass: "oauth" },
+        ],
+      },
+    };
+    const search = () =>
+      vi.fn(async (_uid: string, query: string, _limit?: number) => ok(query ? (byDomain[query] ?? { ok: true, entries: [] }) : first100));
+
+    it("names the note takers and the project tracker the screens must always list", () => {
+      expect(KEY_APPS).toEqual({ notes: ["fireflies.ai", "otter.ai", "read.ai", "tldv.io"], projects: ["linear.app"] });
+    });
+
+    it("Note taker lists Fireflies, Otter and Read.ai even when the first 100 entries leave them out", async () => {
+      const catalogSearch = search();
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      const notes = await host.catalog("cmp_acme", "notes");
+      expect(notes.ok && notes.apps.map((a) => a.domain)).toEqual(["fireflies.ai", "granola.ai", "otter.ai", "read.ai"]);
+      expect(notes.ok && notes.apps.find((a) => a.domain === "fireflies.ai")?.entryId).toBe("cat_ff");
+      // Every read uses the full limit: the server searches only the first `limit` apps.
+      expect(catalogSearch.mock.calls.map((c) => c.slice(1))).toEqual([
+        ["", CATALOG_LIMIT],
+        ["fireflies.ai", CATALOG_LIMIT],
+        ["otter.ai", CATALOG_LIMIT],
+        ["read.ai", CATALOG_LIMIT],
+        ["tldv.io", CATALOG_LIMIT],
+      ]);
+    });
+
+    it("Project management lists Linear even when the first 100 entries leave it out", async () => {
+      const catalogSearch = search();
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      const projects = await host.catalog("cmp_acme", "projects");
+      expect(projects.ok && projects.apps.map((a) => a.domain)).toEqual(["asana.com", "linear.app"]);
+      expect(catalogSearch.mock.calls.map((c) => c.slice(1))).toEqual([
+        ["", CATALOG_LIMIT],
+        ["linear.app", CATALOG_LIMIT],
+      ]);
+    });
+
+    it("tl;dv shows under Note taker once the catalog has it", async () => {
+      const catalogSearch = vi.fn(async (_uid: string, query: string) =>
+        ok(query === "tldv.io" ? { ok: true, entries: [{ name: "tl;dv", domain: "tldv.io", authClass: "oauth" }] } : query ? { ok: true, entries: [] } : first100),
+      );
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      const notes = await host.catalog("cmp_acme", "notes");
+      expect(notes.ok && notes.apps.map((a) => a.domain)).toEqual(["granola.ai", "tldv.io"]);
+    });
+
+    it("an app the first 100 entries already have is listed once", async () => {
+      const both: Json = { ok: true, entries: [{ name: "Asana", domain: "asana.com", authClass: "oauth" }, { name: "Linear", domain: "linear.app", authClass: "oauth" }] };
+      const catalogSearch = vi.fn(async (_uid: string, query: string) => ok(query ? byDomain[query]! : both));
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      const projects = await host.catalog("cmp_acme", "projects");
+      expect(projects.ok && projects.apps.map((a) => a.domain)).toEqual(["asana.com", "linear.app"]);
+    });
+
+    it.each([
+      ["answers a failure", 0, () => Promise.resolve({ ok: false as const, reason: "error" as const, status: 500, message: "boom" })],
+      ["rejects", 1, () => Promise.reject(new Error("offline"))],
+      [
+        "throws before it returns",
+        1,
+        (): Promise<AdapterResult<Json>> => {
+          throw new Error("no adapter");
+        },
+      ],
+    ] as const)("a by-domain read that %s leaves the first 100 entries on screen", async (_how, logsPerRead, failed) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const catalogSearch = vi.fn((_uid: string, query: string): Promise<AdapterResult<Json>> => (query ? failed() : Promise.resolve(ok(first100))));
+        const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+        expect(await host.catalog("cmp_acme", "notes")).toEqual({ ok: true, apps: [expect.objectContaining({ domain: "granola.ai" })], connected: [] });
+        expect(warn).toHaveBeenCalledTimes(logsPerRead * KEY_APPS.notes.length);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("a failed unfiltered read still fails the screen, whatever the by-domain read found", async () => {
+      const catalogSearch = vi.fn(async (_uid: string, query: string): Promise<AdapterResult<Json>> =>
+        query ? ok(byDomain[query]!) : { ok: false, reason: "error", status: 403, message: "HTTP 403 INTEGRATION_FACTORY_FORBIDDEN" },
+      );
+      const host = createFirstRunAppsHost({ catalogSearch, openUrl: vi.fn(), dry: false });
+      expect((await host.catalog("cmp_acme", "notes")).ok).toBe(false);
+    });
+  });
+
+  it("a refused catalog read says who may connect apps, without Retry", async () => {
+    const host = createFirstRunAppsHost({
+      catalogSearch: async () => ({ ok: false, reason: "error", status: 403, message: "HTTP 403 INTEGRATION_FACTORY_FORBIDDEN" }),
+      openUrl: vi.fn(),
+      dry: false,
+    });
+    expect(await host.catalog("cmp_acme", "notes")).toEqual({
+      ok: false,
+      reason: "Only company owners and admins can browse apps to connect.",
+      retry: false,
+    });
+  });
+
+  it("connects a keyless app with an install", async () => {
+    const install = vi.fn(async () => ok({ connection: { id: "c" } }));
+    const host = createFirstRunAppsHost({ install, openUrl: vi.fn(), dry: false });
+    expect(await host.connect("cmp_acme", app("granola.ai", "none"))).toEqual({ ok: true });
+    expect(install).toHaveBeenCalledWith({ companyUid: "cmp_acme", domain: "granola.ai" });
+  });
+
+  it("an OAuth app opens the sign-in page and answers once a connection that was not there before shows", async () => {
+    const existing = { id: "c0", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "linear.app" } };
+    const made = { id: "c1", status: "connected", createdAt: "1999-01-01T00:00:00Z", installation: { domain: "linear.app" } };
+    const startOAuth = vi.fn(async () =>
+      ok({ provider: "linear", displayName: "Linear", authorizationUrl: "https://linear.app/oauth", state: "s", expiresAt: "x" }),
+    );
+    const listConnections = vi
+      .fn()
+      .mockResolvedValueOnce(ok({ connections: [existing] }))
+      .mockResolvedValueOnce(ok({ connections: [existing] }))
+      .mockResolvedValueOnce(ok({ connections: [existing, made] }));
+    const openUrl = vi.fn();
+    const host = createFirstRunAppsHost({ startOAuth, listConnections, openUrl, dry: false, pollMs: 0 });
+    // A server clock far behind this computer's does not matter: ids are compared.
+    expect(await host.connect("cmp_acme", app("linear.app", "oauth"))).toEqual({ ok: true });
+    expect(startOAuth).toHaveBeenCalledWith({ companyUid: "cmp_acme", domain: "linear.app", catalogEntryId: "cat_linear.app" });
+    expect(openUrl).toHaveBeenCalledWith("https://linear.app/oauth");
+    expect(listConnections).toHaveBeenCalledTimes(3);
+  });
+
+  it("a connection that was already there, or never comes, is not an answer", async () => {
+    let t = 10_000;
+    const listConnections = vi.fn(async () =>
+      ok({ connections: [{ id: "c1", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "linear.app" } }] }),
+    );
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ok({ provider: "l", displayName: "L", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
+      listConnections,
+      openUrl: vi.fn(),
+      dry: false,
+      pollMs: 0,
+      timeoutMs: 5,
+      now: () => (t += 1),
+    });
+    expect(await host.connect("cmp_acme", app("linear.app", "oauth"))).toEqual({
+      ok: false,
+      reason: "linear did not finish connecting. Try again.",
+      retry: true,
+    });
+  });
+
+  it.each(["mcp.linear.app", "api.linear.app", "app.eu.linear.app"])("a sign-in recorded on %s answers the press for linear.app", async (domain) => {
+    // A sign-in can record its connection on a subdomain of the app's domain.
+    // mcp. and www. were already read as the bare domain; any other subdomain was not.
+    const made = { id: "c1", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain } };
+    const listConnections = vi
+      .fn()
+      .mockResolvedValueOnce(ok({ connections: [] }))
+      .mockResolvedValueOnce(ok({ connections: [made] }));
+    let t = 0;
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ok({ provider: "linear", displayName: "Linear", authorizationUrl: "https://linear.app/oauth", state: "s", expiresAt: "x" }),
+      listConnections,
+      openUrl: vi.fn(),
+      dry: false,
+      pollMs: 0,
+      timeoutMs: 5,
+      now: () => (t += 1),
+    });
+    expect(await host.connect("cmp_acme", app("linear.app", "oauth"))).toEqual({ ok: true });
+    expect(listConnections).toHaveBeenCalledTimes(2);
+  });
+
+  it("a subdomain connection that was there before the browser opened is not an answer", async () => {
+    let t = 0;
+    const listConnections = vi.fn(async () =>
+      ok({ connections: [{ id: "c0", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "api.notion.com" } }] }),
+    );
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ok({ provider: "notion", displayName: "Notion", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
+      listConnections,
+      openUrl: vi.fn(),
+      dry: false,
+      pollMs: 0,
+      timeoutMs: 5,
+      now: () => (t += 1),
+    });
+    expect(await host.connect("cmp_acme", app("notion.com", "oauth"))).toEqual({
+      ok: false,
+      reason: "notion did not finish connecting. Try again.",
+      retry: true,
+    });
+  });
+
+  it("a new subdomain connection answers even when another subdomain connection was there before", async () => {
+    const old = { id: "c0", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "api.notion.com" } };
+    const made = { id: "c1", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain: "app.notion.com" } };
+    const listConnections = vi
+      .fn()
+      .mockResolvedValueOnce(ok({ connections: [old] }))
+      .mockResolvedValueOnce(ok({ connections: [old] }))
+      .mockResolvedValueOnce(ok({ connections: [old, made] }));
+    let t = 0;
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ok({ provider: "notion", displayName: "Notion", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
+      listConnections,
+      openUrl: vi.fn(),
+      dry: false,
+      pollMs: 0,
+      timeoutMs: 50,
+      now: () => (t += 1),
+    });
+    expect(await host.connect("cmp_acme", app("notion.com", "oauth"))).toEqual({ ok: true });
+    expect(listConnections).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["notlinear.app", "linear.app.example.com", "linear.com"])(
+    "a new connection on the lookalike %s is not an answer for linear.app",
+    async (domain) => {
+      let t = 0;
+      const listConnections = vi
+        .fn()
+        .mockResolvedValueOnce(ok({ connections: [] }))
+        .mockResolvedValue(ok({ connections: [{ id: "c9", status: "connected", createdAt: "2030-01-01T00:00:00Z", installation: { domain } }] }));
+      const host = createFirstRunAppsHost({
+        startOAuth: async () => ok({ provider: "l", displayName: "L", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
+        listConnections,
+        openUrl: vi.fn(),
+        dry: false,
+        pollMs: 0,
+        timeoutMs: 5,
+        now: () => (t += 1),
+      });
+      expect(await host.connect("cmp_acme", app("linear.app", "oauth"))).toEqual({
+        ok: false,
+        reason: "linear did not finish connecting. Try again.",
+        retry: true,
+      });
+    },
+  );
+
+  it("marks an app connected when its connection is on a subdomain, never on a lookalike", async () => {
+    const entries = {
+      ok: true,
+      entries: [
+        { name: "Linear", domain: "linear.app" },
+        { name: "Jira", domain: "jira.com" },
+        { name: "Asana", domain: "asana.com" },
+      ],
+    };
+    const listConnections = vi.fn(async () =>
+      ok({
+        connections: [
+          { id: "c1", status: "connected", createdAt: "2026-01-01", installation: { domain: "api.linear.app" } },
+          { id: "c2", status: "connected", createdAt: "2026-01-01", installation: { domain: "notjira.com" } },
+          { id: "c3", status: "connected", createdAt: "2026-01-01", installation: { domain: "jira.com.example.org" } },
+          { id: "c4", status: "connected", createdAt: "2026-01-01", installation: { domain: "mcp.asana.com" } },
+        ],
+      }),
+    );
+    const host = createFirstRunAppsHost({ catalogSearch: async () => ok(entries), listConnections, openUrl: vi.fn(), dry: false });
+    const projects = await host.catalog("cmp_acme", "projects");
+    // The screen marks an app Connected when its domain is on this list.
+    expect(projects.ok && [...projects.connected].sort()).toEqual(["asana.com", "linear.app"]);
+  });
+
+  it("an aborted wait stops reading the list and answers quietly", async () => {
+    const abort = new AbortController();
+    const listConnections = vi.fn(async () => ok({ connections: [] }));
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ok({ provider: "l", displayName: "L", authorizationUrl: "https://x", state: "s", expiresAt: "x" }),
+      listConnections,
+      openUrl: vi.fn(),
+      dry: false,
+      pollMs: 60_000,
+    });
+    const waiting = host.connect("cmp_acme", app("linear.app", "oauth"), abort.signal);
+    await new Promise((r) => setTimeout(r, 0));
+    abort.abort();
+    expect(await waiting).toEqual(CONNECT_ABORTED);
+    const reads = listConnections.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 5));
+    expect(listConnections.mock.calls.length).toBe(reads);
+  });
+
+  it("a refused start is a plain sentence; a key app is never started here", async () => {
+    const host = createFirstRunAppsHost({
+      startOAuth: async () => ({ ok: false, reason: "error", status: 402 }),
+      openUrl: vi.fn(),
+      dry: false,
+    });
+    expect(await host.connect("cmp_acme", app("linear.app", "oauth"))).toEqual({
+      ok: false,
+      reason: "Your plan's integration limit is reached.",
+      retry: false,
+    });
+    expect((await host.connect("cmp_acme", app("loom.com", "key"))).ok).toBe(false);
+  });
+
+  it("a dry walk still reads the catalog but connects nothing", async () => {
+    const install = vi.fn();
+    const startOAuth = vi.fn();
+    const openUrl = vi.fn();
+    const catalogSearch = vi.fn(async () => ok(catalog));
+    const host = createFirstRunAppsHost({ catalogSearch, install, startOAuth, openUrl, dry: true, delayMs: 0 });
+    expect((await host.catalog("cmp_acme", "projects")).ok).toBe(true);
+    expect(await host.connect("cmp_acme", app("linear.app", "oauth"))).toEqual({ ok: true });
+    expect(await host.connect("cmp_acme", app("granola.ai", "none"))).toEqual({ ok: true });
+    expect(install).not.toHaveBeenCalled();
+    expect(startOAuth).not.toHaveBeenCalled();
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+});

@@ -1,0 +1,28 @@
+{
+  "date": "2026-10-02",
+  "commit": "f8ea7d03584190e223a55f112bc16dd6204fcd76",
+  "reps": 3,
+  "surface": "apps/sync production design harness (?view=shell&persona=indigo), Playwright Chromium, cold context. Native Tauri window cold start is not included.",
+  "coldStartFirstPaintMs": 148,
+  "messagesInteractiveMs": 148,
+  "uiBundle": {
+    "package": "@hq/ui mounted by apps/sync design harness (production vite build)",
+    "jsBytes": 2582555,
+    "cssBytes": 680236,
+    "totalBytes": 3262791
+  },
+  "samples": [
+    {
+      "firstContentfulPaintMs": 180,
+      "messagesInteractiveMs": 184.10000014305115
+    },
+    {
+      "firstContentfulPaintMs": 132,
+      "messagesInteractiveMs": 132.70000004768372
+    },
+    {
+      "firstContentfulPaintMs": 148,
+      "messagesInteractiveMs": 148.29999995231628
+    }
+  ]
+}

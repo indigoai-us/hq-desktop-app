@@ -75,7 +75,7 @@
     padding: 28px 28px 24px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 16px;
-    background: rgba(22, 24, 28, 0.88);
+    background: rgba(24, 24, 24, 0.88);
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
   }
 
@@ -137,9 +137,9 @@
   .retry {
     margin-top: 12px;
     padding: 8px 14px;
-    border: 1px solid #3f3f46;
+    border: 1px solid #3f3f3f;
     border-radius: 8px;
-    background: #27272a;
+    background: #282828;
     color: inherit;
     font: inherit;
     cursor: pointer;

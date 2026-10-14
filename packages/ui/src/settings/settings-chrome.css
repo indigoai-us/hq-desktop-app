@@ -75,11 +75,9 @@
   border-radius: 5px;
   background: color-mix(in srgb, var(--ok, #34c759) 18%, transparent);
   color: var(--ok-ink, var(--ok, #34c759));
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  /* Status pill, not a path or id: sans at the OWNER-008 info-pill size. */
+  font-size: 11px;
+  font-weight: 400;
 }
 
 .ss-badge.muted {

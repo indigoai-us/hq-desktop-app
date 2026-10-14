@@ -1904,7 +1904,10 @@ mod tests {
         assert_eq!(event.tags["provision_kind"], "no-output");
         assert_eq!(
             event.tags["cli_invocation"],
-            "npx:@indigoai-us/hq-cli@^5.10.0"
+            format!(
+                "npx:@indigoai-us/hq-cli@{}",
+                crate::hq_resolver::HQ_CLI_NPM_RANGE
+            )
         );
         assert_eq!(event.tags["exit_code"], "1");
         assert_eq!(event.tags["stderr_reader"], "eof");

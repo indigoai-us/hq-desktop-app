@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import TeamTab from "./TeamTab.svelte";
 import CompanyTabs from "../CompanyTabs.svelte";
@@ -237,7 +237,7 @@ describe("CompanyTabs", () => {
 });
 
 describe("TeamTab sections", () => {
-  it("renders humans, agents, and permissions for an owner", () => {
+  it("renders humans, agents, and permissions for an owner", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(TeamTab, { target: host, props: { data: ownerTab() } });
@@ -249,9 +249,11 @@ describe("TeamTab sections", () => {
     expect(
       host.querySelector('[data-testid="team-field-team:invite-email"]'),
     ).not.toBeNull();
-    expect(
-      host.querySelector('[data-testid="team-field-team:human:prs_member-role"]'),
-    ).not.toBeNull();
+    await vi.waitFor(() =>
+      expect(
+        host.querySelector('button[data-testid="team-field-team:human:prs_member-role"]'),
+      ).not.toBeNull(),
+    );
   });
 
   it("hides role selects and the invite row from a member", () => {
@@ -259,7 +261,8 @@ describe("TeamTab sections", () => {
     document.body.appendChild(host);
     component = mount(TeamTab, { target: host, props: { data: memberTab() } });
     expect(host.querySelector('[data-testid="team-row-team:invite"]')).toBeNull();
-    expect(host.querySelector("select")).toBeNull();
+    expect(host.querySelector('button[aria-haspopup="listbox"]')).toBeNull();
+    expect(host.querySelector(".dd-wait")).toBeNull();
     expect(host.querySelector('[data-testid="team-action-team:invite-invite"]')).toBeNull();
   });
 

@@ -3,14 +3,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createConsentEngine,
   createFolderEngine,
+  createKeyboardEngine,
   createOrbitEngine,
   createPanelEngine,
   createReadyEngine,
   orbitGaps,
   skylineBand,
   skylineGround,
+  type ConsentRefs,
   type FolderRefs,
+  type KeyboardRefs,
   type OrbitRefs,
 } from './engines';
 
@@ -242,5 +246,136 @@ describe('createPanelEngine', () => {
 
     engine.destroy?.();
     expect(observers[0]!.disconnected).toBe(true);
+  });
+});
+
+// Design review (2026-10-12): the folder, cloud, shortcut and consent screens
+// move their whole block (title, content, button) down so it sits in the
+// middle of the window, but never so far that its bottom passes the room kept
+// for the skyline (folder) or for Back and the install card (FLOOR, 64px).
+describe('screens centre their block vertically', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const NAVH = 44;
+  const FLOOR = 64;
+
+  /** The block is the title's top to the forward button's bottom. */
+  function block(copy: HTMLElement, nav: HTMLElement | null): { top: number; bottom: number } {
+    const top = parseFloat(copy.style.top);
+    const bottom = parseFloat(nav!.style.top) + NAVH;
+    expect(Number.isFinite(top)).toBe(true);
+    expect(Number.isFinite(bottom)).toBe(true);
+    return { top, bottom };
+  }
+
+  function keyboardRefs(): KeyboardRefs {
+    return {
+      kb: sized(document.createElement('div'), 660, 230),
+      keys: new Map(),
+      glow: document.createElement('div'),
+      line: sized(document.createElement('p'), 360, 22),
+      copy: sized(document.createElement('div'), 880, 98),
+      nav: document.createElement('div'),
+    };
+  }
+
+  function consentRefs(): ConsentRefs {
+    return {
+      copy: sized(document.createElement('div'), 880, 98),
+      form: sized(document.createElement('div'), 480, 180),
+      choices: [document.createElement('label'), document.createElement('label')],
+      fine: document.createElement('p'),
+      nav: document.createElement('div'),
+    };
+  }
+
+  type Case = {
+    name: string;
+    run: () => { copy: HTMLElement; nav: HTMLElement | null };
+    limit: (H: number) => number;
+  };
+
+  const cases: Case[] = [
+    {
+      name: 'folder',
+      run: () => {
+        const refs = folderRefs(332, 56);
+        createFolderEngine(refs, { reveal: () => {} }).size();
+        return refs;
+      },
+      limit: (H) => H - skylineBand(H),
+    },
+    {
+      name: 'cloud (orbit)',
+      run: () => {
+        const refs = orbitRefs();
+        createOrbitEngine(refs, { reveal: () => {} }).size();
+        return refs;
+      },
+      limit: (H) => H - FLOOR,
+    },
+    {
+      name: 'shortcut (keyboard)',
+      run: () => {
+        const refs = keyboardRefs();
+        createKeyboardEngine(refs, { reveal: () => {} }).size();
+        return refs;
+      },
+      limit: (H) => H - FLOOR,
+    },
+    {
+      name: 'consent',
+      run: () => {
+        const refs = consentRefs();
+        createConsentEngine(refs, { reveal: () => {} }).size();
+        return refs;
+      },
+      limit: (H) => H - FLOOR,
+    },
+  ];
+
+  it.each(cases.map((c) => [c.name, c] as const))('%s: sits in the middle of a tall window (1024x1100)', (_name, c) => {
+    vi.stubGlobal('innerWidth', 1024);
+    vi.stubGlobal('innerHeight', 1100);
+    const { copy, nav } = c.run();
+    const { top, bottom } = block(copy, nav);
+    expect(Math.abs((top + bottom) / 2 - 1100 / 2)).toBeLessThanOrEqual(3);
+    // Moved down from the old title position, and still inside its limit.
+    expect(top).toBeGreaterThan(Math.round(1100 * 0.13));
+    expect(bottom).toBeLessThanOrEqual(c.limit(1100));
+  });
+
+  it.each(cases.map((c) => [c.name, c] as const))(
+    '%s: never passes its limit, nor rises above the title band, in a short window (1024x686)',
+    (_name, c) => {
+      vi.stubGlobal('innerWidth', 1024);
+      vi.stubGlobal('innerHeight', 686);
+      const { copy, nav } = c.run();
+      const { top, bottom } = block(copy, nav);
+      expect(bottom).toBeLessThanOrEqual(c.limit(686));
+      expect(top).toBeGreaterThanOrEqual(56);
+    },
+  );
+
+  it('moves the content with the title, keeping the gaps between them', () => {
+    vi.stubGlobal('innerWidth', 1024);
+    vi.stubGlobal('innerHeight', 1100);
+    const refs = keyboardRefs();
+    createKeyboardEngine(refs, { reveal: () => {} }).size();
+    const copyTop = parseFloat(refs.copy.style.top);
+    const kbTop = parseFloat(refs.kb.style.top);
+    const lineTop = parseFloat(refs.line.style.top);
+    const navTop = parseFloat(refs.nav!.style.top);
+    expect(kbTop).toBeGreaterThanOrEqual(copyTop + 98 + 36);
+    expect(lineTop - kbTop).toBe(230 + 26);
+    expect(navTop - lineTop).toBe(22 + 44);
+
+    const consent = consentRefs();
+    createConsentEngine(consent, { reveal: () => {} }).size();
+    const formTop = parseFloat(consent.form.style.top);
+    expect(formTop).toBeGreaterThanOrEqual(parseFloat(consent.copy.style.top) + 98 + 36);
+    expect(parseFloat(consent.nav!.style.top) - formTop).toBe(180 + 44);
   });
 });

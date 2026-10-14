@@ -12,8 +12,9 @@ import { mount, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
+import { chooseDropdown, dropdownOptions, dropdownValue } from "../test-support/dropdown.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
-import { resetUpdateStore } from "./update-store.svelte";
+import { resetUpdateStore, setBackgroundUpdatesOff } from "./update-store.svelte";
 
 const memoryStorage = installMemoryLocalStorage();
 
@@ -43,7 +44,9 @@ function updatesAdapter(overrides: Record<string, unknown> = {}) {
     },
     meetings: { listAccounts: vi.fn(async () => ok([])) },
     settings: {
-      getSettings: vi.fn(async () => ok({ autoUpdate: true, releaseChannel: "beta" })),
+      getSettings: vi.fn(async () =>
+        ok({ autoUpdate: true, releaseChannel: "beta", hqPath: "/tmp/HQ" }),
+      ),
       updateSettings,
     },
     updates: {
@@ -52,8 +55,28 @@ function updatesAdapter(overrides: Record<string, unknown> = {}) {
       checkCoreState: vi.fn(async () => ok({ versionBehind: false })),
       checkCliUpdate: vi.fn(async () => ok(null)),
       installUpdate: vi.fn(async () => ok(undefined)),
+      installCoreUpdate: vi.fn(async () => ok(undefined)),
+      installCliUpdate: vi.fn(async () => ok(undefined)),
+      downloadUpdate: vi.fn(async () => ok(undefined)),
+      installDownloadedUpdate: vi.fn(async () => ok(undefined)),
+      getDownloadedUpdate: vi.fn(async () => ok(null)),
       availableChannels: vi.fn(async () => ok(["stable", "beta", "alpha"])),
       ...overrides,
+    },
+    shell: {
+      detectAiTools: vi.fn(async () =>
+        ok({
+          claude_desktop: true,
+          claude_cli: true,
+          codex_desktop: true,
+          codex_cli: true,
+          grok_cli: true,
+        }),
+      ),
+      openClaudeCodeLink: vi.fn(async () => ok(undefined)),
+      launchClaudeCode: vi.fn(async () => ok(undefined)),
+      launchCodexWorkspace: vi.fn(async () => ok(undefined)),
+      launchCliInTerminal: vi.fn(async () => ok(undefined)),
     },
   } as unknown as PlatformAdapter;
   return { adapter, updateSettings };
@@ -133,32 +156,22 @@ describe("Updates pane: release channel selector", () => {
   it("renders host-permitted channels with the stored one selected", async () => {
     const { adapter } = updatesAdapter();
     mountUpdates(adapter);
-    const select = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLSelectElement>(
-        '[data-testid="settings-release-channel"]',
-      );
-      expect(el).toBeTruthy();
-      expect(el!.options.length).toBe(3);
-      return el!;
-    });
-    await vi.waitFor(() => expect(select.value).toBe("beta"));
+    await vi.waitFor(async () =>
+      expect(await dropdownValue(host, "settings-release-channel")).toBe("beta"),
+    );
+    expect(await dropdownOptions(host, "settings-release-channel")).toHaveLength(3);
   });
 
   it("persists a selection and immediately re-checks on the new channel", async () => {
     const { adapter, updateSettings } = updatesAdapter();
     mountUpdates(adapter);
     const updates = adapter.updates as unknown as Record<string, ReturnType<typeof vi.fn>>;
-    const select = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLSelectElement>(
-        '[data-testid="settings-release-channel"]',
-      );
-      expect(el?.value).toBe("beta");
-      return el!;
-    });
+    await vi.waitFor(async () =>
+      expect(await dropdownValue(host, "settings-release-channel")).toBe("beta"),
+    );
     const before = updates.checkForUpdates.mock.calls.length;
 
-    select.value = "alpha";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(host, "settings-release-channel", "alpha");
 
     await vi.waitFor(() => {
       expect(updateSettings).toHaveBeenCalledWith({ releaseChannel: "alpha" });
@@ -247,5 +260,268 @@ describe("Updates pane: versions land before the slow core check", () => {
     expect(text).toMatch(
       /staging index build failed: HTTP 502|could not be checked|did not finish|Try again/,
     );
+  });
+});
+
+// QA-061: Settings → Updates showed Automatic updates on while About said
+// automatic updates are off in this build. Both now read one capability.
+describe("Updates pane: automatic updates follow the build capability", () => {
+  function toggle(): HTMLButtonElement | null {
+    return host.querySelector<HTMLButtonElement>('[data-testid="settings-auto-update-toggle"]');
+  }
+
+  it("shows the switch off and disabled in a build without background updates", async () => {
+    setBackgroundUpdatesOff(true);
+    const { adapter } = updatesAdapter();
+    mountUpdates(adapter);
+    await vi.waitFor(() => expect(toggle()).toBeTruthy());
+    expect(toggle()!.getAttribute("aria-checked")).toBe("false");
+    expect(toggle()!.disabled).toBe(true);
+    expect(
+      host.querySelector('[data-testid="settings-auto-update-description"]')?.textContent,
+    ).toContain("not available in this build");
+  });
+
+  it("keeps the saved preference when background updates are available", async () => {
+    setBackgroundUpdatesOff(false);
+    const { adapter } = updatesAdapter();
+    mountUpdates(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+    expect(toggle()!.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("Updates pane: per-row Update now", () => {
+  function updatesFns(adapter: PlatformAdapter) {
+    return adapter.updates as unknown as Record<string, ReturnType<typeof vi.fn>>;
+  }
+
+  it("puts Update now on Desktop, Core, and CLI when each is available", async () => {
+    const { adapter } = updatesAdapter({
+      checkForUpdates: vi.fn(async () => ok({ version: "0.10.408" })),
+      checkCoreState: vi.fn(async () => ok({ versionBehind: true })),
+      checkCliUpdate: vi.fn(async () => ok({ latest: "5.347.0" })),
+    });
+    mountUpdates(adapter);
+
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-app-download"]')?.textContent).toContain(
+        "Update now",
+      );
+      expect(host.querySelector('[data-testid="settings-core-update"]')?.textContent).toContain(
+        "Update now",
+      );
+      expect(host.querySelector('[data-testid="settings-cli-update"]')?.textContent).toContain(
+        "Update now",
+      );
+    });
+    expect(statusTexts()).not.toMatch(/npm |hq update|pnpm /i);
+  });
+
+  it("shows Updating… immediately, ignores a second press, then marks the CLI row up to date", async () => {
+    let settle: ((value: { ok: true; value: undefined }) => void) | undefined;
+    let cliLatest: string | null = "5.347.0";
+    const { adapter } = updatesAdapter({
+      checkCliUpdate: vi.fn(async () => (cliLatest ? ok({ latest: cliLatest }) : ok(null))),
+      installCliUpdate: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            settle = resolve;
+          }),
+      ),
+    });
+    mountUpdates(adapter);
+    const button = await vi.waitFor(() => {
+      const btn = host.querySelector<HTMLButtonElement>('[data-testid="settings-cli-update"]');
+      expect(btn?.textContent).toContain("Update now");
+      return btn!;
+    });
+    button.click();
+    button.click();
+    await vi.waitFor(() => {
+      expect(button.disabled).toBe(true);
+      expect(button.textContent).toContain("Updating…");
+    });
+    expect(updatesFns(adapter).installCliUpdate).toHaveBeenCalledTimes(1);
+    cliLatest = null;
+    settle?.({ ok: true, value: undefined });
+    await vi.waitFor(() => {
+      expect(statusTexts()).toMatch(/HQ CLI[\s\S]*UP TO DATE/);
+      expect(host.querySelector('[data-testid="settings-cli-update"]')).toBeNull();
+    });
+  });
+
+  it("quietly retries a CLI install, then offers Try again and AI fix buttons without raw errors", async () => {
+    const raw = 'npm ERR! code E500\ninstall_hq_cli_update HTTP 502: {"error":"boom"}';
+    const { adapter } = updatesAdapter({
+      checkCliUpdate: vi.fn(async () => ok({ latest: "5.347.0" })),
+      installCliUpdate: vi.fn(async () => ({ ok: false, message: raw })),
+    });
+    mountUpdates(adapter);
+    const button = await vi.waitFor(() => {
+      const btn = host.querySelector<HTMLButtonElement>('[data-testid="settings-cli-update"]');
+      expect(btn).toBeTruthy();
+      return btn!;
+    });
+    button.click();
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Try again");
+      expect(host.textContent).toContain("Fix in Claude Code");
+      expect(host.textContent).toContain("Fix in Codex");
+      expect(host.textContent).toContain("Fix in Grok Build");
+    });
+    expect(updatesFns(adapter).installCliUpdate).toHaveBeenCalledTimes(3);
+    expect(statusTexts()).not.toContain("HTTP 502");
+    expect(statusTexts()).not.toContain("npm ERR");
+    expect(statusTexts()).not.toContain("install_hq_cli_update");
+    expect(statusTexts()).not.toMatch(/hq update|npm i |pnpm /i);
+  });
+
+  /** The CLI-row request for installed 1.2.3, npm latest 5.347.0, failure "nope". */
+  const CLI_HEAL_PROMPT =
+    "Update the HQ CLI (@indigoai-us/hq-cli, the `hq` command) from v1.2.3 to v5.347.0. " +
+    "HQ's own update failed: nope. Check `which -a hq` and `npm prefix -g`, run " +
+    "`npm install -g @indigoai-us/hq-cli@latest` (fix EACCES or Node version if it fails), " +
+    "then confirm with `hq --version`.";
+
+  type ShellMocks = Record<string, ReturnType<typeof vi.fn>>;
+
+  function shellOf(adapter: PlatformAdapter): ShellMocks {
+    return (adapter as unknown as { shell: ShellMocks }).shell;
+  }
+
+  /** Fail the row's own install, then press one of its heal buttons. */
+  async function failRowThenHeal(
+    adapter: PlatformAdapter,
+    row: "cli" | "core",
+    label: string,
+  ): Promise<void> {
+    mountUpdates(adapter);
+    const update = await vi.waitFor(() => {
+      const btn = host.querySelector<HTMLButtonElement>(`[data-testid="settings-${row}-update"]`);
+      expect(btn).toBeTruthy();
+      return btn!;
+    });
+    update.click();
+    const heal = await vi.waitFor(() => {
+      const btn = Array.from(
+        host.querySelectorAll<HTMLButtonElement>(`[data-testid="settings-${row}-heal"] button`),
+      ).find((b) => b.textContent?.includes(label));
+      expect(btn).toBeTruthy();
+      return btn!;
+    });
+    heal.click();
+  }
+
+  function failingCliAdapter() {
+    return updatesAdapter({
+      checkCliUpdate: vi.fn(async () => ok({ latest: "5.347.0" })),
+      installCliUpdate: vi.fn(async () => ({ ok: false, message: "nope" })),
+    }).adapter;
+  }
+
+  /** Same pane, with only some AI tools detected. */
+  function withTools(adapter: PlatformAdapter, tools: Record<string, boolean>): PlatformAdapter {
+    shellOf(adapter).detectAiTools.mockImplementation(async () => ok(tools));
+    return adapter;
+  }
+
+  it("opens Claude Code with the CLI-row heal prompt on the deep link", async () => {
+    const adapter = failingCliAdapter();
+    await failRowThenHeal(adapter, "cli", "Fix in Claude Code");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.openClaudeCodeLink).toHaveBeenCalled();
+    });
+    const url = String(shell.openClaudeCodeLink.mock.calls[0]?.[0] ?? "");
+    expect(new URL(url).searchParams.get("q")).toBe(CLI_HEAL_PROMPT);
+  });
+
+  it("launches grok with the CLI-row heal prompt", async () => {
+    const adapter = failingCliAdapter();
+    await failRowThenHeal(adapter, "cli", "Fix in Grok Build");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCliInTerminal).toHaveBeenCalled();
+    });
+    expect(shell.launchCliInTerminal).toHaveBeenCalledWith({
+      path: "/tmp/HQ",
+      tool: "grok",
+      prompt: CLI_HEAL_PROMPT,
+    });
+    expect(CLI_HEAL_PROMPT).toContain("HQ CLI (@indigoai-us/hq-cli");
+  });
+
+  it("opens the Codex app with the CLI-row heal prompt", async () => {
+    const adapter = failingCliAdapter();
+    await failRowThenHeal(adapter, "cli", "Fix in Codex");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCodexWorkspace).toHaveBeenCalled();
+    });
+    expect(shell.launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ", CLI_HEAL_PROMPT);
+  });
+
+  it("launches the codex CLI in a terminal with the CLI-row heal prompt", async () => {
+    const adapter = withTools(failingCliAdapter(), { codex_cli: true });
+    await failRowThenHeal(adapter, "cli", "Fix in Codex");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCliInTerminal).toHaveBeenCalled();
+    });
+    expect(shell.launchCodexWorkspace).not.toHaveBeenCalled();
+    expect(shell.launchCliInTerminal).toHaveBeenCalledWith({
+      path: "/tmp/HQ",
+      tool: "codex",
+      prompt: CLI_HEAL_PROMPT,
+    });
+  });
+
+  it("launches the claude CLI in a terminal with the CLI-row heal prompt", async () => {
+    const adapter = withTools(failingCliAdapter(), { claude_cli: true });
+    await failRowThenHeal(adapter, "cli", "Fix in Claude Code");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCliInTerminal).toHaveBeenCalled();
+    });
+    expect(shell.openClaudeCodeLink).not.toHaveBeenCalled();
+    expect(shell.launchClaudeCode).not.toHaveBeenCalled();
+    expect(shell.launchCliInTerminal).toHaveBeenCalledWith({
+      path: "/tmp/HQ",
+      tool: "claude",
+      prompt: CLI_HEAL_PROMPT,
+    });
+  });
+
+  it("sends the Core row its own heal prompt, not the CLI one", async () => {
+    const { adapter } = updatesAdapter({
+      checkCoreState: vi.fn(async () => ok({ versionBehind: true, targetVersion: "15.1.0" })),
+      installCoreUpdate: vi.fn(async () => ({ ok: false, message: "rescue clone failed" })),
+    });
+    await failRowThenHeal(adapter, "core", "Fix in Grok Build");
+    const shell = shellOf(adapter);
+    await vi.waitFor(() => {
+      expect(shell.launchCliInTerminal).toHaveBeenCalled();
+    });
+    const args = shell.launchCliInTerminal.mock.calls[0]?.[0] as { tool: string; prompt: string };
+    expect(args.tool).toBe("grok");
+    expect(args.prompt).toMatch(/^Update HQ Core \(the HQ files in this folder/);
+    expect(args.prompt).toContain("from v15.0.118 to v15.1.0");
+    expect(args.prompt).toContain("HQ's own update failed: rescue clone failed.");
+    expect(args.prompt).toContain("/update-hq");
+    expect(args.prompt).not.toContain("hq-cli");
+  });
+
+  it("labels a staged desktop update Restart HQ", async () => {
+    const { adapter } = updatesAdapter({
+      checkForUpdates: vi.fn(async () => ok({ version: "0.10.408" })),
+      getDownloadedUpdate: vi.fn(async () => ok({ version: "0.10.408" })),
+    });
+    mountUpdates(adapter);
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-app-restart"]')?.textContent).toContain(
+        "Restart HQ",
+      );
+    });
   });
 });

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Trusted renderer for structured agent message content (stat / table /
    * chart / markdown blocks). See richMessageContent.ts for the security model:
@@ -17,8 +18,14 @@
   } from "../../common/messageMarkdown.js";
   import ConnectionCard from "./ConnectionCard.svelte";
   import PlainMessageBody from "./PlainMessageBody.svelte";
+  import RichLabelIcon from "./RichLabelIcon.svelte";
   import type { ConnectionCards, ConnectionCardView } from "./connection-card-model.js";
-  import { HOST_PLACED_BLOCK_KINDS, MAX_CONNECT_ITEMS } from "./richMessageContent.js";
+  import {
+    DEFAULT_BLOCK_ICON,
+    HOST_PLACED_BLOCK_KINDS,
+    MAX_CONNECT_ITEMS,
+    calloutDefaultIcon,
+  } from "./richMessageContent.js";
   import type {
     BadgeTone,
     CalloutTone,
@@ -109,7 +116,8 @@
     const out: Array<{ key: string; view: ConnectionCardView }> = [];
     for (const item of items) {
       if (item.app) {
-        const view = cards.views[item.app];
+        // A built-in item that carries the bot's own state draws from it when the host says how.
+        const view = (cards.builtin ? cards.builtin(item) : null) ?? cards.views[item.app];
         if (view) out.push({ key: item.app, view });
       } else if (item.domain && cards.integration) {
         const view = cards.integration({
@@ -117,6 +125,9 @@
           ...(item.why ? { why: item.why } : {}),
           // The app's own pick names its connection (appChosenItems). A bot's block never carries one.
           ...(item.connectionId ? { connectionId: item.connectionId } : {}),
+          // The bot's state for the app, when its runtime sent one.
+          ...(item.state ? { state: item.state } : {}),
+          ...(item.asOf ? { asOf: item.asOf } : {}),
         });
         if (view) out.push({ key: `domain:${item.domain}`, view });
       }
@@ -317,7 +328,11 @@
       <div class="rich-stat-row" data-testid="rich-stat">
         {#each block.items as item, i (i)}
           <div class="rich-stat-tile">
-            <div class="rich-stat-label">{item.label}</div>
+            {#if item.label}
+              <div class="rich-stat-label">
+                <RichLabelIcon name={item.icon ?? DEFAULT_BLOCK_ICON.stat} size={12} /><span>{item.label}</span>
+              </div>
+            {/if}
             <div class="rich-stat-value">{item.value}</div>
             {#if item.delta}
               <div class="rich-stat-delta {item.trend ? TREND_CLASS[item.trend] : ''}">
@@ -417,13 +432,19 @@
       </div>
     {:else if block.kind === "badge"}
       <div class="rich-badge-row" data-testid="rich-badge">
-        <span class="rich-badge {badgeToneClass(block.tone)}">{block.label}</span>
+        <span class="rich-badge {badgeToneClass(block.tone)}">
+          <RichLabelIcon name={block.icon ?? DEFAULT_BLOCK_ICON.badge} size={12} /><span>{block.label}</span>
+        </span>
       </div>
     {:else if block.kind === "keyValue"}
       <dl class="rich-kv" data-testid="rich-keyvalue">
         {#each block.items as row, i (i)}
-          <div class="rich-kv-row">
-            <dt class="rich-kv-key">{row.key}</dt>
+          <div class="rich-kv-pair" data-testid="rich-kv-pair">
+            {#if row.key}
+              <dt class="rich-kv-key">
+                {#if row.icon}<RichLabelIcon name={row.icon} size={12} />{/if}<span>{row.key}</span>
+              </dt>
+            {/if}
             <dd class="rich-kv-value">{row.value}</dd>
           </div>
         {/each}
@@ -432,7 +453,9 @@
       <div class="rich-progress {badgeToneClass(block.tone)}" data-testid="rich-progress">
         <div class="rich-progress-head">
           {#if block.label}
-            <span class="rich-progress-label">{block.label}</span>
+            <span class="rich-progress-label">
+              <RichLabelIcon name={block.icon ?? DEFAULT_BLOCK_ICON.progress} size={12} /><span>{block.label}</span>
+            </span>
           {/if}
           <span class="rich-progress-pct">{block.value}%</span>
         </div>
@@ -454,15 +477,7 @@
         role="note"
       >
         <span class="rich-callout-icon" aria-hidden="true">
-          {#if block.tone === "success"}
-            <svg viewBox="0 0 16 16" width="15" height="15"><path d="M6.5 11L3.5 8l1-1 2 2 5-5 1 1z" fill="currentColor" /></svg>
-          {:else if block.tone === "warning"}
-            <svg viewBox="0 0 16 16" width="15" height="15"><path d="M8 2l6.5 11.5h-13z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" /><rect x="7.35" y="6" width="1.3" height="3.6" fill="currentColor" /><rect x="7.35" y="10.4" width="1.3" height="1.3" fill="currentColor" /></svg>
-          {:else if block.tone === "danger"}
-            <svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.3" /><rect x="7.35" y="4.4" width="1.3" height="4.6" fill="currentColor" /><rect x="7.35" y="10.2" width="1.3" height="1.3" fill="currentColor" /></svg>
-          {:else}
-            <svg viewBox="0 0 16 16" width="15" height="15"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.3" /><rect x="7.35" y="7" width="1.3" height="4.6" fill="currentColor" /><rect x="7.35" y="4.4" width="1.3" height="1.3" fill="currentColor" /></svg>
-          {/if}
+          <RichLabelIcon name={block.icon ?? calloutDefaultIcon(block.tone)} size={14} />
         </span>
         <div class="rich-callout-content">
           {#if block.title}
@@ -479,7 +494,9 @@
       {@const answered = decisionAnswered(block, blockIndex)}
       {@const chosen = decisionChoice(block, blockIndex)}
       <div class="rich-decision" data-testid="rich-decision" role="group" aria-label={block.question}>
-        <div class="rich-decision-q">{block.question}</div>
+        <div class="rich-decision-q">
+          <RichLabelIcon name={block.icon ?? DEFAULT_BLOCK_ICON.decision} size={13} /><span>{block.question}</span>
+        </div>
         <div class="rich-decision-options" class:is-answered={answered}>
           {#each block.options as option, i (option.id || i)}
             {@const isChosen = answered && chosen === option.label}
@@ -514,7 +531,7 @@
               disabled={answered}
               data-testid="rich-decision-other"
               onclick={() => pickDecision(block, blockIndex, null)}
-            >
+            ><RailIcon name="pencil" />
               Other…
             </button>
           {/if}
@@ -583,6 +600,9 @@
     background: var(--raised, var(--pop-hover));
   }
   .rich-stat-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.02em;
@@ -734,6 +754,7 @@
   .rich-badge {
     display: inline-flex;
     align-items: center;
+    gap: 4px;
     padding: 2px 9px;
     border-radius: 999px;
     border: 1px solid var(--tone-line);
@@ -749,34 +770,36 @@
   /* ── Key/value definition list ──────────────────────────────────────── */
   .rich-kv {
     margin: 0;
-    display: grid;
-    gap: 0;
-    border: 1px solid var(--line, var(--pop-border));
-    border-radius: 8px;
-    overflow: hidden;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 14px;
+    row-gap: 3px;
+    font-size: 12px;
+    line-height: 1.5;
   }
-  .rich-kv-row {
-    display: grid;
-    grid-template-columns: minmax(90px, 34%) 1fr;
-    gap: 12px;
-    padding: 6px 11px;
-    border-bottom: 1px solid var(--line, var(--pop-border));
-  }
-  .rich-kv-row:last-child {
-    border-bottom: none;
+  .rich-kv-pair {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    min-width: 0;
+    max-width: 100%;
   }
   .rich-kv-key {
     margin: 0;
-    font-size: 12px;
-    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+    font-weight: 400;
     color: var(--t3, var(--pop-muted));
   }
   .rich-kv-value {
     margin: 0;
-    font-size: 12px;
+    min-width: 0;
     color: var(--t1, var(--pop-text));
     font-variant-numeric: tabular-nums;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
   /* ── Progress meter ─────────────────────────────────────────────────── */
@@ -793,6 +816,9 @@
     font-size: 11px;
   }
   .rich-progress-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     color: var(--t2, var(--pop-muted));
     font-weight: 500;
   }
@@ -822,10 +848,10 @@
     display: flex;
     gap: 9px;
     padding: 10px 12px;
-    border: 1px solid var(--tone-line);
-    border-left-width: 3px;
+    /* Neutral surface; the tone color lives on the icon only. */
+    border: 1px solid var(--line, var(--pop-border));
     border-radius: 8px;
-    background: var(--tone-tint);
+    background: var(--raised, var(--pop-hover));
   }
   .rich-callout-icon {
     flex: 0 0 auto;
@@ -839,14 +865,14 @@
   }
   .rich-callout-title {
     font-size: 12px;
-    font-weight: 600;
-    color: var(--tone-ink);
+    font-weight: 500;
+    color: var(--t1, var(--pop-text));
     margin-bottom: 2px;
   }
   .rich-callout-body {
     font-size: 13px;
     line-height: 1.45;
-    color: var(--t1, var(--pop-text));
+    color: var(--t2, var(--pop-muted));
   }
   .rich-callout-body :global(:first-child) {
     margin-top: 0;
@@ -866,6 +892,9 @@
     border-radius: 8px;
   }
   .rich-decision-q {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 13px;
     font-weight: 600;
     color: var(--t1, var(--pop-text));
@@ -920,7 +949,7 @@
     background: color-mix(in srgb, var(--vio-ink) 22%, transparent);
     box-shadow: inset 0 0 0 1px var(--vio-ink);
     opacity: 1;
-    font-weight: 600;
+    font-weight: 500;
   }
   .rich-decision-check {
     display: inline-flex;
@@ -941,7 +970,7 @@
     font-weight: 500;
   }
   .rich-decision-btn.is-chosen .rich-decision-btn-label {
-    font-weight: 600;
+    font-weight: 500;
   }
   .rich-decision-tag {
     font-size: 11px;

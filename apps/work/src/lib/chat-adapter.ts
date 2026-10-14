@@ -27,6 +27,7 @@ import {
   type NotificationsApi,
   type ReplyThreadResponse,
   type RequestsResponse,
+  type RetiredEntitiesResult,
 } from "@hq/ui";
 import {
   mergeShallowCache,
@@ -366,6 +367,15 @@ export function createChatSidebarApi(
         await call<unknown>(adapter.messaging.listContacts({ companyUid })),
       ),
     }),
+    // Optional-preserving: without the seam the sidebar hides nothing.
+    ...(adapter.messaging.resolveRetiredEntities
+      ? {
+          resolveRetiredEntities: async (uids: string[]) =>
+            await call<RetiredEntitiesResult>(
+              adapter.messaging.resolveRetiredEntities!(uids),
+            ),
+        }
+      : {}),
     // Both platform adapters answer a bare array (the web adapter unwraps
     // the route's `{ requests }` envelope itself); this is the ONLY wrap.
     listDmRequests: async () => ({

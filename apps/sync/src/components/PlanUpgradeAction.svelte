@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   interface Props {
     upgradeUrl: string;
     onUpgrade: (url: string) => void | Promise<void>;
@@ -19,7 +20,7 @@
   data-testid={testId}
   onclick={() => onUpgrade(upgradeUrl)}
 >
-  Upgrade
+  <RailIcon name="external" />Upgrade
 </button>
 
 <style>

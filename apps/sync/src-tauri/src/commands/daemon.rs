@@ -33,7 +33,7 @@ use crate::commands::windows_teardown_probe::{
     sample_shuttingdown, spawn_teardown_log_sweep, TeardownSweepHandle,
 };
 use crate::events::{
-    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_PLAN_LIMIT,
+    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_PLAN_LIMIT,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -66,6 +66,7 @@ use hq_desktop_core::sync_outcome::{
     WindowsTermination, WindowsTerminatorAttribution, RUNNER_PHASE_PRE_PROTOCOL,
     SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
 };
+use hq_desktop_core::watch_owner::LauncherState;
 use hq_desktop_core::watcher_fault::{
     UnmatchedStderrShapeRollup, WatcherFaultProvenance, WatcherFaultReadCounters,
     WATCHER_FAULT_UNAVAILABLE,
@@ -366,13 +367,9 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     if let SyncEvent::Progress(payload) = &event {
         crate::commands::activity::record_progress(app, payload);
     }
-    // Auto-sync hits the same divergences a manual run does, and the shell
-    // clears its conflict rows on `sync:all-complete` (emitted below), so the
-    // watcher forwards the per-file detail too. Without this the rows would
-    // only ever appear after a hand-pressed "Sync Now".
-    if let SyncEvent::Conflict(payload) = &event {
-        let _ = app.emit(EVENT_SYNC_CONFLICT, payload.clone());
-    }
+    // A `conflict` line is read (it refreshes the watchdog) but never
+    // forwarded: parked conflict copies have no desktop surface (owner
+    // decision 2026-10-13).
     // hard-stop-readiness US-019: the registry behind the status header and
     // the menu bar records the notice before the desktop window hears it.
     if let SyncEvent::PlanLimit(payload) = &event {
@@ -1204,6 +1201,11 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
 ) -> Result<String, String> {
+    // Setup gate, ahead of every other check: until HQ is installed on this
+    // computer no origin may start sync, resolve a watch root, or run spawn
+    // preflight. The only HQ folder known at that point is the default one,
+    // which the person has not chosen yet.
+    ensure_setup_allows_sync()?;
     match crate::commands::hq_daemon_host::current_phase() {
         crate::commands::hq_daemon_host::HostPhase::Daemon => {
             // hq daemon runs sync; turn its sync service on instead of spawning a runner.
@@ -1581,7 +1583,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         let mut watch_owner_exit = if signal.is_none()
                             && matches!(code, Some(20 | 21))
                         {
-                            Some(hq_desktop_core::watch_owner::plan_busy_watch_exit_with_unknown_orphan(
+                            Some(
+                                hq_desktop_core::watch_owner::plan_busy_watch_exit_with_launcher(
                                     code,
                                     watch_owner_inspection
                                         .as_ref()
@@ -1592,10 +1595,19 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                     watch_owner_inspection
                                         .as_ref()
                                         .is_some_and(|inspection| inspection.is_child_of_app),
+                                    watch_owner_inspection.as_ref().is_some_and(|inspection| {
+                                        inspection.is_unknown_desktop_orphan
+                                    }),
                                     watch_owner_inspection
                                         .as_ref()
-                                        .is_some_and(|inspection| inspection.is_unknown_desktop_orphan),
-                                ))
+                                        .map_or(LauncherState::Unknown, |inspection| {
+                                            inspection.launcher
+                                        }),
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .is_none_or(|inspection| inspection.lease_is_stale),
+                                ),
+                            )
                         } else {
                             None
                         };
@@ -1863,17 +1875,21 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                         )
                                     } else {
                                         if plan.defer_to_daemon
-                                            || plan.classification == "live_owner_deferral"
+                                            || hq_desktop_core::watch_owner::plan_defers_to_live_owner(plan)
                                         {
                                             set_lifecycle_state(
                                                 WatchDaemonState::Running,
                                                 DaemonFailureCategory::None,
                                             );
                                         }
-                                        sentry::capture_message(
-                                            "auto-sync watcher exited with a live watch-owner lease",
-                                            sentry::Level::Warning,
-                                        );
+                                        if hq_desktop_core::watch_owner::should_emit_busy_watch_exit_warning(
+                                            plan,
+                                        ) {
+                                            sentry::capture_message(
+                                                "auto-sync watcher exited with a live watch-owner lease",
+                                                sentry::Level::Warning,
+                                            );
+                                        }
                                         RunnerReportDirDisposition::DeleteOnExitPath
                                     }
                                 },
@@ -7055,6 +7071,64 @@ struct TreeRssSample {
     largest_child_kind: Option<WatcherProcessKind>,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessGroupRssMember {
+    pid: u32,
+    rss_kb: u64,
+    kind: WatcherProcessKind,
+}
+
+#[cfg(target_os = "macos")]
+fn sum_process_group_rss_kb(members: &[ProcessGroupRssMember], root: u32) -> Option<TreeRssSample> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut total_kb = 0_u64;
+    let mut pid_count = 0_u32;
+    let mut largest_member_kb = 0_u64;
+    let mut largest_node_member_kb = 0_u64;
+    let mut largest_node_member_pid = None;
+    let mut largest_child_member_kb = 0_u64;
+    let mut largest_child_kind = None;
+    let mut root_member_kb = None;
+
+    for member in members {
+        if !seen.insert(member.pid) {
+            continue;
+        }
+        total_kb = total_kb.saturating_add(member.rss_kb);
+        pid_count = pid_count.saturating_add(1);
+        if member.pid == root {
+            root_member_kb = Some(member.rss_kb);
+        }
+        if member.rss_kb > largest_member_kb {
+            largest_member_kb = member.rss_kb;
+        }
+        if member.kind == WatcherProcessKind::Node && member.rss_kb > largest_node_member_kb {
+            largest_node_member_kb = member.rss_kb;
+            largest_node_member_pid = Some(member.pid);
+        }
+        if member.pid != root && member.rss_kb > largest_child_member_kb {
+            largest_child_member_kb = member.rss_kb;
+            largest_child_kind = Some(member.kind);
+        }
+    }
+
+    Some(TreeRssSample {
+        total_kb,
+        pid_count,
+        largest_member_kb,
+        root_member_kb: root_member_kb?,
+        largest_node_member_kb: largest_node_member_pid
+            .is_some()
+            .then_some(largest_node_member_kb),
+        largest_node_member_pid,
+        largest_child_member_kb: (pid_count > 1).then_some(largest_child_member_kb),
+        largest_child_kind,
+    })
+}
+
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
 /// `ps -eo pid=,ppid=,rss=,comm=` table, and decompose it into the PID count,
 /// largest member, largest Node process, and largest descendant kind. Cycle-safe
@@ -7139,27 +7213,115 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     })
 }
 
-/// Best-effort whole-tree RSS decomposition for the registered watcher PID: one
-/// bounded `ps -eo pid=,ppid=,rss=,comm=` invocation summed by
-/// [`sum_pid_tree_rss_kb`].
-/// `None` on spawn/exit/parse failure or a missing root, so the caller falls back
-/// to the single-PID sample.
+/// Best-effort whole-tree RSS decomposition for the registered watcher PID.
+/// macOS reads only the watcher's process group with libproc; other Unix targets
+/// retain the bounded `ps` snapshot. `None` on read/parse failure or a missing
+/// root, so the caller falls back to a single-PID sample.
 #[cfg(not(target_os = "windows"))]
 fn sample_pid_tree_rss_kb(root: u32) -> Option<TreeRssSample> {
-    let mut cmd = std::process::Command::new("ps");
-    paths::no_window(&mut cmd);
-    let out = cmd.args(["-eo", "pid=,ppid=,rss=,comm="]).output().ok()?;
-    if !out.status.success() {
-        return None;
+    #[cfg(target_os = "macos")]
+    {
+        return sample_process_group_rss_kb(root);
     }
-    sum_pid_tree_rss_kb(&String::from_utf8_lossy(&out.stdout), root)
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        #[cfg(test)]
+        PS_TREE_SAMPLE_SPAWNS.fetch_add(1, Ordering::Relaxed);
+        let mut cmd = std::process::Command::new("ps");
+        paths::no_window(&mut cmd);
+        let out = cmd.args(["-eo", "pid=,ppid=,rss=,comm="]).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        sum_pid_tree_rss_kb(&String::from_utf8_lossy(&out.stdout), root)
+    }
 }
 
-/// Best-effort RSS (KB) of the registered watcher. On Unix this uses `ps`,
-/// which reports RSS in 1-KB units. Returns `None` on any failure; diagnostic
-/// sampling never changes whether a crash is captured.
-#[cfg(not(target_os = "windows"))]
+#[cfg(test)]
+static PS_TREE_SAMPLE_SPAWNS: AtomicU64 = AtomicU64::new(0);
+
+/// Sample only the watcher's dedicated process group with libproc. The watcher
+/// is launched with `process_group(0)` in `process.rs`, so its PID is also the
+/// group ID inherited by its children. This avoids spawning `ps` and parsing a
+/// system-wide process table on every 30-second supervisor tick.
+#[cfg(target_os = "macos")]
+fn sample_process_group_rss_kb(root: u32) -> Option<TreeRssSample> {
+    let root_pid = libc::pid_t::try_from(root).ok()?;
+    if unsafe { libc::getpgid(root_pid) } != root_pid {
+        return None;
+    }
+
+    // proc_listpgrppids returns a PID count (unlike proc_listpids, which
+    // returns bytes). Leave room for process churn between the sizing and fill
+    // calls; the reported count still bounds the initialized prefix.
+    let needed = unsafe { libc::proc_listpgrppids(root_pid, std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return None;
+    }
+    let capacity = (needed as usize).saturating_add(16);
+    let mut pids = vec![0_i32; capacity];
+    let listed = unsafe {
+        libc::proc_listpgrppids(
+            root_pid,
+            pids.as_mut_ptr().cast(),
+            (pids.len() * std::mem::size_of::<i32>()) as i32,
+        )
+    };
+    if listed <= 0 {
+        return None;
+    }
+
+    let mut members = Vec::with_capacity((listed as usize).min(pids.len()));
+    for pid in pids.into_iter().take(listed as usize) {
+        if pid <= 0 {
+            continue;
+        }
+        let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+        let task_size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+        let task_read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTASKINFO,
+                0,
+                task.as_mut_ptr().cast(),
+                task_size,
+            )
+        };
+        if task_read != task_size {
+            continue;
+        }
+        let rss_kb = unsafe { task.assume_init().pti_resident_size / 1024 };
+
+        let mut name = [0_u8; 64];
+        let name_len = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
+        let kind = if name_len > 0 {
+            let name_end = name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name.len());
+            let name = String::from_utf8_lossy(&name[..name_end]);
+            classify_watcher_process_kind(&name)
+        } else {
+            WatcherProcessKind::Unknown
+        };
+        members.push(ProcessGroupRssMember {
+            pid: pid as u32,
+            rss_kb,
+            kind,
+        });
+    }
+
+    sum_process_group_rss_kb(&members, root)
+}
+
+/// Best-effort RSS (KB) of the registered watcher. On macOS this uses libproc;
+/// other Unix targets use `ps`, which reports RSS in 1-KB units. Returns `None`
+/// on any failure; diagnostic sampling never changes whether a crash is captured.
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
+    #[cfg(test)]
+    PS_TREE_SAMPLE_SPAWNS.fetch_add(1, Ordering::Relaxed);
     let mut cmd = std::process::Command::new("ps");
     paths::no_window(&mut cmd);
     let out = cmd
@@ -7170,6 +7332,23 @@ fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
         return None;
     }
     parse_ps_rss_kb(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[cfg(target_os = "macos")]
+fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            task.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    (read == size).then(|| unsafe { task.assume_init().pti_resident_size / 1024 })
 }
 
 /// Best-effort Windows working-set sample for the app-owned watcher PID. The
@@ -7305,6 +7484,11 @@ struct InspectedWatchOwner {
     is_live_runner: bool,
     is_child_of_app: bool,
     is_unknown_desktop_orphan: bool,
+    /// Whether the app that launched the holder is still running. A live
+    /// launcher means a second HQ app owns this watcher; it is never killed.
+    launcher: LauncherState,
+    /// Whether the holder's lease heartbeat is older than WATCH_OWNER_STALE_AFTER.
+    lease_is_stale: bool,
 }
 
 fn watch_owner_status_path(hq_root: &str) -> PathBuf {
@@ -7331,12 +7515,19 @@ fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, Str
     let Some(status) = hq_desktop_core::watch_owner::read_watch_owner_status(&path)? else {
         return Ok(None);
     };
+    let lease_is_stale = hq_desktop_core::watch_owner::lease_heartbeat_is_stale(
+        &status,
+        chrono::Utc::now(),
+        hq_desktop_core::watch_owner::WATCH_OWNER_STALE_AFTER,
+    );
     let Some((first_parent, command)) = process_info(status.pid)? else {
         return Ok(Some(InspectedWatchOwner {
             status,
             is_live_runner: false,
             is_child_of_app: false,
             is_unknown_desktop_orphan: false,
+            launcher: LauncherState::Unknown,
+            lease_is_stale,
         }));
     };
     let is_live_runner = is_sync_runner_command(&command, hq_root);
@@ -7370,11 +7561,23 @@ fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, Str
                 |pid| process_info(pid).ok().flatten(),
             )
         });
+    let launcher = if is_child_of_app {
+        LauncherState::Alive
+    } else {
+        hq_desktop_core::watch_owner::desktop_owner_launcher_state(
+            &status,
+            Some(&(first_parent, command.clone())),
+            std::process::id(),
+            process_info,
+        )
+    };
     Ok(Some(InspectedWatchOwner {
         status,
         is_live_runner,
         is_child_of_app,
         is_unknown_desktop_orphan,
+        launcher,
+        lease_is_stale,
     }))
 }
 
@@ -7398,21 +7601,14 @@ fn live_watch_owner_defers_supervisor(hq_root: &str) -> Result<Option<String>, S
     let Some(owner) = inspect_watch_owner(hq_root)? else {
         return Ok(None);
     };
-    let plan = hq_desktop_core::watch_owner::plan_busy_watch_exit_with_unknown_orphan(
-        Some(20),
-        Some(&owner.status),
+    Ok(hq_desktop_core::watch_owner::supervisor_preflight_deferral(
+        &owner.status,
         owner.is_live_runner,
         owner.is_child_of_app,
         owner.is_unknown_desktop_orphan,
-    );
-    if hq_desktop_core::watch_owner::supervisor_should_defer_for_live_owner(
-        &plan,
-        owner.is_live_runner,
-    ) {
-        Ok(Some(owner.status.owner))
-    } else {
-        Ok(None)
-    }
+        owner.launcher,
+        owner.lease_is_stale,
+    ))
 }
 
 fn terminate_external_watch_runner(
@@ -7428,6 +7624,8 @@ fn terminate_external_watch_runner(
         || current.status.started_at != expected.started_at
         || !current.is_live_runner
         || current.is_child_of_app
+        || current.launcher == LauncherState::Alive
+        || !current.lease_is_stale
     {
         return Ok(false);
     }
@@ -7482,6 +7680,24 @@ fn terminate_external_watch_runner(
     })
 }
 
+/// Refuse a sync start while HQ is not installed on this computer yet.
+pub(crate) fn ensure_setup_allows_sync() -> Result<(), String> {
+    if crate::commands::lifecycle::sync_held_for_setup() {
+        return Err(crate::commands::lifecycle::SYNC_HELD_FOR_SETUP_MESSAGE.to_string());
+    }
+    Ok(())
+}
+
+/// Whether a supervisor tick may inspect, preflight, or respawn the watcher.
+/// The hq daemon supervises sync when it hosts it, nothing may start before
+/// the launch choice is made, and nothing may start before setup finishes.
+fn supervisor_tick_may_run(
+    phase: crate::commands::hq_daemon_host::HostPhase,
+    held_for_setup: bool,
+) -> bool {
+    crate::commands::hq_daemon_host::legacy_services_enabled(phase) && !held_for_setup
+}
+
 /// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
 /// is running whenever auto-sync is enabled — respawning it if it died (crash,
 /// OOM, external kill, or a failed initial spawn). Without this a dead daemon
@@ -7498,9 +7714,11 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
         thread::sleep(SUPERVISOR_SETTLE);
         loop {
             // hq daemon supervises sync when it hosts it; before the launch
-            // choice is made nothing may start.
-            if !crate::commands::hq_daemon_host::legacy_services_enabled(
+            // choice is made nothing may start, and before setup finishes
+            // the watcher must not fill the default HQ folder.
+            if !supervisor_tick_may_run(
                 crate::commands::hq_daemon_host::current_phase(),
+                crate::commands::lifecycle::sync_held_for_setup(),
             ) {
                 thread::sleep(SUPERVISOR_INTERVAL);
                 continue;
@@ -7968,11 +8186,63 @@ mod tests {
         // process-global and other tests exercise it concurrently.
     }
 
-    /// Auto-sync is the path most conflicts arrive on — the user never
-    /// presses "Sync Now". The watcher must forward the runner's per-file
-    /// `conflict` line so the shell's conflict rows appear there too.
+    /// First-run VM report (v0.10.395): before setup finished, the app-launch
+    /// start and the supervisor respawn both reached sync preflight and the
+    /// runner pulled the cloud company into the default HQ folder. While HQ
+    /// is not installed every origin must refuse at the setup gate, before it
+    /// resolves a root, runs preflight, or writes anything under home.
     #[test]
-    fn handle_watch_stdout_line_emits_a_per_file_conflict_event() {
+    fn start_daemon_refuses_every_origin_while_setup_is_unfinished() {
+        use crate::commands::lifecycle::{
+            publish_sync_setup_gate, sync_held_for_setup, SYNC_HELD_FOR_SETUP_MESSAGE,
+        };
+        use hq_desktop_core::lifecycle::LifecycleState;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let _home = scoped_home(tmp.path());
+        publish_sync_setup_gate(LifecycleState::NeedsInstall);
+        assert!(sync_held_for_setup());
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        for result in [
+            start_daemon(handle.clone()),
+            start_daemon_for_app_launch(handle.clone()),
+            start_daemon_for_supervisor_respawn(handle.clone()),
+        ] {
+            assert_eq!(result.unwrap_err(), SYNC_HELD_FOR_SETUP_MESSAGE);
+        }
+        assert_eq!(
+            crate::commands::sync::start_sync_gates(),
+            Err(SYNC_HELD_FOR_SETUP_MESSAGE.to_string())
+        );
+        // No default HQ folder, and nothing else, was created under home.
+        assert!(!tmp.path().join("hq").exists());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+
+        publish_sync_setup_gate(LifecycleState::SteadyState);
+        assert!(!sync_held_for_setup());
+    }
+
+    /// The supervisor's tick does nothing (no owner inspection, preflight or
+    /// respawn) while setup is unfinished, and runs again once it finishes.
+    #[test]
+    fn supervisor_tick_waits_for_setup_and_runs_once_it_finishes() {
+        use crate::commands::hq_daemon_host::HostPhase;
+        assert!(!supervisor_tick_may_run(HostPhase::Legacy, true));
+        assert!(supervisor_tick_may_run(HostPhase::Legacy, false));
+        assert!(!supervisor_tick_may_run(HostPhase::Pending, false));
+        assert!(!supervisor_tick_may_run(HostPhase::Daemon, false));
+        assert!(!supervisor_tick_may_run(HostPhase::Daemon, true));
+    }
+
+    /// Owner decision 2026-10-13: a parked conflict copy has no desktop
+    /// surface. The watcher still reads the runner's `conflict` line (it is a
+    /// real protocol record and refreshes the watchdog) but never hands it to
+    /// a window.
+    #[test]
+    fn handle_watch_stdout_line_never_forwards_a_conflict_line_to_the_window() {
         use std::sync::Arc;
         use tauri::Listener;
 
@@ -7982,13 +8252,10 @@ mod tests {
         let totals = Mutex::new(RunTotals::default());
         let phase = Mutex::new(WatcherPhaseContext::default());
 
-        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen = Arc::new(Mutex::new(0usize));
         let seen_w = seen.clone();
-        handle.listen(EVENT_SYNC_CONFLICT, move |event| {
-            seen_w
-                .lock()
-                .unwrap()
-                .push(serde_json::from_str(event.payload()).unwrap());
+        handle.listen("sync:conflict", move |_| {
+            *seen_w.lock().unwrap() += 1;
         });
 
         let line = r#"{"type":"conflict","company":"indigo","path":"knowledge/readme.md","direction":"pull","resolution":"keep"}"#;
@@ -8001,9 +8268,7 @@ mod tests {
         ));
         std::thread::sleep(std::time::Duration::from_millis(30));
 
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0]["path"], "knowledge/readme.md");
+        assert_eq!(*seen.lock().unwrap(), 0);
     }
 
     #[test]
@@ -15377,7 +15642,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn sample_watcher_rss_scoped_reports_tree_for_the_live_process() {
         // The live test process is always in the `ps` table, so the scoped sampler
@@ -15394,6 +15659,42 @@ mod tests {
             sample.tree_largest_member_kb.unwrap_or(0) > 0,
             "a comparable tree sample carries a largest-member RSS"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sample_watcher_rss_scoped_uses_libproc_without_spawning_ps() {
+        use std::os::unix::process::CommandExt;
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut child = ChildGuard(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .expect("start process-group fixture"),
+        );
+        let before = PS_TREE_SAMPLE_SPAWNS.load(Ordering::Relaxed);
+        let sample = sample_watcher_rss_scoped(child.0.id())
+            .expect("the live process group must be sampleable");
+
+        assert!(sample.kb > 0);
+        assert_eq!(sample.kind, RssSampleKind::Tree);
+        assert!(sample.tree_pid_count.unwrap_or(0) >= 1);
+        assert_eq!(
+            PS_TREE_SAMPLE_SPAWNS.load(Ordering::Relaxed),
+            before,
+            "sampling a live watcher process group must not spawn `ps`"
+        );
+        child.0.kill().expect("stop process-group fixture");
+        child.0.wait().expect("reap process-group fixture");
     }
 
     /// The minimal heap-OOM stderr both wiring tests feed through the shared

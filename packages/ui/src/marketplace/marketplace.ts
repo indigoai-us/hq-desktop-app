@@ -133,6 +133,10 @@ export const PACK_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   "magicpath-agent-skills": "MagicPath",
   // Acronym — the generic prettifier would title-case this to "Crm".
   crm: "CRM",
+  // Brand casing: the generic prettifier would produce "Imessage".
+  imessage: "iMessage",
+  // Product name keeps its "HQ" prefix; the prettifier strips it to "Capture".
+  "hq-capture": "HQ Capture",
 };
 
 /** Words we keep lowercased when title-casing a derived name (unless leading). */
@@ -169,6 +173,23 @@ export function listingDisplayName(listing: MarketplaceListing): string {
   const curated = PACK_DISPLAY_NAMES[listing.slug];
   if (curated) return curated;
   return prettifyPackName(listing.name) || listing.name;
+}
+
+/** Public marketing site that hosts a shareable page for every approved listing. */
+export const MARKETPLACE_PUBLIC_BASE = "https://hqforwork.com";
+
+/**
+ * The listing's public, shareable page on hqforwork.com: `/packs/{slug}`
+ * (indigo-marketing route `app/packs/[slug]`, built from the same approved
+ * listings feed this panel reads). Clean canonical URL, no UTM tags: this is
+ * an in-product link. Null when the listing has no usable slug.
+ */
+export function listingPublicUrl(
+  listing: Pick<MarketplaceListing, "slug">,
+): string | null {
+  const slug = listing.slug?.trim();
+  if (!slug) return null;
+  return `${MARKETPLACE_PUBLIC_BASE}/packs/${encodeURIComponent(slug)}`;
 }
 
 /** Listing detail (`get_marketplace_listing`) — adds the presigned download URL. */
@@ -731,29 +752,36 @@ export function looksNotVerified(message: string): boolean {
  * text matches the verified-creator gate, in which case it's classified so the
  * UI still shows the request-access prompt.
  */
+export const PUBLISH_ERROR_COPY =
+  "Couldn't publish this pack. Check its package.yaml and try again.";
+
 export function toPublishError(value: unknown): PublishError {
-  if (isPublishError(value)) return value;
-  // AdapterFailure shape ({ ok:false, reason, code?, message? }): classify from
-  // both the code hint and the human message.
+  // The rejection text (CLI output, server body, transport error) is logged,
+  // never shown: the panel renders app-written copy only.
+  let raw: string;
+  let haystack: string;
   if (
     typeof value === "object" &&
     value !== null &&
     typeof (value as { message?: unknown }).message === "string"
   ) {
     const failure = value as { message: string; code?: string };
-    const haystack = `${failure.code ?? ""} ${failure.message}`;
-    return {
-      message: failure.message,
-      notVerified: looksNotVerified(haystack),
-    };
+    raw = failure.message;
+    haystack = `${failure.code ?? ""} ${failure.message}`;
+  } else {
+    raw =
+      value instanceof Error
+        ? value.message
+        : typeof value === "string"
+          ? value
+          : "";
+    haystack = raw;
   }
-  const message =
-    value instanceof Error
-      ? value.message
-      : typeof value === "string"
-        ? value
-        : "Publish failed.";
-  return { message, notVerified: looksNotVerified(message) };
+  const notVerified = isPublishError(value)
+    ? value.notVerified
+    : looksNotVerified(haystack);
+  if (raw) console.warn("[marketplace] publish failed", raw);
+  return { message: PUBLISH_ERROR_COPY, notVerified };
 }
 
 /**
@@ -956,28 +984,46 @@ export function isClaimError(value: unknown): value is ClaimError {
  * passes through; a bare string / Error is wrapped (taken=false). Used so the
  * panel always has a `taken` flag + message to render, even on a transport error.
  */
+/** App-written copy for a failed claim, keyed by the server's reason code. */
+export function claimErrorCopy(code: string, taken: boolean): string {
+  if (taken || code === "HANDLE_ALREADY_CLAIMED") {
+    return "That handle is already claimed. Try another.";
+  }
+  if (code === "HANDLE_FORMAT_INVALID") {
+    return "That handle isn't valid. Use 3–30 lowercase letters, numbers, - or _.";
+  }
+  if (code === "HANDLE_RESERVED" || code === "HANDLE_CONFUSABLE") {
+    return "That handle isn't available. Try another.";
+  }
+  return "Couldn't claim that handle. Try again.";
+}
+
 export function toClaimError(value: unknown): ClaimError {
-  if (isClaimError(value)) return value;
-  // AdapterFailure shape: the server's stable reason code rides in `code`.
+  let raw = "";
+  let code = "";
+  let taken = false;
   if (
     typeof value === "object" &&
     value !== null &&
     typeof (value as { message?: unknown }).message === "string"
   ) {
-    const failure = value as { message: string; code?: string };
-    const code = failure.code ?? "";
-    const taken =
+    // Structured ClaimError or AdapterFailure: the server's stable reason
+    // code rides in `code`.
+    const failure = value as { message: string; code?: string; taken?: unknown };
+    raw = failure.message;
+    code = typeof failure.code === "string" ? failure.code : "";
+    taken =
+      failure.taken === true ||
       code === "HANDLE_ALREADY_CLAIMED" ||
       /already claimed/i.test(failure.message);
-    return { message: failure.message, code, taken };
+  } else if (value instanceof Error) {
+    raw = value.message;
+  } else if (typeof value === "string") {
+    raw = value;
   }
-  const message =
-    value instanceof Error
-      ? value.message
-      : typeof value === "string"
-        ? value
-        : "Claim failed.";
-  return { message, code: "", taken: false };
+  // The server/transport text is logged, never shown.
+  if (raw) console.warn("[marketplace] handle claim failed", raw);
+  return { message: claimErrorCopy(code, taken), code, taken };
 }
 
 /**

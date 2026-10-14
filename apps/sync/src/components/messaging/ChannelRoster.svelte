@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   // Channel roster (US-018): the member list for one channel, opened from the
   // ChannelView header member-count button. Each row shows the member's name +
   // role; the channel owner additionally sees a "Remove" affordance per other
@@ -181,7 +182,7 @@
               <span class="invite-error" role="alert">{inviteError}</span>
             {/if}
             <button class="btn btn-ghost" type="button" onclick={() => (inviting = false)}>
-              Cancel
+              <RailIcon name="x" />Cancel
             </button>
             <button
               class="btn btn-primary"
@@ -195,7 +196,7 @@
         </div>
       {:else}
         <button class="invite-open" type="button" onclick={() => (inviting = true)}>
-          + Invite people
+          <RailIcon name="user-plus" />Invite people
         </button>
       {/if}
     {/if}
@@ -268,7 +269,7 @@
     padding: 1.125rem 1.25rem 1.25rem;
     border-radius: var(--radius-popover);
     border: 1px solid var(--pop-border);
-    background: var(--pop-bg);
+    background: var(--overlay-bg, var(--pop-bg));
     backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
@@ -454,7 +455,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 
@@ -469,7 +470,7 @@
     padding: 0.3125rem 0.75rem;
     border-radius: 7px;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     border: none;
     font-family: inherit;
@@ -511,7 +512,7 @@
     }
 
     .roster-sheet {
-      background: var(--c-bg);
+      background: var(--overlay-bg, var(--c-bg));
     }
   }
 </style>

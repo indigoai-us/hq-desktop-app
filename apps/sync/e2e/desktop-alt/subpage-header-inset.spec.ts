@@ -45,7 +45,9 @@ describe('sub-page headers reserve the window-controls inset', () => {
     expect(titleBar).toContain('var(--titlebar-leading-inset)');
     expect(titleBar).not.toMatch(/padding-left:\s*78px/);
     expect(pageHeader).toContain('var(--titlebar-height');
-    expect(pageHeader).toContain('var(--titlebar-leading-inset');
+    // Pages render right of the rail under the top bar: page edge, not gutter.
+    expect(pageHeader).not.toContain('var(--titlebar-leading-inset');
+    expect(pageHeader).toContain('var(--page-edge-inset');
     expect(pageHeader).toContain('data-tauri-drag-region');
     expect(pageHeader).not.toMatch(/padding-left:\s*\d+px/);
   });

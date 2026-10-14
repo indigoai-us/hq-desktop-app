@@ -1,9 +1,11 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Grid picker of avatar packs. Ghost layout: search, pack headings, a
    * 4-column swatch grid, keyboard movement, Save.
    */
   import { untrack } from "svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import { resolvePackItemSrc } from "./parse-pack.js";
   import { paintableAvatarSrc } from "./csp-image-src.js";
   import {
@@ -99,8 +101,9 @@
       .catch((err: unknown) => {
         if (cancelled) return;
         remotePacks = [];
-        loadError =
-          err instanceof Error ? err.message : "Could not load avatar packs.";
+        // AUDIT-3c: log the raw failure; show app copy.
+        console.warn("[avatars] pack load failed", err);
+        loadError = "Could not load avatar packs. Try again.";
       })
       .finally(() => {
         if (!cancelled) loadingRemote = false;
@@ -185,7 +188,7 @@
     data-testid="avatar-use-generated"
     aria-pressed={selection.kind === "generated"}
     onclick={selectGenerated}
-  >
+  ><RailIcon name="check-circle" />
     Use generated mark
   </button>
 
@@ -196,11 +199,7 @@
   {/if}
 
   {#if loading}
-    <div class="skeleton" data-testid="avatar-pack-skeleton" aria-busy="true">
-      {#each [0, 1, 2, 3, 4, 5, 6, 7] as n (n)}
-        <span class="skel"></span>
-      {/each}
-    </div>
+    <ReadLoader testid="avatar-pack-loading" />
   {:else if loadError}
     <p class="note" role="alert" data-testid="avatar-pack-load-error">{loadError}</p>
   {:else if loaded.length === 0}
@@ -285,7 +284,7 @@
       data-testid="avatar-pack-save"
       disabled={saving || loading}
       onclick={() => void save()}
-    >
+    ><RailIcon name="save" />
       {saving ? "Saving…" : "Save"}
     </button>
   {/if}
@@ -449,28 +448,5 @@
   .sw.focus:not(.on),
   .sw:hover:not(.on) {
     border-color: color-mix(in srgb, var(--t1) 16%, transparent);
-  }
-
-  .skeleton {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
-  }
-
-  .skel {
-    aspect-ratio: 1;
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--t1) 8%, transparent);
-    animation: pack-skel 1.1s ease-in-out infinite;
-  }
-
-  @keyframes pack-skel {
-    0%,
-    100% {
-      opacity: 0.45;
-    }
-    50% {
-      opacity: 1;
-    }
   }
 </style>

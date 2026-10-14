@@ -98,6 +98,18 @@ async function openMenuAndClick(
 }
 
 describe("V4TitleBar Launch menu", () => {
+  it("keeps the sidebar toggle and omits the Projects board icon", async () => {
+    await mountBar(makeAdapter({}));
+    expect(host.querySelector('[data-testid="titlebar-sidebar-toggle"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="titlebar-projects"]')).toBeNull();
+    expect(host.querySelector('[data-testid="titlebar-notifications"]')).toBeTruthy();
+  });
+
+  it("OWNER-R36: hides the sidebar toggle on a page with no side pane", async () => {
+    await mountBar(makeAdapter({}), { sidebarToggleHidden: true });
+    expect(host.querySelector('[data-testid="titlebar-sidebar-toggle"]')).toBeNull();
+  });
+
   it("offers a labeled host create action without launching an external tool", async () => {
     const onselect = vi.fn();
     const adapter = makeAdapter({});
@@ -120,17 +132,17 @@ describe("V4TitleBar Launch menu", () => {
     expect(header?.classList.contains("has-window-controls")).toBe(true);
   });
 
-  it("renders the Launch button immediately to the LEFT of the meetings icon", async () => {
+  it("keeps Launch but no longer renders the folder, console, meetings, or files icons (console-rail US-003)", async () => {
     await mountBar(makeAdapter({}));
-    const launch = host.querySelector('[data-testid="titlebar-launch"]');
-    const meetings = host.querySelector('[data-testid="titlebar-meetings"]');
-    expect(launch).toBeTruthy();
-    expect(meetings).toBeTruthy();
-    // DOM order: Launch precedes Meetings in the same actions cluster.
-    expect(
-      launch!.compareDocumentPosition(meetings!) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(host.querySelector('[data-testid="titlebar-launch"]')).toBeTruthy();
+    for (const id of [
+      "titlebar-meetings",
+      "titlebar-console",
+      "titlebar-reveal-folder",
+      "titlebar-files",
+    ]) {
+      expect(host.querySelector(`[data-testid="${id}"]`), id).toBeNull();
+    }
   });
 
   it("opens a dropdown with the three tool items", async () => {
@@ -210,145 +222,27 @@ describe("V4TitleBar Launch menu", () => {
     ).toEqual(["path", "tool"]);
   });
 
-  it("renders the Console + folder actions in the cluster, between Launch and meetings", async () => {
-    await mountBar(makeAdapter({}));
-    const actions = host.querySelector(".v4-title-actions");
-    const console_ = host.querySelector('[data-testid="titlebar-console"]');
-    const folder = host.querySelector('[data-testid="titlebar-reveal-folder"]');
-    const meetings = host.querySelector('[data-testid="titlebar-meetings"]');
-    expect(actions?.contains(console_!)).toBe(true);
-    expect(actions?.contains(folder!)).toBe(true);
-    // Both sit left of the camera icon.
-    for (const el of [console_, folder]) {
-      expect(
-        el!.compareDocumentPosition(meetings!) &
-          Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-    }
-    expect(console_?.getAttribute("aria-label")).toBe("Open HQ Console");
-    expect(folder?.getAttribute("aria-label")).toBe("Open HQ folder");
-  });
-
-  it("Console opens https://hq.computer via the host opener, never the webview", async () => {
-    const onopenurl = vi.fn();
-    const beforeHref = window.location.href;
-    await mountBar(makeAdapter({}), { onopenurl });
-    host
-      .querySelector<HTMLButtonElement>('[data-testid="titlebar-console"]')
-      ?.click();
-    await tick();
-    expect(onopenurl).toHaveBeenCalledWith("https://hq.computer");
-    // The webview must not navigate.
-    expect(window.location.href).toBe(beforeHref);
-  });
-
-  it("Console falls back to a noopener window.open with no host opener", async () => {
-    const open = vi
-      .spyOn(window, "open")
-      .mockImplementation(() => null as unknown as Window);
-    await mountBar(makeAdapter({}));
-    host
-      .querySelector<HTMLButtonElement>('[data-testid="titlebar-console"]')
-      ?.click();
-    await tick();
-    expect(open).toHaveBeenCalledWith(
-      "https://hq.computer",
-      "_blank",
-      "noopener,noreferrer",
-    );
-    open.mockRestore();
-  });
-
-  async function clickFolder(adapter: ReturnType<typeof makeAdapter>) {
+  it("shows Not installed with Install when a tool is missing", async () => {
+    const adapter = makeAdapter({});
     await mountBar(adapter);
     host
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="titlebar-reveal-folder"]',
-      )
+      .querySelector<HTMLButtonElement>('[data-testid="titlebar-launch"]')
       ?.click();
     await tick();
     await new Promise((r) => setTimeout(r, 0));
     await tick();
-  }
-
-  it("opens the HQ root through the pathless host command", async () => {
-    const adapter = makeAdapter({});
-    await clickFolder(adapter);
-    expect(adapter.files.revealHqRoot).toHaveBeenCalledTimes(1);
-    // EXACT argument shape: none. The HQ-relative contract cannot express the
-    // root, so passing any path (least of all an absolute one) is the bug
-    // this locks out — the host resolves the configured root itself.
-    expect(adapter.files.revealHqRoot.mock.calls[0]).toEqual([]);
-    expect(adapter.files.revealInFinder).not.toHaveBeenCalled();
-  });
-
-  it("works for a NON-default configured HQ folder on a shared volume", async () => {
-    // Guards against any machine-specific assumption creeping back in: not
-    // under a home dir, not named "HQ", not under Documents.
-    const adapter = makeAdapter({}, { hqFolderPath: "/srv/teams/acme-hq" });
-    await clickFolder(adapter);
-    expect(adapter.files.revealHqRoot).toHaveBeenCalledTimes(1);
-    // Still pathless — the renderer never forwards the configured path, so a
-    // volume outside $HOME cannot be rejected by a home-dir guard.
-    expect(adapter.files.revealHqRoot.mock.calls[0]).toEqual([]);
-    const btn = host.querySelector('[data-testid="titlebar-reveal-folder"]');
-    expect(btn?.hasAttribute("disabled")).toBe(false);
-  });
-
-  it("disables the button with a clear tooltip when no HQ folder is configured", async () => {
-    const adapter = makeAdapter({}, { hqFolderPath: "" });
-    await mountBar(adapter);
-    await new Promise((r) => setTimeout(r, 0));
-    await tick();
-    const btn = host.querySelector<HTMLButtonElement>(
-      '[data-testid="titlebar-reveal-folder"]',
+    const missing = host.querySelector(
+      '[data-testid="titlebar-launch-claude-missing"]',
     );
-    expect(btn?.disabled).toBe(true);
-    btn?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
-    await tick();
+    expect(missing?.textContent).toContain("Not installed");
     expect(
-      host.querySelector('[data-testid="tooltip-bubble"]')?.textContent,
-    ).toContain("HQ folder not configured");
-    expect(adapter.files.revealHqRoot).not.toHaveBeenCalled();
-  });
-
-  it("surfaces a host error verbatim when the configured folder is missing", async () => {
-    const adapter = makeAdapter({});
-    adapter.files.revealHqRoot = vi.fn(async () => ({
-      ok: false as const,
-      reason: "invoke",
-      message: "configured HQ folder does not exist: /srv/teams/acme-hq",
-    })) as never;
-    await clickFolder(adapter);
-    const btn = host.querySelector('[data-testid="titlebar-reveal-folder"]');
-    btn?.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
-    await tick();
-    const tip = host.querySelector('[data-testid="tooltip-bubble"]')?.textContent;
-    expect(tip).toContain("Could not open HQ folder");
-    expect(tip).toContain("does not exist");
-  });
-
-  it("hides the folder action on hosts without local file support (web)", async () => {
-    await mountBar(makeAdapter({}, { localFiles: false }));
+      host.querySelector('[data-testid="titlebar-launch-claude-install"]')
+        ?.textContent,
+    ).toContain("Install");
+    expect(adapter.shell.openClaudeCodeLink).not.toHaveBeenCalled();
     expect(
-      host.querySelector('[data-testid="titlebar-reveal-folder"]'),
-    ).toBeNull();
-    // The Console link is host-agnostic and stays.
-    expect(host.querySelector('[data-testid="titlebar-console"]')).toBeTruthy();
-  });
-
-  it("shows a per-item error and keeps the menu open when a launch fails", async () => {
-    const adapter = makeAdapter({});
-    // No tools detected at all → prompt-free "not detected" copy (no /setup).
-    await openMenuAndClick(adapter, "titlebar-launch-claude");
-    const error = host.querySelector(
-      '[data-testid="titlebar-launch-claude-error"]',
-    );
-    expect(error?.textContent).toContain("Claude Code was not detected");
-    expect(error?.textContent).not.toContain("/setup");
-    expect(
-      host.querySelector('[data-testid="titlebar-launch-menu"]'),
-    ).toBeTruthy();
+      host.querySelector('[data-testid="titlebar-launch-folder"]')?.textContent,
+    ).toContain("/tmp/HQ");
   });
 });
 

@@ -97,7 +97,7 @@ export function classifyInviteError(error: unknown): InviteFailure {
     else kind = 'request_failed';
     return httpStatus === undefined ? { kind } : { kind, httpStatus };
   }
-  // `hq_pro_fetch` rejects with "Network error: …" / "Not signed in: …" before
+  // `hq_pro_fetch` rejects with a network-error or not-signed-in message before
   // any status exists.
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   if (/network error|timed out|timeout|connection|offline|dns/i.test(message)) {

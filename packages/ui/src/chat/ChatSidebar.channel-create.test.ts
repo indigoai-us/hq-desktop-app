@@ -12,6 +12,30 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import ChatSidebar from "./ChatSidebar.svelte";
+import { flushSync } from "svelte";
+import { dropdownButton, dropdownValue } from "../test-support/dropdown.js";
+
+// Reads the scope dropdown's options, closing the menu with a second button
+// click: the modal's capture-phase window Escape handler would otherwise eat an
+// Escape and step back out of the create form.
+async function scopeOptions() {
+  const button = await dropdownButton(document, "chat-channel-scope");
+  button.click();
+  flushSync();
+  const menu = await vi.waitFor(() => {
+    const el = document.querySelector('[data-testid="chat-channel-scope-menu"]');
+    if (!el) throw new Error("scope menu not open");
+    return el;
+  });
+  const out = [...menu.querySelectorAll<HTMLElement>('[role="option"]')].map((o) => ({
+    value: o.dataset.value ?? "",
+    label: o.querySelector(".dd-label")?.textContent?.trim() ?? "",
+    disabled: o.getAttribute("aria-disabled") === "true",
+  }));
+  button.click();
+  flushSync();
+  return out;
+}
 import type { ChatSidebarApi } from "./chat-api.js";
 import type { Workspace } from "./workspaces.js";
 
@@ -151,11 +175,7 @@ async function settleQuery(): Promise<void> {
  * modal has no separate "New channel" entry: the name IS the way in.
  */
 async function openNewChannelModal(name = "HQ Desktop Bugs"): Promise<void> {
-  (
-    host.querySelector(
-      '[data-testid="chat-new-message"]',
-    ) as HTMLButtonElement | null
-  )?.click();
+  (component as unknown as { openCreateChannel: () => void }).openCreateChannel();
   await tick();
   const query = document.querySelector(
     '[data-testid="chat-create-query"]',
@@ -206,13 +226,12 @@ describe("ChatSidebar new-channel scope", () => {
     await mountSidebar({ scopeUid: "cmp_indigo" });
     await openNewChannelModal();
 
-    const select = document.querySelector(
-      '[data-testid="chat-channel-scope"]',
-    ) as HTMLSelectElement;
+    const select = await dropdownButton(document, "chat-channel-scope");
     expect(select).toBeTruthy();
-    expect(select.value).toBe("cmp_indigo");
+    expect(await dropdownValue(document, "chat-channel-scope")).toBe("cmp_indigo");
+    const options = await scopeOptions();
     // Personal is its own toggle now, so the dropdown is companies only.
-    expect([...select.options].map((option) => option.value)).toEqual([
+    expect(options.map((option) => option.value)).toEqual([
       "cmp_indigo",
       "cmp_lr",
     ]);
@@ -222,6 +241,9 @@ describe("ChatSidebar new-channel scope", () => {
         ?.getAttribute("aria-checked"),
     ).toBe("false");
     expect(select.textContent).not.toContain("Corey Epstein");
+    expect(options.map((option) => option.label).join(" ")).not.toContain(
+      "Corey Epstein",
+    );
   });
 
   it("restricts In to companies every selected member belongs to", async () => {
@@ -235,12 +257,11 @@ describe("ChatSidebar new-channel scope", () => {
     await addParticipant("Stefan Johnson");
     await addParticipant("Yousuf Kalim");
 
-    const select = document.querySelector(
-      '[data-testid="chat-channel-scope"]',
-    ) as HTMLSelectElement;
-    expect(select.value).toBe("cmp_indigo");
+    expect(await dropdownValue(document, "chat-channel-scope")).toBe("cmp_indigo");
     expect(
-      [...select.options].find((option) => option.value === "cmp_lr")?.disabled,
+      (await scopeOptions()).find(
+        (option) => option.value === "cmp_lr",
+      )?.disabled,
     ).toBe(true);
     expect(
       document.querySelector('[data-testid="chat-channel-scope-unavailable"]')
@@ -371,5 +392,33 @@ describe("ChatSidebar new-channel scope", () => {
     create.click();
     await tick();
     expect(createChannel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChatSidebar New channel sheet dismissal (QA-019)", () => {
+  async function openSheet(): Promise<void> {
+    let actions: { openNewChannel: () => void } | null = null;
+    await mountSidebar({ onactions: (a: typeof actions) => { if (a) actions = a; } });
+    expect(actions).not.toBeNull();
+    actions!.openNewChannel();
+    for (let i = 0; i < 100 && !document.querySelector('[data-testid="new-channel-sheet"]'); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await tick();
+    }
+    expect(document.querySelector('[data-testid="new-channel-sheet"]')).not.toBeNull();
+  }
+
+  it("closes on its Close button", async () => {
+    await openSheet();
+    (document.querySelector('[data-testid="new-channel-sheet"] button[aria-label="Close"]') as HTMLButtonElement).click();
+    await tick();
+    expect(document.querySelector('[data-testid="new-channel-sheet"]')).toBeNull();
+  });
+
+  it("closes on Escape", async () => {
+    await openSheet();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(document.querySelector('[data-testid="new-channel-sheet"]')).toBeNull();
   });
 });

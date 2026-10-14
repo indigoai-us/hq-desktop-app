@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Pending DM connection requests, rendered in the main conversation area.
    *
@@ -88,17 +89,9 @@
       wakes?.emit?.("dm:request-update", { pairKey: req.pairKey });
       onresolved?.(req, action);
     } catch (err) {
-      const detail =
-        typeof err === "string"
-          ? err
-          : err instanceof Error && err.message
-            ? err.message
-            : "";
       errors = {
         ...errors,
-        [req.pairKey]: detail
-          ? `Could not ${action} this request: ${detail}`
-          : `Could not ${action} this request.`,
+        [req.pairKey]: `Could not ${action} this request. Try again.`,
       };
       console.error(`dm-requests: respond_dm_request ${action} failed`, err);
     } finally {
@@ -157,7 +150,7 @@
   {:else if loadError}
     <div class="dm-requests-status" data-testid="dm-requests-error" role="alert">
       <span>{loadError}</span>
-      <button type="button" onclick={() => void refresh()}>Retry</button>
+      <button type="button" onclick={() => void refresh()}><RailIcon name="refresh" />Retry</button>
     </div>
   {:else if requests.length === 0}
     <p class="dm-requests-status" data-testid="dm-requests-empty" role="status">
@@ -215,7 +208,7 @@
                   data-testid="dm-request-accept"
                   disabled={inflight !== null}
                   onclick={() => void respond(req, "accept")}
-                >
+                ><RailIcon name="check" />
                   {inflight === "accept" ? "Accepting…" : "Accept"}
                 </button>
                 <button
@@ -224,7 +217,7 @@
                   data-testid="dm-request-decline"
                   disabled={inflight !== null}
                   onclick={() => void respond(req, "decline")}
-                >
+                ><RailIcon name="x" />
                   {inflight === "decline" ? "Declining…" : "Decline"}
                 </button>
                 <button
@@ -233,7 +226,7 @@
                   data-testid="dm-request-block"
                   disabled={inflight !== null}
                   onclick={() => void respond(req, "block")}
-                >
+                ><RailIcon name="x" />
                   {inflight === "block" ? "Blocking…" : "Block"}
                 </button>
               </div>
@@ -317,8 +310,7 @@
     align-items: center;
     justify-content: center;
     font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-weight: 500;
     color: var(--t1);
     background: var(--v4-control-bg, rgba(127, 127, 127, 0.18));
   }
@@ -328,14 +320,14 @@
     min-width: 0;
   }
   .request-name {
-    font-weight: 600;
+    font-weight: 500;
     color: var(--t1);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .request-email {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--t2);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -343,26 +335,27 @@
   }
   .request-hint {
     margin: 0;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--t2);
   }
   .request-message {
     margin: 0;
     padding: 8px 12px;
-    border-left: 2px solid var(--line2);
+    border-radius: 6px;
+    background: var(--hover);
     color: var(--t1);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
   .request-no-message {
     margin: 0;
-    font-size: 12px;
+    font-size: 13px;
     font-style: italic;
     color: var(--t2);
   }
   .request-error {
     margin: 0;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--v4-error, #e5484d);
   }
   .request-actions {
@@ -380,7 +373,7 @@
     background: transparent;
     color: var(--t1);
     font-family: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1;
     cursor: pointer;

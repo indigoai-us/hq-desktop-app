@@ -22,7 +22,7 @@ import {
   type CallWindowDeps,
   type CallWindowHandle,
 } from "./bootstrap";
-import { SERVICE_EVIDENCE } from "./service-evidence";
+import { BUNDLED_EVIDENCE_MAX_AGE_MS, SERVICE_EVIDENCE } from "./service-evidence";
 import { hasNoCredentialFields, isCallWindowTarget } from "./target";
 import type { CallWindowTarget } from "./target";
 
@@ -501,7 +501,12 @@ describe("startCallWindow", () => {
     // The bundled US-011 receipt is what unlocks the adapter. It is pinned to
     // this mirror's contract hash and is refused once it goes stale — a failure
     // here means the receipt needs re-running, which is exactly the signal.
-    const validated = validateServiceEvidence(SERVICE_EVIDENCE);
+    // Same bound the call window's preflight applies to the bundled receipt
+    // (bootstrap.ts). The receipt's own lifetime and its 14-day early warning
+    // are asserted in service-evidence.test.ts.
+    const validated = validateServiceEvidence(SERVICE_EVIDENCE, {
+      maxAgeMs: BUNDLED_EVIDENCE_MAX_AGE_MS,
+    });
     expect(validated.ok).toBe(true);
     expect((SERVICE_EVIDENCE as { contractHash: string }).contractHash).toBe(
       PINNED_CONTRACT_HASH,

@@ -317,6 +317,26 @@ describe("CreateModal — create company from the palette", () => {
     expect(onclose).not.toHaveBeenCalled();
   });
 
+  it("shows plain copy, never raw transport text, when submit throws", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
+    const { seam: wired } = seam({
+      submit: async () => {
+        throw raw;
+      },
+    });
+    open({ companyCreate: wired });
+    await gotoCompanyStep();
+    $<HTMLButtonElement>('[data-testid="chat-create-company-submit"]')!.click();
+    await settle();
+    expect($('[data-testid="chat-create-company-error"]')?.textContent).toContain(
+      "That didn't work. Try again.",
+    );
+    expect(document.body.textContent).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[create-modal] company step failed", raw);
+    warn.mockRestore();
+  });
+
   it("reports the server's reason when the form itself cannot be opened", async () => {
     const { seam: wired } = seam({
       open: async () => ({ ok: false, reason: "Only owners can do that", blocked: true }),

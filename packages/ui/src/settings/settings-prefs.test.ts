@@ -64,4 +64,16 @@ describe("settings prefs", () => {
     const parsed = parseSettingsPrefs({});
     expect(parsed).toEqual(DEFAULT_SETTINGS_PREFS);
   });
+
+  it("keeps pin order unset until the rail seeds it", () => {
+    expect(parseSettingsPrefs({}).pinnedCompanyIds).toBeNull();
+    expect(parseSettingsPrefs({ pinnedCompanyIds: null }).pinnedCompanyIds).toBeNull();
+    const storage = memoryStorage();
+    writeSettingsPrefs(
+      { pinnedCompanyIds: ["co_a", "co_a", " co_b ", ""], companyRecentIds: ["co_b"] },
+      storage,
+    );
+    expect(readSettingsPrefs(storage).pinnedCompanyIds).toEqual(["co_a", "co_b"]);
+    expect(readSettingsPrefs(storage).companyRecentIds).toEqual(["co_b"]);
+  });
 });

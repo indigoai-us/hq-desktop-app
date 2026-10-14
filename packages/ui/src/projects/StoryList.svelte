@@ -142,7 +142,7 @@
     background: var(--v4-raised);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
     transition:
@@ -194,8 +194,8 @@
     overflow: hidden;
     color: var(--v4-text-2);
     font-family: var(--font-mono);
-    font-size: var(--type-secondary, var(--text-base));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -212,8 +212,8 @@
     flex: 0 1 auto;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -243,8 +243,8 @@
     border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: var(--type-metadata, var(--text-base));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 16px;
   }
 
@@ -283,9 +283,9 @@
   .ac-count {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-base));
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .empty-state {
@@ -299,12 +299,12 @@
   .empty-state p {
     margin: 0 0 var(--v4-space-1);
     color: var(--v4-text-1);
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .empty-state span {
     color: var(--v4-text-2);
-    font-size: var(--type-secondary, var(--text-base));
+    font-size: 13px;
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -13,10 +13,17 @@ import { BOT_SYNC_DONE_VISIBLE_MS, BOT_SYNC_POLL_MS } from "../chat/bot-sync-mod
 import type { ConversationRow } from "../chat/sidebar-model.js";
 
 /**
- * The sync strip under the header of a cloud bot's direct message: shown
+ * The sync status in the header of a cloud bot's direct message: a still
+ * sync glyph and one muted line to the right of "Direct message", shown
  * while the bot's company files are being downloaded, drawn from the bot's
- * status, gone a few seconds after the server says the files are there. It
- * replaced the grey "still downloading" line.
+ * status, gone a few seconds after the server says the files are there.
+ *
+ * Rewritten 2026-10-04. It used to be a full-width strip with a progress bar
+ * under the header, and these tests pinned that strip (where it sat, its
+ * bar's value). The owner asked for it in the header instead: "remove the
+ * 'syncing' progress bar and just add it as a sync icon and message to the
+ * right of the 'Direct message' in the header next to the bot's name". When
+ * it shows and what it says come from the same model as before.
  */
 
 const NOVA = "agt_nova";
@@ -175,49 +182,56 @@ async function mountNewBotDm(w: World): Promise<void> {
 
 const threadEl = (): HTMLElement | null => host.querySelector<HTMLElement>('[data-testid="conversation-thread"]');
 const threadText = (): string => threadEl()?.textContent ?? "";
-const widget = (): HTMLElement | null => host.querySelector<HTMLElement>('[data-testid="bot-sync-widget"]');
-const bar = (): HTMLElement | null => host.querySelector<HTMLElement>('[data-testid="bot-sync-progress"]');
-const amount = (): string | null => host.querySelector('[data-testid="bot-sync-amount"]')?.textContent ?? null;
+const header = (): HTMLElement => host.querySelector<HTMLElement>('[data-testid="channel-header"]')!;
+/** The sync status: the glyph and the line in the header. */
+const syncStatus = (): HTMLElement | null => host.querySelector<HTMLElement>('[data-testid="bot-sync-status"]');
+const syncText = (): string | null => host.querySelector('[data-testid="bot-sync-status-text"]')?.textContent ?? null;
+const syncTitle = (): string | null => syncStatus()?.getAttribute("title") ?? null;
 const chipRow = (): HTMLElement | null => host.querySelector<HTMLElement>('[data-testid="suggested-replies"]');
 
 /** True when `a` comes before `b` in the page. */
 const before = (a: Element, b: Element): boolean =>
   Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
-describe("DesktopApp sync widget in a cloud bot's direct message", () => {
-  it("shows for a bot whose files are still downloading, with the server's real counts", async () => {
+/** The strip and its progress bar are gone from the page, wherever one looks. */
+function expectNoStrip(): void {
+  expect(host.querySelector('[data-testid="bot-sync-widget"]')).toBeNull();
+  expect(host.querySelector('[data-testid="bot-sync-progress"]')).toBeNull();
+  expect(host.querySelector('[data-testid="conversation-strip"]')).toBeNull();
+  expect(host.querySelector('[role="progressbar"]')).toBeNull();
+}
+
+describe("DesktopApp sync status in the header of a cloud bot's direct message", () => {
+  it("shows for a bot whose files are still downloading, with the server's real percent", async () => {
     const w = world();
     await mountNewBotDm(w);
-    await vi.waitFor(() => expect(widget()).not.toBeNull());
-    const el = widget()!;
+    await vi.waitFor(() => expect(syncStatus()).not.toBeNull());
+    const el = syncStatus()!;
     expect(el.dataset.state).toBe("syncing");
-    expect(el.textContent).toContain("Syncing your company's files");
-    expect(el.textContent).toContain("Pulling files down. 128 of 412 files");
+    expect(syncText()).toBe("Syncing your company's files, 31%");
+    // The whole status is in the title, for a line that was cut short.
+    expect(syncTitle()).toBe("Syncing your company's files. Pulling files down. 128 of 412 files (31%)");
     expect(el.textContent).not.toMatch(/Nova|know more|chat now/);
-    expect(bar()!.getAttribute("aria-valuenow")).toBe("31");
-    expect(bar()!.getAttribute("aria-valuetext")).toBe("128 of 412 files");
-    expect(amount()).toBe("31%");
-    // The grey line it replaced is gone.
+    expectNoStrip();
+    // The grey line it replaced long ago is still gone.
     expect(host.querySelector('[data-testid="agent-dm-catching-up"]')).toBeNull();
     expect(threadText()).not.toContain("is still downloading your company's files");
     // The message box is not locked: the person can chat while the files arrive.
     expect(host.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(false);
   });
 
-  it("shows an empty, still bar and no percent when the server sends no counts", async () => {
+  it("shows the title alone, with no number, when the server sends no counts", async () => {
     const w = world({ status: () => statusOf({ status: "running" }) });
     await mountNewBotDm(w);
-    await vi.waitFor(() => expect(widget()).not.toBeNull());
-    expect(widget()!.dataset.state).toBe("syncing");
-    expect(widget()!.textContent).toContain("Preparing.");
-    expect(amount()).toBeNull();
-    expect(widget()!.textContent).not.toMatch(/\d/);
-    expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
-    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.getPropertyValue("--fill")).toBe("0");
-    expect(bar()!.classList.contains("is-unknown")).toBe(false);
+    await vi.waitFor(() => expect(syncStatus()).not.toBeNull());
+    expect(syncStatus()!.dataset.state).toBe("syncing");
+    expect(syncText()).toBe("Syncing your company's files");
+    expect(syncStatus()!.textContent).not.toMatch(/\d/);
+    expect(syncTitle()).toBe("Syncing your company's files. Preparing.");
+    expectNoStrip();
   });
 
-  it("is a strip directly under the header, above the thread with the bot's suggested replies in it, and the message box", async () => {
+  it("is in the header, to the right of 'Direct message' and before the header's right side, and takes no room above the thread", async () => {
     // The bot answered a question with suggestions; the cards sit under the hello, above.
     const w = world({
       thread: [
@@ -227,19 +241,36 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
       ],
     });
     await mountNewBotDm(w);
-    await vi.waitFor(() => expect(widget()).not.toBeNull());
+    await vi.waitFor(() => expect(syncStatus()).not.toBeNull());
     await vi.waitFor(() => expect(chipRow()).not.toBeNull());
-    const el = widget()!;
-    // Not in the scroller: it stays in view while the person scrolls, and it
-    // takes its own room, so it covers nothing.
+    const el = syncStatus()!;
+    // In the conversation header, in the title block, not in the thread.
+    expect(header().contains(el)).toBe(true);
+    expect(el.closest(".channel-title-block")).not.toBeNull();
     expect(threadEl()!.contains(el)).toBe(false);
-    expect(el.closest('[data-testid="conversation-strip"]')).not.toBeNull();
+    // After the bot's name and the "Direct message" label, in that order.
+    const name = header().querySelector<HTMLElement>('[data-testid="channel-name"]')!;
+    const label = header().querySelector<HTMLElement>('[data-testid="channel-sub"]')!;
+    expect(name.textContent).toBe("Nova");
+    expect(label.textContent).toBe("Direct message");
+    expect(before(name, label)).toBe(true);
+    expect(before(label, el)).toBe(true);
+    // The title and its label are one item of the title block; the status is
+    // the next one, so it is the one that gives way in a narrow window.
+    const block = el.parentElement!;
+    expect(block.classList.contains("channel-title-block")).toBe(true);
+    expect(Array.from(block.children).map((child) => child.className.split(" ")[0])).toEqual(["channel-title", "bot-sync-status"]);
+    expect(block.querySelector(".channel-title")!.contains(label)).toBe(true);
+    // Before the header's right side (Edit profile and the rest), which is not inside the title block.
+    const trailing = header().querySelector<HTMLElement>(".channel-header-trailing")!;
+    expect(before(el, trailing)).toBe(true);
+    expect(block.contains(trailing)).toBe(false);
+    // One glyph, then the words.
+    expect(Array.from(el.children).map((child) => child.getAttribute("data-testid"))).toEqual(["bot-sync-status-icon", "bot-sync-status-text"]);
+    expect(el.querySelector('[data-testid="bot-sync-status-icon"] svg')).not.toBeNull();
+    // Nothing sits between the header and the thread any more.
+    expectNoStrip();
     expect(host.querySelector('[data-testid="conversation-pinned"]')).toBeNull();
-    // Under the conversation header, above everything in the thread.
-    const header = host.querySelector<HTMLElement>('[data-testid="channel-name"]')!;
-    expect(header.textContent).toBe("Nova");
-    expect(before(header, el)).toBe(true);
-    expect(before(el, threadEl()!)).toBe(true);
     // The chips are part of the bot's newest message, in the thread, above the message box.
     expect(threadEl()!.contains(chipRow()!)).toBe(true);
     expect(chipRow()!.closest('[data-testid="conversation-message"]')?.getAttribute("data-event-id")).toBe("e4");
@@ -249,7 +280,7 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
 
   it("the live run: a finished-looking snapshot forty minutes old is stale, with no percent", async () => {
     // What the walkthrough bot's status said: every file counted, no syncOkAt,
-    // the box heartbeating but its last sync run not ok. The old strip read
+    // the box heartbeating but its last sync run not ok. The first strip read
     // the frozen counts as 99%.
     const w = world({
       status: () =>
@@ -266,57 +297,52 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
         }),
     });
     await mountNewBotDm(w);
-    await vi.waitFor(() => expect(widget()).not.toBeNull());
-    const el = widget()!;
-    expect(el.dataset.state).toBe("stale");
-    expect(el.textContent).toContain("Still syncing.");
-    expect(el.textContent).not.toMatch(/\d/);
-    expect(amount()).toBeNull();
-    expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
-    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.getPropertyValue("--fill")).toBe("0");
-    expect(bar()!.classList.contains("is-unknown")).toBe(false);
+    await vi.waitFor(() => expect(syncStatus()).not.toBeNull());
+    expect(syncStatus()!.dataset.state).toBe("stale");
+    expect(syncText()).toBe("Still syncing.");
+    expect(syncStatus()!.textContent).not.toMatch(/\d/);
+    expect(syncTitle()).toBe("Still syncing.");
   });
 
-  it("the live run (Big Nuts, 2026-10-03): 10 of 10 planned, refreshed every second, not finished, reads 'Preparing.' and no percent", async () => {
+  it("the live run (Big Nuts, 2026-10-03): 10 of 10 planned, refreshed every second, not finished, reads the files so far and no percent", async () => {
     // runtime.firstSync = { phase: "pull", filesDone: 10, filesTotal: 10 }, no
     // syncOkAt, no firstSyncFinalized, the computer heartbeating. The personal
-    // target was done; the company vault had not been planned yet. The old
+    // target was done; the company vault had not been planned yet. The first
     // strip read it as 99%.
     const w = world({ status: () => statusOf(downloading(10, 10)) });
     await mountNewBotDm(w);
-    await vi.waitFor(() => expect(widget()).not.toBeNull());
-    const el = widget()!;
-    expect(el.dataset.state).toBe("syncing");
-    expect(el.textContent).toContain("Syncing your company's files");
-    expect(el.textContent).toContain("Preparing. 10 files so far");
-    expect(el.textContent).not.toMatch(/\d+%|99/);
-    expect(amount()).toBeNull();
-    expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
-    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.getPropertyValue("--fill")).toBe("0");
-    expect(bar()!.classList.contains("is-unknown")).toBe(false);
-    expect(bar()!.getAttribute("aria-valuetext")).toBe("10 files so far");
+    await vi.waitFor(() => expect(syncStatus()).not.toBeNull());
+    expect(syncStatus()!.dataset.state).toBe("syncing");
+    // The owner's own example of the header line.
+    expect(syncText()).toBe("Syncing your company's files, 10 files so far");
+    expect(syncTitle()).toBe("Syncing your company's files. Preparing. 10 files so far");
+    expect(syncStatus()!.textContent).not.toMatch(/\d+%|99/);
+    expect(syncTitle()).not.toMatch(/\d+%|99/);
   });
 
   it("shows for a bot that was not made here once its computer reports a download", async () => {
     const w = world();
     await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
-    await vi.waitFor(() => expect(widget()).not.toBeNull());
-    expect(amount()).toBe("31%");
+    await vi.waitFor(() => expect(syncStatus()).not.toBeNull());
+    expect(syncText()).toBe("Syncing your company's files, 31%");
   });
 
   it("shows nothing for a bot whose files are already there", async () => {
     const w = world({ status: () => statusOf(SYNCED, { phase: "ready" }) });
     await mountNewBotDm(w);
-    expect(widget()).toBeNull();
+    expect(syncStatus()).toBeNull();
+    expect(header().textContent).not.toContain("Files are up to date.");
     expect(threadText()).not.toContain("Files are up to date.");
+    // The header is as it is for any direct message: the name and the label.
+    expect(header().querySelector('[data-testid="channel-sub"]')?.textContent).toBe("Direct message");
   });
 
-  it("shows no widget and no error when the status cannot be read", async () => {
+  it("shows no status and no error when the bot's status cannot be read", async () => {
     const w = world({ status: () => null });
     await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
     await vi.waitFor(() => expect(w.getStatus).toHaveBeenCalled());
     await settle(20);
-    expect(widget()).toBeNull();
+    expect(syncStatus()).toBeNull();
     expect(host.textContent).not.toContain("Only owners and admins");
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
@@ -331,7 +357,8 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     });
     await mountRow(w, DM_ROW("prs_nova"), "Hello Corey");
     await settle(20);
-    expect(widget()).toBeNull();
+    expect(syncStatus()).toBeNull();
+    expect(header().querySelector('[data-testid="channel-sub"]')?.textContent).toBe("Direct message");
     expect(w.getStatus).not.toHaveBeenCalled();
   });
 
@@ -346,7 +373,7 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     const row = { id: "ch:chn_team", kind: "channel", title: "team", channelId: "chn_team", channelScope: "channel", companyUid: COMPANY } as ConversationRow;
     await mountRow(w, row, "Hello team");
     await settle(20);
-    expect(widget()).toBeNull();
+    expect(syncStatus()).toBeNull();
   });
 
   it("says a failed download in one sentence", async () => {
@@ -355,16 +382,15 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
         statusOf({ status: "running" }, { phase: "failed", steps: [{ name: "codex-auth", status: "done" }, { name: "sync", status: "failed" }] }),
     });
     await mountNewBotDm(w);
-    await vi.waitFor(() => expect(widget()).not.toBeNull());
-    expect(widget()!.dataset.state).toBe("failed");
-    expect(widget()!.textContent).toContain("Sync hit a problem.");
-    expect(widget()!.textContent).not.toContain("Nova");
-    expect(bar()).toBeNull();
-    expect(amount()).toBeNull();
+    await vi.waitFor(() => expect(syncStatus()).not.toBeNull());
+    expect(syncStatus()!.dataset.state).toBe("failed");
+    expect(syncText()).toBe("Sync hit a problem.");
+    expect(syncStatus()!.textContent).not.toContain("Nova");
+    expectNoStrip();
   });
 });
 
-describe("DesktopApp sync widget over time", () => {
+describe("DesktopApp sync status over time", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(Date.parse("2026-10-02T15:00:00.000Z"));
@@ -384,23 +410,28 @@ describe("DesktopApp sync widget over time", () => {
     let runtime: Row = downloading(128, 412);
     const w = world({ status: () => statusOf(runtime) });
     await mountNewBotDm(w);
-    await vi.waitFor(() => expect(widget()).not.toBeNull());
-    expect(amount()).toBe("31%");
+    await vi.waitFor(() => expect(syncStatus()).not.toBeNull());
+    expect(syncText()).toBe("Syncing your company's files, 31%");
     const asked = w.getStatus.mock.calls.length;
 
     // The next look, about half a minute later, has newer counts.
     runtime = downloading(309, 412);
-    await until(() => amount() === "75%");
+    await until(() => syncText() === "Syncing your company's files, 75%");
     expect(w.getStatus.mock.calls.length).toBeGreaterThan(asked);
 
     // The server says the files are there.
     runtime = SYNCED;
-    await until(() => widget()?.dataset.state === "done");
-    expect(widget()!.textContent).toContain("Files are up to date.");
-    expect(bar()!.getAttribute("aria-valuenow")).toBe("100");
+    await until(() => syncStatus()?.dataset.state === "done");
+    expect(syncText()).toBe("Files are up to date.");
+    expect(syncTitle()).toBe("Files are up to date. 412 files synced.");
 
-    await advance(BOT_SYNC_DONE_VISIBLE_MS + 2_000);
-    expect(widget()).toBeNull();
+    // It goes away when the files are up to date, a few seconds on: the same moment the strip did.
+    await advance(BOT_SYNC_DONE_VISIBLE_MS - 1_500);
+    expect(syncStatus()).not.toBeNull();
+    await advance(2_000);
+    expect(syncStatus()).toBeNull();
+    // The header is the plain one again.
+    expect(header().querySelector('[data-testid="channel-sub"]')?.textContent).toBe("Direct message");
     // The bot is no longer a new bot waiting for its files.
     expect(JSON.parse(window.localStorage.getItem(NEW_BOTS_KEY) ?? "[]")).toEqual([]);
   });
@@ -414,24 +445,24 @@ describe("DesktopApp sync widget over time", () => {
     const w = world({ status: () => statusOf(runtime, { phase: "ready" }) });
     await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
     await settle(20);
-    expect(widget()).toBeNull();
+    expect(syncStatus()).toBeNull();
 
     runtime = { ...synced, ...downloading(40, 400) };
-    await until(() => widget() !== null);
-    expect(widget()!.dataset.state).toBe("syncing");
-    expect(amount()).toBe("10%");
+    await until(() => syncStatus() !== null);
+    expect(syncStatus()!.dataset.state).toBe("syncing");
+    expect(syncText()).toBe("Syncing your company's files, 10%");
 
     runtime = synced;
-    await until(() => widget()?.dataset.state === "done");
-    expect(widget()!.textContent).toContain("Files are up to date.");
+    await until(() => syncStatus()?.dataset.state === "done");
+    expect(syncText()).toBe("Files are up to date.");
     await advance(BOT_SYNC_DONE_VISIBLE_MS + 2_000);
-    expect(widget()).toBeNull();
+    expect(syncStatus()).toBeNull();
   });
 
   it("stops asking once the conversation is closed", async () => {
     const w = world();
     await mountNewBotDm(w);
-    await vi.waitFor(() => expect(widget()).not.toBeNull());
+    await vi.waitFor(() => expect(syncStatus()).not.toBeNull());
     await unmount(component!);
     component = null;
     const asked = w.getStatus.mock.calls.length;
@@ -447,6 +478,6 @@ describe("DesktopApp sync widget over time", () => {
     await advance(5 * BOT_SYNC_POLL_MS);
     // The cards and the hello lookup may ask on their own; the sync timer does not.
     expect(w.getStatus.mock.calls.length).toBe(asked);
-    expect(widget()).toBeNull();
+    expect(syncStatus()).toBeNull();
   });
 });

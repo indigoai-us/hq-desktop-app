@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * StoryPanel — stable in-workspace task detail (DESKTOP-006).
    *
@@ -18,6 +19,7 @@
   import {
     projectDisplayName,
     storyLiveRunView,
+    taskPaneStatus,
     type PortfolioSessionRef,
     type Project,
     type Story,
@@ -51,6 +53,9 @@
     sessions?: readonly PortfolioSessionRef[];
     /** Compact relative "now" for elapsed / last-signal labels. */
     now?: number;
+    /** All stories in the project, so the pane status uses the same task
+     *  column rule as the task list (QA-036). */
+    stories?: readonly Story[];
   }
 
   let {
@@ -64,6 +69,7 @@
     embedded = true,
     sessions = [],
     now = Date.now(),
+    stories = [],
   }: Props = $props();
 
   let passesOverride = $state<boolean | null>(null);
@@ -128,11 +134,21 @@
   const liveRun = $derived(
     story ? storyLiveRunView(story, sessions, now) : null,
   );
-  const statusLabel = $derived(
-    currentPasses ? "Complete" : liveRun ? "Active" : "To do",
+  // Same task-column rule as the task list rows (QA-036): one source of truth.
+  const paneStatus = $derived(
+    story ? taskPaneStatus(story, stories, sessions, passesOverride) : null,
   );
+  // The open half of the To do / Done control names the task's actual column
+  // (To do, In progress, Active) so it never contradicts the badge (QA-036).
+  const statusLabel = $derived(paneStatus?.label ?? "To do");
   const statusTone = $derived(
-    currentPasses ? "complete" : liveRun ? "active" : "todo",
+    paneStatus?.column === "complete"
+      ? "complete"
+      : paneStatus?.column === "active"
+        ? "active"
+        : paneStatus?.column === "in-progress"
+          ? "progress"
+          : "todo",
   );
 
   async function setPasses(next: boolean) {
@@ -334,16 +350,17 @@
         type="button"
         class:active={!currentPasses}
         disabled={saving}
+        data-testid="task-status-open"
         onclick={() => setPasses(false)}
       >
-        {saving && !currentPasses ? "Saving…" : "To do"}
+        {saving && !currentPasses ? "Saving…" : currentPasses ? "To do" : statusLabel}
       </button>
       <button
         type="button"
         class:active={currentPasses}
         disabled={saving}
         onclick={() => setPasses(true)}
-      >
+      ><RailIcon name="check" />
         {saving && currentPasses ? "Saving…" : "Done"}
       </button>
     </div>
@@ -541,14 +558,14 @@
         onclick={() => void copyStoryId()}
         disabled={footerBusy !== null}
         aria-busy={footerBusy === "copy"}
-      >
+      ><RailIcon name="copy" />
         {footerBusy === "copy" ? "Copying…" : "Copy ID"}
       </button>
       <button
         type="button"
         onclick={() => void openPrd()}
         disabled={footerBusy !== null || !prdPath}
-      >
+      ><RailIcon name="external" />
         {footerBusy === "prd" ? "Opening…" : "Open PRD"}
       </button>
       <button
@@ -556,7 +573,7 @@
         class="primary"
         onclick={() => void runStory()}
         disabled={footerBusy !== null}
-      >
+      ><RailIcon name="play" />
         {footerBusy === "run" ? "Opening…" : "Run story"}
       </button>
     </footer>
@@ -589,11 +606,8 @@
     width: min(420px, 100vw);
     border-left: 1px solid var(--v4-hairline);
     background: var(--v4-popover);
-    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    -webkit-backdrop-filter: var(
-      --v4-glass-filter-popover,
-      var(--v4-glass-filter)
-    );
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     box-shadow:
       var(--v4-shadow-popover),
       inset 1px 0 0 var(--v4-glass-highlight);
@@ -605,7 +619,7 @@
     gap: 8px;
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--text-base);
+    font-size: 13px;
     font-weight: 500;
   }
 
@@ -637,7 +651,7 @@
   .section-title-row span {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -655,18 +669,18 @@
   .story-id {
     color: var(--v4-text-3);
     font-family: var(--font-mono);
-    font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-size: 13px;
+    font-weight: 400;
+    letter-spacing: 0;
   }
 
   h2 {
     margin: 0;
     overflow-wrap: anywhere;
     color: var(--v4-text-1);
-    font-size: var(--type-detail, var(--text-lg));
-    font-weight: 600;
-    line-height: 1.2;
+    font-size: 20px;
+    font-weight: 500;
+    line-height: 1.25;
   }
 
   .meta-row {
@@ -676,7 +690,28 @@
   }
 
   .status-pill,
-  .priority,
+  .priority {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 20px;
+    padding: 0;
+    color: var(--v4-text-2);
+    font-size: 13px;
+  }
+
+  .status-pill::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-text-3);
+  }
+
+  .status-pill:has(.live-dot)::before {
+    display: none;
+  }
+
   .dep-chip {
     display: inline-flex;
     align-items: center;
@@ -687,15 +722,19 @@
     border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
   }
 
-  .status-pill.tone-complete {
-    color: var(--v4-ok);
+  .status-pill.tone-complete::before {
+    background: var(--v4-text-1);
   }
 
-  .status-pill.tone-active {
-    color: var(--v4-ok);
+  .status-pill.tone-active::before {
+    background: var(--v4-ok);
+  }
+
+  .status-pill.tone-progress::before {
+    background: var(--v4-text-2);
   }
 
   .status-pill.tone-todo {
@@ -707,7 +746,7 @@
   }
 
   .priority[data-priority="P1"] {
-    color: var(--v4-error);
+    color: var(--v4-text-2);
   }
   .priority[data-priority="P2"] {
     color: var(--v4-text-2);
@@ -721,7 +760,7 @@
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: var(--type-section, var(--text-base));
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -735,37 +774,40 @@
     outline-offset: 2px;
   }
 
+  /* Messages segmented control (NewChannelSheet): content-width track. */
   .status-control {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    display: inline-flex;
+    align-self: flex-start;
+    gap: 2px;
+    width: max-content;
     margin: var(--v4-space-3) var(--v4-space-4) 0;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
+    padding: 2px;
+    border: 1px solid var(--panel-border, var(--v4-hairline));
+    border-radius: 6px;
+    background: var(--hover, var(--v4-control-faint));
   }
 
   .status-control button,
   .panel-footer button {
-    height: 28px;
+    height: var(--hq-btn-h);
     border: 0;
     border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     cursor: pointer;
   }
 
   .status-control button {
-    border-bottom: 1px solid transparent;
-    border-radius: 0;
+    height: auto;
+    padding: 4px 8px;
+    border-radius: 4px;
+    line-height: 17px;
   }
 
   .status-control button.active {
-    border-bottom-color: var(--v4-text-2);
-    background: transparent;
+    background: var(--v4-active-row);
     color: var(--v4-text-1);
   }
 
@@ -779,7 +821,7 @@
   .error {
     margin: var(--v4-space-2) var(--v4-space-4) 0;
     color: var(--v4-error);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .panel-body {
@@ -814,7 +856,7 @@
   .section p,
   .muted {
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     line-height: 1.45;
   }
 
@@ -861,8 +903,8 @@
     gap: 6px;
     min-width: 0;
     color: var(--v4-text-1);
-    font-size: var(--type-secondary, var(--text-sm));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .live-dot {
@@ -876,7 +918,7 @@
   .live-run-time,
   .live-run-foot {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
   }
 
@@ -935,7 +977,7 @@
     border: 1px solid var(--v4-hairline);
     border-radius: 50%;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     line-height: 1;
   }
 
@@ -951,7 +993,7 @@
 
   .ac-note {
     color: var(--v4-text-3) !important;
-    font-size: var(--type-metadata, var(--text-micro)) !important;
+    font-size: 13px !important;
     line-height: 1.4 !important;
   }
 
@@ -990,7 +1032,7 @@
     overflow: hidden;
     color: var(--v4-text-2);
     font-family: var(--font-mono);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1017,7 +1059,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;

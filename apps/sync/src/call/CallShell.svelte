@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   /**
    * The call window's shell (US-016/017/020).
    *
@@ -373,7 +374,7 @@
   {#if view.status === 'identity' && view.recoverable}
     <div class="notice" data-testid="call-identity-error" role="alert">
       <span>Confirm your account to join this call.</span>
-      <button type="button" data-testid="call-identity-retry" onclick={retryIdentity}>Retry</button>
+      <button type="button" data-testid="call-identity-retry" onclick={retryIdentity}><RailIcon name="refresh" />Retry</button>
     </div>
   {/if}
 
@@ -390,14 +391,14 @@
         <button
           type="button"
           data-testid="call-permission-open-settings"
-          onclick={() => onopensettings?.(denial.device)}>Open System Settings</button
+          onclick={() => onopensettings?.(denial.device)}><RailIcon name="settings" />Open System Settings</button
         >
       {/if}
       <button
         type="button"
         data-testid="call-permission-retry"
         disabled={busy !== null}
-        onclick={() => retryDevice(denial.device)}>Retry</button
+        onclick={() => retryDevice(denial.device)}><RailIcon name="refresh" />Retry</button
       >
     </div>
   {/if}
@@ -465,7 +466,7 @@
         </div>
       {:else}
         {#if transcriptionSession}<p class="session-ended">Session ended. Your transcript is below.</p>{/if}
-        <button class="session-start" onclick={openSessionDialog}><span aria-hidden="true">＋</span> Start a transcription session</button>
+        <button class="session-start" onclick={openSessionDialog}><RailIcon name="plus" />Start a transcription session</button>
       {/if}
       {#if callView.transcript.sessionNotice}<p class="session-ended">{callView.transcript.sessionNotice}</p>{/if}
       {#if sessionError && !sessionDialogOpen}<p class="session-error" role="alert">{sessionError}</p>{/if}
@@ -481,12 +482,12 @@
       <footer class="transcript-footer">
         {#if callView.transcript.mode === 'personal'}
           <span role="status" class:save-error={callView.personalSave.status === 'error'}>{callView.personalSave.detail}</span><br/>Private notes · never shared with room visitors.
-          {#if callView.personalSave.status === 'error'}<button class="show-transcript" onclick={() => { void callView.retryPersonalSave?.(); }}>Retry save</button>{/if}
-          {#if callView.personalSave.sourcePath}<button class="show-transcript" onclick={() => { void callView.showPersonalTranscript?.(); }}>Show in personal vault ↗</button>{/if}
+          {#if callView.personalSave.status === 'error'}<button class="show-transcript" onclick={() => { void callView.retryPersonalSave?.(); }}><RailIcon name="refresh" />Retry save</button>{/if}
+          {#if callView.personalSave.sourcePath}<button class="show-transcript" onclick={() => { void callView.showPersonalTranscript?.(); }}><RailIcon name="folder" />Show in personal vault ↗</button>{/if}
         {:else}
           <span role="status" class:save-error={callView.transcriptSave.status === 'error'}>{callView.transcriptSave.detail}</span>
           <br/>Only session participants can access the saved transcript.
-          {#if callView.transcriptSave.sourcePath}<button class="show-transcript" onclick={() => { void callView.showSavedTranscript?.(); }}>Show in vault ↗</button>{/if}
+          {#if callView.transcriptSave.sourcePath}<button class="show-transcript" onclick={() => { void callView.showSavedTranscript?.(); }}><RailIcon name="folder" />Show in vault ↗</button>{/if}
         {/if}
       </footer>
     </aside>
@@ -503,7 +504,7 @@
       </fieldset>
       <p class="session-explainer">{destination==='personal' ? 'Capture your own thoughts, alone or with others.' : 'Starts transcription across the room. Muted microphones stay muted.'} You control pause, resume, and end.</p>
       {#if sessionError}<p class="session-error" role="alert">{sessionError}</p>{/if}
-      <div class="session-modal-actions"><button type="button" disabled={sessionBusy} onclick={()=>sessionDialogOpen=false}>Cancel</button><button class="primary" type="submit" disabled={sessionBusy || !callView.startTranscriptionSession}>{sessionBusy?'Starting…':'Start session'}<span aria-hidden="true">↗</span></button></div>
+      <div class="session-modal-actions"><button type="button" disabled={sessionBusy} onclick={()=>sessionDialogOpen=false}><RailIcon name="x" />Cancel</button><button class="primary" type="submit" disabled={sessionBusy || !callView.startTranscriptionSession}><RailIcon name="play" />{sessionBusy?'Starting…':'Start session'}<span aria-hidden="true">↗</span></button></div>
     </form>
   </dialog>
 </div>

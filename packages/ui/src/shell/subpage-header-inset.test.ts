@@ -73,7 +73,11 @@ describe("sub-page Back headers share PageHeader + titlebar inset", () => {
     expect(tokens).toContain(`${TITLEBAR_HEIGHT_CSS_VAR}:`);
     expect(tokens).toContain(`${TITLEBAR_LEADING_INSET_CSS_VAR}:`);
     expect(header).toContain(`var(${TITLEBAR_HEIGHT_CSS_VAR}`);
-    expect(header).toContain(`var(${TITLEBAR_LEADING_INSET_CSS_VAR}`);
+    // PageHeader renders right of the rail, under the top bar, so it starts on
+    // the shared page edge rather than the traffic-light gutter.
+    expect(header).not.toContain(`var(${TITLEBAR_LEADING_INSET_CSS_VAR}`);
+    expect(header).toContain("var(--page-edge-inset");
+    expect(tokens).toMatch(/--page-edge-inset:\s*20px/);
     expect(titleBar).toContain(`var(${TITLEBAR_HEIGHT_CSS_VAR}`);
     expect(titleBar).toContain(`var(${TITLEBAR_LEADING_INSET_CSS_VAR}`);
     expect(titleBar).not.toMatch(/padding-left:\s*78px/);

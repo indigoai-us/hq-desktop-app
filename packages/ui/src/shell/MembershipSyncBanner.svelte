@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Prominent, dismissible shell banner for a membership the user has
    * accepted but that hasn't been pulled onto this machine yet
@@ -84,7 +85,7 @@
           disabled={syncing}
           aria-busy={syncing}
           onclick={() => void onsync?.()}
-        >
+        ><RailIcon name="refresh" />
           {syncing ? "Syncing…" : error ? "Try again" : "Sync now"}
         </button>
         <button
@@ -92,7 +93,7 @@
           class="membership-dismiss"
           data-testid="membership-sync-dismiss"
           onclick={() => ondismiss?.(allSlugs)}
-        >
+        ><RailIcon name="x" />
           Dismiss
         </button>
       </div>

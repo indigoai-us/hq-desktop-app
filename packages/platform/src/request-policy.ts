@@ -299,6 +299,20 @@ export interface JitteredPollOptions {
   clearTimeoutFn?: (handle: unknown) => void;
   /** Run one tick immediately before arming the first timer. */
   immediate?: boolean;
+  /**
+   * Skip ticks while the document is hidden and run one tick as soon as it is
+   * visible again. Use for polls that only refresh what is on screen.
+   */
+  pauseWhenHidden?: boolean;
+  /** Visibility source; defaults to `document`. Tests inject their own. */
+  visibility?: VisibilitySource | null;
+}
+
+/** The slice of `document` a hidden-aware poll needs. */
+export interface VisibilitySource {
+  readonly hidden: boolean;
+  addEventListener(type: "visibilitychange", fn: () => void): void;
+  removeEventListener(type: "visibilitychange", fn: () => void): void;
 }
 
 /**
@@ -341,6 +355,11 @@ export function startJitteredPoll(opts: JitteredPollOptions): () => void {
 
   let handle: unknown = null;
   let stopped = false;
+  const visibility = opts.pauseWhenHidden
+    ? (opts.visibility ?? (typeof document === "undefined" ? null : document))
+    : null;
+  // A tick that came due while hidden is owed, and runs on the next show.
+  let owed = false;
 
   const arm = (): void => {
     if (stopped) return;
@@ -357,6 +376,11 @@ export function startJitteredPoll(opts: JitteredPollOptions): () => void {
 
   const run = async (): Promise<void> => {
     if (stopped) return;
+    if (visibility?.hidden) {
+      handle = null;
+      owed = true;
+      return;
+    }
     try {
       await opts.tick();
     } catch {
@@ -364,6 +388,13 @@ export function startJitteredPoll(opts: JitteredPollOptions): () => void {
     }
     arm();
   };
+
+  const onVisibilityChange = (): void => {
+    if (stopped || visibility?.hidden || !owed) return;
+    owed = false;
+    void run();
+  };
+  visibility?.addEventListener("visibilitychange", onVisibilityChange);
 
   if (opts.immediate) {
     void run();
@@ -373,6 +404,7 @@ export function startJitteredPoll(opts: JitteredPollOptions): () => void {
 
   return () => {
     stopped = true;
+    visibility?.removeEventListener("visibilitychange", onVisibilityChange);
     if (handle != null) clearTimeoutFn(handle);
     handle = null;
   };

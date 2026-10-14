@@ -3,7 +3,7 @@ import { thisComputerNoun } from "@hq/platform";
 import { CORE_SETUP_LABEL, isCorePath } from "./progressLabel";
 
 export type SyncState =
-  "idle" | "syncing" | "error" | "conflict" | "setup-needed" | "auth-error";
+  "idle" | "syncing" | "error" | "setup-needed" | "auth-error";
 
 export interface SyncProgress {
   company: string;
@@ -223,10 +223,10 @@ export function workspaceWarning(
   workspace: Workspace,
 ): string | null {
   if (stats.errorMessage) return stats.errorMessage;
-  if (stats.conflicts > 0) {
-    return `${stats.conflicts.toLocaleString()} conflict${stats.conflicts === 1 ? "" : "s"} need review.`;
-  }
-  if (stats.aborted) return "Sync stopped because a conflict needs attention.";
+  // Parked conflict copies have no desktop surface (owner decision
+  // 2026-10-13); `stats.conflicts` is never shown. A run that stopped early
+  // still is.
+  if (stats.aborted) return "Sync stopped before it finished.";
   return workspace.brokenReason;
 }
 
@@ -249,8 +249,7 @@ export function buildSourceRows(args: {
     const syncing =
       syncState === "syncing" && progress?.company === workspace.slug;
     const reauth = needsReauthWorkspace(workspace, syncState);
-    const sourceAttention =
-      Boolean(stats.errorMessage) || stats.aborted || stats.conflicts > 0;
+    const sourceAttention = Boolean(stats.errorMessage) || stats.aborted;
     const paused =
       !reauth &&
       !sourceAttention &&
@@ -345,11 +344,6 @@ export function buildAttentionItems(args: {
   } = args;
   const items: AttentionItem[] = [];
 
-  const hasSourceConflict = workspaces.some((workspace) => {
-    const stats = statsBySlug[workspace.slug];
-    return stats ? stats.aborted || stats.conflicts > 0 : false;
-  });
-
   if (syncState === "auth-error") {
     items.push({
       key: "auth-error",
@@ -358,18 +352,6 @@ export function buildAttentionItems(args: {
         syncErrorMessage || "Sign in once and HQ will resume automatically.",
       tone: "paused",
       actionLabel: "Sign in",
-    });
-  }
-
-  if (syncState === "conflict" && !hasSourceConflict) {
-    items.push({
-      key: "sync-conflict",
-      title: "Sync conflict needs review",
-      detail:
-        syncErrorMessage ||
-        "A sync stopped because a conflict needs attention.",
-      tone: "warn",
-      actionLabel: "Open settings",
     });
   }
 
@@ -406,7 +388,7 @@ export function buildAttentionItems(args: {
   for (const workspace of workspaces) {
     const stats = statsBySlug[workspace.slug] ?? emptyWorkspaceStats();
     const warning = workspaceWarning(stats, workspace);
-    if (stats.errorMessage || stats.aborted || stats.conflicts > 0) {
+    if (stats.errorMessage || stats.aborted) {
       items.push({
         key: `source-attention:${workspace.slug}`,
         title: `${workspace.displayName} needs attention`,

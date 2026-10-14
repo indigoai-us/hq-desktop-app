@@ -131,11 +131,11 @@ describe("Cancel while the create request is out", () => {
     click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
 
-    // Still in the takeover, on the first step, with nothing typed.
+    // Still in the takeover, on the first step (the name), with nothing typed.
     expect(oncancel).not.toHaveBeenCalled();
     expect(oncancelcreate).toHaveBeenCalledOnce();
     expect(q('[data-testid="new-bot-creating"]')).toBeNull();
-    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("");
 
     await typeName("Second");
@@ -143,7 +143,7 @@ describe("Cancel while the create request is out", () => {
     await settle(10);
 
     expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
-    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("Second");
     expect(onwaking).not.toHaveBeenCalled();
   });
@@ -186,7 +186,7 @@ describe("Cancel while the create request is out", () => {
 
     expect(oncancelcreate).toHaveBeenCalledOnce();
     expect(oncancel).not.toHaveBeenCalled();
-    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
   });
 
   it("Cancel before Create bot is pressed still leaves the flow", async () => {
@@ -238,10 +238,35 @@ describe("Cancel for a bot that exists", () => {
     expect(oncancelbot).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", name: "Nova" }));
     expect(q('[data-testid="new-bot-cancel-confirm"]')).toBeNull();
     expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
-    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("");
     // The takeover stays open: the person can start another bot at once.
     expect(onclosewaking).not.toHaveBeenCalled();
+  });
+
+  it("asks where the next bot should live after a removal, so Local never lands on the cloud plan check", async () => {
+    // Regression: a starting bot's row opens the takeover with no where
+    // question. Removing that bot started clean on the name, and the next
+    // name went straight to the cloud company screen, which loads the
+    // company's plan and price.
+    const loadProvisionOptions = vi.fn(CREATE_PROPS.loadProvisionOptions);
+    const onchooselocal = vi.fn();
+    render({ ...CREATE_PROPS, loadProvisionOptions, oncreate: vi.fn(), onchooselocal, wakingSession: wakingSession(), getStatus: null, oncancelbot: vi.fn() });
+    await settle();
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    click('[data-testid="new-bot-cancel-remove"]');
+    await settle();
+    await typeName("Testy");
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
+    expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should Testy live?");
+    click('[data-testid="new-bot-choice-local"]');
+    await settle();
+    expect(onchooselocal).toHaveBeenCalledWith("Testy");
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
+    expect(loadProvisionOptions).not.toHaveBeenCalled();
   });
 
   it("keeps the bot when the person backs out, by button or by Escape", async () => {
@@ -544,7 +569,7 @@ describe("What the person sees about a cancelled bot", () => {
     expect(notice.textContent).toContain("Removing Nova. This can take a minute.");
     expect(q('[data-testid="new-bot-cancel-retry"]')).toBeNull();
     // The create screen is there to use meanwhile.
-    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
   });
 
   it("says so when removal fails and offers Try again", async () => {

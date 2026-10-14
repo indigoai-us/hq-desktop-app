@@ -119,6 +119,45 @@ other metric (25% plus a 50 KB absolute floor). See
 [performance-diagnostics.md](./performance-diagnostics.md) for how to regenerate
 the baseline.
 
+## Console rail
+
+`pnpm perf:rail` runs the same production harness as `pnpm perf` and then
+judges the run against the console-rail reference at
+`scripts/fixtures/perf-baseline.console-rail.json`. The shared
+`scripts/fixtures/perf-baseline.json` (2026-09-08, M5 Max, 25% noise band)
+stays the baseline for `pnpm perf`. The rail file is a re-record at the
+`feat/console-rail` branch point, with the machine context in `machine`.
+
+The rail tightens the numbers a person feels on every screen. The old harness
+allows 25% before it calls a change a regression. The rail allows 10% on cold
+start, because the rail is on every window.
+
+| Check | Limit | Why |
+| --- | --- | --- |
+| Cold start, shell usable | reference median + 10% (about 160 ms on the 2026-09-08 harness) | Start is the first thing the window has to do. |
+| First contentful paint | reference median + 10% (about 170 ms) | Same reason: paint before the shell is usable. |
+| Company switch to cached Atlas paint | p95 ≤ 100 ms | Switching company is a navigation, and the destination is already cached. |
+| Switch conversation | product target p95 ≤ 50 ms (2026-09-08 p95 was 49 ms). The gate is the worse of that target and the US-001 recording, because four samples make p95 equal the worst sample. | The message list is the home surface. |
+| Command palette | product target p95 ≤ 20 ms, same gate rule as conversation switch. The clock starts at the Cmd-K `keydown` in the page and stops on the microtask where the palette input is visible (it has a box and is not under `[hidden]`). That is the frame that will paint the input. It is not the next animation frame, and it is not the second frame after the key. The test driver's round trip is outside the sample. A trace of the open is about 3 ms of main-thread work (dispatch, style, layout, paint). | It is summoned constantly and has to feel instant. |
+| Scroll dropped frames | ≤ 1% in Messages and every sidepane; worst frame ≤ 33 ms | A dropped frame is the original choppy-scroll complaint. |
+| Idle main-thread busy | 0 ms | No new pollers. Presence keeps using the stores that already exist. |
+| Initial JS | reference + 150 KB (2026-10-03 reference 2,636,981 bytes, measured on the main merge base 4b8f6137b; limit 2,790,581 bytes, about 6%) | The rail is added to every screen, so the boot bundle can grow a little and no more. The reference tracks main because code that ships on main is not the rail's; the rail's share stays 150 KB. |
+| Lazy chunks | Atlas ≤ 120 KB, Telemetry ≤ 80 KB, neither in the initial JS | Those two views are the heavy ones, so they load only when opened. |
+
+Company switch and sidepane switch stay skipped, with a TODO, until the
+controls exist (US-004 and US-009 for the company tile, US-006 for the
+sidepane host). The lazy-chunk check runs now: the Vite manifest must not
+place `packages/ui/src/atlas` or `packages/ui/src/telemetry` in the entry's
+static import graph.
+
+`scripts/perf-budget-contract.test.ts` fails if the shell entry
+(`packages/ui/src/index.ts` or `packages/ui/src/shell/DesktopApp.svelte`, and
+anything they import statically) reaches those directories. A dynamic
+`import()` is the allowed path.
+
+The harness, the manifest, and these guards are dev-time only. None of them
+are imported by the shipped shell.
+
 ## Requesting an exception
 
 Every rule is allowlisted, never absolute. Add your entry to the relevant

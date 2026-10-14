@@ -122,6 +122,24 @@ describe("appearance host guard on mount", () => {
     expect(root().dataset.forceTheme).toBe("light");
   });
 
+  it("hands a saved Dark the host does not have yet to the host on launch", async () => {
+    // Host restored System (light macOS); the user chose Dark in Settings
+    // before Settings routed theme changes through the host.
+    root().dataset.windowTransparency = "0";
+    localStorage.setItem("hq-work-color-theme", "dark");
+    const requests: unknown[] = [];
+    const onRequest = (event: Event) =>
+      requests.push((event as CustomEvent).detail);
+    window.addEventListener("hq:appearance-request", onRequest);
+
+    mountApp();
+    await settle();
+    window.removeEventListener("hq:appearance-request", onRequest);
+
+    expect(requests).toEqual([{ colorTheme: "dark", windowTransparency: 0 }]);
+    expect(root().dataset.forceTheme).toBe("dark");
+  });
+
   it("still drives the vars itself when no host is installed", async () => {
     const requests: unknown[] = [];
     const onRequest = (event: Event) =>

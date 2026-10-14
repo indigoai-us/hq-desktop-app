@@ -13,7 +13,7 @@
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// Client attribution name stamped on every outbound request as
@@ -117,6 +117,10 @@ pub fn client_headers() -> HeaderMap {
 /// [`client_headers`] for an explicit version (the registered one is the
 /// runtime-resolved app version; see `runtime_version`).
 pub fn client_headers_for(version: &str) -> HeaderMap {
+    headers_for(version, ui_version().as_deref())
+}
+
+fn headers_for(version: &str, ui: Option<&str>) -> HeaderMap {
     let mut headers = HeaderMap::new();
     let user_agent = format!("{}/{}", CLIENT_NAME, version);
     if let Ok(v) = HeaderValue::from_str(&user_agent) {
@@ -128,8 +132,8 @@ pub fn client_headers_for(version: &str) -> HeaderMap {
     if let Ok(v) = HeaderValue::from_str(version) {
         headers.insert("x-hq-client-version", v);
     }
-    if let Some(ui) = ui_version() {
-        if let Ok(v) = HeaderValue::from_str(&ui) {
+    if let Some(ui) = ui {
+        if let Ok(v) = HeaderValue::from_str(ui) {
             headers.insert("x-hq-ui-version", v);
         }
     }
@@ -155,9 +159,44 @@ pub fn client_headers_for(version: &str) -> HeaderMap {
 /// size, which is why size-bounded downloads elsewhere in this workspace
 /// (`vault_s3.rs`, `hq_work.rs::http_get_bytes`) build their own client with
 /// `.no_gzip().no_brotli()` instead of using this helper.
+///
+/// The client is shared: every call returns a clone of one `Client` (a cheap
+/// handle onto the same connection pool), so back-to-back hq-pro calls reuse
+/// an open TLS connection instead of paying a fresh handshake each time. The
+/// default headers carry the app version and the live UI version, and the UI
+/// version can change at runtime (UI hot update), so the shared client is
+/// keyed by both: a changed version builds one new client with the new
+/// headers. Timeouts are the same for every caller, and a per-request
+/// `.timeout(..)` (e.g. [`HYDRATE_REQUEST_TIMEOUT`]) still overrides the
+/// default on that one request.
 pub fn build_client() -> Client {
+    shared_client(&SHARED_CLIENT, client_version(), ui_version())
+}
+
+/// The headers a shared client was built with: app version, UI version.
+type ClientKey = (String, Option<String>);
+type ClientSlot = Mutex<Option<(ClientKey, Client)>>;
+
+static SHARED_CLIENT: ClientSlot = Mutex::new(None);
+
+fn shared_client(slot: &ClientSlot, version: &str, ui: Option<String>) -> Client {
+    let key: ClientKey = (version.to_string(), ui);
+    let Ok(mut slot) = slot.lock() else {
+        return new_client(&key);
+    };
+    if let Some((built_for, client)) = slot.as_ref() {
+        if *built_for == key {
+            return client.clone();
+        }
+    }
+    let client = new_client(&key);
+    *slot = Some((key, client.clone()));
+    client
+}
+
+fn new_client((version, ui): &ClientKey) -> Client {
     Client::builder()
-        .default_headers(client_headers())
+        .default_headers(headers_for(version, ui.as_deref()))
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
@@ -281,6 +320,100 @@ mod tests {
             elapsed < Duration::from_secs(20),
             "build_client() did not time out (elapsed {elapsed:?}) — \
              a timeout regression has shipped",
+        );
+    }
+
+    /// Every `build_client()` call shares one connection pool: two requests
+    /// to the same server go over one TCP connection, not one per call.
+    /// Before, each call built a new client, so each hq-pro request paid a
+    /// fresh TCP and TLS handshake.
+    #[tokio::test]
+    async fn build_client_reuses_one_connection_pool() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    loop {
+                        match socket.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(_) => {
+                                let reply: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: keep-alive\r\n\r\nok";
+                                if socket.write_all(reply).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let url = format!("http://{addr}/v1/ping");
+        for _ in 0..2 {
+            let resp = build_client()
+                .get(&url)
+                .send()
+                .await
+                .expect("request should succeed");
+            assert_eq!(resp.text().await.unwrap(), "ok");
+        }
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            1,
+            "two build_client() calls opened separate connections; the client is not shared",
+        );
+    }
+
+    /// The same versions get the same shared client back; a changed UI
+    /// version (hot update) gets a new client carrying the new header.
+    #[tokio::test]
+    async fn shared_client_is_rebuilt_only_when_its_headers_change() {
+        use wiremock::matchers::header;
+
+        let slot: ClientSlot = Mutex::new(None);
+        let key = |slot: &ClientSlot| slot.lock().unwrap().as_ref().map(|(k, _)| k.clone());
+
+        let _a = shared_client(&slot, "9.9.1", Some("ui-1".to_string()));
+        let _b = shared_client(&slot, "9.9.1", Some("ui-1".to_string()));
+        assert_eq!(
+            key(&slot),
+            Some(("9.9.1".to_string(), Some("ui-1".to_string())))
+        );
+
+        let c = shared_client(&slot, "9.9.1", Some("ui-2".to_string()));
+        assert_eq!(
+            key(&slot),
+            Some(("9.9.1".to_string(), Some("ui-2".to_string())))
+        );
+
+        let server = MockServer::start().await;
+        Mock::given(header("x-hq-ui-version", "ui-2"))
+            .and(header("x-hq-client-version", "9.9.1"))
+            .and(header("user-agent", "hq-desktop-app/9.9.1"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let resp = c
+            .get(server.uri())
+            .send()
+            .await
+            .expect("request should succeed");
+        assert!(
+            resp.status().is_success(),
+            "rebuilt client lost its headers: {}",
+            resp.status()
         );
     }
 

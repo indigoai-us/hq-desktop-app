@@ -146,7 +146,7 @@ describe("openCreateCompanyDraft", () => {
     });
   });
 
-  it("reports a transport failure with the server's words", async () => {
+  it("reports a transport failure with plain copy, not the server's words", async () => {
     const seam = api({
       runCardAction: vi.fn(async () => {
         throw new Error("[network] Request failed (status 503)");
@@ -155,7 +155,7 @@ describe("openCreateCompanyDraft", () => {
     const result = await openCreateCompanyDraft(seam, noWait);
     expect(result).toEqual({
       ok: false,
-      reason: "Request failed (status 503)",
+      reason: "Couldn't reach HQ. Check your connection and try again.",
       blocked: false,
     });
   });
@@ -403,7 +403,7 @@ describe("sendCompanyInvites", () => {
       "cmp_acme",
       [{ email: "ada@example.com", role: "member" }],
     );
-    expect(failures).toEqual([{ email: "ada@example.com", reason: "Too many invites" }]);
+    expect(failures).toEqual([{ email: "ada@example.com", reason: "That didn't work. Try again." }]);
   });
 
   it("says plainly when the host cannot invite at all", async () => {

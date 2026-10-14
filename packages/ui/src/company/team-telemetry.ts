@@ -21,6 +21,12 @@ export interface TeamMember {
   kind: TeamMemberKind;
   /** Company membership role when the payload provides it — never invented. */
   role?: string;
+  /** Month-year label from an explicit joined/enrolled timestamp. Never inferred. */
+  joined?: string;
+  /** OWNER-R9: membership row key for role and removal writes. */
+  membershipKey?: string;
+  /** OWNER-R9: "Self-serve" when the member joined through request access. */
+  badge?: string;
   topSkills: TeamSkillUsage[];
   /** Active project names when known (from outcomes / local board join). */
   activeProjects: string[];
@@ -45,6 +51,8 @@ export interface TeamMemberLabel {
   displayName?: string | null;
   name?: string | null;
 }
+
+const UNRESOLVED_NAMES = new Set(["Identity unavailable", "Unknown person", "Unknown bot"]);
 
 export function memberKindFromUid(uid: string): TeamMemberKind {
   const id = uid.trim().toLowerCase();
@@ -88,9 +96,23 @@ export function displayNameFromMember(
   if (name) return name;
   const email = (raw.email || resolved?.email || "").trim();
   if (email) return email;
+  // OWNER-R5: a raw prs_/agt_ id is never shown as a name.
   const sourceUid = (raw.personUid ?? "").trim();
-  if (sourceUid) return sourceUid;
-  return "Identity unavailable";
+  if (/^(agt|agent)_/i.test(sourceUid)) return "Unknown bot";
+  return "Unknown person";
+}
+
+/** Display label only when the payload carries a real join or enroll timestamp. */
+export function joinedLabel(row: Record<string, unknown>): string | undefined {
+  const raw = row.joinedAt ?? row.enrolledAt ?? row.memberSince ?? row.joined;
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 function trimmedString(value: unknown): string | undefined {
@@ -244,13 +266,14 @@ function mergeDuplicateMember(
     ...existing,
     displayName:
       (existing.displayName === existing.id ||
-        existing.displayName === "Identity unavailable") &&
+        UNRESOLVED_NAMES.has(existing.displayName)) &&
       incoming.displayName !== incoming.id &&
-      incoming.displayName !== "Identity unavailable"
+      !UNRESOLVED_NAMES.has(incoming.displayName)
         ? incoming.displayName
         : existing.displayName,
     email: existing.email ?? incoming.email,
     role: existing.role ?? incoming.role,
+    joined: existing.joined ?? incoming.joined,
     topSkills: Array.from(skillCounts, ([skill, count]) => ({ skill, count }))
       .sort((a, b) => b.count - a.count || a.skill.localeCompare(b.skill))
       .slice(0, 5),
@@ -323,6 +346,7 @@ export function normalizeCompanyTeamTelemetry(
           ? resolvedLabel.email
           : "";
     const email = emailRaw.trim() || undefined;
+    const joined = joinedLabel(r);
     const totals =
       r.totals && typeof r.totals === "object"
         ? (r.totals as Record<string, unknown>)
@@ -340,6 +364,7 @@ export function normalizeCompanyTeamTelemetry(
         resolvedLabel,
       ),
       email,
+      joined,
       kind,
       role,
       topSkills: skillListFromValue(r.skills ?? totals?.skills),
@@ -393,7 +418,9 @@ export function teamTelemetryErrorMessage(err: unknown): string {
   if (lower.includes("network") || lower.includes("fetch")) {
     return "Could not reach telemetry service. Check your connection and retry.";
   }
-  return text || "Failed to load team telemetry.";
+  // AUDIT-3c: an unrecognised failure is logged; the UI shows app copy.
+  console.warn("[team-telemetry] load failed", err);
+  return "Could not load team telemetry. Try again.";
 }
 
 /** ISO date YYYY-MM-DD for range queries (UTC). */

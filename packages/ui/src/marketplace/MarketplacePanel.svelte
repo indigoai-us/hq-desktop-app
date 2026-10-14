@@ -1,4 +1,7 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * MarketplacePanel — the desktop-alt **Marketplace** tab body (US-008).
    *
@@ -25,6 +28,7 @@
     installMarketplacePack,
     listingAuthor,
     listingDisplayName,
+    listingPublicUrl,
     loadMarketplaceListings,
     recordMarketplaceInstall,
     type InstallScope,
@@ -38,6 +42,7 @@
     marketplaceAvatarSrc,
   } from "../library/pack-covers.js";
   import type { WorkspacesResult } from "../chat/workspaces.js";
+  import { copyLinkHref, openExternalHref } from "../common/external-links.js";
 
   /** Host seam for the streamed install progress events the desktop emits
    *  (`marketplace:install-progress` / `-complete` / `-error`). Optional —
@@ -65,9 +70,44 @@
 
   let listings = $state<MarketplaceListing[]>([]);
   let loading = $state(true);
+  /** Bumped by the loader's Try again to start a fresh read (BLANK-3). */
+  let reloadKey = $state(0);
   let error = $state<string | null>(null);
   let query = $state("");
   let selected = $state<MarketplaceListing | null>(null);
+
+  // ── Public page link ───────────────────────────────────────────────────────
+  // Every approved listing has a shareable page on hqforwork.com. Open it in
+  // the system browser (host opener), or copy the clean canonical URL.
+  const selectedPublicUrl = $derived(selected ? listingPublicUrl(selected) : null);
+  let publicLinkCopied = $state(false);
+  let publicLinkCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function openPublicPage(event: MouseEvent): void {
+    if (!selectedPublicUrl) return;
+    event.preventDefault();
+    openExternalHref(selectedPublicUrl);
+  }
+
+  async function copyPublicLink(): Promise<void> {
+    if (!selectedPublicUrl) return;
+    try {
+      await copyLinkHref(selectedPublicUrl);
+    } catch (err) {
+      console.warn("[marketplace] copy public link failed", err);
+      return;
+    }
+    publicLinkCopied = true;
+    if (publicLinkCopiedTimer) clearTimeout(publicLinkCopiedTimer);
+    publicLinkCopiedTimer = setTimeout(() => {
+      publicLinkCopied = false;
+    }, 1500);
+  }
+
+  $effect(() => {
+    void selectedPublicUrl;
+    publicLinkCopied = false;
+  });
 
   // ── Install scope picker (US-009) ──────────────────────────────────────────
   //
@@ -141,10 +181,8 @@
             installResult = { ok: true, message: "Installed." };
           },
           onError: (message) => {
-            installResult = {
-              ok: false,
-              message: message || "Install failed.",
-            };
+            if (message) console.warn("[marketplace] install failed", message);
+            installResult = { ok: false, message: INSTALL_ERROR_COPY };
           },
         })
         .then((fn) => {
@@ -156,6 +194,8 @@
       safeUnlisten(unlistenProgress)();
     };
   });
+
+  const INSTALL_ERROR_COPY = "Couldn't install this pack. Try again.";
 
   async function runInstall(): Promise<void> {
     if (!selected || installing) return;
@@ -205,12 +245,15 @@
           logInstallMetricsFailure(name);
         });
     } else {
+      if (installRes.reason !== "unavailable") {
+        console.warn("[marketplace] install failed", installRes.message);
+      }
       installResult = {
         ok: false,
         message:
           installRes.reason === "unavailable"
             ? "Packs install into your local HQ folder from the desktop app."
-            : (installRes.message ?? "Install failed."),
+            : INSTALL_ERROR_COPY,
       };
     }
     installing = false;
@@ -233,6 +276,7 @@
   // out-of-order completion when queries change quickly.
   $effect(() => {
     const q = serverQuery;
+    void reloadKey;
     loading = true;
     error = null;
     let cancelled = false;
@@ -332,9 +376,9 @@
 <div class="marketplace" data-testid="marketplace-panel">
   <div class="toolbar">
     <p class="count" aria-live="polite">
-      {#if loading}
-        Loading…
-      {:else}
+      <!-- BLANK-2: no count while the read is pending or failed; a zero
+           beside the failed-read line would read as an empty marketplace. -->
+      {#if !loading && !error}
         {visible.length}
         {visible.length === 1 ? "listing" : "listings"}
       {/if}
@@ -357,7 +401,7 @@
         attribution.
       </p>
     </div>
-    <span>{listings.length} available</span>
+    {#if !loading && !error}<span>{listings.length} available</span>{/if}
   </section>
 
   {#if error}
@@ -365,11 +409,7 @@
       {error}
     </div>
   {:else if loading}
-    <div class="grid-skeleton" aria-busy="true">
-      {#each [0, 1, 2, 3, 4, 5] as cell (cell)}
-        <div class="card-skeleton"></div>
-      {/each}
-    </div>
+    <ReadLoader testid="marketplace-loading" onretry={() => (reloadKey += 1)} />
   {:else if visible.length === 0}
     <div class="state-empty" data-testid="marketplace-empty">
       <p>No listings</p>
@@ -536,6 +576,40 @@
           <span class="pill version">v{selected.version}</span>
           <span class="scope-badge">{selected.slug}</span>
         </div>
+        {#if selectedPublicUrl}
+          <div class="public-link" data-testid="marketplace-public-link">
+            <a
+              class="public-link-open"
+              href={selectedPublicUrl}
+              data-testid="marketplace-public-link-open"
+              onclick={openPublicPage}
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M9 3h4v4M13 3 7.5 8.5M11 9.5V13H3V5h3.5" />
+              </svg>
+              View public page
+            </a>
+            <button
+              type="button"
+              class="public-link-copy"
+              data-testid="marketplace-public-link-copy"
+              aria-label="Copy public page link"
+              title="Copy link"
+              onclick={copyPublicLink}
+            >
+              {#if publicLinkCopied}
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" /></svg>
+                <span>Copied</span>
+              {:else}
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="5.5" y="5.5" width="7" height="7" rx="1.5" />
+                  <path d="M10.5 5.5V4A1.5 1.5 0 0 0 9 2.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5" />
+                </svg>
+                <span>Copy link</span>
+              {/if}
+            </button>
+          </div>
+        {/if}
       </div>
       <button
         type="button"
@@ -623,29 +697,20 @@
         >
           <h3 class="section-title">Install</h3>
           <label class="scope-label" for="marketplace-scope">Scope</label>
-          <select
-            id="marketplace-scope"
-            class="scope-select"
-            data-testid="marketplace-scope-select"
-            bind:value={scopeIndex}
+          <Dropdown
+            block
+            testid="marketplace-scope-select"
+            label="Scope"
+            value={String(scopeIndex)}
             disabled={installing}
-          >
-            {#each installTargets as target, i (i)}
-              <option
-                value={i}
-                disabled={!target.enabled}
-                data-testid="marketplace-scope-option"
-                data-enabled={target.enabled}
-                data-slug={target.scope.kind === "company"
-                  ? target.scope.slug
-                  : "personal"}
-              >
-                {target.label}{target.enabled
-                  ? ""
-                  : ` — ${target.reason ?? "unavailable"}`}
-              </option>
-            {/each}
-          </select>
+            options={installTargets.map((target, i) => ({
+              value: String(i),
+              label: target.label,
+              detail: target.enabled ? null : (target.reason ?? "unavailable"),
+              disabled: !target.enabled,
+            }))}
+            onchange={(v) => (scopeIndex = Number(v))}
+          />
 
           <p class="scope-hint" data-testid="marketplace-scope-hint">
             {selectedScopeLabel}
@@ -667,7 +732,7 @@
             disabled={installing || !chosenTarget?.enabled}
             aria-busy={installing}
             onclick={runInstall}
-          >
+          ><RailIcon name="download" />
             {#if installing}
               <span
                 class="install-spinner"
@@ -718,8 +783,7 @@
     min-height: 0;
   }
 
-  .grid,
-  .grid-skeleton {
+  .grid {
     padding-bottom: 12px;
   }
 
@@ -1145,30 +1209,6 @@
     font-size: var(--text-base);
   }
 
-  .grid-skeleton {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-    gap: var(--v4-space-3);
-  }
-
-  .card-skeleton {
-    height: 212px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    animation: mk-skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
-  @keyframes mk-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
   /* ---- detail slide-over (mirrors LibraryDetailPanel) ------------------- */
   .detail-backdrop {
     position: fixed;
@@ -1283,6 +1323,48 @@
     margin-top: var(--v4-space-2);
   }
 
+  .public-link {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--v4-space-1);
+    margin-top: var(--v4-space-2);
+  }
+
+  .public-link-open,
+  .public-link-copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 500;
+    line-height: 18px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .public-link-open:hover,
+  .public-link-copy:hover {
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
+  }
+
+  .public-link svg {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
   .scope-badge {
     display: inline-flex;
     align-items: center;
@@ -1301,8 +1383,8 @@
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     border: 0;
     border-radius: var(--v4-radius-button);
     background: transparent;
@@ -1423,19 +1505,19 @@
   .install-button {
     margin-top: var(--v4-space-3);
     width: 100%;
-    height: 34px;
+    height: var(--hq-btn-h);
     border: 1px solid transparent;
     border-radius: var(--v4-radius-button);
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: var(--hq-btn-gap);
     transition:
       opacity 140ms ease,
       filter 140ms ease;
@@ -1531,7 +1613,6 @@
     .card:hover .cover-img {
       transform: none;
     }
-    .card-skeleton,
     .detail-backdrop,
     .detail-panel {
       animation: none;

@@ -9,10 +9,17 @@
     size: string;
     ver: string;
     pwd: boolean;
+    /** 1-based deploy step. Absent means the upload step while deploying. */
+    step?: number | null;
+    liveVersion?: string | null;
+    nextVersion?: string | null;
   }
 </script>
 
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import { deployProgress } from "./deploy-progress.js";
+
   interface Props {
     deployment: DeploymentEntry;
     /** Open a URL in the host's external browser (defaults to window.open). */
@@ -33,6 +40,15 @@
   const stateLabel = $derived(
     deployment.state.charAt(0).toUpperCase() + deployment.state.slice(1),
   );
+  const progress = $derived(
+    deployment.state === "deploying"
+      ? deployProgress({
+          step: deployment.step,
+          liveVersion: deployment.liveVersion ?? deployment.ver,
+          nextVersion: deployment.nextVersion,
+        })
+      : null,
+  );
   const envLabel = $derived(environmentLabel(deployment));
   const detailId = $derived(`deploy-detail-${deployment.sub}`);
 
@@ -43,13 +59,9 @@
       await openExternal(`https://${deployment.url}`);
       openError = null;
     } catch (err) {
-      console.error("deployment: open failed", err);
-      openError =
-        err instanceof Error && err.message
-          ? err.message
-          : typeof err === "string" && err.trim()
-            ? err
-            : "The browser handoff was rejected.";
+      // AUDIT-3c: log the raw failure; the tooltip shows app copy.
+      console.warn("[deployment] open failed", err);
+      openError = "The browser didn’t open. Try again.";
     } finally {
       opening = false;
     }
@@ -77,6 +89,9 @@
     <span class={`status-dot ${deployment.state}`} aria-hidden="true"></span>
     <span>{stateLabel}</span>
   </span>
+  {#if progress}
+    <span class="deploy-progress" data-testid="company-deploy-progress">{progress.label} · {progress.step}/5</span>
+  {/if}
 
   <button
     class="subdomain-cell"
@@ -146,7 +161,7 @@
         onclick={openDeployment}
         disabled={opening}
         aria-busy={opening}
-      >
+      ><RailIcon name="refresh" />
         {opening ? "Retrying…" : "Retry"}
       </button>
     </div>
@@ -190,7 +205,7 @@
             onclick={openDeployment}
             disabled={opening}
             aria-busy={opening}
-          >
+          ><RailIcon name="refresh" />
             {opening
               ? "Opening…"
               : openError
@@ -400,7 +415,7 @@
     color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -498,7 +513,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 700;
+    font-weight: 500;
     cursor: pointer;
   }
 

@@ -1,0 +1,173 @@
+<script lang="ts">
+  /**
+   * All of someone's badges, opened by "See all" on a profile: every badge in
+   * the catalog grouped by tier. Earned ones show their mark and tier, and a
+   * click opens the badge's card on the dark stage, grown out of its tile.
+   * The rest are dim outlines with what earns them and plain progress.
+   */
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import BadgeMark from "./BadgeMark.svelte";
+  import BadgeCardModal from "./BadgeCardModal.svelte";
+  import { BADGES, TIER_NAME, isAwarded, resolveEarned, type EarnedBadge, type ResolvedBadge } from "./badge-catalog.js";
+  import { badgeCollection } from "./badge-collection.js";
+  import type { BadgeProgress } from "./badge-source.js";
+  import { PROFILE_PANE_WIDTH } from "../shell/profile-panes/profile-pane-model.js";
+
+  interface Props {
+    badges: readonly EarnedBadge[];
+    progress?: readonly BadgeProgress[];
+    /** Whose badges these are. */
+    owner?: string;
+    onback?: () => void;
+    onclose?: () => void;
+  }
+
+  let { badges, progress = [], owner = "", onback, onclose }: Props = $props();
+
+  const groups = $derived(badgeCollection(badges, progress));
+  const earned = $derived(resolveEarned(badges));
+
+  let cardOpen = $state<ResolvedBadge | null>(null);
+  let cardOpener = $state<HTMLElement | null>(null);
+
+  function openCard(badge: ResolvedBadge, event: MouseEvent): void {
+    cardOpener = event.currentTarget as HTMLElement;
+    cardOpen = badge;
+  }
+
+</script>
+
+<aside class="pane" style:width="{PROFILE_PANE_WIDTH}px" aria-label={owner ? `${owner}'s badges` : "Badges"} data-testid="badges-pane">
+  <header class="head">
+    <button type="button" class="icon" data-testid="badges-pane-back" aria-label="Back to profile" onclick={() => onback?.()}><RailIcon name="caret-left" size={14} /></button>
+    <span>Badges</span>
+    <span class="grow"></span>
+    <button type="button" class="icon" data-testid="badges-pane-close" aria-label="Close" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
+  </header>
+  <div class="body">
+    <p class="sum" data-testid="badges-pane-summary">{earned.length} of {BADGES.length} earned</p>
+    {#each groups as group (group.tier)}
+      <section aria-label="{group.label} badges" data-testid="badges-group" data-tier={group.tier}>
+        <div class="k">{group.label} <span class="count">{group.earned}/{group.tiles.length}</span></div>
+        <ul class="grid">
+          {#each group.tiles as tile (tile.def.id)}
+            <li>
+              {#if tile.earned}
+                {@const badge = tile.earned}
+                <button
+                  type="button"
+                  class="b"
+                  data-testid="badges-tile"
+                  data-badge-id={tile.def.id}
+                  data-state="earned"
+                  aria-describedby="badge-hc-{tile.def.id}"
+                  aria-label="Open the {tile.def.name} card, {TIER_NAME[tile.tier]}"
+                  onclick={(event) => openCard(badge, event)}
+                >
+                  <BadgeMark badge={tile.def} tier={tile.tier} label="{tile.def.name}, {TIER_NAME[tile.tier]}" />
+                  <span class="nm">{tile.def.name}</span>
+                  <span class="tr">{TIER_NAME[tile.tier]}</span>
+                  <span class="hc" role="tooltip" aria-hidden="true" id="badge-hc-{tile.def.id}" data-testid="badges-hover-card">{tile.def.crit}</span>
+                </button>
+              {:else}
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+                <div
+                  class="b locked"
+                  data-testid="badges-tile"
+                  data-badge-id={tile.def.id}
+                  data-state="locked"
+                  tabindex="0"
+                  aria-describedby="badge-hc-{tile.def.id}"
+                >
+                  <span class="mark"><BadgeMark badge={tile.def} tier={tile.tier} locked label="{tile.def.name}, not {isAwarded(tile.def) ? 'awarded' : 'earned'} yet" /></span>
+                  <span class="nm">{tile.def.name}</span>
+                  <span class="pg" data-testid="badges-progress">{tile.progress}</span>
+                  <span class="hc" role="tooltip" aria-hidden="true" id="badge-hc-{tile.def.id}" data-testid="badges-hover-card">{tile.def.crit}</span>
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/each}
+  </div>
+</aside>
+{#if cardOpen}
+  <BadgeCardModal open badge={cardOpen} owner={owner || null} returnFocus={cardOpener} origin={cardOpener} onclose={() => (cardOpen = null)} />
+{/if}
+
+<style>
+  .pane {
+    box-sizing: border-box; max-width: 100%; height: 100%; min-height: 0;
+    display: flex; flex-direction: column;
+    background: var(--side-bg, var(--v4-secondary-sidebar));
+    color: var(--v4-text-1);
+    font: 400 13px/1.45 var(--font-ui, var(--font-sans));
+  }
+  .head {
+    flex: none; display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px; border-bottom: 1px solid var(--v4-rowline, var(--line));
+    font-size: 13px; font-weight: 500;
+  }
+  .grow { flex: 1; }
+  .icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px;
+    background: transparent; color: var(--v4-text-2); font-size: 13px; cursor: pointer;
+  }
+  .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--v4-text-1); }
+  .body { overflow: auto; padding: 12px 20px 24px; min-height: 0; }
+  .sum { margin: 0; color: var(--v4-text-3); }
+  /* Section label: the mono caps label style shared by the profile panes. */
+  .k {
+    display: flex; align-items: baseline; gap: 6px; margin: 20px 0 8px;
+    font: 500 10px/1.4 var(--font-mono, "Geist Mono", monospace); letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--v4-text-3);
+  }
+  .count { font-variant-numeric: tabular-nums; }
+  .grid { list-style: none; margin: 0 -4px; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+  .b {
+    box-sizing: border-box; width: 100%; height: 100%; min-width: 0;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 6px 4px 10px; border: 0; border-radius: 8px; background: transparent;
+    color: inherit; font: inherit; text-align: center; cursor: pointer;
+    transition: background-color 120ms ease;
+  }
+  button.b:hover { background: var(--hover, var(--v4-hover)); }
+  .b.locked { cursor: default; }
+  /* Locked: a dim outline of the mark; the words stay readable. */
+  .mark { display: block; opacity: 0.45; }
+  /* Same sizes as the profile's Badges section: the name 12px, the level
+     or progress under it 11px (owner review 2026-10-08). */
+  /* Names wrap between words only, balanced over two lines, never mid-word. */
+  .nm { max-width: calc(100% + 8px); font-size: 12px; color: var(--v4-text-1); line-height: 1.3; overflow-wrap: normal; text-wrap: balance; }
+  .locked .nm { color: var(--v4-text-2); }
+  .tr { font-size: 11px; line-height: 1.4; color: var(--v4-text-3); }
+  .pg { margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
+  .b:focus-visible { outline: 2px solid var(--v4-focus, var(--v4-text-2)); outline-offset: -2px; }
+
+  /* What earns the badge: a small hover card under the tile (on hover or
+     keyboard focus) instead of a paragraph in the grid. The outer columns
+     align to their edge so the card stays inside the pane. */
+  .b { position: relative; }
+  .hc {
+    position: absolute; top: calc(100% - 6px); left: 50%; z-index: 5;
+    transform: translateX(-50%);
+    box-sizing: border-box; width: max-content; max-width: 180px; padding: 6px 9px;
+    border: 1px solid var(--panel-border, var(--line2)); border-radius: 7px;
+    background: var(--overlay-bg, var(--v4-popover, var(--v4-surface-solid)));
+    box-shadow: var(--panel-shadow, 0 4px 12px rgba(0, 0, 0, 0.22));
+    color: var(--v4-text-1); font: 400 12px/1.4 var(--font-ui, var(--font-sans)); text-align: left;
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transition: opacity 120ms ease, visibility 0s linear 120ms;
+  }
+  .grid li:nth-child(3n + 1) .hc { left: 4px; transform: none; }
+  .grid li:nth-child(3n) .hc { left: auto; right: 4px; transform: none; }
+  .b:hover .hc, .b:focus-visible .hc {
+    opacity: 1; visibility: visible;
+    transition: opacity 120ms ease 600ms, visibility 0s linear 600ms;
+  }
+  @media (prefers-reduced-motion: reduce) { .hc, .b:hover .hc, .b:focus-visible .hc { transition: none; } }
+
+  @media (prefers-reduced-motion: reduce) { .b { transition: none; } }
+</style>

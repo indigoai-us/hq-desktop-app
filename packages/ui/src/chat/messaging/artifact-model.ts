@@ -1,3 +1,4 @@
+import { compactNumber } from "../../common/compact-number.js";
 /**
  * Chat artifact model — the structured long blocks (`hq dm --details` /
  * `--prompt`, delegation/handoff cards) that used to be hard-clamped to 180
@@ -62,17 +63,12 @@ export function artifactTitle(text: string, kind: ArtifactKind): string {
   return artifactKindLabel(kind);
 }
 
-function formatCount(n: number): string {
-  if (n < 1000) return String(n);
-  const k = n / 1000;
-  return `${k >= 10 ? Math.round(k) : Math.round(k * 10) / 10}k`;
-}
 
 export function artifactSizeLabel(text: string): string {
   const lines = text.split("\n").length;
   const chars = text.length;
-  const lineLabel = `${formatCount(lines)} ${lines === 1 ? "line" : "lines"}`;
-  return `${lineLabel} · ${formatCount(chars)} chars`;
+  const lineLabel = `${compactNumber(lines)} ${lines === 1 ? "line" : "lines"}`;
+  return `${lineLabel} · ${compactNumber(chars)} chars`;
 }
 
 /**

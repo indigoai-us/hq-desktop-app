@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Workspace } from "../../chat/workspaces.js";
 import {
+  shareTarget,
   PERSONAL_VAULT,
   breadcrumbs,
   isSensitiveName,
@@ -130,5 +131,21 @@ describe("breadcrumbs", () => {
       { label: "knowledge", path: "companies/acme/knowledge" },
       { label: "pricing.md", path: "companies/acme/knowledge/pricing.md" },
     ]);
+  });
+});
+
+describe("shareTarget (QA-005)", () => {
+  const acme = { id: "company:acme", kind: "company" as const, label: "Acme", root: "companies/acme", slug: "acme" };
+
+  it("names a company file by its company-relative path and says sharing is not connected", () => {
+    const target = shareTarget(acme, "companies/acme/knowledge/pricing.md");
+    expect(target).toMatchObject({ path: "knowledge/pricing.md", company: "acme", available: false });
+    expect(target.reason).toContain("/hq-share");
+  });
+
+  it("explains why a personal file cannot be shared", () => {
+    const target = shareTarget(PERSONAL_VAULT, "personal/knowledge/idea-bank.md");
+    expect(target).toMatchObject({ path: "personal/knowledge/idea-bank.md", company: null, available: false });
+    expect(target.reason).toContain("company vault");
   });
 });

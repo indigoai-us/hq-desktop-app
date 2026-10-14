@@ -1542,6 +1542,158 @@ async fn acquire_cli_package_update_lease(
     Ok((package_guard, process_guard))
 }
 
+/// Replace the `--prefix <live>` value in an npm install argv with `staging`.
+/// Returns None when the argv has no `--prefix` pair to retarget.
+pub(crate) fn staged_install_argv(base_args: &[String], staging: &Path) -> Option<Vec<String>> {
+    let index = base_args.iter().position(|arg| arg == "--prefix")?;
+    base_args.get(index + 1)?;
+    let mut args = base_args.to_vec();
+    args[index + 1] = staging.to_string_lossy().into_owned();
+    Some(args)
+}
+
+const STAGED_HQ_VERSION_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Run the staged `hq --version`. The staged copy sits under a different
+/// prefix, so hq-cli keys it to a different package-use lease directory and it
+/// does not wait on the live update request this updater holds.
+async fn staged_hq_version_runs(hq: &Path, path: &str) -> bool {
+    let hq = hq.to_string_lossy().into_owned();
+    let mut cmd = paths::tokio_spawn_command(&hq, &["--version"]);
+    cmd.env("PATH", path).kill_on_drop(true);
+    matches!(
+        tokio::time::timeout(STAGED_HQ_VERSION_TIMEOUT, cmd.output()).await,
+        Ok(Ok(output)) if output.status.success()
+    )
+}
+
+/// Install hq-cli into a staging prefix, verify it, and swap it into the live
+/// prefix (see `hq_desktop_core::hq_cli_staged_swap`). Returns the staging npm
+/// output on success; None means nothing live changed and the caller should run
+/// the in-place install.
+async fn run_staged_swap_install(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    prefix: &str,
+    base_args: &[String],
+) -> Option<std::process::Output> {
+    use hq_desktop_core::hq_cli_staged_swap as staged;
+    let windows_layout = cfg!(target_os = "windows");
+    let live = Path::new(prefix);
+    if !staged::hq_cli_package_dir(live, windows_layout).is_dir() {
+        return None;
+    }
+    let nonce = ulid::Ulid::new().to_string();
+    let staging = staged::staging_prefix_for(live, &nonce);
+    let args = staged_install_argv(base_args, &staging)?;
+    let output = match run_npm_install(npm, path, npm_cache, args).await {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "staged install failed; using in-place install: {}",
+                    redact_home(&npm_output_detail(&output))
+                ),
+            );
+            staged::remove_staging(&staging);
+            return None;
+        }
+        Err(error) => {
+            log(
+                "hq-cli-update",
+                &format!("staged install did not run: {error}"),
+            );
+            staged::remove_staging(&staging);
+            return None;
+        }
+    };
+    let verified = staged::verify_staged_install(&staging, windows_layout);
+    let runs = verified.is_ok()
+        && staged_hq_version_runs(&staged::staged_hq_bin(&staging, windows_layout), path).await;
+    if !runs {
+        log(
+            "hq-cli-update",
+            &format!(
+                "staged install failed verification ({}); using in-place install",
+                verified
+                    .err()
+                    .unwrap_or_else(|| "hq --version failed".into())
+            ),
+        );
+        staged::remove_staging(&staging);
+        return None;
+    }
+    let swap = tauri::async_runtime::spawn_blocking({
+        let live = live.to_path_buf();
+        let staging = staging.clone();
+        move || staged::swap_staged_install(&live, &staging, windows_layout, &nonce)
+    })
+    .await;
+    match swap {
+        Ok(Ok(mode)) => {
+            log(
+                "hq-cli-update",
+                &format!("staged install swapped in ({mode:?})"),
+            );
+            Some(output)
+        }
+        Ok(Err(error)) => {
+            log(
+                "hq-cli-update",
+                &format!(
+                    "staged swap failed; using in-place install: {}",
+                    redact_home(&error)
+                ),
+            );
+            staged::remove_staging(&staging);
+            None
+        }
+        Err(error) => {
+            log(
+                "hq-cli-update",
+                &format!("staged swap task failed: {error}"),
+            );
+            staged::remove_staging(&staging);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod staged_swap_argv_tests {
+    use super::staged_install_argv;
+    use std::path::Path;
+
+    #[test]
+    fn retargets_only_the_prefix_value() {
+        let base: Vec<String> = [
+            "install",
+            "-g",
+            "--prefix",
+            "/live",
+            "@indigoai-us/hq-cli@1.2.3",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let staged = staged_install_argv(&base, Path::new("/live/.hq-cli-staging-x")).unwrap();
+        assert_eq!(staged[3], "/live/.hq-cli-staging-x");
+        assert_eq!(staged[4], "@indigoai-us/hq-cli@1.2.3");
+        assert_eq!(staged.len(), base.len());
+    }
+
+    #[test]
+    fn no_prefix_means_no_staging() {
+        let base: Vec<String> = ["install", "-g", "@indigoai-us/hq-cli"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(staged_install_argv(&base, Path::new("/s")).is_none());
+    }
+}
+
 async fn run_npm_install_with_retries(
     npm: &str,
     path: &str,
@@ -1564,7 +1716,31 @@ async fn run_npm_install_with_retry_attempt(
 ) -> Result<NpmInstallRun, HqCliUpdateFailure> {
     let (_package_use_lease, _process_admission) =
         acquire_cli_package_update_lease(npm, path, prefix, retry_attempt).await?;
+    // Back up before anything runs, so even a staging attempt that misbehaves
+    // can be rolled back by the in-place path below.
     let mut backup = prefix.map(preserve_hq_cli_install).transpose()?;
+    // Stage, verify, and swap first so running sessions never see the live
+    // `hq` link removed. Any staging failure falls through to the in-place
+    // install and its recovery ladder, still under the same lease.
+    if let Some(prefix) = prefix {
+        if let Some(output) =
+            run_staged_swap_install(npm, path, npm_cache, prefix, &base_args).await
+        {
+            if let Some(backup) = backup.as_mut() {
+                backup.finish(true)?;
+            }
+            return Ok(NpmInstallRun {
+                output,
+                final_attempt_forced: false,
+                rungs: vec!["staged-swap"],
+                missing_target_state: MissingTargetState::Unknown,
+                windows_busy_retry_attempts: None,
+                windows_busy_retry_outcome: WindowsBusyRetryOutcome::NotApplicable,
+                lock_holder_diagnostic: None,
+                previous_install_restored: false,
+            });
+        }
+    }
     let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
     let mut missing_target_state = MissingTargetState::Unknown;
     let mut windows_busy_retry_attempts = None;
@@ -2062,6 +2238,61 @@ fn record_non_convergent_episode_markers(keys: &[String]) -> Result<(), String> 
 /// wedging the CLI-update single-flight for every later caller.
 const PNPM_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Environment for every pnpm process the CLI updater starts (the install and
+/// each probe).
+///
+/// - Corepack: with `COREPACK_DEFAULT_TO_LATEST` unset, a Corepack `pnpm` shim
+///   that has no default yet resolves the registry's newest pnpm and writes it
+///   to Corepack's global lastKnownGood file. That is how an HQ update moved a
+///   user from pnpm 10 to pnpm 12.5.1. Project selection and auto-pinning are
+///   off so the app's working directory cannot choose or rewrite a version.
+/// - `HQ_RESCUE_SELF_UPDATED` / `HQ_NO_UPDATE_CHECK`: a lifecycle script that
+///   runs `hq` during the install must never start a second update.
+const PNPM_UPDATE_CHILD_ENV: [(&str, &str); 5] = [
+    ("COREPACK_DEFAULT_TO_LATEST", "0"),
+    ("COREPACK_ENABLE_PROJECT_SPEC", "0"),
+    ("COREPACK_ENABLE_AUTO_PIN", "0"),
+    ("HQ_RESCUE_SELF_UPDATED", "1"),
+    ("HQ_NO_UPDATE_CHECK", "1"),
+];
+
+/// Run one pnpm probe with a hard deadline that covers every process it
+/// starts. The probe runs in its own process group; on timeout the whole group
+/// is killed, not only the direct child. Killing only the direct child let a
+/// pnpm that re-invokes itself (`pnpm dlx dlx dlx ... bin -g` under a Corepack
+/// pnpm 12) keep forking after the deadline until the machine ran out of
+/// processes. `None` on spawn error or timeout.
+async fn run_bounded_pnpm_probe(
+    mut cmd: tokio::process::Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    cmd.envs(PNPM_UPDATE_CHILD_ENV.iter().copied())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let child = cmd.spawn().ok()?;
+    #[cfg_attr(not(unix), allow(unused_variables))]
+    let pid = child.id();
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(result) => result.ok(),
+        Err(_) => {
+            // The future (and with it the direct child) is dropped here; the
+            // group kill reaches every descendant the probe started.
+            #[cfg(unix)]
+            if let Some(pid) = pid {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            None
+        }
+    }
+}
+
 /// The global bin directory pnpm resolves NATIVELY (`pnpm bin -g`) under the same
 /// environment the install used — deliberately WITHOUT the forced global-bin-dir
 /// flag the install passes. The forced-flag probe the r2 fix
@@ -2081,14 +2312,12 @@ async fn pnpm_effective_global_bin_dir(
     pnpm_home: Option<&str>,
 ) -> Option<String> {
     let mut cmd = paths::tokio_spawn_command(pnpm_bin, &["bin", "-g"]);
-    cmd.env("PATH", path).kill_on_drop(true);
+    cmd.env("PATH", path);
     if let Some(home) = pnpm_home {
         cmd.env("PNPM_HOME", home);
     }
-    let output = tokio::time::timeout(PNPM_PROBE_TIMEOUT, cmd.output())
-        .await
-        .ok()? // timed out -> future dropped -> child killed
-        .ok()?; // spawn / exec error
+    // Timed out -> the probe's whole process group is killed.
+    let output = run_bounded_pnpm_probe(cmd, PNPM_PROBE_TIMEOUT).await?;
     if !output.status.success() {
         return None;
     }
@@ -2106,13 +2335,8 @@ async fn pnpm_probe_line(
     args: &[&str],
 ) -> Option<String> {
     let mut cmd = paths::tokio_spawn_command(pnpm_bin, args);
-    cmd.env("PATH", path)
-        .env("PNPM_HOME", pnpm_home)
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(PNPM_PROBE_TIMEOUT, cmd.output())
-        .await
-        .ok()?
-        .ok()?;
+    cmd.env("PATH", path).env("PNPM_HOME", pnpm_home);
+    let output = run_bounded_pnpm_probe(cmd, PNPM_PROBE_TIMEOUT).await?;
     if !output.status.success() {
         return None;
     }
@@ -2268,7 +2492,8 @@ async fn install_hq_cli_update_via_pnpm(
             let mut cmd = paths::spawn_command(&pnpm, &[]);
             cmd.args(&args)
                 .env("PATH", &path)
-                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied())
+                .envs(PNPM_UPDATE_CHILD_ENV.iter().copied());
             // Without PNPM_HOME the child falls back to its own default, which
             // on a Dock-launched app is not necessarily the home that owns the
             // shim we are trying to replace.
@@ -2728,6 +2953,10 @@ fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateResult> {
 
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("hq CLI update install");
+        return Err(crate::scratch_build::UPDATES_OFF_MESSAGE.to_string());
+    }
     install_hq_cli_update_with_retry_attempt(app, 0)
         .await
         .map_err(|error| error.to_string())
@@ -4314,7 +4543,7 @@ async fn provision_managed_npm_for_first_install(app: &AppHandle) -> Option<(Str
     Some((managed_npm, managed_path))
 }
 
-fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
+pub(crate) fn managed_toolchain_npm_and_path() -> Option<(String, String, String)> {
     let root = paths::managed_toolchain_roots().into_iter().next()?;
     let node_exe = paths::managed_node_executable_in(&root);
     let bin_dir = node_exe.parent()?.to_path_buf();
@@ -4969,6 +5198,9 @@ fn heal_blocked_managed_shadow(latest: &str) -> Option<HqCliUpdateInfo> {
 }
 
 pub fn setup_hq_cli_update_checker(app: &AppHandle) {
+    if !crate::scratch_build::launch_side_effect_allowed("hq CLI update checker") {
+        return;
+    }
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         // One-time un-wedge for machines blocked by the pre-pin dist-tag race. A
@@ -5028,6 +5260,11 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
                 }
             }
         }
+        // US-010: Claude Code rides the hq-cli cadence. At launch only an
+        // absent install is filled in (no network when it is present); each
+        // scheduled cycle below also moves it to the registry's latest.
+        crate::toolchain::ensure_claude_toolchain(&handle, crate::toolchain::EnsureMode::InstallIfAbsent)
+            .await;
         tokio::time::sleep(first_scheduled_delay).await;
         loop {
             // hq daemon's updater keeps the CLI current when it hosts
@@ -5036,6 +5273,8 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             if !crate::commands::hq_daemon_host::daemon_mode_active() {
                 let lease_timed_out =
                     run_check_cycle(&handle, retry_floor_repair, lease_retries_scheduled).await;
+                crate::toolchain::ensure_claude_toolchain(&handle, crate::toolchain::EnsureMode::Update)
+                    .await;
                 if lease_timed_out {
                     if let Some(delay) = hq_desktop_core::hq_cli_update::auto_update_retry_delay(
                         hq_desktop_core::hq_cli_update::AutoUpdateFailureKind::PackageUseLeaseTimeout,
@@ -5170,6 +5409,93 @@ mod tests {
     use std::process::{Command, Stdio};
     #[cfg(unix)]
     use std::sync::{Mutex, OnceLock};
+
+    #[cfg(unix)]
+    fn write_executable(path: &std::path::Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, body).unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    /// Regression: under a Corepack pnpm 12, `pnpm bin -g` re-invoked itself as
+    /// `pnpm dlx dlx dlx ... bin -g` without end. The probe deadline killed only
+    /// the direct child, so the chain kept forking until the machine hit EAGAIN.
+    /// The deadline must take down every process the probe started.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pnpm_probe_timeout_kills_a_self_reinvoking_process_chain() {
+        let temp = tempfile::tempdir().unwrap();
+        let pids = temp.path().join("pids");
+        std::fs::create_dir_all(&pids).unwrap();
+        let fake = temp.path().join("pnpm");
+        // Each level records its pid, then starts itself again with `dlx`
+        // prepended and waits, the shape of the reported process storm.
+        write_executable(
+            &fake,
+            &format!(
+                "#!/bin/sh\necho $$ > \"{}/$$\"\nsleep 0.05\n\"$0\" dlx \"$@\"\n",
+                pids.display()
+            ),
+        );
+        let cmd = paths::tokio_spawn_command(fake.to_str().unwrap(), &["bin", "-g"]);
+
+        // Long enough for several levels to start even on a loaded CI runner.
+        let output = run_bounded_pnpm_probe(cmd, Duration::from_secs(3)).await;
+        assert!(
+            output.is_none(),
+            "a probe that never finishes must time out"
+        );
+
+        // Give the kernel a moment to deliver SIGKILL, then confirm nothing
+        // the probe started is still alive or still spawning.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let recorded_before = std::fs::read_dir(&pids).unwrap().count();
+        assert!(
+            recorded_before >= 2,
+            "the fake pnpm should have re-invoked itself"
+        );
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let recorded_after = std::fs::read_dir(&pids).unwrap().count();
+        assert_eq!(
+            recorded_before, recorded_after,
+            "the chain kept spawning after the deadline"
+        );
+        for entry in std::fs::read_dir(&pids).unwrap() {
+            let pid: i32 = entry
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            let alive = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+            assert!(!alive, "probe process {pid} survived the deadline");
+        }
+    }
+
+    /// Every pnpm probe runs with Corepack settings that cannot rewrite the
+    /// user's default pnpm, and with the hq update guard set.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pnpm_probes_run_with_corepack_and_update_guards() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = temp.path().join("pnpm");
+        write_executable(
+            &fake,
+            "#!/bin/sh\nprintf '%s %s %s %s %s' \"$COREPACK_DEFAULT_TO_LATEST\" \"$COREPACK_ENABLE_PROJECT_SPEC\" \"$COREPACK_ENABLE_AUTO_PIN\" \"$HQ_RESCUE_SELF_UPDATED\" \"$HQ_NO_UPDATE_CHECK\"\n",
+        );
+        let line = pnpm_probe_line(
+            fake.to_str().unwrap(),
+            "/usr/bin:/bin",
+            temp.path().to_str().unwrap(),
+            &["root", "-g"],
+        )
+        .await
+        .expect("probe output");
+        assert_eq!(line, "0 0 0 1 1");
+    }
 
     #[test]
     fn remaining_cli_package_use_lease_budget_subtracts_elapsed_and_saturates() {
@@ -5993,6 +6319,98 @@ console.log('ready'); setInterval(() => {}, 1000);
             command.get_args().collect::<Vec<_>>(),
             args.iter().map(OsStr::new).collect::<Vec<_>>(),
         );
+    }
+
+    /// Regression: an in-place `npm install -g` removed the live `bin/hq` link
+    /// mid-update, so running sessions hit "command not found: hq". The update
+    /// must install into a staging prefix and swap the package in without ever
+    /// running npm against the live prefix or replacing the live link.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn npm_update_stages_and_swaps_without_touching_live_bin_link() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        use std::fs;
+        use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("live prefix");
+        let package = prefix.join("lib/node_modules/@indigoai-us/hq-cli");
+        fs::create_dir_all(package.join("dist")).unwrap();
+        fs::create_dir_all(prefix.join("bin")).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.345.108","bin":{"hq":"dist/index.js"}}"#,
+        )
+        .unwrap();
+        fs::write(package.join("dist/index.js"), "#!/bin/sh\necho 5.345.108\n").unwrap();
+        fs::set_permissions(
+            package.join("dist/index.js"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let link_target = "../lib/node_modules/@indigoai-us/hq-cli/dist/index.js";
+        symlink(link_target, prefix.join("bin/hq")).unwrap();
+        let link_inode_before = fs::symlink_metadata(prefix.join("bin/hq")).unwrap().ino();
+
+        // Fake npm: honours --prefix and lays down a complete package + link.
+        let calls = temp.path().join("npm-calls.log");
+        let npm = temp.path().join("fake-npm");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "{calls}"
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--prefix" ]; then p="$2"; shift; fi
+  shift
+done
+pkg="$p/lib/node_modules/@indigoai-us/hq-cli"
+mkdir -p "$pkg/dist" "$p/bin"
+printf '%s' '{{"name":"@indigoai-us/hq-cli","version":"5.345.109","bin":{{"hq":"dist/index.js"}}}}' > "$pkg/package.json"
+printf '#!/bin/sh\necho 5.345.109\n' > "$pkg/dist/index.js"
+chmod 755 "$pkg/dist/index.js"
+rm -f "$p/bin/hq"
+ln -s "{link_target}" "$p/bin/hq"
+exit 0
+"#,
+            calls = calls.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.345.109")),
+        )
+        .await
+        .unwrap();
+
+        assert!(run.output.status.success());
+        assert_eq!(run.rungs, vec!["staged-swap"]);
+        let log = fs::read_to_string(&calls).unwrap();
+        assert_eq!(log.lines().count(), 1, "one npm run, into staging only");
+        assert!(log.contains(".hq-cli-staging-"), "{log}");
+        assert_eq!(
+            fs::symlink_metadata(prefix.join("bin/hq")).unwrap().ino(),
+            link_inode_before,
+            "live bin link was never replaced"
+        );
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("package.json")).unwrap()).unwrap();
+        assert_eq!(manifest["version"], "5.345.109");
+        let leftovers: Vec<_> = fs::read_dir(&prefix)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".hq-cli-staging-") || n.starts_with("hq-cli-install-backup"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[cfg(unix)]

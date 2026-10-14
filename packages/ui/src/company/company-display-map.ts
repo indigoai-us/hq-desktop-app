@@ -250,3 +250,41 @@ export function workspacesFromMembershipRows(raw: unknown): Workspace[] {
   }
   return out;
 }
+
+/** A company folder on this Mac that has no cloud id yet. */
+export interface LocalOnlyCompany {
+  slug: string;
+  name: string;
+}
+
+/**
+ * Companies that exist only on this Mac, from the same
+ * `list_syncable_workspaces` rows the roster reads. The host already unions
+ * the local manifest and company folders into those rows; this keeps the ones
+ * `workspacesFromMembershipRows` drops for having no cloud id.
+ *
+ * Skips scaffolding (`_template`), archived entries, the personal vault and
+ * anything without a slug. One entry per slug.
+ */
+export function localOnlyCompaniesFromRows(raw: unknown): LocalOnlyCompany[] {
+  const seen = new Set<string>();
+  const out: LocalOnlyCompany[] = [];
+  for (const row of membershipRowsFrom(raw)) {
+    if (!isWorkspaceRow(row)) continue;
+    if (str(row.kind).toLowerCase() !== "company") continue;
+    if (str(row.companyUid) || str(row.cloudUid) || str(row.uid)) continue;
+    const slug = str(row.slug) || str(row.companySlug);
+    if (!slug || slug.startsWith("_") || slug === "personal") continue;
+    const state = str(row.state).toLowerCase();
+    if (state && state !== "local-only") continue;
+    if (row.archived === true || str(row.status).toLowerCase() === "archived") continue;
+    const key = slug.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      slug,
+      name: readableName(row.displayName) || readableName(row.name) || slug,
+    });
+  }
+  return out;
+}

@@ -807,3 +807,60 @@ describe("withExtraBlocks", () => {
     expect(withExtraBlocks(null, null)).toBeNull();
   });
 });
+
+describe("parseRichContent — closed icon enum on title labels", () => {
+  function first(block: Record<string, unknown>) {
+    return parseRichContent({ v: 1, blocks: [block] })?.blocks[0] as Record<string, unknown> | undefined;
+  }
+
+  const cases: Array<{ name: string; block: Record<string, unknown>; fallback: string; pick: (b: Record<string, unknown>) => unknown }> = [
+    { name: "badge", block: { kind: "badge", label: "owner" }, fallback: "tag", pick: (b) => b.icon },
+    { name: "progress", block: { kind: "progress", label: "Rollout", value: 10 }, fallback: "chart", pick: (b) => b.icon },
+    { name: "callout (warning)", block: { kind: "callout", tone: "warning", title: "T", body: "b" }, fallback: "alert", pick: (b) => b.icon },
+    { name: "callout (danger)", block: { kind: "callout", tone: "danger", body: "b" }, fallback: "error", pick: (b) => b.icon },
+    { name: "decision", block: { kind: "decision", question: "Q?", options: ["A"] }, fallback: "question", pick: (b) => b.icon },
+    {
+      name: "stat item",
+      block: { kind: "stat", items: [{ label: "MRR", value: "1" }] },
+      fallback: "chart",
+      pick: (b) => (b.items as Array<Record<string, unknown>>)[0]!.icon,
+    },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name}: keeps a valid icon name`, () => {
+      const block = c.name === "stat item"
+        ? { ...c.block, items: [{ label: "MRR", value: "1", icon: "star" }] }
+        : { ...c.block, icon: "star" };
+      expect(c.pick(first(block)!)).toBe("star");
+    });
+    it(`${c.name}: an unknown icon collapses to the per-kind default`, () => {
+      const block = c.name === "stat item"
+        ? { ...c.block, items: [{ label: "MRR", value: "1", icon: "<svg/onload=x>" }] }
+        : { ...c.block, icon: "https://evil.example/x.svg" };
+      expect(c.pick(first(block)!)).toBe(c.fallback);
+    });
+    it(`${c.name}: a missing icon is omitted (the renderer applies the default)`, () => {
+      expect(c.pick(first(c.block)!)).toBeUndefined();
+    });
+  }
+
+  it("keyValue keys keep a valid icon, drop an unknown one, and have no default", () => {
+    const b = first({
+      kind: "keyValue",
+      items: [
+        { key: "Owner", value: "Jacob", icon: "user" },
+        { key: "Folder", value: "HQ", icon: "rocket" },
+        { key: "Pickup", value: "sent" },
+      ],
+    }) as { items: Array<Record<string, unknown>> };
+    expect(b.items.map((i) => i.icon)).toEqual(["user", undefined, undefined]);
+    expect("icon" in b.items[1]!).toBe(false);
+  });
+
+  it("keyValue still caps at 50 pairs", () => {
+    const items = Array.from({ length: 80 }, (_, i) => ({ key: `k${i}`, value: "v", icon: "tag" }));
+    const b = first({ kind: "keyValue", items }) as { items: unknown[] };
+    expect(b.items).toHaveLength(50);
+  });
+});

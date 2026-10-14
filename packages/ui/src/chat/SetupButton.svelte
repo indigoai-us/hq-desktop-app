@@ -53,9 +53,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    min-height: 30px;
-    padding: 0 12px;
+    gap: var(--hq-btn-gap);
+    min-height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid transparent;
     border-radius: 0;
     background: transparent;

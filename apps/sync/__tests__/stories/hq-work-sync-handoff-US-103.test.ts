@@ -6,7 +6,7 @@
  * always mounts the @hq/ui HQ Work shell.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const tauriEvents = vi.hoisted(() => ({
   listeners: new Map<string, (event: { payload?: unknown }) => void>(),
@@ -44,6 +44,7 @@ import {
   createHqWorkSidebarApi,
 } from '../../src/desktop-alt/hq-work-host';
 import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
+import { loadShellSettings } from '../../../../packages/ui/src/shell/settings-lazy';
 import { type HqWorkInvoker } from '../../src/lib/hq-work';
 import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
 import { takePendingChannelOpen } from '../../../../packages/ui/src/chat/open-target';
@@ -252,13 +253,21 @@ function mountMessagingSidebar(invokeFn: SyncInvokeFn): void {
   });
 }
 
-/** The sidebar "+" opens the unified create modal directly (no dropdown). */
+/**
+ * Open the unified search-first create modal. The sidebar "+" now opens the
+ * New message / New channel / New agent menu (c7de0843), so the modal is
+ * reached the way the native app reaches it: the View-menu "New chat"
+ * accelerator emits `shortcut:invoke` with the `chat.new` binding id.
+ */
 async function openCreateModal(): Promise<void> {
   await vi.waitFor(() => {
     expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy();
   });
-  (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
+  const invokeShortcut = tauriEvents.listeners.get('shortcut:invoke');
+  expect(invokeShortcut).toBeTypeOf('function');
+  invokeShortcut?.({ payload: { id: 'chat.new' } });
   await flush();
+  expect(document.querySelector('[data-testid="chat-create-query"]')).toBeTruthy();
 }
 
 /** Clear the create modal's 110 ms query debounce. */
@@ -336,6 +345,15 @@ afterEach(async () => {
   takePendingConversation();
   tauriEvents.listeners.clear();
   vi.clearAllMocks();
+});
+
+
+// Settings is a lazy chunk (packages/ui/src/shell/settings-lazy.ts, 7e9692ab).
+// Its first dynamic import needs a real module transform, which microtask
+// flushes cannot wait out. Load the memoized chunk once up front so the
+// `{#await loadShellSettings()}` branch resolves deterministically.
+beforeAll(async () => {
+  await loadShellSettings();
 });
 
 describe('US-103 embedded desktop window', () => {
@@ -561,15 +579,19 @@ describe('US-103 embedded desktop window', () => {
         payload: { status: 'active', accountId: 'acct_grace', generation: 2 },
       });
       await flush(40);
-      window.dispatchEvent(
-        new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
-          detail: { kind: 'settings', section: 'companies' },
-        }),
-      );
-      await flush(24);
 
-      expect(host.querySelector('[data-testid="settings-companies-pane"]')?.textContent).toContain('Grace Org');
-      expect(host.querySelector('[data-testid="settings-companies-pane"]')?.textContent).not.toContain('Ada Org');
+      // Settings no longer lists companies (fc383c3f): they are reached from
+      // the rail's More companies popover, which must follow the new session.
+      (host.querySelector('[data-testid="rail-more-companies"]') as HTMLButtonElement).click();
+      // The popover is a lazy door; wait for its list to mount.
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="more-companies-list"]')).toBeTruthy();
+      });
+      const companyList = document.querySelector('[data-testid="more-companies-list"]');
+      expect(companyList?.textContent).toContain('Grace Org');
+      expect(companyList?.textContent).not.toContain('Ada Org');
+      (document.querySelector('[data-testid="more-companies-scrim"]') as HTMLButtonElement).click();
+      await flush();
       window.dispatchEvent(
         new CustomEvent(EMBEDDED_NAVIGATION_EVENT, {
           detail: { kind: 'settings', section: 'profile' },
@@ -906,7 +928,7 @@ describe('US-103 embedded desktop window', () => {
       expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
       expect(
         document.querySelector('[data-testid="chat-create-summary-error"]')?.textContent,
-      ).toContain('network unavailable');
+      ).toContain("That didn't work either. Try again."); // AUDIT-3c: raw transport text is logged, not shown
       expect(document.querySelector('[data-testid="chat-create-summary"]')?.textContent).toContain(
         'do not lose me',
       );

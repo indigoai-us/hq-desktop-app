@@ -16,7 +16,7 @@ import type { Workspace } from "../chat/workspaces.js";
  * known to be a cloud bot only once the server answers this person's read of
  * its status. One failed read (the network, a 5xx, a timeout, a 401 while
  * the sign-in is refreshed) used to end the asking, so an owner's
- * conversation had no cards, no chips and no sync strip until they left it
+ * conversation had no cards, no chips and no sync status until they left it
  * and came back. Only a refusal (403, 404) ends it now.
  */
 

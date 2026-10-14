@@ -208,8 +208,12 @@ describe("resolveCompanyFeature", () => {
 });
 
 describe("identity.hasCompanyFeature", () => {
-  it("is a company read: the flag is not in the person-only registry table", () => {
-    expect(LEGACY_TO_REGISTRY[FLAG]).toBeUndefined();
+  it("is in the registry table only for the rail's company-scoped hasFeature read", () => {
+    // On the rail `hasFeature(flag, { companyUid })` reads this flag for one
+    // company (the direct create), so the table carries it. A read with no
+    // company still says nothing about a company; the tests below hold
+    // `hasCompanyFeature` to the company's own answer.
+    expect(LEGACY_TO_REGISTRY[FLAG]).toBe(FLAG);
   });
 
   it("sync adapter asks the resolve route for that company and returns its value", async () => {

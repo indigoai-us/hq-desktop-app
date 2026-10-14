@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Session-expired / sign-in-required notice for the desktop window (PL-03).
    *
@@ -47,7 +48,7 @@
         disabled={signingIn}
         aria-busy={signingIn}
         onclick={() => void onsignin?.()}
-      >
+      ><RailIcon name="key" />
         {signingIn ? "Opening sign-in…" : "Sign in"}
       </button>
     {/if}
@@ -57,7 +58,7 @@
         class="auth-dismiss"
         data-testid="session-expired-dismiss"
         onclick={() => ondismiss?.()}
-      >
+      ><RailIcon name="x" />
         Dismiss
       </button>
     {/if}

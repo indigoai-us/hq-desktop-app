@@ -9,12 +9,15 @@ describe("SettingsMutationQueue", () => {
   it("logs a rejected save and still runs the next patch", async () => {
     const prefs: Record<string, unknown> = { existing: 1 };
     let fail = true;
-    const invoke: SettingsInvoker = async (command, args) => {
-      if (command === "get_settings") return { ...prefs };
+    const invoke: SettingsInvoker = async <T>(
+      command: string,
+      args?: Record<string, unknown>,
+    ): Promise<T> => {
+      if (command === "get_settings") return { ...prefs } as T;
       if (command === "save_settings") {
         if (fail) throw new Error("disk full");
         Object.assign(prefs, (args?.prefs ?? {}) as Record<string, unknown>);
-        return undefined;
+        return undefined as T;
       }
       throw new Error(`unexpected ${command}`);
     };

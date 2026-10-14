@@ -23,6 +23,7 @@
     type TaskColumn,
   } from "./projects-model.js";
   import StoryCard from "./StoryCard.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import StoryList from "./StoryList.svelte";
 
   interface Props {
@@ -33,7 +34,7 @@
      * awaiting_input signals matched to a story id place a card in Active.
      */
     sessions?: readonly PortfolioSessionRef[];
-    /** When true, render the loading skeleton instead of content. */
+    /** When true, render the loader instead of content. */
     loading?: boolean;
     /** Compact relative "now" for live elapsed / last-signal labels. */
     now?: number;
@@ -108,13 +109,7 @@
 
   {#if loading}
     <div class="board-loading" aria-busy="true" aria-label="Loading tasks">
-      {#each TASK_COLUMNS as column (column)}
-        <div class="skeleton-column">
-          <div class="skeleton-header"></div>
-          <div class="skeleton-card"></div>
-          <div class="skeleton-card"></div>
-        </div>
-      {/each}
+      <ReadLoader testid="board-loading" />
     </div>
   {:else if viewMode === "board"}
     <div class="board-scroll" data-testid="task-kanban">
@@ -207,10 +202,6 @@
 <style>
   .story-kanban {
     container: story-kanban / inline-size;
-    /* Page ground laid over an opaque surface for the sticky column headers,
-       so cards scrolling underneath never show through. */
-    --board-sticky-bg: linear-gradient(var(--v4-ground), var(--v4-ground)),
-      var(--v4-surface-solid);
     display: flex;
     flex-direction: column;
     gap: var(--v4-space-3);
@@ -241,15 +232,16 @@
   .toggle-segment {
     display: inline-flex;
     align-items: center;
-    height: 22px;
-    padding: 0 10px;
+    height: auto;
+    padding: 4px 8px;
     border: 0;
     border-radius: 4px;
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 17px;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -271,8 +263,7 @@
     outline-offset: 1px;
   }
 
-  /* No overflow here on wide canvases: an overflow value would make this the
-     sticky headers' scroll container and stop them sticking to the page. */
+  /* No overflow here on wide canvases: the page scroller handles long boards. */
   .board-scroll {
     flex: 1 0 auto;
     min-width: 0;
@@ -288,7 +279,7 @@
   }
 
   /* overflow-x: clip keeps cards inside the column without creating a scroll
-     container, so the sticky header still sticks to the page scroller. */
+     container. */
   .kanban-column {
     display: flex;
     flex-direction: column;
@@ -299,20 +290,19 @@
     background: transparent;
   }
 
+  /* Unshaded header: sits directly on the page ground, separated from the
+     cards by spacing alone (no fill, no divider, not sticky). */
   .column-header {
-    position: sticky;
-    top: 0;
-    z-index: 2;
     display: flex;
     align-items: center;
     gap: 8px;
     width: 100%;
     min-height: 36px;
+    margin-bottom: 4px;
     padding: 0 2px;
     border: 0;
-    border-bottom: 1px solid var(--v4-hairline);
     border-radius: 0;
-    background: var(--board-sticky-bg, var(--v4-surface-solid));
+    background: transparent;
     color: inherit;
     font: inherit;
     font-size: 13px;
@@ -344,7 +334,7 @@
   }
 
   .status-dot[data-column="complete"] {
-    background: color-mix(in srgb, var(--v4-ok) 70%, var(--v4-text-3));
+    background: var(--v4-text-1);
   }
 
   .live-dot {
@@ -354,7 +344,7 @@
   .column-label {
     color: var(--v4-text-1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .count-badge {
@@ -366,7 +356,7 @@
     border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
   }
@@ -428,7 +418,7 @@
 
   .column-empty span {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .list-scroll {
@@ -436,55 +426,10 @@
     min-width: 0;
   }
 
-  .board-loading {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
-  }
-
-  .skeleton-column {
-    display: flex;
-    flex-direction: column;
-    gap: var(--v4-space-2);
-  }
-
-  .skeleton-header {
-    height: 36px;
-    border-radius: 0;
-    background: var(--v4-control-faint);
-  }
-
-  .skeleton-card {
-    height: 84px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-control-faint);
-  }
-
-  .skeleton-header,
-  .skeleton-card {
-    animation: skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
-  @keyframes skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .toggle-segment,
     .chevron {
       transition: none;
-    }
-
-    .skeleton-header,
-    .skeleton-card {
-      animation: none;
     }
   }
 

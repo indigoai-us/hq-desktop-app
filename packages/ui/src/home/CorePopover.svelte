@@ -1,9 +1,10 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Core popover (US-016) — opened from the titlebar "● Core ⌄" pill.
    *
-   * Contains: conflict rescue card, HQ core version/drift row, desktop app
-   * update row, Library stub, expandable PACKS list + marketplace, and a
+   * Contains: HQ core version/drift row, desktop app
+   * update row, Marketplace row, expandable PACKS list + marketplace, and a
    * cloud-paused notice. Model logic lives in core-popover-model.ts.
    */
   import type { PlatformAdapter } from "@hq/platform";
@@ -12,15 +13,12 @@
   import type { Issue } from "./copy-prompts.js";
   import { sanitizeVisibleIdentifiers } from "../chat/visible-labels.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
-  import type { HomeConflict } from "./home-model.js";
   import {
     buildCorePopoverViewModel,
     coreNeedsRestore,
     parseInstalledPacks,
     CORE_POPOVER_FIXTURE_PACKS,
     CORE_POPOVER_FIXTURE_CORE,
-    CORE_POPOVER_FIXTURE_CONFLICTS,
-    type CorePopoverConflict,
     type CorePopoverPack,
     type CoreUploadsPausedInput,
   } from "./core-popover-model.js";
@@ -43,6 +41,7 @@
     type UpdateStoreAdapter,
   } from "../settings/update-store.svelte";
   import "./tokens.css";
+  import BrowsePacksDoor from "./overlays/browse-packs-door.svelte";
 
   interface Props {
     /** Platform seam — updates/packages slices + capability flags.
@@ -51,8 +50,6 @@
     adapter: PlatformAdapter;
     /** Desktop app version string (from __APP_VERSION__). */
     appVersion: string;
-    /** Live conflict list from DesktopApp (sync:conflict stream). */
-    conflicts?: HomeConflict[];
     /** Settings-backed Cloud Off flag. */
     cloudPaused?: boolean;
     /**
@@ -64,11 +61,6 @@
     lastSyncLabel?: string | null;
     /** Live caption while a run is in flight (`syncStatusLabel(...).detail`). */
     syncCaption?: string | null;
-    /** Unresolved conflict count from the journal read (drives "Sync paused"
-     *  and the conflict notice payload). Falls back to `conflicts.length`. */
-    conflictCount?: number;
-    /** Company whose files conflicted — copy-prompt payload only. */
-    conflictCompany?: string | null;
     /**
      * PL-02 — sync trouble inputs.
      * `errorMessage` is the message behind an `error` phase; empty suppresses
@@ -87,9 +79,9 @@
     /** Absolute HQ root for the Claude Code hand-off. Empty → no open button. */
     hqFolderPath?: string | null;
     /**
-     * Visual-QA only (D-08): inject fixture conflicts/packs/update when live
-     * sources are empty. MUST stay false on real-data paths — defaulting true
-     * put a fake conflict card and a phantom "4 packs" header in production.
+     * Visual-QA only (D-08): inject fixture packs/update when live sources
+     * are empty. MUST stay false on real-data paths — defaulting true put a
+     * phantom "4 packs" header in production.
      */
     useFixtures?: boolean;
     /** Sync/hydration recovery card from the titlebar status model (D-04). */
@@ -101,11 +93,6 @@
     } | null;
     onrecovery?: () => void | Promise<void>;
     onclose?: () => void;
-    onresolve?: (
-      path: string,
-      strategy: "keep-local" | "keep-remote",
-    ) => void | Promise<void>;
-    onopeneditor?: (path: string) => void | Promise<void>;
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
     onopenMarketplace?: () => void;
@@ -129,13 +116,10 @@
   let {
     adapter,
     appVersion,
-    conflicts = [],
     cloudPaused = false,
     syncState = null,
     lastSyncLabel = null,
     syncCaption = null,
-    conflictCount,
-    conflictCompany = null,
     errorMessage = null,
     errorCompany = null,
     manifestError = null,
@@ -147,8 +131,6 @@
     recovery = null,
     onrecovery,
     onclose,
-    onresolve,
-    onopeneditor,
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
@@ -157,6 +139,7 @@
   }: Props = $props();
 
   let packsExpanded = $state(true);
+  let browsePacksOpen = $state(false);
   let coreRestoring = $state(false);
   let packs = $state<CorePopoverPack[]>([]);
   let packsLoading = $state(false);
@@ -167,25 +150,6 @@
   let loadGeneration = 0;
   let returnNudge = $state<{ companyUid: string; slug?: string; dayIndex: number } | null>(null);
   let returnNudgeBusy = $state(false);
-  /** Fixture conflict timestamp for "· Nm ago" header. */
-  const fixtureConflictAt = Date.now() - 3 * 60_000;
-
-  const modelConflicts = $derived.by((): CorePopoverConflict[] => {
-    const live = conflicts.map((c) => ({
-      path: c.path,
-      status: (c.status === "error"
-        ? "error"
-        : c.status === "resolving"
-          ? "resolving"
-          : "pending") as CorePopoverConflict["status"],
-      error: c.error,
-    }));
-    if (live.length > 0) return live;
-    // D-08: demo conflict card when live stream is empty.
-    if (useFixtures) return CORE_POPOVER_FIXTURE_CONFLICTS;
-    return [];
-  });
-
   const modelPacks = $derived.by((): CorePopoverPack[] => {
     if (packs.length > 0) return packs;
     return useFixtures ? CORE_POPOVER_FIXTURE_PACKS : [];
@@ -256,15 +220,8 @@
     }),
   );
 
-  /** Journal count wins; the live conflict stream is the fallback. */
-  const effectiveConflictCount = $derived(
-    conflictCount ?? modelConflicts.length,
-  );
-
   const model = $derived(
     buildCorePopoverViewModel({
-      conflicts: modelConflicts,
-      conflictUpdatedAtMs: modelConflicts.length > 0 ? fixtureConflictAt : null,
       core: modelCore,
       appVersion,
       coreChecking,
@@ -280,8 +237,6 @@
       syncCaption,
       uploadsPaused: uploadsPaused ?? [],
       notices: {
-        conflictCount: effectiveConflictCount,
-        conflictCompany,
         errorMessage,
         errorCompany,
         manifestError,
@@ -573,10 +528,10 @@
       <span class="core-return-nudge" data-testid="core-popover-return-nudge">
         Run a sync today to keep your company up to date.
       </span>
-      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-sync" disabled={returnNudgeBusy} aria-busy={returnNudgeBusy} onclick={() => void runReturnNudgeSync()}>
+      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-sync" disabled={returnNudgeBusy} aria-busy={returnNudgeBusy} onclick={() => void runReturnNudgeSync()}><RailIcon name="refresh" />
         {returnNudgeBusy ? "Starting sync…" : "Sync now"}
       </button>
-      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-dismiss" disabled={returnNudgeBusy} onclick={dismissReturnNudge}>
+      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-dismiss" disabled={returnNudgeBusy} onclick={dismissReturnNudge}><RailIcon name="x" />
         Dismiss
       </button>
     {/if}
@@ -629,7 +584,7 @@
             onclick={() => {
               if (row.upgradeUrl) onopenurl?.(row.upgradeUrl);
             }}
-          >
+          ><RailIcon name="arrow-right" />
             Upgrade plan
           </button>
         </div>
@@ -649,69 +604,6 @@
         >Sync is paused on this device. Turn Cloud on to resume.</span
       >
     </div>
-  {/if}
-
-  {#if model.conflictCount > 0}
-    <section
-      class="core-conflicts"
-      data-testid="core-popover-rescue-card"
-      aria-label="Conflicts"
-    >
-      <header
-        class="core-section-header"
-        data-testid="core-popover-conflict-header"
-      >
-        {model.conflictHeader}
-      </header>
-      <ul class="core-conflict-list">
-        {#each model.conflictRows as row (row.path)}
-          <li class="core-conflict-row" data-testid="core-popover-conflict-row">
-            <div class="core-conflict-meta">
-              <span class="core-conflict-name">{row.fileName}</span>
-              <span
-                class="core-conflict-path"
-                data-testid="conflict-row-path"
-                title={row.path}
-              >
-                {row.companyPath}
-              </span>
-              {#if row.error}
-                <span class="core-conflict-error">{row.error}</span>
-              {/if}
-            </div>
-            <div class="core-conflict-actions">
-              <button
-                type="button"
-                class="core-btn primary"
-                data-testid="core-popover-keep-local"
-                disabled={row.actionsDisabled}
-                onclick={() => void onresolve?.(row.path, "keep-local")}
-              >
-                Keep local
-              </button>
-              <button
-                type="button"
-                class="core-btn primary"
-                data-testid="core-popover-keep-cloud"
-                disabled={row.actionsDisabled}
-                onclick={() => void onresolve?.(row.path, "keep-remote")}
-              >
-                Keep cloud
-              </button>
-              <button
-                type="button"
-                class="core-btn secondary"
-                data-testid="core-popover-open-editor"
-                disabled={row.actionsDisabled}
-                onclick={() => void onopeneditor?.(row.path)}
-              >
-                Open in editor
-              </button>
-            </div>
-          </li>
-        {/each}
-      </ul>
-    </section>
   {/if}
 
   {#if model.notices.length > 0}
@@ -781,7 +673,7 @@
             disabled={coreRestoring}
             aria-busy={coreRestoring}
             onclick={() => void handleRestore()}
-          >
+          ><RailIcon name="refresh" />
             {coreRestoring ? "Restoring…" : "Restore"}
           </button>
         {:else if !useFixtures && canInspectCore && !updateStore.isInstallBusy}
@@ -792,7 +684,7 @@
             disabled={updateStore.checking}
             aria-busy={updateStore.checking}
             onclick={() => void handleCheckUpdates()}
-          >
+          ><RailIcon name="refresh" />
             {updateStore.checking ? "Checking…" : "Check"}
           </button>
         {/if}
@@ -811,7 +703,7 @@
             appStatusLabel === "INSTALLING" ||
             appStatusLabel.startsWith("DOWNLOADING")}
           class:drifted={appStatusLabel === "UPDATE AVAILABLE" ||
-            appStatusLabel === "RESTART TO UPDATE" ||
+            appStatusLabel === "UPDATE READY" ||
             appStatusLabel === "CHECK FAILED" ||
             appStatusLabel === "UPDATE FAILED"}
           data-testid={appStatusLabel === "UP TO DATE"
@@ -828,7 +720,7 @@
               data-testid="core-popover-download-install"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleDownloadInstall()}
-            >
+            ><RailIcon name="download" />
               Download &amp; install
             </button>
           {:else if appActions.showRestart}
@@ -838,7 +730,7 @@
               data-testid="core-popover-restart-update"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleRestartToUpdate()}
-            >
+            ><RailIcon name="refresh" />
               Restart to update
             </button>
           {/if}
@@ -850,7 +742,7 @@
               disabled={updateStore.checking}
               aria-busy={updateStore.checking}
               onclick={() => void handleCheckUpdates()}
-            >
+            ><RailIcon name="refresh" />
               {updateStore.checking ? "Checking…" : "Check for updates"}
             </button>
           {/if}
@@ -872,7 +764,7 @@
         onclose?.();
       }}
     >
-      <span class="core-row-label">Library</span>
+      <span class="core-row-label">Marketplace</span>
       <span class="core-row-chevron" aria-hidden="true">›</span>
     </button>
   </div>
@@ -917,17 +809,27 @@
           {/each}
         {/if}
       </ul>
-      <button
-        type="button"
-        class="core-btn secondary core-marketplace"
-        data-testid="core-popover-open-marketplace"
-        onclick={() => {
-          onopenMarketplace?.();
-          onclose?.();
-        }}
-      >
-        Open marketplace
-      </button>
+      <div class="core-pack-actions">
+        <button
+          type="button"
+          class="core-btn secondary"
+          data-testid="core-popover-browse-packs"
+          onclick={() => (browsePacksOpen = true)}
+        ><RailIcon name="search" />
+          Browse packs
+        </button>
+        <button
+          type="button"
+          class="core-btn secondary core-marketplace"
+          data-testid="core-popover-open-marketplace"
+          onclick={() => {
+            onopenMarketplace?.();
+            onclose?.();
+          }}
+        ><RailIcon name="external" />
+          Open marketplace
+        </button>
+      </div>
     {/if}
   </section>
 
@@ -943,7 +845,21 @@
   {/if}
 </div>
 
+{#if browsePacksOpen}
+  <BrowsePacksDoor
+    installed={modelPacks}
+    marketplace={adapter.marketplace}
+    onopenLibrary={onopenLibrary}
+    onclose={() => (browsePacksOpen = false)}
+  />
+{/if}
+
 <style>
+  /* Surface matches the titlebar Launch menu (.v4-launch-menu in
+     V4TitleBar.svelte): near-opaque --v4-popover-strong, hairline border,
+     popover radius and shadow. No backdrop-filter; a nested blur is
+     neutered outside its parent's backdrop root anyway. Only the vertical
+     axis scrolls so long pack lists never add a horizontal scrollbar. */
   .core-popover {
     position: absolute;
     top: calc(100% + 6px);
@@ -952,19 +868,23 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    width: min(300px, calc(100vw - 24px));
+    box-sizing: border-box;
+    width: 340px;
+    max-width: calc(100vw - 24px);
     max-height: min(70vh, 520px);
-    overflow: auto;
-    padding: 6px;
-    border: 1px solid var(--panel-border);
-    border-radius: 12px;
-    /* Frosted glass panel — Daybook .panel. */
-    background: var(--panel-bg);
-    box-shadow: var(--panel-shadow);
-    color: var(--t1);
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid var(--overlay-border);
+    border-radius: var(--v4-radius-popover, 10px);
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
+    color: var(--v4-text-1, var(--t1));
     font: 400 13px/1.45 var(--font-ui);
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  }
+
+  .core-popover > * {
+    min-width: 0;
   }
 
   /* PL-01 status header. Tones reuse the existing --ok / --warn / --ice-ink
@@ -976,7 +896,7 @@
     padding: 10px 12px 8px;
     margin-bottom: 6px;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-status-state {
@@ -1004,7 +924,7 @@
 
   .core-status-last,
   .core-status-caption {
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     color: var(--t2);
   }
@@ -1037,8 +957,8 @@
   }
 
   .core-notice[data-tone="warn"] {
-    border-color: var(--panel-border);
-    background: var(--raised);
+    border-color: var(--v4-hairline, var(--panel-border));
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-notice-text {
@@ -1049,13 +969,13 @@
   }
 
   .core-notice-title {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--t1);
   }
 
   .core-notice-body {
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     color: var(--t2);
   }
@@ -1074,7 +994,7 @@
     padding: 10px 12px;
     margin-bottom: 6px;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-recovery-sentence {
@@ -1097,7 +1017,7 @@
     margin-bottom: 6px;
     border: none;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-paused-title {
@@ -1107,7 +1027,7 @@
   }
 
   .core-paused-body {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--t2);
     line-height: 1.35;
   }
@@ -1121,90 +1041,63 @@
     flex: 0 0 auto;
     padding: 0;
     border: none;
-    color: var(--ice-ink);
+    color: var(--t2);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 400;
     letter-spacing: 0;
     line-height: 1.2;
   }
 
-  .core-conflicts {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin: 2px 0 6px;
-    padding: 8px 10px;
-    border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--warn) 8%, transparent);
-  }
 
   .core-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 13px;
     font-weight: 500;
     color: var(--t1);
   }
 
-  .core-conflict-list {
-    list-style: none;
-    margin: 0;
+  .core-link {
+    margin-left: auto;
+    appearance: none;
+    border: 0;
+    background: transparent;
     padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--v4-text-2, var(--t2));
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
   }
 
-  .core-conflict-row {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .core-conflict-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-
-  .core-conflict-name {
-    overflow: hidden;
-    font-size: 11px;
-    line-height: 1.35;
-    color: var(--warn-ink);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .core-conflict-path {
-    overflow: hidden;
-    color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .core-conflict-error {
-    color: var(--warn-ink);
-    font-size: 10px;
-  }
-
-  .core-conflict-actions {
+  .core-pack-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
+    margin-top: 8px;
   }
+
+
+
+
+
+
+
 
   .core-rows {
     display: grid;
     gap: 2px;
   }
 
+  /* Rows wrap at narrow widths so the actions move to their own line
+     instead of clipping at the panel edge (QA-037). */
   .core-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
@@ -1225,14 +1118,14 @@
   }
 
   .core-row-button:hover {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
   }
 
   .core-row-label {
     min-width: 0;
     overflow: hidden;
     color: var(--t1);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1240,16 +1133,20 @@
 
   .core-row-actions {
     display: inline-flex;
+    flex-wrap: wrap;
     flex-shrink: 0;
     align-items: center;
+    justify-content: flex-end;
     gap: 4px;
+    max-width: 100%;
+    margin-left: auto;
   }
 
   .core-idle-hint {
     margin: -4px 0 4px;
     padding: 0 2px;
     color: var(--t2);
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
   }
 
@@ -1264,7 +1161,7 @@
     background: transparent;
     color: var(--t2);
     font: inherit;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
@@ -1290,7 +1187,7 @@
 
   .core-row-chevron {
     color: var(--t3);
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
     transition: transform 120ms ease;
   }
@@ -1299,20 +1196,23 @@
     transform: rotate(90deg);
   }
 
+  /* Model labels are caps ("NO DRIFT"); the chrome shows sentence case. */
   .core-pill {
-    display: inline-flex;
-    align-items: center;
-    min-height: 18px;
+    display: inline-block;
+    line-height: 18px;
     padding: 0;
     border: 0;
     background: transparent;
-    color: var(--ok-ink);
-    font-family: var(--font-mono);
-    font-size: 10px;
+    color: var(--t2);
+    font-size: 13px;
     font-weight: 400;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    text-transform: lowercase;
     white-space: nowrap;
+  }
+
+  .core-pill::first-letter,
+  .core-packs-meta::first-letter {
+    text-transform: uppercase;
   }
 
   button.core-pill {
@@ -1329,7 +1229,7 @@
   }
 
   .core-pill.ok {
-    color: var(--ok-ink);
+    color: var(--t2);
   }
 
   button.core-pill:hover:not(:disabled) {
@@ -1348,7 +1248,7 @@
     background: var(--btn-bg);
     color: var(--t1);
     font: inherit;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
   }
@@ -1363,8 +1263,8 @@
 
   .core-btn.primary {
     border: none;
-    background: var(--ice-ink);
-    color: var(--badge-fg);
+    background: var(--t1);
+    color: var(--panel-bg, var(--v4-popover));
   }
 
   .core-btn.primary:hover:not(:disabled) {
@@ -1379,7 +1279,7 @@
   }
 
   .core-btn.secondary:hover:not(:disabled) {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
     color: var(--t1);
     border-color: var(--line2);
   }
@@ -1403,7 +1303,7 @@
     gap: 0;
     border: none;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
     padding: 4px 0;
     margin-top: 4px;
     transition: background 0.12s;
@@ -1433,7 +1333,7 @@
   }
 
   .core-packs-label {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     color: var(--t1);
   }
@@ -1443,10 +1343,9 @@
     min-width: 0;
     margin-left: auto;
     color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 13px;
     text-align: right;
-    text-transform: uppercase;
+    text-transform: lowercase;
   }
 
   .core-pack-list {
@@ -1468,11 +1367,11 @@
     padding: 4px 8px 4px 24px;
     border-radius: 6px;
     color: var(--t1);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .core-pack-row:hover {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
   }
 
   .core-pack-name {
@@ -1487,7 +1386,7 @@
     margin-left: auto;
     color: var(--t3);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
 
@@ -1499,13 +1398,6 @@
   .core-load-error {
     margin: 0;
     color: var(--warn-ink);
-    font-size: 11px;
-  }
-
-  @media (prefers-reduced-transparency: reduce) {
-    .core-popover {
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-    }
+    font-size: 13px;
   }
 </style>

@@ -22,6 +22,11 @@
 -->
 <plist version="1.0">
 <dict>
+    <!-- HQ CLI uses this signed executable as the stable ProgramArguments[0]
+         for its LaunchAgents. The argument protocol is handled before Tauri
+         initializes; bump only when that protocol changes incompatibly. -->
+    <key>HQLaunchdTaskVersion</key>
+    <integer>1</integer>
     <!--
       LSUIElement stays true so the process always LAUNCHES as an accessory.
       It is no longer the final word on Dock presence: `commands/dock.rs` reads

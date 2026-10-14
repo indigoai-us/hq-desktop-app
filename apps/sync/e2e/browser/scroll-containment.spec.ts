@@ -17,8 +17,13 @@ test('desktop document contains overscroll while a conversation scrolls', async 
   }));
   expect(boundary).toEqual({root: 'none', rootOverflow: 'hidden', bodyOverflow: 'hidden'});
 
+  // Open #welcome, a fixture channel with a fixed history, rather than the
+  // thread the shell happens to land on: a fresh setup bot's DM is short (a
+  // local bot asks for no access grant), so it need not overflow.
+  await page.locator('[data-conversation-id="ch:setup"]').first().click();
   const thread = page.getByTestId('conversation-thread');
   await expect(thread).toBeVisible();
+  await expect(page.locator('main h2').first()).toHaveText('welcome');
   await page.setViewportSize({ width: 960, height: 600 });
   // Only a thread with more content than room exercises the boundaries.
   await expect

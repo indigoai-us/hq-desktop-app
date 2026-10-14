@@ -26,6 +26,7 @@ import {
   vaultPutIntegrityFields,
   withHttpStatus,
   withoutSecret,
+  localIanaZone,
   type AdapterFailure,
   type AdapterPromise,
   type AdapterResult,
@@ -35,6 +36,7 @@ import {
   type PlatformAdapter,
 } from "../adapter.js";
 import { WEB_CAPABILITIES, type Capability } from "../capabilities.js";
+import { parseBadgesPayload } from "../badges.js";
 import { createUnsupportedCallsApi } from "../calls/api.js";
 import {
   parseShelfViewer,
@@ -45,10 +47,12 @@ import {
 } from "../library-shelf.js";
 import {
   bearerTokenFromHeaders,
-  createFeatureFlagGate,
+  createScopedFeatureFlagGates,
+  DESKTOP_AGENT_CREATION_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
-  type FeatureFlagGate,
+  FIRST_RUN_FOUND_APPS_FLAG,
+  type ScopedFeatureFlagGates,
 } from "../flags.js";
 import {
   retryThrottled,
@@ -137,6 +141,8 @@ export const WEB_PATHS = {
     `/v1/avatar-packs/${encodeURIComponent(packId)}`,
   agentAvatar: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
+  /** GET a person's accomplishment badges; `uid` is `me` or a `prs_*` uid. */
+  badges: (uid: string) => `/v1/badges/${encodeURIComponent(uid)}`,
   channelMessages: (id: string) =>
     `/v1/notify/channels/${encodeURIComponent(id)}/messages`,
   cardAction: (channelId: string, cardId: string) =>
@@ -174,6 +180,8 @@ export const WEB_PATHS = {
     `/v1/google/accounts/${encodeURIComponent(id)}`,
   calendarCalendars: "/v1/calendar/calendars",
   botList: "/v1/bot/list",
+  /** Recorded meeting history (`?companyId=` scopes to one company). */
+  meetingsList: "/v1/meetings",
   botInvite: "/v1/bot/invite",
   botJoinNow: "/v1/bot/join-now",
   botCancel: (id: string) => `/v1/bot/${encodeURIComponent(id)}/cancel`,
@@ -227,6 +235,8 @@ export const WEB_PATHS = {
     `/companies/${encodeURIComponent(slug)}/activity`,
   companyHomeChannel: (companyUid: string) =>
     `/v1/companies/${encodeURIComponent(companyUid)}/home-channel`,
+  /** POST, body `{ companyUid }`: hq-pro's owner-gated Stripe portal mint. */
+  companyBillingPortal: () => `/v1/billing/portal`,
   firstWeekReturnNudge: (companyUid: string) =>
     `/membership/first-week-return-nudge?companyUid=${encodeURIComponent(companyUid)}`,
 
@@ -250,6 +260,7 @@ export const WEB_PATHS = {
   agentStatus: AGENT_PATHS.status,
   agentJobs: AGENT_PATHS.jobs,
   agentPauseJob: AGENT_PATHS.pauseJob,
+  agentRuntimeActions: AGENT_PATHS.runtimeActions,
   agentStop: AGENT_PATHS.stop,
   agentStart: AGENT_PATHS.start,
   agentRetryProvisioning: AGENT_PATHS.retryProvisioning,
@@ -259,6 +270,7 @@ export const WEB_PATHS = {
   agentMobileRoster: AGENT_PATHS.mobileRoster,
   agentOwners: AGENT_PATHS.owners,
   agentCompanyTelemetry: AGENT_PATHS.companyTelemetry,
+  myTelemetry: AGENT_PATHS.myTelemetry,
 } as const;
 
 export interface WebPlatformAdapterConfig {
@@ -485,7 +497,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly headers: Record<string, string>;
   private readonly onUnauthorized: () => void;
-  private readonly flags: FeatureFlagGate;
+  private readonly flagsFor: ScopedFeatureFlagGates;
   private readonly requestPolicy: RequestPolicyOptions;
   private readonly retryLambdaInvoke504: boolean;
   private activeCompany: string | null = null;
@@ -501,7 +513,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
     this.requestPolicy = config.requestPolicy ?? {};
     this.retryLambdaInvoke504 = config.retryLambdaInvoke504 ?? true;
-    this.flags = createFeatureFlagGate({
+    this.flagsFor = createScopedFeatureFlagGates({
       endpoint: this.baseUrl,
       getToken: () => bearerTokenFromHeaders(this.headers),
       fetch: this.fetchFn,
@@ -520,8 +532,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
     if (
       flag === "meetings" ||
       flag === "agents.claude-provider" ||
+      flag === DESKTOP_AGENT_CREATION_FLAG ||
       flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
-      flag === PERSONAL_TRANSCRIPTS_FLAG
+      flag === PERSONAL_TRANSCRIPTS_FLAG ||
+      flag === FIRST_RUN_FOUND_APPS_FLAG
     ) {
       return Promise.resolve(ok(false));
     }
@@ -671,16 +685,18 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.get(WEB_PATHS.whoami),
     isAdmin: () => this.get(WEB_PATHS.isAdmin),
-    hasFeature: (flag) =>
+    hasFeature: (flag, scope) =>
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? this.legacyHasFeature(flag)
-        : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
+        : this.flagsFor(scope?.companyUid).resolve(flag, () =>
+            this.legacyHasFeature(flag),
+          ),
     // The browser build has no company flag source: every company flag is off.
     hasCompanyFeature: () => Promise.resolve(false),
     subscribeFeature: (flag, onChange) =>
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? () => {}
-        : this.flags.subscribe(
+        : this.flagsFor(null).subscribe(
             flag,
             () => this.legacyHasFeature(flag),
             onChange,
@@ -698,6 +714,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getAvatarPack: (packId) => this.get(WEB_PATHS.avatarPack(packId)),
     selectAgentAvatar: (agentUid, input) =>
       this.post(WEB_PATHS.agentAvatar(agentUid), input),
+    getBadges: async (uid) => {
+      const result = await this.get<unknown>(WEB_PATHS.badges(uid));
+      return result.ok ? ok(parseBadgesPayload(result.value)) : result;
+    },
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -975,6 +995,27 @@ export class WebPlatformAdapter implements PlatformAdapter {
       if (!result.ok) return result;
       return ok(unwrapNamedArray(result.value, ["bots"]));
     },
+    listRecorded: (companyId) =>
+      this.get<Json>(
+        companyId
+          ? `${WEB_PATHS.meetingsList}?companyId=${encodeURIComponent(companyId)}&limit=50`
+          : `${WEB_PATHS.meetingsList}?limit=50`,
+      ),
+    getRecorded: (meetingId, companyId) =>
+      this.get<Json>(
+        `${WEB_PATHS.meetingsList}/${encodeURIComponent(meetingId)}${
+          companyId ? `?companyId=${encodeURIComponent(companyId)}` : ""
+        }`,
+      ),
+    readRecordedBody: async (url) => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return failure("network", `meeting notes HTTP ${res.status}`);
+        return ok(await res.text());
+      } catch (err) {
+        return failure("network", err instanceof Error ? err.message : String(err));
+      }
+    },
     inviteBot: (payload) =>
       this.post(
         withCompanyQuery(WEB_PATHS.botInvite, payload),
@@ -1041,6 +1082,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
+    fetch: async (path, init) => {
+      const res = await this.fetchFn(`${this.baseUrl}${path}`, {
+        method: init.method,
+        credentials: "same-origin",
+        headers: { ...(init.headers ?? {}), ...this.headers },
+        body: init.body,
+      });
+      if (res.status === 401) this.onUnauthorized();
+      return res;
+    },
     getProvisionOptions: (companyUid) =>
       this.get<AgentProvisionOptionsView>(AGENT_PATHS.provisionOptions(companyUid)),
     getStatus: (agentUid, brain) => this.get(WEB_PATHS.agentStatus(agentUid, brain)),
@@ -1061,6 +1112,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
     listJobs: (agentUid) => this.get(WEB_PATHS.agentJobs(agentUid)),
     pauseJob: (agentUid, jobId) =>
       this.post(WEB_PATHS.agentPauseJob(agentUid, jobId)),
+    getProfile: (agentUid) => this.get(WEB_PATHS.agentProfile(agentUid)),
+    runtimeAction: (agentUid, input) =>
+      this.post(WEB_PATHS.agentRuntimeActions(agentUid), input),
     updateProfile: (agentUid, patch) =>
       this.request("PATCH", WEB_PATHS.agentProfile(agentUid), patch),
     stop: (agentUid) => this.post(WEB_PATHS.agentStop(agentUid)),
@@ -1074,8 +1128,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
       ),
     listOwners: (companyUid, agentUid) =>
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
-    getCompanyTelemetry: (companyUid, from, to) =>
-      this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
+    getCompanyTelemetry: (companyUid, from, to, tz) =>
+      this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to, tz ?? localIanaZone())),
+    getMyTelemetry: (from, to, tz) => this.get(WEB_PATHS.myTelemetry(from, to, tz)),
   };
 
   readonly integrations: PlatformAdapter["integrations"] = {
@@ -1083,6 +1138,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.post(INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    getConnectionAccess: ({ companyUid, connectionId }) =>
+      this.get(INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+    revokeConnectionAccess: (input) =>
+      this.post(INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
     // No redirectUri: the server's default lands on the console's callback.
@@ -1093,6 +1152,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
       withoutSecret(await this.postWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
     blueprint: (input) =>
       this.postWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
+    catalogLookup: (companyUid, domains) =>
+      this.postWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+    discoverDocs: (input) =>
+      this.postWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+    uninstall: (input) =>
+      this.postWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
   };
 
   readonly company: PlatformAdapter["company"] = {
@@ -1114,6 +1179,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.get(WEB_PATHS.companyActivity(slug)),
     ensureHomeChannel: (companyUid) =>
       this.post(WEB_PATHS.companyHomeChannel(companyUid)),
+    createBillingPortalSession: (companyUid) =>
+      this.post(WEB_PATHS.companyBillingPortal(), { companyUid }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
@@ -1190,10 +1257,23 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly files: PlatformAdapter["files"] = {
     listDir: async () => NO_API,
     getFileContent: async () => NO_API,
-    listVaultPrefix: (companyUid, prefix) =>
+    listVaultPrefix: (companyUid, prefix, cursor) =>
       this.get(
-        `${WEB_PATHS.filesList}?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}`,
+        `${WEB_PATHS.filesList}?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       ),
+    getAccessTree: (companyUid, prefix, page) => {
+      const query = new URLSearchParams({ prefix });
+      if (page) query.set("limit", String(page.limit));
+      if (page?.cursor) query.set("cursor", page.cursor);
+      return this.get(`/files/${encodeURIComponent(companyUid)}/acl/tree?${query.toString()}`);
+    },
+    listAccessGroups: (companyUid) => this.get(`/secrets/${encodeURIComponent(companyUid)}/groups`),
+    listOutboundGroupGrants: (sourceCompanyUid, groupId) =>
+      this.get(`/group-grants/outbound?${new URLSearchParams({ sourceCompanyUid, groupId }).toString()}`),
+    listInboundGroupGrants: (companyUid) =>
+      this.get(`/group-grants/inbound?${new URLSearchParams({ companyUid }).toString()}`),
+    createGroupGrant: (input) => this.post("/group-grants", input),
+    revokeGroupGrant: (input) => this.post("/group-grants/revoke", input),
     presignVaultGet: (companyUid, key) =>
       this.post(WEB_PATHS.filesPresign, {
         company: companyUid,
@@ -1247,6 +1327,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     launchCodexWorkspace: async () => DESKTOP_ONLY,
     launchCliInTerminal: async () => DESKTOP_ONLY,
     detectAiTools: async () => DESKTOP_ONLY,
+    detectWorkApps: async () => DESKTOP_ONLY,
     pickFolder: async () => DESKTOP_ONLY,
     pickFile: async () => DESKTOP_ONLY,
   };

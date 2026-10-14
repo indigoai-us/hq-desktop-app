@@ -1,0 +1,8 @@
+{
+  "local": {
+    "available": false,
+    "reason": "hq-storage: prune would free nothing: 6 branches, tags or stash still reach the old history (refs/stash,refs/tags/v-new,refs/heads/side,refs/heads/old-branch,refs/tags/v-old-annot). Delete them first, or pass --force to rewrite anyway"
+  },
+  "cloud": [],
+  "dry_run": false
+}

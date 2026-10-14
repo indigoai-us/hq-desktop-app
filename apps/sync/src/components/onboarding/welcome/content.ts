@@ -33,5 +33,5 @@ export const RAIL: readonly { name: string; meaning: string; icon: string }[] = 
   { name: 'secrets', meaning: 'Injected at run time', icon: ICONS.key },
   { name: 'permissions', meaning: 'Who sees which folder', icon: ICONS['shield-check'] },
   { name: 'deploys', meaning: 'Anything becomes a link', icon: ICONS.link },
-  { name: 'messages', meaning: 'People and agents, one thread', icon: ICONS['chats-circle'] },
+  { name: 'messages', meaning: 'People and bots, one thread', icon: ICONS['chats-circle'] },
 ];

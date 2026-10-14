@@ -41,10 +41,58 @@ export const HQ_BLOCK_FENCE_LANG = "hq-block";
 
 export type BlockAlign = "left" | "center" | "right";
 
+/**
+ * Closed icon enum for title labels. Same rule as the tone enums: the agent
+ * picks a NAME, the renderer maps it to its own inline monochrome SVG. An
+ * agent never supplies markup, a path, a URL or a style. Every block that
+ * carries a title or label (badge, callout, decision question, progress, stat
+ * item) always renders an icon: a missing or unknown name falls back to the
+ * per-kind default ({@link DEFAULT_BLOCK_ICON}). keyValue keys take the same
+ * enum but have no default, so a key shows an icon only when asked for.
+ */
+export const RICH_ICON_NAMES = [
+  "user",
+  "folder",
+  "file",
+  "check",
+  "clock",
+  "flag",
+  "link",
+  "mail",
+  "alert",
+  "error",
+  "info",
+  "star",
+  "tag",
+  "send",
+  "calendar",
+  "chart",
+  "question",
+] as const;
+
+export type RichIcon = (typeof RICH_ICON_NAMES)[number];
+
+const RICH_ICON_SET: ReadonlySet<string> = new Set(RICH_ICON_NAMES);
+
+/** True when `value` is one of the closed {@link RICH_ICON_NAMES}. */
+export function isRichIcon(value: unknown): value is RichIcon {
+  return typeof value === "string" && RICH_ICON_SET.has(value);
+}
+
+/** The icon a labelled block shows when the agent names none (or an unknown one). */
+export const DEFAULT_BLOCK_ICON = {
+  badge: "tag",
+  progress: "chart",
+  stat: "chart",
+  decision: "question",
+} as const satisfies Record<string, RichIcon>;
+
 /** A single metric tile: label + value, with an optional delta/trend. */
 export interface StatItem {
   label: string;
   value: string;
+  /** Closed-enum icon before the label; absent → {@link DEFAULT_BLOCK_ICON}.stat. */
+  icon?: RichIcon;
   /** Optional change caption, e.g. "+12%" or "-3.4k". Rendered verbatim text. */
   delta?: string;
   /** Optional direction used only to pick an accent color, never markup. */
@@ -105,15 +153,19 @@ export interface BadgeBlock {
   label: string;
   /** Closed enum → CSS class only; never a raw color/style. */
   tone: BadgeTone;
+  /** Closed-enum icon before the label; absent → {@link DEFAULT_BLOCK_ICON}.badge. */
+  icon?: RichIcon;
 }
 
 /** One row of a key→value definition list; both sides are sanitized text. */
 export interface KeyValueRow {
   key: string;
   value: string;
+  /** Optional closed-enum icon before the key; no default (keys stay quiet). */
+  icon?: RichIcon;
 }
 
-/** An aligned two-column definition list (label → value). */
+/** A definition list (label → value), rendered as an inline, wrapping run of pairs. */
 export interface KeyValueBlock {
   kind: "keyValue";
   items: KeyValueRow[];
@@ -127,6 +179,8 @@ export interface ProgressBlock {
   value: number;
   /** Optional closed-enum tone → CSS class; omitted when absent. */
   tone?: BadgeTone;
+  /** Closed-enum icon before the label; absent → {@link DEFAULT_BLOCK_ICON}.progress. */
+  icon?: RichIcon;
 }
 
 /**
@@ -143,6 +197,8 @@ export interface CalloutBlock {
   tone: CalloutTone;
   title?: string;
   body: string;
+  /** Closed-enum icon; absent → the tone's icon ({@link calloutDefaultIcon}). */
+  icon?: RichIcon;
 }
 
 /**
@@ -175,6 +231,8 @@ export interface DecisionBlock {
   allowOther: boolean;
   /** Opaque id echoed back for correlation; never rendered. */
   questionId?: string;
+  /** Closed-enum icon before the question; absent → {@link DEFAULT_BLOCK_ICON}.decision. */
+  icon?: RichIcon;
 }
 
 /**
@@ -238,10 +296,45 @@ export interface ConnectItem {
    * The connection this card is for. Set by the app alone, on the cards it
    * chooses itself from the company's list (`appChosenItems`), so such a card
    * is tied to that one connection and not to whichever one shares its
-   * domain. Never read from a bot's block: the parser takes `app`, `domain`
-   * and `why` and nothing else.
+   * domain. Never read from a bot's block: a bot's connection id travels in
+   * {@link ConnectItem.state} and is checked against the domain before use.
    */
   connectionId?: string;
+  /**
+   * The app's state as the bot looked it up when it wrote the message (a
+   * runtime with `show_connection_cards` state). Domain items only. Absent on
+   * old messages and old runtimes: the app then works the state out itself.
+   */
+  state?: ConnectItemState;
+  /** The bot's own Slack as the bot looked it up. Slack items only. */
+  slack?: ConnectItemSlack;
+  /** When the bot looked the state up: an ISO time, as sent. */
+  asOf?: string;
+}
+
+/** How a connection is shared, as the server names it. Any other value is dropped. */
+export type ConnectAccessMode = "everyone" | "legacy-open" | "private" | "shared";
+
+/** An integration item's state, as the bot sent it. Only checked fields are kept. */
+export interface ConnectItemState {
+  /** The company has this app connected. */
+  connected: boolean;
+  /** The bot may use the connection now. Never true when `connected` is false. */
+  usableByBot: boolean;
+  connectionId?: string;
+  /** The person who connected it (`prs_...`). */
+  createdByPersonUid?: string;
+  accessMode?: ConnectAccessMode;
+}
+
+/** Where the bot's own Slack stands, from the bot's view. */
+export type ConnectSlackInstalled = "installed" | "pending" | "absent";
+
+/** The Slack item's state, as the bot sent it. */
+export interface ConnectItemSlack {
+  installed: ConnectSlackInstalled;
+  /** The Slack workspace's name. Kept, not drawn: every word on a card is the app's. */
+  workspaceName?: string;
 }
 
 /**
@@ -431,6 +524,36 @@ function parseCalloutTone(value: unknown): CalloutTone {
     : "info";
 }
 
+/** The icon a callout of `tone` shows when the agent names none. */
+export function calloutDefaultIcon(tone: CalloutTone): RichIcon {
+  switch (tone) {
+    case "success":
+      return "check";
+    case "warning":
+      return "alert";
+    case "danger":
+      return "error";
+    default:
+      return "info";
+  }
+}
+
+/**
+ * Read an agent's `icon` field with the same strictness as `tone`: a known
+ * name passes, an unknown non-empty value collapses to `fallback`, and a
+ * missing value yields nothing (the renderer then applies the default).
+ */
+function parseIcon(value: unknown, fallback: RichIcon | null): RichIcon | undefined {
+  if (value == null) return undefined;
+  if (isRichIcon(value)) return value;
+  return fallback ?? undefined;
+}
+
+function iconField(value: unknown, fallback: RichIcon | null): { icon?: RichIcon } {
+  const icon = parseIcon(value, fallback);
+  return icon ? { icon } : {};
+}
+
 function parseStatBlock(raw: Record<string, unknown>): StatBlock | null {
   const rawItems = Array.isArray(raw.items) ? raw.items : [];
   const items: StatItem[] = [];
@@ -449,6 +572,7 @@ function parseStatBlock(raw: Record<string, unknown>): StatBlock | null {
       value,
       ...(deltaText ? { delta: deltaText } : {}),
       ...(trend ? { trend } : {}),
+      ...iconField(entry.icon, DEFAULT_BLOCK_ICON.stat),
     });
   }
   return items.length > 0 ? { kind: "stat", items } : null;
@@ -524,7 +648,12 @@ function parseMarkdownBlock(raw: Record<string, unknown>): MarkdownBlock | null 
 function parseBadgeBlock(raw: Record<string, unknown>): BadgeBlock | null {
   const label = toSafeText(raw.label, MAX_LABEL_LEN);
   if (!label) return null;
-  return { kind: "badge", label, tone: parseBadgeTone(raw.tone) };
+  return {
+    kind: "badge",
+    label,
+    tone: parseBadgeTone(raw.tone),
+    ...iconField(raw.icon, DEFAULT_BLOCK_ICON.badge),
+  };
 }
 
 function parseKeyValueBlock(raw: Record<string, unknown>): KeyValueBlock | null {
@@ -535,7 +664,8 @@ function parseKeyValueBlock(raw: Record<string, unknown>): KeyValueBlock | null 
     const key = toSafeText(entry.key, MAX_LABEL_LEN);
     const value = toSafeText(entry.value, MAX_CELL_LEN);
     if (!key && !value) continue;
-    items.push({ key, value });
+    // Keys have no default icon: an unknown name is dropped, not replaced.
+    items.push({ key, value, ...iconField(entry.icon, null) });
   }
   return items.length > 0 ? { kind: "keyValue", items } : null;
 }
@@ -553,6 +683,7 @@ function parseProgressBlock(raw: Record<string, unknown>): ProgressBlock | null 
     ...(label ? { label } : {}),
     value: clamped,
     ...(tone ? { tone } : {}),
+    ...iconField(raw.icon, DEFAULT_BLOCK_ICON.progress),
   };
 }
 
@@ -565,11 +696,13 @@ function parseCalloutBlock(raw: Record<string, unknown>): CalloutBlock | null {
   const body = toSafeText(raw.body ?? raw.text, MAX_TEXT_LEN);
   if (!body) return null;
   const title = toSafeText(raw.title, MAX_LABEL_LEN);
+  const tone = parseCalloutTone(raw.tone);
   return {
     kind: "callout",
-    tone: parseCalloutTone(raw.tone),
+    tone,
     ...(title ? { title } : {}),
     body,
+    ...iconField(raw.icon, calloutDefaultIcon(tone)),
   };
 }
 
@@ -611,6 +744,7 @@ function parseDecisionBlock(raw: Record<string, unknown>): DecisionBlock | null 
     // Free-text "Other" is offered unless explicitly disabled.
     allowOther: raw.allowOther !== false,
     ...(questionId ? { questionId } : {}),
+    ...iconField(raw.icon, DEFAULT_BLOCK_ICON.decision),
   };
 }
 
@@ -694,6 +828,60 @@ export function isSlackConnectDomain(value: unknown): boolean {
   return domain !== null && (domain === SLACK_DOMAIN || domain.endsWith(`.${SLACK_DOMAIN}`));
 }
 
+const CONNECT_ACCESS_MODES: readonly ConnectAccessMode[] = ["everyone", "legacy-open", "private", "shared"];
+const CONNECT_SLACK_STATES: readonly ConnectSlackInstalled[] = ["installed", "pending", "absent"];
+/** A connection id as the server writes it. */
+const CONNECTION_ID = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,119}$/;
+/** A person uid as the server writes it. */
+const PERSON_UID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/;
+const MAX_AS_OF_LEN = 40;
+const MAX_WORKSPACE_NAME_LEN = 80;
+
+/**
+ * An integration item's `state`. Null unless `connected` and `usableByBot`
+ * are both booleans and agree (a bot cannot use what is not connected): the
+ * item is then read as one without state. The optional fields are kept only
+ * when they have the server's shape.
+ */
+function parseConnectItemState(raw: unknown): ConnectItemState | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.connected !== "boolean" || typeof raw.usableByBot !== "boolean") return null;
+  if (raw.usableByBot && !raw.connected) return null;
+  const out: ConnectItemState = { connected: raw.connected, usableByBot: raw.usableByBot };
+  const connectionId = typeof raw.connectionId === "string" ? raw.connectionId.trim() : "";
+  if (CONNECTION_ID.test(connectionId)) out.connectionId = connectionId;
+  const creator = typeof raw.createdByPersonUid === "string" ? raw.createdByPersonUid.trim() : "";
+  if (PERSON_UID.test(creator)) out.createdByPersonUid = creator;
+  const mode = CONNECT_ACCESS_MODES.find((known) => known === raw.accessMode);
+  if (mode) out.accessMode = mode;
+  return out;
+}
+
+/**
+ * The Slack item's `slack`. The plan writes it two ways: `installed` as a
+ * boolean, and as "installed" | "pending" | "absent" (the bot's own Slack
+ * read). Both are read; a boolean has no pending. `state` with the same
+ * three words is read too, as the server's agent route names it. Null for
+ * anything else.
+ */
+function parseConnectItemSlack(raw: unknown): ConnectItemSlack | null {
+  if (!isRecord(raw)) return null;
+  const value = raw.installed !== undefined ? raw.installed : raw.state;
+  const installed: ConnectSlackInstalled | null =
+    value === true ? "installed" : value === false ? "absent" : (CONNECT_SLACK_STATES.find((known) => known === value) ?? null);
+  if (!installed) return null;
+  const workspaceName = toSafeLabel(raw.workspaceName, MAX_WORKSPACE_NAME_LEN);
+  return workspaceName ? { installed, workspaceName } : { installed };
+}
+
+/** An `asOf` the app can read as a time, as sent; else null. */
+function parseAsOf(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const value = raw.trim();
+  if (!value || value.length > MAX_AS_OF_LEN || !Number.isFinite(Date.parse(value))) return null;
+  return value;
+}
+
 function parseConnectItem(entry: unknown): ConnectItem | null {
   if (typeof entry === "string") {
     // The old form: a bare target name.
@@ -701,20 +889,37 @@ function parseConnectItem(entry: unknown): ConnectItem | null {
     return target ? { app: target } : null;
   }
   if (!isRecord(entry)) return null;
-  // Only `app`, `domain` and `why` are read. A url, label, logo or style the
+  // Only `app`, `domain`, `why` and the bot's state fields (`state` on an
+  // app, `slack` on Slack, `asOf`) are read. A url, label, logo or style the
   // agent adds is ignored: the app builds every link and writes every word.
   const why = toSafeLabel(entry.why, MAX_CONNECT_WHY_LEN);
+  const asOf = parseAsOf(entry.asOf);
   const withWhy = (item: ConnectItem): ConnectItem => (why ? { ...item, why } : item);
+  const slackItem = (): ConnectItem => {
+    const slack = parseConnectItemSlack(entry.slack);
+    return withWhy(slack ? { app: "slack", slack, ...(asOf ? { asOf } : {}) } : { app: "slack" });
+  };
   if (entry.app !== undefined) {
     // Only Slack is a built-in a bot may name in the new form.
-    return entry.app === "slack" ? withWhy({ app: "slack" }) : null;
+    return entry.app === "slack" ? slackItem() : null;
   }
   const domain = normalizeConnectDomain(entry.domain);
   if (!domain) return null;
   // Slack by its domain is the bot's own Slack card, the same item as
   // `app: "slack"`. A block that names both forms then dedupes to one card.
-  if (isSlackConnectDomain(domain)) return withWhy({ app: "slack" });
-  return withWhy({ domain });
+  if (isSlackConnectDomain(domain)) return slackItem();
+  const state = parseConnectItemState(entry.state);
+  return withWhy(state ? { domain, state, ...(asOf ? { asOf } : {}) } : { domain });
+}
+
+/**
+ * Whether a `connect` item carries the bot's state for its card: Slack with
+ * `slack`, an app with `state`. The legacy tools card never does.
+ */
+export function connectItemCarriesState(item: ConnectItem): boolean {
+  if (item.app === "slack") return item.slack !== undefined;
+  if (item.app) return false;
+  return item.state !== undefined;
 }
 
 function parseConnectBlock(raw: Record<string, unknown>): ConnectBlock | null {
@@ -1445,8 +1650,10 @@ export function messageHasVisibleContent(message: {
   richContent?: unknown;
   prompt?: string | null;
   details?: string | null;
+  forwardNote?: string | null;
 }): boolean {
   if (message.prompt?.trim() || message.details?.trim()) return true;
+  if (typeof message.forwardNote === "string" && message.forwardNote.trim()) return true;
   const { text, rich } = richContentForMessage(message);
   if (text.trim()) return true;
   return rich?.blocks.some((block) => !HOST_PLACED_BLOCK_KINDS.has(block.kind)) ?? false;

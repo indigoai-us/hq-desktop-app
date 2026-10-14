@@ -20,6 +20,7 @@
 //!   GET    /v1/bot/list?calendarEventIds=...         — bots for given events
 //!   POST   /v1/bot/invite                            — schedule a new bot
 //!   POST   /v1/bot/{botId}/cancel                    — cancel scheduled bot
+//!   GET    /v1/meetings/{recallBotId}?view=live      — live transcript poll
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -34,9 +35,10 @@ use crate::util::client_info::build_client;
 #[allow(unused_imports)]
 pub use hq_desktop_core::meetings::{
     build_notification_body, build_notification_title, build_set_company_body,
-    cap_unattributed_notifications, dedupe_new, encode_query_value, first_active_bot, is_recorded,
-    is_unattributed, is_url_safe_id, select_recorded, select_unattributed,
-    set_company_error_message, AccountCalendars, AccountsResponse, BotsResponse, CalendarsResponse,
+    cap_unattributed_notifications, dedupe_new, encode_query_value, first_active_bot,
+    interpret_live_transcript_response, is_recorded, is_unattributed, is_url_safe_id,
+    live_transcript_url, select_recorded, select_unattributed, set_company_error_message,
+    AccountCalendars, LiveTranscriptFetch, AccountsResponse, BotsResponse, CalendarsResponse,
     CancelBotResult, CompanyMembership, EventTime, EventsResponse, GoogleAccount, GoogleCalendar,
     InviteBotBody, MeetingEvent, NotifyDetectedPayload, OntologyParticipant, ScheduledBot,
     SelectedCalendarRef, SetCompanyBody, SetCompanyErrorBody, SetCompanyResult,
@@ -184,12 +186,16 @@ async fn vault_base() -> Result<String, String> {
     resolve_vault_api_url().map(|u| u.trim_end_matches('/').to_string())
 }
 
-/// Per-request budget for meetings HTTP. Matches `client_info::build_client`'s
-/// 15s default and is applied on the RequestBuilder so a hung hq-pro call
-/// still errors even if that shared timeout is later removed. Without this,
-/// a wedged `/v1/bot/list` or `/v1/calendar/events` pins the UI `loading`
-/// flag and the Refresh button forever.
-const MEETINGS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Per-request budget for meetings HTTP, applied on the RequestBuilder (it
+/// overrides `client_info::build_client`'s 15s default) so a hung hq-pro call
+/// still errors and cannot pin the UI `loading` flag forever.
+///
+/// BLANK-3: 35s, past API Gateway's own 30s integration limit, so a slow but
+/// healthy read is answered (or refused by the server) before this client
+/// gives up. At 15s a cold past-meetings read failed on its first open and
+/// loaded on a later retry (tester round 28). While a read is pending the UI
+/// shows the shared loader, never a failure.
+const MEETINGS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 
 fn with_timeout(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     req.timeout(MEETINGS_REQUEST_TIMEOUT)
@@ -330,6 +336,47 @@ pub async fn meetings_list_scheduled_bots(
     Ok(parsed.bots)
 }
 
+/// `GET /v1/meetings/{recallBotId}?view=live&companyId=&sinceRevision=` —
+/// one live-transcript poll. Sends `If-None-Match` when the renderer has an
+/// ETag, so an unchanged snapshot answers 304. 404s come back as typed
+/// `disabled` / `not-found` results rather than errors; anything else is an
+/// error string that the renderer logs while keeping its last good state.
+#[tauri::command]
+pub async fn meetings_fetch_live_transcript(
+    recall_bot_id: String,
+    company_id: String,
+    since_revision: Option<u64>,
+    etag: Option<String>,
+) -> Result<LiveTranscriptFetch, String> {
+    let base = vault_base().await?;
+    let url = live_transcript_url(
+        &base,
+        recall_bot_id.trim(),
+        company_id.trim(),
+        since_revision,
+    )?;
+    let auth = auth_header().await?;
+    let mut req = build_client().get(url).header("authorization", &auth);
+    if let Some(tag) = etag.as_deref().filter(|t| !t.is_empty()) {
+        req = req.header("if-none-match", tag);
+    }
+    let res = with_timeout(req)
+        .send()
+        .await
+        .map_err(|e| format!("live-transcript fetch: {e}"))?;
+    let status = res.status().as_u16();
+    let etag = res
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("live-transcript read: {e}"))?;
+    interpret_live_transcript_response(status, etag, &text)
+}
+
 #[tauri::command]
 pub async fn meetings_set_company(
     meeting_id: String,
@@ -376,6 +423,57 @@ pub async fn meetings_set_company(
         return Err(set_company_error_message(parsed));
     }
     serde_json::from_str(&text).map_err(|e| format!("meeting/company parse: {e} — body: {text}"))
+}
+
+/// Largest recorded-meeting document or signal body read into the renderer.
+const RECORDED_BODY_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// A presigned vault GET the renderer may ask the native side to read:
+/// https, on an HQ vault bucket in S3. Anything else is refused before any
+/// network call.
+fn recorded_body_url_allowed(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    host.starts_with("hq-vault-")
+        && host.ends_with(".amazonaws.com")
+        && host.contains(".s3.")
+}
+
+/// OWNER-019: read a recorded meeting's document or signal body from its
+/// presigned vault URL. The vault buckets send no CORS headers, so the
+/// webview's own `fetch` of these URLs is blocked and every meeting looked
+/// empty; the native client has no such restriction. No auth header is sent
+/// (the URL is already signed), and the URL is never logged.
+#[tauri::command]
+pub async fn meetings_read_recorded_body(url: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if !recorded_body_url_allowed(&url) {
+        return Err("meeting notes link is not an HQ vault link".to_string());
+    }
+    let res = with_timeout(build_client().get(&url))
+        .send()
+        .await
+        .map_err(|e| format!("meeting notes fetch: {}", e.without_url()))?;
+    let status = res.status();
+    if !status.is_success() {
+        crate::util::logfile::log("meetings", &format!("meeting notes body HTTP {status}"));
+        return Err(format!("meeting notes HTTP {}", status.as_u16()));
+    }
+    let bytes = res
+        .bytes()
+        .await
+        .map_err(|e| format!("meeting notes read: {}", e.without_url()))?;
+    if bytes.len() > RECORDED_BODY_MAX_BYTES {
+        return Err("meeting notes are too large to show".to_string());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// `POST /v1/bot/invite` — schedule a Recall.ai bot for a meeting. Pass
@@ -1118,6 +1216,29 @@ pub async fn meetings_clear_prompt_badge(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_body_reads_only_hq_vault_links() {
+        // OWNER-019: the shape hq-pro returns in `source.presigned_url`.
+        assert!(recorded_body_url_allowed(
+            "https://hq-vault-cmp-example.s3.us-east-1.amazonaws.com/sources/meetings/m.md?X-Amz-Expires=3600"
+        ));
+        assert!(recorded_body_url_allowed(
+            "https://hq-vault-prs-example.s3.amazonaws.com/signals/s.md"
+        ));
+        assert!(!recorded_body_url_allowed(
+            "http://hq-vault-cmp-example.s3.us-east-1.amazonaws.com/m.md"
+        ));
+        assert!(!recorded_body_url_allowed("https://example.com/m.md"));
+        assert!(!recorded_body_url_allowed(
+            "https://other-bucket.s3.us-east-1.amazonaws.com/m.md"
+        ));
+        assert!(!recorded_body_url_allowed(
+            "https://hq-vault-x.s3.amazonaws.com.evil.example/m.md"
+        ));
+        assert!(!recorded_body_url_allowed("file:///etc/passwd"));
+        assert!(!recorded_body_url_allowed("not a url"));
+    }
 
     #[test]
     fn scheduled_bot_event_id_query_encoding_escapes_reserved_chars() {

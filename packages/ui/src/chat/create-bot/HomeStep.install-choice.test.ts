@@ -19,6 +19,20 @@ import CreateBotFlow from "./CreateBotFlow.svelte";
 import type { RuntimeStatus } from "./runtime-status.js";
 import { NO_AI_TOOLS, type AiTools } from "../../settings/setup-launch.js";
 
+/** name → coding tool: the coding-tool screen is the only local step after the name. */
+async function walkToHome(root: HTMLElement, settleFn: () => Promise<void>): Promise<void> {
+  const name = root.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]');
+  if (!name) throw new Error("missing new-bot-name");
+  name.value = "Dr Love";
+  name.dispatchEvent(new Event("input", { bubbles: true }));
+  await settleFn();
+  const next = root.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]');
+  if (!next) throw new Error("missing new-bot-continue-name");
+  next.click();
+  await settleFn();
+  if (!root.querySelector('[data-testid="create-bot-sunrise-home"]')) throw new Error("not on home");
+}
+
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -70,7 +84,6 @@ async function openWizardHome(props: Record<string, unknown> = {}): Promise<{
       botWorkers: [],
       existingNames: [],
       botCompanies: [{ slug: "indigo", label: "Indigo" }],
-      previewPlacement: "top",
       oncreate: async () => undefined,
       onsignin: () => undefined,
       onrecheckruntimes,
@@ -80,9 +93,8 @@ async function openWizardHome(props: Record<string, unknown> = {}): Promise<{
     },
   });
   await settle();
-  click('[data-testid="create-bot-next"]');
-  await settle();
-  expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
+  await walkToHome(host, () => settle());
+  expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
   return { onopenassistant, onassistedinstall, onrecheckruntimes };
 }
 

@@ -22,7 +22,7 @@ right-click / Opt+Shift+O), not a second chat app.
 | Rust command module | `src-tauri/src/commands/desktop_alt.rs` |
 | Vite entry | `desktop-alt.html`, `src/desktop-alt/main.ts`, `vite.config.ts` `desktopAlt` input |
 | Shell + route state | `src/desktop-alt/DesktopApp.svelte`, `src/desktop-alt/route.ts`, `src/desktop-alt/v4/V4Sidebar.svelte`, `src/desktop-alt/v4/V4SecondarySidebar.svelte`, `src/desktop-alt/v4/V4TitleBar.svelte` |
-| Pages | `src/desktop-alt/pages/HomePage.svelte`, `MissionControlPage.svelte`, `CompanyPage.svelte`, `CompanyGoalsPage.svelte`, `CompanyProjectsPage.svelte`, `InboxPage.svelte`, `MeetingsPage.svelte`, `MarketplacePage.svelte`, `LibraryPage.svelte`, `SettingsPage.svelte`, `ProjectDetailView.svelte` |
+| Pages | `src/desktop-alt/pages/HomePage.svelte`, `MissionControlPage.svelte`, `CompanyGoalsPage.svelte`, `CompanyProjectsPage.svelte`, `InboxPage.svelte`, `MeetingsPage.svelte`, `MarketplacePage.svelte`, `LibraryPage.svelte`, `SettingsPage.svelte`, `ProjectDetailView.svelte` |
 | Company secondary nav | Overview · Goals · Projects · Skills · Workers · Knowledge (→ files mode) · Team · Activity · Deployments · Secrets · Settings |
 | Company panels | `src/desktop-alt/panels/CompanyBoardPanel.svelte`, `ActivityPanel.svelte`, `DeploymentsPanel.svelte`, `SecretsPanel.svelte`, `CompanyLibraryPanel.svelte` (Skills/Workers), `TeamPanel.svelte` |
 | Global command surface | `src/desktop-alt/components/CommandPalette.svelte`, opened by command-K and grouped into actions/navigation rows |

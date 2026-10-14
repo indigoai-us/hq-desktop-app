@@ -3,7 +3,7 @@ use super::cognito::{self, AuthState, CognitoRefreshFailureClass, CognitoTokens}
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub const AUTH_SESSION_CHANGED_EVENT: &str = "auth:session-changed";
 const MAX_AUTH_SESSION_REASON_CHARS: usize = 200;
@@ -613,7 +613,8 @@ pub async fn get_stored_token_presence() -> String {
     hq_desktop_core::unexpected_surface::stored_token_presence_label(presence).to_string()
 }
 
-/// Sign out: clear the locally stored Cognito tokens (file + in-memory cache)
+/// Sign out: revoke the refresh token at Cognito (single attempt, 5s bound),
+/// then always clear the locally stored Cognito tokens (file + in-memory cache)
 /// and reset the Sentry user scope. After this, `get_auth_state` / a relaunch
 /// both report unauthenticated — without it, a frontend-only sign-out leaves the
 /// token file on disk and the app re-authenticates silently on next launch.
@@ -628,11 +629,17 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
         hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
     );
     record_last_auth_transition("sign_out");
+    let cache_account_id = active_auth_session_snapshot().and_then(|session| session.account_id);
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
     crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     clear_sentry_user();
     // The next account must not inherit this one's plan-limit upload pause.
     crate::commands::uploads_paused::clear(&app);
+    // Nor this one's active company: a later connector import or scoped read
+    // must never land in the previous account's company.
+    if let Some(scope) = app.try_state::<crate::commands::desktop_alt::DesktopSessionScope>() {
+        scope.clear();
+    }
     publish_auth_session(
         &app,
         AuthSessionEnvelope {
@@ -642,6 +649,11 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
             reason: Some("Signed out on this device.".to_string()),
         },
     );
+    // Publish the new generation before deleting the old partition. A late
+    // index build now fails its write guard instead of recreating this folder.
+    if let Some(account_id) = cache_account_id {
+        crate::commands::vault_explorer::clear_account_cache(&app, &account_id);
+    }
     Ok(())
 }
 

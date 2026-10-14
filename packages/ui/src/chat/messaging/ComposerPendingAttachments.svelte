@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Pending composer attachments: square image thumbs + compact file chips
    * in one wrapping row. Owns the lazy object-URL lifecycle for image
@@ -126,7 +127,7 @@
         class="composer-attach-upgrade"
         data-testid="composer-attach-upgrade"
         onclick={() => onupgrade?.(upgradeUrl)}
-      >
+      ><RailIcon name="arrow-right" />
         Upgrade plan
       </button>
     {/if}

@@ -5,7 +5,7 @@
     issue: Issue;
     /** Layout variant. "inline" sits inside a banner / row at small weight.
      *  "compact" is icon-only with the label hidden until hover (for dense
-     *  surfaces like the SyncStats conflict row). */
+     *  surfaces). */
     variant?: "inline" | "compact";
     /** Optional override label. Default: "Copy prompt". */
     label?: string;
@@ -27,8 +27,8 @@
       copyError = null;
       setTimeout(() => (copied = false), 1500);
     } catch (e) {
-      copyError = e instanceof Error ? e.message : String(e);
-      console.error("CopyPromptButton clipboard write failed:", e);
+      copyError = 'Copy failed. Try again.';
+      console.warn('[copy-prompt] clipboard write failed', e);
       setTimeout(() => (copyError = null), 2500);
     } finally {
       copying = false;
@@ -170,7 +170,7 @@
   }
 
   /* Compact variant: icon-only by default, label appears via tooltip. Used
-     in dense rows (SyncStats conflict line). */
+     in dense rows. */
   .copy-prompt-btn.compact {
     padding: 0.1875rem 0.3125rem;
   }

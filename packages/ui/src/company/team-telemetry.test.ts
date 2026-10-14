@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   defaultTelemetryRange,
   displayNameFromMember,
@@ -60,11 +60,27 @@ describe("normalizeCompanyTeamTelemetry presence honesty", () => {
     expect(member?.displayName.toLowerCase()).not.toBe("online");
     expect(member?.events).toBe(42);
     expect(member?.sessions).toBe(3);
+    expect(member?.joined).toBeUndefined();
+  });
+
+  it("formats an explicit joined timestamp and ignores activity time", () => {
+    const view = normalizeCompanyTeamTelemetry({
+      members: [
+        {
+          personUid: "prs_ada",
+          displayName: "Ada",
+          joinedAt: "2025-01-15T00:00:00.000Z",
+          lastActivityAt: "2026-09-04T12:00:00.000Z",
+        },
+      ],
+    });
+    expect(view.members[0]?.joined).toBe("Jan 2025");
   });
 });
 
 describe("displayNameFromMember", () => {
-  it("prefers genuine identity fields, then the source UID, then an explicit unavailable state", () => {
+  // OWNER-R5: never the source UID; an unresolved member is "Unknown person" / "Unknown bot".
+  it("prefers genuine identity fields, then Unknown person or Unknown bot, never the source UID", () => {
     expect(
       displayNameFromMember({
         displayName: "Ada",
@@ -75,8 +91,9 @@ describe("displayNameFromMember", () => {
     expect(
       displayNameFromMember({ email: "a@x.com", personUid: "prs_1" }),
     ).toBe("a@x.com");
-    expect(displayNameFromMember({ personUid: "prs_1" })).toBe("prs_1");
-    expect(displayNameFromMember({})).toBe("Identity unavailable");
+    expect(displayNameFromMember({ personUid: "prs_1" })).toBe("Unknown person");
+    expect(displayNameFromMember({ personUid: "agt_1" })).toBe("Unknown bot");
+    expect(displayNameFromMember({})).toBe("Unknown person");
     expect(
       displayNameFromMember(
         { personUid: "prs_1" },
@@ -218,7 +235,7 @@ describe("normalizeCompanyTeamTelemetry", () => {
     ]);
   });
 
-  it("uses identities returned with telemetry before falling back to a source UID", () => {
+  it("uses identities returned with telemetry before falling back to Unknown person (never the source UID)", () => {
     const view = normalizeCompanyTeamTelemetry({
       members: [
         {
@@ -265,7 +282,7 @@ describe("normalizeCompanyTeamTelemetry", () => {
       members: [{ personUid: "prs_source_only" }],
       identities: { persons: {}, agents: {} },
     });
-    expect(sourceOnly.members[0]?.displayName).toBe("prs_source_only");
+    expect(sourceOnly.members[0]?.displayName).toBe("Unknown person");
   });
 
   it("collapses only exact duplicate member UIDs without hiding same-name people", () => {
@@ -318,9 +335,21 @@ describe("teamTelemetryErrorMessage", () => {
       /connection/i,
     );
     expect(teamTelemetryErrorMessage("fetch failed")).toMatch(/connection/i);
+    const quiet = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(teamTelemetryErrorMessage("")).toBe(
-      "Failed to load team telemetry.",
+      "Could not load team telemetry. Try again.",
     );
+    quiet.mockRestore();
+  });
+
+  it("AUDIT-3c: never returns unrecognised raw error text, and logs it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
+    const shown = teamTelemetryErrorMessage(raw);
+    expect(shown).not.toContain("HTTP 500");
+    expect(shown).toBe("Could not load team telemetry. Try again.");
+    expect(warn).toHaveBeenCalledWith("[team-telemetry] load failed", raw);
+    warn.mockRestore();
   });
 });
 

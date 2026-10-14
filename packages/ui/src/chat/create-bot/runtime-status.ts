@@ -103,20 +103,23 @@ export function parseRuntimeStatus(raw: unknown): RuntimeStatus | null {
   }
 }
 
-/** Trailing text on the runtime pill: "Claude Code · not installed". */
-export function runtimeChipSuffix(status: RuntimeStatus | null): string {
+/**
+ * The short status on a coding tool's card: "Signed in", "Sign in first",
+ * "Not installed" or "Couldn't check". `ready` is the boolean fallback for a
+ * host that has no per-runtime status.
+ */
+export function runtimeCardStatus(status: RuntimeStatus | null, ready: boolean): string {
   switch (status?.state) {
     case "signedIn":
-    case undefined:
-      return "";
+      return "Signed in";
     case "signedOut":
-      return " · not signed in";
+      return "Sign in first";
     case "notInstalled":
-      return " · not installed";
+      return "Not installed";
     case "probeFailed":
-      return " · couldn’t check";
+      return "Couldn’t check";
     default:
-      return "";
+      return ready ? "Signed in" : "Sign in first";
   }
 }
 
@@ -193,7 +196,7 @@ export function runtimeFooter(
       };
     default:
       return {
-        text: `Signed in on this ${host} - the bot uses your own ${label} plan.`,
+        text: `Signed in on this ${host}. The bot uses your own ${label} plan.`,
         action: null,
         actionLabel: null,
         isError: false,

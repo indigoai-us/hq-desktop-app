@@ -201,11 +201,11 @@ describe("AvatarPackPicker", () => {
       },
     });
     await tick();
-    expect(host.querySelector('[data-testid="avatar-pack-skeleton"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="avatar-pack-loading"]')).not.toBeNull();
     resolvePacks(packs);
     await tick();
     await tick();
-    expect(host.querySelector('[data-testid="avatar-pack-skeleton"]')).toBeNull();
+    expect(host.querySelector('[data-testid="avatar-pack-loading"]')).toBeNull();
     expect(host.querySelectorAll('[data-testid="avatar-pack-item"]').length).toBeGreaterThan(0);
   });
 

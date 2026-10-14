@@ -122,8 +122,12 @@ export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
   };
 }
 
-export function syncStateFromLive(status: LiveSyncStatus): SyncState {
-  if (status.conflicts > 0) return "conflict";
+/**
+ * The journal's conflict count is kept for diagnostics only. A parked conflict
+ * copy has no desktop surface (owner decision 2026-10-13), so it never changes
+ * the state the shell draws from.
+ */
+export function syncStateFromLive(_status: LiveSyncStatus): SyncState {
   return "idle";
 }
 

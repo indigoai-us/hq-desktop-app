@@ -255,3 +255,39 @@ export function outlineOf(body: string): OutlineItem[] {
   }
   return out;
 }
+
+/** What the Share sheet can offer for one file (QA-005). */
+export interface ShareTarget {
+  /** The path a grant would name: company-relative for a company vault. */
+  path: string;
+  /** Company slug the grant would belong to; null for the personal vault. */
+  company: string | null;
+  /** False while the app has no files-share call; `reason` says why. */
+  available: boolean;
+  reason: string;
+}
+
+/**
+ * Share target for `path` in `vault`. The desktop adapter has no call that
+ * grants access to a vault path yet, so every target is unavailable with a
+ * reason the sheet shows. Personal files are not in a company vault, which is
+ * what a share grant names, so they get their own reason.
+ */
+export function shareTarget(vault: Vault, path: string): ShareTarget {
+  if (vault.kind === "personal") {
+    return {
+      path,
+      company: null,
+      available: false,
+      reason:
+        "Personal files live only in your HQ folder on this computer. Sharing grants access to a company vault path, so a personal file has to move into a company vault before anyone else can open it.",
+    };
+  }
+  return {
+    path: vaultRelativePath(vault, path),
+    company: vault.slug,
+    available: false,
+    reason:
+      "Sharing from the desktop app is not connected yet. Ask Claude to run /hq-share with this path to grant access.",
+  };
+}

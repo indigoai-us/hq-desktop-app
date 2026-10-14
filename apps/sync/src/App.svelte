@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import {
     createSyncPlatformAdapter,
+    ensureHqAnywhereGlobalRuntime,
     POST_READY_ACTION_TELEMETRY_FLAG,
     POST_READY_DROP_REASON_FLAG,
     type Json,
@@ -45,6 +46,7 @@
   import type { WorkspacesResult } from './lib/workspaces';
   import type { Channel } from './lib/channels';
   import { ChannelUnreadTracker } from './lib/channelUnreadTracker';
+  import { registerChannelUnreadListeners } from './lib/channelUnreadListeners';
   import { UnreadSummaryTracker } from './lib/unreadSummaryTracker';
   import { TrayMessageBadgePublisher } from './lib/trayMessageBadge';
   import { RecordingActionAckCoordinator } from './lib/recordingActionAck';
@@ -302,7 +304,7 @@
   // on the main window without touching the first-run flags; clears when the
   // film ends or is skipped.
   let replayIntro = $state(false);
-  let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
+  let syncState = $state<'idle' | 'syncing' | 'error' | 'setup-needed' | 'auth-error'>('idle');
   let watcherWaitingForLock = $state(false);
   let watcherLockHolder = $state<string | null>(null);
   // True while a manual "Sync Now" owns the progress UI — its richer
@@ -405,7 +407,7 @@
     /** ISO 8601 timestamp when the detection fired. */
     detectedAt: string;
     /** Lifecycle state — drives the Record/Stop button label. */
-    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'finalising' | 'error';
     /** Recall.ai recording id (returned by start_recording). */
     recordingId?: string;
     /** Last error message from a failed start/stop, if any. */
@@ -989,7 +991,14 @@
         return;
       }
       if (action === 'open') {
-        await invoke('show_main_window');
+        // OWNER-R3: the body click opens Meetings in the HQ window, where the
+        // detected meeting has Start recording. Popover when it can't open.
+        try {
+          await invoke('open_desktop_alt_window', { route: bannerOpenRoute('meeting', data) ?? 'meetings' });
+        } catch (err) {
+          console.warn('[meetings] open Meetings from the banner failed', err);
+          await invoke('show_main_window');
+        }
         void invoke('meetings_clear_prompt_badge').catch(() => {});
         return;
       }
@@ -1102,25 +1111,17 @@
     );
 
     // Exact channel unread snapshots include increases and read/decrement
-    // transitions, so the aggregate and native menu-bar count cannot stick.
-    unlisteners.push(
-      await listen<{ channelId: string; unread: number }>(
-        'channel:unread-changed',
-        (e) => {
-          applyChannelUnread(e.payload.channelId, e.payload.unread);
-        },
-      ),
-    );
-
-    unlisteners.push(
-      await listen<Channel>('channel:updated', (e) => {
-        if (typeof e.payload.unread === 'number') {
-          applyChannelUnread(e.payload.channelId, e.payload.unread);
-        } else {
-          void loadChannelUnreadCount();
-        }
-      }),
-    );
+    // transitions. The directory-change emitter also sends a payload-less
+    // invalidation, which the listener handles by refreshing the full snapshot.
+    const channelUnreadUnlisteners = await registerChannelUnreadListeners({
+      listen: (eventName, handlePayload) =>
+        listen<unknown>(eventName, ({ payload }) => handlePayload(payload)),
+      applyChannelUnread,
+      refreshSnapshot: () => {
+        void loadChannelUnreadCount();
+      },
+    });
+    unlisteners.push(...channelUnreadUnlisteners);
 
     unlisteners.push(
       await listen('tray:replay-intro', () => {
@@ -1328,14 +1329,9 @@
         // Adding skips here would inflate the numerator and break the
         // ratio.
         syncFanoutFilesSkipped += event.payload.filesSkipped;
-        if (event.payload.aborted) {
-          // Conflict-aborted. The tray goes to its conflict state; the
-          // actionable resolve surface (count, company, Copy prompt,
-          // Open in Claude Code) is the desktop window's Core popover,
-          // which reads the same aggregate from `get_sync_status`.
-          syncState = 'conflict';
-          await invoke('set_tray_state', { state: 'conflict' });
-        }
+        // An aborted company has no tray state of its own: parked conflict
+        // copies have no desktop surface (owner decision 2026-10-13). The
+        // desktop window's source rows still say the run stopped early.
       })
     );
 
@@ -1350,8 +1346,8 @@
         manualSyncTelemetryPending = false;
         manualSyncActive = false;
         externalSyncActive = false;
-        // Only flip to idle if nothing raised conflict/error mid-stream
-        if (syncState !== 'conflict' && syncState !== 'error') {
+        // Only flip to idle if nothing raised an error mid-stream
+        if (syncState !== 'error') {
           syncState = 'idle';
           await invoke('set_tray_state', { state: 'idle' });
         }
@@ -2044,6 +2040,24 @@
     }, 5000);
   }
 
+  let hqAnywhereRuntimeSetupInFlight: Promise<void> | null = null;
+  function reconcileHqAnywhereGlobalRuntime(): void {
+    if (hqAnywhereRuntimeSetupInFlight) return;
+    hqAnywhereRuntimeSetupInFlight = ensureHqAnywhereGlobalRuntime(
+      traySyncAdapter.identity,
+      traySyncAdapter.settings,
+    )
+      .then((result) => {
+        if (!result.ok) console.warn('[hq-anywhere] startup runtime setup failed:', result);
+      })
+      .catch((error) => {
+        console.warn('[hq-anywhere] startup runtime setup failed:', error);
+      })
+      .finally(() => {
+        hqAnywhereRuntimeSetupInFlight = null;
+      });
+  }
+
   async function checkAuth() {
     const outcome = await resolveStartupState(probeStartupState, {
       onRetry: (attempt, err) =>
@@ -2116,8 +2130,10 @@
       }
     }
 
-    if (authenticated) void loadUnreadSummary();
-    else resetUnreadSummary();
+    if (authenticated) {
+      void loadUnreadSummary();
+      reconcileHqAnywhereGlobalRuntime();
+    } else resetUnreadSummary();
     // US-005: once signed in and NOT in first-run onboarding, ask the server
     // whether this person's recorded consent is stale and should be re-asked.
     // Non-blocking and fail-quiet — the window renders immediately; if a
@@ -2194,6 +2210,7 @@
       await handleSyncNow();
     }
     if (auth.authenticated) {
+      reconcileHqAnywhereGlobalRuntime();
       void invoke('open_desktop_alt_window').catch((e) => {
         console.error('open_desktop_alt_window after sign-in failed:', e);
       });
@@ -2306,7 +2323,7 @@
     margin: 0;
     padding: 8px 12px;
     border-radius: 8px;
-    background: var(--popover-surface, #17171b);
+    background: var(--popover-surface, #191919);
     color: var(--popover-text, #e0e0e0);
     font-size: 12px;
     text-align: center;

@@ -191,7 +191,7 @@ describe("DesktopApp leave channel (self-remove)", () => {
     expect(host.querySelector('[data-testid="channel-action-error"]')).toBeNull();
   });
 
-  it("failure: preserves a trimmed server message and keeps the rail row + selection", async () => {
+  it("failure: shows plain copy (not the server message) and keeps the rail row + selection", async () => {
     const removeChannelMember = vi.fn(async () =>
       failure("http-403", "  You can't leave this channel.  "),
     );
@@ -211,7 +211,9 @@ describe("DesktopApp leave channel (self-remove)", () => {
     expect(removed).toEqual([]);
     const alert = host.querySelector('[data-testid="channel-action-error"]');
     expect(alert, "error surfaces near the header").toBeTruthy();
-    expect(alert?.textContent).toContain("You can't leave this channel.");
+    // Server text is logged, not shown (AUDIT-3c).
+    expect(alert?.textContent).not.toContain("You can't leave this channel.");
+    expect(alert?.textContent).toContain("Couldn't leave this channel. Refresh and try again.");
     // Selection preserved — header still shows #launch.
     expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
     expect(
@@ -236,7 +238,7 @@ describe("DesktopApp leave channel (self-remove)", () => {
     ).toContain("Couldn't leave this channel. Refresh and try again.");
   });
 
-  it("failure from a rejected adapter preserves its trimmed error message", async () => {
+  it("failure from a rejected adapter shows plain copy, not its error message", async () => {
     const removeChannelMember = vi.fn(async () => {
       throw new Error("  Channel service is temporarily unavailable.  ");
     });
@@ -252,7 +254,26 @@ describe("DesktopApp leave channel (self-remove)", () => {
 
     expect(
       host.querySelector('[data-testid="channel-action-error"]')?.textContent,
-    ).toContain("Channel service is temporarily unavailable.");
+    ).toContain("Couldn't leave this channel. Refresh and try again.");
+    expect(
+      host.querySelector('[data-testid="channel-action-error"]')?.textContent,
+    ).not.toContain("Channel service is temporarily unavailable.");
+  });
+
+  it("never shows raw transport error text when leaving fails", async () => {
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const removeChannelMember = vi.fn(async () => failure("http-500", RAW));
+    await mountApp({ removeChannelMember });
+    await openPopover();
+    host.querySelector<HTMLButtonElement>('[data-testid="status-member-remove"]')!.click();
+    await settle();
+    const alert = host.querySelector('[data-testid="channel-action-error"]');
+    expect(alert?.textContent).toContain("Couldn't leave this channel. Refresh and try again.");
+    expect(alert?.textContent).not.toContain("boom");
+    expect(alert?.getAttribute("title") ?? "").not.toContain("boom");
+    expect(warn.mock.calls.some((a) => a.some((x) => String(x).includes("boom")))).toBe(true);
+    warn.mockRestore();
   });
 
   it("handles a stale owner-role 409 with a clear message and no raw error", async () => {

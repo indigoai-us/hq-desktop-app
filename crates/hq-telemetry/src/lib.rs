@@ -1454,6 +1454,10 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "object_lock_checksum_required",
     "object_body_idle_timeout",
     "sync_device_limit",
+    // The ~6.18.51 pin's additions (kept in lockstep with hq-desktop-core's
+    // RunnerErrorCause::as_str; the cross-crate egress test enumerates ALL).
+    "tombstone_full_reconcile_required",
+    "unsafe_symlink_target",
     "access_denied",
     "no_such_key",
     "no_such_bucket",

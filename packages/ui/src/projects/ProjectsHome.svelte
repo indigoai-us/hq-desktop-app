@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * ProjectsHome: the Projects page. One company at a time, picked from the
    * companies this person belongs to that have a folder on this Mac, with that
@@ -9,6 +10,7 @@
   import { hostComputerNoun, subscribeHostComputerNoun, type PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import CompanyProjectsPage from "./CompanyProjectsPage.svelte";
+  import { companyPickerSlugs } from "../shell/pinned-companies.js";
 
   interface Props {
     adapter: PlatformAdapter;
@@ -21,9 +23,38 @@
     /** Company the rest of the app is scoped to, used when `slug` is unset. */
     preferredSlug?: string | null;
     onslugchange?: (slug: string) => void;
+    /**
+     * The shell already picked the company (the rail tile and the company
+     * sidepane header name it), so the page shows no switcher of its own.
+     * Defaults to true when the caller pins `slug` to the shell's company.
+     */
+    pinned?: boolean;
+    /**
+     * New project company tabs: the rail's member companies, Personal first
+     * (QA-050). Defaults to the member companies in `companies`; never the
+     * local folders, which can include companies the person is not in.
+     */
+    pickerCompanies?: readonly string[] | null;
+    /** Project to open on arrival (folder name) and its tab (QA-066). */
+    focusProject?: string | null;
+    focusTab?: "tasks" | "files" | null;
   }
 
-  let { adapter, companies, slug = null, preferredSlug = null, onslugchange }: Props = $props();
+  let {
+    adapter,
+    companies,
+    slug = null,
+    preferredSlug = null,
+    onslugchange,
+    pinned,
+    pickerCompanies = null,
+    focusProject = null,
+    focusTab = null,
+  }: Props = $props();
+
+  const sheetRoster = $derived(pickerCompanies ?? companyPickerSlugs(companies));
+
+  const showSwitcher = $derived(!(pinned ?? (slug != null && slug === preferredSlug)));
 
   let hostNoun = $state(hostComputerNoun());
   onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
@@ -75,9 +106,6 @@
     if (next !== previous) onslugchange?.(next);
   }
 
-  function initial(c: Workspace): string {
-    return (c.displayName || c.slug).trim()[0]?.toUpperCase() ?? "?";
-  }
 </script>
 
 <div class="ph" data-testid="projects-home">
@@ -88,6 +116,7 @@
     </div>
   {:else}
     <div class="ph-body">
+      {#if showSwitcher}
       <div class="ph-bar">
         <div class="ph-company">
           <button
@@ -98,8 +127,9 @@
             data-testid="projects-company-switcher"
             onclick={() => (menuOpen = !menuOpen)}
           >
-            <span class="ph-avatar">{initial(current)}</span>
-            <span class="ph-name">{current.displayName || current.slug}</span>
+            <span class="ph-name"
+              ><CompanyLabel name={current.displayName || current.slug} companyUid={current.slug} /></span
+            >
             <svg viewBox="0 0 16 16" class="ph-caret" aria-hidden="true">
               <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
@@ -115,16 +145,23 @@
                   class:is-current={c.slug === current.slug}
                   onclick={() => choose(c.slug)}
                 >
-                  <span class="ph-avatar small">{initial(c)}</span>
-                  <span>{c.displayName || c.slug}</span>
+                  <CompanyLabel name={c.displayName || c.slug} companyUid={c.slug} />
                 </button>
               {/each}
             </div>
           {/if}
         </div>
       </div>
+      {/if}
       {#key current.slug}
-        <CompanyProjectsPage {adapter} slug={current.slug} companyUid={current.cloudUid ?? null} />
+        <CompanyProjectsPage
+          {adapter}
+          slug={current.slug}
+          companyUid={current.cloudUid ?? null}
+          pickerCompanies={sheetRoster}
+          {focusProject}
+          {focusTab}
+        />
       {/key}
     </div>
   {/if}
@@ -165,30 +202,14 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
   }
   .ph-company-btn:hover,
   .ph-company-btn[aria-expanded="true"] {
     border-color: var(--v4-hairline);
     background: var(--v4-control-faint);
-  }
-  .ph-avatar {
-    display: inline-grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 6px;
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
-    font-size: 12px;
-    font-weight: 600;
-  }
-  .ph-avatar.small {
-    width: 18px;
-    height: 18px;
-    font-size: 10px;
   }
   .ph-caret {
     width: 14px;
@@ -259,6 +280,6 @@
   .ph-empty h2 {
     margin: 0 0 8px;
     color: var(--v4-text-1);
-    font-size: 20px;
+    font-size: 13px;
   }
 </style>

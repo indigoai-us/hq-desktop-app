@@ -69,3 +69,30 @@ export function setupExpectationCopy(os: OnboardingHostOs): string {
       return "This usually takes a few minutes. Each step below shows what HQ is doing and how long it has been running.";
   }
 }
+
+/** Which drawn keyboard the shortcut scene shows. */
+export type ShortcutKeyboardLayout = "mac" | "pc";
+
+/**
+ * The one platform decision behind the shortcut scene: the drawn keyboard,
+ * the lit keys and the legend all branch on this value, so they can never
+ * disagree. Only a UA that reads as macOS gets the Mac board; Windows, Linux
+ * and an unknown UA get the PC board with Alt.
+ */
+export function shortcutKeyboardLayoutFor(os: OnboardingHostOs): ShortcutKeyboardLayout {
+  return os === "macos" ? "mac" : "pc";
+}
+
+/** The "open HQ desktop view" chord as the legend shows and a screen reader speaks it. */
+export interface ShortcutChord {
+  keys: readonly string[];
+  spoken: string;
+  /** Key ids lit on the drawn keyboard. */
+  highlight: readonly string[];
+}
+
+export function openHqShortcutChord(layout: ShortcutKeyboardLayout): ShortcutChord {
+  return layout === "mac"
+    ? { keys: ["\u2325", "\u21E7", "O"], spoken: "Option, Shift, O", highlight: ["alt", "shift", "o"] }
+    : { keys: ["Alt", "Shift", "O"], spoken: "Alt, Shift, O", highlight: ["alt", "shift", "o"] };
+}

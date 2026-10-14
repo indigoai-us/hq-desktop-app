@@ -23,6 +23,7 @@
  */
 
 import type { Capabilities, Capability } from "./capabilities.js";
+import type { BadgesPayload } from "./badges.js";
 import type {
   EvidenceOptions,
   ServiceEvidence,
@@ -405,6 +406,11 @@ export interface SelectAgentAvatarResult {
   slackUpdated?: boolean;
 }
 
+/** Evaluation context for a feature flag. */
+export interface FeatureScope {
+  companyUid?: string | null;
+}
+
 export interface IdentityApi {
   whoami(): AdapterPromise<WhoAmI>;
   /** Native auth envelope; accountId is the Cognito subject used by local writers. */
@@ -415,7 +421,11 @@ export interface IdentityApi {
     reason: string | null;
   }>;
   isAdmin(): AdapterPromise<boolean>;
-  hasFeature(flag: string): AdapterPromise<boolean>;
+  /**
+   * `scope.companyUid` evaluates the flag in that company's context, which is
+   * the only way a company-targeted flag reads as on. Omitted → person-only.
+   */
+  hasFeature(flag: string, scope?: FeatureScope): AdapterPromise<boolean>;
   /**
    * One company's value for a flag, for the signed-in person. `hasFeature` is
    * read per person with no company, so it cannot answer for a company flag.
@@ -467,6 +477,13 @@ export interface IdentityApi {
     agentUid: string,
     input: SelectAgentAvatarInput,
   ): AdapterPromise<SelectAgentAvatarResult>;
+  /**
+   * GET /v1/badges/{uid} — a teammate's accomplishment badges (`uid` is a
+   * `prs_*` person uid or `me`), parsed by `parseBadgesPayload`. A failure
+   * (including the 404 for agents, non-teammates and a route that is not
+   * deployed yet) is the caller's cue to show no badges.
+   */
+  getBadges?(uid: string): AdapterPromise<BadgesPayload>;
 }
 
 export interface MessageSearchOptions {
@@ -716,6 +733,17 @@ export type NotifyPrefsPatch = Partial<Omit<NotifyPrefs, "updatedAt">>;
 
 export interface MessagingApi {
   /**
+   * POST a forward (US-009) to `/v1/notify/dm` or
+   * `/v1/notify/channels/{id}/messages`. Resolves `ok` with the HTTP status and
+   * raw body for any HTTP answer, success or refusal, so the caller can read
+   * the server's `code`. Fails only when HQ could not be reached. Optional:
+   * hosts without it draw no Forward button.
+   */
+  forwardMessage?(args: {
+    path: string;
+    body: Json;
+  }): AdapterPromise<{ status: number | null; body: string }>;
+  /**
    * GET /v1/notify/prefs. Optional: hosts without it hide the fine-grained
    * notification settings. A server that predates the route answers 404
    * (`code: "http-404"`), which callers treat as "not available yet".
@@ -760,6 +788,14 @@ export interface MessagingApi {
    */
   deleteChannel(channelId: string): AdapterPromise<Json>;
   listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
+  /**
+   * Which of these company (`cmp_*`) and bot (`agt_*`) uids no longer have a
+   * live cloud entity (desktop `resolve_retired_entities`, which reads
+   * `GET /entity/{uid}`: 404 or `deleted: true` is gone). Answers
+   * `{ retiredCompanyUids, goneAgentUids, liveUids, agentCompanyUids }`.
+   * Optional: hosts without it never hide rows of retired companies.
+   */
+  resolveRetiredEntities?(uids: string[]): AdapterPromise<Json>;
   listDmRequests(): AdapterPromise<Json[]>;
   /**
    * POST /v1/notify/connections/{accept|decline|block} body `{ pairKey }` —
@@ -983,6 +1019,25 @@ export interface MeetingsApi {
   listMemberships(): AdapterPromise<Json[]>;
   listUpcoming(): AdapterPromise<Json[]>;
   listScheduledBots(): AdapterPromise<Json[]>;
+  /**
+   * Recorded meeting history, newest first (`GET /v1/meetings`). Pass a
+   * company uid for that company's meetings; omit it for the caller's
+   * unattributed (personal) meetings. Returns the raw `{ meetings, nextToken }`
+   * envelope; callers coerce rows at their parse boundary.
+   */
+  listRecorded(companyId?: string | null): AdapterPromise<Json>;
+  /**
+   * One recorded meeting (`GET /v1/meetings/{id}`): source frontmatter plus
+   * its signals grouped by type, each with a presigned body URL. Raw
+   * envelope; callers coerce it.
+   */
+  getRecorded(meetingId: string, companyId?: string | null): AdapterPromise<Json>;
+  /**
+   * Text behind a presigned vault URL from `getRecorded` (the meeting
+   * document or a signal body). On desktop the native side reads it: the
+   * vault buckets send no CORS headers, so a webview fetch is blocked.
+   */
+  readRecordedBody(url: string): AdapterPromise<string>;
   inviteBot(payload: Json): AdapterPromise<Json>;
   cancelBot(id: string): AdapterPromise<void>;
   /** Same payload as inviteBot — hq-pro `POST /v1/bot/join-now`. */
@@ -1006,7 +1061,54 @@ export interface MeetingsApi {
    * permission and starts the detector as soon as everything is granted.
    */
   openPermissionsSetup(): AdapterPromise<void>;
+  /**
+   * One live-transcript poll (`GET /v1/meetings/{recallBotId}?view=live`).
+   * Optional: only hosts with the native fetch implement it; callers show
+   * an honest "no live view" state when it is absent.
+   */
+  fetchLiveTranscript?(
+    req: LiveTranscriptRequest,
+  ): AdapterPromise<LiveTranscriptResult>;
 }
+
+export interface LiveTranscriptRequest {
+  recallBotId: string;
+  companyId: string;
+  sinceRevision?: number | null;
+  etag?: string | null;
+}
+
+export interface LiveTranscriptSegmentWire {
+  segmentId: string;
+  participantId?: string | null;
+  speaker?: string | null;
+  startSeconds: number;
+  endSeconds?: number | null;
+  text: string;
+}
+
+export interface LiveTranscriptPartialWire {
+  participantId?: string | null;
+  speaker?: string | null;
+  startSeconds: number;
+  text: string;
+}
+
+/** Tagged result of one poll, as produced by the native fetch. */
+export type LiveTranscriptResult =
+  | {
+      kind: "ok";
+      revision: number;
+      etag?: string | null;
+      updatedAt?: string | null;
+      provisional?: boolean;
+      truncated?: boolean;
+      segments: LiveTranscriptSegmentWire[];
+      partial?: LiveTranscriptPartialWire | null;
+    }
+  | { kind: "not-modified" }
+  | { kind: "disabled" }
+  | { kind: "not-found" };
 
 export interface MarketplaceApi {
   listListings(opts?: Json): AdapterPromise<Json>;
@@ -1043,9 +1145,82 @@ export interface CreatorProfileUpdate {
 
 export interface CompanyApi {
   getDeployments(slug: string): AdapterPromise<Json[]>;
+  /**
+   * The company's connected apps from hq-pro `GET /v1/integrations/admin`:
+   * `{ companyUid, viewer, connections: [{ id, provider, status, scopes,
+   * createdByName, updatedAt, … }], audit }`. Desktop only.
+   */
+  listIntegrations?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * One connection's redaction presets, hq-pro `GET
+   * /v1/integrations/admin/redaction` (US-004). A refusal keeps the HTTP
+   * status and the server code (`REDACTION_ADMIN_REQUIRED`,
+   * `CONNECTION_NOT_FOUND`, `REDACTION_REQUEST_INVALID`). Desktop only.
+   */
+  getRedaction?(companyUid: string, connectionId: string): AdapterPromise<Json>;
+  /**
+   * Replace one connection's list of presets that are on (`[]` = all off),
+   * hq-pro `PUT /v1/integrations/admin/redaction`. Same answer and refusals
+   * as {@link getRedaction}. Desktop only.
+   */
+  putRedaction?(companyUid: string, connectionId: string, presets: readonly string[]): AdapterPromise<Json>;
+  /**
+   * Raw hq-deploy `/api/apps` rows for one scope (company slug or
+   * `personal`): `{ scope, callerSub, apps }`. Desktop only.
+   */
+  listDeployApps?(scope: string): AdapterPromise<Json>;
+  /**
+   * Side-panel preview for one deployed app: `{ ogImageUrl, thumbnail }`.
+   * Read lazily on selection and cached on disk by app id + deploy time.
+   * Desktop only.
+   */
+  deployAppPreview?(appId: string, url: string, deployedAt: string, refresh: boolean): AdapterPromise<Json>;
+  /**
+   * Rendered snapshot of one deployed app: `{ snapshot, width, height }`
+   * with `snapshot` a PNG data: URL. Captured in a hidden window on selection
+   * and cached on disk by app id + deploy time. For a protected app pass
+   * `gate`; the desktop then requests an hq-deploy preview pass for `scope`
+   * (and fails when the server does not offer one). Desktop only; macOS today.
+   */
+  deployAppSnapshot?(
+    appId: string,
+    url: string,
+    deployedAt: string,
+    refresh: boolean,
+    gate?: { scope: string; protected: boolean },
+  ): AdapterPromise<Json>;
+  /**
+   * One hq-deploy access call (`access-policy`, `access-mode`,
+   * `allowed-emails` under `/api/apps/:id`) for a scope. Desktop only; the
+   * host refuses any other route.
+   */
+  deployAccessRequest?(
+    scope: string,
+    method: "GET" | "PUT" | "POST" | "DELETE",
+    path: string,
+    body?: Json,
+  ): AdapterPromise<Json>;
   getSecrets(slug: string): AdapterPromise<Json[]>;
   listMembers(slug: string): AdapterPromise<Json[]>;
-  getTeamTelemetry(slug: string): AdapterPromise<Json>;
+  /**
+   * OWNER-R9: the company's membership roster with role, acceptedAt, origin and
+   * membershipKey (`GET /membership/company/{uid}` → `{members}`). Desktop only.
+   */
+  listCompanyMemberships?(companyUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: unclaimed invites (`GET /membership/company/{uid}/pending` → `{pending}`). */
+  listPendingMemberships?(companyUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: files and secrets one member can reach (`GET /files/{uid}/members/{personUid}/access`). */
+  getMemberAccess?(companyUid: string, personUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: change a member's role (`POST /membership/role`). Server enforces who may. */
+  setMemberRole?(companyUid: string, membershipKey: string, newRole: string): AdapterPromise<Json>;
+  /** OWNER-R9: remove a member or revoke an invite (`POST /membership/revoke`). Server keeps the last owner. */
+  revokeMembership?(companyUid: string, membershipKey: string): AdapterPromise<Json>;
+  /**
+   * Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to
+   * the last 30 days). `range.tz` is an IANA zone sent to hq-pro as `tz`; the
+   * host sends this machine's zone when it is absent.
+   */
+  getTeamTelemetry(slug: string, range?: { from: string; to: string; tz?: string }): AdapterPromise<Json>;
   claimPendingInvite(slug: string): AdapterPromise<Json>;
   connectToCloud(slug: string): AdapterPromise<Json>;
   getSummary(slug: string): AdapterPromise<Json>;
@@ -1059,6 +1234,15 @@ export interface CompanyApi {
    * slug) since callers already have it from the workspace roster.
    */
   ensureHomeChannel(companyUid: string): AdapterPromise<{ homeChannelId: string }>;
+  /**
+   * Mint a Stripe customer-portal session for a company
+   * (`POST /v1/billing/portal`, body `{ companyUid }`). hq-pro owner-gates the
+   * call and verifies the Stripe customer belongs to that company before it
+   * mints; a non-owner gets 403 (`FORBIDDEN`), a mislinked customer 409
+   * (`BILLING_CUSTOMER_CONFLICT`). The `url` is short-lived: mint one per
+   * click and never cache it.
+   */
+  createBillingPortalSession(companyUid: string): AdapterPromise<{ url: string }>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }
@@ -1166,13 +1350,82 @@ export interface VaultApi {
   readFrontmatter(path: string): AdapterPromise<string>;
 }
 
+export interface AtlasLocalApi {
+  /** District roots and direct children, `{ revision, complete, objects }`. */
+  firstPage(companySlug: string): AdapterPromise<Json | null>;
+  /** Every object under the districts, cached on disk by folder revision. */
+  listing(companySlug: string): AdapterPromise<Json | null>;
+  /** Text of one object under the districts (project PRDs). */
+  readText(companySlug: string, key: string): AdapterPromise<string | null>;
+}
+
+/** Result of `FilesApi.createFile`. */
+export interface CreatedFile {
+  path: string;
+  cloudSync: boolean;
+}
+
+/** Identifies one cross-company group grant (hq-pro POST /group-grants/revoke body). */
+export interface GroupGrantKey {
+  sourceCompanyUid: string;
+  groupId: string;
+  targetCompanyUid: string;
+}
+
+/** hq-pro POST /group-grants body. `role` is a membership role. */
+export interface GroupGrantInput extends GroupGrantKey {
+  role: string;
+}
+
 export interface FilesApi {
   listDir(relPath: string): AdapterPromise<Json[]>;
   /** Files explorer vault index. Desktop only; hosts without it omit it. */
   vault?: VaultApi;
   getFileContent(path: string): AdapterPromise<string>;
-  /** ACL-filtered vault browse (hq-pro GET /v1/files/list). */
-  listVaultPrefix(companyUid: string, prefix: string): AdapterPromise<Json>;
+  /**
+   * Append one JSON line to the Daily Brief preference log
+   * (`personal/brief/brief-log.jsonl`). The host fixes the path and refuses
+   * anything but a single JSON object. Desktop only; hosts without it omit it.
+   */
+  appendBriefLog?(line: string): AdapterPromise<void>;
+  /**
+   * Create a new text file at an HQ-relative path in the synced HQ folder
+   * (QA-072). Refuses an existing file. `cloudSync` is true when the company
+   * is cloud-backed and syncing, so HQ Sync carries the file to the vault.
+   * Desktop only; hosts without it omit it.
+   */
+  createFile?(path: string, contents: string): AdapterPromise<CreatedFile>;
+  /**
+   * ACL-filtered vault browse (hq-pro GET /v1/files/list). Pass the previous
+   * page's `cursor` to continue a listing.
+   */
+  listVaultPrefix(companyUid: string, prefix: string, cursor?: string): AdapterPromise<Json>;
+  /**
+   * OWNER-R17: who can open one vault path, with inherited grants and display
+   * names (hq-pro GET /files/{companyUid}/acl/tree, the read the web console's
+   * access panel uses). Read-only. Hosts without it omit it. Pass `page`
+   * to read a large folder in pages (`limit` up to 200, `cursor` from the
+   * previous page's `nextCursor`); the server refuses it with
+   * ACL_TREE_PAGINATION_DISABLED where paging is not on.
+   */
+  getAccessTree?(companyUid: string, prefix: string, page?: { limit: number; cursor?: string }): AdapterPromise<Json>;
+  /** OWNER-R17: the company's groups, for names (hq-pro GET /secrets/{companyUid}/groups). Read-only. */
+  listAccessGroups?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Cross-company group grants: the reads and writes the web console's Grants
+   * page uses (hq-pro GET /group-grants/outbound, GET /group-grants/inbound,
+   * POST /group-grants, POST /group-grants/revoke). Hosts without them omit them.
+   */
+  listOutboundGroupGrants?(sourceCompanyUid: string, groupId: string): AdapterPromise<Json>;
+  listInboundGroupGrants?(companyUid: string): AdapterPromise<Json>;
+  createGroupGrant?(input: GroupGrantInput): AdapterPromise<Json>;
+  revokeGroupGrant?(input: GroupGrantKey): AdapterPromise<Json>;
+  /**
+   * Atlas map listing from the company folder synced to this machine
+   * (QA-016). Desktop only. Each call resolves null when the company folder is
+   * not on this machine; the caller then falls back to `listVaultPrefix`.
+   */
+  atlasLocal?: AtlasLocalApi;
   /** Presigned GET for a vault key (hq-pro POST /v1/files/presign). */
   presignVaultGet(companyUid: string, key: string): AdapterPromise<Json>;
   /**
@@ -1219,7 +1472,26 @@ export interface AgencyApi {
  */
 export interface AgentProfilePatch {
   displayName?: string;
+  title?: string;
   description?: string;
+}
+
+/** hq-pro personal Outpost routes (owner-scoped by the caller's token). */
+export const OUTPOST_PATHS = {
+  status: "/outpost/status",
+  jobsStatus: "/outpost/jobs/status",
+} as const;
+
+/**
+ * POST /v1/agents/{uid}/runtime/actions body. Routine changes use the
+ * `cron.pause|resume|trigger|delete|create|update` actions; `params.jobId`
+ * names the routine and `body` carries the create/update fields.
+ */
+export interface AgentRuntimeActionInput {
+  actionId: string;
+  idempotencyKey: string;
+  params?: Record<string, string>;
+  body?: Record<string, unknown>;
 }
 
 /**
@@ -1243,6 +1515,8 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/jobs/${encodeURIComponent(jobId)}/pause`,
   profile: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+  runtimeActions: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/runtime/actions`,
   stop: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/stop`,
   start: (agentUid: string) =>
@@ -1272,8 +1546,48 @@ export const AGENT_PATHS = {
   },
   owners: (companyUid: string, agentUid: string) =>
     `/v1/fleet/${encodeURIComponent(companyUid)}/agents/${encodeURIComponent(agentUid)}/owners`,
-  companyTelemetry: (companyUid: string, from: string, to: string) =>
-    `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+  companyTelemetry: (companyUid: string, from: string, to: string, tz?: string) =>
+    `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`,
+  myTelemetry: (from: string, to: string, tz?: string) =>
+    `/v1/telemetry/me?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${tz ? `&tz=${encodeURIComponent(tz)}` : ""}`,
+} as const;
+
+/**
+ * This machine's IANA time zone (e.g. "America/Denver"), or undefined when the
+ * runtime cannot say. Sent to hq-pro telemetry reads as `tz`.
+ */
+export function localIanaZone(): string | undefined {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof zone === "string" && zone.trim() ? zone : undefined;
+  } catch (err) {
+    console.warn("[telemetry] could not read the local time zone:", err);
+    return undefined;
+  }
+}
+
+/** One company's connected apps (hq-pro integrations-admin; any member may read). */
+export const COMPANY_INTEGRATION_PATHS = {
+  list: (companyUid: string) =>
+    `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}`,
+} as const;
+
+/**
+ * US-004 (hq-pro #4915): the "Hidden from AI" redaction presets of one
+ * connection. GET reads them; PUT replaces the whole list of presets that are
+ * on (`[]` = all off). Both answer `{ companyUid, connectionId, presets,
+ * availablePresets, isDefault, updatedAt, updatedBy, canEdit }`.
+ */
+export const REDACTION_PATHS = {
+  read: (companyUid: string, connectionId: string) =>
+    `/v1/integrations/admin/redaction?companyUid=${encodeURIComponent(companyUid)}&connectionId=${encodeURIComponent(connectionId)}`,
+  write: "/v1/integrations/admin/redaction",
+} as const;
+
+/** The caller's personal integrations, as read by the console's Personal Integrations page. */
+export const PERSONAL_INTEGRATION_PATHS = {
+  googleAccounts: "/v1/google/accounts",
+  slackAccounts: "/v1/slack/personal/accounts",
 } as const;
 
 export interface AgentProvisionSizeOption {
@@ -1298,6 +1612,17 @@ export interface AgentProvisionOptionsView {
 }
 
 /**
+ * Raw hq-pro REST transport for framework-free clients (`@hq/agents`). Paths
+ * are relative (`/v1/agents`); the adapter owns the base URL and the auth.
+ * Non-2xx answers resolve with their status, never throw, so callers can read
+ * the server's refusal body. Only a transport failure rejects.
+ */
+export type HqProFetch = (
+  path: string,
+  init: { method: string; headers?: Record<string, string>; body?: string },
+) => Promise<{ status: number; text(): Promise<string> }>;
+
+/**
  * Options for removing a cloud bot. The server refuses to remove a bot whose
  * machine is running unless the request names that machine. The refusal
  * carries the machine id (`AdapterFailure.instanceId`); the caller repeats the
@@ -1308,6 +1633,11 @@ export interface AgentDeprovisionOptions {
 }
 
 export interface AgentsApi {
+  /**
+   * The REST transport `@hq/agents` runs on. Absent on adapters that cannot
+   * reach hq-pro; callers keep their older path then.
+   */
+  fetch?: HqProFetch;
   /** GET /v1/agents/provision-options?companyUid= — tenant-priced sizes. */
   getProvisionOptions(
     companyUid: string,
@@ -1346,6 +1676,17 @@ export interface AgentsApi {
   listJobs(agentUid: string): AdapterPromise<Json>;
   /** POST /v1/agents/{uid}/jobs/{jobId}/pause — owner/admin. */
   pauseJob(agentUid: string, jobId: string): AdapterPromise<Json>;
+  /**
+   * GET /v1/agents/{uid}/profile: the owner's whole bot profile in one
+   * call. Anyone else gets 404, and so does a server that has not shipped
+   * the route; callers fall back to the individual reads.
+   */
+  getProfile?(agentUid: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/runtime/actions: owner relay to the bot's box. */
+  runtimeAction?(
+    agentUid: string,
+    input: AgentRuntimeActionInput,
+  ): AdapterPromise<Json>;
   /** PATCH /v1/agents/{uid}/profile — owner/admin. */
   updateProfile(
     agentUid: string,
@@ -1367,12 +1708,42 @@ export interface AgentsApi {
   ): AdapterPromise<Json>;
   /** GET /v1/fleet/{companyUid}/agents/{uid}/owners. */
   listOwners(companyUid: string, agentUid: string): AdapterPromise<Json>;
-  /** GET /v1/telemetry/company?companyUid=&from=&to= — owner/admin. */
+  /**
+   * GET /v1/telemetry/company?companyUid=&from=&to=&tz= — owner/admin. `tz` is
+   * an IANA zone; the response's `bucketTz` says which zone the days were cut in.
+   */
   getCompanyTelemetry(
     companyUid: string,
     from: string,
     to: string,
+    tz?: string,
   ): AdapterPromise<Json>;
+  /**
+   * GET /v1/telemetry/me?from=&to=&tz= — the caller's own cross-company rollups
+   * (daily series + totals). `tz` is an IANA zone; the response's `bucketTz`
+   * says which zone the days were cut in. Optional so older test doubles stay valid.
+   */
+  getMyTelemetry?(from: string, to: string, tz?: string): AdapterPromise<Json>;
+  /**
+   * OWNER-R27: session history recorded on this Mac in the HQ workspace
+   * folder (workspace/sessions + workspace/threads), newest first. Native
+   * hosts only; `from`/`to` are YYYY-MM-DD.
+   */
+  listLocalSessions?(
+    range: { from: string; to: string },
+    page?: { offset?: number; limit?: number },
+  ): AdapterPromise<Json>;
+  /**
+   * POST /outpost/status — the caller's own Outpost row (state, region,
+   * instance state, telemetry timestamps). A 404 failure means no Outpost.
+   */
+  getMyOutpostStatus?(): AdapterPromise<Json>;
+  /** GET /outpost/jobs/status — the caller's scheduled-job status rows. */
+  listMyOutpostJobs?(): AdapterPromise<Json>;
+  /** GET /v1/google/accounts — the caller's connected Google accounts. */
+  listMyGoogleAccounts?(): AdapterPromise<Json>;
+  /** GET /v1/slack/personal/accounts — the caller's personal Slack accounts. */
+  listMySlackAccounts?(): AdapterPromise<Json>;
 }
 
 /**
@@ -1392,6 +1763,10 @@ export const INTEGRATION_PATHS = {
   connections: (companyUid: string) =>
     `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}&view=summary`,
   grantAccess: "/v1/integrations/factory/access/grant",
+  /** The per-connection access view: mode, entries, caller's `canManage`. */
+  readAccess: (companyUid: string, connectionId: string) =>
+    `/v1/integrations/factory/access?companyUid=${encodeURIComponent(companyUid)}&connectionId=${encodeURIComponent(connectionId)}`,
+  revokeAccess: "/v1/integrations/factory/access/revoke",
   /** The catalog of apps HQ can connect. `limit` is left out when not given; the server bounds it to 1..100. */
   catalog: (companyUid: string, query: string, limit?: number) =>
     `/v1/integrations/factory/catalog?companyUid=${encodeURIComponent(companyUid)}` +
@@ -1400,6 +1775,11 @@ export const INTEGRATION_PATHS = {
   oauthStart: "/v1/integrations/factory/oauth/start",
   install: "/v1/integrations/factory/install",
   blueprint: "/v1/integrations/factory/blueprint",
+  /** Which of a fixed list of domains are in the catalog (first-run "Your apps"). */
+  catalogLookup: "/v1/integrations/factory/catalog/lookup",
+  /** Find and probe a vendor's remote MCP server from its docs page. */
+  discoverDocs: "/v1/integrations/factory/discover-docs",
+  uninstall: "/v1/integrations/factory/uninstall",
 } as const;
 
 /** One row of the integration catalog, as the server sends it. Every field may be missing. */
@@ -1479,6 +1859,13 @@ export interface IntegrationInstallInput {
     | { placement: "header"; header: string };
   provider?: string;
   displayName?: string;
+  /** A docs-discovery receipt (`discoverDocs`); the server installs what it verified. */
+  discoveryReceiptId?: string;
+  /**
+   * Marks an install the desktop first run made with no sign-in, so it can be
+   * undone and shown as automatic (hq-pro `installation.origin`).
+   */
+  origin?: "first-run-auto";
 }
 
 /** Who gets to use a connection. A bot's uid is granted as a person. */
@@ -1520,6 +1907,20 @@ export interface IntegrationsApi {
    */
   grantConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
   /**
+   * GET /v1/integrations/factory/access?companyUid=&connectionId=: the mode,
+   * creator and ACL entries for a single connection, plus whether the caller
+   * may manage it. Serves per-bot read of effective access.
+   */
+  getConnectionAccess(input: {
+    companyUid: string;
+    connectionId: string;
+  }): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/access/revoke: remove a person's or bot's
+   * grant on a connection. Same manage check as `grantConnectionAccess`.
+   */
+  revokeConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
+  /**
    * GET /v1/integrations/factory/catalog?companyUid=&query=&limit=: the apps
    * HQ can connect that match `query`. Owner or admin only; anyone else gets
    * a 403 with code `INTEGRATION_FACTORY_FORBIDDEN`. Answers
@@ -1527,6 +1928,31 @@ export interface IntegrationsApi {
    * carries the HTTP status (`status`) and the server's `code`.
    */
   catalogSearch(companyUid: string, query: string, limit?: number): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/catalog/lookup with `{ companyUid, domains }`:
+   * which of a FIXED list of app domains are in the catalog. The first-run
+   * "Your apps" step always sends its whole signature list, so the request
+   * says nothing about what was found on this computer. Owner or admin only.
+   * Answers `{ ok, companyUid, matches: { [domain]: IntegrationCatalogEntry | null } }`
+   * (hq-pro `lookupFactoryCatalog`, integrations-admin.ts). Optional: hosts
+   * without it leave it out.
+   */
+  catalogLookup?(companyUid: string, domains: readonly string[]): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/discover-docs with `{ companyUid, docsUrl }`:
+   * hq-pro reads the vendor's docs page, finds its remote MCP server and
+   * probes it (it never builds or hosts one). Owner or admin only, runs
+   * synchronously (up to about 18 s). Answers `{ ok, discoveryReceiptId?,
+   * discovery: { authMode, verification, provider, displayName, mcpUrl } }`,
+   * or a CLI-only `cliDetection`. A 404, 409 or 422 means HQ cannot connect
+   * it yet; the server records the attempt. Optional.
+   */
+  discoverDocs?(input: { companyUid: string; docsUrl: string }): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/uninstall with `{ companyUid, installationId }`:
+   * revoke a factory installation's connection. Owner or admin only. Optional.
+   */
+  uninstall?(input: { companyUid: string; installationId: string }): AdapterPromise<Json>;
   /**
    * POST /v1/integrations/factory/oauth/start with `{ companyUid, domain }`
    * or `{ companyUid, catalogEntryId }` and no `redirectUri`: the server's
@@ -1599,9 +2025,75 @@ export interface SyncApi {
   restoreFromUpstream(args: Json): AdapterPromise<void>;
   beginReauth(): AdapterPromise<Json>;
   listSyncableWorkspaces(): AdapterPromise<Json[]>;
+  /**
+   * Per-company download footprint (`get_sync_mode`; CLI `hq sync mode`).
+   * `isDefault: true` means no saved choice, so the effective mode is `all`.
+   * Footprint only: access is unchanged by either mode.
+   */
+  getCompanySyncMode?(slug: string): AdapterPromise<CompanySyncModeConfig>;
+  /** Set a company's footprint to `all` or `shared` (`set_sync_mode`). */
+  setCompanySyncMode?(
+    slug: string,
+    mode: CompanySyncMode,
+  ): AdapterPromise<CompanySyncModeConfig>;
+}
+
+/** Download footprint choices the desktop exposes; `custom` stays CLI-only. */
+export type CompanySyncMode = 'all' | 'shared';
+
+/** Wire shape of `get_sync_mode` / `set_sync_mode` (`MembershipSyncConfig`). */
+export interface CompanySyncModeConfig {
+  membershipId: string;
+  syncMode: 'all' | 'shared' | 'custom';
+  isDefault: boolean;
+  customPaths?: string[] | null;
+  updatedBy?: string | null;
+}
+
+/** One installed app, as `detect_work_apps` reports it. */
+export interface FoundWorkApp {
+  /** macOS `CFBundleIdentifier`; null on Windows. */
+  bundleId: string | null;
+  name: string;
+}
+
+/** One configured MCP server: its name and host only, never a URL or a credential. */
+export interface FoundMcpServer {
+  tool: "claude_code" | "claude_desktop" | "cursor" | "codex";
+  name: string;
+  transport: "http" | "sse" | "stdio" | "unknown";
+  /** Host only; null for local, unparsable or URL-less servers. */
+  host: string | null;
+  local: boolean;
+  /** A credential field is present in the config; its value was never read. */
+  hasCredentialFields: boolean;
+  enabled: boolean;
+}
+
+/** The answer of `detect_work_apps` (apps/sync/src-tauri/src/commands/work_apps.rs). */
+export interface FoundWorkApps {
+  platform: "macos" | "windows" | "linux";
+  scannedAtMs: number;
+  apps: FoundWorkApp[];
+  mcpServers: FoundMcpServer[];
+  sources: {
+    source: "apps" | FoundMcpServer["tool"];
+    outcome: "read" | "missing" | "unreadable" | "invalid" | "unsupported" | "budget";
+    count: number;
+  }[];
+  truncated: boolean;
 }
 
 /** Desktop-only group (capability: canLaunchApps). */
+/** Claude Code permission modes a launch may ask for. */
+export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
+
+export interface ClaudeLaunchOptions {
+  permissionMode?: ClaudePermissionMode;
+  /** Initial prompt, passed to `claude` as its positional prompt argument. */
+  prompt?: string;
+}
+
 export interface ShellApi {
   openInEditor(path: string): AdapterPromise<void>;
   openClaudeCodeLink(url: string): AdapterPromise<void>;
@@ -1615,14 +2107,29 @@ export interface ShellApi {
    */
   openCodexDeepLink(url: string): AdapterPromise<void>;
   openFileInClaude(path: string): AdapterPromise<void>;
-  launchClaudeCode(path: string): AdapterPromise<void>;
+  /**
+   * Open a terminal at `path` running `claude`. `permissionMode` adds
+   * `--permission-mode <mode>` (the Daily Brief asks for bypassPermissions);
+   * omitted, the launch is unchanged.
+   */
+  launchClaudeCode(path: string, opts?: ClaudeLaunchOptions): AdapterPromise<void>;
   /** Open the Codex desktop app (the ChatGPT app's Codex surface) with the
    *  folder loaded as the workspace and an optional pre-typed composer prompt.
    *  Backed by the `launch_codex_workspace` command (ChatGPT-bundled CLI's
    *  `codex app <path>` + delayed `codex://threads/new?prompt=` follow-up). */
   launchCodexWorkspace(path: string, prompt?: string): AdapterPromise<void>;
+  /** Open `{ path, tool }` (tool: claude | codex | grok) in a terminal. An
+   *  optional `prompt` string is handed to the tool as its first prompt. */
   launchCliInTerminal(args: Json): AdapterPromise<void>;
   detectAiTools(): AdapterPromise<Json>;
+  /**
+   * Names-only scan of this computer's work apps (`detect_work_apps`): app
+   * bundle ids and names, and the MCP servers configured in Claude Code,
+   * Claude Desktop, Cursor and Codex by name and host. The values of a
+   * server's credential fields and arguments are never read. Optional:
+   * hosts without the scan leave it out. See {@link FoundWorkApps}.
+   */
+  detectWorkApps?(): AdapterPromise<FoundWorkApps>;
   pickFolder(): AdapterPromise<string | null>;
   pickFile(kind: string): AdapterPromise<string | null>;
 }
@@ -1639,6 +2146,12 @@ export interface AppShellApi {
   consumePendingRoute(): AdapterPromise<string | null>;
   takePendingMessagesTarget(): AdapterPromise<Json | null>;
   setActiveCompany(slug: string): AdapterPromise<void>;
+  /**
+   * The company the native read gate is bound to, or null. A surface that
+   * binds a company for one read puts this back afterwards. Hosts without a
+   * native gate omit it.
+   */
+  getActiveCompany?(): AdapterPromise<string | null>;
   openDriftDetail(report: Json): AdapterPromise<void>;
   openMeetingPermissionsWindow(): AdapterPromise<void>;
   notificationPermissionState(): AdapterPromise<string>;
@@ -1759,6 +2272,11 @@ export interface LocalBotRow {
    * copy (`chat/bot-display-names.ts`); readers fall back to `name`.
    */
   displayName?: string;
+  /**
+   * `assistant` for the person's assistant (the setup bot), from an hq-cli
+   * that reports the cloud role marker. Absent on older CLI versions.
+   */
+  role?: string;
   agentUid: string;
   ownerUid: string;
   runtime: "claude" | "codex" | "grok";
@@ -1819,6 +2337,10 @@ export interface LocalBotRow {
 export interface RemoteBotRow {
   /** Local folder name (what `adopt`/`start` take). */
   name: string;
+  /** The cloud name, from an hq-cli that reports it. Absent on older CLI versions. */
+  displayName?: string;
+  /** `assistant` for the person's assistant (the setup bot). Absent on older CLI versions. */
+  role?: string;
   agentUid: string;
   /** `personal` | `company`, as the cloud record has it. */
   kind: string;
@@ -1849,6 +2371,10 @@ export interface RemoteBotRow {
 /** One bot's outcome in `hq bot restore --json`. */
 export interface BotRestoreRow {
   name: string;
+  /** The cloud name, from an hq-cli that reports it. Absent on older CLI versions. */
+  displayName?: string;
+  /** `assistant` for the person's assistant (the setup bot). Absent on older CLI versions. */
+  role?: string;
   agentUid: string;
   /** `restored` = brought back here; `repaired` = new credentials for one already here. */
   action:
@@ -1954,6 +2480,22 @@ export interface LocalBotsApi {
   configure?(name: string, settings: LocalBotSettingsInput): AdapterPromise<Json>;
   promote?(name: string, companyUid: string): AdapterPromise<Json>;
   /**
+   * Set the model a bot asks its runtime for (`hq bot set-model <name>
+   * <model|default>`), from its next message. Used by the runtime repair
+   * card's "Use a supported model". Optional for older hosts.
+   */
+  setModel?(name: string, model: string): AdapterPromise<Json>;
+  /**
+   * Run one test turn with a runtime (and model) exactly as a bot would
+   * (`hq bot probe --runtime <r> [--model <m>] [--effort <e>] [--timeout
+   * <s>]`): `{ ok, class, detail, runtime, model, modelFallback? }`. A failing
+   * check is a value with `ok: false`, not an error. An hq CLI that predates
+   * the command answers `{ supported: false }`. The repair card passes the
+   * runtime and model; the New bot flow adds the bot's thinking level and a
+   * shorter timeout. Optional for older hosts.
+   */
+  probe?(runtime: SessionProviderId, model?: string | null, options?: LocalBotProbeOptions): AdapterPromise<Json>;
+  /**
    * The local bots this ACCOUNT owns, each flagged `here` or not
    * (`hq bot list --remote`). The one source of truth for "the person owns
    * this bot and this computer cannot run it". Optional: older hosts and the
@@ -1973,7 +2515,309 @@ export interface LocalBotsApi {
   restore?(options?: { all?: boolean }): AdapterPromise<BotRestoreResult>;
 }
 
+/** The event every line of a context scan arrives on: `{ scanId, event }`. */
+export const IMPORT_SCAN_EVENT = "import-scan://event";
+
+/** How a context scan ended, as the host reports it. */
+export interface ImportScanEndView {
+  /** "done" | "failed" | "cancelled" | "timeout" | "unavailable" | "no_hq" (no HQ folder) */
+  status: string;
+  lines?: number;
+  dropped?: number;
+}
+
+/**
+ * Desktop-only (visual first run, "Bring in your context"): reads this
+ * computer's coding-tool history with `hq import scan --json --stream`. The
+ * host validates each line and emits it as `IMPORT_SCAN_EVENT` with the
+ * scan's id; nothing leaves the computer. One scan at a time.
+ */
+/** Settings > Storage (`hq storage status --json`). Desktop-only. */
+export interface StorageLocalTranche {
+  id: string;
+  label: string;
+  from?: string | null;
+  to?: string | null;
+  commit_count: number;
+  est_bytes: number;
+}
+
+export interface StorageCloudTranche {
+  id: string;
+  label: string;
+  count: number;
+  bytes: number;
+}
+
+export interface StorageCloudCompany {
+  company: string;
+  available: boolean;
+  error?: string | null;
+  current_bytes: number;
+  noncurrent_bytes: number;
+  noncurrent_count: number;
+  delete_markers: number;
+  tranches: StorageCloudTranche[];
+  /** Owner or admin: may delete old versions. Absent on older CLIs. */
+  can_delete?: boolean | null;
+}
+
+export interface StorageStatus {
+  local: {
+    available: boolean;
+    reason?: string | null;
+    root?: string | null;
+    git_dir_bytes: number;
+    working_tree_bytes: number;
+    commit_count: number;
+    oldest_commit_at?: string | null;
+    newest_commit_at?: string | null;
+    tranches: StorageLocalTranche[];
+    /** Tool bookmarks (e.g. refs/cmux/last-turn/*) that prune clears. */
+    extra_refs?: number;
+    /** Branches, tags or a stash that still reach old history. */
+    holding_refs?: StorageHoldingRef[];
+    holding_refs_count?: number;
+    /** Bytes an undo backup still holds, freed at `reclaim_after`. */
+    pending_reclaim_bytes?: number | null;
+    reclaim_after?: string | null;
+  };
+  cloud: StorageCloudCompany[];
+  /**
+   * Big files that can move to HQ cloud. Absent on CLIs without offload, and
+   * on newer CLIs that leave the big-file scan out of status
+   * (`big_files_included: false`; read them with `StorageApi.bigFiles`).
+   */
+  offload?: StorageOffloadStatus | null;
+  /** Cloud history could not be read at all (e.g. signed out). */
+  cloud_error?: string | null;
+  generated_at?: string | null;
+  /**
+   * `false`: this CLI left the big-file scan out of status; `hq storage
+   * big-files` has it. Absent on older CLIs, whose status carries `offload`.
+   */
+  big_files_included?: boolean | null;
+  reclaim?: StorageReclaim | null;
+}
+
+/** A branch, tag or stash that keeps old backup history alive. */
+export interface StorageHoldingRef {
+  name: string;
+  commit_date?: string | null;
+}
+
+/** Top-level `reclaim`: expired undo backups the CLI dropped first. */
+export interface StorageReclaim {
+  available: boolean;
+  dropped?: number | null;
+  freed_bytes?: number | null;
+  reason?: string | null;
+}
+
+export interface StorageCountBytes {
+  count: number;
+  bytes: number;
+}
+
+/** `hq storage big-files --json`: the big-file scan on its own. */
+export interface StorageBigFiles {
+  offload?: StorageOffloadStatus | null;
+  generated_at?: string | null;
+}
+
+/** `hq storage status --json` → `offload`. */
+export interface StorageOffloadStatus {
+  /** Old copies of big files in local backup history. */
+  history_candidates: StorageCountBytes;
+  /** Big files in the HQ folder not opened or changed for a while. */
+  current_candidates: StorageCountBytes;
+  /** `.hqcloud` placeholders already on this computer. */
+  placeholders: StorageCountBytes;
+  /** `false` when big files can't move at all (old HQ, old HQ sync). */
+  available?: boolean | null;
+  reason?: string | null;
+  /**
+   * `true` only once the CLI can move current files. Absent means it can't,
+   * so `current_candidates` is not offered.
+   */
+  current_available?: boolean | null;
+  /** Why current files can't move yet. Never shown raw. */
+  current_reason?: string | null;
+  /**
+   * Old big files a linked worktree still uses. They can't be freed, so they
+   * are not in `history_candidates`. `worktrees` are paths; show folder names only.
+   */
+  history_held?: (StorageCountBytes & { worktrees?: string[] | null }) | null;
+}
+
+/** `hq storage offload --json` (with `--dry-run`: what would move). */
+export interface StorageOffloadResult {
+  history: {
+    uploaded: number;
+    bytes: number;
+    freed_bytes: number;
+    /** Old copies that would move (dry run) or were eligible. */
+    candidates?: number | null;
+    candidate_bytes?: number | null;
+    /** `false` with a `reason` when history copies could not move. */
+    available?: boolean | null;
+    reason?: string | null;
+    /** Undo backup the rewrite kept (normally none: offload frees at once). */
+    backup_ref?: string | null;
+    /** When `pending_reclaim_bytes` are freed (dry run: an estimate). */
+    reclaim_after?: string | null;
+    pending_reclaim_bytes?: number | null;
+    /** Old versions a linked worktree still uses: left in place, never counted as freed. */
+    held_by_worktrees?: StorageCountBytes | null;
+    /** Worktree paths that still use old history. Show folder names only. */
+    worktree_holders?: string[] | null;
+    /** Set when the run stops before changing anything, e.g. nothing_to_free. */
+    refused?: string | null;
+    /** The CLI's plain sentence for `refused`. */
+    message?: string | null;
+  };
+  current: {
+    offloaded: Array<{ path: string; bytes: number }>;
+    freed_bytes: number;
+    /** `false` with a `reason` while current files can't move yet. */
+    available?: boolean | null;
+    reason?: string | null;
+  };
+  /** Per-file failures; the UI only counts them. */
+  errors: unknown[];
+  dry_run?: boolean;
+  reclaim?: StorageReclaim | null;
+}
+
+/** Native event while HQ opens a `.hqcloud` placeholder. */
+export const CLOUD_FILE_EVENT = "cloud-file://fetch";
+
+export interface CloudFileEventPayload {
+  /** Original file name, e.g. `promo.mp4`. */
+  name: string;
+  /** Full placeholder path; keys the toast. */
+  path?: string | null;
+  phase: "fetching" | "opened" | "error";
+  /**
+   * `offline` | `no-access` | `orphaned` | `not-member` | `update-hq` |
+   * `open-failed` | `failed`.
+   */
+  error?: string | null;
+}
+
+export interface StoragePruneRequest {
+  /** YYYY-MM-DD; local snapshots older than this are removed. */
+  localBefore?: string | null;
+  /** YYYY-MM-DD; old cloud file versions older than this are removed. */
+  cloudBefore?: string | null;
+  company?: string | null;
+}
+
+/**
+ * `hq storage prune --json`. `local` is the hq-core script's output with
+ * `available` added: a dry run reports `would_remove_commits`/`est_bytes`, a
+ * real run `removed_commits` and git dir size `before`/`after`.
+ * `retained_refs` counts other refs that can keep old history alive.
+ */
+export interface StorageLocalPruneResult {
+  available: boolean;
+  reason?: string | null;
+  would_remove_commits: number;
+  est_bytes: number;
+  removed_commits: number;
+  total_commits_before: number;
+  flattened_merges: number;
+  retained_refs: number;
+  /** Dry run: tool bookmarks prune would clear. */
+  refs_to_remove?: number;
+  /** Real run: tool bookmarks prune cleared. */
+  refs_removed?: number;
+  refs_to_remove_sample?: string[];
+  before?: { git_dir_bytes: number } | null;
+  after?: { git_dir_bytes: number } | null;
+  /** `nothing_to_free`: branches, tags or a stash still reach the history. */
+  refused?: string | null;
+  holding_refs?: StorageHoldingRef[];
+  holding_refs_count?: number;
+  /** Real run: bytes freed right away. */
+  freed_bytes?: number | null;
+  /** The 24 h undo backup, and when the bytes it holds are freed. */
+  backup_ref?: string | null;
+  reclaim_after?: string | null;
+  pending_reclaim_bytes?: number | null;
+}
+
+export interface StorageCloudPruneResult {
+  company: string;
+  deleted_count: number;
+  deleted_bytes: number;
+  errors: string[];
+}
+
+export interface StoragePruneResult {
+  local?: StorageLocalPruneResult | null;
+  cloud: StorageCloudPruneResult[];
+  dry_run: boolean;
+  reclaim?: StorageReclaim | null;
+}
+
+/**
+ * Desktop-only. A failure whose message is `update-hq` means the hq CLI is
+ * missing or predates `hq storage`.
+ */
+/** Last good `hq storage status`, kept by the desktop host. */
+export interface CachedStorageStatus {
+  status: StorageStatus;
+  /** ISO time the scan finished. */
+  fetched_at: string;
+  hq_root: string;
+}
+
+export interface StorageApi {
+  /**
+   * `hq storage status --json`. Slow (minutes cold). The host runs one scan
+   * at a time: a call made while one runs joins it.
+   */
+  status(): AdapterPromise<StorageStatus>;
+  /** Last known status without scanning; null when there is none. */
+  cachedStatus?(): AdapterPromise<CachedStorageStatus | null>;
+  /**
+   * `hq storage big-files --json`: the slow big-file scan, separate from
+   * status so the summary shows first. One scan at a time on the host. An
+   * older CLI without the command fails with `update-hq`; its status carries
+   * big files instead.
+   */
+  bigFiles?(): AdapterPromise<StorageBigFiles>;
+  previewPrune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
+  prune(request: StoragePruneRequest): AdapterPromise<StoragePruneResult>;
+  /** `hq storage offload --dry-run --json`. */
+  previewOffload(): AdapterPromise<StorageOffloadResult>;
+  /** `hq storage offload --yes --json`: upload, verify, free space. */
+  offload(): AdapterPromise<StorageOffloadResult>;
+  /** Download a `.hqcloud` placeholder's original and open it. */
+  openCloudFile(path: string): AdapterPromise<string>;
+  /**
+   * The UI is listening for `CLOUD_FILE_EVENT`: returns events that fired
+   * before (e.g. a cold start from a Finder double-click).
+   */
+  cloudFileUiReady(): AdapterPromise<CloudFileEventPayload[]>;
+}
+
+export interface ContextImportApi {
+  /** Run a scan under this id. Resolves when it ends, however it ends. */
+  scanStart(scanId: string): AdapterPromise<ImportScanEndView>;
+  /** Stop the running scan with this id. */
+  scanCancel(scanId: string): AdapterPromise<boolean>;
+}
+
 /** Input to `LocalBotsApi.configure`. */
+export interface LocalBotProbeOptions {
+  /** Thinking level the check runs at; null = the runtime's default. */
+  effort?: string | null;
+  /** Give up after this many seconds (the CLI's own default is 120). */
+  timeoutSecs?: number | null;
+}
+
 export interface LocalBotSettingsInput {
   model?: string | null;
   effort?: string | null;
@@ -1985,6 +2829,12 @@ export interface SettingsApi {
   getSettings(): AdapterPromise<Json>;
   /** Persist a minimal patch over the latest host settings. */
   updateSettings(patch: Json): AdapterPromise<void>;
+  /** Read the signed-in person's server-backed HQ Anywhere preference. */
+  getHqAnywherePersonSetting?(): AdapterPromise<boolean>;
+  /** Write the signed-in person's server-backed HQ Anywhere preference. */
+  putHqAnywherePersonSetting?(value: boolean): AdapterPromise<void>;
+  /** Apply or remove the native global Claude Code/Codex setup. */
+  syncHqAnywhereGlobal?(enabled: boolean): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
   /**
    * The welcome channel's guided setup finished on this machine. Optional:
@@ -2246,6 +3096,10 @@ export interface PlatformAdapter {
   readonly sessions: SessionsApi;
   /** Optional: only the desktop host can run bots on this machine. */
   readonly bots?: LocalBotsApi;
+  /** Optional: only the desktop host can read this computer's context. */
+  readonly contextImport?: ContextImportApi;
+  /** Optional: only the desktop host can read and prune local HQ backups. */
+  readonly storage?: StorageApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
   /** Native calling (US-014). Unsupported hosts implement it as refusals. */

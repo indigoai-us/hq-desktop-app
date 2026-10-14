@@ -77,7 +77,7 @@ bytes the browser receives are the bytes the app ships.
 | `scroll · messages · worst frame` | the single worst frame in the gesture — this is what a hitch feels like | ~17–25ms |
 | `scroll · messages · dropped frames` | % of frames over the 16.7ms budget | <1% |
 | `interaction · switch conversation` | input → next painted frame when clicking a rail row | ~45ms |
-| `interaction · command palette` | input → next painted frame on Cmd-K | ~13ms |
+| `interaction · command palette` | Cmd-K → first painted frame where the palette input is visible | ~13ms |
 | `interaction · composer keystroke` | mean per-character cost of typing in the composer | ~15ms |
 | `idle · main-thread busy` | total time in >50ms long tasks while untouched for 30s | **0ms** |
 | `idle · render batches /min` | DOM mutation batches (≈ render passes) while untouched | **~2/min** |

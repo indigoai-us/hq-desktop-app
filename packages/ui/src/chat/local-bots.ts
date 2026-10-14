@@ -8,7 +8,9 @@
  * supervisor's.
  */
 
+import { isUnknownPeerLabel } from "./peer-names.js";
 import type { LocalBotRow } from "@hq/platform";
+import { withAssistantNames } from "./assistant-owner.js";
 import { botRowDisplayName, type BotDisplayNames } from "./bot-display-names.js";
 import type { ConversationRow } from "./sidebar-model.js";
 
@@ -41,9 +43,24 @@ export function localBotRuntimeLabel(id: string): string {
 
 /**
  * Contacts plus the user's own local bots (as DM contacts), skipping any bot
- * the server roster already listed. Bots carry no company.
+ * the server roster already listed. Bots carry no company. The assistant's
+ * row reads its one name (`assistant`), never its handle or slug.
  */
 export function localBotsAsContacts<T extends { personUid: string }>(
+  contacts: readonly T[],
+  bots: readonly LocalBotRow[] | null | undefined,
+  displayNames?: BotDisplayNames | null,
+  assistant?: { agentUid: string; name: string } | null,
+): Array<T | { personUid: string; displayName: string; companyUid: null }> {
+  return withAssistantNames(
+    mergeLocalBots(contacts, bots, displayNames) as Array<Record<string, unknown>>,
+    assistant,
+    "personUid",
+    "displayName",
+  ) as Array<T | { personUid: string; displayName: string; companyUid: null }>;
+}
+
+function mergeLocalBots<T extends { personUid: string }>(
   contacts: readonly T[],
   bots: readonly LocalBotRow[] | null | undefined,
   displayNames?: BotDisplayNames | null,
@@ -62,7 +79,17 @@ export function localBotsAsContacts<T extends { personUid: string }>(
 
 /** Result of the sidebar "New bot" entry point (see CreateModal). */
 export type LocalBotEntryResult =
-  | { ok: true; agentUid: string; name: string }
+  | {
+      ok: true;
+      agentUid: string;
+      name: string;
+      /**
+       * What a new enough hq-cli did for `hq bot create setup` (contract
+       * section 3): made it, adopted the account's one, or found it here.
+       * Absent on older CLI versions.
+       */
+      outcome?: "created" | "adopted" | "existing";
+    }
   | {
       ok: false;
       /** Plain sentence, safe to render (see `plainBotFailure`). */
@@ -91,12 +118,17 @@ const RAW_FAILURE_SHAPES: readonly RegExp[] = [
   /\b(?:HTTP|status)\s*[:=]?\s*\d{3}\b/i,
   /\b\d{3}\s+(?:Bad Request|Unauthorized|Forbidden|Not Found|Conflict|Internal Server Error)\b/i,
   /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
+  // AUDIT-3: host command names (local_bots_create) are machine text too.
+  /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/,
   /type="|slug="|uid="/,
   /\b(?:Error|TypeError|RangeError|SyntaxError):/,
   /\bat\s+\S+\s+\([^)]*:\d+:\d+\)/,
   /\{[\s\S]*"\w+"\s*:/,
   /(?:^|\s)\/(?:Users|home|private|tmp|var|opt)\//,
   /\bhq\s+bot\b/,
+  // A CLI flag the installed hq does not know ("unknown option '--x'").
+  /\bunknown option\b/i,
+  /(?:^|\s)--[a-z][a-z-]+/,
 ];
 
 /** True when `raw` is machine text that must not be shown to a person. */
@@ -195,10 +227,46 @@ export function localBotPresence(
  * treated as fine in that case: flashing "is starting up" over a bot that is
  * answering messages reads as broken, and the next listing settles it.
  */
-export function localBotNeedsOfflineNotice(bot: LocalBotRow | null | undefined): boolean {
+export function localBotNeedsOfflineNotice(
+  bot: LocalBotRow | null | undefined,
+  opts: { startingSinceMs?: number | null; nowMs?: number; justCreated?: boolean } = {},
+): boolean {
   if (!bot || bot.online === true) return false;
   if (bot.online === null && bot.processAlive && bot.state !== "failed" && !bot.promotionHold) return false;
+  if (localBotInStartupGrace(bot, opts.startingSinceMs ?? null, opts.nowMs ?? Date.now(), opts.justCreated === true)) return false;
   return true;
+}
+
+/**
+ * How long a starting bot may go without its first check-in before the
+ * conversation says anything. A bot the app or `hq packages install
+ * --start-bot` just started reaches HQ Cloud a few seconds after its launchd
+ * agent loads; until then HQ reports it offline. Telling the person a bot they
+ * just added is offline reads as broken, so a starting bot gets this long.
+ */
+export const LOCAL_BOT_STARTUP_GRACE_MS = 45_000;
+
+/**
+ * A bot is starting when its process is up, its launchd agent is loaded, or it
+ * is `justCreated` (it appeared in the list while the app was open and has
+ * never checked in); it has not failed, and it is not held for promotion. `startingSinceMs` is when
+ * the app first saw it in that not-yet-online state; within the grace period
+ * no notice shows. A bot that never checks in still gets the notice after it.
+ */
+export function localBotInStartupGrace(
+  bot: LocalBotRow,
+  startingSinceMs: number | null,
+  nowMs: number,
+  justCreated = false,
+): boolean {
+  if (startingSinceMs === null) return false;
+  if (bot.state === "failed" || bot.promotionHold) return false;
+  // A pack install lists its new bot a moment before the launchd agent
+  // loads, so a bot that just appeared and has never checked in gets the
+  // grace too. A bot that was already here and is not running gets the
+  // notice at once.
+  if (!bot.processAlive && !bot.daemonLoaded && !(justCreated && !bot.lastHeartbeatAt)) return false;
+  return nowMs - startingSinceMs < LOCAL_BOT_STARTUP_GRACE_MS;
 }
 
 /**
@@ -281,4 +349,60 @@ export function localBotCompanies(
   return (workspaces ?? [])
     .filter((w) => w.kind !== "personal" && Boolean(w.cloudUid) && w.slug.trim())
     .map((w) => ({ slug: w.slug.trim(), label: w.displayName?.trim() || w.slug.trim() }));
+}
+
+/**
+ * Whether a local bot belongs on a company's surfaces (OWNER-014).
+ *
+ * A bot on this Mac shows in a company only when it holds that company's
+ * membership (`companies`, matched by slug through the workspace list) or is
+ * being handed to that company (`promotionHold`). A personal bot with neither
+ * shows in Personal only, never in whichever company happens to be open.
+ */
+export function localBotInCompany(
+  bot: Pick<LocalBotRow, "companies" | "promotionHold">,
+  companyUid: string | null | undefined,
+  workspaces: ReadonlyArray<{ slug: string; cloudUid: string | null }> | null | undefined,
+): boolean {
+  const uid = (companyUid ?? "").trim();
+  if (!uid) return false;
+  if (bot.promotionHold?.companyUid?.trim() === uid) return true;
+  const slugs = new Set((bot.companies ?? []).map((s) => s.trim()).filter(Boolean));
+  if (slugs.size === 0) return false;
+  return (workspaces ?? []).some((w) => (w.cloudUid ?? "").trim() === uid && slugs.has(w.slug.trim()));
+}
+
+/** The local bots that belong to one company (see `localBotInCompany`). */
+export function localBotsForCompany<T extends Pick<LocalBotRow, "companies" | "promotionHold">>(
+  bots: readonly T[] | null | undefined,
+  companyUid: string | null | undefined,
+  workspaces: ReadonlyArray<{ slug: string; cloudUid: string | null }> | null | undefined,
+): T[] {
+  return (bots ?? []).filter((bot) => localBotInCompany(bot, companyUid, workspaces));
+}
+
+/** Local bots as peer-directory rows: the agent uid with the bot's display name (or handle). */
+export function localBotPeers(
+  bots: readonly LocalBotRow[] | null | undefined,
+): Array<{ personUid: string; displayName: string }> {
+  return (bots ?? [])
+    .map((b) => ({ personUid: b.agentUid.trim(), displayName: (b.displayName ?? "").trim() || b.name.trim() }))
+    .filter((b) => b.personUid && b.displayName);
+}
+
+/**
+ * The name a thinking row shows for an agent: the conversation title when it
+ * names someone, else the local bot's name, else the fallback. A bot made a
+ * moment ago is titled "Unknown bot" until HQ's rosters list it.
+ */
+export function thinkingAgentName(
+  title: string | null | undefined,
+  agentUid: string,
+  bots: readonly LocalBotRow[] | null | undefined,
+  fallback: string,
+): string {
+  const t = (title ?? "").trim();
+  if (t && !isUnknownPeerLabel(t) && !/^(?:prs|agt|agent)_/i.test(t)) return t;
+  const local = localBotPeers(bots).find((b) => b.personUid === agentUid.trim());
+  return local?.displayName || t || fallback;
 }

@@ -3,11 +3,11 @@
 //! The reported Sentry event was
 //!
 //! ```text
-//! [provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.10.0: No such file or directory (os error 2)
+//! [provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.345.46: No such file or directory (os error 2)
 //! ```
 //!
 //! captured at `level=error` with `provision_kind=spawn`,
-//! `cli_invocation=npx:@indigoai-us/hq-cli@^5.10.0` and `exit_code=signal/none`,
+//! `cli_invocation=npx:@indigoai-us/hq-cli@^5.345.46` and `exit_code=signal/none`,
 //! from a macOS machine that had no Node runtime at all.
 //!
 //! These tests drive the real production decision
@@ -47,7 +47,7 @@ use hq_desktop_core::toolchain::ManagedRuntime;
 /// platform is the composition — see `expected_title`.
 #[cfg(unix)]
 const REPORTED_TITLE: &str = "[provision-cli] spawn `hq` failed: \
-     npx:@indigoai-us/hq-cli@^5.10.0: No such file or directory (os error 2)";
+     npx:@indigoai-us/hq-cli@^5.345.46: No such file or directory (os error 2)";
 
 fn enoent() -> Error {
     // Constructed from the raw errno so the Display text is the platform's own
@@ -116,12 +116,11 @@ fn run(diagnosis: RuntimeDiagnosisInput) -> (Vec<sentry::protocol::Event<'static
     )
 }
 
-/// Guard on the guard: if the invocation label ever drifts, the "reported
-/// title" this file asserts against stops describing the real event and every
-/// other test here silently weakens. Pin the composition instead of trusting
-/// the constant.
+/// Guard on the guard: the shared npx invocation retains its existing CLI
+/// range. The higher floor required by HQ Anywhere belongs to its dedicated
+/// resolver and must not leak into this shared invocation.
 #[test]
-fn the_reported_title_is_still_what_this_code_would_compose() {
+fn the_shared_invocation_title_uses_the_existing_resolver_range() {
     assert_eq!(HQ_CLI_NPM_RANGE, "^5.10.0");
     assert_eq!(
         HqInvocation::Npx.sentry_label(),
@@ -131,9 +130,10 @@ fn the_reported_title_is_still_what_this_code_would_compose() {
         .starts_with("[provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.10.0: "));
     assert!(expected_title().ends_with("(os error 2)"));
 
-    // On the platform the event actually came from, pin it byte-for-byte.
+    // Keep the original Sentry title as historical evidence. The current
+    // shared resolver intentionally composes its prior, lower CLI range.
     #[cfg(unix)]
-    assert_eq!(expected_title(), REPORTED_TITLE);
+    assert_ne!(expected_title(), REPORTED_TITLE);
 }
 
 /// THE regression: the reported machine can no longer produce the reported

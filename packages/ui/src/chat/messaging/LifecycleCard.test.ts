@@ -459,15 +459,15 @@ describe("LifecycleCard controls and states", () => {
     expect(skipped.querySelector(".lc-k")).toBeNull();
   });
 
-  it("locks control scale in CSS: 32 / 28 / 40 / 36", () => {
+  it("locks control scale in CSS: inputs 32, buttons at the standard, 40 / 36", () => {
     const css = readFileSync(
       resolve("src/chat/messaging/LifecycleCard.svelte"),
       "utf8",
     );
     expect(css).toMatch(/\.lc-in \{[\s\S]*?height: 32px;/);
-    expect(css).toMatch(/\.lc-seg-btn \{[\s\S]*?height: 32px;/);
-    expect(css).toMatch(/\.lc-btn \{[\s\S]*?height: 32px;/);
-    expect(css).toMatch(/\.lc-btn\.link,[\s\S]*?height: 28px;/);
+    expect(css).toMatch(/\.lc-seg-btn \{[\s\S]*?height: var\(--hq-btn-h\);/);
+    expect(css).toMatch(/\.lc-btn \{[\s\S]*?height: var\(--hq-btn-h\);/);
+    expect(css).toMatch(/\.lc-btn\.link,[\s\S]*?height: var\(--hq-btn-h\);/);
     expect(css).toMatch(/\.lc-radio \{[\s\S]*?height: 40px;/);
     expect(css).toMatch(/\.lc-ro \{[\s\S]*?height: 36px;/);
     expect(css).toMatch(/text-decoration: none;/);

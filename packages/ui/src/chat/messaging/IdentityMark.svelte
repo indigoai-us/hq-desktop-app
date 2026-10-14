@@ -1,19 +1,29 @@
 <script lang="ts">
   import { agentAvatarFor } from "./agent-avatars";
   import { paintableAvatarSrc } from "../../avatars/csp-image-src.js";
+  import TierMark from "../../badges/TierMark.svelte";
+  import { TIER_MARK_MIN_AVATAR, topBadgeFor } from "../../badges/badge-tier.js";
+  import type { BadgeTier } from "../../badges/badge-catalog.js";
 
   interface Props {
     kind?: "person" | "group" | "agent" | "channel" | "file";
     label?: string;
     members?: string[];
     privateChannel?: boolean;
-    size?: "small" | "regular";
+    size?: "small" | "regular" | "large";
     online?: boolean;
     /** Real avatar photo — falls back to the monogram when absent or on error. */
     avatarUrl?: string | null;
     /** Agent uid — drives the deterministic generated avatar when the agent
      *  has no assigned photo. Ignored for non-agent kinds. */
     agentUid?: string | null;
+    /** A person's uid (`prs_*`): their tier mark comes from the badges read by it. */
+    personUid?: string | null;
+    /**
+     * The tier mark at the bottom right. Left out, a person's tier comes
+     * from their badges (as on their profile); null shows none.
+     */
+    tier?: BadgeTier | null;
   }
 
   let {
@@ -25,7 +35,21 @@
     online = false,
     avatarUrl = null,
     agentUid = null,
+    personUid = null,
+    tier = undefined,
   }: Props = $props();
+
+  const AVATAR_PX = { small: 22, regular: 32, large: 48 } as const;
+  /**
+   * The badge behind the mark, looked up only when no tier is given and the
+   * picture is big enough to carry the mark (so small avatars read nothing).
+   */
+  const top = $derived(
+    tier === undefined && kind === "person" && AVATAR_PX[size] >= TIER_MARK_MIN_AVATAR && (label.trim() || personUid)
+      ? topBadgeFor({ kind: "person", name: label, uid: personUid })
+      : null,
+  );
+  const shownTier = $derived(tier !== undefined ? tier : (top?.tier ?? null));
 
   // Photo > deterministic generated avatar (agents only) > monogram/glyph.
   // paintableAvatarSrc drops arbitrary http(s); the packaged CSP would
@@ -61,6 +85,7 @@
 <span
   class="identity"
   class:small={size === "small"}
+  class:large={size === "large"}
   data-kind={kind}
   aria-hidden="true"
 >
@@ -69,8 +94,8 @@
       class="avatar-img"
       src={effectiveAvatarUrl}
       alt=""
-      width={size === "small" ? 22 : 32}
-      height={size === "small" ? 22 : 32}
+      width={size === "small" ? 22 : size === "large" ? 48 : 32}
+      height={size === "small" ? 22 : size === "large" ? 48 : 32}
       loading="lazy"
       decoding="async"
       onerror={() => (imageBroken = true)}
@@ -121,6 +146,7 @@
     <span class="monogram">{initials(label)}</span>
   {/if}
   {#if online}<span class="presence"></span>{/if}
+  {#if shownTier && AVATAR_PX[size] >= TIER_MARK_MIN_AVATAR}<TierMark tier={shownTier} avatar={AVATAR_PX[size]} badge={top} />{/if}
 </span>
 
 <style>
@@ -147,6 +173,14 @@
     height: 22px;
     flex-basis: 22px;
     font-size: 8px;
+  }
+  /* Profile header: the same mark scaled up, initials at the regular size's
+     proportion (12px in 32px). */
+  .identity.large {
+    width: 48px;
+    height: 48px;
+    flex-basis: 48px;
+    font-size: 18px;
   }
   .monogram {
     display: grid;
@@ -225,14 +259,21 @@
     width: 13px;
     height: 13px;
   }
+  /* Top right: the bottom right holds the tier mark (badges/TierMark).
+     Small pictures carry no mark, so theirs stays at the bottom right. */
   .presence {
     position: absolute;
     right: -1px;
-    bottom: 0;
+    top: 0;
     width: 6px;
     height: 6px;
     border: 1.5px solid var(--v4-ground, var(--pop-bg));
     border-radius: 50%;
     background: var(--v4-ok, #42d77d);
+  }
+
+  .small .presence {
+    top: auto;
+    bottom: 0;
   }
 </style>

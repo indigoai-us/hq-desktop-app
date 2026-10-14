@@ -7,7 +7,6 @@ import {
 } from "./copy-prompts.js";
 
 const ALL_KINDS: IssueKind[] = [
-  "sync-conflict",
   "sync-failed",
   "auth-expired",
   "hq-cli-update-available",
@@ -34,17 +33,6 @@ describe("buildPrompt", () => {
     const out = buildPrompt({ kind: "made-up-kind" as IssueKind });
     expect(out).toContain("unknown issue kind");
     expect(out).toContain("made-up-kind");
-  });
-
-  it("embeds the conflict count in sync-conflict prompts", () => {
-    const out = buildPrompt({ kind: "sync-conflict", payload: { count: 7 } });
-    expect(out).toContain("7 file conflicts");
-  });
-
-  it("singularises a single conflict", () => {
-    const out = buildPrompt({ kind: "sync-conflict", payload: { count: 1 } });
-    expect(out).toContain("1 file conflict");
-    expect(out).not.toContain("1 file conflicts");
   });
 
   it("directs daemon-owned sync diagnosis to the daemon log and keeps the legacy log for history", () => {
@@ -106,14 +94,6 @@ describe("buildPrompt", () => {
     expect(out).toContain("cloud_uid mismatch");
   });
 
-  it("handles missing payload gracefully", () => {
-    const issue: Issue = { kind: "sync-conflict" };
-    const out = buildPrompt(issue);
-    // Falls back to generic copy without count
-    expect(out).toContain("sync conflicts");
-    expect(out).not.toContain("NaN");
-  });
-
   describe("hq-core-update-failed prompts", () => {
     // The footer update-failed surface must NEVER expose a raw "exit N" chip
     // to the user — it hands the agent a guided-update prompt instead. Guard
@@ -167,9 +147,6 @@ describe("buildPrompt", () => {
     // The whole point of the registry is to give the receiving agent
     // concrete next actions — guard against the templates becoming generic
     // "please help me" prose.
-    expect(buildPrompt({ kind: "sync-conflict" })).toContain(
-      "/resolve-conflicts",
-    );
     expect(buildPrompt({ kind: "auth-expired" })).toContain("/hq-login");
     expect(buildPrompt({ kind: "sync-failed" })).toMatch(
       /\/diagnose|\/investigate/,

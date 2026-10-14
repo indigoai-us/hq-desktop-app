@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * The in-call control bar (US-020).
    *
@@ -286,7 +287,7 @@
         data-testid="moderation-mute-request"
         disabled={inert || !selectedPeer}
         onclick={() => selectedPeer && onmuterequest?.(selectedPeer)}
-      >
+      ><RailIcon name="stop" />
         Ask to mute
       </button>
       <button
@@ -295,7 +296,7 @@
         data-testid="moderation-mute-force"
         disabled={inert || !selectedPeer}
         onclick={() => selectedPeer && onmuteforce?.(selectedPeer)}
-      >
+      ><RailIcon name="stop" />
         Mute now
       </button>
       <button
@@ -304,7 +305,7 @@
         data-testid="moderation-remove"
         disabled={inert || !selectedPeer}
         onclick={(event) => openConfirm("remove", event)}
-      >
+      ><RailIcon name="trash" />
         Remove
       </button>
       {/if}
@@ -314,7 +315,7 @@
         data-testid="moderation-end"
         disabled={inert}
         onclick={(event) => openConfirm("end", event)}
-      >
+      ><RailIcon name="stop" />
         End for everyone
       </button>
     </div>
@@ -367,7 +368,7 @@
       data-testid="moderation-confirm-cancel"
       bind:this={cancelButton}
       onclick={closeConfirm}
-    >
+    ><RailIcon name="x" />
       Cancel
     </button>
     <button
@@ -382,7 +383,7 @@
         if (action === "end") void onendroom?.();
         else if (peer) void onremovepeer?.(peer);
       }}
-    >
+    ><RailIcon name="trash" />
       {confirming === "end" ? "End room" : "Remove"}
     </button>
   </div>

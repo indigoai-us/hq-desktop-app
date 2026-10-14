@@ -33,6 +33,29 @@ describe("heavy message bodies", () => {
     expect(isHeavyMessageBody("log line without cues\n".repeat(80))).toBe(true);
   });
 
+  it("renders a long bot summary written in plain paragraphs as Markdown, not a plain dump", () => {
+    // Live walkthrough 2026-10-12: the Agency Guide's 1,700-character wrap-up
+    // (four paragraphs, no lists or headings) rendered as a scrolling monospace box.
+    const body = "Fair enough, the button for it stays on the card below. That's setup done, for HQ and for the agency.\n\nRidgeline Growth now has a shared HQ that every bot and teammate you add starts from. In it today: your playbook with the rate card, scope rules, checklist, audit criteria, voice and your site's look (Files, under Knowledge, Agency Playbook); a home for Lumen Analytics, Harbor & Pine and Atlas Field Services, each with its contract, proposal, call notes, exports, contacts and open items filled in with sources (Files, under Clients); and Slack and Google Drive connected, with Drive marked as where agreements and transcripts live.\n\nTo use it, keep working in Claude Code, Codex or Cursor (the buttons below open it); ask me for an agent in Slack for the team whenever you want one; and other agents connect from the HQ console at hq.computer, under Agents, which is also where you manage your team and billing. When you bring on Jess, Dev or an account manager, I'll add them and share what you choose, Google Drive included. You can also message me and any other bots right here.\n\nNothing is left waiting on your side. The one thing I'd flag: Atlas has an acceptance email but no signed SOW, and your checklist says no work before one.\n\nWhere next? I can walk you through a client's workspace, or kick off onboarding on one. Harbor & Pine is the best first run: a tracking problem and five scope requests are already sitting in its notes. I'm here whenever you need me.";
+    expect(body.length).toBeGreaterThan(1_200);
+    expect(isHeavyMessageBody(body)).toBe(false);
+    expect(renderMessageBodyMarkdown(body).startsWith('<pre class="dm-plain">')).toBe(false);
+    // Log output of the same size is still a dump.
+    expect(isHeavyMessageBody("2026-10-12T13:45:12Z info received 4956e9f3 (3 chars, dm) status=ok\n".repeat(25))).toBe(true);
+  });
+
+  it("renders a short message with one long sign-in link as Markdown, not a plain dump", () => {
+    // Live walkthrough 2026-10-12: a bot's Slack sign-in message (a 580-character
+    // link plus a few sentences) rendered as a scrolling monospace box.
+    const link = `https://slack.com/oauth/v2/authorize?client_id=1&state=${"x".repeat(560)}`;
+    const body = `Google Drive is connected. I read the three transcripts there.\n\nSlack next: a sign-in page should have opened. If it didn't, use this link:\n\n${link}\n\nOnly a workspace owner can connect it for now. If the page says HQ can't be installed, tell me.`.repeat(1) + " More plain words.".repeat(20);
+    expect(body.length).toBeGreaterThan(1_200);
+    expect(isHeavyMessageBody(body)).toBe(false);
+    expect(renderMessageBodyMarkdown(body).startsWith('<pre class="dm-plain">')).toBe(false);
+    // A real dump with a link in it is still a dump.
+    expect(isHeavyMessageBody(`log line without cues ${link}\n`.repeat(80))).toBe(true);
+  });
+
   it("treats large JSON dumps as heavy and renders them as a plain pre", () => {
     const body =
       `${JSON.stringify({ outcome: "doc-wrong", commandsRun: ["a"] })}\n`.repeat(
@@ -120,21 +143,21 @@ describe("message Markdown normalization", () => {
 });
 
 describe("message body URL autolinking", () => {
-  it("autolinks bare http and https URLs with rel=noopener noreferrer", () => {
+  it("autolinks bare http and https URLs with rel=noopener noreferrer and a readable label", () => {
     const http = renderMessageBodyMarkdown("see http://example.com/docs");
     expect(http).toContain(
-      '<a href="http://example.com/docs" target="_blank" rel="noopener noreferrer">http://example.com/docs</a>',
+      '<a href="http://example.com/docs" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="auto" title="http://example.com/docs">example.com › docs</a>',
     );
     const https = renderMessageBodyMarkdown("see https://example.com/docs");
     expect(https).toContain(
-      '<a href="https://example.com/docs" target="_blank" rel="noopener noreferrer">https://example.com/docs</a>',
+      '<a href="https://example.com/docs" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="auto" title="https://example.com/docs">example.com › docs</a>',
     );
   });
 
   it("does not swallow a trailing period after a bare URL", () => {
     const html = renderMessageBodyMarkdown("See https://example.com.");
     expect(html).toContain(
-      '<a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a>.',
+      '<a href="https://example.com" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="auto" title="https://example.com">example.com</a>.',
     );
     expect(html).not.toContain('href="https://example.com."');
   });
@@ -151,7 +174,7 @@ describe("message body URL autolinking", () => {
   it("still renders markdown [label](https://…) links", () => {
     const html = renderMessageBodyMarkdown("see [docs](https://example.com/x)");
     expect(html).toContain(
-      '<a href="https://example.com/x" target="_blank" rel="noopener noreferrer">docs</a>',
+      '<a href="https://example.com/x" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="text">docs</a>',
     );
   });
 
@@ -187,7 +210,7 @@ describe("message body URL autolinking", () => {
   it("preserves escaped &amp; in a URL and does not decode it", () => {
     const html = renderMessageBodyMarkdown("https://example.com?a=1&b=2");
     expect(html).toContain(
-      '<a href="https://example.com?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">https://example.com?a=1&amp;b=2</a>',
+      '<a href="https://example.com?a=1&amp;b=2" target="_blank" rel="noopener noreferrer" class="message-link" data-link-preview="auto" title="https://example.com?a=1&amp;b=2">example.com</a>',
     );
     expect(html).not.toContain('href="https://example.com?a=1&b=2"');
   });

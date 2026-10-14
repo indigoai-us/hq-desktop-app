@@ -32,7 +32,8 @@ function channelRow(
   return {
     channelId,
     type: "chat",
-    scope: "company",
+    // Project channels: company-scoped channels leave the Home inbox.
+    scope: "project",
     companyUid: "cmp_1",
     name,
     lastActivityAt: today(30),

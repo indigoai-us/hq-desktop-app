@@ -126,10 +126,11 @@ export type PrefsLoadState =
 /** Map a failed adapter result to a load state. 404 is "not available yet". */
 export function prefsFailureState(failure: { code?: string; message?: string }): PrefsLoadState {
   if (failure.code === "http-404") return { kind: "unavailable" };
-  return {
-    kind: "error",
-    message: failure.message?.trim() || "Couldn't load notification settings.",
-  };
+  // The server/transport text is logged, never shown.
+  if (failure.message?.trim()) {
+    console.warn("[settings] notification settings load failed", failure.message);
+  }
+  return { kind: "error", message: "Couldn't load notification settings. Try again." };
 }
 
 /** Error copy for a failed save. */
@@ -140,5 +141,8 @@ export function prefsSaveErrorMessage(failure: { code?: string; message?: string
   if (failure.code === "INVALID_NOTIFY_PREFS") {
     return "That setting wasn't accepted. Try again.";
   }
-  return failure.message?.trim() || "Couldn't save notification settings.";
+  if (failure.message?.trim()) {
+    console.warn("[settings] notification settings save failed", failure.message);
+  }
+  return "Couldn't save notification settings. Try again.";
 }

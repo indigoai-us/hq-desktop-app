@@ -23,6 +23,7 @@ export {
   reportIdleWait,
   setAutoUpdateEnabled,
   applyAvailableUpdate,
+  setBackgroundUpdatesOff,
   applyRecommendBanner,
   dismissRecommendBanner,
   clearRecommendBanner,
@@ -32,7 +33,8 @@ export {
 export * from "./appearance-seam";
 
 export { default as SettingsPage } from "./SettingsPage.svelte";
-export { default as ShellSettings } from "./ShellSettings.svelte";
+// ShellSettings loads through shell/settings-lazy.ts so it stays out of the
+// initial JS graph; a static re-export here would pull it back in.
 export type { ShellSettingsProfile } from "./ShellSettings.svelte";
 export { default as CompaniesSettingsPane } from "./CompaniesSettingsPane.svelte";
 export {

@@ -80,6 +80,12 @@ export function createDesktopAdapter(
     files: {
       ...tauri.files,
       listVaultPrefix: web.files.listVaultPrefix,
+      getAccessTree: web.files.getAccessTree,
+      listAccessGroups: web.files.listAccessGroups,
+      listOutboundGroupGrants: web.files.listOutboundGroupGrants,
+      listInboundGroupGrants: web.files.listInboundGroupGrants,
+      createGroupGrant: web.files.createGroupGrant,
+      revokeGroupGrant: web.files.revokeGroupGrant,
       presignVaultGet: web.files.presignVaultGet,
       presignVaultPut: web.files.presignVaultPut,
     },

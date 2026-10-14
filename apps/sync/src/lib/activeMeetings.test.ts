@@ -212,6 +212,26 @@ describe('activeMeetings — Rust bridge-death terminal event resolves the row',
     expect(rowState('win-1')).toBeUndefined();
     expect(activeStopWatchdogCount()).toBe(0);
   });
+
+  it('keeps a reconciled recording visible as Finalising until Recall resolves it', () => {
+    emit('recording:reconciled', {
+      outcome: 'finalising',
+      windowId: 'restart-win',
+      recordingId: 'rec-finalising',
+    });
+
+    expect(rowState('restart-win')).toMatchObject({
+      state: 'finalising',
+      recordingId: 'rec-finalising',
+    });
+
+    emit('recording:reconciled', {
+      outcome: 'saved',
+      windowId: 'restart-win',
+      recordingId: 'rec-finalising',
+    });
+    expect(rowState('restart-win')).toBeUndefined();
+  });
 });
 
 // Regression for B2: when a meeting CALL ends, the bridge emits `meeting:closed`.

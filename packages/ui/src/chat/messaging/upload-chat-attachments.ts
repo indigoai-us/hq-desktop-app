@@ -191,10 +191,15 @@ function uploadFailureMessage(err: unknown, fileName: string): string {
   return `Could not upload ${fileName}`;
 }
 
-/** Friendly prefix, then the server's error text verbatim. */
+/**
+ * Plain copy for a failed upload. Server text is logged, not shown. The one
+ * exception is a structured plan-limit refusal (`planLimit`), whose sentence is
+ * hq-pro's user-facing plan copy and sits beside the Upgrade control.
+ */
 export function formatUploadServerError(
   serverMessage: string,
   fileName: string,
+  opts: { planLimit?: boolean } = {},
 ): string {
   const text = serverMessage.trim();
   if (!text || /failed to fetch|networkerror|^load failed$/i.test(text)) {
@@ -203,7 +208,9 @@ export function formatUploadServerError(
   if (text.startsWith("Could not upload ") || text.startsWith("Couldn't attach ")) {
     return text;
   }
-  return `Could not upload ${fileName}: ${text}`;
+  if (opts.planLimit) return `Could not upload ${fileName}: ${text}`;
+  console.warn("[upload] attachment upload failed", text);
+  return `Could not upload ${fileName}. Try again.`;
 }
 
 export async function uploadChatAttachments(opts: {
@@ -242,6 +249,7 @@ export async function uploadChatAttachments(opts: {
         formatUploadServerError(
           signed.message || "Could not prepare the upload",
           file.name,
+          { planLimit: isPlanLimitCode(signed.code) },
         ),
         { upgradeUrl: signed.upgradeUrl, planLimit: isPlanLimitCode(signed.code) },
       );
@@ -251,7 +259,9 @@ export async function uploadChatAttachments(opts: {
       const refusal = presignItemRefusal(signed.value);
       if (refusal) {
         throw new ChatAttachmentUploadError(
-          formatUploadServerError(refusal.message, file.name),
+          formatUploadServerError(refusal.message, file.name, {
+            planLimit: refusal.planLimit,
+          }),
           refusal,
         );
       }

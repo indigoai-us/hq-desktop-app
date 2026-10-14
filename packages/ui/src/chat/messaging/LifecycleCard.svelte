@@ -683,8 +683,8 @@
   }
 
   .lc-seg-btn {
-    height: 32px;
-    padding: 0 14px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 0;
     border-left: 1px solid var(--line, var(--pop-border));
     background: transparent;
@@ -820,10 +820,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    height: 32px;
-    min-height: 32px;
-    padding: 0 14px;
+    gap: var(--hq-btn-gap);
+    height: var(--hq-btn-h);
+    min-height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--line2, var(--pop-border));
     border-radius: 0;
     background: transparent;
@@ -854,9 +854,9 @@
 
   .lc-btn.link,
   .lc-btn.row {
-    height: 28px;
-    padding: 0 10px;
-    font-size: 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
+    font-size: 13px;
     text-decoration: none;
   }
 

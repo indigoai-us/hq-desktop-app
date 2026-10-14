@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mount, unmount, tick } from "svelte";
 
 import ChannelStatusPopover from "./ChannelStatusPopover.svelte";
+import { dropdownOptions } from "../test-support/dropdown.js";
 import type { ChannelStatusModel } from "./channel-status-model.js";
 
 let host: HTMLDivElement;
@@ -210,11 +211,9 @@ describe("ChannelStatusPopover — multi-repo project block", () => {
     });
     await tick();
 
-    const select = host.querySelector(
-      '[data-testid="status-branch-select"]',
-    ) as HTMLSelectElement | null;
-    expect(select).not.toBeNull();
-    expect(Array.from(select!.options).map((o) => o.value)).toEqual([
+    expect(
+      (await dropdownOptions(host, "status-branch-select")).map((o) => o.value),
+    ).toEqual([
       "feature/a",
       "feature/b",
     ]);

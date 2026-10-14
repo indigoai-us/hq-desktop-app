@@ -73,7 +73,7 @@ describe('desktop-alt persona shell boot matrix', () => {
       expect(host.querySelector('[data-testid="desktop-shell"]')).toBeTruthy();
       await vi.waitFor(
         () => {
-          expect(host.querySelector('[data-testid="channel-skeleton"]')).toBeNull();
+          expect(host.querySelector('[data-testid="channel-loading"]')).toBeNull();
           if (persona.expectedPaint === 'setup') {
             expect(host.querySelector('[data-testid="setup-channel-intro"]')).toBeTruthy();
           } else {

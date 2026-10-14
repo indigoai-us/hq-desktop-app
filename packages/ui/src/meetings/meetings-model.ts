@@ -28,6 +28,60 @@ export interface MeetingEvent {
   sourceCompanyUid?: string;
   sourceAccountId?: string;
   signals?: unknown;
+  /** Calendar attendees (Google shape); the room strip shows them as invited. */
+  attendees?: MeetingAttendee[];
+  /** US-021: live room presence from the notetaker, when the host has it. */
+  room?: MeetingRoom | null;
+  /** US-021: agenda outline for the live canvas. */
+  outline?: MeetingOutlineEntry[];
+  /** US-021: notetaker notes for the live canvas. */
+  notes?: MeetingNoteEntry[];
+  /** Calendar event body; often HTML from Google. The canvas reads it as the agenda. */
+  description?: string | null;
+  location?: string | null;
+  organizer?: { email?: string; displayName?: string | null; self?: boolean } | null;
+  htmlLink?: string | null;
+  conferenceData?: { entryPoints?: Array<{ entryPointType?: string; uri?: string }> } | null;
+  /** Set when the row comes from recorded meeting history, not the calendar. */
+  recorded?: { meetingId: string; durationLabel: string | null; hasSignals: boolean } | null;
+}
+
+export interface MeetingAttendee {
+  email?: string;
+  displayName?: string | null;
+  responseStatus?: string;
+  self?: boolean;
+  resource?: boolean;
+  organizer?: boolean;
+}
+
+export interface MeetingRoom {
+  live?: boolean;
+  speakerId?: string | null;
+  participants?: Array<{
+    id: string;
+    name?: string;
+    kind?: "human" | "bot";
+    live?: boolean;
+    speaking?: boolean;
+  }>;
+}
+
+export interface MeetingOutlineEntry {
+  id?: string;
+  title: string;
+  detail?: string | null;
+  state?: "done" | "now" | "todo";
+  children?: Array<{ id?: string; title: string; done?: boolean }>;
+}
+
+export interface MeetingNoteEntry {
+  id?: string;
+  author?: string;
+  kind?: "human" | "bot";
+  at?: string;
+  text?: string;
+  typing?: boolean;
 }
 
 export interface ScheduledBot {
@@ -42,6 +96,12 @@ export interface ScheduledBot {
   scheduledStartTime?: string | null;
   autoScheduled: boolean;
   errorMessage?: string | null;
+  /** Terminal Recall subcode when a bot could not join (optional for older servers). */
+  terminalSubCode?: string | null;
+  /** Plain-language reason for a terminal join failure (optional for older servers). */
+  failureReason?: string | null;
+  /** Company whose vault receives the transcript (hq-pro `companyId`). */
+  companyId?: string | null;
   /**
    * US-010 — the real source-landed signal from hq-pro: true only when the
    * transcript has actually been persisted to the vault as a queryable source
@@ -257,8 +317,8 @@ export function meetingUrlsMatch(
  *   2. recurring series ID
  *   3. normalized meeting URL (covers missing/stale calendar IDs)
  *
- * Only active lifecycle statuses match so a failed/cancelled bot never blocks
- * re-invite.
+ * Active bots and terminal failed bots match. A failed bot stays visible long
+ * enough to explain what happened, while its row action still permits re-invite.
  */
 export function botForEvent(
   event: MeetingEvent,
@@ -266,7 +326,14 @@ export function botForEvent(
   scheduledBots: ScheduledBot[] = Array.from(botsByEventId.values()),
 ): ScheduledBot | undefined {
   const exact = botsByEventId.get(event.id);
-  if (exact && isActiveBotStatus(exact.status)) return exact;
+  const activeExact = scheduledBots.find(
+    (bot) => isActiveBotStatus(bot.status) && bot.calendarEventId === event.id,
+  ) ?? (exact && isActiveBotStatus(exact.status) ? exact : undefined);
+  if (activeExact) return activeExact;
+  const failedExact = exact?.status === "failed"
+    ? exact
+    : scheduledBots.find((bot) => bot.status === "failed" && bot.calendarEventId === event.id);
+  if (failedExact) return failedExact;
 
   // A series and a meeting URL are reused by later occurrences. A finished
   // recording belongs only to its own occurrence, never the next meeting.
@@ -279,20 +346,20 @@ export function botForEvent(
 
   const seriesId = recurringSeriesId(event);
   if (seriesId) {
-    const seriesBot = scheduledBots.find((bot) => {
-      if (!isActiveBotStatus(bot.status) || !matchesOccurrence(bot)) return false;
-      return bot.calendarSeriesId?.trim() === seriesId;
-    });
+    const matchesSeries = (bot: ScheduledBot): boolean =>
+      matchesOccurrence(bot) && bot.calendarSeriesId?.trim() === seriesId;
+    const seriesBot = scheduledBots.find((bot) => isActiveBotStatus(bot.status) && matchesSeries(bot))
+      ?? scheduledBots.find((bot) => bot.status === "failed" && matchesSeries(bot));
     if (seriesBot) return seriesBot;
   }
 
   const eventUrl = normalizeMeetingUrl(eventMeetingUrl(event));
   if (!eventUrl) return undefined;
 
-  return scheduledBots.find((bot) => {
-    if (!isActiveBotStatus(bot.status) || !matchesOccurrence(bot)) return false;
-    return normalizeMeetingUrl(bot.meetingUrl) === eventUrl;
-  });
+  const matchesUrl = (bot: ScheduledBot): boolean =>
+    matchesOccurrence(bot) && normalizeMeetingUrl(bot.meetingUrl) === eventUrl;
+  return scheduledBots.find((bot) => isActiveBotStatus(bot.status) && matchesUrl(bot))
+    ?? scheduledBots.find((bot) => bot.status === "failed" && matchesUrl(bot));
 }
 
 /**
@@ -350,7 +417,8 @@ export type BotAttachmentState =
   | "joining"
   | "recording"
   | "processing"
-  | "completed";
+  | "completed"
+  | "failed";
 
 export function botAttachmentState(
   bot: ScheduledBot | undefined,
@@ -368,6 +436,8 @@ export function botAttachmentState(
       return "processing";
     case "done":
       return "completed";
+    case "failed":
+      return "failed";
   }
 }
 
@@ -530,8 +600,10 @@ export function pickLiveMeeting(
     recording: 0,
     starting: 1,
     stopping: 2,
-    detected: 3,
-    error: 4,
+    // Keep unresolved ended recordings ahead of new detections and errors.
+    finalising: 3,
+    detected: 4,
+    error: 5,
   };
   return (
     [...activeMeetings].sort((a, b) => {
@@ -705,6 +777,23 @@ export function eventMeetingUrl(e: MeetingEvent): string | null {
 }
 
 /**
+ * Whether a calendar event belongs in the Meetings list at all. Hidden:
+ * free/busy placeholders ("Busy") and untitled events, and anything with
+ * neither a location nor a join link. A physical address counts as a
+ * location. Every consumer (rail sections, live pick, toolbar counts, canvas
+ * next/previous) reads the store's already-filtered list, so they agree.
+ */
+export function isListableMeeting(
+  e: Pick<MeetingEvent, "summary" | "location" | "meetingUrl" | "hangoutLink" | "conferenceData">,
+): boolean {
+  const title = (e.summary ?? "").trim().toLowerCase();
+  if (!title || title === "busy") return false;
+  if ((e.location ?? "").trim()) return true;
+  if ((e.meetingUrl ?? "").trim() || (e.hangoutLink ?? "").trim()) return true;
+  return Boolean(e.conferenceData?.entryPoints?.some((p) => (p.uri ?? "").trim()));
+}
+
+/**
  * Human platform label for a meeting row — "Google Meet" / "Zoom" / "Teams" /
  * "Webex", else empty string when the URL is missing or unrecognized.
  */
@@ -784,7 +873,13 @@ export function resolveInviteCompanyId(
  *                stays "processing" — see below.
  */
 export type RowButtonKind =
-  "invite" | "invited" | "joining" | "in-call" | "processing" | "done";
+  | "invite"
+  | "invited"
+  | "joining"
+  | "in-call"
+  | "processing"
+  | "done"
+  | "failed";
 
 /**
  * US-010 — "Done — transcript saved" must reflect a transcript that ACTUALLY
@@ -803,6 +898,8 @@ export type RowButtonKind =
 export function rowButtonKind(bot: ScheduledBot | undefined): RowButtonKind {
   if (!bot) return "invite";
   switch (bot.status) {
+    case "failed":
+      return "failed";
     case "scheduled":
       return "invited";
     case "joining":
@@ -838,34 +935,21 @@ export function rowButtonLabel(kind: RowButtonKind, pending: boolean): string {
       return "Processing";
     case "done":
       return "Done";
+    case "failed":
+      return "Couldn't join";
   }
 }
 
 /**
- * Map a raw invoke rejection to friendly, recoverable copy. Tries to parse a
- * JSON `{ error | message }` payload first, then falls back to HTTP-status
+ * Map a raw invoke rejection to friendly, recoverable copy. Uses HTTP-status
  * heuristics (409 already-scheduled, 401 re-auth, 403 forbidden, 5xx server),
  * else the caller-supplied fallback. Mirrors the classic MeetingsWindow.
  */
 export function friendlyError(err: unknown, fallback: string): string {
   const raw = String(err ?? "").trim();
-  const jsonStart = raw.indexOf("{");
-  if (jsonStart >= 0) {
-    try {
-      const parsed = JSON.parse(raw.slice(jsonStart)) as {
-        error?: string;
-        message?: string;
-      };
-      if (typeof parsed.error === "string" && parsed.error.length > 0) {
-        return parsed.error;
-      }
-      if (typeof parsed.message === "string" && parsed.message.length > 0) {
-        return parsed.message;
-      }
-    } catch {
-      // Not JSON — fall through to HTTP-status heuristics below.
-    }
-  }
+  // The raw rejection (including any server JSON body) is logged, never
+  // shown: only the fixed copy below reaches the screen.
+  if (raw) console.warn("[meetings] request failed", raw);
   if (/\b409\b/.test(raw))
     return "A bot is already scheduled for this meeting.";
   if (/\b401\b/.test(raw)) return "You need to sign in again.";

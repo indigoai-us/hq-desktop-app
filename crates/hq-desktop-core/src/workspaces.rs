@@ -87,6 +87,10 @@ pub struct Workspace {
     /// `None` for the personal workspace and while the backend rolls out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_channel_id: Option<String>,
+    /// Presigned company website favicon (`/membership/me` `iconUrl`). Every
+    /// plan; independent of `branding_enabled`. Absent → initials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

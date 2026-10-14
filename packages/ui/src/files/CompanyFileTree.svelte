@@ -1,4 +1,6 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * CompanyFileTree — Obsidian-style collapsible folder tree (US-002, made LAZY
    * in US-010; DESKTOP-008 keyboard + filter).
@@ -34,6 +36,8 @@
     type LazyNode,
   } from "./file-tree.js";
   import "../chat/tokens.css";
+  import { fileTreeErrorReason } from "./company-read-scope.js";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
 
   interface Props {
     /**
@@ -50,6 +54,12 @@
     selectedPath?: string | null;
     /** Optional case-insensitive name filter over loaded nodes (DESKTOP-008). */
     filterQuery?: string;
+    /** Clears the name filter from the empty state (QA-058). */
+    onclearfilter?: () => void;
+    /** Last editor / live-edit mark for a row (US-025). */
+    rowNote?: (path: string) => { label: string; live: boolean } | null;
+    /** Plain-language reason shown under a failed root read. */
+    errorReason?: (err: unknown) => string;
   }
 
   let {
@@ -58,6 +68,9 @@
     onselect,
     selectedPath = null,
     filterQuery = "",
+    onclearfilter,
+    rowNote,
+    errorReason,
   }: Props = $props();
 
   // The lazily-built top-level node list (children of `rootPath`).
@@ -101,7 +114,7 @@
       .catch((err) => {
         console.error("list_hq_dir failed:", err);
         if (!cancelled && generation === treeGeneration) {
-          rootError = String(err);
+          rootError = errorReason ? errorReason(err) : fileTreeErrorReason(err);
           roots = [];
         }
       })
@@ -315,9 +328,10 @@
     <div
       class="ft-status"
       aria-label="Loading files"
+      aria-busy="true"
       data-testid="file-tree-loading"
     >
-      Loading…
+      <ReadLoader testid="file-tree-loader" onretry={() => (rootRetryNonce += 1)} />
     </div>
   {:else if rootError}
     <div
@@ -325,7 +339,7 @@
       role="alert"
       data-testid="file-tree-error"
     >
-      <span>Files unavailable</span>
+      <span class="ft-error-text"><span>Files unavailable</span><span class="ft-error-reason" data-testid="file-tree-error-reason">{rootError}</span></span>
       <button
         type="button"
         class="ft-retry"
@@ -333,18 +347,25 @@
         onclick={retryRoot}
         disabled={rootLoading}
         aria-busy={rootLoading}
-      >
+      ><RailIcon name="refresh" />
         {rootLoading ? "Retrying…" : "Retry"}
       </button>
     </div>
   {:else if rows.length === 0}
-    <div class="ft-status" data-testid="file-tree-empty">
-      {filtering ? "No matching files" : "No files"}
-    </div>
+    <ListEmptyState
+      total={roots.length}
+      shown={0}
+      query={filterQuery}
+      noun={["item", "items"]}
+      emptyCopy="No files"
+      onclear={onclearfilter}
+      testid="file-tree-empty"
+    />
   {:else}
     {#each rows as { node, depth } (node.path)}
       {@const meta = fileTreeRowMeta(node, rootPath)}
       {#if node.isDir}
+        {@const note = rowNote?.(node.path) ?? null}
         <div
           class="ft-dir-item"
           class:focused={node.path === focusedPath}
@@ -392,6 +413,12 @@
             {#if loadingPaths.has(node.path)}
               <span class="ft-spinner"></span>
             {/if}
+            {#if note}
+              <span class="ft-note">
+                {#if note.live}<i class="ft-live" aria-hidden="true"></i>{/if}
+                {note.label}
+              </span>
+            {/if}
           </div>
           {#if loadErrorPaths.has(node.path) && (filtering || expanded.has(node.path))}
             <div
@@ -408,13 +435,14 @@
                 onclick={() => void ensureLoaded(node)}
                 disabled={loadingPaths.has(node.path)}
                 aria-busy={loadingPaths.has(node.path)}
-              >
+              ><RailIcon name="refresh" />
                 {loadingPaths.has(node.path) ? "Retrying…" : "Retry"}
               </button>
             </div>
           {/if}
         </div>
       {:else}
+        {@const note = rowNote?.(node.path) ?? null}
         <button
           type="button"
           class="ft-row ft-file"
@@ -435,6 +463,12 @@
               <span class="ft-meta">{meta}</span>
             {/if}
           </span>
+          {#if note}
+            <span class="ft-note">
+              {#if note.live}<i class="ft-live" aria-hidden="true"></i>{/if}
+              {note.label}
+            </span>
+          {/if}
         </button>
       {/if}
     {/each}
@@ -460,7 +494,7 @@
     align-items: center;
     gap: 6px;
     width: 100%;
-    min-height: 32px;
+    min-height: 28px;
     height: auto;
     padding: 4px 8px;
     border: none;
@@ -468,9 +502,9 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 400;
-    line-height: 1.2;
+    line-height: 17px;
     text-align: left;
     cursor: pointer;
     transition: background 140ms ease;
@@ -493,10 +527,27 @@
 
   /* Selected file row — neutral emphasis (no purple, hard Indigo policy). */
   .ft-row.selected {
-    background: transparent;
-    box-shadow: inset 0 -1px 0 var(--v4-hairline);
+    background: var(--v4-active-row);
+    box-shadow: none;
     color: var(--v4-text-1);
-    font-weight: 600;
+    font-weight: 500;
+  }
+
+  .ft-note {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--v4-text-3);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .ft-live {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-ok);
   }
 
   .ft-copy {
@@ -516,9 +567,9 @@
     overflow: hidden;
     min-width: 0;
     color: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: inherit;
-    line-height: 1.25;
+    line-height: 17px;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
@@ -527,9 +578,9 @@
     overflow: hidden;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-weight: 400;
-    line-height: 1.3;
+    line-height: 16px;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
@@ -593,14 +644,24 @@
   .ft-status {
     padding: 12px;
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-align: center;
   }
 
+  .ft-error-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .ft-error-reason {
+    color: var(--t3, var(--v4-text-3));
+  }
   .ft-root-error,
   .ft-node-error {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     justify-content: center;
     gap: 8px;
   }
@@ -611,7 +672,7 @@
     padding-block: 3px;
     padding-right: 8px;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
   }
 
   .ft-retry {
@@ -622,7 +683,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 

@@ -191,6 +191,8 @@ enum CoreAutoUpdateDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CoreUpdateErrorKind {
     AlreadyInProgress,
+    /// Turned off for this build (a scratch build, `scratch_build.rs`).
+    Unavailable,
     InvalidCoreRoot,
     Network,
     RescueSpawn,
@@ -202,6 +204,7 @@ impl CoreUpdateErrorKind {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::AlreadyInProgress => "already_in_progress",
+            Self::Unavailable => "unavailable",
             Self::InvalidCoreRoot => "invalid_core_root",
             Self::Network => "network",
             Self::RescueSpawn => "rescue_spawn",
@@ -1812,6 +1815,7 @@ pub(crate) fn classify_core_update_error(
             classify_spawn_error(detail).unwrap_or_else(|| classify_rescue_stderr_failure(detail))
         }
         CoreUpdateErrorKind::AlreadyInProgress
+        | CoreUpdateErrorKind::Unavailable
         | CoreUpdateErrorKind::InvalidCoreRoot
         | CoreUpdateErrorKind::ChannelConfiguration
         | CoreUpdateErrorKind::Internal => RescueFailureCategory::Unknown,
@@ -1917,6 +1921,19 @@ impl Drop for CoreUpdateRunGuard {
 }
 
 pub(crate) fn try_begin_core_update() -> Result<CoreUpdateRunGuard, CoreUpdateError> {
+    try_begin_core_update_with(crate::scratch_build::active())
+}
+
+/// `try_begin_core_update` with the scratch-build switch passed in, so both
+/// answers can be tested in any build.
+pub(crate) fn try_begin_core_update_with(scratch: bool) -> Result<CoreUpdateRunGuard, CoreUpdateError> {
+    if scratch {
+        crate::scratch_build::skip("HQ Core update");
+        return Err(CoreUpdateError::new(
+            CoreUpdateErrorKind::Unavailable,
+            "HQ Core updates are turned off for this test build",
+        ));
+    }
     CORE_UPDATE_RUNNING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map(|_| CoreUpdateRunGuard)
@@ -3047,6 +3064,7 @@ struct CoreUpdateBaselinePersistenceDiagnosticTags {
     permission_state: &'static str,
     disk_state: &'static str,
     concurrent_writer: &'static str,
+    concurrent_writer_outcome: &'static str,
     stamp_state: String,
     outcome: &'static str,
     stamp_key: &'static str,
@@ -3094,6 +3112,8 @@ impl CoreUpdateBaselinePersistenceDiagnosticTags {
                     "invalid_input",
                     "serialization",
                     "not_found",
+                    "baseline_write_lost",
+                    "baseline_target_corrupt",
                     "permission_denied",
                     "already_exists",
                     "storage_full",
@@ -3130,6 +3150,15 @@ impl CoreUpdateBaselinePersistenceDiagnosticTags {
                     "temp_consumed_target_present",
                     "no_evidence",
                     "unknown",
+                ],
+            ),
+            concurrent_writer_outcome: bounded(
+                value("concurrent_writer_outcome"),
+                &[
+                    "baseline_match",
+                    "baseline_mismatch",
+                    "target_invalid",
+                    "not_classified",
                 ],
             ),
             stamp_state: stamp_tags.state,
@@ -3179,7 +3208,17 @@ fn send_core_update_baseline_persistence_warning(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let category = report.error_category.label();
-        let (message, fingerprint) = if report.diagnostic_tags.outcome == "refresh_pending" {
+        let (message, fingerprint) = if report.diagnostic_tags.error_kind == "baseline_write_lost" {
+            (
+                "Desktop Core baseline write lost to concurrent writer",
+                ["desktop-core-baseline-write-lost"],
+            )
+        } else if report.diagnostic_tags.error_kind == "baseline_target_corrupt" {
+            (
+                "Desktop Core baseline target corrupt after concurrent writer",
+                ["desktop-core-baseline-target-corrupt"],
+            )
+        } else if report.diagnostic_tags.outcome == "refresh_pending" {
             (
                 "Desktop Core baseline refresh pending",
                 ["desktop-core-baseline-refresh-pending"],
@@ -3223,6 +3262,10 @@ fn send_core_update_baseline_persistence_warning(
                     report.diagnostic_tags.concurrent_writer,
                 );
                 sentry_scope.set_tag(
+                    "persistence_concurrent_writer_outcome",
+                    report.diagnostic_tags.concurrent_writer_outcome,
+                );
+                sentry_scope.set_tag(
                     "persistence_stamp_state",
                     &report.diagnostic_tags.stamp_state,
                 );
@@ -3238,6 +3281,28 @@ fn send_core_update_baseline_persistence_warning(
                 );
             },
             || sentry::capture_message(message, sentry::Level::Warning),
+        );
+    }));
+}
+
+fn report_identical_concurrent_baseline_write() {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sentry::with_scope(
+            |scope| {
+                scope.set_fingerprint(Some(&["desktop-core-baseline-concurrent-writer"]));
+                scope.set_tag("operation", "baseline_persistence");
+                scope.set_tag(
+                    "persistence_concurrent_writer",
+                    "temp_consumed_target_present",
+                );
+                scope.set_tag("persistence_concurrent_writer_outcome", "baseline_match");
+            },
+            || {
+                sentry::capture_message(
+                    "Desktop Core concurrent writer persisted identical baseline",
+                    sentry::Level::Info,
+                )
+            },
         );
     }));
 }
@@ -3952,19 +4017,47 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
 
     match remote_tree {
         Ok(tree) => {
-            let blobs = tree
+            let blobs: BTreeMap<String, String> = tree
                 .into_iter()
                 .map(|(path, (sha, _))| (path, sha))
                 .collect();
-            if let Err(error) =
-                hq_desktop_core::drift_scope::persist_core_drift_baseline_with_diagnostics(
-                    hq_folder, &source, &commit, blobs,
-                )
-            {
+            let first_attempt =
+                hq_desktop_core::drift_scope::persist_core_drift_baseline_with_diagnostics_and_outcome(
+                    hq_folder, &source, &commit, blobs.clone(),
+                );
+            let (persisted_with_diagnostic, persistence_diagnostic) = match first_attempt {
+                Ok(
+                    hq_desktop_core::drift_scope::CoreDriftBaselinePersistenceOutcome::Written,
+                ) => (true, None),
+                Ok(
+                    hq_desktop_core::drift_scope::CoreDriftBaselinePersistenceOutcome::ConcurrentWriterAlreadyPersisted,
+                ) => {
+                    report_identical_concurrent_baseline_write();
+                    (true, None)
+                }
+                Err(error) if error.to_string().contains("error_kind=baseline_write_lost") => {
+                    // Keep the lost-write classification visible, then let the caller
+                    // retry the authoritative tree exactly once.
+                    match hq_desktop_core::drift_scope::persist_core_drift_baseline_with_diagnostics(
+                        hq_folder, &source, &commit, blobs,
+                    ) {
+                        Ok(()) => (true, Some(error.to_string())),
+                        Err(retry_error) => (
+                            false,
+                            Some(format!(
+                                "caller retry also failed: {retry_error}; initial lost write: {error}"
+                            )),
+                        ),
+                    }
+                }
+                Err(error) => (false, Some(error.to_string())),
+            };
+            if !persisted_with_diagnostic && persistence_diagnostic.is_some() {
+                let diagnostic = persistence_diagnostic.as_deref().unwrap_or_default();
                 log(
                     "hq-core-state",
                     &format!(
-                        "could not persist authoritative Core baseline {source}@{commit}: {error}; keeping refresh pending"
+                        "could not persist authoritative Core baseline {source}@{commit}: {diagnostic}; keeping refresh pending"
                     ),
                 );
                 persist_baseline_refresh_target(channel, &source, &commit, injected_path)?;
@@ -3973,7 +4066,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                     baseline_persisted: false,
                     refresh_pending: true,
                     fetch_failure_class: None,
-                    persistence_diagnostic: Some(error.to_string()),
+                    persistence_diagnostic,
                     stamp_key,
                 });
             }
@@ -4003,7 +4096,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                 baseline_persisted: true,
                 refresh_pending,
                 fetch_failure_class: None,
-                persistence_diagnostic: None,
+                persistence_diagnostic,
                 stamp_key,
             })
         }
@@ -5022,10 +5115,16 @@ fn skip_automatic_core_update_for_disabled_updates(
 fn defer_automatic_core_update_for_sync(
     candidate: CoreAutoUpdateCandidate<'_>,
     deferral: Option<(u32, Duration)>,
+    daemon_mode: bool,
 ) -> NativeCoreAutoUpdateOutcome {
+    let (count, age) = deferral.unwrap_or((0, Duration::ZERO));
     log(
         "hq-core-update",
-        "native auto-update deferred: sync in progress",
+        &format!(
+            "native auto-update deferred: sync in progress (host={}, deferral {count}/{CORE_UPDATE_SYNC_DEFERRAL_CAP}, first {}s ago)",
+            if daemon_mode { "daemon" } else { "app" },
+            age.as_secs()
+        ),
     );
     emit_core_update_event(
         "core_update_skipped",
@@ -5434,6 +5533,7 @@ where
         candidate,
         auto_updates,
         sync_in_progress,
+        crate::commands::hq_daemon_host::daemon_mode_active(),
         now,
         injected_path,
         || false,
@@ -5454,6 +5554,7 @@ async fn execute_native_core_auto_update_with_clock_and_preinstall_and_target_ch
     candidate: CoreAutoUpdateCandidate<'_>,
     auto_updates: bool,
     sync_in_progress: bool,
+    daemon_mode: bool,
     now: Now,
     injected_path: Option<&std::path::Path>,
     target_already_installed_after_guard: TargetAlreadyInstalled,
@@ -5472,7 +5573,6 @@ where
         automatic_target_baseline_refresh_pending_with_path(candidate.channel, injected_path);
     let mut sync_deferral = (sync_in_progress
         && auto_updates
-        && !crate::commands::hq_daemon_host::daemon_mode_active()
         && (candidate.version_behind || baseline_refresh_pending))
         .then(|| record_core_update_sync_deferral(now()));
     let mut sync_deferral_cap_reached = sync_deferral.is_some_and(|(_, _, capped)| capped);
@@ -5481,7 +5581,13 @@ where
         candidate.version_behind || baseline_refresh_pending,
         sync_in_progress && !sync_deferral_cap_reached,
     ) {
-        CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
+        CoreAutoUpdateDecision::Ignore => {
+            // Nothing to install, for example because sync delivered the
+            // release from another computer. The next release starts a fresh
+            // deferral streak.
+            reset_core_update_sync_deferral_streak();
+            NativeCoreAutoUpdateOutcome::Ignored
+        }
         CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled => {
             skip_automatic_core_update_for_disabled_updates(candidate)
         }
@@ -5489,6 +5595,7 @@ where
             defer_automatic_core_update_for_sync(
                 candidate,
                 sync_deferral.map(|(count, age, _)| (count, age)),
+                daemon_mode,
             )
         }
         CoreAutoUpdateDecision::Install => {
@@ -5511,9 +5618,6 @@ where
                     return NativeCoreAutoUpdateOutcome::DeferredForPrewarm;
                 }
                 AutomaticCoreUpdatePreinstall::DeferForSync => {
-                    if crate::commands::hq_daemon_host::daemon_mode_active() {
-                        return defer_automatic_core_update_for_sync(candidate, None);
-                    }
                     let checked_at = now();
                     let current_streak = core_update_sync_deferral_snapshot(checked_at);
                     if !current_streak.2 {
@@ -5522,6 +5626,7 @@ where
                             return defer_automatic_core_update_for_sync(
                                 candidate,
                                 Some((count, age)),
+                                daemon_mode,
                             );
                         }
                         sync_deferral = Some((count, age, capped));
@@ -5896,6 +6001,7 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
         CoreAutoUpdateCandidate::from(state),
         hq_desktop_core::hq_cli_update::auto_update_enabled(),
         crate::updater::sync_in_progress(),
+        crate::commands::hq_daemon_host::daemon_mode_active(),
         Instant::now,
         None,
         || automatic_core_update_target_already_installed(state),
@@ -5964,6 +6070,9 @@ async fn run_native_core_auto_update(app: &AppHandle, state: &CoreState) {
 /// staging-drift) with one and owns automatic Core installation natively.
 /// First check 30s after launch, then every 6h.
 pub fn setup_core_state_checker(app: &AppHandle) {
+    if !crate::scratch_build::launch_side_effect_allowed("HQ Core state checker and auto update") {
+        return;
+    }
     let post_sync_handle = app.clone();
     app.listen(crate::events::EVENT_SYNC_ALL_COMPLETE, move |_event| {
         let handle = post_sync_handle.clone();
@@ -6027,6 +6136,123 @@ mod tests {
         assert!(by_age.ready(start + CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP));
         by_age.reset();
         assert!(!by_age.ready(start + CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP));
+    }
+
+    // The HQ daemon syncs continuously, so its progress snapshot reads
+    // "syncing" at almost every check. Unbounded deferral there meant a new
+    // Core release never installed on daemon-hosted machines. The automatic
+    // rescue takes the exclusive sync operation lock (15-minute wait), so the
+    // same bounded deferral the desktop-hosted runner uses is safe here too.
+    #[tokio::test]
+    async fn daemon_mode_sync_deferrals_are_bounded_and_then_install() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        reset_core_update_sync_deferral_streak();
+        let home = TempDir::new().unwrap();
+        let candidate = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("16.0.13"),
+            target_version: "16.0.14-daemon-sync-deferral-cap",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let installs = Arc::new(AtomicUsize::new(0));
+        let start = Instant::now();
+        let mut outcomes = Vec::new();
+        for attempt in 0..CORE_UPDATE_SYNC_DEFERRAL_CAP {
+            let installs_for_call = Arc::clone(&installs);
+            let at = start + Duration::from_secs(60 * u64::from(attempt));
+            let outcome = execute_native_core_auto_update_with_clock_and_preinstall_and_target_check(
+                candidate,
+                true,
+                true,
+                true,
+                move || at,
+                Some(home.path()),
+                || false,
+                || async { AutomaticCoreUpdatePreinstall::DeferForSync },
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    installs_for_call.fetch_add(1, Ordering::AcqRel);
+                    Ok(CoreUpdateAutoInstall::new(0, true))
+                },
+            )
+            .await;
+            outcomes.push(outcome);
+        }
+        reset_core_update_sync_deferral_streak();
+
+        let cap = CORE_UPDATE_SYNC_DEFERRAL_CAP as usize;
+        assert!(
+            outcomes[..cap - 1]
+                .iter()
+                .all(|outcome| *outcome == NativeCoreAutoUpdateOutcome::DeferredForSync),
+            "{outcomes:?}"
+        );
+        assert_ne!(outcomes[cap - 1], NativeCoreAutoUpdateOutcome::DeferredForSync, "{outcomes:?}");
+        assert_eq!(installs.load(Ordering::Acquire), 1);
+    }
+
+    // A daemon-hosted machine can defer release A and then receive A through
+    // sync from another computer. The next check is up to date, so the
+    // deferral count for A must not carry over and cut short the grace that
+    // the next release B gets while sync is busy.
+    #[tokio::test]
+    async fn deferral_streak_resets_when_core_is_up_to_date() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        reset_automatic_target_states_for_test();
+        reset_core_update_sync_deferral_streak();
+        let home = TempDir::new().unwrap();
+        let release_a = CoreAutoUpdateCandidate {
+            channel: Channel::Release,
+            local_version: Some("16.0.13"),
+            target_version: "16.0.14-streak-reset-a",
+            is_eligible: true,
+            version_behind: true,
+        };
+        let up_to_date = CoreAutoUpdateCandidate {
+            local_version: Some("16.0.14-streak-reset-a"),
+            version_behind: false,
+            ..release_a
+        };
+        let release_b = CoreAutoUpdateCandidate {
+            local_version: Some("16.0.14-streak-reset-a"),
+            target_version: "16.0.15-streak-reset-b",
+            ..release_a
+        };
+        let installs = Arc::new(AtomicUsize::new(0));
+        let start = Instant::now();
+        let mut checks = vec![release_a; CORE_UPDATE_SYNC_DEFERRAL_CAP as usize - 1];
+        checks.push(up_to_date);
+        checks.push(release_b);
+        let mut outcomes = Vec::new();
+        for (attempt, candidate) in checks.into_iter().enumerate() {
+            let installs_for_call = Arc::clone(&installs);
+            let at = start + Duration::from_secs(60 * attempt as u64);
+            let outcome = execute_native_core_auto_update_with_clock_and_preinstall_and_target_check(
+                candidate,
+                true,
+                true,
+                true,
+                move || at,
+                Some(home.path()),
+                || false,
+                || async { AutomaticCoreUpdatePreinstall::DeferForSync },
+                move |_, run_guard, _| async move {
+                    let _run_guard = run_guard;
+                    installs_for_call.fetch_add(1, Ordering::AcqRel);
+                    Ok(CoreUpdateAutoInstall::new(0, true))
+                },
+            )
+            .await;
+            outcomes.push(outcome);
+        }
+        reset_core_update_sync_deferral_streak();
+
+        let last = outcomes.len() - 1;
+        assert_eq!(outcomes[last - 1], NativeCoreAutoUpdateOutcome::Ignored, "{outcomes:?}");
+        assert_eq!(outcomes[last], NativeCoreAutoUpdateOutcome::DeferredForSync, "{outcomes:?}");
+        assert_eq!(installs.load(Ordering::Acquire), 0);
     }
 
     // Snapshot of the hq-pro entries that can admit `core_update_failed`
@@ -6616,6 +6842,7 @@ mod tests {
             execute_native_core_auto_update_with_clock_and_preinstall_and_target_check(
                 candidate,
                 true,
+                false,
                 false,
                 Instant::now,
                 None,
@@ -9487,6 +9714,25 @@ error: clone failed";
         assert!(event.extra["baselinePersistenceDetail"]
             .as_str()
             .is_some_and(|detail| detail.contains("baseline refresh pending")));
+    }
+
+    #[test]
+    fn identical_concurrent_baseline_write_emits_only_bounded_outcome_tags() {
+        let events = sentry::test::with_captured_events_options(
+            report_identical_concurrent_baseline_write,
+            sentry::ClientOptions::default(),
+        );
+        let event = events.into_iter().next().expect("baseline match is measured");
+        assert_eq!(event.level, sentry::Level::Info);
+        assert_eq!(
+            event.tags.get("persistence_concurrent_writer_outcome").map(String::as_str),
+            Some("baseline_match")
+        );
+        assert_eq!(
+            event.tags.get("persistence_concurrent_writer").map(String::as_str),
+            Some("temp_consumed_target_present")
+        );
+        assert!(event.extra.is_empty());
     }
 
     #[test]

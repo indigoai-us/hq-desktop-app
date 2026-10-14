@@ -14,7 +14,7 @@
  * the HQ root — no pre-typed command.
  */
 
-import type { ShellApi } from "@hq/platform";
+import type { ClaudePermissionMode, ShellApi } from "@hq/platform";
 import { SETUP_LAUNCH_COMMANDS } from "../chat/setup-channel";
 import { buildClaudeCodeUrl } from "./claude-code-link";
 import {
@@ -56,6 +56,22 @@ export interface LaunchActionsInput {
    * path settles trust before that scan, so it keeps `prompt` unchanged.
    */
   deepLinkPrompt?: string;
+  /**
+   * Claude Code permission mode for the terminal CLI launch
+   * (`claude --permission-mode <mode>`). The Daily Brief passes
+   * "bypassPermissions"; every other caller omits it and launches as before.
+   * The `claude://code/new` deep link has no permission-mode parameter, so
+   * the desktop-app path cannot carry it.
+   */
+  permissionMode?: ClaudePermissionMode;
+  /**
+   * First prompt for the TERMINAL CLIs (grok, the codex CLI fallback, the
+   * claude CLI), passed to `launch_cli_in_terminal` and bound after `--` as
+   * the tool's PROMPT argument. Opt-in: callers that omit it keep the bare
+   * terminal launch they had before (the `/setup` and `/startwork` surfaces
+   * tell the person what to type instead).
+   */
+  terminalPrompt?: string;
 }
 
 export interface LaunchActions {
@@ -90,7 +106,9 @@ function failureMessage(res: FailedLaunch, what: string): string {
   if (res.reason === "unavailable") {
     return `${what} isn't available in this app. Use the HQ desktop app.`;
   }
-  return `Could not open ${what}: ${res.message ?? "the command failed."}`;
+  // The adapter's failure text is logged, never shown.
+  console.warn(`[launch] open ${what} failed`, res.message);
+  return `Could not open ${what}. Try again.`;
 }
 
 function claudeNotDetectedMessage(prefill: string | undefined): string {
@@ -122,10 +140,20 @@ export function createLaunchActions({
   hqFolderPath,
   prompt,
   deepLinkPrompt,
+  permissionMode,
+  terminalPrompt,
 }: LaunchActionsInput): LaunchActions {
   const folder = hqFolderPath.trim();
   const prefill = prefillOf(prompt);
   const deepLinkPrefill = prefillOf(deepLinkPrompt) ?? prefill;
+  const terminalPrefill = prefillOf(terminalPrompt);
+
+  /** `launch_cli_in_terminal` payload, with the prompt only when one is set. */
+  function terminalArgs(tool: LaunchKey) {
+    return terminalPrefill
+      ? { path: folder, tool, prompt: terminalPrefill }
+      : { path: folder, tool };
+  }
   let aiTools: AiTools | null | undefined;
 
   async function ensureAiTools(): Promise<AiTools | null> {
@@ -145,7 +173,14 @@ export function createLaunchActions({
       return res.ok ? null : failureMessage(res, "Claude Code");
     }
     if (path === "cli") {
-      const res = await shell.launchClaudeCode(folder);
+      // With a permission mode (the brief's launches) the CLI also gets the
+      // prompt as its first message. A terminal prompt alone goes through the
+      // command that can carry a prompt. Plain callers launch exactly as before.
+      const res = permissionMode
+        ? await shell.launchClaudeCode(folder, { permissionMode, ...(prefill ? { prompt: prefill } : {}) })
+        : terminalPrefill
+          ? await shell.launchCliInTerminal(terminalArgs("claude"))
+          : await shell.launchClaudeCode(folder);
       return res.ok ? null : failureMessage(res, "Claude Code");
     }
     return claudeNotDetectedMessage(prefill);
@@ -170,10 +205,9 @@ export function createLaunchActions({
       }
     }
     if (path !== "none") {
-      const res = await shell.launchCliInTerminal({
-        path: folder,
-        tool: SETUP_LAUNCH_COMMANDS.codex.kind,
-      });
+      const res = await shell.launchCliInTerminal(
+        terminalArgs(SETUP_LAUNCH_COMMANDS.codex.kind),
+      );
       return res.ok ? null : failureMessage(res, "Codex");
     }
     let copied = false;
@@ -190,10 +224,9 @@ export function createLaunchActions({
 
   async function launchGrok(): Promise<string | null> {
     if (!folder) return null;
-    const res = await shell.launchCliInTerminal({
-      path: folder,
-      tool: SETUP_LAUNCH_COMMANDS.grok.tool,
-    });
+    const res = await shell.launchCliInTerminal(
+      terminalArgs(SETUP_LAUNCH_COMMANDS.grok.tool),
+    );
     return res.ok ? null : failureMessage(res, "Grok Build");
   }
 

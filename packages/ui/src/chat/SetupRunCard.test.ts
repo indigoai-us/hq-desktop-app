@@ -309,10 +309,12 @@ describe("SetupRunCard guided cards", () => {
     expect(host.querySelector<HTMLInputElement>('[data-testid="setup-run-secret-input"]')?.value ?? "").toBe("");
   });
 
-  it("a failed store shows the message and leaves the question open", async () => {
+  it("a failed store shows plain copy, never the raw error, and leaves the question open", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
     const onanswer = vi.fn();
     const onstoresecret = vi.fn(async () => {
-      throw new Error("HQ could not reach the vault.");
+      throw raw;
     });
     const run = cardRun('{"kind":"secret","name":"API_KEY"}', "Secret", ["Done", "Skip"]);
     await mountCard({ mode: "live", run, onanswer, onstoresecret });
@@ -324,7 +326,11 @@ describe("SetupRunCard guided cards", () => {
     await tick();
     await Promise.resolve();
     await tick();
-    expect(host.querySelector('[data-testid="setup-run-secret-error"]')?.textContent).toContain("could not reach the vault");
+    expect(host.querySelector('[data-testid="setup-run-secret-error"]')?.textContent).toContain("Could not save that. Try again.");
+    expect(host.textContent).not.toContain("boom");
+    for (const el of host.querySelectorAll("[title]")) expect(el.getAttribute("title")).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[setup-run] store secret failed", raw);
+    warn.mockRestore();
     expect(onanswer).not.toHaveBeenCalled();
     expect(host.querySelector('[data-testid="setup-run-choice"]')?.textContent?.trim()).toBe("Skip");
   });

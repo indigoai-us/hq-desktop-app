@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   /**
    * MeetingPermissionsWindow — secondary window that walks the user through
    * granting every macOS TCC permission the Recall Desktop SDK needs.
@@ -337,7 +338,7 @@
             disabled={opening === perm.id}
             aria-busy={opening === perm.id}
           >
-            {#if opening === perm.id}
+            <RailIcon name="settings" />{#if opening === perm.id}
               Opening…
             {:else if status === 'granted'}
               Manage in Settings
@@ -468,7 +469,7 @@
     background: transparent;
     color: currentColor;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
   .why-card h2 {

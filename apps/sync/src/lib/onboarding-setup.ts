@@ -90,6 +90,7 @@ export const ERROR_CATEGORIES = [
   'cancel-cleanup-failed',
   'unsupported-platform',
   'disk',
+  'disk-full',
   'unknown',
 ] as const;
 
@@ -202,6 +203,7 @@ export const CONNECTOR_IMPORT_OUTCOMES = [
   'import_failed',
   'command_failed',
   'user_skipped',
+  'skipped_after_failure',
   'unknown',
 ] as const;
 

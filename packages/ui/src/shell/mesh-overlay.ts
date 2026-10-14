@@ -680,11 +680,40 @@ export function applyChannelRoster(
     members: named,
     companyLabel: model.companyLabel,
   });
+  const visibleUids = new Set([
+    ...rebuilt.members.map((member) => member.personUid),
+    ...rebuilt.agents.map((agent) => agent.personUid),
+  ]);
+  for (const member of model.members) {
+    if (!member.online || visibleUids.has(member.personUid)) continue;
+    rebuilt.members.push(member);
+    visibleUids.add(member.personUid);
+  }
+  for (const agent of model.agents) {
+    if (!agent.online || visibleUids.has(agent.personUid)) continue;
+    rebuilt.agents.push(agent);
+    visibleUids.add(agent.personUid);
+  }
   return {
     ...model,
     members: rebuilt.members,
     agents: rebuilt.agents,
     memberCount: named.length || model.memberCount,
+  };
+}
+
+export function applyAuthoritativePresence(
+  model: ChannelStatusModel,
+  isOnline: (actorUid: string) => boolean,
+): ChannelStatusModel {
+  const currentRows = (rows: ChannelStatusModel["members"]) =>
+    rows
+      .filter((row) => row.isChannelMember !== false || isOnline(row.personUid))
+      .map((row) => ({ ...row, online: isOnline(row.personUid) }));
+  return {
+    ...model,
+    members: currentRows(model.members),
+    agents: currentRows(model.agents),
   };
 }
 

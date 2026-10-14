@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * SubmitPanel — the desktop-alt **Submit** tab body (US-013).
    *
@@ -107,7 +108,8 @@
       }
     } else if (picked.reason !== "unavailable") {
       // A picker failure is non-fatal — surface it inline so the user can retry.
-      errorMessage = picked.message ?? "Could not open the folder picker.";
+      console.warn("[marketplace] folder picker failed", picked.message);
+      errorMessage = "Couldn't open the folder picker. Try again.";
     }
     choosing = false;
   }
@@ -149,7 +151,8 @@
         // 409 duplicate — render the calm "already pending" state, not an error.
         alreadyPending = true;
       } else {
-        requestError = res.message ?? "Could not submit the application.";
+        console.warn("[marketplace] creator access request failed", res.message);
+        requestError = "Couldn't send your request. Try again.";
       }
     }
     requesting = false;
@@ -204,7 +207,7 @@
           onclick={choose}
           disabled={choosing || submitting}
           aria-busy={choosing}
-        >
+        ><RailIcon name="folder" />
           {choosing
             ? "Choosing…"
             : selectedPath
@@ -228,7 +231,7 @@
         onclick={submit}
         disabled={!canSubmit}
         aria-busy={submitting}
-      >
+      ><RailIcon name="send" />
         {submitting ? "Submitting…" : "Submit for review"}
       </button>
     </section>
@@ -335,7 +338,7 @@
             onclick={submitApplication}
             disabled={!canSubmitApplication}
             aria-busy={requesting}
-          >
+          ><RailIcon name="send" />
             {requesting ? "Submitting…" : "Submit application"}
           </button>
         {/if}
@@ -413,7 +416,7 @@
   .btn {
     display: inline-flex;
     align-items: center;
-    height: 32px;
+    height: var(--hq-btn-h);
     padding: 0 var(--v4-space-3);
     border-radius: var(--v4-radius-button);
     border: 1px solid var(--v4-hairline);
@@ -421,7 +424,7 @@
     color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     transition:
       background 140ms ease,

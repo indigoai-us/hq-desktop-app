@@ -517,6 +517,7 @@ describe('onboarding step telemetry', () => {
       'import_failed',
       'command_failed',
       'user_skipped',
+      'skipped_after_failure',
       'unknown',
     ];
 

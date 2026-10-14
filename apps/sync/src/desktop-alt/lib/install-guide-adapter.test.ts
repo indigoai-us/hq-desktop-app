@@ -141,11 +141,13 @@ describe("classifyInstallFailure — plain wording for each known signal", () =>
   });
 
   it("routes disk-full signals to a plain-language sentence", () => {
-    const plain = classifyInstallFailure(
+    for (const raw of [
       "ENOSPC: no space left on device",
-      "Claude Code",
-    )!;
-    expect(plain.toLowerCase()).toContain("disk space");
+      "HQ could not install this tool because the managed Node/npm disk has no space available. Keep at least 1 GiB free.",
+    ]) {
+      const plain = classifyInstallFailure(raw, "Claude Code")!;
+      expect(plain.toLowerCase()).toContain("disk space");
+    }
   });
 
   it("returns null for a signal it does not know, so the caller falls back to the generic sentence", () => {
@@ -399,11 +401,18 @@ describe("createSetupInstallGuideCallbacks - downloadUrlFor + onopen", () => {
       invoke: (async () => undefined) as unknown as InstallGuideDeps["invoke"],
       openUrl: openUrl as unknown as InstallGuideDeps["openUrl"],
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = await cb.onopen("https://claude.com/download");
     expect(result.ok).toBe(false);
-    expect(result.reason).toContain("shell open denied");
+    // AUDIT-3c: the thrown text goes to the log, the reason is app copy.
+    expect(result.reason).not.toContain("shell open denied");
+    expect(result.reason).toBe("HQ couldn't open the download page. Try again.");
+    expect(warn).toHaveBeenCalledWith("[hq-desktop] open download page failed", expect.any(Error));
+    warn.mockRestore();
   });
 });
+
+const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
 
 describe("createSetupInstallGuideCallbacks - onopenassistant", () => {
   it("routes claude-desktop to open_claude_code_link with the URL verbatim", async () => {
@@ -432,21 +441,23 @@ describe("createSetupInstallGuideCallbacks - onopenassistant", () => {
 
   it("surfaces a plain reason when dispatch fails, and never leaks a stack trace", async () => {
     const invoke = vi.fn(async () => {
-      throw new Error(
-        "ShellExecuteW failed to open codex link: 2\n  at some/rust/frame.rs:99",
-      );
+      throw new Error(RAW);
     });
     const cb = createSetupInstallGuideCallbacks({
       invoke: invoke as unknown as InstallGuideDeps["invoke"],
       openUrl: async () => undefined,
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = await cb.onopenassistant(
       "chatgpt-desktop",
       "codex://threads/new?prompt=hello",
     );
     expect(result.ok).toBe(false);
-    // The error message is passed through; stacks are naturally elided by
-    // JS `err.message`, and no callback logs the whole `err` object.
-    expect(result.reason).toContain("ShellExecuteW");
+    // AUDIT-3c: the invoke error text is logged, never shown.
+    expect(result.reason).not.toContain("HTTP 500");
+    expect(result.reason).toBe("HQ couldn't open ChatGPT on this computer. Try again.");
+    const logged = warn.mock.calls.find((c) => c[0] === "[hq-desktop] open ChatGPT failed");
+    expect((logged?.[1] as Error).message).toBe(RAW);
+    warn.mockRestore();
   });
 });

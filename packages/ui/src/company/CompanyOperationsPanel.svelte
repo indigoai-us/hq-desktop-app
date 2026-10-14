@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * CompanyOperationsPanel — DESKTOP-010 company-scoped operations workspace.
    *
@@ -233,7 +234,7 @@
                 onclick={() => void openCompanySettings()}
                 disabled={settingsBusy}
                 aria-busy={settingsBusy}
-              >
+              ><RailIcon name="external" />
                 {settingsBusy ? "Opening…" : "Open console"}
               </button>
             </div>
@@ -254,7 +255,7 @@
                 onclick={() => void openCompanySettings()}
                 disabled={settingsBusy}
                 aria-busy={settingsBusy}
-              >
+              ><RailIcon name="external" />
                 {settingsBusy ? "Opening…" : "Open"}
               </button>
             </div>
@@ -272,7 +273,7 @@
                 onclick={() => void openCompanySettings()}
                 disabled={settingsBusy}
                 aria-busy={settingsBusy}
-              >
+              ><RailIcon name="external" />
                 {settingsBusy ? "Opening…" : "Open"}
               </button>
             </div>
@@ -290,7 +291,7 @@
                 onclick={() => void openCompanySettings()}
                 disabled={settingsBusy}
                 aria-busy={settingsBusy}
-              >
+              ><RailIcon name="external" />
                 {settingsBusy ? "Opening…" : "Open"}
               </button>
             </div>
@@ -506,8 +507,8 @@
 
   .ops-settings-button {
     flex: 0 0 auto;
-    height: 30px;
-    padding: 0 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid transparent;
     border-radius: var(--v4-radius-button);
     background: var(--v4-primary-bg);
@@ -563,8 +564,8 @@
   }
 
   .ops-settings-row-action {
-    height: 28px;
-    padding: 0 11px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-button);
     background: transparent;

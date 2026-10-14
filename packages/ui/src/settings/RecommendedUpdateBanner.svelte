@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Prominent, dismissible shell banner for hq-pro `updateRecommended`.
    * "Update now" downloads and installs immediately (no sync-idle deferral).
@@ -39,7 +40,7 @@
       disabled={installing}
       aria-busy={installing}
       onclick={() => void onupdate?.()}
-    >
+    ><RailIcon name="refresh" />
       {installing ? "Updating…" : "Update now"}
     </button>
     <button
@@ -47,7 +48,7 @@
       class="recommend-dismiss"
       data-testid="recommended-update-dismiss"
       onclick={() => ondismiss?.()}
-    >
+    ><RailIcon name="x" />
       Dismiss
     </button>
   </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Unified Notifications feed (US-012).
    *
@@ -29,6 +30,7 @@
     type NotificationsFeedState,
     type NotificationsFilter,
   } from "./notifications-model";
+  import { publishNotificationsCache } from "./notifications-cache.svelte.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -96,6 +98,14 @@
   let feedReady = $state(false);
   let loadingMore = $state(false);
   let loadMoreError = $state<string | null>(null);
+
+  $effect(() => {
+    publishNotificationsCache({
+      items: feedState.items,
+      ready: feedReady,
+      loading,
+    });
+  });
 
   // Re-fetch when All | Unread toggles, or when a mesh wake bumps wakeSeq —
   // never when items/unreadCount update.
@@ -365,7 +375,7 @@
         disabled={markAllPending || feedState.unreadCount === 0}
         aria-busy={markAllPending}
         onclick={() => void handleMarkAllRead()}
-      >
+      ><RailIcon name="check" />
         {markAllPending ? "Marking…" : "Mark all read"}
       </button>
       {#if onopensettings}
@@ -374,7 +384,7 @@
           class="notif-mark-all"
           data-testid="notifications-open-settings"
           onclick={() => onopensettings?.()}
-        >
+        ><RailIcon name="settings" />
           Notification settings
         </button>
       {/if}
@@ -386,7 +396,7 @@
       <strong>{unavailableNotification.actorName || "Notification"}</strong>
       <p>{unavailableNotification.contextLine}</p>
       <p>This notification does not include a conversation link. You can find the conversation using search.</p>
-      <button type="button" onclick={() => (unavailableNotification = null)}>Dismiss</button>
+      <button type="button" onclick={() => (unavailableNotification = null)}><RailIcon name="x" />Dismiss</button>
     </div>
   {/if}
 
@@ -707,7 +717,7 @@
                         data-testid="notifications-reply-send"
                         disabled={replySending || !replyDraft.trim()}
                         onclick={() => void sendReply(row, replyDraft)}
-                      >
+                      ><RailIcon name="send" />
                         {replySending ? "Sending…" : "Send"}
                       </button>
                     </div>
@@ -733,7 +743,7 @@
             disabled={loadingMore}
             aria-busy={loadingMore}
             onclick={() => void loadMore()}
-          >
+          ><RailIcon name="chevron-down" />
             {loadingMore
               ? "Loading…"
               : loadMoreError

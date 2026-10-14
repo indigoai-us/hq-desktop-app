@@ -58,9 +58,13 @@ describe('quick communications rail', () => {
     expect(channelView).toContain('placeholder={`Message ${conversationLabel}…`}');
   });
 
-  it('uses loading placeholders instead of collapsing the rail to one status line', () => {
-    expect(sidePane).toContain('class="qw-skeleton-row"');
-    expect(sidePane).toContain('aria-label="Loading conversations"');
+  // OWNER-R26: skeleton rows were removed everywhere; a status line is the loading state.
+  it('shows a loading status line, not skeleton rows, while the rail hydrates', () => {
+    expect(sidePane).toContain(
+      '<p class="qw-side-status" role="status" data-testid="quick-conversations-loading">Loading conversations…</p>',
+    );
+    expect(sidePane).toMatch(/\{#if \(loading \|\| loadingChannels\) && railEntries\.length === 0\}\s*<p class="qw-side-status"/);
+    expect(sidePane).not.toMatch(/skeleton/i);
     expect(sidePane).toContain('aria-busy={loading || loadingChannels}');
     expect(sidePane).toMatch(/\.conversation-row\s*\{[\s\S]*?min-height:\s*28px/);
   });

@@ -614,3 +614,28 @@ describe("PrototypeSettingsPanes window opacity", () => {
     ).toBe("0.30");
   });
 });
+
+describe("PrototypeSettingsPanes General copy on macOS", () => {
+  it("shows Dock wording when the native OS probe has not landed", async () => {
+    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+    );
+    const { adapter } = trayAdapter(vi.fn(async () => ok({})));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "general", adapter },
+    });
+    await tick();
+
+    const text = host.textContent ?? "";
+    expect(text).toContain("Show in Dock");
+    expect(text).toContain("Keep HQ in the Dock and the app switcher (Cmd+Tab)");
+    expect(text).not.toMatch(/taskbar|Alt\+Tab/);
+    expect(
+      host.querySelector('[data-testid="settings-dock-toggle"]')?.getAttribute("aria-label"),
+    ).toBe("Show in Dock");
+    ua.mockRestore();
+  });
+});

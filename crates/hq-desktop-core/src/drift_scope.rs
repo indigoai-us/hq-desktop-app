@@ -37,6 +37,12 @@ pub struct CoreDriftBaseline {
     pub normalized_blobs: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreDriftBaselinePersistenceOutcome {
+    Written,
+    ConcurrentWriterAlreadyPersisted,
+}
+
 fn baseline_key(source_repo: &str, commit: &str) -> String {
     format!(
         "{}.json",
@@ -54,6 +60,7 @@ pub struct CoreDriftBaselinePersistenceDiagnostic {
     pub permission_state: &'static str,
     pub disk_state: &'static str,
     pub concurrent_writer: &'static str,
+    pub concurrent_writer_outcome: &'static str,
 }
 
 impl CoreDriftBaselinePersistenceDiagnostic {
@@ -62,7 +69,7 @@ impl CoreDriftBaselinePersistenceDiagnostic {
             concat!(
                 "[baseline_persistence_diagnostics write_path={} error_kind={} directory_state={} ",
                 "target_state={} temp_state={} permission_state={} ",
-                "disk_state={} concurrent_writer={}]",
+                "disk_state={} concurrent_writer={} concurrent_writer_outcome={}]",
             ),
             self.write_path,
             self.error_kind,
@@ -72,6 +79,7 @@ impl CoreDriftBaselinePersistenceDiagnostic {
             self.permission_state,
             self.disk_state,
             self.concurrent_writer,
+            self.concurrent_writer_outcome,
         )
     }
 }
@@ -153,9 +161,56 @@ fn baseline_persistence_error(
             permission_state,
             disk_state,
             concurrent_writer,
+            concurrent_writer_outcome: "not_classified",
         },
         detail,
     })
+}
+
+fn classify_consumed_temp_target(
+    baseline: &CoreDriftBaseline,
+    directory: &Path,
+    target: &Path,
+    temp: &Path,
+    temp_preexisting: bool,
+) -> Result<CoreDriftBaselinePersistenceOutcome, Box<CoreDriftBaselinePersistenceError>> {
+    match read_baseline_file(target, &baseline.source_repo, &baseline.commit) {
+        Some(existing) if existing == *baseline => {
+            Ok(CoreDriftBaselinePersistenceOutcome::ConcurrentWriterAlreadyPersisted)
+        }
+        Some(_) => {
+            let mut classified = baseline_persistence_error(
+                "rename_temp",
+                "baseline_write_lost",
+                format!(
+                    "baseline target differs from intended content after rename race: {}",
+                    target.display()
+                ),
+                directory,
+                target,
+                temp,
+                temp_preexisting,
+            );
+            classified.diagnostic.concurrent_writer_outcome = "baseline_mismatch";
+            Err(classified)
+        }
+        None => {
+            let mut classified = baseline_persistence_error(
+                "rename_temp",
+                "baseline_target_corrupt",
+                format!(
+                    "baseline target failed validation after rename race: {}",
+                    target.display()
+                ),
+                directory,
+                target,
+                temp,
+                temp_preexisting,
+            );
+            classified.diagnostic.concurrent_writer_outcome = "target_invalid";
+            Err(classified)
+        }
+    }
 }
 
 pub fn persist_core_drift_baseline(
@@ -174,6 +229,21 @@ pub fn persist_core_drift_baseline_with_diagnostics(
     commit: &str,
     normalized_blobs: BTreeMap<String, String>,
 ) -> Result<(), Box<CoreDriftBaselinePersistenceError>> {
+    persist_core_drift_baseline_with_diagnostics_and_outcome(
+        hq_folder,
+        source_repo,
+        commit,
+        normalized_blobs,
+    )
+    .map(|_| ())
+}
+
+pub fn persist_core_drift_baseline_with_diagnostics_and_outcome(
+    hq_folder: &Path,
+    source_repo: &str,
+    commit: &str,
+    normalized_blobs: BTreeMap<String, String>,
+) -> Result<CoreDriftBaselinePersistenceOutcome, Box<CoreDriftBaselinePersistenceError>> {
     persist_core_drift_baseline_with_diagnostics_and_rename(
         hq_folder,
         source_repo,
@@ -189,7 +259,7 @@ fn persist_core_drift_baseline_with_diagnostics_and_rename<F>(
     commit: &str,
     normalized_blobs: BTreeMap<String, String>,
     mut rename: F,
-) -> Result<(), Box<CoreDriftBaselinePersistenceError>>
+) -> Result<CoreDriftBaselinePersistenceOutcome, Box<CoreDriftBaselinePersistenceError>>
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
@@ -267,8 +337,19 @@ where
         })?;
     }
     match rename(&temp, &path) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(CoreDriftBaselinePersistenceOutcome::Written),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if persistence_path_state(&temp) == "missing"
+                && persistence_path_state(&path) == "file"
+            {
+                return classify_consumed_temp_target(
+                    &baseline,
+                    &dir,
+                    &path,
+                    &temp,
+                    temp_preexisting,
+                );
+            }
             std::fs::create_dir_all(&dir).map_err(|error| {
                 baseline_persistence_error(
                     "create_directory",
@@ -291,8 +372,22 @@ where
                     temp_preexisting,
                 )
             })?;
-            rename(&temp, &path).map_err(|error| {
-                baseline_persistence_error(
+            match rename(&temp, &path) {
+                Ok(()) => Ok(CoreDriftBaselinePersistenceOutcome::Written),
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound
+                        && persistence_path_state(&temp) == "missing"
+                        && persistence_path_state(&path) == "file" =>
+                {
+                    classify_consumed_temp_target(
+                        &baseline,
+                        &dir,
+                        &path,
+                        &temp,
+                        temp_preexisting,
+                    )
+                }
+                Err(error) => Err(baseline_persistence_error(
                     "rename_temp",
                     persistence_error_kind(error.kind()),
                     format!("commit baseline {}: {error}", path.display()),
@@ -300,8 +395,8 @@ where
                     &path,
                     &temp,
                     temp_preexisting,
-                )
-            })
+                )),
+            }
         }
         Err(error) => Err(baseline_persistence_error(
             "rename_temp",
@@ -323,6 +418,14 @@ pub fn load_core_drift_baseline(
     let path = hq_folder
         .join(BASELINE_DIR)
         .join(baseline_key(source_repo, commit));
+    read_baseline_file(&path, source_repo, commit)
+}
+
+fn read_baseline_file(
+    path: &Path,
+    source_repo: &str,
+    commit: &str,
+) -> Option<CoreDriftBaseline> {
     let bytes = std::fs::read(path).ok()?;
     let baseline: CoreDriftBaseline = serde_json::from_slice(&bytes).ok()?;
     (baseline.schema_version == BASELINE_SCHEMA_VERSION
@@ -1110,6 +1213,129 @@ contributes:
             load_core_drift_baseline(tmp.path(), "indigoai-us/hq-core", "0123456789abcdef")
                 .unwrap();
         assert_eq!(loaded.normalized_blobs, second);
+    }
+
+    #[test]
+    fn baseline_persistence_classifies_competing_writer_targets() {
+        let source_repo = "indigoai-us/hq-core";
+        let commit = "0123456789abcdef";
+        let expected_blobs = BTreeMap::from([("core/policies/example.md".into(), "expected".into())]);
+        let expected = CoreDriftBaseline {
+            schema_version: BASELINE_SCHEMA_VERSION,
+            source_repo: source_repo.into(),
+            commit: commit.into(),
+            normalized_blobs: expected_blobs.clone(),
+        };
+        let expected_bytes = format!(
+            r#"{{"normalizedBlobs":{{"core/policies/example.md":"expected"}},"commit":"{commit}","sourceRepo":"{source_repo}","schemaVersion":{BASELINE_SCHEMA_VERSION}}}"#
+        );
+        // A competing writer consumes this writer's temp and lands the exact
+        // baseline this writer intended to persist before the rename runs.
+        let equal_tmp = tempfile::tempdir().unwrap();
+        let equal_attempts = Cell::new(0);
+        persist_core_drift_baseline_with_diagnostics_and_rename(
+            equal_tmp.path(),
+            source_repo,
+            commit,
+            expected_blobs.clone(),
+            |from, to| {
+                let attempt = equal_attempts.get();
+                equal_attempts.set(attempt + 1);
+                assert_eq!(attempt, 0);
+                fs::remove_file(from)?;
+                fs::write(to, expected_bytes.as_bytes())?;
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "competing writer consumed the temp and landed the same baseline",
+                ))
+            },
+        )
+        .expect("an equal, valid competing baseline is already persisted");
+        assert_eq!(equal_attempts.get(), 1);
+        assert_eq!(
+            load_core_drift_baseline(equal_tmp.path(), source_repo, commit),
+            Some(expected.clone())
+        );
+
+        // Same stamp but different normalized_blobs is a lost write. It must
+        // stay an error with its own class; accepting every parseable target
+        // would silently discard this writer's content.
+        let different_tmp = tempfile::tempdir().unwrap();
+        let mut different_blobs = expected_blobs.clone();
+        different_blobs.insert("core/policies/example.md".into(), "other writer".into());
+        let different = CoreDriftBaseline {
+            normalized_blobs: different_blobs,
+            ..expected.clone()
+        };
+        let different_bytes = serde_json::to_vec_pretty(&different).unwrap();
+        let different_attempts = Cell::new(0);
+        let different_error = persist_core_drift_baseline_with_diagnostics_and_rename(
+            different_tmp.path(),
+            source_repo,
+            commit,
+            expected_blobs.clone(),
+            |from, to| {
+                let attempt = different_attempts.get();
+                different_attempts.set(attempt + 1);
+                if attempt == 0 {
+                    fs::remove_dir_all(from.parent().unwrap())?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "injected missing baseline directory",
+                    ));
+                }
+                fs::remove_file(from)?;
+                fs::write(to, &different_bytes)?;
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "competing writer landed different baseline content",
+                ))
+            },
+        )
+        .expect_err("different normalized_blobs must remain a visible lost write");
+        assert_eq!(different_attempts.get(), 2);
+        assert!(different_error
+            .to_string()
+            .contains("error_kind=baseline_write_lost"));
+        assert!(different_error
+            .to_string()
+            .contains("concurrent_writer_outcome=baseline_mismatch"));
+
+        // A target that cannot be parsed is corruption, not a lost-write
+        // success or the generic OS-level not_found class.
+        let corrupt_tmp = tempfile::tempdir().unwrap();
+        let corrupt_attempts = Cell::new(0);
+        let corrupt_error = persist_core_drift_baseline_with_diagnostics_and_rename(
+            corrupt_tmp.path(),
+            source_repo,
+            commit,
+            expected_blobs,
+            |from, to| {
+                let attempt = corrupt_attempts.get();
+                corrupt_attempts.set(attempt + 1);
+                if attempt == 0 {
+                    fs::remove_dir_all(from.parent().unwrap())?;
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "injected missing baseline directory",
+                    ));
+                }
+                fs::remove_file(from)?;
+                fs::write(to, b"not a baseline")?;
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "competing writer landed an unparseable target",
+                ))
+            },
+        )
+        .expect_err("an unparseable target must remain a visible corruption");
+        assert_eq!(corrupt_attempts.get(), 2);
+        assert!(corrupt_error
+            .to_string()
+            .contains("error_kind=baseline_target_corrupt"));
+        assert!(corrupt_error
+            .to_string()
+            .contains("concurrent_writer_outcome=target_invalid"));
     }
 
     #[test]

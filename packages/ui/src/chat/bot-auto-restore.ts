@@ -34,6 +34,7 @@ import type { LocalBotRow, RemoteBotRow } from "@hq/platform";
 
 import { botRunsHere } from "./bot-runnability.js";
 import { botLiveElsewhere, botsNotHere, type RemoteBotListing } from "./bot-restore.js";
+import { isAssistantRecord } from "./setup-bot.js";
 
 /**
  * How many times the app may bring ONE bot back by itself in a session.
@@ -120,6 +121,11 @@ export function noteAutoRestoreAttempt(
  * listing the app could not read can never be the basis for acting by itself —
  * the same rule the prompt already follows, and the reason a 404 cloud cannot
  * make the app churn.
+ *
+ * NEVER THE ASSISTANT. The assistant (the setup bot) has one owner,
+ * `assistant-owner.ts`; an automatic restore that adopted it raced the first
+ * run's create on the v0.11.4 release check and left "Couldn't start" next to
+ * a running bot.
  */
 export function autoRestoreCandidates(
   listing: RemoteBotListing | null | undefined,
@@ -128,7 +134,25 @@ export function autoRestoreCandidates(
 ): RemoteBotRow[] {
   if (!listing || listing.failure) return [];
   return botsNotHere(listing.rows).filter(
-    (bot) => !botRunsHere(local, bot.agentUid) && !botLiveElsewhere(bot, now),
+    (bot) => !isAssistantRecord(bot) && !botRunsHere(local, bot.agentUid) && !botLiveElsewhere(bot, now),
+  );
+}
+
+/**
+ * The assistant, when the account's own listing shows it is not on this
+ * computer, this computer could run it, and it is not running on another one.
+ * Only `assistant-owner.ts` brings it back.
+ */
+export function assistantToRecover(
+  listing: RemoteBotListing | null | undefined,
+  local: readonly LocalBotRow[] | null | undefined,
+  now: number = Date.now(),
+): RemoteBotRow | null {
+  if (!listing || listing.failure) return null;
+  return (
+    botsNotHere(listing.rows).find(
+      (bot) => isAssistantRecord(bot) && !botRunsHere(local, bot.agentUid) && !botLiveElsewhere(bot, now),
+    ) ?? null
   );
 }
 
@@ -217,7 +241,7 @@ export const AUTO_RESTORE_RUNNING = "Bringing back your bots…";
 /** In a DM whose own bot is being brought back right now. */
 export const AUTO_RESTORE_STARTING_THIS_BOT = "Starting this bot on this computer…";
 
-/** Names in a sentence: "setup", "setup and test-bot", "a, b and c". */
+/** Names in a sentence: "Scout", "Scout and Dr Love", "a, b and c". Pass names, never handles. */
 export function joinBotNames(names: readonly string[]): string {
   const clean = names.map((name) => name.trim()).filter(Boolean);
   if (clean.length === 0) return "";
@@ -225,7 +249,7 @@ export function joinBotNames(names: readonly string[]): string {
   return `${clean.slice(0, -1).join(", ")} and ${clean[clean.length - 1]}`;
 }
 
-/** When they are back: "setup and test-bot are back online." */
+/** When they are back: "Scout and Dr Love are back online." */
 export function autoRestoreDoneLine(names: readonly string[]): string {
   const subject = joinBotNames(names);
   if (!subject) return "";

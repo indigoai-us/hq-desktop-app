@@ -142,7 +142,7 @@ async function mountApp(options: {
 }
 
 describe("US-009: Desktop card-action command and wake refresh", () => {
-  it("Given the server returns 403, when the action is run, then the card shows the permission reason", async () => {
+  it("Given the server returns 403, when the action is run, then the card shows plain permission copy", async () => {
     const runCardAction = vi.fn(async () =>
       failure("LIFECYCLE_CARD_FORBIDDEN", "Viewer cannot act on this card"),
     );
@@ -166,7 +166,10 @@ describe("US-009: Desktop card-action command and wake refresh", () => {
     ).toBe("blocked");
     expect(
       host.querySelector("[data-testid='lifecycle-card-reason']")?.textContent,
-    ).toContain("Viewer cannot act on this card");
+    ).toContain("You don't have permission to do this.");
+    expect(
+      host.querySelector("[data-testid='lifecycle-card-reason']")?.textContent,
+    ).not.toContain("Viewer cannot act on this card");
     expect(host.querySelector("[data-testid='channel-action-error']")).toBeNull();
   });
 

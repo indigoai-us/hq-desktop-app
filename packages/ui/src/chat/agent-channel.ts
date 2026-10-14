@@ -106,6 +106,33 @@ export const AGENT_HELLO_WAIT_MS = 90_000;
 /** Opening words of the hello request. Lets the app recognise its own request. */
 export const AGENT_HELLO_REQUEST_LEAD = "Automatic message from HQ:";
 
+/**
+ * Opening words of the visual first run's notes to the setup assistant
+ * (first-run/visual-first-run.ts). Like the hello request, they go on the
+ * bot-only lane and are never shown to the person.
+ */
+export const FIRST_RUN_NOTE_LEAD = "Setup note from the HQ desktop app:";
+
+/**
+ * The words before the first run's handoff JSON. The setup worker reads the
+ * handoff by this marker, so it must not change.
+ */
+export const FIRST_RUN_HANDOFF_MARKER = "Handoff from the app:";
+
+/**
+ * Whether a body is one of the app's own messages to a bot: the hello
+ * request, a connection notice, or a first-run note. A first-run note must
+ * open with its lead AND carry the handoff JSON after the marker, so a
+ * message the person typed that only opens with the lead, or quotes the
+ * handoff further in, is not one. Says nothing about who sent it; callers
+ * decide that.
+ */
+export function isAppNoticeBody(body: string | null | undefined): boolean {
+  const text = body ?? "";
+  if (text.startsWith(AGENT_HELLO_REQUEST_LEAD)) return true;
+  return text.startsWith(FIRST_RUN_NOTE_LEAD) && text.includes(`${FIRST_RUN_HANDOFF_MARKER} {"from":"desktop-visual-first-run"`);
+}
+
 /** How the hello request opens. Tells it apart from the app's later notices. */
 const AGENT_HELLO_REQUEST_OPENING = `${AGENT_HELLO_REQUEST_LEAD} your setup has just finished`;
 
@@ -268,6 +295,39 @@ export function buildAgentSlackConnectedNotice(input: { personName?: string | nu
   );
 }
 
+/**
+ * Whether a row's body is a connection-changed notice to a bot: a tool was
+ * connected and shared with it ({@link buildAgentToolConnectedNotice}), or it
+ * was connected to Slack ({@link buildAgentSlackConnectedNotice}). The hello
+ * request is not one.
+ */
+export function isConnectionChangedNotice(body: string | null | undefined): boolean {
+  const text = body ?? "";
+  if (!text.startsWith(`${AGENT_HELLO_REQUEST_LEAD} `) || text.startsWith(AGENT_HELLO_REQUEST_OPENING)) return false;
+  return / just connected (?:you to Slack\.|.+ for the company and allowed you to use it)/.test(text);
+}
+
+/**
+ * The newest connection-changed notice to a bot in a page (any order) written
+ * after `afterMs`, or null. Only a row the bot did not write counts. Cards
+ * drawn from the bot's state older than such a notice may be out of date, so
+ * the host reads the live state once for it.
+ */
+export function connectionNoticeAfter(
+  rows: ReadonlyArray<{ eventId?: string | null; fromPersonUid?: string | null; body?: string | null; createdAt?: string | null }>,
+  input: { agentUid: string; afterMs: number },
+): { eventId: string; at: number } | null {
+  let newest: { eventId: string; at: number } | null = null;
+  for (const row of rows) {
+    if ((row.fromPersonUid ?? "").trim() === input.agentUid || !isConnectionChangedNotice(row.body)) continue;
+    const at = Date.parse(row.createdAt ?? "");
+    const eventId = (row.eventId ?? "").trim();
+    if (!eventId || !Number.isFinite(at) || at <= input.afterMs) continue;
+    if (!newest || at > newest.at) newest = { eventId, at };
+  }
+  return newest;
+}
+
 type HelloRow = {
   eventId?: string | null;
   fromPersonUid?: string | null;
@@ -332,7 +392,7 @@ export function agentHelloEventId(
 /**
  * Whether a direct message is with a cloud bot whose conversation gets what
  * the app adds for one: connection cards, suggested replies, the file sync
- * strip, and the app's hidden notices to the bot.
+ * status in the header, and the app's hidden notices to the bot.
  *
  * An `agt_` uid alone does not say so. A teammate's local bot, the person's
  * own local bot on another Mac and a bot from outside the company all have

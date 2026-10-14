@@ -49,10 +49,11 @@ pub use hq_desktop_core::desktop_alt::{
     live_cloud_uid_from_broken_reason, nested_number_field, nested_string_field,
     normalize_deployment_host, normalize_deployment_state, normalize_slug, number_field,
     parse_activity_response, parse_board_response, parse_company_activity, parse_company_board,
-    parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
+    parse_crm_projection_response, parse_deploy_apps_response, parse_deployment_entries, parse_deployments_response,
     parse_project_creators, parse_project_creators_response, parse_secret_envs,
     parse_secrets_response, prefix_company_resolution_error, read_file_bytes_capped,
-    read_file_content, read_file_content_capped, resolve_company_uid_from_workspaces,
+    append_brief_log_line, read_file_content, read_file_content_capped,
+    resolve_company_uid_from_workspaces,
     resolve_hq_folder, secret_env_and_key, secret_key, secret_rotation, secret_rows,
     secret_structure_summary, secret_updated_at, secrets_url, string_field, subdomain_from_url,
     summary_count_or_auth, validate_hq_relative_path, workspace_grants_company_file_access,
@@ -72,7 +73,7 @@ use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
 
 pub const WINDOW_LABEL: &str = "desktop-alt";
-const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";
+pub(crate) const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";
 
 /// Desktop session scope — mirrors CLI session `company_slug` binding for read gates.
 pub struct DesktopSessionScope {
@@ -86,8 +87,16 @@ impl DesktopSessionScope {
         }
     }
 
-    fn active_company_slug(&self) -> Option<String> {
+    pub(crate) fn active_company_slug(&self) -> Option<String> {
         self.active_company.lock().ok()?.clone()
+    }
+
+    /// Forget the active company. Called on sign-out so the next account
+    /// never reads from, or imports connectors into, this one's company.
+    pub(crate) fn clear(&self) {
+        if let Ok(mut active) = self.active_company.lock() {
+            *active = None;
+        }
     }
 }
 
@@ -361,6 +370,7 @@ pub async fn get_company_team_telemetry(
     slug: String,
     from: Option<String>,
     to: Option<String>,
+    tz: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let slug = normalize_slug(&slug)?;
     let company_uid = resolve_company_uid(&slug).await?;
@@ -375,13 +385,7 @@ pub async fn get_company_team_telemetry(
         d.format("%Y-%m-%d").to_string()
     });
     let to = to.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
-    let url = format!(
-        "{}/v1/telemetry/company?companyUid={}&from={}&to={}",
-        base.trim_end_matches('/'),
-        urlencoding_encode(&company_uid),
-        urlencoding_encode(&from),
-        urlencoding_encode(&to),
-    );
+    let url = company_telemetry_url(&base, &company_uid, &from, &to, tz.as_deref());
     let token = cognito::get_valid_access_token()
         .await
         .map_err(|e| format!("auth: {e}"))?;
@@ -412,6 +416,38 @@ pub async fn get_company_team_telemetry(
         return Err(format!("team telemetry HTTP {status}: {text}"));
     }
     serde_json::from_str(&text).map_err(|e| format!("team telemetry parse: {e}"))
+}
+
+/// `GET /v1/telemetry/company` URL. `tz` is the caller's IANA zone, forwarded
+/// so hq-pro can say which zone it cut the days in (`bucketTz`). A value that
+/// is blank or does not look like a zone name is dropped and the server
+/// default applies.
+fn company_telemetry_url(
+    base: &str,
+    company_uid: &str,
+    from: &str,
+    to: &str,
+    tz: Option<&str>,
+) -> String {
+    let mut url = format!(
+        "{}/v1/telemetry/company?companyUid={}&from={}&to={}",
+        base.trim_end_matches('/'),
+        urlencoding_encode(company_uid),
+        urlencoding_encode(from),
+        urlencoding_encode(to),
+    );
+    let zone = tz.map(str::trim).filter(|z| {
+        !z.is_empty()
+            && z.len() <= 64
+            && z
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'))
+    });
+    if let Some(zone) = zone {
+        url.push_str("&tz=");
+        url.push_str(&urlencoding_encode(zone));
+    }
+    url
 }
 
 /// Background tasks for one agent — backs the task chips in the agent surface.
@@ -589,6 +625,111 @@ pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry
     );
 
     parse_deployments_response(status, &text, &slug)
+}
+
+/// Every hq-deploy app in one scope, rows passed through for the personal
+/// Deployments page. `scope` is a company slug or `personal`. `callerSub` lets
+/// the page mark the caller's own deploys. Tokens never reach the log.
+#[tauri::command]
+pub async fn list_deploy_apps(scope: String) -> Result<serde_json::Value, String> {
+    let scope = normalize_slug(&scope)?;
+    let url = deployments_url(HQ_DEPLOY_API_BASE);
+    let tokens = cognito::get_valid_tokens()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+    let caller_sub = tokens
+        .id_token
+        .as_deref()
+        .and_then(|t| cognito::decode_id_token_claims(t).ok())
+        .and_then(|c| c.sub);
+
+    let mut req = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", tokens.access_token));
+    req = if scope == "personal" {
+        req.header("x-hq-deploy-scope", "personal")
+    } else {
+        req.header("x-org-slug", &scope)
+    };
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("deploy apps fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("deploy apps read: {e}"))?;
+    let apps = parse_deploy_apps_response(status, &text)?;
+    eprintln!(
+        "[desktop-alt] deploy apps scope={scope} -> HTTP {status} ({} apps)",
+        apps.len()
+    );
+    Ok(serde_json::json!({ "scope": scope, "callerSub": caller_sub, "apps": apps }))
+}
+
+/// One hq-deploy access call for the Deployments Access form: read or change
+/// an app's access policy, mode, or email allowlist. `path` is validated by
+/// `deploy_access_url` so only access routes are reachable. The ID token rides
+/// in `x-hq-pro-authorization` because company/selected policies are checked
+/// against hq-pro membership. Bodies (which may carry a new password) and
+/// tokens never reach the log.
+#[tauri::command]
+pub async fn deploy_access_request(
+    scope: String,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let scope = normalize_slug(&scope)?;
+    let method = method.to_ascii_uppercase();
+    let url = hq_desktop_core::desktop_alt::deploy_access_url(HQ_DEPLOY_API_BASE, &method, &path)?;
+    let tokens = cognito::get_valid_tokens()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+    let verb = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| "deploy access: invalid method".to_string())?;
+    let mut req = build_client()
+        .request(verb, &url)
+        .header("authorization", format!("Bearer {}", tokens.access_token));
+    if let Some(id_token) = tokens.id_token.as_deref() {
+        req = req.header("x-hq-pro-authorization", format!("Bearer {id_token}"));
+    }
+    req = if scope == "personal" {
+        req.header("x-hq-deploy-scope", "personal")
+    } else {
+        req.header("x-org-slug", &scope)
+    };
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("deploy access fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("deploy access read: {e}"))?;
+    eprintln!("[desktop-alt] deploy access {method} {path} -> HTTP {status}");
+    if !status.is_success() {
+        let detail = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| {
+                v.get("message")
+                    .or_else(|| v.get("error"))
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        return Err(format!("deploy access HTTP {}: {detail}", status.as_u16()));
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(text).map_err(|e| format!("deploy access parse: {e}"))
 }
 
 #[tauri::command]
@@ -1508,6 +1649,21 @@ pub async fn get_company_file_content(
     read_file_content(&target.hq_root, &target.relative_path)
 }
 
+/// Append one event to the Daily Brief preference log
+/// (`personal/brief/brief-log.jsonl`), the only HQ file the brief page writes.
+/// The path is fixed and the line validated in the core; the renderer never
+/// names a path.
+#[tauri::command]
+pub async fn append_brief_log(line: String) -> Result<(), String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("the brief log requires a signed-in user".to_string());
+    }
+    let (hq, _workspaces) = hydrated_file_context().await?;
+    tauri::async_runtime::spawn_blocking(move || append_brief_log_line(&hq, &line))
+        .await
+        .map_err(|e| format!("brief log write did not finish: {e}"))?
+}
+
 /// Return a size-capped supported text/media preview after resolving and authorizing the
 /// HQ-relative path natively. The renderer receives bytes, never a filesystem
 /// path or a wildcard asset-protocol URL.
@@ -1686,6 +1842,48 @@ pub async fn list_hq_dir(
 }
 
 #[cfg(test)]
+mod company_telemetry_url_tests {
+    use super::company_telemetry_url;
+
+    #[test]
+    fn forwards_the_local_zone_as_tz() {
+        assert_eq!(
+            company_telemetry_url(
+                "https://api.test/",
+                "cmp_1",
+                "2026-10-01",
+                "2026-10-07",
+                Some("America/Denver"),
+            ),
+            "https://api.test/v1/telemetry/company?companyUid=cmp_1&from=2026-10-01&to=2026-10-07&tz=America%2FDenver",
+        );
+    }
+
+    #[test]
+    fn omits_tz_when_absent_blank_or_not_a_zone_name() {
+        let bare = "https://api.test/v1/telemetry/company?companyUid=cmp_1&from=a&to=b";
+        assert_eq!(company_telemetry_url("https://api.test", "cmp_1", "a", "b", None), bare);
+        assert_eq!(company_telemetry_url("https://api.test", "cmp_1", "a", "b", Some("  ")), bare);
+        assert_eq!(
+            company_telemetry_url("https://api.test", "cmp_1", "a", "b", Some("UTC&companyUid=cmp_2")),
+            bare,
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_scope_tests {
+    #[test]
+    fn clearing_the_session_scope_forgets_the_active_company() {
+        let scope = super::DesktopSessionScope::new();
+        *scope.active_company.lock().unwrap() = Some("acme".to_string());
+        assert_eq!(scope.active_company_slug().as_deref(), Some("acme"));
+        scope.clear();
+        assert_eq!(scope.active_company_slug(), None);
+    }
+}
+
+#[cfg(test)]
 mod window_router_tests {
     use super::*;
     use hq_desktop_core::workspaces::{WorkspaceKind, WorkspaceState};
@@ -1715,6 +1913,7 @@ mod window_router_tests {
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         }
     }
 

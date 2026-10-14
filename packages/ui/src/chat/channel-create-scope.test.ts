@@ -131,7 +131,7 @@ describe("companiesForChannelCreate", () => {
         ],
         "Corey Epstein",
       ),
-    ).toEqual([{ companyUid: "cmp_indigo", label: "Indigo" }]);
+    ).toEqual([{ companyUid: "cmp_indigo", label: "Indigo", slug: "indigo" }]);
   });
 });
 
@@ -164,7 +164,7 @@ describe("companiesForChannelCreate · membership evidence", () => {
   it("FAILS OPEN when membership is unknown", () => {
     expect(
       companiesForChannelCreate([workspace({ membershipStatus: null })]),
-    ).toEqual([{ companyUid: "cmp_acme", label: "Acme" }]);
+    ).toEqual([{ companyUid: "cmp_acme", label: "Acme", slug: "acme" }]);
   });
 
   it("is case/space tolerant on membership status", () => {
@@ -179,7 +179,7 @@ describe("companiesForChannelCreate · membership evidence", () => {
         workspace({ displayName: "  " }),
         workspace({}),
       ]),
-    ).toEqual([{ companyUid: "cmp_acme", label: "acme" }]);
+    ).toEqual([{ companyUid: "cmp_acme", label: "acme", slug: "acme" }]);
   });
 });
 

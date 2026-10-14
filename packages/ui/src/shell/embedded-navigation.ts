@@ -14,6 +14,8 @@ export const EMBEDDED_NAVIGATION_EVENT = 'hq:embedded-navigation';
 
 export const EMBEDDED_SETTINGS_SECTIONS = [
   'profile',
+  'public-profile',
+  'billing',
   'companies',
   'general',
   'agents',
@@ -23,6 +25,7 @@ export const EMBEDDED_SETTINGS_SECTIONS = [
   'sync',
   'meetings',
   'updates',
+  'storage',
 ] as const;
 
 export type EmbeddedSettingsSection =
@@ -56,6 +59,7 @@ export type EmbeddedNavigationTarget =
       kind: 'channel';
       channelId: string;
       replyRootEventId?: string | null;
+      messageId?: string | null;
     }
   | {
       kind: 'dm';

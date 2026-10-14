@@ -1,5 +1,6 @@
 <script lang="ts">
   import SignInPrompt from '../src/components/SignInPrompt.svelte';
+  import { loadBrief } from '@hq/ui';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
   import { createLifecycleInvoke, resolveLifecycleOptions } from './lifecycle-scenario';
@@ -8,20 +9,30 @@
   import DriftDetail from '../src/components/DriftDetail.svelte';
   import ShareDetail from '../src/components/ShareDetail.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
+  import MeetingsShot from './MeetingsShot.svelte';
+  import AccessShot from './AccessShot.svelte';
+  import ActivityShot from './ActivityShot.svelte';
+  import RepairCardsShot from './RepairCardsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
   import CompanyStepPreview from './CompanyStepPreview.svelte';
+  import YourAppsPreview from './YourAppsPreview.svelte';
+  import MarketplaceDetailPreview from './MarketplaceDetailPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
+  import ForwardPickerPreview from './ForwardPickerPreview.svelte';
+  import ClaudeCodePreview from './ClaudeCodePreview.svelte';
+  import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { bannerFixtures } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
-  import { TOUR_SEEN_STORAGE_KEY } from '@hq/ui';
+  import { TOUR_SEEN_STORAGE_KEY, VISUAL_FIRST_RUN_DONE_KEY, WELCOME_SETUP_RUN_KEY, pushToast } from '@hq/ui';
+  import { raiseToasts, toastSwitch } from './audit-switches';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
   // and the copy-prompt button (the last inbound message carries an agent
@@ -128,6 +139,10 @@
   //   ?view=shell|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
+  //   shell view also takes ?state=empty|loading|error (dev-harness/state-flags.ts):
+  //     empty lists, a held skeleton (?loadingMs=N to release), or failed loads
+  //   shell view also takes ?auth=, ?reads=, ?toast=, ?gates=on, ?atlas=populated
+  //     (AUDIT-3 switches, dev-harness/audit-switches.ts)
   //   shell view also takes ?tour=1: a fresh install that has not seen the
   //     first-run guided tour, so the tour starts by itself (clears the
   //     local "seen" key on load)
@@ -138,11 +153,36 @@
   // view is the production HQ Work shell; size that one to ~1180x760.
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'shell';
+  // A real brief run read from the HQ root (see the brief view below).
+  const briefRun = params.get('briefRun');
+  const briefCompanies = [
+    {
+      uid: params.get('briefCompanyUid') ?? 'cmp_indigo',
+      slug: params.get('briefCompany') ?? 'indigo',
+      label: params.get('briefCompany') ?? 'indigo',
+    },
+  ];
+  const briefRunSource = {
+    async readHqFile(rel: string): Promise<string | null> {
+      const res = await fetch(`/__hq/${rel}`);
+      return res.ok ? res.text() : null;
+    },
+  };
   if (params.get('tour') === '1') {
     try {
       localStorage.removeItem(TOUR_SEEN_STORAGE_KEY);
     } catch {
       // Storage unavailable: the mocked host flag still says "not shown".
+    }
+  }
+  // ?firstrun=visual|visual-notools|visual-fail (dev-harness/audit-switches.ts):
+  // a first run, so forget that setup ran or the takeover finished here.
+  if (params.get('firstrun')) {
+    try {
+      localStorage.removeItem(WELCOME_SETUP_RUN_KEY);
+      localStorage.removeItem(VISUAL_FIRST_RUN_DONE_KEY);
+    } catch {
+      // Storage unavailable: nothing was remembered either.
     }
   }
   const theme = params.get('theme') ?? 'dark';
@@ -202,6 +242,11 @@
     setTimeout(() => void emit('banner:event', payload), 50);
   }
 
+  // ?toast=update|info|error|progress|stack (dev-harness/audit-switches.ts).
+  if (view === 'shell') {
+    setTimeout(() => raiseToasts(toastSwitch(), emit, pushToast), 2500);
+  }
+
   if (view === 'drift') {
     setTimeout(() => void emit('drift:report', driftPreviewReport), 75);
   } else if (view === 'new-files') {
@@ -211,7 +256,33 @@
   }
 </script>
 
-{#if view === 'activity'}
+{#if view === 'brief'}
+  <!-- Daily Brief page alone. Add ?briefDemo=1|fail or ?briefDemoAt=0..1|fail
+       (packages/ui/src/brief/brief-demo.ts) to review the Create brief sunrise. -->
+  <!-- ?briefRun=<run_id>&briefCompany=<slug>&briefCompanyUid=<uid> renders a real
+       run from the HQ root (HQ_ROOT, default ~/hq) through the app's loader. -->
+  {#await loadBrief() then mod}
+    <div style="height:100vh;overflow:auto">
+      {#if briefRun}
+        <mod.BriefRunsPage adapter={{}} companies={briefCompanies} source={briefRunSource} initialRunId={briefRun} />
+      {:else}
+        <mod.BriefRunsPage adapter={{}} companies={[]} source={null} />
+      {/if}
+    </div>
+  {/await}
+{:else if view === 'bot-integrations'}
+  <!-- Per-bot integration control section (BotIntegrationsSection) rendered in
+       both Agent profile and Local bot card contexts. Flag
+       desktop.bot-integration-control-v1 is forced on via the flagEnabled
+       prop. Size the preview viewport to ~1180x760. -->
+  <BotIntegrationsPreview />
+{:else if view === 'claude-code'}
+  <!-- New Bot waking screen at the Claude code paste-back (?claude= variants in ClaudeCodePreview.svelte). -->
+  <ClaudeCodePreview />
+{:else if view === 'forward'}
+  <!-- The Forward message dialog with fictional destinations. ~900x760 viewport. -->
+  <ForwardPickerPreview />
+{:else if view === 'activity'}
   <!-- Recent Changes at its native 560x460 size. -->
   <ActivityLog />
 {:else if view === 'new-files'}
@@ -226,6 +297,15 @@
 {:else if view === 'meetings'}
   <!-- Upcoming Meetings at its native 460x600 size. -->
   <MeetingsWindow />
+{:else if view === 'meetings-shot'}
+  <MeetingsShot />
+{:else if view === 'access-shot'}
+  <AccessShot />
+{:else if view === 'activity-shot'}
+  <ActivityShot />
+{:else if view === 'repair-cards'}
+  <!-- Bot runtime repair cards. &state=signed-out|update|model|transient|signing-in|updating|fixed &live=1 -->
+  <RepairCardsShot />
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />
@@ -254,12 +334,21 @@
   <OnboardingWizard
     initialStep={onboardingStep}
     mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
+    wallpaper={params.get('wallpaper') === 'none' ? null : (params.get('wallpaper') ?? '/wallpaper.jpg')}
     onfinish={() => {}}
   />
+{:else if view === 'marketplace'}
+  <!-- The Marketplace tab with the detail panel open on one listing. -->
+  <MarketplaceDetailPreview />
+{:else if view === 'your-apps'}
+  <!-- The first-run "Your apps" step on its own (integration auto-detect MVP):
+       ?state=auto|connect|connecting|failed|docs|member|empty|many. Size the
+       viewport to ~1200x800 or ~960x600. In-page answers only. -->
+  <YourAppsPreview />
 {:else if view === 'onboarding-company'}
   <!-- The first-run company step on its own: ?scenario=create|join|paused.
        Size the viewport to ~800x900 like the welcome window. -->
-  <div class="fake-desktop" aria-hidden="true"></div>
+  <div class="fake-desktop fake-desktop--image" aria-hidden="true"></div>
   <CompanyStepPreview />
 {:else if view === 'global-error'}
   <!-- Deterministic render failure for visually verifying the production
@@ -302,6 +391,11 @@
 {/if}
 
 <style>
+  .fake-desktop--image {
+    background: #000 url('/wallpaper.jpg') center / cover no-repeat !important;
+    filter: blur(34px) saturate(125%) brightness(0.45) !important;
+    transform: scale(1.08);
+  }
   .fake-desktop {
     position: fixed;
     inset: 0;

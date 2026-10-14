@@ -58,6 +58,12 @@ sentry = "^0.35"
 libc = "0.2"
 rustix = { version = "1", features = ["fs"] }
 
+# token_keychain.rs mirrors the Cognito token file into the macOS login
+# Keychain (shared item, see that module). Already in the lockfile through
+# the TLS stack; listed directly so the dependency is explicit.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
 # paths.rs carries the Windows platform code (Git-Bash/toolchain resolution,
 # long paths) folded in during Phase 3.
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -73,6 +79,7 @@ windows = { version = "0.58", features = [
 winreg = "0.55"
 
 [dev-dependencies]
+regex = "1"
 sentry = { version = "^0.35", features = ["test"] }
 # client_info's build_client timeout regression test stands up a mock server.
 wiremock = "0.6"

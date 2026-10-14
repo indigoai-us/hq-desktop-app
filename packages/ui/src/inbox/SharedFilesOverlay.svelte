@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * The global destination for file-share notifications. Share events do not
    * carry a company UID, so this surface intentionally lists only the server
@@ -139,7 +140,7 @@
   {:else if error}
     <div class="shared-files-status" data-testid="shared-files-error" role="alert">
       <p>{error}</p>
-      <button type="button" data-testid="shared-files-retry" onclick={() => void load()}>Retry</button>
+      <button type="button" data-testid="shared-files-retry" onclick={() => void load()}><RailIcon name="refresh" />Retry</button>
     </div>
   {:else if events.length === 0}
     <p class="shared-files-status" data-testid="shared-files-empty" role="status">No files have been shared with you yet.</p>
@@ -173,7 +174,7 @@
           disabled={loadingMore}
           aria-busy={loadingMore}
           onclick={() => void loadMore()}
-        >{loadingMore ? "Loading…" : "Load more"}</button>
+        ><RailIcon name="chevron-down" />{loadingMore ? "Loading…" : "Load more"}</button>
       </div>
     {/if}
   {/if}

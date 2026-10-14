@@ -73,6 +73,24 @@ fn resolve_app_path() -> String {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn bundle_identifier_from_exe(exe: &str) -> Option<String> {
+    let app_bundle = Path::new(exe)
+        .ancestors()
+        .find(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"))?;
+    let info = std::fs::read_to_string(app_bundle.join("Contents").join("Info.plist")).ok()?;
+    let (_, after_key) = info.split_once("<key>CFBundleIdentifier</key>")?;
+    let after_key = after_key.trim_start();
+    let after_open = after_key.strip_prefix("<string>")?;
+    let end = after_open.find("</string>")?;
+    let identifier = after_open[..end].trim();
+    (!identifier.is_empty()
+        && identifier
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-'))
+    .then(|| identifier.to_string())
+}
+
 /// Extract the first `ProgramArguments` entry (or `Program`) from a LaunchAgent
 /// plist. Returns None when the structure isn't present.
 #[cfg(any(target_os = "macos", test))]
@@ -83,6 +101,9 @@ fn extract_program_path(plist: &str) -> Option<String> {
 /// Generate the LaunchAgent plist XML content for the given app path.
 #[cfg(any(target_os = "macos", test))]
 fn generate_plist(app_path: &str) -> String {
+    let associated_bundle = bundle_identifier_from_exe(app_path)
+        .map(|identifier| format!("    <key>AssociatedBundleIdentifiers</key>\n    <array>\n        <string>{identifier}</string>\n    </array>\n"))
+        .unwrap_or_default();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -90,6 +111,7 @@ fn generate_plist(app_path: &str) -> String {
 <dict>
     <key>Label</key>
     <string>{}</string>
+{}
     <key>ProgramArguments</key>
     <array>
         <string>{}</string>
@@ -104,6 +126,7 @@ fn generate_plist(app_path: &str) -> String {
 </plist>
 "#,
         LAUNCH_AGENT_LABEL,
+        associated_bundle,
         app_path,
         LAUNCH_AGENT_RELAUNCH_ARG,
         KEEP_ALIVE_FAILURE_POLICY,
@@ -121,7 +144,25 @@ fn has_current_restart_policy(plist: &str) -> bool {
 
 #[cfg(any(target_os = "macos", test))]
 fn registration_is_current(plist: &str, current_exe: &str) -> bool {
-    extract_program_path(plist).as_deref() == Some(current_exe) && has_current_restart_policy(plist)
+    plist == generate_plist(current_exe)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn write_plist_if_changed(path: &Path, content: &str) -> Result<bool, String> {
+    match std::fs::read_to_string(path) {
+        Ok(existing) if existing == content => Ok(false),
+        Ok(_) => {
+            std::fs::write(path, content)
+                .map_err(|e| format!("Failed to write LaunchAgent plist: {e}"))?;
+            Ok(true)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(path, content)
+                .map_err(|e| format!("Failed to write LaunchAgent plist: {e}"))?;
+            Ok(true)
+        }
+        Err(err) => Err(format!("Failed to read LaunchAgent plist: {err}")),
+    }
 }
 
 /// Resolve the installed `HQ Sync.exe` path for the HKCU Run value.
@@ -178,6 +219,68 @@ pub fn reconcile_action(
         (false, true) => ReconcileAction::Disable,
         (false, false) => ReconcileAction::None,
     }
+}
+
+/// Bundle identifier of the installed production HQ. Only a process running
+/// from a bundle with this identifier may write the login LaunchAgent at
+/// launch.
+pub const PRODUCTION_BUNDLE_IDENTIFIER: &str = "ai.indigo.hq-sync-menubar";
+
+/// The one "is this the shipped HQ bundle" predicate. Stable, beta and alpha
+/// all ship under [`PRODUCTION_BUNDLE_IDENTIFIER`] (the channel is a runtime
+/// setting, not a separate bundle), so any other identifier is a scratch,
+/// Lane Check, worktree or side-by-side test build, and an unreadable one
+/// counts as non-production. Launch-time autostart, the updater and every
+/// launch-time install or uninstall path decide through this function.
+pub fn is_production_bundle_identifier(bundle_identifier: Option<&str>) -> bool {
+    bundle_identifier == Some(PRODUCTION_BUNDLE_IDENTIFIER)
+}
+
+/// Env var that turns the updater off for scratch builds. Launch-time
+/// autostart reconciliation honours it too.
+pub const UPDATER_DISABLED_ENV: &str = "HQ_UPDATER_DISABLED";
+
+/// Whether launch-time autostart reconciliation may touch the registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchEnsureGate {
+    /// Production bundle: reconcile as usual.
+    Proceed,
+    /// `HQ_UPDATER_DISABLED` is set: this is a scratch build.
+    SkipUpdaterDisabled,
+    /// The running bundle is not the production bundle (its identifier, or
+    /// None when it could not be read).
+    SkipNonProductionBundle(Option<String>),
+}
+
+/// Same truthy parsing as the updater's `HQ_UPDATER_DISABLED` switch.
+pub fn env_flag_truthy(value: Option<&str>) -> bool {
+    value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+}
+
+/// Pure gate for launch-time autostart reconciliation. A scratch bundle (its
+/// own identifier, or `HQ_UPDATER_DISABLED` set) shares the owner's
+/// LaunchAgent path, so writing it would repoint the owner's login item at the
+/// scratch bundle. Explicit Settings toggles do not go through this gate.
+pub fn launch_ensure_gate(
+    bundle_identifier: Option<&str>,
+    updater_disabled_env: Option<&str>,
+) -> LaunchEnsureGate {
+    if env_flag_truthy(updater_disabled_env) {
+        return LaunchEnsureGate::SkipUpdaterDisabled;
+    }
+    if is_production_bundle_identifier(bundle_identifier) {
+        LaunchEnsureGate::Proceed
+    } else {
+        LaunchEnsureGate::SkipNonProductionBundle(bundle_identifier.map(str::to_string))
+    }
+}
+
+/// Bundle identifier of the running executable's enclosing `.app`, read from
+/// its Info.plist.
+#[cfg(target_os = "macos")]
+pub fn running_bundle_identifier() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    bundle_identifier_from_exe(&exe.to_string_lossy())
 }
 
 /// Apply a launch-time autostart decision. Refresh writes the new registration
@@ -291,10 +394,16 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
             }
 
             let app_path = resolve_app_path();
+            let is_inside_app_bundle = Path::new(&app_path)
+                .ancestors()
+                .any(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"));
+            if is_inside_app_bundle && bundle_identifier_from_exe(&app_path).is_none() {
+                return Err(format!(
+                    "Could not read CFBundleIdentifier from the HQ app Info.plist for {app_path}"
+                ));
+            }
             let plist_content = generate_plist(&app_path);
-
-            std::fs::write(&path, plist_content)
-                .map_err(|e| format!("Failed to write LaunchAgent plist: {}", e))?;
+            write_plist_if_changed(&path, &plist_content)?;
         } else {
             // Remove the plist if it exists
             if path.exists() {
@@ -337,6 +446,109 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
     {
         let _ = enabled;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod launchagent_write_tests {
+    use super::{
+        bundle_identifier_from_exe, generate_plist, is_production_bundle_identifier,
+        launch_ensure_gate, write_plist_if_changed, LaunchEnsureGate,
+    };
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn unchanged_plist_is_not_rewritten() {
+        let temp = TempDir::new().expect("temp directory");
+        let path = temp.path().join("agent.plist");
+        assert!(write_plist_if_changed(&path, "stable plist").expect("first write"));
+        assert!(!write_plist_if_changed(&path, "stable plist").expect("identical write"));
+        assert_eq!(
+            fs::read_to_string(path).expect("plist contents"),
+            "stable plist"
+        );
+    }
+
+    #[test]
+    fn launch_ensure_gate_proceeds_only_for_production_bundle() {
+        assert_eq!(
+            launch_ensure_gate(Some("ai.indigo.hq-sync-menubar"), None),
+            LaunchEnsureGate::Proceed
+        );
+        assert_eq!(
+            launch_ensure_gate(Some("ai.indigo.hq-lane-check"), None),
+            LaunchEnsureGate::SkipNonProductionBundle(Some("ai.indigo.hq-lane-check".into()))
+        );
+        assert_eq!(
+            launch_ensure_gate(None, None),
+            LaunchEnsureGate::SkipNonProductionBundle(None)
+        );
+    }
+
+    #[test]
+    fn only_the_shipped_identifier_is_a_production_bundle() {
+        assert!(is_production_bundle_identifier(Some("ai.indigo.hq-sync-menubar")));
+        for id in [
+            "ai.indigo.hq-lane-check.conflict-toast",
+            "ai.indigo.hq-lane-check",
+            "ai.indigo.hq-sync-menubar-dev",
+            "ai.indigo.hq-new-bot-test",
+            "ai.indigo.hq-rail-newbot",
+            "ai.indigo.hq-sync-menubar.worktree",
+            "",
+        ] {
+            assert!(!is_production_bundle_identifier(Some(id)), "{id}");
+        }
+        assert!(!is_production_bundle_identifier(None));
+    }
+
+    #[test]
+    fn launch_ensure_gate_skips_when_updater_disabled_env_set() {
+        for value in ["1", "true", "YES", " 1 "] {
+            assert_eq!(
+                launch_ensure_gate(Some("ai.indigo.hq-sync-menubar"), Some(value)),
+                LaunchEnsureGate::SkipUpdaterDisabled,
+                "{value:?}"
+            );
+        }
+        for value in ["0", "", "false", "no"] {
+            assert_eq!(
+                launch_ensure_gate(Some("ai.indigo.hq-sync-menubar"), Some(value)),
+                LaunchEnsureGate::Proceed,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scratch_bundle_identifier_from_info_plist_is_not_production() {
+        let temp = TempDir::new().expect("temp directory");
+        let contents = temp.path().join("HQ Lane Check x.app").join("Contents");
+        let executable = contents.join("MacOS").join("hq-sync-menubar");
+        fs::create_dir_all(executable.parent().expect("executable parent")).expect("app folders");
+        fs::write(contents.join("Info.plist"), "<plist><dict><key>CFBundleIdentifier</key><string>ai.indigo.hq-lane-check-x</string></dict></plist>").expect("Info.plist");
+        let id = bundle_identifier_from_exe(executable.to_str().expect("path"));
+        assert_eq!(
+            launch_ensure_gate(id.as_deref(), None),
+            LaunchEnsureGate::SkipNonProductionBundle(Some("ai.indigo.hq-lane-check-x".into()))
+        );
+    }
+
+    #[test]
+    fn bundle_identity_comes_from_app_info_plist() {
+        let temp = TempDir::new().expect("temp directory");
+        let app = temp.path().join("HQ.app");
+        let contents = app.join("Contents");
+        let executable = contents.join("MacOS").join("hq-sync-menubar");
+        fs::create_dir_all(executable.parent().expect("executable parent")).expect("app folders");
+        fs::write(contents.join("Info.plist"), "<plist><dict><key>CFBundleIdentifier</key><string>ai.indigo.hq-sync-menubar</string></dict></plist>").expect("Info.plist");
+        let executable = executable.to_str().expect("path");
+        assert_eq!(
+            bundle_identifier_from_exe(executable),
+            Some("ai.indigo.hq-sync-menubar".into())
+        );
+        assert!(generate_plist(executable).contains("<key>AssociatedBundleIdentifiers</key>"));
     }
 }
 

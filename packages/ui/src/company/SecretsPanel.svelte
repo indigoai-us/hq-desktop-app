@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { buildClaudeCodeUrl } from "../projects/claude-code-link";
   import {
     companyStore,
@@ -10,6 +11,8 @@
     type SecretItem,
   } from "./SecretEnvRow.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
 
   interface Props {
     slug: string;
@@ -255,7 +258,7 @@
       disabled={actionBusy !== null || !resourcesEnabled}
       aria-busy={actionBusy === "export"}
       title="Export via HQ secrets workflow"
-    >
+    ><RailIcon name="download" />
       {actionBusy === "export" ? "Opening…" : "Export .env"}
     </button>
     <button
@@ -265,7 +268,7 @@
       disabled={actionBusy !== null || !resourcesEnabled}
       aria-busy={actionBusy === "new"}
       title="Create via HQ secrets workflow"
-    >
+    ><RailIcon name="plus" />
       {actionBusy === "new" ? "Opening…" : "New key"}
     </button>
   </div>
@@ -314,7 +317,7 @@
         onclick={retry}
         disabled={loading}
         aria-busy={loading}
-      >
+      ><RailIcon name="refresh" />
         {loading ? "Retrying…" : "Retry"}
       </button>
     </div>
@@ -331,11 +334,7 @@
     </header>
 
     {#if loading}
-      <div class="secrets-skeleton" aria-label="Loading secrets">
-        {#each Array(3) as _, index (index)}
-          <span style={`width: ${88 - index * 10}%`}></span>
-        {/each}
-      </div>
+      <ReadLoader testid="secrets-loading" onretry={retry} />
     {:else if secrets.length > 0}
       <div class="secrets-list">
         {#each secrets as secretEnv, index (`${secretEnv.env}:${index}`)}
@@ -343,7 +342,7 @@
         {/each}
       </div>
     {:else}
-      <div class="empty-state">No secrets yet</div>
+      <ListEmptyState total={0} shown={0} noun={["secret", "secrets"]} emptyCopy="No secrets yet" testid="secrets-empty" />
     {/if}
   </section>
 </section>
@@ -408,16 +407,16 @@
 
   .toolbar-button,
   .secrets-error button {
-    height: 30px;
+    height: var(--hq-btn-h);
     min-width: 0;
-    padding: 0 11px;
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
     font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -523,49 +522,14 @@
     display: grid;
   }
 
-  .secrets-skeleton {
-    display: grid;
-    gap: 10px;
-    padding: 14px 13px;
-  }
-
-  .secrets-skeleton span {
-    height: 18px;
-    border-radius: var(--v4-radius-button);
-    background: linear-gradient(
-      90deg,
-      var(--v4-control-faint),
-      var(--v4-hairline),
-      var(--v4-control-faint)
-    );
-    background-size: 200% 100%;
-    animation: skeleton 1.2s ease-in-out infinite;
-  }
-
   .empty-state {
     padding: 26px 13px;
     text-align: center;
   }
 
-  @keyframes skeleton {
-    from {
-      background-position: 0 0;
-    }
-
-    to {
-      background-position: -200% 0;
-    }
-  }
-
   @media (max-width: 760px) {
     .secrets-toolbar {
       flex-wrap: wrap;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .secrets-skeleton span {
-      animation: none;
     }
   }
 

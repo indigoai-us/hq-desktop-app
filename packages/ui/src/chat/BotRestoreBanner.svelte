@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Your bots are waiting — the one prompt after a fresh install or a move to
    * a new Mac.
@@ -74,7 +75,7 @@
         class="restore-dismiss"
         data-testid="bot-restore-done"
         onclick={() => ondismiss?.()}
-      >
+      ><RailIcon name="check" />
         Done
       </button>
     </div>

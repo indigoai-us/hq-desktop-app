@@ -161,7 +161,7 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
     id: 'cloud',
     kind: 'network',
     title: 'Your folder is local. Your team is not.',
-    body: 'Every machine syncs to the same company cloud. People and agents share one context.',
+    body: 'Every machine syncs to the same company cloud. People and bots share one context.',
     holdMs: 11_000,
     hue: 0.42,
     surfaces: [
@@ -169,7 +169,7 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
       { name: 'secrets', meaning: 'Injected at run time' },
       { name: 'permissions', meaning: 'Who sees which folder' },
       { name: 'deploys', meaning: 'Anything becomes a link' },
-      { name: 'messages', meaning: 'People and agents, one thread' },
+      { name: 'messages', meaning: 'People and bots, one thread' },
     ],
   },
   {
@@ -188,7 +188,7 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
   {
     id: 'first-agent',
     kind: 'steps',
-    title: 'Your first agent',
+    title: 'Your first bot',
     body: 'Once setup finishes, this is the shortest path to something real.',
     holdMs: 11_000,
     hue: 0.82,

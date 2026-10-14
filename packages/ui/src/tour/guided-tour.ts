@@ -107,9 +107,9 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       body: company
         ? `Click here to open your files. Everything HQ knows about your company lives there, synced to ${thisComputerNoun()} and shared with your team.`
         : `Click here to open your files, synced to ${thisComputerNoun()}. Your company's files appear there once setup creates it.`,
-      // Hidden on the web host: the card centers.
-      targets: ['[data-testid="titlebar-files"]'],
-      placement: "bottom",
+      // The rail's Library item opens the Files explorer.
+      targets: ['[data-testid="rail-library"]'],
+      placement: "right",
       onEnter: "none",
     },
     {
@@ -128,10 +128,15 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
         ? "Invite teammates so they share the same files, bots and knowledge. Invites are sent from your company's Team page on hq.computer."
         : "Invite teammates so they share the same files, bots and knowledge. Invites open once setup creates your company.",
       // No send-invite control is mounted in the desktop shell today; the
-      // Team panel's Invite button wins if one appears, else the sidebar's
-      // Companies section. With no company there is nothing to point at.
+      // Team panel's Invite button wins if one appears, then the rail's
+      // first company tile, then a host sidebar that still lists companies.
+      // With no company there is nothing to point at.
       targets: hasCompany
-        ? ['[data-testid="team-invite"]', '[data-testid="chat-companies-section"]']
+        ? [
+            '[data-testid="team-invite"]',
+            '[data-testid="rail-company"]',
+            '[data-testid="chat-companies-section"]',
+          ]
         : [],
       placement: "right",
       onEnter: "none",
@@ -140,16 +145,16 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       id: "meetings",
       title: "Meetings",
       body: "HQ can take notes on your calls and turn them into summaries and action items.",
-      targets: ['[data-testid="titlebar-meetings"]'],
-      placement: "bottom",
+      targets: ['[data-testid="rail-meetings"]'],
+      placement: "right",
       onEnter: "none",
     },
     {
       id: "web-console",
-      title: "Open HQ on the web",
-      body: "This opens hq.computer, where you manage your team, billing and integrations.",
-      targets: ['[data-testid="titlebar-console"]'],
-      placement: "bottom",
+      title: "Your personal tools",
+      body: "Deployments, telemetry, secrets, connections and Outpost live on the left rail.",
+      targets: ['[data-testid="rail-deployments"]'],
+      placement: "right",
       onEnter: "none",
     },
     {
@@ -228,11 +233,40 @@ export interface TourAutoStartInput {
   welcomeOnScreen: boolean;
   /** The tour already started once in this window. */
   startedThisSession: boolean;
+  /**
+   * #welcome is asking the person to do something before setup can run (no
+   * coding tool signed in, so it shows Install Claude), or the host has not
+   * said yet whether it will. See `tourSetupBlocked`.
+   */
+  setupBlocked: boolean;
+}
+
+export interface TourSetupInput {
+  /** The host runs a setup bot from #welcome. Without one nothing blocks. */
+  hasSetupBot: boolean;
+  /** Signed-in coding tools by runtime; null until the host has answered. */
+  runtimeReady: Record<string, boolean> | null;
+  /** Starting the setup bot failed and #welcome shows why. */
+  setupError: string | null;
+}
+
+/**
+ * The tour's first step points at the setup bot. While #welcome still needs
+ * a coding tool (its Install Claude card) or shows a setup error, that card
+ * is the next thing to do, and a tour card over it gives two competing
+ * instructions. So the tour waits until a tool is known to be signed in.
+ */
+export function tourSetupBlocked(input: TourSetupInput): boolean {
+  if (!input.hasSetupBot) return false;
+  if (input.setupError) return true;
+  if (input.runtimeReady == null) return true;
+  return !Object.values(input.runtimeReady).some((ready) => ready === true);
 }
 
 /**
  * Start by itself only on a fresh install (guided setup still owed), once,
- * after the shell is up and the setup conversation is what the person sees.
+ * after the shell is up, the setup conversation is what the person sees, and
+ * that conversation is not waiting on the person (see `tourSetupBlocked`).
  */
 export function shouldAutoStartTour(input: TourAutoStartInput): boolean {
   return (
@@ -240,7 +274,8 @@ export function shouldAutoStartTour(input: TourAutoStartInput): boolean {
     !input.tourSeen &&
     input.shellReady &&
     input.welcomeOnScreen &&
-    !input.startedThisSession
+    !input.startedThisSession &&
+    !input.setupBlocked
   );
 }
 

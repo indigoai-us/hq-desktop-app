@@ -1,4 +1,6 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
   /**
    * Right-hand profile sheet for one of the user's LOCAL bots (this Mac, the
    * user's own Claude Code / Codex / Grok login). Mirrors AgentDetailPanel's
@@ -12,6 +14,7 @@
   import { onMount } from "svelte";
   import { hostComputerNoun, subscribeHostComputerNoun, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
   import IdentityMark from "./messaging/IdentityMark.svelte";
+  import BotIntegrationsSection from "./messaging/BotIntegrationsSection.svelte";
   import BotKindChip from "./BotKindChip.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import {
@@ -35,7 +38,14 @@
 
   interface Props {
     bot: LocalBotRow;
-    adapter: Pick<PlatformAdapter, "bots"> | { bots?: PlatformAdapter["bots"] };
+    adapter:
+      | (Pick<PlatformAdapter, "bots"> &
+          Partial<Pick<PlatformAdapter, "integrations" | "identity">>)
+      | {
+          bots?: PlatformAdapter["bots"];
+          integrations?: PlatformAdapter["integrations"];
+          identity?: PlatformAdapter["identity"];
+        };
     avatarUrl?: string | null;
     /** Cloud companies the owner is in; `slug` lets a company bot's list narrow the promote targets. */
     companies?: Array<{ uid: string; name: string; slug?: string }>;
@@ -91,6 +101,7 @@
       pairing = candidate && ["https://auth.openai.com/codex/device", "https://auth.openai.com/device"].includes(candidate.url ?? "") && /^[A-Z0-9]{4,8}-[A-Z0-9]{4,8}$/.test(candidate.code ?? "")
         ? { url: candidate.url!, code: candidate.code! } : null;
       await onchanged?.();
+    // raw-error-ok: shown only inside the collapsed Technical details disclosure
     } catch (error) { if (bot.agentUid === uid) promotionError = error instanceof Error ? error.message : "Could not continue promotion."; }
     finally { if (bot.agentUid === uid) promoting = false; }
   }
@@ -145,7 +156,8 @@
         ...(effortValue !== savedEffort ? { effort: effortValue === DEFAULT_LOCAL_BOT_EFFORT ? null : effortValue } : {}),
       });
       if (!result.ok) {
-        actionError = result.message || `Could not change what ${bot.name} thinks with.`;
+        console.warn("[local-bot] save settings failed", result.message);
+        actionError = `Could not change what ${bot.name} thinks with. Try again.`;
         return;
       }
       await onchanged?.();
@@ -153,7 +165,8 @@
       draftEffort = null;
       settingsNote = "Saved. Applies from its next message.";
     } catch (error) {
-      actionError = error instanceof Error ? error.message : `Could not change what ${bot.name} thinks with.`;
+      console.warn("[local-bot] save settings failed", error);
+      actionError = `Could not change what ${bot.name} thinks with. Try again.`;
     } finally {
       savingSettings = false;
     }
@@ -172,6 +185,23 @@
     return heartbeat ? `Offline · ${heartbeat}` : "Offline · never checked in";
   });
   const memoryPath = $derived(bot.memoryDir?.trim() || `personal/workers/${bot.name}/memory`);
+
+  // The first bound company's uid, resolved from the bot's slugs via `companies`.
+  // Null when the bot has no bound company (e.g., personal bot) or the slug is
+  // not in the companies list the host provided. `BotIntegrationsSection`
+  // no-ops when `companyUid` is null, so the whole section hides.
+  const botCompanyUid = $derived.by(() => {
+    const slugs: readonly string[] = Array.isArray(bot.companies)
+      ? bot.companies
+      : bot.companySlug
+        ? [bot.companySlug]
+        : [];
+    for (const slug of slugs) {
+      const match = companies.find((c) => c.slug && c.slug === slug);
+      if (match?.uid) return match.uid;
+    }
+    return null;
+  });
   const startedFrom = $derived(
     bot.workerId ? `${bot.workerId}${bot.companySlug ? ` · ${bot.companySlug}` : ""}` : null,
   );
@@ -193,13 +223,15 @@
       }
       const result = await api[verb](bot.name);
       if (!result.ok) {
-        actionError = result.message || `Could not ${verb} ${bot.name}.`;
+        console.warn(`[local-bot] ${verb} failed`, result.message);
+        actionError = `Could not ${verb} ${bot.name}. Try again.`;
         return;
       }
       await onchanged?.();
       if (verb === "remove") onclose?.();
     } catch (error) {
-      actionError = error instanceof Error ? error.message : `Could not ${verb} ${bot.name}.`;
+      console.warn(`[local-bot] ${verb} failed`, error);
+      actionError = `Could not ${verb} ${bot.name}. Try again.`;
     } finally {
       busy = null;
     }
@@ -309,7 +341,7 @@
             data-testid="local-bot-detail-uid"
             title="Copy uid"
             onclick={() => void copyUid()}
-          >
+          ><RailIcon name="copy" />
             {bot.agentUid}
             <span class="ad-uid-hint">{copied ? "copied" : "copy"}</span>
           </button>
@@ -322,38 +354,36 @@
         <h3 class="ad-kicker">Model and thinking</h3>
         <label class="ad-field">
           <span>Model</span>
-          <select
-            data-testid="local-bot-detail-model-select"
+          <Dropdown
+            block
+            testid="local-bot-detail-model-select"
+            label="Model"
             value={modelValue}
             disabled={savingSettings || promoting || Boolean(promotionPhase)}
-            onchange={(event) => {
-              draftModel = (event.currentTarget as HTMLSelectElement).value;
+            options={modelChoices.map((choice) => ({ value: choice.value, label: choice.label }))}
+            onchange={(v) => {
+              draftModel = v;
               settingsNote = null;
             }}
-          >
-            {#each modelChoices as choice (choice.value)}
-              <option value={choice.value}>{choice.label}</option>
-            {/each}
-          </select>
+          />
         </label>
         {#if modelHint}
           <p class="ad-muted" data-testid="local-bot-detail-model-hint">{modelHint}</p>
         {/if}
         <label class="ad-field">
           <span>Thinking</span>
-          <select
-            data-testid="local-bot-detail-effort-select"
+          <Dropdown
+            block
+            testid="local-bot-detail-effort-select"
+            label="Thinking"
             value={effortValue}
             disabled={savingSettings || promoting || Boolean(promotionPhase)}
-            onchange={(event) => {
-              draftEffort = (event.currentTarget as HTMLSelectElement).value;
+            options={effortChoices.map((level) => ({ value: level, label: effortLabel(level) }))}
+            onchange={(v) => {
+              draftEffort = v;
               settingsNote = null;
             }}
-          >
-            {#each effortChoices as level (level)}
-              <option value={level}>{effortLabel(level)}</option>
-            {/each}
-          </select>
+          />
         </label>
         <div class="ad-danger-row">
           <button
@@ -362,7 +392,7 @@
             data-testid="local-bot-detail-settings-save"
             disabled={!settingsDirty || savingSettings}
             onclick={() => void saveSettings()}
-          >
+          ><RailIcon name="save" />
             {savingSettings ? "Saving…" : "Save"}
           </button>
           {#if settingsNote}
@@ -370,6 +400,15 @@
           {/if}
         </div>
       </section>
+    {/if}
+
+    {#if "integrations" in adapter && "identity" in adapter && adapter.integrations && adapter.identity}
+      <BotIntegrationsSection
+        companyUid={botCompanyUid}
+        botUid={bot.agentUid}
+        botRole={bot.role ?? null}
+        adapter={{ integrations: adapter.integrations, identity: adapter.identity }}
+      />
     {/if}
 
     {#if bot.kind === "personal"}
@@ -382,22 +421,19 @@
         <h3 class="ad-kicker">Cloud hosting</h3>
         <p class="ad-muted">Your bot keeps its identity, conversation, skills, and memory. We prepare its cloud computer, ask you to connect ChatGPT, then move this conversation over.</p>
         <label class="ad-field"><span>Company</span>
-          <select value={promotionCompany} onchange={(event) => { promotionCompany = event.currentTarget.value; }} disabled={promoting || Boolean(promotionPhase)} aria-label="Promotion company">
-            <option value="">Choose company</option>
-            {#each promotionCompanies as company (company.uid)}<option value={company.uid}>{company.name}</option>{/each}
-          </select>
+          <Dropdown block testid="local-bot-promotion-company" label="Promotion company" value={promotionCompany} onchange={(v) => { promotionCompany = v; }} disabled={promoting || Boolean(promotionPhase)} options={[{ value: "", label: "Choose company" }, ...promotionCompanies.map((company) => ({ value: company.uid, label: company.name }))]} />
         </label>
         {#if promotionPhase || promoting}
           <p role="status"><strong>{promotionError ? "Promotion paused" : promotionStatus}</strong></p>
         {/if}
         {#if pairing}
           <p class="ad-muted">Open the sign-in page and enter <strong>{pairing.code}</strong>. Sign in with the ChatGPT subscription you want this cloud bot to use. Return here afterward; we will continue automatically.</p>
-          <button class="ad-btn" onclick={() => onopenurl?.(pairing!.url)} disabled={!onopenurl}>Connect ChatGPT</button>
+          <button class="ad-btn" onclick={() => onopenurl?.(pairing!.url)} disabled={!onopenurl}><RailIcon name="plug" />Connect ChatGPT</button>
         {/if}
         {#if promotionPhase === "active"}
           <p role="status">Promoted. Continue in this conversation.</p>
         {:else}
-          <button class="ad-btn" disabled={promoting || !promotionCompany || Boolean(busy)} onclick={() => void promote()}>
+          <button class="ad-btn" disabled={promoting || !promotionCompany || Boolean(busy)} onclick={() => void promote()}><RailIcon name="upload" />
             {promoting ? "Preparing cloud promotion…" : promotionError ? "Retry promotion" : promotionPhase ? "Check progress" : "Promote to cloud"}
           </button>
           {#if promotionError}
@@ -424,7 +460,7 @@
               data-testid="local-bot-detail-stop"
               disabled={Boolean(busy) || promoting || Boolean(promotionPhase)}
               onclick={() => void run("stop")}
-            >
+            ><RailIcon name="stop" />
               {busy === "stop" ? "Stopping…" : "Stop"}
             </button>
           {:else}
@@ -434,7 +470,7 @@
               data-testid="local-bot-detail-start"
               disabled={Boolean(busy) || promoting || Boolean(promotionPhase)}
               onclick={() => void run("start")}
-            >
+            ><RailIcon name="play" />
               {busy === "start" ? "Starting…" : "Start"}
             </button>
           {/if}
@@ -444,7 +480,7 @@
             data-testid="local-bot-detail-remove"
             disabled={Boolean(busy) || promoting || Boolean(promotionPhase)}
             onclick={() => (confirmRemove = true)}
-          >
+          ><RailIcon name="trash" />
             {busy === "remove" ? "Removing…" : "Remove"}
           </button>
         </div>
@@ -496,7 +532,7 @@
   .ad-title {
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .ad-close {
@@ -510,7 +546,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--t2);
-    font-size: 18px;
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
   }
@@ -545,21 +581,33 @@
     gap: 8px;
     margin: 0;
     color: var(--t1);
-    font-size: 16px;
-    font-weight: 650;
-    line-height: 1.3;
+    font-size: 20px;
+    font-weight: 500;
+    line-height: 1.25;
   }
 
   .ad-status {
     margin: 2px 0 0;
     color: var(--t3);
-    font: 500 10px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.3 var(--font-ui);
+  }
+
+  .ad-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .ad-status[data-presence="online"] {
-    color: var(--v4-ok, #42d77d);
+    color: var(--t2);
+  }
+
+  .ad-status[data-presence="online"]::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-ok, #42d77d);
   }
 
   .ad-desc {
@@ -582,9 +630,7 @@
   .ad-meta dt,
   .ad-kicker {
     color: var(--t3);
-    font: 500 10px/1.2 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.2 var(--font-ui);
   }
 
   .ad-meta dd {
@@ -598,7 +644,7 @@
     max-width: 100%;
     overflow-wrap: anywhere;
     color: var(--t2);
-    font: 12px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 13px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
   }
 
   .ad-uid {
@@ -610,7 +656,7 @@
     border: none;
     background: transparent;
     color: var(--t2);
-    font: 12px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 13px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
     cursor: pointer;
     overflow-wrap: anywhere;
     text-align: left;
@@ -618,9 +664,7 @@
 
   .ad-uid-hint {
     color: var(--t3);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
   }
 
   .ad-section {
@@ -638,7 +682,7 @@
   .ad-muted {
     margin: 0;
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-btn,
@@ -651,7 +695,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -676,7 +720,7 @@
     justify-content: space-between;
     gap: 12px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-field select {
@@ -688,7 +732,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-field select:focus-visible {
@@ -706,7 +750,7 @@
   .ad-error {
     margin: 0;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-close:focus-visible,

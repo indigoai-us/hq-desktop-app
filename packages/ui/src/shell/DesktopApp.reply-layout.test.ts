@@ -159,6 +159,8 @@ describe("DesktopApp reply-column layout", () => {
     ) as HTMLElement;
     const column = handle.parentElement!;
     const stage = column.parentElement!;
+    // US-015 (home-thread): the thread pane opens at 360 px until resized.
+    expect(column.style.getPropertyValue("--thread-width")).toBe("360px");
     vi.spyOn(stage, "getBoundingClientRect").mockReturnValue({
       width: 1000,
     } as DOMRect);

@@ -3,14 +3,14 @@
 /**
  * First-run guided tour, end to end through the real shell: on a fresh
  * install (the host says the guided setup is owed and the tour was never
- * shown) it starts by itself once #welcome is on screen, records "seen" at
- * once, then walks all eight steps: the titlebar Files button and the
+ * shown) it waits while #welcome still asks for a coding tool, starts by
+ * itself once one is signed in and the setup bot's DM opens, records "seen"
+ * at once, then walks all eight steps: the titlebar Files button and the
  * sidebar "+" (pointed at, not opened: no explorer, no create modal), the
  * Companies section for invites, meetings, the console globe, the held-open
- * Launch menu and the command palette. The setup bot's DM opens mid-tour
- * (as the auto-started bot does on a real install): step 1 re-points at its
- * composer, and Done leaves the person on that conversation, with every
- * surface the tour opened closed, nothing created and no navigation.
+ * Launch menu and the command palette. Step 1 points at the setup bot's
+ * composer, and Done leaves the person on the conversation they picked, with
+ * every surface the tour opened closed, nothing created and no navigation.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -21,7 +21,12 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 import { SETUP_ROW_ID } from "../chat/setup-channel.js";
-import { TOUR_SEEN_STORAGE_KEY, resolveTourTarget, tourSteps } from "../tour/guided-tour.js";
+import {
+  TOUR_AUTO_START_DELAY_MS,
+  TOUR_SEEN_STORAGE_KEY,
+  resolveTourTarget,
+  tourSteps,
+} from "../tour/guided-tour.js";
 import type { Workspace } from "../chat/workspaces.js";
 
 const memoryStorage = installMemoryLocalStorage();
@@ -62,6 +67,12 @@ async function settle(): Promise<void> {
 
 const q = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 
+/** The shell premounts the palette hidden once idle, so "open" means shown. */
+const paletteShown = () => {
+  const palette = q("command-palette");
+  return Boolean(palette && !palette.closest<HTMLElement>(".command-backdrop")?.hidden);
+};
+
 const SETUP_BOT_UID = "agt_setup_tour";
 
 const SETUP_BOT: LocalBotRow = {
@@ -94,10 +105,11 @@ async function next(): Promise<void> {
 
 // One mount per file: the sidebar's boot pick keeps module-level state.
 describe("DesktopApp first-run guided tour", () => {
-  it("auto-starts on a fresh install, walks the eight steps and leaves the person where they are", async () => {
+  it("waits for a coding tool, then auto-starts on a fresh install, walks the eight steps and leaves the person where they are", async () => {
     const markWelcomeTourShown = vi.fn(async () => ok(undefined));
     const createBot = vi.fn(async () => ok({ ok: true, name: "x", agentUid: "agt_x" }));
     const onselectrow = vi.fn();
+    let claudeLoggedIn = false;
     const adapter = {
       kind: "desktop",
       isAvailable: () => false,
@@ -133,6 +145,19 @@ describe("DesktopApp first-run guided tour", () => {
       shell: {
         detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
       },
+      // The setup bot runs on Claude. Setup opens it only once a coding tool
+      // is signed in, so the fixture signs in before the person presses run.
+      sessions: {
+        preflight: async () =>
+          ok({
+            claudeAvailable: true,
+            claudeLoggedIn,
+            codexAvailable: false,
+            codexLoggedIn: false,
+            grokAvailable: false,
+            grokLoggedIn: false,
+          }),
+      },
     } as unknown as PlatformAdapter;
 
     host = document.createElement("div");
@@ -151,37 +176,44 @@ describe("DesktopApp first-run guided tour", () => {
     });
     await settle();
 
+    // No coding tool is signed in yet, so #welcome asks for one first. The
+    // tour must not start on top of that card: two competing instructions
+    // (the signup VM run showed "1 of 8" over Install Claude).
+    await vi.waitFor(() => expect(q("setup-bot-error")).toBeTruthy(), { timeout: 4000, interval: 20 });
+    expect(q("setup-channel-intro")).toBeTruthy();
+    expect(host.querySelector(`.chat-row[data-conversation-id="${SETUP_ROW_ID}"].active`)).toBeTruthy();
+    await new Promise((r) => setTimeout(r, TOUR_AUTO_START_DELAY_MS + 400));
+    await settle();
+    expect(q("guided-tour-card")).toBeNull();
+    expect(markWelcomeTourShown).not.toHaveBeenCalled();
+    expect(memoryStorage.getItem(TOUR_SEEN_STORAGE_KEY)).toBeNull();
+
+    // The person signs in and runs setup: the setup bot's DM opens, and the
+    // tour starts there by itself with step 1 on its composer.
+    claudeLoggedIn = true;
+    q("setup-run")!.click();
+    await settle();
+    await vi.waitFor(() => expect(q("channel-name")?.textContent).toContain("Your assistant"), {
+      timeout: 2000,
+      interval: 20,
+    });
     await vi.waitFor(() => expect(q("guided-tour-card")).toBeTruthy(), {
       timeout: 8000,
       interval: 20,
     });
-    // #welcome is on screen and is what step 1 spotlights.
-    expect(q("setup-channel-intro")).toBeTruthy();
-    expect(host.querySelector(`.chat-row[data-conversation-id="${SETUP_ROW_ID}"].active`)).toBeTruthy();
     expect(markWelcomeTourShown).toHaveBeenCalledTimes(1);
     expect(memoryStorage.getItem(TOUR_SEEN_STORAGE_KEY)).toBe("1");
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
-    expect(resolvedSelector(0)).toBe('[data-testid="setup-hero"]');
-
-    // Mid-tour the setup bot's DM opens (on a real install the bot does this
-    // by itself). Step 1 now points at its composer.
-    q("setup-run")!.click();
-    await settle();
-    await vi.waitFor(() => expect(q("channel-name")?.textContent).toContain("setup"), {
-      timeout: 2000,
-      interval: 20,
-    });
     const dmStep = tourSteps({ setupBotDmOpen: true, setupBotUid: SETUP_BOT_UID })[0];
     expect(
       resolveTourTarget(dmStep.targets, (sel) => document.querySelector(sel))?.selector,
     ).toBe(".dm-reply-composer");
-    expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
     expect(createBot).not.toHaveBeenCalled();
 
-    // Step 2: the titlebar Files button; the explorer does not open.
+    // Step 2: the rail Library button; the explorer does not open.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("Your company's files");
-    expect(resolvedSelector(1)).toBe('[data-testid="titlebar-files"]');
+    expect(resolvedSelector(1)).toBe('[data-testid="rail-library"]');
     expect(q("vault-explorer")).toBeNull();
 
     // Step 3: the sidebar "+" that leads to New bot; the create modal stays shut.
@@ -191,10 +223,10 @@ describe("DesktopApp first-run guided tour", () => {
     expect(resolvedSelector(2)).toBe('[data-testid="chat-new-message"]');
     expect(q("chat-create-modal")).toBeNull();
 
-    // Step 4: invites, pointed at the sidebar's Companies section.
+    // Step 4: invites, pointed at the first company tile on the rail.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("Bring in your team");
-    expect(resolvedSelector(3)).toBe('[data-testid="chat-companies-section"]');
+    expect(resolvedSelector(3)).toBe('[data-testid="rail-company"]');
 
     // Back and forth over steps 2-4 never opens the explorer or the modal.
     q("guided-tour-back")!.click();
@@ -210,7 +242,7 @@ describe("DesktopApp first-run guided tour", () => {
     // Step 5: meetings.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("HQ can take notes on your calls");
-    expect(resolvedSelector(4)).toBe('[data-testid="titlebar-meetings"]');
+    expect(resolvedSelector(4)).toBe('[data-testid="rail-meetings"]');
 
     // The person opens another conversation themselves mid-tour.
     const other = host.querySelector<HTMLButtonElement>('.chat-row[data-conversation-id^="dm:person-"]')!;
@@ -223,10 +255,10 @@ describe("DesktopApp first-run guided tour", () => {
     );
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("5 of 8");
 
-    // Step 6: the web console globe.
+    // Step 6: the personal tools on the rail.
     await next();
-    expect(q("guided-tour-card")?.textContent).toContain("Open HQ on the web");
-    expect(resolvedSelector(5)).toBe('[data-testid="titlebar-console"]');
+    expect(q("guided-tour-card")?.textContent).toContain("Your personal tools");
+    expect(resolvedSelector(5)).toBe('[data-testid="rail-deployments"]');
     expect(q("titlebar-launch-menu")).toBeNull();
 
     // Step 7: the Launch menu is held open; a click on the card keeps it.
@@ -239,7 +271,7 @@ describe("DesktopApp first-run guided tour", () => {
     // Step 8: the command palette opens; the Launch menu closes.
     await next();
     expect(q("titlebar-launch-menu")).toBeNull();
-    expect(q("command-palette")).toBeTruthy();
+    expect(paletteShown()).toBe(true);
     expect(resolvedSelector(7)).toBe('[data-testid="command-palette"]');
     expect(q("guided-tour-card")?.textContent).toContain("Find anything with");
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("8 of 8");
@@ -260,7 +292,7 @@ describe("DesktopApp first-run guided tour", () => {
     expect(q("titlebar-back")?.outerHTML).toBe(backBefore);
     expect(q("vault-explorer")).toBeNull();
     expect(q("guided-tour-card")).toBeNull();
-    expect(q("command-palette")).toBeNull();
+    expect(paletteShown()).toBe(false);
     expect(q("chat-create-modal")).toBeNull();
     expect(q("titlebar-launch-menu")).toBeNull();
     expect(createBot).not.toHaveBeenCalled();

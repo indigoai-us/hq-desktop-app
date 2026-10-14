@@ -3,6 +3,7 @@ import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
   FIRST_LAUNCH_JOIN_KEY_FLAG as PUBLIC_FIRST_LAUNCH_JOIN_KEY_FLAG,
+  HQ_ANYWHERE_RUNTIME_FLAG as PUBLIC_HQ_ANYWHERE_RUNTIME_FLAG,
   POST_READY_DROP_REASON_FLAG as PUBLIC_POST_READY_DROP_REASON_FLAG,
 } from "./index.js";
 import {
@@ -12,6 +13,7 @@ import {
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
+  HQ_ANYWHERE_RUNTIME_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
@@ -21,6 +23,7 @@ import {
   POST_READY_DROP_REASON_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
+  VISUAL_FIRST_RUN_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -55,6 +58,12 @@ function deferred<T = void>(): {
 }
 
 describe("registry key mapping", () => {
+  it("maps HQ Anywhere availability to the admin rollout flag", () => {
+    expect(HQ_ANYWHERE_RUNTIME_FLAG).toBe("hq-anywhere-runtime");
+    expect(PUBLIC_HQ_ANYWHERE_RUNTIME_FLAG).toBe(HQ_ANYWHERE_RUNTIME_FLAG);
+    expect(registryKeyFor(HQ_ANYWHERE_RUNTIME_FLAG)).toBe(HQ_ANYWHERE_RUNTIME_FLAG);
+  });
+
   it("exports the first-launch join-key flag through the public platform entrypoint", () => {
     expect(PUBLIC_FIRST_LAUNCH_JOIN_KEY_FLAG).toBe(FIRST_LAUNCH_JOIN_KEY_FLAG);
   });
@@ -206,6 +215,64 @@ describe("registry key mapping", () => {
       adapter.identity.hasFeature(SETUP_DEPS_TIMEOUT_RETRY_FLAG),
     ).resolves.toEqual(ok(true));
     expect(isEnabled).toHaveBeenCalledWith(SETUP_DEPS_TIMEOUT_RETRY_FLAG);
+  });
+
+  it("maps visual first-run setup through its desktop hq-flags key", () => {
+    expect(VISUAL_FIRST_RUN_FLAG).toBe("desktop.visual-first-run");
+    expect(registryKeyFor(VISUAL_FIRST_RUN_FLAG)).toBe(VISUAL_FIRST_RUN_FLAG);
+  });
+
+  it("keeps visual first-run setup off when hq-flags has no value for it", async () => {
+    const isEnabled = vi.fn(() => true);
+    const invoke = vi.fn(async () => undefined);
+    const adapter = createSyncPlatformAdapter({
+      invoke,
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(VISUAL_FIRST_RUN_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+    // Off without asking hq-pro's per-feature route either.
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps visual first-run setup off when the registry cannot be read", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {
+            throw new Error("registry unavailable");
+          },
+          snapshot: () => null,
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(VISUAL_FIRST_RUN_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("turns visual first-run setup on only for an explicit hq-flags value", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: { [VISUAL_FIRST_RUN_FLAG]: true } }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(VISUAL_FIRST_RUN_FLAG)).resolves.toEqual(ok(true));
+    expect(isEnabled).toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
   });
 
   it("keeps the ready first action off until hq-flags configures it", async () => {

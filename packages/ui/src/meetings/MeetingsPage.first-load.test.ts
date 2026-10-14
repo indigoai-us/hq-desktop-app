@@ -31,6 +31,9 @@ const api = {
   listMemberships: () => call("listMemberships") as never,
   listUpcoming: () => call("listUpcoming") as never,
   listScheduledBots: () => call("listScheduledBots") as never,
+  listRecorded: () => Promise.resolve({ ok: true, value: { meetings: [] } }) as never,
+  getRecorded: () => Promise.resolve({ ok: true, value: { signals: {} } }) as never,
+  readRecordedBody: () => Promise.resolve({ ok: true, value: "" }) as never,
   inviteBot: () => call("inviteBot") as never,
   cancelBot: () => call("cancelBot") as never,
   joinBotNow: () => call("joinBotNow") as never,
@@ -227,6 +230,27 @@ describe("MeetingsPage first-load UX (US-010)", () => {
     });
     // Failure is not "you have no meetings" — no connect-first takeover.
     expect(q("meetings-connect-empty")).toBeNull();
+  });
+
+  it("keeps the connect empty state hidden when the calendar accounts read fails (AUDIT-3-16)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    call.mockImplementation((method: string) => {
+      if (method === "listAccounts") return Promise.reject(new Error("HTTP 503"));
+      if (method === "listCalendars") {
+        return Promise.resolve(ok({ calendars: [], selectedCalendarIds: [] }));
+      }
+      return Promise.resolve(ok([]));
+    });
+
+    mountPage();
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(q("meetings-loading")).toBeNull();
+      expect(meetingsStore.hasLiveSnapshot).toBe(true);
+    });
+    expect(q("meetings-connect-empty")).toBeNull();
+    expect(host.textContent).not.toContain("Connect your calendar");
   });
 
   it("the connect empty state's CTA starts the calendar connect flow", async () => {

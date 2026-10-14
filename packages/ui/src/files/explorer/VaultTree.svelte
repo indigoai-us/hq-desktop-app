@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../../common/ReadLoader.svelte";
   /**
    * VaultTree: the lazy folder tree for one vault in the Files explorer.
    *
@@ -10,6 +11,9 @@
    * Obsidian's file pane.
    */
   import { untrack } from "svelte";
+  import RailButton from "../../common/button/RailButton.svelte";
+  import RailIcon from "../../common/button/RailIcon.svelte";
+  import type { RailIconName } from "../../common/button/rail-icons.js";
   import type { Vault, TreeEntry } from "./vault-model.js";
   import { toTreeEntry, visibleEntries } from "./vault-model.js";
 
@@ -21,9 +25,25 @@
     /** Bumped by the parent to force a reload (vault switch, refresh). */
     reloadKey: number;
     onopen: (path: string, opts: { newTab: boolean }) => void;
+    /** AUDIT-3-22: false when the vault home already shows the one Try again. */
+    retryHere?: boolean;
+    /** Retries every vault read, not just the tree. */
+    onretry?: () => void;
+    /** Open every folder as it loads (a filtered tree shows each match). */
+    revealAll?: boolean;
+    /** A short muted note after a row's name (e.g. "conflict copy"). */
+    noteFor?: (entry: TreeEntry) => string | null;
+    /** OWNER-R17: a folder row was selected (it also opens or closes). */
+    onfocusdir?: (path: string) => void;
+    /** Display name for a row (e.g. a note's frontmatter title); null keeps the file name. */
+    labelFor?: (entry: TreeEntry) => string | null;
+    /** Count shown at the end of a folder row (e.g. files inside). */
+    countFor?: (entry: TreeEntry) => number | null;
+    /** Small kind icon before a file row's name. */
+    iconFor?: (entry: TreeEntry) => RailIconName | null;
   }
 
-  let { vault, listDir, activePath, showSystem, reloadKey, onopen }: Props = $props();
+  let { vault, listDir, activePath, showSystem, reloadKey, onopen, retryHere = true, onretry, revealAll = false, noteFor, onfocusdir, labelFor, countFor, iconFor }: Props = $props();
 
   let children = $state<Record<string, TreeEntry[]>>({});
   let expanded = $state<Record<string, boolean>>({});
@@ -55,16 +75,28 @@
   async function load(path: string): Promise<void> {
     const gen = generation;
     loading = { ...loading, [path]: true };
-    const res = await listDir(path);
+    const res = await listDir(path).catch((err: unknown) => {
+      console.warn("VaultTree: folder read did not finish:", path, err);
+      return { ok: false as const, message: "folder read did not finish" };
+    });
     if (gen !== generation) return;
     loading = { ...loading, [path]: false };
     if (!res.ok) {
-      if (path === vault.root) rootError = res.message || "This vault could not be read.";
+      // AUDIT-3: plain copy only; the host message goes to the log.
+      console.warn("VaultTree: folder read failed:", path, res.message);
+      if (path === vault.root) rootError = "Couldn't read this vault.";
       children = { ...children, [path]: [] };
       return;
     }
     const entries = (res.value ?? []).map(toTreeEntry).filter((e): e is TreeEntry => e !== null);
     children = { ...children, [path]: entries };
+    if (revealAll) {
+      const dirs = entries.filter((e) => e.isDir);
+      if (dirs.length) {
+        expanded = { ...expanded, ...Object.fromEntries(dirs.map((d) => [d.path, true])) };
+        for (const d of dirs) if (!children[d.path]) void load(d.path);
+      }
+    }
   }
 
   $effect(() => {
@@ -156,8 +188,10 @@
 
   function activate(entry: TreeEntry, newTab: boolean): void {
     focusPath = entry.path;
-    if (entry.isDir) toggle(entry);
-    else onopen(entry.path, { newTab });
+    if (entry.isDir) {
+      toggle(entry);
+      onfocusdir?.(entry.path);
+    } else onopen(entry.path, { newTab });
   }
 
   function onkeydown(event: KeyboardEvent): void {
@@ -220,6 +254,8 @@
   }
 
   function displayName(entry: TreeEntry): string {
+    const label = labelFor?.(entry);
+    if (label) return label;
     if (entry.isDir) return entry.name;
     return entry.name.replace(/\.(md|markdown)$/i, "");
   }
@@ -236,13 +272,14 @@
   data-testid="vault-tree"
 >
   {#if rootError}
-    <p class="vt-note" role="status">{rootError}</p>
-  {:else if loading[vault.root] && !children[vault.root]}
-    <div class="vt-skeleton" aria-hidden="true">
-      {#each [72, 54, 64, 40, 58] as w, i (i)}
-        <span style={`width:${w}%`}></span>
-      {/each}
+    <div class="vt-note vt-error" role="alert" data-testid="vault-tree-error">
+      <p>{rootError}</p>
+      {#if retryHere}
+        <RailButton icon="refresh" data-testid="vault-tree-retry" onclick={() => { rootError = null; if (onretry) onretry(); else void load(vault.root); }}>Try again</RailButton>
+      {/if}
     </div>
+  {:else if loading[vault.root] && !children[vault.root]}
+    <ReadLoader testid="vault-tree-loader" onretry={() => { if (onretry) onretry(); else void load(vault.root); }} />
   {:else if rows.length === 0}
     <p class="vt-note">This vault is empty.</p>
   {:else}
@@ -277,9 +314,16 @@
             {:else}
               <span class="vt-chevron-spacer" aria-hidden="true"></span>
             {/if}
+            {#if !entry.isDir && iconFor?.(entry)}
+              <span class="vt-kind" aria-hidden="true"><RailIcon name={iconFor(entry)!} size={13} /></span>
+            {/if}
             <span class="vt-name">{displayName(entry)}</span>
+            {#if noteFor?.(entry)}<span class="vt-note-inline">{noteFor(entry)}</span>{/if}
             {#if !entry.isDir && ext && ext !== "md" && ext !== "markdown"}
               <span class="vt-ext">{ext}</span>
+            {/if}
+            {#if entry.isDir && countFor?.(entry) != null}
+              <span class="vt-count" data-testid="vault-tree-count">{countFor(entry)}</span>
             {/if}
             {#if entry.isDir && loading[entry.path]}
               <span class="vt-spinner" aria-label="Loading"></span>
@@ -292,10 +336,31 @@
 </div>
 
 <style>
+  .vt-kind {
+    display: inline-flex;
+    flex: none;
+    margin-right: 2px;
+    color: var(--text-3, var(--v4-text-3, currentColor));
+  }
+  .vt-count {
+    flex: none;
+    margin-left: auto;
+    padding-left: 8px;
+    color: var(--text-3, var(--v4-text-3, currentColor));
+    font-variant-numeric: tabular-nums;
+  }
+  .vt-note-inline {
+    flex: none;
+    margin-left: 6px;
+    color: var(--text-3, var(--v4-text-3, currentColor));
+    opacity: 0.75;
+  }
   .vt {
     box-sizing: border-box;
     height: 100%;
     overflow-y: auto;
+    /* OWNER-R13: long names truncate (full name on hover); never a sideways scroll. */
+    overflow-x: hidden;
     padding: 4px 6px 16px;
     outline: none;
   }
@@ -324,6 +389,8 @@
     text-align: left;
     cursor: pointer;
     white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
   }
   .vt-row:hover {
     background: var(--v4-control-faint);
@@ -374,7 +441,7 @@
     border-radius: 4px;
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 10px;
+    font-size: 13px;
     letter-spacing: 0.02em;
     text-transform: uppercase;
   }
@@ -393,20 +460,12 @@
       transform: rotate(360deg);
     }
   }
+  .vt-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .vt-error p { margin: 0; }
   .vt-note {
     margin: 12px 10px;
     color: var(--v4-text-3);
-    font-size: 12px;
-  }
-  .vt-skeleton {
-    display: grid;
-    gap: 10px;
-    padding: 10px;
-  }
-  .vt-skeleton span {
-    height: 10px;
-    border-radius: 4px;
-    background: var(--v4-control-faint);
+    font-size: 13px;
   }
   @media (prefers-reduced-motion: reduce) {
     .vt-chevron,

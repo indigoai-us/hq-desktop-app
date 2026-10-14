@@ -1,0 +1,368 @@
+// @vitest-environment happy-dom
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mount, tick, unmount } from "svelte";
+import { ok, type PlatformAdapter } from "@hq/platform";
+
+import DesktopApp from "./DesktopApp.svelte";
+import { createFixtureChatSidebarApi } from "./fixtures.js";
+import { createEmptyNotificationsApi } from "./mesh-overlay.js";
+import { createChatWakeBus } from "../chat/chat-api.js";
+import type { ConversationRow } from "../chat/sidebar-model.js";
+import { firstRunHandoffNotice } from "../chat/first-run/visual-first-run.js";
+import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "../chat/agent-channel.js";
+
+/**
+ * Owner request, 2026-10-12: HQ DMs are threaded on the server, and a bot's
+ * DM shows them threaded like any other conversation. Hosted bots post every
+ * answer as a reply to the message that triggered it, so the answer sits
+ * under "1 reply" on that message and opens in the thread panel. The bot's
+ * answer to the app's own hidden request (its first message) has no visible
+ * root, so it stays on the main timeline.
+ */
+
+/** Newest first, as the server returns a direct-message page. */
+const THREAD = [
+  { eventId: "e4", fromPersonUid: "agt_nova", fromDisplayName: "Nova", body: "Here now. What do you need?", createdAt: "2026-10-02T13:55:10.000Z", rootEventId: "e3" },
+  { eventId: "e3", fromPersonUid: "prs_me", fromDisplayName: "Corey", body: "Hello there", createdAt: "2026-10-02T13:54:50.000Z", replyCount: 1 },
+  { eventId: "e2", fromPersonUid: "agt_nova", fromDisplayName: "Nova", body: "Hi Corey, I am Nova.", createdAt: "2026-10-02T13:54:20.000Z", rootEventId: "e1" },
+  { eventId: "e1", fromPersonUid: "prs_me", fromDisplayName: "Corey", body: "Automatic message from HQ: your setup has just finished", createdAt: "2026-10-02T13:53:50.000Z", audience: "agent", replyCount: 1 },
+];
+
+function adapter(peerUid: string): PlatformAdapter {
+  return {
+    kind: "web",
+    isAvailable: () => false,
+    capabilities: {},
+    messaging: {
+      listContacts: async () => ok({ contacts: [] }),
+      listChannelMembers: async () => ok({ members: [] }),
+      fetchChannel: async () => ok({ messages: [], nextCursor: null }),
+      fetchDmThread: async () =>
+        ok({ messages: THREAD.map((row) => (row.fromPersonUid === "agt_nova" ? { ...row, fromPersonUid: peerUid } : row)) }),
+      fetchReplyThread: async () =>
+        ok({
+          scope: "dm",
+          root: THREAD[1],
+          replies: [{ ...THREAD[0], fromPersonUid: peerUid }],
+        }),
+    },
+    agents: {
+      getStatus: async () => ok({ setupState: { phase: "ready" }, agent: { runtime: { syncOkAt: "2026-10-02T14:20:00.000Z" } } }),
+    },
+    settings: {
+      getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }),
+    },
+    shell: {
+      detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
+    },
+  } as unknown as PlatformAdapter;
+}
+
+let host: HTMLDivElement;
+let component: ReturnType<typeof mount> | null = null;
+
+afterEach(async () => {
+  if (component) await unmount(component);
+  component = null;
+  host?.remove();
+});
+
+async function settle(times = 10): Promise<void> {
+  for (let i = 0; i < times; i += 1) {
+    await tick();
+    await Promise.resolve();
+  }
+}
+
+async function mountDm(peerUid: string, seeded: Array<Record<string, unknown>> = []): Promise<string> {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  const row = { id: `dm:${peerUid}`, kind: "dm", title: "Nova", personUid: peerUid, companyUid: null } as ConversationRow;
+  component = mount(DesktopApp, {
+    target: host,
+    props: {
+      adapter: adapter(peerUid),
+      sidebarApi: createFixtureChatSidebarApi(),
+      notificationsApi: createEmptyNotificationsApi(),
+      self: { uid: "prs_me", displayName: "Corey", email: "me@example.com" },
+      initialRow: row,
+      ...(seeded.length > 0 ? { messagesByRow: () => seeded as never } : {}),
+      wakes: createChatWakeBus(),
+      coreFixtures: false,
+    },
+  });
+  const thread = (): string => host.querySelector('[data-testid="conversation-thread"]')?.textContent ?? "";
+  await vi.waitFor(() => expect(thread()).toContain("Hello there"));
+  await settle();
+  return thread();
+}
+
+describe("DesktopApp direct message with a bot", () => {
+  it("keeps the bot's answer in its thread, under a reply count on the message it answers", async () => {
+    const text = await mountDm("agt_nova");
+    expect(text).toContain("Hello there");
+    expect(text).not.toContain("Here now. What do you need?");
+    expect(text).toMatch(/1 reply/);
+  });
+
+  it("shows the bot's first message, the answer to the app's hidden request, on the main timeline", async () => {
+    const text = await mountDm("agt_nova");
+    expect(text).toContain("Hi Corey, I am Nova.");
+    expect(text.indexOf("Hi Corey, I am Nova.")).toBeLessThan(text.indexOf("Hello there"));
+  });
+
+  it("never shows the request the app sent the bot for its first message", async () => {
+    const text = await mountDm("agt_nova");
+    expect(text).not.toContain("Automatic message from HQ");
+  });
+
+  it("never shows that request when the host seeded the thread from its own store", async () => {
+    // Regression (owner, 2026-10-02): the request was visible in the bot's
+    // direct message. The host's stored rows carry no lane and were shown as
+    // they were.
+    const seeded = [...THREAD].reverse().map(({ audience: _lane, ...row }) => row);
+    const text = await mountDm("agt_nova", seeded);
+    expect(text).toContain("Hi Corey, I am Nova.");
+    expect(text).not.toContain("Automatic message from HQ");
+    expect(text).not.toContain("Here now. What do you need?");
+  });
+
+  it("keeps threads under their root in a conversation between two people", async () => {
+    const text = await mountDm("prs_nova");
+    expect(text).toContain("Hello there");
+    expect(text).not.toContain("Here now. What do you need?");
+    expect(text).toMatch(/1 reply/);
+  });
+
+  it("opens the bot's answer in the thread panel from the reply count", async () => {
+    await mountDm("agt_nova");
+    const counts = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="message-replies"]')];
+    expect(counts).toHaveLength(1);
+    expect(host.querySelectorAll('[data-testid="message-reply-quick"]').length).toBeGreaterThan(0);
+    counts[0]!.click();
+    await settle();
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="reply-panel"]')?.textContent ?? "").toContain("Here now. What do you need?"),
+    );
+  });
+
+  it("still offers 'Reply in thread' between two people, and it opens the thread", async () => {
+    await mountDm("prs_nova");
+    const replies = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="message-reply-quick"]')];
+    expect(replies.length).toBeGreaterThan(0);
+    replies[0]!.click();
+    await settle();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="reply-panel"]')).not.toBeNull());
+  });
+});
+
+/**
+ * B-1: only the app's own requests are left out of a bot conversation, and
+ * an explicit agent-lane row is left out in a human-only view. The app's requests open with
+ * "Automatic message from HQ:". A row is one of them when it is tagged for
+ * the bot (`audience: "agent"`), or, for a stored copy with no tag, when the
+ * signed-in person sent it. A bot's own row is never an app request.
+ * Human-only visibility separately hides explicit agent-only rows while an
+ * untagged row remains human-visible in a channel or in a conversation
+ * between two people.
+ */
+describe("DesktopApp: which rows opening with the app's words are hidden", () => {
+  const LEAD = "Automatic message from HQ:";
+  type Row = Record<string, unknown>;
+  const row = (eventId: string, fromPersonUid: string, body: string, at: string, over: Row = {}): Row => ({
+    eventId,
+    fromPersonUid,
+    fromDisplayName: fromPersonUid === "prs_me" ? "Corey" : fromPersonUid.startsWith("agt_") ? "Nova" : "Hassaan",
+    body,
+    createdAt: `2026-10-02T13:${at}.000Z`,
+    ...over,
+  });
+
+  async function mountRows(input: {
+    target: ConversationRow;
+    /** Newest first, as the server returns a page. */
+    page: Row[];
+    seeded?: Row[];
+    shows: string;
+  }): Promise<string> {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const value = {
+      kind: "web",
+      isAvailable: () => false,
+      capabilities: {},
+      messaging: {
+        listContacts: async () => ok({ contacts: [] }),
+        listChannelMembers: async () => ok({ members: [] }),
+        fetchChannel: async () => ok({ messages: input.page, nextCursor: null }),
+        fetchDmThread: async () => ok({ messages: input.page }),
+      },
+      agents: {
+        getStatus: async () => ok({ setupState: { phase: "ready" }, agent: { runtime: { syncOkAt: "2026-10-02T14:20:00.000Z" } } }),
+      },
+      settings: { getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }) },
+      shell: { detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }) },
+    } as unknown as PlatformAdapter;
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: value,
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_me", displayName: "Corey", email: "me@example.com" },
+        initialRow: input.target,
+        ...(input.seeded ? { messagesByRow: () => input.seeded as never } : {}),
+        wakes: createChatWakeBus(),
+        coreFixtures: false,
+      },
+    });
+    const thread = (): string => host.querySelector('[data-testid="conversation-thread"]')?.textContent ?? "";
+    await vi.waitFor(() => expect(thread()).toContain(input.shows));
+    await settle();
+    return thread();
+  }
+
+  const BOT_DM = { id: "dm:agt_nova", kind: "dm", title: "Nova", personUid: "agt_nova", companyUid: null } as ConversationRow;
+  const PERSON_DM = { id: "dm:prs_hassaan", kind: "dm", title: "Hassaan", personUid: "prs_hassaan", companyUid: null } as ConversationRow;
+  const CHANNEL = { id: "ch:chn_general", kind: "channel", title: "general", channelId: "chn_general" } as ConversationRow;
+
+  it("shows a bot's own message that opens with the app's words, in its direct message", async () => {
+    const text = await mountRows({
+      target: BOT_DM,
+      shows: "Hello there",
+      page: [
+        row("e4", "agt_nova", `${LEAD} this is what the request I got said. Here is my answer.`, "55:10"),
+        row("e3", "prs_me", "Hello there", "54:50"),
+        row("e2", "agt_nova", `${LEAD} quoted by the bot as a reply`, "54:20", { rootEventId: "e1" }),
+        row("e1", "prs_me", `${LEAD} your setup has just finished`, "53:50", { audience: "agent", replyCount: 1 }),
+      ],
+    });
+    expect(text).toContain(`${LEAD} this is what the request I got said. Here is my answer.`);
+    expect(text).toContain(`${LEAD} quoted by the bot as a reply`);
+    // The app's own request, sent for the person on the bot's lane, stays out.
+    expect(text).not.toContain("your setup has just finished");
+  });
+
+  it("in a bot's direct message, hides a stored copy with no tag only when the signed-in person sent it", async () => {
+    // The host's stored thread keeps no lane. The viewer's own copy of the
+    // request is hidden; a row from anyone else is not the app's request.
+    const seeded = [
+      row("e1", "prs_me", `${LEAD} your setup has just finished`, "53:50"),
+      row("e2", "agt_nova", "Hi Corey, I am Nova.", "54:20"),
+      row("e3", "prs_someone_else", `${LEAD} written by another account`, "54:40"),
+      row("e4", "prs_me", "Hello there", "54:50"),
+    ];
+    const text = await mountRows({ target: BOT_DM, shows: "Hello there", page: [], seeded });
+    expect(text).toContain("Hi Corey, I am Nova.");
+    expect(text).toContain(`${LEAD} written by another account`);
+    expect(text).not.toContain("your setup has just finished");
+  });
+
+  it("keeps an untagged direct message and hides an explicit agent-lane message", async () => {
+    const text = await mountRows({
+      target: PERSON_DM,
+      shows: "Hello there",
+      page: [
+        row("e3", "prs_me", "Hello there", "54:50"),
+        row("e2", "prs_me", `${LEAD} I typed this myself`, "54:20"),
+        row("e1", "prs_hassaan", `${LEAD} and Hassaan typed this`, "53:50", { audience: "agent" }),
+      ],
+    });
+    expect(text).toContain(`${LEAD} I typed this myself`);
+    expect(text).not.toContain(`${LEAD} and Hassaan typed this`);
+  });
+
+  it("keeps an untagged agt_ channel message and hides an explicit agent-lane message", async () => {
+    const text = await mountRows({
+      target: CHANNEL,
+      shows: "Morning all",
+      page: [
+        row("c4", "prs_me", "Morning all", "55:10"),
+        row("c3", "agt_nova", `${LEAD} a bot wrote this in the channel`, "54:50"),
+        row("c2", "prs_hassaan", `${LEAD} a teammate wrote this`, "54:20", { audience: "agent" }),
+        row("c1", "prs_me", `${LEAD} I wrote this`, "53:50"),
+      ],
+    });
+    expect(text).toContain(`${LEAD} a bot wrote this in the channel`);
+    expect(text).not.toContain(`${LEAD} a teammate wrote this`);
+    expect(text).toContain(`${LEAD} I wrote this`);
+  });
+});
+
+/**
+ * A note as builds before the one-handoff change wrote it, after the kickoff:
+ * they stay in people's threads, so they must stay hidden.
+ */
+function olderBuildNote(json: Record<string, unknown>): string {
+  return (
+    `${FIRST_RUN_NOTE_LEAD} I just finished more of the app's visual setup. ` +
+    `${FIRST_RUN_HANDOFF_MARKER} ${JSON.stringify({ from: "desktop-visual-first-run", v: 1, ...json })}. ` +
+    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
+    "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\"."
+  );
+}
+
+/**
+ * Owner finding, round 2: after the visual first run the setup assistant's
+ * chat showed a message from the person ("Test Engineer", avatar TE) holding
+ * the raw handoff. The server's thread read returns the app's bot-only notes
+ * with no lane, so the conversation has to know them by what they say.
+ */
+describe("DesktopApp: the setup assistant's chat after the visual first run", () => {
+  it("never shows the app's handoff notes, and nothing with the handoff is shown as the person's", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    // A note an older build sent after the kickoff; still in people's threads.
+    const settled = olderBuildNote({ done: ["company"], team: { kind: "personal" } });
+    const handoff = firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], imported: null, team: null, apps: null });
+    const page = [
+      { eventId: "s4", fromPersonUid: "agt_setup", fromDisplayName: "Biscuit", body: "You're working alone, noted. Which project first?", createdAt: "2026-10-10T13:55:10.000Z" },
+      { eventId: "s3", fromPersonUid: "prs_me", fromDisplayName: "Test Engineer", body: settled, createdAt: "2026-10-10T13:54:50.000Z" },
+      { eventId: "s2", fromPersonUid: "prs_me", fromDisplayName: "Test Engineer", body: handoff, createdAt: "2026-10-10T13:54:30.000Z" },
+      { eventId: "s1", fromPersonUid: "agt_setup", fromDisplayName: "Biscuit", body: "Hi, I'm Biscuit, your HQ assistant.", createdAt: "2026-10-10T13:54:20.000Z" },
+    ];
+    const value = {
+      kind: "web",
+      isAvailable: () => false,
+      capabilities: {},
+      messaging: {
+        listContacts: async () => ok({ contacts: [] }),
+        listChannelMembers: async () => ok({ members: [] }),
+        fetchChannel: async () => ok({ messages: [], nextCursor: null }),
+        fetchDmThread: async () => ok({ messages: page }),
+      },
+      agents: {
+        getStatus: async () => ok({ setupState: { phase: "ready" }, agent: { runtime: { syncOkAt: "2026-10-10T14:20:00.000Z" } } }),
+      },
+      settings: { getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }) },
+      shell: { detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }) },
+    } as unknown as PlatformAdapter;
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: value,
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_me", displayName: "Test Engineer", email: "te@example.com" },
+        initialRow: { id: "dm:agt_setup", kind: "dm", title: "Biscuit", personUid: "agt_setup", companyUid: null } as ConversationRow,
+        wakes: createChatWakeBus(),
+        coreFixtures: false,
+      },
+    });
+    const thread = (): string => host.querySelector('[data-testid="conversation-thread"]')?.textContent ?? "";
+    await vi.waitFor(() => expect(thread()).toContain("Which project first?"));
+    await settle();
+    const text = thread();
+    expect(text).toContain("Hi, I'm Biscuit, your HQ assistant.");
+    expect(text).not.toContain("Handoff from the app");
+    expect(text).not.toContain("desktop-visual-first-run");
+    expect(text).not.toContain("Setup note from the HQ desktop app");
+    expect(text).not.toContain("Do not greet me again");
+    // Only the assistant's two messages are drawn. The person wrote nothing,
+    // so nothing is shown as theirs.
+    const drawn = [...host.querySelectorAll('[data-testid="conversation-message"]')];
+    expect(drawn).toHaveLength(2);
+    expect(drawn.filter((el) => (el.textContent ?? "").includes("Test Engineer"))).toHaveLength(0);
+  });
+});

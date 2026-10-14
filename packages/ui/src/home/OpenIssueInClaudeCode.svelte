@@ -57,8 +57,9 @@
       dispatched = true;
       setTimeout(() => (dispatched = false), 1800);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("open-issue-in-claude-code: dispatch failed", err);
+      // AUDIT-3c: log the raw failure; the button shows app copy.
+      const msg = "Couldn’t open Claude Code. Try again.";
+      console.warn("[open-issue-in-claude-code] dispatch failed", err);
       // Same fallback as the tray popover: the user still gets the prompt.
       try {
         await navigator.clipboard.writeText(prompt);

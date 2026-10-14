@@ -2,14 +2,20 @@
  * Pure helpers for the Cloud group of Settings → Bots.
  *
  * Cloud bots are company-hosted (`agt_*` entities provisioned through a company
- * channel). The cheapest cross-company listing is the member-safe
- * `GET /v1/agents/mobile-roster` with no companyUid: hq-pro returns every
- * visible bot across all of the caller's active companies, each row tagged with
- * its companyUid. Rows carry setup phase but no runtime (paused/running) state
- * and no avatar; the pane renders an initial and infers "paused" only from its
- * own successful Pause action.
+ * channel). They are listed with the member-safe `GET /v1/agents/mobile-roster`
+ * once per company, in parallel. The unscoped form (no companyUid) scans every
+ * company in one sequential server request and runs past the 15s client
+ * timeout for people in many companies (QA-080), so it is only a fallback when
+ * no company uid is known. Rows carry setup phase but no runtime (paused/running)
+ * state; the pane renders the server avatar when present and infers "paused"
+ * only from its own successful Pause action.
  */
 
+import type { AdapterResult, Json } from "@hq/platform";
+import { classifyApiError } from "../common/api-error.js";
+
+/** Plain copy shown when every roster request fails with unclassified text. */
+export const CLOUD_ROSTER_ERROR_COPY = "Couldn't read your cloud bots. Try again.";
 import type { WorkspaceLike } from "../chat/channel-admin.js";
 import { canEditAgentProfile } from "../avatars/can-edit.js";
 import { deriveAgentWorkStatus, type AgentWorkStatus } from "../chat/agent-detail-model.js";
@@ -17,11 +23,15 @@ import { deriveAgentWorkStatus, type AgentWorkStatus } from "../chat/agent-detai
 export interface CloudBotRow {
   uid: string;
   displayName: string;
+  /** Server-provided bot portrait, when the roster includes one. */
+  avatarUrl: string | null;
   companyUid: string | null;
   companyLabel: string | null;
   status: AgentWorkStatus;
   /** Raw setup phase from the roster (`ready`, `provisioning`, `failed`, …). */
   phase: string;
+  /** The machine an API already disclosed for this bot, when it has one. */
+  machineInstanceId: string | null;
   /** Owner/admin of the bot's company (or explicit admin) may pause/remove it. */
   canManage: boolean;
 }
@@ -82,9 +92,11 @@ export function cloudBotsFromRoster(
     if (phase === "deprovisioned" || phase === "archived") continue;
     seen.add(uid);
     const companyUid = str(item.companyUid) || null;
+    const profile = isRecord(item.profile) ? item.profile : null;
     rows.push({
       uid,
       displayName: str(item.displayName) || str(item.name) || uid,
+      avatarUrl: str(item.avatarUrl) || str(profile?.avatarUrl) || null,
       companyUid,
       companyLabel: companyUid ? (names.get(companyUid) ?? companyUid) : null,
       status: deriveAgentWorkStatus({
@@ -92,6 +104,7 @@ export function cloudBotsFromRoster(
         runtimeStatus: str(item.status),
       }),
       phase,
+      machineInstanceId: str(item.instanceId) || str(item.machineInstanceId) || null,
       canManage: canEditAgentProfile({
         agentUid: uid,
         agentCompanyUid: companyUid,
@@ -102,4 +115,56 @@ export function cloudBotsFromRoster(
   }
   rows.sort((a, b) => a.displayName.localeCompare(b.displayName));
   return rows;
+}
+
+/**
+ * Fetch the mobile roster for each company in parallel and merge the rows,
+ * tagging each with its company when the server row omits it. Partial failure
+ * still returns the companies that answered; `failure` is set only when every
+ * request failed, so one slow company cannot blank the whole list.
+ */
+export async function fetchCloudRoster(
+  listMobileRoster: (companyUid?: string | null) => Promise<AdapterResult<Json>>,
+  companyUids: ReadonlyArray<string | null | undefined>,
+): Promise<{ agents: unknown[]; failure: unknown | null }> {
+  const uids = [...new Set(companyUids.map((uid) => (uid ?? "").trim()).filter(Boolean))];
+  const scopes: Array<string | null> = uids.length ? uids : [null];
+  const results = await Promise.all(
+    scopes.map(async (uid) => {
+      try {
+        return { uid, result: await listMobileRoster(uid) };
+      } catch (error) {
+        return { uid, result: { ok: false as const, reason: "error" as const, message: error instanceof Error ? error.message : String(error) } };
+      }
+    }),
+  );
+  const agents: unknown[] = [];
+  let failure: unknown | null = null;
+  let anyOk = false;
+  for (const { uid, result } of results) {
+    if (!result.ok) {
+      failure ??= result;
+      continue;
+    }
+    anyOk = true;
+    const value: unknown = result.value;
+    const rec = isRecord(value) ? value : {};
+    const list = Array.isArray(value) ? value : Array.isArray(rec.agents) ? rec.agents : [];
+    const scope = uid ?? (str(rec.companyUid) || null);
+    for (const item of list) {
+      if (isRecord(item) && scope && !str(item.companyUid)) agents.push({ ...item, companyUid: scope });
+      else agents.push(item);
+    }
+  }
+  if (anyOk) return { agents, failure: null };
+  // Unclassified failure text (raw server body, invoke error) must not reach
+  // the screen: friendlyApiError passes unclassified text through, so swap it
+  // for plain copy here and keep the raw text in the log.
+  if (isRecord(failure) && typeof failure.message === "string" && failure.message.trim()) {
+    if (!classifyApiError(failure)) {
+      console.warn("[bots] cloud roster failed", failure.message);
+      failure = { ...failure, message: CLOUD_ROSTER_ERROR_COPY };
+    }
+  }
+  return { agents, failure };
 }

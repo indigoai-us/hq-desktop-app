@@ -214,7 +214,7 @@ describe('BannerActionRouter', () => {
       'inbox:dm:prs_maya',
     );
     expect(bannerOpenRoute('dm', missing)).toBe('inbox');
-    expect(bannerOpenRoute('meeting', { windowId: 'WIN-1' })).toBeNull();
+    expect(bannerOpenRoute('meeting', { windowId: 'WIN-1' })).toBe('meetings');
     expect(bannerOpenRoute('update', {})).toBeNull();
   });
 });

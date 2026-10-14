@@ -38,6 +38,8 @@ export interface ScheduledBot {
   scheduledStartTime?: string | null;
   autoScheduled: boolean;
   errorMessage?: string | null;
+  terminalSubCode?: string | null;
+  failureReason?: string | null;
   /**
    * US-010 — the real source-landed signal from hq-pro: true only when the
    * transcript has actually been persisted to the vault as a queryable source
@@ -440,8 +442,10 @@ export function pickLiveMeeting(activeMeetings: ActiveMeeting[]): ActiveMeeting 
     recording: 0,
     starting: 1,
     stopping: 2,
-    detected: 3,
-    error: 4,
+    // Keep unresolved ended recordings ahead of new detections and errors.
+    finalising: 3,
+    detected: 4,
+    error: 5,
   };
   return (
     [...activeMeetings].sort((a, b) => {

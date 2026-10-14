@@ -39,6 +39,9 @@ macro_rules! print {
     ($($arg:tt)*) => { ::hq_desktop_core::best_effort_print!($($arg)*) };
 }
 
+#[cfg(not(feature = "meet-native-webdriver"))]
+mod launchd_task;
+
 #[cfg(feature = "meet-native-webdriver")]
 mod meet_native;
 
@@ -59,6 +62,8 @@ mod ui_hot_update;
 mod ui_protocol;
 mod tray_helper;
 mod updater;
+mod scratch_build;
+mod toolchain;
 mod updater_outcome;
 mod util;
 #[cfg(target_os = "macos")]
@@ -335,6 +340,9 @@ fn main() {
 
 #[cfg(not(feature = "meet-native-webdriver"))]
 fn main() {
+    // LaunchAgent work is delegated to the user's node installation while
+    // launchd sees this Indigo-signed, stable app executable as argv[0].
+    launchd_task::run_if_requested();
     // The copied Windows update helper must run before Sentry, Tauri, and the
     // single-instance plugin. It waits for the real app to exit, then launches
     // the verified NSIS package from outside the install directory.
@@ -451,6 +459,16 @@ fn main() {
     }
 
     let builder = crate::recovery::register_protocol(tauri::Builder::default());
+    // Deployments snapshots of protected apps load through this scheme; it
+    // serves only hosts with a live preview session (deploy_snapshot.rs).
+    let builder = builder.register_asynchronous_uri_scheme_protocol(
+        commands::deploy_snapshot::PREVIEW_SCHEME,
+        |_ctx, request, responder| {
+            tauri::async_runtime::spawn(async move {
+                responder.respond(commands::deploy_snapshot::proxy_preview_request(request).await);
+            });
+        },
+    );
     let builder = ui_protocol::register_protocol(builder)
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
@@ -466,6 +484,15 @@ fn main() {
         // menubar process. Here the callback surfaces the existing instance and
         // the second process exits instead of becoming a ghost duplicate.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // Windows/Linux: double-clicking a `.hqcloud` placeholder while HQ
+            // runs lands here. Fetch the original and open it; no window steal.
+            let cloud_files = commands::cloud_file::placeholders_from_argv(&argv);
+            if !cloud_files.is_empty() {
+                for file in cloud_files {
+                    commands::cloud_file::spawn_fetch_and_open(app, file);
+                }
+                return;
+            }
             // US-104: if the OS delivered a hqwork:// URL to THIS process,
             // route it internally. Do not steal the popover for a deep link.
             if let Some(url) = commands::hq_work::hqwork_url_from_argv(&argv) {
@@ -519,7 +546,11 @@ fn main() {
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("external-links")
                 .on_navigation(|webview, url| {
-                    crate::util::external_links::allow_navigation(webview.app_handle(), url)
+                    crate::util::external_links::allow_webview_navigation(
+                        webview.app_handle(),
+                        webview.label(),
+                        url,
+                    )
                 })
                 .build(),
         )
@@ -591,6 +622,7 @@ fn main() {
         .manage(commands::dm_notify::WatchedSharesState::new())
         .manage(commands::messages::PendingMessagesTarget::new())
         .manage(crate::deep_link::PendingSetupTarget::new())
+        .manage(crate::deep_link::PendingPackTarget::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         .manage(commands::banner::PendingBannerActions::default())
         .manage(commands::banner::BannerActionRouterReadiness::default())
@@ -694,6 +726,7 @@ fn main() {
             commands::ai_tools::detect_claude_ready,
             commands::ai_tools::detect_claude_desktop_connectors,
             commands::ai_tools::import_claude_desktop_connectors,
+            commands::work_apps::detect_work_apps,
             commands::launch::launch_claude_code,
             commands::launch::launch_cli_in_terminal,
             commands::launch::launch_codex_workspace,
@@ -765,6 +798,7 @@ fn main() {
             commands::windows_teardown_probe::session_end_teardown_probe_status,
             commands::session_end_latch::session_end_latch_status,
             commands::workspaces::list_syncable_workspaces,
+            commands::retired_entities::resolve_retired_entities,
             commands::workspaces::connect_workspace_to_cloud,
             commands::workspaces::claim_pending_company_invite,
             commands::workspaces::set_workspace_sync_enabled,
@@ -782,9 +816,11 @@ fn main() {
             commands::telemetry::emit_desktop_telemetry_if_opted_in,
             commands::telemetry::emit_desktop_operational_telemetry,
             commands::personal::ensure_person_entity,
+            commands::personal::get_hq_anywhere_person_setting,
             commands::personal::put_hq_anywhere_person_setting,
+            commands::hq_anywhere::set_hq_anywhere_global_install,
             commands::folder_picker::pick_folder,
-            commands::install_directory::resolve_hq_path,
+            commands::install_directory::command::resolve_hq_path,
             commands::install_directory::set_hq_install_path,
             commands::install_directory::create_directory,
             commands::install_directory::check_writable,
@@ -804,6 +840,9 @@ fn main() {
             commands::install_manifest::record_install_complete,
             commands::install_stages::git_init,
             commands::install_stages::git_probe_user,
+            commands::command_line_tools::command_line_tools_status,
+            commands::command_line_tools::command_line_tools_start_install,
+            commands::command_line_tools::command_line_tools_show_installer,
             commands::install_stages::take_onboarding_failure_detail,
             commands::install_stages::register_search_index,
             commands::install_stages::install_default_packages,
@@ -864,6 +903,7 @@ fn main() {
             crate::recovery::reset_local_ui_state,
             crate::recovery::open_recovery_window_cmd,
             updater::get_pending_update,
+            updater::background_updates_off,
             updater::install_update,
             updater::download_update,
             updater::install_downloaded_update,
@@ -882,17 +922,30 @@ fn main() {
             commands::drift_detail::open_drift_detail,
             commands::drift_detail::drift_window_ready,
             commands::feedback::submit_bug_report,
+            commands::storage::get_storage_status,
+            commands::storage::get_cached_storage_status,
+            commands::storage::get_storage_big_files,
+            commands::storage::preview_storage_prune,
+            commands::storage::run_storage_prune,
+            commands::storage::preview_storage_offload,
+            commands::storage::run_storage_offload,
+            commands::cloud_file::open_cloud_file,
+            commands::cloud_file::cloud_file_ui_ready,
             commands::bots::local_bots_list,
             commands::bots::local_bots_create,
             commands::bots::local_bots_start,
             commands::bots::local_bots_stop,
             commands::bots::local_bots_remove,
             commands::bots::local_bots_configure,
+            commands::bots::local_bots_set_model,
+            commands::bots::local_bots_probe,
             commands::bots::local_bots_promote,
             commands::bots::local_bots_workers,
             commands::bots::local_bots_list_remote,
             commands::bots::local_bots_adopt,
             commands::bots::local_bots_restore,
+            commands::import_scan::import_scan_start,
+            commands::import_scan::import_scan_cancel,
             commands::packages::list_packages,
             commands::packages::list_packages_cached,
             commands::packages::check_package_updates,
@@ -903,6 +956,8 @@ fn main() {
             commands::packages::uninstall_package,
             commands::packages::open_packages_window,
             commands::packages::packages_window_ready,
+            commands::packages::pack_deep_link_catalog_name,
+            commands::packages::install_pack_from_deep_link,
             commands::activity::open_activity_log,
             commands::activity::activity_window_ready,
             commands::activity::get_activity_log,
@@ -947,10 +1002,16 @@ fn main() {
             commands::desktop_alt::list_agent_tasks,
             commands::desktop_alt::list_channel_agent_tasks,
             commands::desktop_alt::get_company_deployments,
+            commands::desktop_alt::list_deploy_apps,
+            commands::deploy_preview::deploy_app_preview,
+            commands::deploy_preview_pass::deploy_app_snapshot,
+            commands::link_title::link_page_title,
+            commands::desktop_alt::deploy_access_request,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,
             commands::desktop_alt::get_company_file_tree,
             commands::desktop_alt::get_company_file_content,
+            commands::desktop_alt::append_brief_log,
             commands::desktop_alt::get_authorized_file_preview,
             commands::desktop_alt::reveal_authorized_file,
             commands::desktop_alt::reveal_hq_root,
@@ -962,12 +1023,17 @@ fn main() {
             commands::vault_explorer::read_vault_note,
             commands::vault_explorer::read_vault_note_frontmatter,
             commands::projects_local::get_local_projects,
+            commands::projects_local::list_local_sessions,
             commands::projects_local::get_local_project_prd,
             commands::projects_local::get_local_project_readme,
             commands::projects_local::get_local_company_goals,
             commands::projects_local::get_company_crm_projection,
+            commands::projects_local::atlas_local_first_page,
+            commands::projects_local::atlas_local_listing,
+            commands::projects_local::atlas_local_read_text,
             commands::projects_local::set_local_project_status,
             commands::projects_local::set_local_story_passes,
+            commands::projects_local::create_project_file,
             commands::library_local::get_library_root,
             commands::library_local::get_library_company,
             commands::library_local::get_library_worker_detail,
@@ -993,6 +1059,8 @@ fn main() {
             commands::marketplace::get_my_creator,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
+            commands::meetings::meetings_fetch_live_transcript,
+            commands::meetings::meetings_read_recorded_body,
             commands::meetings::meetings_list_memberships,
             commands::meetings::meetings_list_accounts,
             commands::meetings::meetings_list_calendars_for_account,
@@ -1071,6 +1139,8 @@ fn main() {
             commands::messages::get_company_tab,
             commands::messages::run_company_tab_action,
             crate::deep_link::take_pending_setup_target,
+            crate::deep_link::peek_pending_pack_target,
+            crate::deep_link::take_pending_pack_target,
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
             commands::messages::delete_channel,
@@ -1128,6 +1198,14 @@ fn main() {
             commands::compat::open_developer_settings,
         ])
         .setup(|app| {
+            // Windows/Linux cold start from a `.hqcloud` double-click. macOS
+            // delivers it as `RunEvent::Opened` below instead.
+            #[cfg(not(target_os = "macos"))]
+            for file in commands::cloud_file::placeholders_from_argv(
+                &std::env::args().collect::<Vec<_>>(),
+            ) {
+                commands::cloud_file::spawn_fetch_and_open(app.handle(), file);
+            }
             // Unattended dependency-install mode for the VM install matrix.
             // Engaged only by HQ_HEADLESS_INSTALL_DEPS=<out.json>; runs the
             // real `install_deps` orchestrator, writes a JSON result, exits.
@@ -1253,7 +1331,11 @@ fn main() {
             // hq-cli can attach the installed hq-sync version to feedback
             // submissions — the CLI has no other way to learn the running
             // menubar-app version. Best-effort; never aborts launch.
-            commands::config::record_sync_version(app_version::current());
+            // Only from the shipped bundle (scratch_build.rs): a scratch or
+            // side-by-side bundle would name itself as the installed app.
+            if scratch_build::production_bundle() {
+                commands::config::record_sync_version(app_version::current());
+            }
 
             // Heal a LaunchAgent still pointing at a renamed bundle
             // (`HQ Sync.app` → `HQ.app`) before the default-on create/opt-out
@@ -1374,6 +1456,11 @@ fn main() {
 
             #[cfg(not(target_os = "macos"))]
             setup_startup_surfaces(app.handle(), first_run)?;
+
+            // A staged updater package is owned by the current process. Clear
+            // persisted deferral markers before the updater can stage a new
+            // package or the first client-health heartbeat can run.
+            commands::client_health::clear_staged_update_signal_at_startup();
 
             // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
             // updater at 10s) so a known-bad release can be yanked before the
@@ -1544,6 +1631,12 @@ fn main() {
             // See `commands::recall_sdk` for the gate definition and the
             // graceful-degradation contract.
             {
+                // This marker is a live-process claim for external updaters,
+                // never a recovery ledger. Remove a predecessor's claim before
+                // the SDK can start so a crash cannot permanently block updates.
+                if let Err(e) = hq_desktop_core::recording_active::cleanup_on_boot() {
+                    util::logfile::log("recall-sdk", &format!("startup: failed to clear stale recording activity marker: {e}"));
+                }
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     if !commands::recall_sdk::meeting_detect_eligible().await {
@@ -1727,6 +1820,17 @@ fn main() {
             // `has_visible_windows` is deliberately ignored: a hidden-but-live
             // notification banner still counts as a visible window, so
             // honouring the flag would make the Dock icon inert.
+            // Finder double-click on a `.hqcloud` placeholder (cold or warm
+            // start): fetch the original from HQ cloud and open it.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                for url in urls {
+                    if let Some(file) = commands::cloud_file::placeholder_from_url(url) {
+                        commands::cloud_file::spawn_fetch_and_open(_app_handle, file);
+                    }
+                }
+            }
+
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 // Same reason as the focus handler above: no eager force-probe.

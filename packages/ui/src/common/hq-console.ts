@@ -3,7 +3,7 @@
  * link the desktop window opens into the HQ console.
  *
  * Centralised so the "all links resolve to the right place" guarantee lives in
- * one file rather than scattered string literals (CompanyPage, MeetingsPage,
+ * one file rather than scattered string literals (TeamPanel, MeetingsPage,
  * MarketplacePanel, the shell's secondary-sidebar footer all consume these).
  * Every link opens in the system browser via the host platform's external-
  * `open()`.

@@ -250,7 +250,7 @@ describe("bots that live on another computer", () => {
     q<HTMLButtonElement>('[data-testid="settings-remote-bot-scout-start"]')!.click();
     await settle(14);
 
-    const status = q('[data-testid="settings-bots-status"]');
+    const status = q('[data-testid="settings-remote-bot-scout-action-status"]');
     expect(status?.textContent).toContain("Could not bring scout back to this computer");
     expect(status?.textContent).not.toContain("403");
     expect(status?.textContent).not.toContain("/v1/");
@@ -504,7 +504,7 @@ describe("the durable restore home in Settings", () => {
     q<HTMLButtonElement>('[data-testid="settings-remote-bot-scout-start"]')!.click();
     await settle(14);
 
-    const status = q('[data-testid="settings-bots-status"]');
+    const status = q('[data-testid="settings-remote-bot-scout-action-status"]');
     expect(status?.textContent).toContain("runs in HQ Cloud");
     expect(status?.textContent).not.toContain("Please try again");
     expect(status?.textContent).not.toContain("not-runnable-here");

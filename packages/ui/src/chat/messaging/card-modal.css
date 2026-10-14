@@ -95,6 +95,28 @@
   background-repeat: no-repeat;
 }
 
+.card-modal[data-has-light-art] .card-modal-art--light {
+	display: none;
+}
+
+:root[data-force-theme="light"] .card-modal[data-has-light-art] .card-modal-art--dark {
+	display: none;
+}
+
+:root[data-force-theme="light"] .card-modal[data-has-light-art] .card-modal-art--light {
+	display: block;
+}
+
+@media (prefers-color-scheme: light) {
+	:root:not([data-force-theme="dark"]) .card-modal[data-has-light-art] .card-modal-art--dark {
+		display: none;
+	}
+
+	:root:not([data-force-theme="dark"]) .card-modal[data-has-light-art] .card-modal-art--light {
+		display: block;
+	}
+}
+
 /* The scrim: darkest at the edges, like the takeover's shade. */
 .card-modal-art::after {
   content: "";
@@ -103,6 +125,191 @@
   background:
     radial-gradient(ellipse at center, rgba(9, 9, 11, 0), rgba(9, 9, 11, 0.34)),
     rgba(9, 9, 11, 0.16);
+}
+
+/* A surface modal keeps art as a deliberately cropped header. This is used
+   for consequential actions, where the words need an opaque, theme-aware
+   reading surface rather than the connection-card treatment. */
+.card-modal--surface {
+  --cm-ink: var(--v4-text-1);
+  --cm-muted: var(--v4-text-2);
+  --cm-faint: var(--v4-text-3);
+  --cm-line: var(--v4-hairline);
+  width: min(472px, 100%);
+  gap: 0;
+  padding: 0;
+  background: var(--v4-surface-solid);
+  box-shadow: var(--v4-shadow-window);
+  color: var(--cm-ink);
+  color-scheme: light dark;
+}
+
+.card-modal--surface .card-modal-art {
+  z-index: 0;
+  inset: 0 0 auto;
+  height: 196px;
+  background-position: center 42%;
+}
+
+.card-modal--surface .card-modal-art::after {
+  background: linear-gradient(
+    to bottom,
+    transparent 16%,
+    color-mix(in srgb, var(--v4-surface-solid) 52%, transparent) 62%,
+    var(--v4-surface-solid) 100%
+  );
+}
+
+.card-modal--surface .card-modal-hero,
+.card-modal--surface .card-modal-glass,
+.card-modal--surface .card-modal-foot {
+  position: relative;
+  z-index: 1;
+}
+
+.card-modal--surface .card-modal-hero {
+  min-height: 0;
+  align-items: flex-start;
+  padding: 184px 28px 20px;
+}
+
+.card-modal--surface .card-modal-plate {
+  display: block;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.card-modal--surface .card-modal-hero-mark {
+  position: absolute;
+  top: 104px;
+  left: 28px;
+  z-index: 1;
+  width: 56px;
+  height: 56px;
+}
+
+.card-modal--surface .card-modal-heading {
+  gap: 0;
+}
+
+.card-modal--surface .card-modal-title {
+  overflow: visible;
+  color: var(--cm-ink);
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.25;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.card-modal--surface .card-modal-subtitle,
+.card-modal--surface .card-modal-progress {
+  margin-top: 4px;
+}
+
+/* The close button sits on the art, so it carries its own small disc of
+   the dialog surface to stay legible over any wallpaper, in either theme. */
+.card-modal--surface .card-modal-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  margin: 0;
+  width: var(--hq-btn-h);
+  height: var(--hq-btn-h);
+  border: 1px solid color-mix(in srgb, var(--v4-hairline) 70%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--v4-surface-solid) 78%, transparent);
+  color: var(--v4-text-1);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.16);
+}
+
+.card-modal--surface .card-modal-close:hover:not(:disabled) {
+  border-color: var(--v4-hairline);
+  background: var(--v4-surface-solid);
+  color: var(--v4-text-1);
+}
+
+.card-modal--surface .card-modal-glass {
+  flex: 0 1 auto;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.card-modal--surface .card-modal-glass::before,
+.card-modal--surface .card-modal-glass::after {
+  display: none;
+}
+
+.card-modal--surface .card-modal-body {
+  padding: 0 28px 24px;
+  overflow: visible;
+  color: var(--cm-muted);
+  scrollbar-color: var(--cm-line) transparent;
+}
+
+.card-modal--surface .card-modal-foot {
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 20px 28px 28px;
+  border-top: 1px solid var(--cm-line);
+}
+
+.card-modal--surface .card-modal-copy {
+  color: var(--cm-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.card-modal--surface .card-modal-btn {
+  border-color: var(--v4-control-border, var(--cm-line));
+  background: var(--v4-secondary-bg, var(--v4-control-bg));
+  color: var(--v4-secondary-fg, var(--cm-ink));
+}
+
+.card-modal--surface .card-modal-btn:hover:not(:disabled) {
+  border-color: var(--cm-ink);
+  background: var(--v4-active-row, var(--v4-control-bg));
+}
+
+.card-modal--surface .card-modal-btn.is-danger {
+  border-color: var(--v4-error);
+  background: var(--v4-error);
+  color: #fff;
+}
+
+/* Hover deepens the same red; it never falls back to the art treatment's
+   muted danger fill, which reads as half-disabled on the surface. */
+.card-modal--surface .card-modal-btn.is-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--v4-error) 86%, #000);
+  background: color-mix(in srgb, var(--v4-error) 86%, #000);
+  color: #fff;
+}
+
+/* A problem on the surface reads as quiet secondary text with a small red
+   mark, so it pairs with the red action instead of competing with it. */
+.card-modal--surface .card-modal-status[data-kind="problem"] {
+  color: var(--cm-muted);
+}
+
+.card-modal--surface .card-modal-status[data-kind="problem"] .card-modal-status-mark {
+  color: var(--v4-error);
+}
+
+.card-modal--surface .card-modal-btn.is-quiet {
+  background: var(--v4-secondary-bg, var(--v4-control-bg));
+  color: var(--v4-secondary-fg, var(--cm-ink));
 }
 
 /* The hero: the art, with the card's icon and title on a glass plate. */
@@ -143,6 +350,14 @@
   border-radius: 8px;
   background: rgba(9, 9, 11, 0.46);
   color: var(--cm-ink);
+}
+
+.card-modal-hero-mark {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
 }
 
 /* Slack's mark is in Slack's own colour (ConnectionCardIcon), so its box is
@@ -413,6 +628,17 @@
 .card-modal-btn.is-primary:hover:not(:disabled) {
   border-color: #fff;
   background: #fff;
+}
+
+.card-modal-btn.is-danger {
+  border-color: rgba(240, 97, 109, 0.68);
+  background: rgba(145, 41, 49, 0.84);
+  color: #fff7f6;
+}
+
+.card-modal-btn.is-danger:hover:not(:disabled) {
+  border-color: rgba(255, 176, 181, 0.92);
+  background: rgba(170, 48, 59, 0.94);
 }
 
 .card-modal-btn.is-quiet {

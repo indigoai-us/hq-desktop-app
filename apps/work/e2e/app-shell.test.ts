@@ -45,15 +45,19 @@ test.describe("desktop shell: signed-in default surface", () => {
     await expect(page.getByRole("heading", { name: "HQ Work" })).toHaveCount(0);
   });
 
-  test("the shell paints a loading skeleton when there is no live data", async ({
+  test("the shell lands on #welcome when there is no live data", async ({
     page,
   }) => {
     await page.goto("/");
     await expect(page.getByTestId("chat-sidebar")).toBeVisible();
-    // The pre-selection boot state is a shimmer skeleton, not a "No data"
-    // flash (work-desktop-dogfood).
-    await expect(page.getByTestId("channel-skeleton")).toBeVisible();
-    await expect(page.getByTestId("conversation-composer")).toHaveCount(0);
+    // Boot lands on the built-in #welcome channel until setup has run on this
+    // machine (main c1aad113), never on a "No data" flash or a boot error.
+    await expect(page.getByRole("heading", { name: "welcome", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Getting started with HQ Desktop" }),
+    ).toBeVisible();
+    await expect(page.getByText("No data", { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("conversation-boot-error")).toHaveCount(0);
   });
 
   for (const path of LEGACY_PATHS) {

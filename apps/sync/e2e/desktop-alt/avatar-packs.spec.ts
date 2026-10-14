@@ -63,7 +63,7 @@ describe('avatar pack picker source contract', () => {
     expect(gallery).toContain('getAvatarPack');
     expect(gallery).toContain('GALLERY_CACHE_STORAGE_KEY');
     expect(picker).toContain('loading="lazy"');
-    expect(picker).toContain('avatar-pack-skeleton');
+    expect(picker).toContain('avatar-pack-loading');
     expect(picker).toContain('paintableAvatarSrc');
     expect(agentAvatars).toMatch(/import\.meta\.glob\(/);
     expect(agentAvatars).toContain('query: "?url"');

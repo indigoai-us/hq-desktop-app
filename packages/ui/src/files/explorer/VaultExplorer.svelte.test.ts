@@ -15,6 +15,7 @@ import { flushSync, mount, tick, unmount } from "svelte";
 import type { PlatformAdapter, VaultFileHit, VaultNoteLinks } from "@hq/platform";
 import type { Workspace } from "../../chat/workspaces.js";
 import VaultExplorer from "./VaultExplorer.svelte";
+import { expectPendingRead } from "../../common/read-loader.test-support.js";
 
 let host: HTMLDivElement | null = null;
 let component: ReturnType<typeof mount> | null = null;
@@ -40,6 +41,7 @@ const DIRS: Record<string, Array<{ name: string; path: string; isDir: boolean; h
   "companies/acme/knowledge": [
     { name: "pricing.md", path: "companies/acme/knowledge/pricing.md", isDir: false, hasChildren: false },
     { name: "tone.md", path: "companies/acme/knowledge/tone.md", isDir: false, hasChildren: false },
+    { name: "INDEX.md", path: "companies/acme/knowledge/INDEX.md", isDir: false, hasChildren: false },
   ],
 };
 
@@ -47,7 +49,9 @@ const FILES: Record<string, string> = {
   "companies/acme/knowledge/pricing.md":
     "---\nowner: Sara\ntags: [gtm, pricing]\n---\n# Pricing\n\nTone lives in [[tone]].\n\n## Tiers\n\nThree tiers.",
   "companies/acme/knowledge/tone.md": "# Tone\n\nPlain and warm.",
-  "companies/acme/README.md": "# Acme\n\nStart with [[knowledge/pricing|pricing]].",
+  "companies/acme/README.md":
+    "# Acme\n\nStart with [[knowledge/pricing|pricing]].\n\nSee the [Knowledge Index](knowledge/INDEX.md) or [old notes](knowledge/gone.md).",
+  "companies/acme/knowledge/INDEX.md": "# Knowledge Index\n\nEverything Acme knows.",
 };
 
 const hit = (path: string): VaultFileHit => ({ path, name: path.split("/").pop()!, isMarkdown: path.endsWith(".md") });
@@ -176,6 +180,40 @@ const rowNames = (el: HTMLElement) =>
   [...el.querySelectorAll('[data-testid="vault-tree-row"]')].map((r) => r.textContent?.trim());
 
 describe("VaultExplorer", () => {
+  it("shows this vault's last summary while its refreshed summary is pending", async () => {
+    let releaseRefresh!: () => void;
+    const refresh = new Promise<void>((resolve) => (releaseRefresh = resolve));
+    const { host, adapter } = await render({ companies: [...companies] });
+    const summary = adapter.files!.vault!.summary as ReturnType<typeof vi.fn>;
+    summary.mockImplementation(async (root: string) => {
+      if (root === "companies/acme") await refresh;
+      return ok({
+        root,
+        notes: root === "companies/acme" ? 4 : 1,
+        files: root === "companies/acme" ? 4 : 1,
+        links: 2,
+        truncated: false,
+        hubs: [],
+        folders: [],
+      });
+    });
+
+    host.querySelector<HTMLButtonElement>('[data-testid="vault-switcher"]')!.click();
+    await settle();
+    [...host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((button) => button.textContent?.includes("Personal"))!.click();
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="vault-switcher"]')!.click();
+    await settle();
+    [...host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((button) => button.textContent?.includes("Acme"))!.click();
+    await settle(2);
+
+    expect(host.querySelector('[data-testid="vault-home"]')!.textContent).toContain("3notes");
+    expect(host.querySelector('[data-testid="vault-home-loader"]')).toBeNull();
+    releaseRefresh();
+    await settle();
+    expect(host.querySelector('[data-testid="vault-home"]')!.textContent).toContain("4notes");
+  });
+
   it("uses Windows file-manager labels in the explorer and preview", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" });
     const { host } = await render({ path: "companies/acme/knowledge/pricing.md" }, true);
@@ -251,6 +289,29 @@ describe("VaultExplorer", () => {
     expect(host.querySelector(".note-title")?.textContent).toBe("Tone");
   });
 
+  it("follows a relative Markdown link to the linked file and selects it (QA-104)", async () => {
+    const { host, onlocationchange } = await render({ path: "companies/acme/README.md" });
+    expect(host.querySelector(".note-title")?.textContent).toBe("Acme");
+    const link = host.querySelector<HTMLAnchorElement>('[data-testid="note-body"] a[href="knowledge/INDEX.md"]')!;
+    expect(link.textContent).toBe("Knowledge Index");
+    link.click();
+    await settle();
+    expect(host.querySelector(".note-title")?.textContent).toBe("Knowledge Index");
+    expect(host.querySelector('[data-testid="note-body"]')!.textContent).toContain("Everything Acme knows.");
+    expect(onlocationchange).toHaveBeenLastCalledWith({
+      vaultId: "company:acme",
+      path: "companies/acme/knowledge/INDEX.md",
+    });
+  });
+
+  it("says when a relative Markdown link points at a missing file (QA-104)", async () => {
+    const { host } = await render({ path: "companies/acme/README.md" });
+    host.querySelector<HTMLAnchorElement>('[data-testid="note-body"] a[href="knowledge/gone.md"]')!.click();
+    await settle();
+    expect(host.querySelector(".note-title")?.textContent).toBe("Acme");
+    expect(host.querySelector('[data-testid="note-link-note"]')?.textContent).toBe("gone.md isn't in this vault");
+  });
+
   it("reads notes through the capped reader and never the whole file", async () => {
     const { host, calls } = await render({ path: "companies/acme/knowledge/pricing.md" });
     expect(host.querySelector(".note-title")?.textContent).toBe("Pricing");
@@ -289,5 +350,82 @@ describe("VaultExplorer", () => {
     await settle();
     const items = [...host.querySelectorAll('[role="menuitemradio"]')].map((i) => i.textContent?.replace(/\s+/g, " ").trim());
     expect(items).toEqual(["P Personal Just you", "A Acme Company"]);
+  });
+
+  it("opens the Share sheet for the open file instead of doing nothing (QA-005)", async () => {
+    const { host } = await render();
+    host.querySelector<HTMLButtonElement>('[data-tree-path="companies/acme/knowledge"]')!.click();
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-tree-path="companies/acme/knowledge/pricing.md"]')!.click();
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="vault-share"]')!.click();
+    await settle();
+    const sheet = host.querySelector('[data-testid="file-share-sheet"]')!;
+    expect(sheet).not.toBeNull();
+    expect(sheet.querySelector('[data-testid="file-share-path"]')?.textContent).toBe("knowledge/pricing.md");
+    expect(sheet.querySelector('[data-testid="file-share-unavailable"]')?.textContent).toContain("/hq-share");
+    expect(sheet.querySelector<HTMLButtonElement>('[data-testid="file-share-submit"]')!.disabled).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await settle();
+    expect(host.querySelector('[data-testid="file-share-sheet"]')).toBeNull();
+  });
+});
+
+describe("VaultExplorer failed read (AUDIT-3-22)", () => {
+  it("one failure shows one Try again, in the vault home, and it retries the tree too", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let fail = true;
+    const calls: string[] = [];
+    const adapter = makeAdapter(calls);
+    const listOk = adapter.files!.listDir;
+    const summaryOk = adapter.files!.vault!.summary;
+    (adapter.files as unknown as Record<string, unknown>).listDir = vi.fn(async (p: string) =>
+      fail ? { ok: false as const, message: "HTTP 503" } : listOk(p),
+    );
+    (adapter.files!.vault as unknown as Record<string, unknown>).summary = vi.fn(async (root: string, sys: boolean) =>
+      fail ? { ok: false as const, message: "HTTP 503" } : summaryOk(root, sys),
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(VaultExplorer, {
+      target: host,
+      props: { adapter, companies, vaultId: "company:acme", onlocationchange: vi.fn() } as never,
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="vault-home-error"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="vault-tree-error"]')).toBeTruthy();
+    const retries = [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Try again");
+    expect(retries).toHaveLength(1);
+    expect(retries[0]!.getAttribute("data-testid")).toBe("vault-home-retry");
+    fail = false;
+    retries[0]!.click();
+    await settle(10);
+    expect(host.querySelector('[data-testid="vault-tree-error"]')).toBeNull();
+    expect(host.querySelector('[data-testid="vault-home-error"]')).toBeNull();
+    expect(rowNames(host).length).toBeGreaterThan(0);
+    expect(host.querySelector('[data-testid="vault-home"]')!.textContent).toContain("3notes");
+  });
+});
+
+describe("VaultExplorer pending read (BLANK-3)", () => {
+  it("a vault summary that never answers keeps the loader with a waiting line and Try again", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const adapter = makeAdapter([]);
+      (adapter.files!.vault as unknown as Record<string, unknown>).summary = vi.fn(() => new Promise(() => {}));
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      component = mount(VaultExplorer, {
+        target: host,
+        props: { adapter, companies, vaultId: "company:acme", onlocationchange: vi.fn() } as never,
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      flushSync();
+      await expectPendingRead(host, "vault-home-loader");
+      expect(host.querySelector('[data-testid="vault-home-error"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

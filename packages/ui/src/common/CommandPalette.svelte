@@ -1,7 +1,19 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import RailIcon from "./button/RailIcon.svelte";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
+  import { onMount, tick, untrack } from "svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import { formatShortcut } from "./keyboard-shortcuts";
+  import {
+    PALETTE_SCOPE_IDS,
+    createAsNewItems,
+    itemInPaletteScope,
+    nextPaletteScope,
+    paletteScopeLabel,
+    paletteSectionLabel,
+    type PaletteScopeId,
+    type PaletteSectionId,
+  } from "../shell/palette-rows.js";
 
   export interface CommandPaletteItem {
     id: string;
@@ -28,16 +40,41 @@
     iconUrl?: string | null;
     /** True to draw the company mark (favicon or building) for this row. */
     showCompanyMark?: boolean;
+    /** Result group. Conversations set this from the row kind. */
+    section?: PaletteSectionId;
+    /** Owning company for scope filtering. */
+    companyUid?: string | null;
+    /** Personal-scope row (personal channel, or a DM with no company). */
+    personal?: boolean;
+    /** Stay open after the action (scope widen). */
+    keepOpen?: boolean;
   }
 
   interface Props {
     commands: CommandPaletteItem[];
+    /**
+     * False keeps the palette mounted but hidden. The host pre-mounts it on
+     * idle after shell-ready so Cmd-K only flips visibility (US-040).
+     */
+    open?: boolean;
     onclose: () => void;
+    /** Active company name for the first scope chip. */
+    companyName?: string;
+    /** Active company uid. Rows from other companies hide on the company chip. */
+    companyUid?: string | null;
+    /**
+     * Create-as-new row. The palette paints the row immediately; the host
+     * navigates. Absent handler still shows the row and closes the palette.
+     */
+    oncreate?: (
+      kind: "project" | "channel" | "note" | "ask",
+      query: string,
+    ) => void;
   }
 
   interface CommandPaletteSection {
-    id: "actions" | "navigate" | "conversations";
-    label: "ACTIONS" | "NAVIGATE" | "CONVERSATIONS";
+    id: PaletteSectionId;
+    label: string;
     items: CommandPaletteItem[];
   }
   interface CommandActionError {
@@ -45,18 +82,29 @@
     message: string;
   }
 
-  let { commands, onclose }: Props = $props();
+  let {
+    commands,
+    onclose,
+    open = true,
+    companyName = "Company",
+    companyUid = null,
+    oncreate,
+  }: Props = $props();
   let query = $state("");
+  let scope = $state<PaletteScopeId>("company");
   let highlightedIndex = $state(0);
   let inputEl: HTMLInputElement | null = $state(null);
   let paletteEl: HTMLDivElement | null = $state(null);
   let executingId = $state<string | null>(null);
   let actionError = $state<CommandActionError | null>(null);
+  // First open paints the input and the first rows in one frame; the rest of
+  // the list mounts on the next frame so Cmd-K never waits on the full list.
+  const FIRST_PAINT_ROWS = 8;
+  let rowBudget = $state(FIRST_PAINT_ROWS);
 
-  function errorMessage(error: unknown): string {
-    if (error instanceof Error && error.message) return error.message;
-    if (typeof error === "string" && error.trim()) return error;
-    return "The command was rejected before it could finish.";
+  // AUDIT-3c: the thrown text is logged by execute(); the UI shows app copy.
+  function errorMessage(_error: unknown): string {
+    return "The command didn’t finish. Try again.";
   }
 
   function fuzzyMatch(value: string, needle: string): boolean {
@@ -127,19 +175,76 @@
     return [...filteredActionNav, ...rankedConversations];
   });
 
-  function sectionId(command: CommandPaletteItem): CommandPaletteSection["id"] {
-    // Conversations (US-013) sit under their own section after actions/navigate.
-    if (command.id.startsWith("conversation-")) return "conversations";
-    return command.id.startsWith("command-go-") ? "navigate" : "actions";
+  function sectionId(command: CommandPaletteItem): PaletteSectionId {
+    if (command.section) return command.section;
+    if (command.id.startsWith("project-")) return "projects";
+    if (command.id.startsWith("file-")) return "files";
+    if (command.id.startsWith("skill-")) return "skills";
+    if (command.id.startsWith("conversation-")) return "channels";
+    return "commands";
   }
 
+  const scopedCommands = $derived.by((): CommandPaletteItem[] => {
+    return filteredCommands.filter((command) =>
+      itemInPaletteScope(
+        {
+          section: sectionId(command),
+          companyUid: command.companyUid,
+          personal: command.personal,
+        },
+        scope,
+        companyUid,
+      ),
+    );
+  });
+
+  const scopeLabel = $derived(paletteScopeLabel(scope, companyName));
+
+  const showingCreate = $derived(
+    query.trim().length > 0 && scopedCommands.length === 0,
+  );
+
+  const createCommands = $derived.by((): CommandPaletteItem[] => {
+    if (!showingCreate) return [];
+    return createAsNewItems(query, scopeLabel).map((spec) => ({
+      id: spec.id,
+      label: spec.label,
+      detail: spec.detail,
+      section: spec.section,
+      keepOpen: spec.kind === "search-all",
+      action: () => {
+        if (spec.kind === "search-all") {
+          scope = "all";
+          return;
+        }
+        oncreate?.(spec.kind, query.trim());
+      },
+    }));
+  });
+
+  const visibleCommands = $derived(
+    showingCreate ? createCommands : scopedCommands,
+  );
+
   const commandSections = $derived.by((): CommandPaletteSection[] => {
-    const sections: CommandPaletteSection[] = [
-      { id: "actions", label: "ACTIONS", items: [] },
-      { id: "navigate", label: "NAVIGATE", items: [] },
-      { id: "conversations", label: "CONVERSATIONS", items: [] },
+    const order: PaletteSectionId[] = [
+      "projects",
+      "people",
+      "channels",
+      "files",
+      "skills",
+      "commands",
+      "create",
+      "also",
     ];
-    for (const command of filteredCommands) {
+    const sections: CommandPaletteSection[] = order.map((id) => ({
+      id,
+      label: paletteSectionLabel(id),
+      items: [],
+    }));
+    let budget = rowBudget;
+    for (const command of visibleCommands) {
+      if (budget-- <= 0) break;
       const target = sections.find(
         (section) => section.id === sectionId(command),
       );
@@ -148,9 +253,13 @@
     return sections.filter((section) => section.items.length > 0);
   });
 
+  const visibleIndex = $derived(
+    new Map(visibleCommands.map((command, index) => [command.id, index])),
+  );
+
   $effect(() => {
-    if (highlightedIndex >= filteredCommands.length) {
-      highlightedIndex = Math.max(0, filteredCommands.length - 1);
+    if (highlightedIndex >= visibleCommands.length) {
+      highlightedIndex = Math.max(0, visibleCommands.length - 1);
     }
   });
 
@@ -159,16 +268,35 @@
     highlightedIndex = 0;
   });
 
-  onMount(() => {
-    const returnFocus =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    void tick().then(() => inputEl?.focus());
+  let returnFocus: HTMLElement | null = null;
 
-    return () => {
-      if (returnFocus?.isConnected) returnFocus.focus();
-    };
+  function restoreFocus() {
+    if (returnFocus?.isConnected) returnFocus.focus();
+    returnFocus = null;
+  }
+
+  // Each open starts fresh: empty query, company scope, focus in the input.
+  $effect.pre(() => {
+    if (!open) return;
+    untrack(() => {
+      returnFocus =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      query = "";
+      scope = "company";
+      highlightedIndex = 0;
+      actionError = null;
+    });
+    void tick().then(() => inputEl?.focus());
+    return restoreFocus;
+  });
+
+  onMount(() => {
+    const frame = requestAnimationFrame(() => {
+      rowBudget = Number.POSITIVE_INFINITY;
+    });
+    return () => cancelAnimationFrame(frame);
   });
 
   async function execute(command: CommandPaletteItem | undefined) {
@@ -180,9 +308,9 @@
     await tick();
     try {
       await command.action();
-      onclose();
+      if (!command.keepOpen) onclose();
     } catch (err) {
-      console.error("command-palette: action failed", err);
+      console.warn("[command-palette] action failed", err);
       actionError = { command, message: errorMessage(err) };
     } finally {
       executingId = null;
@@ -200,25 +328,9 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === "Tab") {
-      const focusable = [
-        inputEl,
-        ...(paletteEl?.querySelectorAll<HTMLButtonElement>(
-          "button:not([disabled])",
-        ) ?? []),
-      ].filter(
-        (element): element is HTMLInputElement | HTMLButtonElement =>
-          element instanceof HTMLElement,
-      );
-      const first = focusable[0];
-      const last = focusable.at(-1);
-
-      if (
-        (event.shiftKey && document.activeElement === first) ||
-        (!event.shiftKey && document.activeElement === last)
-      ) {
-        event.preventDefault();
-        (event.shiftKey ? last : first)?.focus();
-      }
+      // Tab widens the scope (Shift+Tab narrows). Chips are the only scopes.
+      event.preventDefault();
+      scope = nextPaletteScope(scope, event.shiftKey ? -1 : 1);
       return;
     }
 
@@ -231,9 +343,9 @@
     if (event.key === "ArrowDown") {
       event.preventDefault();
       highlightedIndex =
-        filteredCommands.length === 0
+        visibleCommands.length === 0
           ? 0
-          : (highlightedIndex + 1) % filteredCommands.length;
+          : (highlightedIndex + 1) % visibleCommands.length;
       void revealHighlightedOption();
       return;
     }
@@ -241,17 +353,17 @@
     if (event.key === "ArrowUp") {
       event.preventDefault();
       highlightedIndex =
-        filteredCommands.length === 0
+        visibleCommands.length === 0
           ? 0
-          : (highlightedIndex - 1 + filteredCommands.length) %
-            filteredCommands.length;
+          : (highlightedIndex - 1 + visibleCommands.length) %
+            visibleCommands.length;
       void revealHighlightedOption();
       return;
     }
 
     if (event.key === "Enter") {
       event.preventDefault();
-      void execute(filteredCommands[highlightedIndex]);
+      void execute(visibleCommands[highlightedIndex]);
     }
   }
 </script>
@@ -259,6 +371,7 @@
 <div
   class="command-backdrop"
   role="presentation"
+  hidden={!open}
   onclick={() => {
     if (!executingId) onclose();
   }}
@@ -285,9 +398,28 @@
         spellcheck="false"
         aria-label="Filter commands"
         aria-controls="command-palette-list"
-        aria-activedescendant={filteredCommands[highlightedIndex]?.id}
-        placeholder="Search commands"
+        aria-activedescendant={visibleCommands[highlightedIndex]?.id}
+        placeholder="Search or jump to…"
       />
+      <div class="scope-chips" role="radiogroup" aria-label="Search scope">
+        {#each PALETTE_SCOPE_IDS as id (id)}
+          <button
+            type="button"
+            role="radio"
+            class:on={scope === id}
+            aria-checked={scope === id}
+            onclick={() => {
+              scope = id;
+            }}
+          >
+            {#if id === "company"}
+              <CompanyLabel name={paletteScopeLabel(id, companyName)} {companyUid} />
+            {:else}
+              {paletteScopeLabel(id, "")}
+            {/if}
+          </button>
+        {/each}
+      </div>
     </div>
 
     <h2 id="command-palette-title">Command palette</h2>
@@ -301,7 +433,7 @@
           onclick={() => void execute(failure.command)}
           disabled={!!executingId}
           aria-busy={executingId === failure.command.id}
-        >
+        ><RailIcon name="refresh" />
           {executingId === failure.command.id ? "Retrying…" : "Retry"}
         </button>
       </div>
@@ -313,12 +445,18 @@
       role="listbox"
       aria-label="Commands"
     >
+      {#if showingCreate}
+        <div class="command-empty-note" role="status">
+          <strong>No results for “{query.trim()}” in {scopeLabel}</strong>
+          <span>Searched projects, people and bots, channels, files, skills, and commands. Tab widens the scope.</span>
+        </div>
+      {/if}
       {#if commandSections.length > 0}
         {#each commandSections as section (section.id)}
           <div class="command-section" role="presentation">
             <div class="command-section-title">{section.label}</div>
             {#each section.items as command (command.id)}
-              {@const index = filteredCommands.indexOf(command)}
+              {@const index = visibleIndex.get(command.id) ?? -1}
               <button
                 id={command.id}
                 class:highlighted={index === highlightedIndex}
@@ -356,13 +494,27 @@
           </div>
         {/each}
       {:else}
-        <div class="command-empty" role="status">No commands found</div>
+        <div class="command-empty" role="status">
+          <strong>No results in {scopeLabel}</strong>
+          <span>Type to search projects, people and bots, channels, files, skills, and commands.</span>
+        </div>
       {/if}
+    </div>
+    <div class="command-foot">
+      <span><kbd>tab</kbd> scope</span>
+      <span class="grow"></span>
+      <span>
+        {showingCreate ? 0 : visibleCommands.length} results · {scopeLabel}
+      </span>
     </div>
   </div>
 </div>
 
 <style>
+  .command-backdrop[hidden] {
+    display: none;
+  }
+
   .command-backdrop {
     position: fixed;
     inset: 0;
@@ -384,17 +536,10 @@
     border: 1px solid var(--v4-hairline, var(--pop-border));
     border-radius: var(--v4-radius-popover);
     /* Solid popover material (D-03): popover-strong is the near-opaque token
-       tier, routed through the shared glass filter (DESKTOP-012) so text never
-       bleeds through while the chrome stays on the one vibrancy stack. */
-    background: var(--v4-popover-strong, var(--pop-bg));
-    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    -webkit-backdrop-filter: var(
-      --v4-glass-filter-popover,
-      var(--v4-glass-filter)
-    );
-    box-shadow:
-      var(--v4-shadow-popover, var(--pop-shadow)),
-      inset 0 1px 0 var(--v4-glass-highlight);
+       tier so text never bleeds through. No backdrop-filter: it paints a
+       square blur behind the rounded card in WKWebView. */
+    background: var(--overlay-bg);
+    box-shadow: var(--v4-shadow-popover, var(--pop-shadow));
     color: var(--v4-text-1, var(--pop-text));
     transform-origin: top center;
   }
@@ -412,11 +557,69 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    height: 48px;
+    min-height: 48px;
     flex: 0 0 auto;
-    padding: 0 12px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
     border-bottom: 1px solid var(--pop-divider);
     background: var(--pop-hover);
+  }
+
+  .scope-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    width: 100%;
+  }
+
+  .scope-chips button {
+    padding: 3px 8px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--v4-text-3, var(--pop-muted));
+    font: inherit;
+    font-size: var(--text-base);
+    cursor: pointer;
+  }
+
+  .scope-chips button.on {
+    background: var(--v4-active-row, var(--pop-hover));
+    color: var(--v4-text-1, var(--pop-text));
+  }
+
+  .command-empty-note {
+    padding: 16px 12px 8px;
+    text-align: center;
+  }
+
+  .command-empty-note strong {
+    display: block;
+    color: var(--v4-text-1, var(--pop-text));
+    font-weight: 500;
+  }
+
+  .command-empty-note span {
+    display: block;
+    margin-top: 4px;
+    color: var(--v4-text-3, var(--pop-muted));
+    font-size: var(--text-base);
+    line-height: 1.45;
+  }
+
+  .command-foot {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex: 0 0 auto;
+    padding: 8px 14px;
+    border-top: 1px solid var(--pop-divider);
+    color: var(--v4-text-3, var(--pop-muted));
+    font-size: var(--text-base);
+  }
+
+  .command-foot .grow {
+    flex: 1;
   }
 
   .command-glyph,
@@ -488,7 +691,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 700;
+    font-weight: 500;
     cursor: pointer;
   }
 
@@ -504,19 +707,18 @@
   }
 
   .command-section-title {
-    padding: 5px 8px 4px;
-    color: var(--pop-muted);
-    font-size: var(--text-micro);
-    font-weight: 600;
-    line-height: 14px;
-    text-transform: uppercase;
+    padding: 8px 8px 4px;
+    color: var(--v4-text-2, var(--pop-muted));
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 17px;
   }
 
   .command-list button,
   .command-empty {
     width: 100%;
-    min-height: 46px;
-    border-radius: 0;
+    min-height: 32px;
+    border-radius: 8px;
   }
 
   .command-list button {
@@ -524,7 +726,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 7px 8px;
+    padding: 6px 8px;
     border: 0;
     background: transparent;
     color: var(--pop-muted);
@@ -551,14 +753,13 @@
     background: var(--pop-hover);
     color: var(--pop-text);
     outline: none;
-    box-shadow: inset 0 -1px 0 var(--pop-border);
   }
 
   .command-copy {
     display: flex;
-    flex-direction: column;
+    align-items: baseline;
     min-width: 0;
-    gap: 2px;
+    gap: 8px;
   }
 
   .command-copy strong,
@@ -570,8 +771,9 @@
 
   .command-copy strong {
     color: currentColor;
+    flex: 0 1 auto;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 400;
   }
 
   .command-copy span {
@@ -639,9 +841,10 @@
     }
   }
 
+  /* Opacity, not background: the fade stays on the compositor. */
   @keyframes command-backdrop-in {
     from {
-      background: rgba(0, 0, 0, 0);
+      opacity: 0;
     }
   }
 

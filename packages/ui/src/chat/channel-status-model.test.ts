@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  canOfferMembershipActions,
   buildActiveSessionRows,
   buildChannelStatusModel,
   buildLiveReadSessionRows,
@@ -514,5 +515,24 @@ describe("channel-status-model — member email preservation", () => {
     const none = built.members.find((m) => m.personUid === "prs_noemail");
     expect(marcus?.email).toBe("marcus@example.com");
     expect(none?.email).toBeNull();
+  });
+});
+
+describe("channel-status-model — membership action eligibility", () => {
+  it("keeps online company presence visible without granting channel actions", () => {
+    const built = buildChannelStatusModel({
+      project: { id: "chn_1", title: "#general" },
+      members: [{ personUid: "prs_member", displayName: "Member", role: "owner" }],
+      presence: [
+        { actorUid: "prs_member", status: "online", actorType: "human" },
+        { actorUid: "prs_guest", status: "online", actorType: "human", displayName: "Guest" },
+      ],
+    });
+    const member = built.members.find((row) => row.personUid === "prs_member");
+    const guest = built.members.find((row) => row.personUid === "prs_guest");
+
+    expect(member && canOfferMembershipActions(member)).toBe(true);
+    expect(guest?.online).toBe(true);
+    expect(guest && canOfferMembershipActions(guest)).toBe(false);
   });
 });

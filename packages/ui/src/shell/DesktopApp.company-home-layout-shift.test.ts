@@ -7,7 +7,7 @@
  * and with skeleton rows before the real message list mounted — each
  * arrival reflowed the pane. The fix reserves the hero, the member-count
  * pill, and the mute control at their final size from the very first
- * render, and matches skeleton-row geometry to the empty state so nothing
+ * render, and shows the shared loader in the thread so nothing
  * downstream moves once data resolves.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -158,7 +158,7 @@ describe("DesktopApp company-home channel: no layout shift on load", () => {
 
     const hero = () => host.querySelector<HTMLElement>('[data-testid="company-hero"]');
     const memberPill = () => host.querySelector<HTMLElement>('[data-testid="channel-members"]');
-    const skeleton = () => host.querySelector('[data-testid="conversation-skeleton"]');
+    const loader = () => host.querySelector('[data-testid="conversation-loading"]');
 
     // First render, before `fetchChannel` resolves: the hero and the
     // member-count slot must already exist at their final fixed size.
@@ -170,10 +170,9 @@ describe("DesktopApp company-home channel: no layout shift on load", () => {
     const pillRectBefore = getComputedStyle(memberPill()!);
     expect(pillRectBefore.padding).toBe("5px 12px");
 
-    // Cold-open skeleton rows stand in for the real messages until the
-    // timeline resolves — same row geometry either way (see
-    // `.thread-skeleton-row` in ChannelConversation.svelte).
-    expect(skeleton()).toBeTruthy();
+    // The shared loader stands in for the real messages until the
+    // timeline resolves.
+    expect(loader()).toBeTruthy();
 
     // Now resolve the channel-get call: real metadata lands.
     await vi.waitFor(() => expect(resolveFetch).toBeTruthy());

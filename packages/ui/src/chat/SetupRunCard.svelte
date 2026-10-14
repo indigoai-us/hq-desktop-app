@@ -188,7 +188,8 @@
       secretValue = "";
       onanswer?.(question.requestId, question.questionId, [doneLabel()]);
     } catch (err) {
-      secretError = err instanceof Error ? err.message : String(err);
+      console.warn("[setup-run] store secret failed", err);
+      secretError = "Could not save that. Try again.";
     } finally {
       secretBusy = false;
     }

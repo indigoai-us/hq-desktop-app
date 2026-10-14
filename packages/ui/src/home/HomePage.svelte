@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import type { Workspace } from "../chat/workspaces.js";
   import type {
     ActivityEntry,
@@ -16,10 +17,9 @@
   import NeedsYouCard from "./NeedsYouCard.svelte";
   import { pendingInviteWorkspaces } from "../chat/workspaces.js";
   import Caret from "../common/Caret.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import {
     formatClock,
-    getAggregateConflictCardModel,
-    getConflictCardModel,
     getDeleteRefusalCopy,
     getDriftCardModel,
     getHomeCompanyRows,
@@ -31,7 +31,6 @@
     getHomeTodayAgenda,
     getInviteCardModel,
     getNeedsYouCount,
-    type HomeConflict,
     type HomeCoreState,
     type HomeDeleteRefusal,
   } from "./home-model.js";
@@ -39,7 +38,7 @@
   /**
    * V4 Home — the exception-based surface (SPEC section 5,
    * home-healthy/syncing/error.png). Presentational: DesktopApp owns the sync
-   * event stream, the conflict queue, and the core-drift state; this page
+   * event stream and the core-drift state; this page
    * renders the meta line, the NEEDS YOU queue, the syncing progress card,
    * the error card, and the actor-grouped digest. Supersedes SyncPage
    * (US-003) — the sources-table mental model is gone.
@@ -70,10 +69,6 @@
     autoSyncOn?: boolean | null;
     /** Local hq-core version ("15.0.15"); null when unreadable. */
     hqVersion?: string | null;
-    conflicts: HomeConflict[];
-    /** Aggregate fallback from sync:complete when no per-file events exist. */
-    aggregateConflictCount?: number;
-    aggregateConflictCompany?: string | null;
     deleteRefusals?: HomeDeleteRefusal[];
     coreState?: HomeCoreState | null;
     driftDismissed?: boolean;
@@ -86,12 +81,6 @@
     companyNamesByUid?: Map<string, string>;
     /** Open a company workspace from the portfolio table. */
     onopencompany?: (slug: string) => void;
-    onresolveconflict?: (
-      path: string,
-      strategy: "keep-local" | "keep-remote",
-    ) => void | Promise<void>;
-    oncompareconflict?: (path: string) => void | Promise<void>;
-    onresolveaggregateconflicts?: () => void | Promise<void>;
     onrestoredrift?: () => void | Promise<void>;
     onkeepdrift?: () => void | Promise<void>;
     onviewdrift?: () => void | Promise<void>;
@@ -121,9 +110,6 @@
     syncStartedAt = null,
     autoSyncOn = null,
     hqVersion = null,
-    conflicts,
-    aggregateConflictCount = 0,
-    aggregateConflictCompany = null,
     deleteRefusals = [],
     coreState = null,
     driftDismissed = false,
@@ -132,9 +118,6 @@
     meetingEvents = [],
     companyNamesByUid = new Map(),
     onopencompany,
-    onresolveconflict,
-    oncompareconflict,
-    onresolveaggregateconflicts,
     onrestoredrift,
     onkeepdrift,
     onviewdrift,
@@ -179,17 +162,8 @@
       : null,
   );
   const inviteWorkspaces = $derived(pendingInviteWorkspaces(workspaces));
-  const showAggregateConflict = $derived(
-    syncState === "conflict" && conflicts.length === 0,
-  );
   const needsYouCount = $derived(
-    getNeedsYouCount(
-      conflicts,
-      coreState,
-      driftDismissed,
-      inviteWorkspaces.length,
-      showAggregateConflict,
-    ),
+    getNeedsYouCount(coreState, driftDismissed, inviteWorkspaces.length),
   );
   const progressModel = $derived(
     getHomeProgressModel({
@@ -214,21 +188,6 @@
   const todayAgenda = $derived(
     getHomeTodayAgenda({ events: meetingEvents, companyNamesByUid }),
   );
-
-  async function handleConflictAction(
-    path: string,
-    actionId: string,
-  ): Promise<void> {
-    if (actionId === "compare") await oncompareconflict?.(path);
-    else
-      await onresolveconflict?.(path, actionId as "keep-local" | "keep-remote");
-  }
-
-  async function handleAggregateConflictAction(
-    actionId: string,
-  ): Promise<void> {
-    if (actionId === "resolve-conflicts") await onresolveaggregateconflicts?.();
-  }
 
   async function handleDriftAction(actionId: string): Promise<void> {
     if (actionId === "restore") await onrestoredrift?.();
@@ -397,21 +356,6 @@
             onaction={(id) => void handleInviteAction(invite.slug, id)}
           />
         {/each}
-        {#if showAggregateConflict}
-          <NeedsYouCard
-            card={getAggregateConflictCardModel(
-              aggregateConflictCount,
-              aggregateConflictCompany,
-            )}
-            onaction={handleAggregateConflictAction}
-          />
-        {/if}
-        {#each conflicts as conflict (conflict.path)}
-          <NeedsYouCard
-            card={getConflictCardModel(conflict)}
-            onaction={(id) => handleConflictAction(conflict.path, id)}
-          />
-        {/each}
         {#if driftCard}
           <NeedsYouCard card={driftCard} onaction={handleDriftAction} />
         {/if}
@@ -465,10 +409,13 @@
                 onclick={() => onopencompany?.(row.slug)}
               >
                 <span class="home-td-name">
-                  <span class={`home-dot ${row.tone}`} aria-hidden="true"
-                  ></span>
                   <span class="home-name-copy">
-                    <span class="home-name">{row.name}</span>
+                    <span class="home-name"
+                      ><CompanyLabel name={row.name} companyUid={row.slug} />
+                      <!-- Sync status, kept as a trailing signal. -->
+                      <span class={`home-dot ${row.tone}`} aria-hidden="true"
+                      ></span></span
+                    >
                     <span class="home-sub">{row.sub}</span>
                   </span>
                 </span>
@@ -495,7 +442,7 @@
                   <span class="home-agenda-time">{item.time}</span>
                   <span class="home-agenda-copy">
                     <span class="home-agenda-title">{item.title}</span>
-                    <span class="home-agenda-company">{item.company}</span>
+                    <span class="home-agenda-company"><CompanyLabel name={item.company} /></span>
                   </span>
                 </div>
               {/each}
@@ -507,11 +454,8 @@
       </div>
     </div>
   {:else}
-    <div class="home-skeleton" aria-busy="true">
-      {#each [0, 1, 2] as row (row)}
-        <span class="home-skeleton-bar" style={`width: ${78 - row * 14}%`}
-        ></span>
-      {/each}
+    <div class="home-loading" aria-busy="true">
+      <ReadLoader testid="home-loading" onretry={onretry ? () => void onretry() : null} />
     </div>
   {/if}
 </section>
@@ -1034,39 +978,12 @@
     overflow-wrap: anywhere;
   }
 
-  /* ── First-load skeleton ───────────────────────────────────────────────── */
-  .home-skeleton {
-    display: grid;
-    gap: 10px;
+  /* ── First-load loader ─────────────────────────────────────────────────── */
+  .home-loading {
     padding: 14px 0;
     border: 0;
     border-radius: 0;
     background: transparent;
     box-shadow: none;
-  }
-
-  .home-skeleton-bar {
-    display: block;
-    height: 10px;
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-faint);
-    animation: home-skeleton-pulse 1.2s ease-in-out infinite;
-  }
-
-  @keyframes home-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-
-    50% {
-      opacity: 1;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .home-skeleton-bar {
-      animation: none;
-    }
   }
 </style>

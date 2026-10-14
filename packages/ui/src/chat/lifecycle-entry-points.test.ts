@@ -96,7 +96,7 @@ describe("runCreateCompanyEntry", () => {
     const result = await runCreateCompanyEntry({ runCardAction });
     expect(result).toEqual({
       ok: false,
-      reason: "Only owners can create companies",
+      reason: "You don't have permission to do this. Ask a workspace owner or admin.",
       blocked: true,
     });
   });

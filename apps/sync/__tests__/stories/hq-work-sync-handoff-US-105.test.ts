@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 vi.mock('svelte', async () => {
   // @ts-expect-error client entry has no public type export.
@@ -43,6 +43,7 @@ import {
 } from '@hq/platform';
 import { createHqWorkSidebarApi } from '../../src/desktop-alt/hq-work-host';
 import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
+import { loadShellSettings } from '../../../../packages/ui/src/shell/settings-lazy';
 import { getVaultObject } from '../../src/desktop-alt/vault-s3-put';
 
 const repoRoot = resolve(process.cwd());
@@ -299,6 +300,15 @@ afterEach(async () => {
     /* private mode */
   }
   vi.clearAllMocks();
+});
+
+
+// Settings is a lazy chunk (packages/ui/src/shell/settings-lazy.ts, 7e9692ab).
+// Its first dynamic import needs a real module transform, which microtask
+// flushes cannot wait out. Load the memoized chunk once up front so the
+// `{#await loadShellSettings()}` branch resolves deterministically.
+beforeAll(async () => {
+  await loadShellSettings();
 });
 
 describe('US-105 embedded feature-parity QA', () => {

@@ -92,19 +92,11 @@
     width: max-content;
     max-width: 13.5rem;
     border-radius: 12px;
-    background: var(--pop-bg);
+    background: var(--overlay-bg);
     border: 1px solid var(--pop-border);
     box-shadow:
       var(--pop-shadow),
       inset 0 1px 0 var(--pop-highlight);
-    backdrop-filter: var(
-      --glass-filter-soft,
-      blur(16px) saturate(112%) contrast(101%)
-    );
-    -webkit-backdrop-filter: var(
-      --glass-filter-soft,
-      blur(16px) saturate(112%) contrast(101%)
-    );
   }
 
   .emoji-picker.place-below {

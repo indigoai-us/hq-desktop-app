@@ -34,6 +34,9 @@ use crate::util::logfile::log;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/// S3 user-metadata key hq-cloud publishes each file's raw SHA-256 hex under.
+const CONTENT_SHA256_META_KEY: &str = "hq-content-sha256";
+
 pub(crate) type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// Dynamic-dispatch uploader used by both production (real S3) and tests (fake counter).
@@ -42,9 +45,34 @@ pub(crate) type UploaderFn =
 
 #[derive(Debug)]
 pub(crate) enum UploadOutcome {
-    Ok,
+    /// Stored. Carries the object's ETag from the PutObject response when S3
+    /// returned one; it becomes the journal row's `remoteEtag`.
+    Ok(Option<String>),
     Transient(String),
     Permanent(String),
+}
+
+/// S3 wraps ETags in literal quotes. hq-cloud's journal stores them without
+/// (`normalizeEtag` in hq-cloud src/journal.ts), and its `hasRemoteChanged`
+/// compares the stored value against a normalized live ETag.
+pub(crate) fn normalize_etag(etag: &str) -> Option<String> {
+    let trimmed = etag.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// When a file's upload finished, for its journal row's `syncedAt`.
+///
+/// A single timestamp taken before the scan (whole seconds) is older than
+/// every object's S3 LastModified. hq-cloud reads a row with no `remoteEtag`
+/// as "the cloud changed since sync" when LastModified > syncedAt, so a later
+/// local edit (e.g. `hq reindex` rewriting core/workers/registry.yaml) became
+/// a both-sides conflict and parked a copy on a brand-new account.
+fn synced_at_now() -> String {
+    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 // ── Personal-vault path exclusion list ────────────────────────────────────────
@@ -539,7 +567,7 @@ async fn upload_with_retry(
     data: Bytes,
     sha256_hex: &str,
     uploader: &UploaderFn,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     const MAX_ATTEMPTS: usize = 3;
     const DELAY_MS: [u64; 2] = [1000, 3000];
 
@@ -550,7 +578,7 @@ async fn upload_with_retry(
             tokio::time::sleep(std::time::Duration::from_millis(DELAY_MS[attempt - 1])).await;
         }
         match uploader(key.to_string(), data.clone(), sha256_hex.to_string()).await {
-            UploadOutcome::Ok => return Ok(()),
+            UploadOutcome::Ok(etag) => return Ok(etag.as_deref().and_then(normalize_etag)),
             UploadOutcome::Transient(e) => last_err = e,
             UploadOutcome::Permanent(e) => return Err(format!("permanent upload error: {e}")),
         }
@@ -733,7 +761,6 @@ where
         upload_err = upload_plan_concurrently(
             plan,
             &mut journal,
-            &now,
             &uploader,
             &on_progress,
             &on_skip,
@@ -773,25 +800,26 @@ where
                 }
             }
 
-            match upload_with_retry(&rel_key, contents, &sha256_hex, &uploader).await {
-                Ok(()) => {}
-                Err(e) => {
-                    upload_err = Some(e);
-                    break 'upload;
-                }
-            }
+            let remote_etag =
+                match upload_with_retry(&rel_key, contents, &sha256_hex, &uploader).await {
+                    Ok(etag) => etag,
+                    Err(e) => {
+                        upload_err = Some(e);
+                        break 'upload;
+                    }
+                };
 
             journal.files.insert(
                 rel_key.clone(),
                 JournalEntry {
                     hash: sha256_hex,
                     size,
-                    synced_at: now.clone(),
+                    synced_at: synced_at_now(),
                     direction: Direction::Up,
-                    // Rust authors neither remoteEtag nor mtimeMs (see
-                    // JournalEntry docs). This is the seed path only; the
-                    // hq-cloud runner stamps both on the next steady-state sync.
-                    remote_etag: None,
+                    // The ETag of the object this upload stored, so the
+                    // hq-cloud runner sees the cloud copy as unchanged. mtimeMs
+                    // stays the runner's to stamp.
+                    remote_etag,
                     mtime_ms: None,
                     extra: Default::default(),
                 },
@@ -826,6 +854,8 @@ enum PlannedUpload {
         rel_key: String,
         sha256_hex: String,
         size: u64,
+        remote_etag: Option<String>,
+        synced_at: String,
     },
     /// The file now matches its journal entry (changed back between phases).
     Unchanged,
@@ -853,7 +883,6 @@ enum PlannedUpload {
 async fn upload_plan_concurrently<P, S>(
     plan: Vec<(PathBuf, String)>,
     journal: &mut crate::util::journal::SyncJournal,
-    now: &str,
     uploader: &UploaderFn,
     on_progress: &P,
     on_skip: &S,
@@ -898,11 +927,14 @@ where
                 if baseline.as_deref() == Some(sha256_hex.as_str()) {
                     return Ok(PlannedUpload::Unchanged);
                 }
-                upload_with_retry(&rel_key, contents, &sha256_hex, &uploader).await?;
+                let remote_etag =
+                    upload_with_retry(&rel_key, contents, &sha256_hex, &uploader).await?;
                 Ok(PlannedUpload::Uploaded {
                     rel_key,
                     sha256_hex,
                     size,
+                    remote_etag,
+                    synced_at: synced_at_now(),
                 })
             }
         },
@@ -915,17 +947,19 @@ where
                 rel_key,
                 sha256_hex,
                 size,
+                remote_etag,
+                synced_at,
             }) => {
                 journal.files.insert(
                     rel_key,
                     JournalEntry {
                         hash: sha256_hex,
                         size,
-                        synced_at: now.to_string(),
+                        synced_at,
                         direction: Direction::Up,
-                        // Same as the sequential loop: Rust authors neither
-                        // remoteEtag nor mtimeMs; the runner stamps both later.
-                        remote_etag: None,
+                        // Same as the sequential loop: the stored object's
+                        // ETag; mtimeMs stays the runner's to stamp.
+                        remote_etag,
                         mtime_ms: None,
                         extra: Default::default(),
                     },
@@ -1220,6 +1254,34 @@ pub async fn ensure_person_entity(app: tauri::AppHandle) -> Result<bool, String>
     // `Some(..)` = resolved to a concrete uid; `None` = benign 409, entity
     // already exists server-side. Either way the entity is present.
     Ok(resolve_or_provision(&app, &vault).await?.is_some())
+}
+
+/// Read the signed-in person's HQ Anywhere opt-in through hq-pro's person-settings API.
+#[tauri::command]
+pub async fn get_hq_anywhere_person_setting() -> Result<bool, String> {
+    let access_token = crate::commands::cognito::get_valid_access_token()
+        .await
+        .map_err(|error| {
+            eprintln!("[person-settings] could not refresh caller token: {error}");
+            "Could not load the HQ Anywhere setting.".to_string()
+        })?;
+    let api_url = crate::commands::sync::resolve_vault_api_url().map_err(|error| {
+        eprintln!("[person-settings] could not resolve vault API: {error}");
+        "Could not load the HQ Anywhere setting.".to_string()
+    })?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    read_hq_anywhere_person_setting(&vault).await
+}
+
+async fn read_hq_anywhere_person_setting(vault: &VaultClient) -> Result<bool, String> {
+    vault
+        .get_hq_anywhere_person_setting()
+        .await
+        .map(|setting| setting.value)
+        .map_err(|error| {
+            eprintln!("[person-settings] HQ Anywhere setting read failed: {error}");
+            "Could not load the HQ Anywhere setting.".to_string()
+        })
 }
 
 /// Store the signed-in person's HQ Anywhere opt-in through hq-pro's person-settings API.
@@ -1716,12 +1778,16 @@ pub(crate) async fn ensure_impl_with<R: tauri::Runtime + 'static>(
                             .bucket(&bucket)
                             .key(&key)
                             .body(ByteStream::from(data))
-                            .checksum_sha256(sha256_b64);
+                            .checksum_sha256(sha256_b64)
+                            // hq-cloud's content lineage key (FILE_CONTENT_SHA256_META_KEY
+                            // in hq-cloud src/s3.ts): lets the runner compare content
+                            // instead of timestamps.
+                            .metadata(CONTENT_SHA256_META_KEY, &sha256_hex);
                         for (k, v) in author_meta.iter() {
                             req = req.metadata(k, v);
                         }
                         match req.send().await {
-                            Ok(_) => UploadOutcome::Ok,
+                            Ok(out) => UploadOutcome::Ok(out.e_tag().map(str::to_string)),
                             Err(e) => {
                                 let status =
                                     e.raw_response().map(|r| r.status().as_u16()).unwrap_or(0);
@@ -1813,8 +1879,46 @@ mod tests {
     };
     use tauri::Listener;
     use tempfile::TempDir;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn hq_anywhere_get_command_helper_returns_the_person_setting_value() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+                "key": "hq-anywhere",
+                "value": true
+            })))
+            .mount(&server)
+            .await;
+        let vault = VaultClient::new(&server.uri(), "test-token");
+
+        assert_eq!(read_hq_anywhere_person_setting(&vault).await.unwrap(), true);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.query(), Some("setting=hq-anywhere"));
+    }
+
+    #[tokio::test]
+    async fn hq_anywhere_get_command_helper_returns_a_safe_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(ResponseTemplate::new(502).set_body_string("private upstream detail"))
+            .mount(&server)
+            .await;
+        let vault = VaultClient::new(&server.uri(), "test-token");
+
+        assert_eq!(
+            read_hq_anywhere_person_setting(&vault).await,
+            Err("Could not load the HQ Anywhere setting.".to_string())
+        );
+    }
 
     // --- prepare-phase metadata fast path -----------------------------------
 
@@ -1998,7 +2102,7 @@ mod tests {
         Arc::new(
             move |key: String, _data: Bytes, _sha256: String| -> BoxFuture<UploadOutcome> {
                 calls.lock().unwrap().push(key);
-                Box::pin(async { UploadOutcome::Ok })
+                Box::pin(async { UploadOutcome::Ok(None) })
             },
         )
     }
@@ -2007,7 +2111,7 @@ mod tests {
         Arc::new(
             move |_key: String, _data: Bytes, _sha256: String| -> BoxFuture<UploadOutcome> {
                 counter.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async { UploadOutcome::Ok })
+                Box::pin(async { UploadOutcome::Ok(None) })
             },
         )
     }
@@ -2075,7 +2179,11 @@ mod tests {
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
-            let vault = VaultClient::new(&server.uri(), "tok");
+            // Own connection pool, as in the give-up test below: a keep-alive
+            // connection left over from an earlier test's runtime would fail the
+            // first send in transport, and the retry loop would count it as one of
+            // its three attempts without the mock seeing it.
+            let vault = VaultClient::with_own_pool(server.uri(), "tok");
             let r = resolve_or_provision(&handle, &vault).await;
 
             r
@@ -2116,7 +2224,10 @@ mod tests {
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
-            let vault = VaultClient::new(&server.uri(), "tok");
+            // Own connection pool: a keep-alive connection left over from an
+            // earlier test's runtime would fail the first send in transport,
+            // and the retry loop would count it without the mock seeing it.
+            let vault = VaultClient::with_own_pool(server.uri(), "tok");
             let r = resolve_or_provision(&handle, &vault).await;
 
             r
@@ -3538,7 +3649,7 @@ mod tests {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                     in_flight.fetch_sub(1, Ordering::SeqCst);
                     calls.lock().unwrap().push(key);
-                    UploadOutcome::Ok
+                    UploadOutcome::Ok(None)
                 })
             },
         )
@@ -3803,6 +3914,87 @@ mod tests {
         assert_eq!(peak.load(Ordering::SeqCst), 1, "legacy path is sequential");
     }
 
+    /// Uploader that answers with a quoted S3-style ETag per key and records
+    /// when each upload landed.
+    fn make_etag_uploader(
+        landed: Arc<Mutex<Vec<(String, chrono::DateTime<Utc>)>>>,
+    ) -> UploaderFn {
+        Arc::new(
+            move |key: String, _data: Bytes, _sha256: String| -> BoxFuture<UploadOutcome> {
+                let landed = landed.clone();
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    landed.lock().unwrap().push((key.clone(), Utc::now()));
+                    UploadOutcome::Ok(Some(format!("\"etag-{key}\"")))
+                })
+            },
+        )
+    }
+
+    /// Regression (fresh-Mac signup, 0.11.3): the first push journaled every
+    /// file with `remoteEtag: None` and one pre-scan, whole-second `syncedAt`.
+    /// hq-cloud's `hasRemoteChanged` then read each cloud object as changed
+    /// (LastModified > syncedAt), so `hq reindex` rewriting
+    /// core/workers/registry.yaml became a both-sides conflict and the new
+    /// account saw "2 conflict copies parked". Every row must now carry the
+    /// stored object's (unquoted) ETag and a syncedAt no earlier than its upload.
+    #[tokio::test]
+    async fn first_push_journals_each_uploads_etag_and_post_upload_synced_at() {
+        for concurrency in [1, FIRST_PUSH_UPLOAD_CONCURRENCY] {
+            let tmp_state = TempDir::new().unwrap();
+            let tmp_hq = TempDir::new().unwrap();
+            let root = tmp_hq.path();
+            seed_vault_files(root, 6);
+            write_file(&root.join("core/workers/registry.yaml"), b"workers: []\n");
+
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+
+            let landed: Arc<Mutex<Vec<(String, chrono::DateTime<Utc>)>>> =
+                Arc::new(Mutex::new(vec![]));
+            let (uploaded, _) = run_personal_first_push_with_concurrency(
+                root,
+                make_etag_uploader(landed.clone()),
+                |_, _, _| {},
+                |_, _, _| {},
+                |_, _| {},
+                concurrency,
+            )
+            .await
+            .unwrap();
+            assert_eq!(uploaded, 8, "concurrency {concurrency}");
+
+            let journal = read_journal(PERSONAL_VAULT_JOURNAL_SLUG).unwrap();
+            let landed = landed.lock().unwrap();
+            assert_eq!(landed.len(), 8);
+            for (key, at) in landed.iter() {
+                let row = journal.files.get(key).expect("every upload is journaled");
+                assert_eq!(
+                    row.remote_etag.as_deref(),
+                    Some(format!("etag-{key}").as_str()),
+                    "{key} (concurrency {concurrency}) must record the stored object's ETag"
+                );
+                let synced = chrono::DateTime::parse_from_rfc3339(&row.synced_at)
+                    .unwrap()
+                    .with_timezone(&Utc);
+                // Millisecond precision: compare at that resolution.
+                assert!(
+                    synced.timestamp_millis() >= at.timestamp_millis(),
+                    "{key} (concurrency {concurrency}): syncedAt {synced} is before its upload landed at {at}"
+                );
+            }
+            assert!(journal.files.contains_key("core/workers/registry.yaml"));
+        }
+    }
+
+    #[test]
+    fn normalize_etag_strips_quotes_and_rejects_empty() {
+        assert_eq!(normalize_etag("\"abc\"").as_deref(), Some("abc"));
+        assert_eq!(normalize_etag("abc").as_deref(), Some("abc"));
+        assert_eq!(normalize_etag("\"\""), None);
+        assert_eq!(normalize_etag(""), None);
+    }
+
     #[tokio::test]
     async fn concurrent_first_push_is_bounded_and_journals_every_upload() {
         let tmp_state = TempDir::new().unwrap();
@@ -3875,7 +4067,7 @@ mod tests {
                     if key == "knowledge/a-bad.md" {
                         UploadOutcome::Permanent("AccessDenied".into())
                     } else {
-                        UploadOutcome::Ok
+                        UploadOutcome::Ok(None)
                     }
                 })
             },
@@ -3930,7 +4122,7 @@ mod tests {
                         "knowledge/flaky.md" if n < 3 => UploadOutcome::Transient("503".into()),
                         // Always transient: gives up after 3 attempts.
                         "knowledge/down.md" => UploadOutcome::Transient("503".into()),
-                        _ => UploadOutcome::Ok,
+                        _ => UploadOutcome::Ok(None),
                     }
                 })
             },

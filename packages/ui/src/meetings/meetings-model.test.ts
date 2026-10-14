@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { get } from "svelte/store";
 import {
   activeRecordingsFromScheduledBots,
@@ -31,6 +31,7 @@ import {
   type MeetingEvent,
   type ScheduledBot,
 } from "./meetings-model";
+import { friendlyError as friendlyErrorAudit } from "./meetings-model";
 import {
   activeMeetings,
   upsertActiveMeeting,
@@ -457,7 +458,7 @@ describe("meetings-model", () => {
       );
     });
 
-    it("ignores inactive series bots so failed cancels can be retried by inviting again", () => {
+    it("shows failed series bots until a successful retry becomes active", () => {
       const event = {
         ...eventAt(
           "series-1_20260527T190000Z",
@@ -470,7 +471,14 @@ describe("meetings-model", () => {
         calendarSeriesId: "series-1",
       });
 
-      expect(botForEvent(event, new Map(), [failedBot])).toBeUndefined();
+      const retry = bot({
+        botId: "retry",
+        status: "scheduled",
+        calendarSeriesId: "series-1",
+      });
+
+      expect(botForEvent(event, new Map(), [failedBot])?.botId).toBe(failedBot.botId);
+      expect(botForEvent(event, new Map(), [failedBot, retry])?.botId).toBe("retry");
     });
 
     // US-005 — join priority: event ID → series ID → normalized URL.
@@ -879,10 +887,10 @@ describe("meetings-model", () => {
       ).toBe("processing");
     });
 
-    it("a failed/unknown status falls back to invite regardless of sourceLanded", () => {
+    it("a failed status stays failed so callers can show the recovery detail", () => {
       expect(
         rowButtonKind(bot({ status: "failed", sourceLanded: false })),
-      ).toBe("invite");
+      ).toBe("failed");
     });
   });
 
@@ -948,4 +956,17 @@ it('does not attach a completed recording to a later occurrence sharing its seri
   expect(botForEvent(event, new Map(), [{ ...bot, calendarSeriesId: null }])).toBeUndefined();
   expect(botForEvent(event, new Map(), [{ ...bot, scheduledStartTime: event.start.dateTime }])?.botId).toBe('old');
   expect(botForEvent(event, new Map([[event.id, { ...bot, calendarEventId: event.id }]]))?.botId).toBe('old');
+});
+
+describe("friendlyError raw errors (AUDIT-3c)", () => {
+  it("never returns the server JSON error/message body and logs the raw text", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const a = '[invoke] x failed: {"error":"boom"}';
+    const b = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    expect(friendlyErrorAudit(a, "Couldn't invite the bot.")).toBe("Couldn't invite the bot.");
+    expect(friendlyErrorAudit(b, "Couldn't invite the bot.")).toBe("Server hiccup — try again in a moment.");
+    expect(warn).toHaveBeenCalledWith("[meetings] request failed", a);
+    expect(warn).toHaveBeenCalledWith("[meetings] request failed", b);
+    warn.mockRestore();
+  });
 });

@@ -93,8 +93,9 @@
       dispatched = true;
       setTimeout(() => (dispatched = false), 1800);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error("OpenFileInClaudeCode dispatch failed:", e);
+      // AUDIT-3c: log the raw failure; the button shows app copy.
+      const msg = "Couldn’t open Claude Code. Try again.";
+      console.warn("[open-in-claude-code] dispatch failed", e);
       // Never fall back to a renderer-built prompt for an authorization
       // failure: that would bypass the native membership decision.
       if (authorizedFile) {
@@ -203,7 +204,7 @@
     color: var(--muted-2);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
     transition:

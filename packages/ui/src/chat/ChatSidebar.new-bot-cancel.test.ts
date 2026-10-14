@@ -7,7 +7,7 @@
  * work, so it keeps going when the takeover closes, and an answer that arrives
  * after Cancel still gets its bot removed. Every server call here is a fake.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
@@ -25,6 +25,13 @@ import { tenantStorageKey } from "../identity/tenant-storage.js";
 import { resetWakingSessionStores, WAKING_BOTS_STORAGE_KEY } from "./create-bot/waking-sessions.js";
 import { registerShortcuts, runShortcut, shortcutsSuspended } from "../common/keyboard-shortcuts.js";
 import { isMac } from "../common/platform.js";
+import { createBotFlowDoor } from "../shell/lazy-doors.js";
+
+// The create window loads its bot flow on demand on the rail; load it first
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -131,8 +138,9 @@ function mountSidebar(props: Record<string, unknown>): void {
 async function openTakeover(): Promise<void> {
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
   await settle();
-  click('[data-testid="chat-create-new-bot"]');
+  click('[data-testid="chat-create-menu-agent"]');
   await settle();
+  // "New bot" opens on the name; "Where should it live?" comes after it.
 }
 
 async function typeName(value: string): Promise<void> {
@@ -142,9 +150,12 @@ async function typeName(value: string): Promise<void> {
   await settle();
 }
 
+/** Name the bot, pick Cloud (these bots are made in the cloud), and press Create bot. */
 async function pressCreate(name: string): Promise<void> {
   await typeName(name);
   click('[data-testid="new-bot-continue-name"]');
+  await settle();
+  click('[data-testid="new-bot-choice-cloud"]');
   await settle();
   click('[data-testid="new-bot-create-submit"]');
   await settle();
@@ -221,9 +232,9 @@ describe("Cancel while the create request is out", () => {
     click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
 
-    // Back on a clean create screen, with one line saying what is happening.
+    // Back on the first step with nothing typed, with one line saying what is happening.
     expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
-    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("");
     expect(notice()).toBe("Cancelling Woah. Anything already set up for it will be removed.");
     expect(removeAgent).not.toHaveBeenCalled();
@@ -235,7 +246,7 @@ describe("Cancel while the create request is out", () => {
     await removalSettled(() => expect(notice()).toBe("Woah was removed."));
 
     expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
-    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-name-screen"]')).toBeTruthy();
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("Second");
     expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
     expect(q('[data-conversation-id="dm:agt_woah"]')).toBeNull();
@@ -271,7 +282,7 @@ describe("Cancel while the create request is out", () => {
     expect(removeAgent).not.toHaveBeenCalled();
     // The failure of a request the person cancelled is not shown as an error.
     expect(q('[role="alert"]')).toBeNull();
-    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
   });
 
   it("lets the person start another bot at once while the first is removed", async () => {
@@ -1275,7 +1286,7 @@ describe("Cancel for a bot that is starting", () => {
     // While the server works: one line, a clean create screen, and the row
     // still there, marked, because the bot still exists.
     expect(notice()).toBe("Removing Nova. This can take a minute.");
-    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("");
     expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
     expect(q('[data-conversation-id="dm:agt_nova"] [data-testid="chat-row-removing-pill"]')?.textContent?.trim()).toBe("Removing");
@@ -1462,7 +1473,10 @@ describe("Cancel for a bot that is starting", () => {
 
     click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
-    click('[data-testid="chat-create-new-bot"]');
+    // On the rail, New bot is on the "+" menu, which closes after each pick.
+    document.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
+    await settle();
+    click('[data-testid="chat-create-menu-agent"]');
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
     expect(q('[data-testid="new-bot-cancel-notice"]')).toBeNull();
@@ -1709,7 +1723,7 @@ describe("The app's shortcuts are let go on every way out of the takeover (revie
     await cancelAndConfirm();
 
     // The takeover is back on its create screen: still a modal, still held.
-    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-name-screen"]')).toBeTruthy();
     expect(shortcutsSuspended()).toBe(true);
     finishRemoval(REMOVED);
     await removalSettled(() => expect(notice()).toBe("Nova was removed."));
@@ -1796,7 +1810,7 @@ describe("Bots that are starting outlive the sidebar (review A-C2)", () => {
 
     // The person keeps the screen they are on.
     expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
-    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-name-screen"]')).toBeTruthy();
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("Second");
     // The bot was not cancelled: it keeps starting and has its row.
     expect(removeAgent).not.toHaveBeenCalled();
@@ -2033,7 +2047,7 @@ describe("More than one bot starting (review A-I1)", () => {
 
     await openTakeover();
     expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
-    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("");
 
     click('[data-testid="new-bot-takeover-cancel"]');

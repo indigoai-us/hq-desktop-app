@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Project Board (US-008 — faithful port of desktop-alt BoardTab, US-006).
    *
@@ -233,7 +234,7 @@
               class="panel-btn"
               data-testid="board-open-in-channel"
               onclick={() => onOpenInChannel?.()}
-            >
+            ><RailIcon name="external" />
               Open in channel
             </button>
             <button
@@ -242,7 +243,7 @@
               data-testid="board-view-changes"
               onclick={() =>
                 selectedStoryId && onViewChanges?.(selectedStoryId)}
-            >
+            ><RailIcon name="eye" />
               View changes
             </button>
           </footer>

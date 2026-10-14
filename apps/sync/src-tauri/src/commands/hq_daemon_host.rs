@@ -8,7 +8,7 @@
 //! it exits; the daemon runs sync, mesh, bots, search indexing and updates.
 //! Until the choice is made neither side starts, so the two never overlap.
 //!
-//! The app's per-pass work (journal, conflict and plan-limit notices, client
+//! The app's per-pass work (journal, plan-limit notices, client
 //! health, git mirror, Recent Changes) is driven from hq-cloud's
 //! `sync-last-pass.json` through the same handler the watch runner's stdout
 //! feeds (see `sync_progress_watch`).
@@ -33,7 +33,7 @@ use hq_desktop_core::hq_daemon::{
     SyncHostMode, HQ_DAEMON_FLAG, HQ_DAEMON_HOST_MIN_CLI,
 };
 use hq_desktop_core::hq_resolver::{resolve_hq, HqInvocation};
-use tauri::{AppHandle, Listener, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Listener, Manager, Runtime};
 
 use crate::commands::daemon::{handle_watch_stdout_line, WatcherPhaseContext};
 use crate::commands::process::{
@@ -372,8 +372,13 @@ pub fn daemon_mode_active() -> bool {
     current_phase() == HostPhase::Daemon
 }
 
-pub fn daemon_sync_now_args() -> Vec<&'static str> {
-    vec!["daemon", "sync", "now", "--json"]
+pub fn daemon_sync_now_args(company_slug: Option<&str>) -> Vec<&str> {
+    let mut args = vec!["daemon", "sync", "now"];
+    if let Some(company_slug) = company_slug {
+        args.extend(["--company", company_slug]);
+    }
+    args.push("--json");
+    args
 }
 
 pub(crate) fn daemon_sync_now_for_phase<F>(
@@ -382,17 +387,12 @@ pub(crate) fn daemon_sync_now_for_phase<F>(
     request: F,
 ) -> Option<Result<String, String>>
 where
-    F: FnOnce() -> Result<(), String>,
+    F: FnOnce(Option<&str>) -> Result<(), String>,
 {
     if phase != HostPhase::Daemon {
         return None;
     }
-    if company_slug.is_some() {
-        return Some(Err(
-            "Company-specific Sync Now is unavailable while HQ daemon owns sync.".to_string(),
-        ));
-    }
-    Some(request().map(|_| "hq-daemon-sync".to_string()))
+    Some(request(company_slug).map(|_| "hq-daemon-sync".to_string()))
 }
 
 pub fn daemon_sync_pause_args(pause: bool) -> Vec<&'static str> {
@@ -514,6 +514,13 @@ pub(crate) fn request_daemon_instant_sync_enabled(enabled: bool) -> Result<(), S
 
 /// Run one daemon control and keep transport details in the local log.
 pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
+    run_daemon_sync_command_with_pass_request_source(args, None)
+}
+
+fn run_daemon_sync_command_with_pass_request_source(
+    args: &[&str],
+    pass_request_source: Option<&str>,
+) -> Result<String, String> {
     #[cfg(test)]
     if TEST_DAEMON_COMMANDS_ENABLED.load(Ordering::Acquire) {
         TEST_DAEMON_COMMANDS
@@ -550,10 +557,15 @@ pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
         return Ok("Services enabled".to_string());
     }
     let hq = local_hq().ok_or_else(|| HQ_CLI_MISSING_MESSAGE.to_string())?;
-    let output = hq_desktop_core::paths::spawn_command(&hq, args)
+    let mut command = hq_desktop_core::paths::spawn_command(&hq, args);
+    command
         .env("PATH", hq_desktop_core::paths::child_path())
         .env("HQ_NO_UPDATE_CHECK", "1")
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    if let Some(pass_request_source) = pass_request_source {
+        command.env("HQ_SYNC_PASS_REQUEST_SOURCE", pass_request_source);
+    }
+    let output = command
         .output()
         .map_err(|error| {
             log(
@@ -575,6 +587,12 @@ pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
     }
     let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
     log(LOG_TAG, &format!("daemon sync control failed: {detail}"));
+    // The caller needs this specific CLI parse error to make one backwards-
+    // compatible unscoped retry. All other command errors remain normalized
+    // before they can reach the UI.
+    if is_unknown_company_option(&detail) {
+        return Err(detail);
+    }
     Err(daemon_sync_command_error(&detail).to_string())
 }
 
@@ -632,6 +650,12 @@ pub struct DaemonSyncStatusDetails {
     pub unit_status: String,
     pub reason: Option<String>,
     pub log_path: String,
+    pub hq_cloud_version: Option<String>,
+    pub runner_source: Option<String>,
+    pub hq_cloud_update_last_check_at: Option<String>,
+    pub hq_cloud_update_outcome: Option<String>,
+    pub hq_cloud_update_target: Option<String>,
+    pub hq_cloud_update_error_class: Option<String>,
 }
 
 pub fn parse_daemon_sync_status(output: &str) -> Result<DaemonSyncStatusDetails, String> {
@@ -692,6 +716,30 @@ pub fn parse_daemon_sync_status(output: &str) -> Result<DaemonSyncStatusDetails,
         unit_status: unit_status.to_string(),
         reason,
         log_path: log_path.to_string(),
+        hq_cloud_version: object
+            .get("hqCloudVersion")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        runner_source: object
+            .get("runnerSource")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_last_check_at: object
+            .get("hqCloudUpdateLastCheckAt")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_outcome: object
+            .get("hqCloudUpdateOutcome")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_target: object
+            .get("hqCloudUpdateTarget")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hq_cloud_update_error_class: object
+            .get("hqCloudUpdateErrorClass")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
     })
 }
 
@@ -702,6 +750,69 @@ pub fn hosted_daemon_sync_status() -> Result<DaemonSyncStatusDetails, String> {
         status.reason = Some(INSTANT_SYNC_UNSUPPORTED_MESSAGE.to_string());
     }
     Ok(status)
+}
+
+/// Client health is best-effort and must not wait on a stuck CLI. Keep this
+/// call below the heartbeat cadence so an old or unhealthy CLI falls back.
+pub fn hosted_daemon_sync_status_bounded() -> Result<DaemonSyncStatusDetails, String> {
+    const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+    let hq = local_hq().ok_or_else(|| HQ_CLI_MISSING_MESSAGE.to_string())?;
+    let mut child =
+        hq_desktop_core::paths::spawn_command(&hq, &["daemon", "sync", "status", "--json"])
+            .env("PATH", hq_desktop_core::paths::child_path())
+            .env("HQ_NO_UPDATE_CHECK", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                log(
+                    LOG_TAG,
+                    &format!("could not start bounded daemon status: {error}"),
+                );
+                "HQ daemon status is unavailable. Tap to retry.".to_string()
+            })?;
+    let deadline = Instant::now() + STATUS_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log(LOG_TAG, "bounded daemon status timed out after 5 seconds");
+                return Err("HQ daemon status timed out. Tap to retry.".to_string());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log(
+                    LOG_TAG,
+                    &format!("could not wait for bounded daemon status: {error}"),
+                );
+                return Err("HQ daemon status is unavailable. Tap to retry.".to_string());
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("could not read bounded daemon status: {error}"),
+        );
+        "HQ daemon status is unavailable. Tap to retry.".to_string()
+    })?;
+    if !output.status.success() {
+        log(LOG_TAG, "bounded daemon status exited unsuccessfully");
+        return Err("HQ daemon status is unavailable. Tap to retry.".to_string());
+    }
+    let output = String::from_utf8(output.stdout).map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("bounded daemon status returned invalid UTF-8: {error}"),
+        );
+        "HQ daemon returned an unreadable sync status. Tap to retry.".to_string()
+    })?;
+    parse_daemon_sync_status(&output)
 }
 
 /// `daemon_status` in daemon mode: the daemon's sync service.
@@ -744,6 +855,7 @@ pub fn replay_last_pass<R: Runtime>(app: &AppHandle<R>, hq_folder: &str, pass: &
 
 /// Decide who runs background services on this launch, then start them.
 pub fn setup_sync_host(app: &AppHandle) {
+    crate::commands::sync_progress_watch::setup_last_pass_watch(app);
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         // The previous app may have exited during an automatic update after
@@ -974,27 +1086,82 @@ async fn resolve_mode(cache_path: Option<&Path>) -> (Option<SyncHostMode>, HostF
 /// Today's launch behaviour: warm the npx cache and start the watch runner.
 fn start_legacy_services(handle: AppHandle, launch_reconcile_enabled: bool) {
     crate::commands::prewarm::spawn_prewarm();
+    start_legacy_sync(handle, launch_reconcile_enabled);
+}
+
+/// Start the watch runner (or the one-shot sync-on-launch pass) for the
+/// legacy host. Nothing starts while HQ is not installed yet: sync would
+/// write into the default HQ folder before the person has chosen where HQ
+/// lives. [`start_sync_services_after_setup`] runs this again once setup ends.
+fn start_legacy_sync(handle: AppHandle, launch_reconcile_enabled: bool) {
+    match current_legacy_sync_plan(launch_reconcile_enabled) {
+        LegacySyncPlan::HeldForSetup => log(
+            LOG_TAG,
+            "HQ is not installed yet; auto-sync starts after setup finishes",
+        ),
+        LegacySyncPlan::StartWatcher => {
+            #[cfg(test)]
+            crate::commands::process::record_sync_runner_spawn_attempt();
+            std::thread::spawn(move || {
+                // Small delay to let the app fully initialize
+                std::thread::sleep(Duration::from_secs(2));
+                let _ = crate::commands::daemon::start_daemon_for_app_launch(handle);
+            });
+        }
+        LegacySyncPlan::SyncOnLaunch => schedule_sync_on_launch(handle),
+        LegacySyncPlan::Nothing => {}
+    }
+}
+
+/// The plan for this process's current setup gate and sync settings.
+fn current_legacy_sync_plan(launch_reconcile_enabled: bool) -> LegacySyncPlan {
     let dev_disable_auto_sync = std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH")
         .ok()
         .as_deref()
         == Some("1");
-    if !dev_disable_auto_sync && (is_autostart_enabled() || is_realtime_sync_enabled()) {
-        #[cfg(test)]
-        crate::commands::process::record_sync_runner_spawn_attempt();
-        std::thread::spawn(move || {
-            // Small delay to let the app fully initialize
-            std::thread::sleep(Duration::from_secs(2));
-            let _ = crate::commands::daemon::start_daemon_for_app_launch(handle);
-        });
-    } else if !dev_disable_auto_sync
-        && hq_desktop_core::daemon::should_run_sync_on_launch(
-            launch_reconcile_enabled,
-            sync_on_launch_enabled(),
-            is_realtime_sync_enabled(),
-            is_autostart_enabled(),
-        )
-    {
-        schedule_sync_on_launch(handle);
+    legacy_sync_plan(
+        crate::commands::lifecycle::sync_held_for_setup(),
+        dev_disable_auto_sync,
+        is_autostart_enabled() || is_realtime_sync_enabled(),
+        || {
+            hq_desktop_core::daemon::should_run_sync_on_launch(
+                launch_reconcile_enabled,
+                sync_on_launch_enabled(),
+                is_realtime_sync_enabled(),
+                is_autostart_enabled(),
+            )
+        },
+    )
+}
+
+/// What the legacy host starts for sync on this launch (or after setup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacySyncPlan {
+    /// HQ is not installed yet: nothing starts and nothing touches the folder.
+    HeldForSetup,
+    /// Auto-sync is on: start the watch runner.
+    StartWatcher,
+    /// Auto-sync is off but a one-shot sync-on-launch pass is due.
+    SyncOnLaunch,
+    Nothing,
+}
+
+fn legacy_sync_plan(
+    held_for_setup: bool,
+    dev_disable_auto_sync: bool,
+    auto_sync_on: bool,
+    sync_on_launch_due: impl FnOnce() -> bool,
+) -> LegacySyncPlan {
+    if held_for_setup {
+        LegacySyncPlan::HeldForSetup
+    } else if dev_disable_auto_sync {
+        LegacySyncPlan::Nothing
+    } else if auto_sync_on {
+        LegacySyncPlan::StartWatcher
+    } else if sync_on_launch_due() {
+        LegacySyncPlan::SyncOnLaunch
+    } else {
+        LegacySyncPlan::Nothing
     }
 }
 
@@ -1018,6 +1185,35 @@ fn schedule_sync_on_launch(app: AppHandle) {
             }
         });
     });
+}
+
+/// The hq daemon's sync service runs only when Auto-sync wants it and setup
+/// is finished on this computer.
+fn daemon_sync_wanted(sync_wanted: bool, held_for_setup: bool) -> bool {
+    sync_wanted && !held_for_setup
+}
+
+/// Setup just finished in this process: start the sync services that the
+/// launch kept off while HQ was not installed. Auto-sync is the default, so a
+/// new user gets the watch runner now, rooted at the folder they chose,
+/// instead of on the supervisor's next tick.
+pub fn start_sync_services_after_setup(handle: AppHandle) {
+    match current_phase() {
+        HostPhase::Legacy => start_legacy_sync(handle, false),
+        HostPhase::Daemon => {
+            std::thread::spawn(|| {
+                if let Err(e) = set_daemon_sync(sync_wanted()) {
+                    log(
+                        LOG_TAG,
+                        &format!("could not apply the Auto-sync setting after setup: {e}"),
+                    );
+                }
+            });
+        }
+        // Host selection has not finished; it starts sync itself and the
+        // setup gate is already open by then.
+        HostPhase::Pending => {}
+    }
 }
 
 /// Sync should run: Auto-sync on, cloud not paused, and no dev kill switch.
@@ -1049,14 +1245,16 @@ fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
         );
     }
     std::thread::spawn(watch_env_changes);
-    crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
-    if let Err(e) = set_daemon_sync(sync_wanted()) {
+    // Before setup finishes the hq daemon's sync stays paused, so it does not
+    // fill the default HQ folder; setup completion applies the setting again.
+    let held_for_setup = crate::commands::lifecycle::sync_held_for_setup();
+    if let Err(e) = set_daemon_sync(daemon_sync_wanted(sync_wanted(), held_for_setup)) {
         log(
             LOG_TAG,
             &format!("could not apply the Auto-sync setting: {e}"),
         );
     }
-    if launch_sync {
+    if launch_sync && !held_for_setup {
         schedule_sync_on_launch(handle.clone());
     }
     host_loop();
@@ -1090,7 +1288,7 @@ fn daemon_env() -> HashMap<String, String> {
 fn local_hq() -> Option<String> {
     match resolve_hq() {
         HqInvocation::Local(path) => Some(path),
-        HqInvocation::Npx => None,
+        HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => None,
     }
 }
 
@@ -1114,12 +1312,33 @@ pub fn set_daemon_sync(enable: bool) -> Result<(), String> {
     Ok(())
 }
 
-pub fn request_daemon_sync_now() -> Result<(), String> {
-    let output = run_daemon_sync_command(&daemon_sync_now_args())?;
+fn is_unknown_company_option(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("unknown option") && error.contains("--company")
+}
+
+fn request_daemon_sync_now_with<F>(company_slug: Option<&str>, mut request: F) -> Result<(), String>
+where
+    F: FnMut(&[&str]) -> Result<String, String>,
+{
+    let args = daemon_sync_now_args(company_slug);
+    let output = match request(&args) {
+        Err(error) if company_slug.is_some() && is_unknown_company_option(&error) => {
+            let unscoped_args = daemon_sync_now_args(None);
+            request(&unscoped_args)?
+        }
+        result => result?,
+    };
     if let Some(message) = daemon_sync_action_error(&output) {
         return Err(message.to_string());
     }
     Ok(())
+}
+
+pub fn request_daemon_sync_now(company_slug: Option<&str>) -> Result<(), String> {
+    request_daemon_sync_now_with(company_slug, |args| {
+        run_daemon_sync_command_with_pass_request_source(args, Some("desktop"))
+    })
 }
 
 /// `start_daemon` / `stop_daemon` in daemon mode.
@@ -1318,11 +1537,12 @@ fn host_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::{Arc, Mutex};
     use tauri::Listener;
     use tempfile::TempDir;
 
-    use crate::events::{EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT};
+    use crate::events::EVENT_SYNC_ALL_COMPLETE;
     use hq_desktop_core::hq_daemon::{DaemonState, LastPass};
 
     // ── which services run ───────────────────────────────────────────────
@@ -1532,8 +1752,12 @@ mod tests {
     #[test]
     fn desktop_sync_controls_use_daemon_sync_commands() {
         assert_eq!(
-            daemon_sync_now_args(),
+            daemon_sync_now_args(None),
             vec!["daemon", "sync", "now", "--json"]
+        );
+        assert_eq!(
+            daemon_sync_now_args(Some("acme")),
+            vec!["daemon", "sync", "now", "--company", "acme", "--json"]
         );
         assert_eq!(
             daemon_sync_pause_args(true),
@@ -1638,6 +1862,26 @@ mod tests {
     }
 
     #[test]
+    fn daemon_sync_status_parser_retains_runner_and_updater_telemetry() {
+        let status = parse_daemon_sync_status(r#"{"running":true,"paused":false,"syncOwner":"daemon","owner":"hq-daemon","unitStatus":"running","reason":null,"logPath":"/tmp/hq-sync.log","hqCloudVersion":"6.18.54","runnerSource":"managed-full-package","hqCloudUpdateLastCheckAt":"2026-10-08T12:00:00.000Z","hqCloudUpdateOutcome":"failed","hqCloudUpdateTarget":"6.18.54","hqCloudUpdateErrorClass":"registry"}"#).unwrap();
+        assert_eq!(status.hq_cloud_version.as_deref(), Some("6.18.54"));
+        assert_eq!(
+            status.runner_source.as_deref(),
+            Some("managed-full-package")
+        );
+        assert_eq!(
+            status.hq_cloud_update_last_check_at.as_deref(),
+            Some("2026-10-08T12:00:00.000Z")
+        );
+        assert_eq!(status.hq_cloud_update_outcome.as_deref(), Some("failed"));
+        assert_eq!(status.hq_cloud_update_target.as_deref(), Some("6.18.54"));
+        assert_eq!(
+            status.hq_cloud_update_error_class.as_deref(),
+            Some("registry")
+        );
+    }
+
+    #[test]
     fn daemon_sync_status_parser_rejects_invalid_json() {
         assert!(parse_daemon_sync_status("not json").is_err());
     }
@@ -1716,20 +1960,46 @@ mod tests {
     }
 
     #[test]
-    fn daemon_sync_now_rejects_company_scope_instead_of_syncing_every_company() {
-        let mut request_called = false;
-        let result = daemon_sync_now_for_phase(HostPhase::Daemon, Some("acme"), || {
-            request_called = true;
-            request_daemon_sync_now()
+    fn daemon_sync_now_passes_company_scope_to_the_daemon_command() {
+        let mut requested_scope = None;
+        let result = daemon_sync_now_for_phase(HostPhase::Daemon, Some("acme"), |scope| {
+            requested_scope = scope.map(str::to_string);
+            Ok(())
         });
 
-        assert_eq!(
-            result,
-            Some(Err(
-                "Company-specific Sync Now is unavailable while HQ daemon owns sync.".to_string()
-            ))
-        );
-        assert!(!request_called);
+        assert_eq!(result, Some(Ok("hq-daemon-sync".to_string())));
+        assert_eq!(requested_scope.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn scoped_daemon_sync_retries_once_without_company_for_an_older_cli() {
+        let mut calls = Vec::new();
+        let result = request_daemon_sync_now_with(Some("acme"), |args| {
+            calls.push(args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>());
+            if calls.len() == 1 {
+                Err("error: unknown option '--company'".to_string())
+            } else {
+                Ok(r#"{"accepted":true,"action":"restart-sync-runner","daemonRunning":true}"#.to_string())
+            }
+        });
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, vec![
+            vec!["daemon", "sync", "now", "--company", "acme", "--json"],
+            vec!["daemon", "sync", "now", "--json"],
+        ]);
+    }
+
+    #[test]
+    fn unscoped_daemon_sync_uses_one_unchanged_command() {
+        let mut calls = Vec::new();
+        let result = request_daemon_sync_now_with(None, |args| {
+            calls.push(args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>());
+            Ok(r#"{"accepted":true,"action":"restart-sync-runner","daemonRunning":true}"#.to_string())
+        });
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, vec![vec!["daemon", "sync", "now", "--json"]]);
     }
 
     #[test]
@@ -1794,6 +2064,75 @@ mod tests {
         set_phase(HostPhase::Legacy);
     }
 
+    /// Before setup finishes, launch starts neither the watch runner nor a
+    /// sync-on-launch pass, whatever the Auto-sync setting says. Once setup
+    /// finishes, the default Auto-sync starts the watch runner.
+    #[test]
+    fn legacy_sync_plan_waits_for_setup_then_starts_the_watcher() {
+        let never_due = || -> bool { panic!("sync-on-launch must not be consulted") };
+        assert_eq!(
+            legacy_sync_plan(true, false, true, never_due),
+            LegacySyncPlan::HeldForSetup
+        );
+        assert_eq!(
+            legacy_sync_plan(true, false, false, never_due),
+            LegacySyncPlan::HeldForSetup
+        );
+        assert_eq!(
+            legacy_sync_plan(false, false, true, never_due),
+            LegacySyncPlan::StartWatcher
+        );
+        assert_eq!(
+            legacy_sync_plan(false, false, false, || true),
+            LegacySyncPlan::SyncOnLaunch
+        );
+        assert_eq!(
+            legacy_sync_plan(false, false, false, || false),
+            LegacySyncPlan::Nothing
+        );
+        assert_eq!(
+            legacy_sync_plan(false, true, true, never_due),
+            LegacySyncPlan::Nothing
+        );
+    }
+
+    /// The legacy launch path itself: with setup unfinished and Auto-sync on
+    /// (the default for a new user), launch plans no watch runner and no
+    /// sync pass and does not create the default HQ folder. After setup the
+    /// same settings start the watch runner.
+    #[test]
+    fn legacy_launch_holds_sync_until_setup_then_starts_the_watcher() {
+        let _phase_guard = TEST_PHASE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let home = TempDir::new().unwrap();
+        let _home = crate::util::test_support::scoped_home(home.path());
+        assert!(is_autostart_enabled() || is_realtime_sync_enabled());
+        crate::commands::lifecycle::publish_sync_setup_gate(
+            hq_desktop_core::lifecycle::LifecycleState::NeedsInstall,
+        );
+
+        assert_eq!(current_legacy_sync_plan(true), LegacySyncPlan::HeldForSetup);
+        assert!(!home.path().join("hq").exists());
+
+        assert!(crate::commands::lifecycle::publish_sync_setup_gate(
+            hq_desktop_core::lifecycle::LifecycleState::SteadyState,
+        ));
+        assert_eq!(current_legacy_sync_plan(true), LegacySyncPlan::StartWatcher);
+        assert!(!home.path().join("hq").exists());
+    }
+
+    #[test]
+    fn hq_daemon_sync_stays_paused_until_setup_finishes() {
+        assert!(!daemon_sync_wanted(true, true));
+        assert!(!daemon_sync_wanted(false, true));
+        assert!(daemon_sync_wanted(true, false));
+        assert!(!daemon_sync_wanted(false, false));
+    }
+
     #[test]
     fn daemon_mode_controls_and_lifecycle_do_not_spawn_a_sync_runner() {
         let _phase_guard = TEST_PHASE_LOCK
@@ -1811,9 +2150,9 @@ mod tests {
         let handle = app.handle().clone();
         let mut sync_now_called = false;
         assert_eq!(
-            daemon_sync_now_for_phase(HostPhase::Daemon, None, || {
+            daemon_sync_now_for_phase(HostPhase::Daemon, None, |_| {
                 sync_now_called = true;
-                request_daemon_sync_now()
+                request_daemon_sync_now(None)
             }),
             Some(Ok("hq-daemon-sync".to_string()))
         );
@@ -1921,19 +2260,18 @@ mod tests {
 
     #[test]
     fn a_finished_pass_emits_the_same_events_the_watch_runner_output_did() {
+        // Owner decision 2026-10-13: a conflict line in the pass is read but
+        // never forwarded to a window; the rest of the pass still is.
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         let hq_folder = TempDir::new().unwrap();
 
-        let conflicts = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let conflicts = Arc::new(Mutex::new(0usize));
         let completes = Arc::new(Mutex::new(0usize));
         {
             let conflicts = conflicts.clone();
-            handle.listen(EVENT_SYNC_CONFLICT, move |event| {
-                conflicts
-                    .lock()
-                    .unwrap()
-                    .push(serde_json::from_str(event.payload()).unwrap());
+            handle.listen("sync:conflict", move |_| {
+                *conflicts.lock().unwrap() += 1;
             });
             let completes = completes.clone();
             handle.listen(EVENT_SYNC_ALL_COMPLETE, move |_| {
@@ -1951,9 +2289,7 @@ mod tests {
         replay_last_pass(&handle, hq_folder.path().to_str().unwrap(), &pass);
         std::thread::sleep(std::time::Duration::from_millis(30));
 
-        let conflicts = conflicts.lock().unwrap();
-        assert_eq!(conflicts.len(), 1);
-        assert_eq!(conflicts[0]["path"], "knowledge/readme.md");
+        assert_eq!(*conflicts.lock().unwrap(), 0);
         assert_eq!(*completes.lock().unwrap(), 1);
     }
 }

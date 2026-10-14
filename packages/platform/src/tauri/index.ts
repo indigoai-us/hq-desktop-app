@@ -24,6 +24,7 @@ import {
   validateSendReply,
   withHttpStatus,
   withoutSecret,
+  localIanaZone,
   type AdapterPromise,
   type AdapterResult,
   type AgentProvisionOptionsView,
@@ -33,9 +34,12 @@ import {
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
+import { claudeLaunchArgs } from "./claude-launch.js";
+import { parseBadgesPayload } from "../badges.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { withCreateAgentsAdmins } from "./provision-refusal.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
+import { scrubTransportFailure } from "../api-error.js";
 import { createCallsApi } from "../calls/api.js";
 import {
   isLambdaInvokeServiceErrorBody,
@@ -44,11 +48,14 @@ import {
 } from "../request-policy.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_AGENT_CREATION_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   PERSONAL_TRANSCRIPTS_FLAG,
-  createFeatureFlagGate,
   createHqProFlagFetch,
+  createHqProRestFetch,
+  createScopedFeatureFlagGates,
+  type ScopedFeatureFlagGates,
   resolveCompanyFeature,
   type FeatureFlagGate,
 } from "../flags.js";
@@ -108,11 +115,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   private readonly invokeFn: InvokeFn;
   /** Serializes get-settings → merge → save across generic desktop callers. */
   private settingsMutationTail: Promise<void> = Promise.resolve();
-  private readonly flags: FeatureFlagGate;
+  private readonly flagsFor: ScopedFeatureFlagGates;
 
   constructor(config: TauriPlatformAdapterConfig) {
     this.invokeFn = config.invoke;
-    this.flags = createFeatureFlagGate({
+    this.flagsFor = createScopedFeatureFlagGates({
       // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
       endpoint: "",
       getToken: () => "",
@@ -203,7 +210,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         body: body === undefined ? null : JSON.stringify(body),
       });
     }
-    if (!raw.ok) return { result: raw, status: null };
+    if (!raw.ok) return { result: scrubTransportFailure(raw), status: null };
     const rec =
       raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)
         ? (raw.value as Record<string, unknown>)
@@ -212,8 +219,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       const text = typeof rec.body === "string" ? rec.body : "";
       if (rec.status < 200 || rec.status >= 300) {
         return {
-          result: hqProFailure(
-            parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+          result: scrubTransportFailure(
+            hqProFailure(
+              parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+            ),
           ),
           status: rec.status,
           body: text,
@@ -271,12 +280,14 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
-    hasFeature: (flag) =>
+    hasFeature: (flag, scope) =>
       flag === HUMAN_ONLY_CONVERSATIONS_FLAG
         ? // Pinned per release; the registry cannot turn it off.
           Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
-        : this.flags.resolve(flag, () =>
-            flag === CLAUDE_PROVIDER_FLAG || flag === PERSONAL_TRANSCRIPTS_FLAG
+        : this.flagsFor(scope?.companyUid).resolve(flag, () =>
+            flag === CLAUDE_PROVIDER_FLAG ||
+            flag === DESKTOP_AGENT_CREATION_FLAG ||
+            flag === PERSONAL_TRANSCRIPTS_FLAG
               ? Promise.resolve(ok(false))
               : this.call("has_feature", { flag }),
           ),
@@ -289,10 +300,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     subscribeFeature: (flag, onChange) =>
       flag === HUMAN_ONLY_CONVERSATIONS_FLAG
         ? () => {}
-        : this.flags.subscribe(
+        : this.flagsFor(null).subscribe(
             flag,
             () =>
-              flag === CLAUDE_PROVIDER_FLAG || flag === PERSONAL_TRANSCRIPTS_FLAG
+              flag === CLAUDE_PROVIDER_FLAG ||
+              flag === DESKTOP_AGENT_CREATION_FLAG ||
+              flag === PERSONAL_TRANSCRIPTS_FLAG
                 ? Promise.resolve(ok(false))
                 : this.call("has_feature", { flag }),
             onChange,
@@ -322,6 +335,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         `/v1/agents/${encodeURIComponent(agentUid)}/avatar`,
         input,
       ),
+    getBadges: async (uid) => {
+      const result = await this.hqProJson<unknown>("GET", WEB_PATHS.badges(uid));
+      return result.ok ? ok(parseBadgesPayload(result.value)) : result;
+    },
   };
 
   readonly messaging: PlatformAdapter["messaging"] = {
@@ -536,6 +553,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     listMemberships: async () => MEETINGS_USE_CLOUD,
     listUpcoming: async () => MEETINGS_USE_CLOUD,
     listScheduledBots: async () => MEETINGS_USE_CLOUD,
+    listRecorded: async () => MEETINGS_USE_CLOUD,
+    getRecorded: async () => MEETINGS_USE_CLOUD,
+    readRecordedBody: async () => MEETINGS_USE_CLOUD,
     inviteBot: async () => MEETINGS_USE_CLOUD,
     cancelBot: async () => MEETINGS_USE_CLOUD,
     joinBotNow: async () => MEETINGS_USE_CLOUD,
@@ -579,6 +599,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
+    fetch: createHqProRestFetch((cmd, args) => this.invokeFn(cmd, args)),
     // A refusal keeps its HTTP status and the people the server says to ask
     // (`admins`), so the New Bot screen can say why Create is off.
     getProvisionOptions: async (companyUid) => {
@@ -627,8 +648,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       ),
     listOwners: (companyUid, agentUid) =>
       this.hqProJson("GET", AGENT_PATHS.owners(companyUid, agentUid)),
-    getCompanyTelemetry: (companyUid, from, to) =>
-      this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+    getCompanyTelemetry: (companyUid, from, to, tz) =>
+      this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to, tz ?? localIanaZone())),
+    getMyTelemetry: (from, to, tz) =>
+      this.hqProJson("GET", AGENT_PATHS.myTelemetry(from, to, tz)),
   };
 
   readonly integrations: PlatformAdapter["integrations"] = {
@@ -636,6 +659,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("GET", INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.hqProJson("POST", INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    getConnectionAccess: ({ companyUid, connectionId }) =>
+      this.hqProJson("GET", INTEGRATION_PATHS.readAccess(companyUid, connectionId)),
+    revokeConnectionAccess: (input) =>
+      this.hqProJson("POST", INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.hqProRequestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
     // No redirectUri: the server's default lands on the console's callback.
@@ -646,6 +673,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       withoutSecret(await this.hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
     blueprint: (input) =>
       this.hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
+    catalogLookup: (companyUid, domains) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.catalogLookup, { companyUid, domains: [...domains] }),
+    discoverDocs: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.discoverDocs, { companyUid: input.companyUid, docsUrl: input.docsUrl }),
+    uninstall: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.uninstall, { companyUid: input.companyUid, installationId: input.installationId }),
   };
 
   readonly company: PlatformAdapter["company"] = {
@@ -660,6 +693,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.call("get_activity", { slug }),
     ensureHomeChannel: (companyUid) =>
       this.hqProJson("POST", `/v1/companies/${companyUid}/home-channel`),
+    createBillingPortalSession: (companyUid) =>
+      this.hqProJson("POST", WEB_PATHS.companyBillingPortal(), { companyUid }),
     getFirstWeekReturnNudge: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
@@ -751,12 +786,14 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     openClaudeCodeLink: (url) => this.call("open_claude_code_link", { url }),
     openCodexDeepLink: (url) => this.call("open_codex_deep_link", { url }),
     openFileInClaude: (path) => this.call("open_file_in_claude", { path }),
-    launchClaudeCode: (path) => this.call("launch_claude_code", { path }),
+    launchClaudeCode: (path, opts) =>
+      this.call("launch_claude_code", claudeLaunchArgs(path, opts)),
     launchCodexWorkspace: (path, prompt) =>
       this.call("launch_codex_workspace", { path, prompt: prompt ?? null }),
     launchCliInTerminal: (args) =>
       this.call("launch_cli_in_terminal", { args }),
     detectAiTools: () => this.call("detect_ai_tools"),
+    detectWorkApps: () => this.call("detect_work_apps"),
     pickFolder: () => this.call("pick_folder"),
     pickFile: (kind) => this.call("pick_file", { kind }),
   };
@@ -864,6 +901,18 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
   };
 
+  readonly storage: NonNullable<PlatformAdapter["storage"]> = {
+    status: () => this.call("get_storage_status"),
+    cachedStatus: () => this.call("get_cached_storage_status"),
+    bigFiles: () => this.call("get_storage_big_files"),
+    previewPrune: (request) => this.call("preview_storage_prune", { request }),
+    prune: (request) => this.call("run_storage_prune", { request }),
+    previewOffload: () => this.call("preview_storage_offload"),
+    offload: () => this.call("run_storage_offload"),
+    openCloudFile: (path) => this.call("open_cloud_file", { path }),
+    cloudFileUiReady: () => this.call("cloud_file_ui_ready"),
+  };
+
   readonly bots: NonNullable<PlatformAdapter["bots"]> = {
     list: () => this.call("local_bots_list"),
     create: (input) =>
@@ -885,6 +934,14 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     stop: (name) => this.call("local_bots_stop", { name }),
     remove: (name) => this.call("local_bots_remove", { name }),
     configure: (name, settings) => this.call("local_bots_configure", localBotSettingsArgs(name, settings)),
+    setModel: (name, model) => this.call("local_bots_set_model", { name, model }),
+    probe: (runtime, model, options) =>
+      this.call("local_bots_probe", {
+        runtime,
+        model: model ?? null,
+        effort: options?.effort ?? null,
+        timeoutSecs: options?.timeoutSecs ?? null,
+      }),
     promote: (name, companyUid) => this.call("local_bots_promote", { name, companyUid }),
   };
 
@@ -892,6 +949,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getConfig: () => this.call("get_config"),
     getSettings: () => this.call("get_settings"),
     updateSettings: (patch) => this.queueSettingsPatch(patch),
+    getHqAnywherePersonSetting: () => this.call("get_hq_anywhere_person_setting"),
+    putHqAnywherePersonSetting: (value) =>
+      this.call("put_hq_anywhere_person_setting", { value }),
+    syncHqAnywhereGlobal: (enabled) =>
+      this.call("set_hq_anywhere_global_install", { enabled }),
     getSetupStatus: () => this.call("get_setup_status"),
     markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
     markWelcomeTourShown: () => this.call("mark_welcome_tour_shown"),

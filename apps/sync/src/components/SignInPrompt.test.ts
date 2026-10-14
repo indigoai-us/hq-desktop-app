@@ -131,6 +131,62 @@ describe('SignInPrompt browser continuation', () => {
   });
 });
 
+describe('SignInPrompt session retry (OWNER-015)', () => {
+  beforeEach(() => {
+    tauri.invoke.mockImplementation((command: string) =>
+      command === 'desktop_continuation_context' ? Promise.resolve(null) : Promise.resolve(undefined),
+    );
+  });
+
+  it('renders Retry inside the card, after the providers, and makes no data call to show it', async () => {
+    const onretry = vi.fn();
+    component = mount(SignInPrompt, { target: host, props: { onretry } });
+    await flush();
+
+    const card = host.querySelector('.sign-in-card');
+    const retry = host.querySelector<HTMLButtonElement>('[data-testid="sign-in-session-retry"]');
+    expect(retry).not.toBeNull();
+    expect(card?.contains(retry)).toBe(true);
+    expect(retry!.querySelector('svg')).not.toBeNull();
+    const actions = host.querySelector('.sign-in-actions')!;
+    expect(actions.compareDocumentPosition(retry!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // main #1287 added a native get_auth_state recheck on mount; that is a
+    // local session probe, not a data call. Retry itself must add no call.
+    const callsBeforeRetry = tauri.invoke.mock.calls.length;
+    retry!.click();
+    expect(onretry).toHaveBeenCalledTimes(1);
+    expect(tauri.invoke.mock.calls.length).toBe(callsBeforeRetry);
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(
+      commands.every((command) => command === 'desktop_continuation_context' || command === 'get_auth_state'),
+    ).toBe(true);
+  });
+
+  it('omits Retry when no handler is passed and never renders a password control', async () => {
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    expect(host.querySelector('[data-testid="sign-in-session-retry"]')).toBeNull();
+    expect(host.querySelector('input[type="password"]')).toBeNull();
+  });
+
+  it('keeps "Sign in to HQ" as the one heading on the signed-out page, with the reason under it (OWNER-D 5)', async () => {
+    component = mount(SignInPrompt, {
+      target: host,
+      props: { layout: 'column', reauth: true, note: 'Your session expired.' },
+    });
+    await flush();
+
+    const headings = host.querySelectorAll('h1, h2');
+    expect(headings).toHaveLength(1);
+    expect(headings[0]!.textContent).toBe('Sign in to HQ');
+    expect(host.querySelector('[data-testid="sign-in-description"]')?.textContent?.trim()).toBe(
+      'Your session expired.',
+    );
+  });
+});
+
 describe('SignInPrompt welcome handoff', () => {
   it('advances when a valid native session appears while the welcome view is open', async () => {
     const onsuccess = vi.fn();

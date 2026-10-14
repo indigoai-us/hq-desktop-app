@@ -1,7 +1,10 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import type { PlatformAdapter, SessionProviderId } from "@hq/platform";
   import { hostComputerNoun } from "@hq/platform";
   import "./settings-chrome.css";
+  import { announceRuntimeSignedIn } from "../chat/messaging/runtime-repair.svelte.js";
+  import { CONNECTOR_APPS, INDIGO_MCP_URL } from "./hq-connector-setup.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -79,7 +82,8 @@
     error = "";
     const result = await sessions.preflight();
     if (!result.ok) {
-      error = result.message || "Could not read AI tool status.";
+      console.warn("[agents-settings] preflight failed", result.message);
+      error = "Couldn't read AI tool status. Try again.";
       loading = false;
       return;
     }
@@ -117,6 +121,7 @@
     const state = result.ok ? String((result.value as { state?: string }).state ?? "") : "error";
     if (state === "connected") {
       stopPolling();
+      announceRuntimeSignedIn(id);
       busy = null;
       action = null;
       line = "";
@@ -128,9 +133,13 @@
       return;
     }
     busy = null;
+    console.warn(
+      "[agents-settings] sign-in status failed",
+      result.ok ? (result.value as { message?: string }).message : result.message,
+    );
     line = result.ok
-      ? String((result.value as { message?: string }).message ?? "Sign-in did not complete.")
-      : result.message || "Could not check sign-in.";
+      ? "Sign-in did not complete. Try again."
+      : "Couldn't check sign-in. Try again.";
   }
 
   async function connect(id: SessionProviderId) {
@@ -144,11 +153,13 @@
     if (token !== generation) return;
     if (!result.ok) {
       busy = null;
-      line = result.message || `Could not open sign-in. If the browser did not open, run \`${id === "claude" ? "claude" : id} login\` in a terminal.`;
+      console.warn("[agents-settings] sign-in start failed", result.message);
+      line = `Couldn't open sign-in. Try again, or run \`${id === "claude" ? "claude" : id} login\` in a terminal.`;
       return;
     }
     const state = String((result.value as { state?: string }).state ?? "");
     if (state === "connected") {
+      announceRuntimeSignedIn(id);
       busy = null;
       action = null;
       line = "";
@@ -161,7 +172,8 @@
       return;
     }
     busy = null;
-    line = String((result.value as { message?: string }).message ?? "Sign-in did not complete.");
+    console.warn("[agents-settings] sign-in did not complete", (result.value as { message?: string }).message);
+    line = "Sign-in did not complete. Try again.";
   }
 
   async function install(id: SessionProviderId) {
@@ -172,7 +184,8 @@
     line = `Installing ${PROVIDERS.find((provider) => provider.id === id)?.name ?? id}…`;
     const result = await adapter.sessions.installProvider(id);
     if (!result.ok) {
-      line = result.message || "Install failed. Check your network and try again.";
+      console.warn("[agents-settings] install failed", result.message);
+      line = "Install failed. Check your network and try again.";
       busy = null;
       action = null;
       return;
@@ -181,6 +194,28 @@
     busy = null;
     action = null;
     await load();
+  }
+
+  // Connect-AI-apps copy buttons. On a denied clipboard the setup text is
+  // revealed inline so the person can select it by hand, and the button stays
+  // live to retry.
+  let copiedId = $state<string | null>(null);
+  let copyFailedId = $state<string | null>(null);
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function copySetup(app: { id: string; copyText: string }) {
+    clearTimeout(copyTimer);
+    copiedId = null;
+    copyFailedId = null;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API is unavailable");
+      await navigator.clipboard.writeText(app.copyText);
+      copiedId = app.id;
+      copyTimer = setTimeout(() => (copiedId = null), 1500);
+    } catch (err) {
+      console.warn("[agents-settings] copy connector setup failed", err);
+      copyFailedId = app.id;
+    }
   }
 
   $effect(() => {
@@ -222,7 +257,7 @@
               class="ss-btn"
               disabled={Boolean(busy) || loading}
               onclick={() => void connect(provider.id)}
-            >
+            ><RailIcon name="plug" />
               {busy === provider.id && action === "connect" ? "Connecting…" : `Connect ${provider.short}`}
             </button>
           {:else}
@@ -231,7 +266,7 @@
               class="ss-btn"
               disabled={Boolean(busy) || loading || !adapter?.sessions.installProvider}
               onclick={() => void install(provider.id)}
-            >
+            ><RailIcon name="download" />
               {busy === provider.id && action === "install" ? "Installing…" : `Install ${provider.short}`}
             </button>
           {/if}
@@ -242,4 +277,50 @@
       <p class="ss-lede" aria-live="polite">{line}</p>
     {/if}
   </div>
+
+  <div class="ss-section" data-testid="settings-hq-connector">
+    <p class="ss-section-label">Connect AI apps to HQ</p>
+    <p class="ss-lede">
+      Let Grok Bot, Claude, ChatGPT, Codex, or the Grok CLI read and write your HQ files and use your secrets and connected apps. Copy the setup for your app, paste it there, and sign in to HQ when the browser opens. One sign-in covers every company you belong to.
+    </p>
+    {#each [{ id: "url", name: "Connector URL", help: INDIGO_MCP_URL, copyText: INDIGO_MCP_URL }, ...CONNECTOR_APPS] as app (app.id)}
+      <div class="ss-field" data-testid={`settings-hq-connector-${app.id}`}>
+        <div class="ss-field-text">
+          <div class="ss-field-label">{app.name}</div>
+          <div class="ss-field-help">{app.help}</div>
+          {#if "steps" in app && app.steps}
+            <ol class="ss-field-help hq-connector-steps" data-testid={`settings-hq-connector-${app.id}-steps`}>
+              {#each app.steps as step}<li>{step}</li>{/each}
+            </ol>
+          {/if}
+          {#if copyFailedId === app.id}
+            <pre class="ss-field-help hq-connector-manual" data-testid={`settings-hq-connector-${app.id}-manual`}>{app.copyText}</pre>
+            <div class="ss-field-help" role="status">Copy didn't work. Select the text above, or tap the button to try again.</div>
+          {/if}
+        </div>
+        <button
+          type="button"
+          class="ss-btn"
+          data-testid={`settings-hq-connector-${app.id}-copy`}
+          onclick={() => void copySetup(app)}
+        >{copiedId === app.id ? "Copied" : ("copyLabel" in app && app.copyLabel) || "Copy"}</button>
+      </div>
+    {/each}
+  </div>
 </div>
+
+<style>
+  .hq-connector-steps {
+    margin: 6px 0 0;
+    padding-left: 18px;
+  }
+  .hq-connector-steps li + li {
+    margin-top: 2px;
+  }
+  .hq-connector-manual {
+    margin: 6px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+  }
+</style>

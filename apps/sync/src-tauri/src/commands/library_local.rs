@@ -182,6 +182,7 @@ mod tests {
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         }
     }
 

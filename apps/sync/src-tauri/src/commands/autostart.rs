@@ -20,6 +20,10 @@ pub async fn get_autostart_enabled() -> Result<bool, String> {
 /// Enable or disable autostart.
 #[tauri::command]
 pub async fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
+    if crate::scratch_build::active() {
+        crate::scratch_build::skip("set_autostart_enabled");
+        return Err("Start at login is turned off for this test build".to_string());
+    }
     hq_platform::autostart::set_enabled(enabled)
 }
 
@@ -117,6 +121,9 @@ fn apply_reconcile_notice(report: &hq_platform::launchagent::ReconcileReport) {
 /// non-macOS and when this process is not the shipped `/Applications` app
 /// (so `cargo tauri dev` cannot rewrite the user's login agent).
 pub fn reconcile_launch_agent_on_launch() {
+    if !crate::scratch_build::launch_side_effect_allowed("LaunchAgent reconcile") {
+        return;
+    }
     #[cfg(target_os = "macos")]
     {
         let report = hq_platform::launchagent::reconcile_installed(true);
@@ -167,7 +174,7 @@ fn restart_preferring_launch_agent_with_update_version(
         );
     }
     #[cfg(target_os = "macos")]
-    {
+    if crate::scratch_build::production_bundle() {
         if hq_platform::launchagent::schedule_handoff_after_exit() {
             log(
                 "updater",
@@ -225,7 +232,44 @@ pub fn take_launch_agent_repoint_notice() -> Option<String> {
 pub fn ensure_autostart_on_launch() {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        use hq_platform::autostart::ReconcileAction;
+        use hq_platform::autostart::{LaunchEnsureGate, ReconcileAction};
+
+        // Only the installed production bundle may write the login item at
+        // launch. A scratch build shares ~/Library/LaunchAgents and would
+        // otherwise repoint the owner's login item at itself. The bundle
+        // identifier comes from the same source as every other launch-time
+        // gate (scratch_build::LaunchIdentity); Windows has none to read and
+        // counts as production, so only the env switch applies there.
+        let bundle_identifier = crate::scratch_build::running_bundle_identifier();
+        // A scratch build counts as HQ_UPDATER_DISABLED=1 (scratch_build.rs).
+        let updater_disabled = if crate::scratch_build::active() {
+            Some("1".to_string())
+        } else {
+            std::env::var(hq_platform::autostart::UPDATER_DISABLED_ENV).ok()
+        };
+        match hq_platform::autostart::launch_ensure_gate(
+            bundle_identifier,
+            updater_disabled.as_deref(),
+        ) {
+            LaunchEnsureGate::Proceed => {}
+            LaunchEnsureGate::SkipUpdaterDisabled => {
+                log(
+                    "autostart",
+                    "autostart: ensure skipped, HQ_UPDATER_DISABLED is set",
+                );
+                return;
+            }
+            LaunchEnsureGate::SkipNonProductionBundle(id) => {
+                log(
+                    "autostart",
+                    &format!(
+                        "autostart: ensure skipped, non-production bundle {}",
+                        id.as_deref().unwrap_or("<unknown>")
+                    ),
+                );
+                return;
+            }
+        }
 
         let want_enabled = start_at_login_pref();
 

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import SettingsTab from "./SettingsTab.svelte";
 import CompanyHero from "../CompanyHero.svelte";
@@ -125,14 +125,16 @@ function memberSettings() {
 }
 
 describe("SettingsTab", () => {
-  it("shows general and danger zone for an owner", () => {
+  it("shows general and danger zone for an owner", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(SettingsTab, { target: host, props: { data: ownerSettings() } });
     expect(host.querySelector('[data-testid="company-tab-settings"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="team-section-general"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="team-section-danger"]')).not.toBeNull();
-    expect(host.querySelector("select")).not.toBeNull();
+    await vi.waitFor(() =>
+      expect(host.querySelector('button[aria-haspopup="listbox"]')).not.toBeNull(),
+    );
   });
 
   it("hides danger zone and edits from a member", () => {
@@ -140,7 +142,8 @@ describe("SettingsTab", () => {
     document.body.appendChild(host);
     component = mount(SettingsTab, { target: host, props: { data: memberSettings() } });
     expect(host.querySelector('[data-testid="team-section-danger"]')).toBeNull();
-    expect(host.querySelector("select")).toBeNull();
+    expect(host.querySelector('button[aria-haspopup="listbox"]')).toBeNull();
+    expect(host.querySelector(".dd-wait")).toBeNull();
     expect(host.querySelector("input")).toBeNull();
   });
 

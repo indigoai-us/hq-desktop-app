@@ -85,7 +85,7 @@ describe('RecipientPicker discovery recovery', () => {
     });
     flushSync();
 
-    const input = host.querySelector<HTMLInputElement>('.recipient-input')!;
+    const input = host.querySelector<HTMLInputElement>('[data-testid="recipient-query"]')!;
     typeInto(input, 'maya');
 
     await vi.waitFor(() => {
@@ -96,7 +96,7 @@ describe('RecipientPicker discovery recovery', () => {
     });
     expect(host.querySelector('.recipient-picker')?.getAttribute('aria-busy')).toBe('false');
 
-    host.querySelector<HTMLButtonElement>('.discovery-retry')!.click();
+    host.querySelector<HTMLButtonElement>('[role="alert"] button')!.click();
     flushSync();
 
     expect(host.querySelector('.recipient-picker')?.getAttribute('aria-busy')).toBe('true');
@@ -115,12 +115,12 @@ describe('RecipientPicker discovery recovery', () => {
 
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('.suggestion-primary')?.textContent).toBe('Maya');
+      expect(host.querySelector('[data-testid="recipient-row"] .rp-option-name')?.textContent).toBe('Maya');
     });
 
     const activeId = input.getAttribute('aria-activedescendant');
     expect(activeId).toBeTruthy();
-    expect(host.querySelector(`#${activeId}`)?.getAttribute('aria-selected')).toBe('true');
+    expect(host.querySelector(`#${activeId}`)?.classList.contains('highlight')).toBe(true);
 
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     flushSync();
@@ -171,7 +171,7 @@ describe('RecipientPicker discovery recovery', () => {
       expect(invokeMock).toHaveBeenCalledWith('meetings_list_memberships');
     });
 
-    typeInto(host.querySelector<HTMLInputElement>('.recipient-input')!, 'maya');
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="recipient-query"]')!, 'maya');
 
     await vi.waitFor(() => {
       flushSync();
@@ -179,6 +179,6 @@ describe('RecipientPicker discovery recovery', () => {
         'Showing saved results.',
       );
     });
-    expect(host.querySelector('.suggestion-primary')?.textContent).toBe('Maya');
+    expect(host.querySelector('[data-testid="recipient-row"] .rp-option-name')?.textContent).toBe('Maya');
   });
 });

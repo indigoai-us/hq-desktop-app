@@ -21,6 +21,7 @@ function eventAt(id: string, startLocal: Date, durationMin = 30): MeetingEvent {
     id,
     status: "confirmed",
     summary: id,
+    meetingUrl: `https://zoom.us/j/${id}`,
     start: { dateTime: startLocal.toISOString() },
     end: {
       dateTime: new Date(
@@ -150,6 +151,18 @@ describe("meetings-view-model (US-017)", () => {
       expect(done.visual).toBe("on");
       expect(done.action).toBe("none");
       expect(done.kind).toBe("done");
+    });
+
+    it("shows a failed bot as retryable with its reason", () => {
+      const failed = notetakerToggleState(bot({
+        status: "failed",
+        failureReason: "This Zoom meeting only admits signed-in Zoom users.",
+      }));
+      expect(failed).toMatchObject({ visual: "off", kind: "failed", action: "invite" });
+      expect(failed.detail).toBe("This Zoom meeting only admits signed-in Zoom users.");
+      expect(notetakerToggleState(bot({ status: "failed" })).detail).toBe(
+        "The notetaker couldn't join this meeting.",
+      );
     });
 
     it("resolves via event bot maps (exact event id)", () => {

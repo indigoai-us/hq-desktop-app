@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   // Channel conversation pane (US-018). Renders one channel's thread + composer
   // by REUSING the shared <Conversation showAuthors={true}/> (channels are
   // multi-party, so author names show above incoming messages). The header
@@ -456,6 +457,8 @@
     >
       {#if joining}
         <span class="inline-spinner" aria-hidden="true"></span>
+      {:else}
+        <RailIcon name="arrow-right" />
       {/if}
       {joining ? 'Joining…' : isGroup ? 'Join conversation' : `Join #${title}`}
     </button>
@@ -605,7 +608,7 @@
     padding: 0.4375rem 0.875rem;
     border-radius: 7px;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     border: none;
     font-family: inherit;

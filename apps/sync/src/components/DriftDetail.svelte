@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../lib/listener-registry';
@@ -442,7 +443,7 @@
           <span class="drift-mini-spinner" aria-hidden="true"></span>
           Rechecking…
         {:else}
-          Recheck
+          <RailIcon name="refresh" />Recheck
         {/if}
       </button>
     </div>
@@ -965,7 +966,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 700;
+    font-weight: 500;
     cursor: pointer;
   }
 

@@ -32,8 +32,8 @@ test.describe("smoke: desktop shell", () => {
 
   test("the empty shell owns its own scroll", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByTestId("channel-skeleton")).toBeVisible();
-    await expect(page.getByTestId("conversation-composer")).toHaveCount(0);
+    // With no live data the shell settles on the built-in #welcome channel.
+    await expect(page.getByRole("heading", { name: "welcome", exact: true })).toBeVisible();
 
     // Full-bleed contract: the document/body never scrolls — the shell owns
     // all internal scrolling.

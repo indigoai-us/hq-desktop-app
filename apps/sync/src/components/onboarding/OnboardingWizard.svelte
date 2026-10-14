@@ -1,4 +1,6 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
+  import { BRAND_ICONS } from '@hq/ui/rail-icons';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
@@ -12,7 +14,7 @@
   import {
     HQ_MARK_H,
     HQ_MARK_Q,
-    KEYBOARD_ROWS,
+    createCompanyEngine,
     createConsentEngine,
     createFolderEngine,
     createKeyboardEngine,
@@ -20,6 +22,7 @@
     createOrbitEngine,
     createPanelEngine,
     createReadyEngine,
+    keyboardRowsFor,
   } from './welcome/engines';
   import {
     READY_PROGRESS_DONE_TEXT,
@@ -127,8 +130,10 @@
     type StageState,
   } from '../../lib/onboarding-setup';
   import {
+    openHqShortcutChord,
     readOnboardingHostOs,
     setupExpectationCopy,
+    shortcutKeyboardLayoutFor,
     thisComputerNounFor,
     yourComputerNounFor,
   } from '../../lib/onboarding-platform';
@@ -169,8 +174,16 @@
   } from '../../lib/onboarding-wizard';
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
   import { startTraySync } from '../../lib/traySync';
+  import {
+    CLT_CARD_COPY,
+    CLT_GATED_STAGES,
+    commandLineToolsMissing,
+    runCommandLineToolsGate,
+    type CommandLineToolsPhase,
+  } from '../../lib/command-line-tools-gate';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import CompanyStep, { type CompanyStepEvent, type CompanyStepResult } from './CompanyStep.svelte';
+  import hqAppIcon from '../../assets/onboarding/hq-app-icon.png';
   import {
     companyUidFromMissingBucket,
     isMissingBucketMessage,
@@ -186,6 +199,10 @@
   import {
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
+    getHqAnywherePersonSetting,
+    hqAnywhereRuntimeEnabled as resolveHqAnywhereRuntimeEnabled,
+    putHqAnywherePersonSetting,
+    setHqAnywhereGlobalRuntime,
     COMPANY_NAME_PREFILL_FLAG,
     FIRST_LAUNCH_JOIN_KEY_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
@@ -380,10 +397,17 @@
   // answer was dropped. Consent is now its own step after setup.)
   // Sharing is the default; the person can still pick "Don't share".
   let telemetryChoice = $state<'share' | 'decline' | null>('share');
+  let hqAnywhereRuntimeEnabled = $state(false);
   let hqAnywhereEnabled = $state(false);
+  let hqAnywhereSettingLoaded = $state(false);
+  let hqAnywhereLoading = $state(false);
   let hqAnywhereSaving = $state(false);
+  let hqAnywhereSettingUp = $state(false);
+  let hqAnywhereLoadError = $state(false);
   let hqAnywhereSettingError = $state(false);
   let hqAnywhereRetryValue = $state<boolean | null>(null);
+  let hqAnywhereSetupRetry = $state(false);
+  let hqAnywhereLoadStarted = false;
   let consentSubmitting = $state(false);
   /** The ready screen, with its usage-data checkbox, has been on show. */
   let readyConsentShown = false;
@@ -458,6 +482,14 @@
   const firstFolderSelfHealIntervalMs = 2_000;
   let companyStepVisited = false;
   /**
+   * The company picked, joined or created in this flow, as the reference the
+   * connector import passes to `hq integrations import --company` (slug, or
+   * the `cmp_` uid when no slug is known). Null for a Personal setup (no
+   * company, or the company step skipped): integrations are company-scoped,
+   * so the connector import is not offered then.
+   */
+  let connectorImportCompany = $state<string | null>(null);
+  /**
    * The company route lookup. It starts on the second setup explainer, so the
    * company step can run between the setup explainers and the ready
    * ("Open HQ Desktop") screen instead of after it. Reset on an account switch.
@@ -467,8 +499,14 @@
   /** The company lookup has answered with a usable route (or none needed). */
   let companyRouteResolved = $state(false);
   /** Leaving the explainers waits this long at most for the company lookup. */
-  const COMPANY_ROUTE_WAIT_MS = 3_000;
-  let leavingExplainers = false;
+  /**
+   * How long leaving the explainers waits for the company lookup. Long enough
+   * that the person goes straight to the right screen rather than seeing the
+   * ready screen and being pulled back from it.
+   */
+  const COMPANY_ROUTE_WAIT_MS = 12_000;
+  /** Leaving the explainers waits on the company lookup; the forward button says so. */
+  let leavingExplainers = $state(false);
   let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
   let inviteStepHiddenTelemetryRecorded = false;
@@ -494,6 +532,13 @@
   /** Real backend progress text for the running stage, when one was reported. */
   let stageDetail = $state<string | null>(null);
   /** Set while the active stage waits for its automatic next attempt. */
+  // Apple's developer tools gate (macOS). null = no card on screen.
+  let cltPhase = $state<CommandLineToolsPhase | null>(null);
+  let cltReady = false;
+  let cltShowPending = $state(false);
+  let cltRetryPending = $state(false);
+  let cltRetryResolve: (() => void) | null = null;
+
   let setupRetry = $state<{ stageId: StageId; attempt: SetupRetryAttempt } | null>(
     null,
   );
@@ -730,10 +775,12 @@
   const thisComputer = $derived(thisComputerNounFor(setupHostOs));
   // The global shortcut is Option-Shift-O on a Mac and Alt+Shift+O elsewhere.
   const yourComputer = $derived(yourComputerNounFor(setupHostOs));
-  const chordKeys = $derived(setupHostOs === 'windows' ? ['Alt', 'Shift', 'O'] : ['⌥', '⇧', 'O']);
-  const chordSpoken = $derived(
-    setupHostOs === 'windows' ? 'Alt, Shift, O' : 'Option, Shift, O',
-  );
+  // Board, lit keys and legend all come from this one layout decision.
+  const shortcutLayout = $derived(shortcutKeyboardLayoutFor(setupHostOs));
+  const keyboardRows = $derived(keyboardRowsFor(shortcutLayout));
+  const shortcutChord = $derived(openHqShortcutChord(shortcutLayout));
+  const chordKeys = $derived(shortcutChord.keys);
+  const chordSpoken = $derived(shortcutChord.spoken);
   const setupSubStatusModel = $derived(
     setupSubStatus({
       stageId: currentStageId,
@@ -771,7 +818,16 @@
   // ─── Welcome flow: chrome, install card, ready gate ─────────────────────
   /** An install this flow started is still running. */
   const installPending = $derived(setupStarted && !setupCompleted);
-  const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
+  /** The company step's current screen offers Back (within the step, or out to the shortcut screen). */
+  let companyBack = $state(false);
+  let companyStepRef = $state<{ back: () => boolean } | null>(null);
+  /** This run has a company step (a person with no company yet). */
+  const companyInRun = $derived(
+    !consentOnly && !replay && Boolean(companyPath && companyPath.kind !== 'skip'),
+  );
+  const chrome = $derived(
+    welcomeChrome({ scene, replay, setupCompleted, companyInRun, companyBack: companyBack && !leavingExplainers }),
+  );
   const installCard = $derived(
     installCardModel({
       percent: overallPercent,
@@ -1587,12 +1643,20 @@
     } finally {
       switchingAccount = false;
     }
+    // The next account must never import connectors into, or read from, the
+    // previous account's company. sign_out clears it natively too; this also
+    // covers a sign-out that failed.
+    connectorImportCompany = null;
+    // The cached membership read belongs to the previous account as well.
+    membershipMeRead = null;
+    await selectCompany(null, true);
     existingSessionEmail = null;
     signedInEmail = null;
     if (from === 'company') {
       companyPath = null;
       companyPriorPlan = null;
       companyStepVisited = false;
+      connectorImportCompany = null;
       resetCompanyRoute();
       postSetupStepsResolved = false;
       resumeAfterAccountSwitch = true;
@@ -1752,7 +1816,9 @@
     directoryBusy = true;
     directoryNotice = null;
     try {
-      const path = await invokeCommand<string>('resolve_hq_path');
+      // Resolve only. The folder is created by the install step, after the
+      // person has confirmed where HQ lives.
+      const path = await invokeCommand<string>('resolve_hq_path', { create: false });
       if (directoryCancelled) return;
       homeDir = homeDirFromDefaultHqPath(path);
       acceptPath(path);
@@ -1859,8 +1925,9 @@
     directoryBusy = true;
     directoryNotice = null;
     try {
-      // The default path is prepared natively before auth exists. Validate it
-      // here, after sign-in, before allowing setup to use it.
+      // The default path is only resolved before auth exists. Validate it
+      // here, after sign-in, before allowing setup to use it; check_writable
+      // creates the folder, so this Install step is where it first appears.
       const [detection, writable] = await Promise.all([
         invokeCommand<DetectHqResult>('detect_hq', { path: selectedPath }),
         invokeCommand<boolean>('check_writable', { path: selectedPath }),
@@ -2618,6 +2685,66 @@
     }
   }
 
+  // Wait for Apple's developer tools before a stage that runs git. Holds the
+  // setup run in place, so it resumes at the same stage. False when the run
+  // was replaced or cancelled while waiting.
+  async function ensureCommandLineTools(runId: number): Promise<boolean> {
+    if (cltReady) return true;
+    const gateInvoke = <T,>(command: string, args?: Record<string, unknown>) =>
+      (args === undefined ? invoke<T>(command) : invoke<T>(command, args));
+    if (!(await commandLineToolsMissing({ invoke: gateInvoke }))) {
+      cltReady = true;
+      return isCurrentRun(runId);
+    }
+    for (;;) {
+      if (!isCurrentRun(runId)) return false;
+      const outcome = await runCommandLineToolsGate({
+        invoke: gateInvoke,
+        now: () => Date.now(),
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        isActive: () => isCurrentRun(runId),
+        onPhase: async (phase) => {
+          cltPhase = phase;
+          cltRetryPending = false;
+          // The card is painted before macOS is asked to install anything.
+          await tick();
+        },
+      });
+      if (outcome === 'ready') {
+        cltReady = true;
+        cltPhase = null;
+        return isCurrentRun(runId);
+      }
+      if (outcome === 'inactive') {
+        cltPhase = null;
+        return false;
+      }
+      await new Promise<void>((resolve) => {
+        cltRetryResolve = resolve;
+      });
+      cltRetryResolve = null;
+    }
+  }
+
+  function retryCommandLineTools() {
+    if (cltRetryPending || !cltRetryResolve) return;
+    cltRetryPending = true;
+    cltRetryResolve();
+  }
+
+  async function showAppleInstaller() {
+    if (cltShowPending) return;
+    cltShowPending = true;
+    try {
+      await invoke('command_line_tools_show_installer');
+    } catch (error) {
+      // Nothing to show; the card keeps waiting.
+      console.warn('[clt] show installer failed', error);
+    } finally {
+      cltShowPending = false;
+    }
+  }
+
   async function runSetup(
     runId: number,
     startStage: StageId = STAGE_ORDER[0],
@@ -2671,6 +2798,12 @@
     };
     for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
+      if (
+        (CLT_GATED_STAGES as readonly StageId[]).includes(id) &&
+        !(await ensureCommandLineTools(runId))
+      ) {
+        return;
+      }
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
         const result = await runStage(
@@ -2865,6 +2998,12 @@
     inviteTeammateContext = null;
     showInviteTeammateStep = false;
     if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
+    // The lookup could not say which company this person is in. The app's
+    // active company still names one when there is one; the connector import
+    // is skipped only when there is none.
+    const active = await activeCompanyForConnectorImport();
+    if (!stillCurrent()) return;
+    connectorImportCompany = active;
     if (setupCompleted) {
       // After setup there is no later attempt: settle on no company step.
       companyRouteResolved = true;
@@ -2894,8 +3033,10 @@
   /**
    * Leave the setup explainers. The company step comes first when this
    * person needs one, then the ready ("Open HQ Desktop") screen. A lookup
-   * that has not answered yet gets a short wait; if it answers later, the
-   * ready screen hands over to the company step then.
+   * that has not answered yet is waited for (COMPANY_ROUTE_WAIT_MS, the
+   * forward button reads "One moment…"); only one slower than that lets the
+   * ready screen show, and the company step is then offered once the install
+   * is done, with the other follow-ons.
    */
   async function leaveExplainers(): Promise<void> {
     if (leavingExplainers) return;
@@ -3023,24 +3164,105 @@
     }
   }
 
+  async function loadHqAnywhereSetting(): Promise<void> {
+    if (hqAnywhereLoading || hqAnywhereSaving) return;
+    hqAnywhereLoading = true;
+    hqAnywhereLoadError = false;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
+    try {
+      const result = await getHqAnywherePersonSetting(onboardingFeatureFlags.settings);
+      if (result.ok) {
+        hqAnywhereEnabled = result.value;
+        hqAnywhereSettingLoaded = true;
+      } else {
+        console.warn('[onboarding-hq-anywhere] setting read failed:', result);
+        hqAnywhereLoadError = true;
+      }
+    } catch (error) {
+      console.warn('[onboarding-hq-anywhere] setting read failed:', error);
+      hqAnywhereLoadError = true;
+    } finally {
+      hqAnywhereLoading = false;
+    }
+  }
+
+  async function prepareHqAnywhereSetting(): Promise<void> {
+    const enabled = await resolveHqAnywhereRuntimeEnabled(onboardingFeatureFlags.identity);
+    if (!enabled) return;
+    hqAnywhereRuntimeEnabled = true;
+    await loadHqAnywhereSetting();
+  }
+
+  async function configureHqAnywhereGlobalRuntime(value: boolean): Promise<void> {
+    if (hqAnywhereSettingUp) return;
+    hqAnywhereSettingUp = true;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
+    try {
+      const result = await setHqAnywhereGlobalRuntime(
+        onboardingFeatureFlags.identity,
+        onboardingFeatureFlags.settings,
+        value,
+      );
+      if (!result.ok) {
+        console.warn('[onboarding-hq-anywhere] global runtime setup failed:', result);
+        hqAnywhereRetryValue = value;
+        hqAnywhereSetupRetry = true;
+        hqAnywhereSettingError = true;
+      }
+    } catch (error) {
+      console.warn('[onboarding-hq-anywhere] global runtime setup failed:', error);
+      hqAnywhereRetryValue = value;
+      hqAnywhereSetupRetry = true;
+      hqAnywhereSettingError = true;
+    } finally {
+      hqAnywhereSettingUp = false;
+    }
+  }
+
   async function saveHqAnywhereSetting(value: boolean): Promise<void> {
-    if (hqAnywhereSaving) return;
+    if (hqAnywhereSaving || hqAnywhereSettingUp || hqAnywhereLoading || !hqAnywhereSettingLoaded) return;
     const previous = hqAnywhereEnabled;
     hqAnywhereEnabled = value;
     hqAnywhereSaving = true;
+    hqAnywhereLoadError = false;
     hqAnywhereSettingError = false;
     hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
     try {
-      await invokeCommand<void>('put_hq_anywhere_person_setting', { value });
+      const result = await putHqAnywherePersonSetting(
+        onboardingFeatureFlags.settings,
+        value,
+      );
+      if (result.ok) {
+        hqAnywhereSaving = false;
+        await configureHqAnywhereGlobalRuntime(value);
+      } else {
+        console.warn('[onboarding-hq-anywhere] setting write failed:', result);
+        hqAnywhereEnabled = previous;
+        hqAnywhereRetryValue = value;
+        hqAnywhereSettingError = true;
+      }
     } catch (error) {
-      // The raw transport detail stays in diagnostics; setup always shows the
-      // same plain message and leaves a retry path the person can use.
       console.warn('[onboarding-hq-anywhere] setting write failed:', error);
       hqAnywhereEnabled = previous;
       hqAnywhereRetryValue = value;
       hqAnywhereSettingError = true;
     } finally {
       hqAnywhereSaving = false;
+    }
+  }
+
+  function retryHqAnywhereSetting(): void {
+    if (hqAnywhereLoadError) {
+      void loadHqAnywhereSetting();
+    } else if (hqAnywhereRetryValue !== null && hqAnywhereSetupRetry) {
+      void configureHqAnywhereGlobalRuntime(hqAnywhereRetryValue);
+    } else if (hqAnywhereRetryValue !== null) {
+      void saveHqAnywhereSetting(hqAnywhereRetryValue);
     }
   }
 
@@ -3423,6 +3645,11 @@
     const nextScene =
       targetScene ?? (next === CONNECTOR_IMPORT_STEP_INDEX ? scene : sceneForStep(next));
     if (next === currentStep) {
+      // Back from the company step can leave the router on it (a finished
+      // install closes the way back into setup), so coming forward again does
+      // not change step. Showing the company step still counts as visiting it,
+      // or the ready screen would send the person through it a second time.
+      if (next === COMPANY_STEP_INDEX && nextScene === 'company') companyStepVisited = true;
       scene = nextScene;
       return;
     }
@@ -3491,6 +3718,11 @@
 
   function goBack(): void {
     if (!chrome.back) return;
+    // The company step goes back through its own screens first.
+    if (scene === 'company' && companyStepRef?.back()) return;
+    // Leaving the company step by Back means it has not been done: the next
+    // Next comes back to it.
+    if (scene === 'company') companyStepVisited = false;
     const target = previousScene(scene, replay);
     if (!target) return;
     if (target === 'welcome') enterSettled = true;
@@ -3595,10 +3827,8 @@
   function startWelcome(): () => void {
     const controller = createWelcomeController({
       reducedMotion: () => reducedMotion,
-      onTick: (progress) => {
-        const fill = tickFills[chrome.currentTick];
-        if (fill) fill.style.width = `${(progress * 100).toFixed(1)}%`;
-      },
+      // No onTick: the progress ticks do not count down a screen's hold; the
+      // current tick is simply on (design review, 2026-10-12).
       // The motion is decoration in front of setup; it must never block it.
       onError: () => {
         motionFailed = true;
@@ -3708,7 +3938,15 @@
         ),
       );
     }
-    for (const id of ['company', 'first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
+    if (refs['panel:company'] && refs.companyCanvas) {
+      controller.register(
+        'company',
+        createCompanyEngine(refs['panel:company'], refs.companyCanvas as HTMLCanvasElement, {
+          reveal: revealNav,
+        }),
+      );
+    }
+    for (const id of ['first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
       const block = refs[`panel:${id}`];
       if (block) controller.register(id, createPanelEngine(block, { reveal: revealNav }));
     }
@@ -3744,9 +3982,10 @@
     const settled = enterSettled;
     enterSettled = false;
     if (motionFailed) navRevealed = true;
-    const index = storyOrder.indexOf(next as never);
+    // Ticks up to and including this screen's are full; the rest are empty.
+    const current = chrome.currentTick;
     for (const [tick, fill] of tickFills.entries()) {
-      if (fill) fill.style.width = tick + 1 < index ? '100%' : '0';
+      if (fill) fill.style.width = tick <= current ? '100%' : '0';
     }
     void tick().then(() => {
       controller.show(next, {
@@ -3768,6 +4007,13 @@
     if (scene === 'ready' && consentOnReady) {
       readyConsentShown = true;
       markPostReadyActionReady();
+    }
+  });
+
+  $effect(() => {
+    if (scene === 'ready' && consentOnReady && !hqAnywhereLoadStarted) {
+      hqAnywhereLoadStarted = true;
+      void prepareHqAnywhereSetting();
     }
   });
 
@@ -3821,16 +4067,10 @@
   // the teammate invite (flag-gated, sole active member only), then the
   // connector import, which only shows itself if it has something to offer.
   // Each hands back to the ready screen, which picks the next one up here.
-  // The company step comes before the ready screen. When the lookup answers
-  // only after the person reached ready (a quick Skip intro), hand over then;
-  // this does not wait for the install.
-  $effect(() => {
-    if (consentOnly || replay || !companyRouteResolved) return;
-    if (currentStep !== READY_STEP_INDEX) return;
-    if (companyPath && companyPath.kind !== 'skip' && !companyStepVisited) {
-      advanceTo(COMPANY_STEP_INDEX, null);
-    }
-  });
+  // The company step comes before the ready screen: leaving the explainers
+  // waits for the lookup (COMPANY_ROUTE_WAIT_MS), so a person is not shown the
+  // ready screen and then pulled away from it. Only a lookup slower than that
+  // hands over later, once the install is done, with the other follow-ons.
 
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
@@ -3848,6 +4088,12 @@
       return;
     }
     if (connectorImportVisited) return;
+    if (!connectorImportCompany) {
+      // Personal setup: there is no company to import connectors into, so
+      // the step is not offered and the ready screen stays on show.
+      connectorImportVisited = true;
+      return;
+    }
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX, null);
   });
 
@@ -3890,7 +4136,10 @@
       paidCompany: summary.paidCompany,
       pendingInvites: summary.pendingInvites,
     });
-    if (route.kind === 'skip') void selectCompany(route.company.slug);
+    if (route.kind === 'skip') {
+      connectorImportCompany = route.company.slug ?? route.company.companyUid;
+      void selectCompany(route.company.slug);
+    }
   }
 
   /** A failed lookup keeps the existing #setup create-company recovery in place. */
@@ -3909,9 +4158,19 @@
     });
   }
 
-  /** Make the chosen company the app's active one. Best effort. */
-  async function selectCompany(slug: string | null): Promise<void> {
-    if (!slug) return;
+  /** The app's active company slug, or null when there is none or it cannot be read. */
+  async function activeCompanyForConnectorImport(): Promise<string | null> {
+    try {
+      const slug = await invokeCommand<string | null>('get_desktop_active_company');
+      return typeof slug === 'string' && slug.trim() ? slug.trim() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Make the chosen company the app's active one (or clear it). Best effort. */
+  async function selectCompany(slug: string | null, clear = false): Promise<void> {
+    if (!slug && !clear) return;
     try {
       await invokeCommand('set_desktop_active_company', { companySlug: slug });
     } catch (error) {
@@ -3930,8 +4189,12 @@
           ? 'joined_invite'
           : result.outcome;
     const details: StepTelemetryDetails = { outcome };
+    connectorImportCompany = result.outcome === 'skipped' ? (result.company ?? null) : null;
     if (result.outcome === 'created') {
+      connectorImportCompany = result.companyUid;
       recordWorkspaceSelected(result.companyUid);
+      // The company step asked about invites itself: never ask twice.
+      inviteTeammateVisited = true;
     } else if (result.outcome === 'joined') {
       details.decision = 'joined_invite';
       const joinedInvite =
@@ -3943,10 +4206,12 @@
         companyStepCompanyUid = companyUid;
         recordWorkspaceSelected(companyUid);
       }
+      connectorImportCompany = result.slugs[0] ?? companyUid ?? null;
       void selectCompany(result.slugs[0] ?? null);
     } else if (result.outcome === 'used_existing') {
       details.decision = 'used_existing';
       companyStepCompanyUid = result.companyUid;
+      connectorImportCompany = result.slug ?? result.companyUid;
       recordWorkspaceSelected(result.companyUid);
       void selectCompany(result.slug);
     }
@@ -4175,7 +4440,7 @@
     <div class="corelabel" bind:this={refs.corelabel} aria-hidden="true">company cloud</div>
     <div class="copy" bind:this={refs.cloudCopy}>
       <h2 class="h h-lg" id="welcome-title-cloud" tabindex="-1" data-scene-heading>Your folder is local. Your team is not.</h2>
-      <p class="body">Every machine syncs to the same company cloud. People and agents share one context.</p>
+      <p class="body">Every machine syncs to the same company cloud. People and bots share one context.</p>
     </div>
     {#each ORBIT_INNER as name, i (name)}
       <div class="pill tool" aria-hidden="true" bind:this={innerChips[i]}>{name}</div>
@@ -4211,7 +4476,7 @@
       <p class="body">From anywhere on {yourComputer}, this opens the HQ desktop view.</p>
     </div>
     <div class="keyboard" bind:this={refs.kb} aria-hidden="true">
-      {#each KEYBOARD_ROWS as row, ri (ri)}
+      {#each keyboardRows as row, ri (ri)}
         <div class="krow">
           {#each row as key, ki (key.id)}
             <div
@@ -4233,7 +4498,13 @@
       <span class="chordcap">Open the HQ desktop view</span>
     </p>
     <div class="nav" class:on={scene === 'shortcut' && navRevealed} bind:this={refs.navShortcut}>
-      <button class="btn btn-primary" type="button" onclick={forward}>{replay ? 'Done' : 'Next'}</button>
+      <button
+        class="btn btn-primary"
+        type="button"
+        disabled={leavingExplainers}
+        aria-busy={leavingExplainers}
+        onclick={forward}
+      >{replay ? 'Done' : leavingExplainers ? 'One moment…' : 'Next'}</button>
     </div>
   </section>
 
@@ -4376,7 +4647,7 @@
               disabled={consentSubmitting || finishing}
               data-testid="consent-finish-offline"
               onclick={() => void finishOffline()}
-            >Finish setup, send later</button>
+            ><RailIcon name="check" />Finish setup, send later</button>
           {/if}
         {:else}
           <button
@@ -4397,7 +4668,7 @@
               data-testid="consent-dismiss"
               disabled={consentSubmitting || finishing}
               onclick={() => void dismissReprompt()}
-            >Not now</button>
+            ><RailIcon name="x" />Not now</button>
           {/if}
         {/if}
       </div>
@@ -4413,9 +4684,11 @@
       data-scene="company"
       aria-labelledby="onboarding-title-company"
     >
+      <canvas class="company-art" aria-hidden="true" bind:this={refs.companyCanvas}></canvas>
       <div class="panel-block" bind:this={refs['panel:company']}>
         {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'skip'}
           <CompanyStep
+            bind:this={companyStepRef}
             path={companyPath}
             priorPlan={companyPriorPlan}
             namePrefillEnabled={companyNamePrefillEnabled}
@@ -4426,6 +4699,7 @@
             listen={(event, handler) => listen(event, (message) => handler(message.payload))}
             onTelemetry={recordCompanyStep}
             oncomplete={leaveCompanyStep}
+            onbackchange={(canGoBack) => (companyBack = canGoBack)}
           />
         {/if}
       </div>
@@ -4540,7 +4814,7 @@
                   type="button"
                   data-testid="onboarding-invite-skip"
                   onclick={leaveInviteTeammate}
-                >{inviteSent ? 'Continue' : 'Skip'}</button>
+                >{inviteSent ? 'Continue' : 'Skip for now'}</button>
               </div>
             </form>
           </div>
@@ -4560,6 +4834,7 @@
       <div class="panel-block" bind:this={refs['panel:connectors']}>
         {#if currentStep === CONNECTOR_IMPORT_STEP_INDEX}
           <ConnectorImportStep
+            company={connectorImportCompany}
             oncomplete={() => advanceTo(READY_STEP_INDEX, null)}
             onoffer={() => (scene = 'connectors')}
             onTelemetry={(event) =>
@@ -4621,11 +4896,9 @@
           aria-busy={finishing || installPending}
           onclick={() => void handleFinish()}
         >
-          <span class="tc-icon" aria-hidden="true">{@render ToolIcon('desktop')}</span>
-          <span class="tc-text">
-            <span class="tc-name">HQ Desktop</span>
-            <span class="tc-line">{openDesktop.label === 'Open HQ Desktop' ? 'Use HQ’s own app' : openDesktop.label}</span>
-          </span>
+          <span class="tc-icon" aria-hidden="true"><img src={hqAppIcon} alt="" width="32" height="32" /></span>
+          <span class="tc-name">{openDesktop.label}</span>
+          {#if !openDesktop.enabled}<span class="tc-spin" aria-hidden="true"></span>{/if}
         </button>
         {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
           <div
@@ -4652,7 +4925,7 @@
               data-testid="onboarding-ai-tools-recheck-button"
               onclick={() => void probeAiTools()}
             >
-              <span class="tp-name">Check again</span>
+              <RailIcon name="refresh" /><span class="tp-name">Check again</span>
             </button>
           </div>
         {:else if installedToolSlots.length > 0}
@@ -4708,7 +4981,7 @@
                 type="button"
                 data-testid="consent-deferred-retry"
                 onclick={() => void flushDeferredConsent()}
-              >Retry</button>
+              ><RailIcon name="refresh" />Retry</button>
             </div>
           </div>
         {/if}
@@ -4767,40 +5040,42 @@
             aria-busy={privacyOpening}
             onclick={() => void handleOpenPrivacy()}
           >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
-          <span class="rc-sep" aria-hidden="true">·</span>
-          <label class="rc-check">
-            <input
-              type="checkbox"
-              data-testid="ready-hq-anywhere"
-              checked={hqAnywhereEnabled}
-              disabled={hqAnywhereSaving || finishing}
-              aria-busy={hqAnywhereSaving}
-              onchange={(event) => void saveHqAnywhereSetting(event.currentTarget.checked)}
-            />
-            <span>Enable HQ Anywhere</span>
-          </label>
-          {#if hqAnywhereSaving}
-            <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-saving">Saving…</span>
+          {#if hqAnywhereRuntimeEnabled}
+            <label class="rc-check rc-check-next">
+              <input
+                type="checkbox"
+                data-testid="ready-hq-anywhere"
+                checked={hqAnywhereEnabled}
+                disabled={!hqAnywhereSettingLoaded || hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp || finishing}
+                aria-busy={hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp}
+                onchange={(event) => void saveHqAnywhereSetting(event.currentTarget.checked)}
+              />
+              <span>Enable HQ Anywhere</span>
+            </label>
+            {#if hqAnywhereLoading}
+              <span role="status" aria-live="polite">Loading…</span>
+            {:else if hqAnywhereSaving}
+              <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-saving">Saving…</span>
+            {:else if hqAnywhereSettingUp}
+              <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-up">Setting up…</span>
+            {/if}
+            {#if hqAnywhereLoadError || hqAnywhereSettingError}
+              <span data-testid="hq-anywhere-setting-error">
+                <button
+                  type="button"
+                  class="consent-link hq-anywhere-retry"
+                  data-testid="hq-anywhere-setting-retry"
+                  disabled={hqAnywhereLoading || hqAnywhereSaving || finishing}
+                  aria-busy={hqAnywhereLoading || hqAnywhereSaving}
+                  onclick={retryHqAnywhereSetting}
+                >Tap to retry</button>
+              </span>
+            {/if}
           {/if}
           {#if privacyOpenError}
             <span class="consent-link-error" role="alert">Couldn’t open the page.</span>
           {/if}
         </div>
-        {#if hqAnywhereSettingError}
-          <div class="ready-setting-error" role="alert" data-testid="hq-anywhere-setting-error">
-            <span>Couldn't save this setting. Try again.</span>
-            <button
-              type="button"
-              class="consent-link"
-              data-testid="hq-anywhere-setting-retry"
-              disabled={hqAnywhereSaving || finishing}
-              aria-busy={hqAnywhereSaving}
-              onclick={() => {
-                if (hqAnywhereRetryValue !== null) void saveHqAnywhereSetting(hqAnywhereRetryValue);
-              }}
-            >{hqAnywhereSaving ? 'Saving…' : 'Retry'}</button>
-          </div>
-        {/if}
         {#if consentFailure}
           <div
             class="note consent-error"
@@ -4835,7 +5110,7 @@
                   data-testid="consent-finish-offline"
                   disabled={consentSubmitting || finishing}
                   onclick={() => void finishOffline()}
-                >Finish setup, send later</button>
+                ><RailIcon name="check" />Finish setup, send later</button>
               {/if}
             </div>
           </div>
@@ -4849,7 +5124,7 @@
         <div class="graphic" aria-hidden="true">{@render TrustMock()}</div>
         <h2 class="h h-md" id="onboarding-title-trust" tabindex="-1" data-scene-heading>Trust your workspace</h2>
         <p class="body">Claude Code will open with your hq folder selected and /setup ready to run. Choose “Yes, trust this workspace.” Just check that hq is still the folder it’s pointing at.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(READY_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(SETTINGS_STEP_INDEX)}>Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(READY_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(SETTINGS_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -4858,7 +5133,7 @@
         <div class="graphic" aria-hidden="true">{@render SettingsMock()}</div>
         <h2 class="h h-md" id="onboarding-title-settings" tabindex="-1" data-scene-heading>Dial in your settings</h2>
         <p class="body">For the best results, use the latest models (Opus 4.8 or GPT-5.5), set thinking to “High” or above, and turn on auto mode (bypass permissions). You might need to flip that last one on in settings.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(TRUST_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(RUN_SETUP_STEP_INDEX)}>Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(TRUST_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(RUN_SETUP_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -4867,7 +5142,7 @@
         <div class="graphic" aria-hidden="true">{@render SetupPromptMock()}</div>
         <h2 class="h h-md" id="onboarding-title-run-setup" tabindex="-1" data-scene-heading>Press enter to run /setup</h2>
         <p class="body">Hit ⏎ in the message box to start setup.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(SETTINGS_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(HANDOFF_STEP_INDEX)}>Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(SETTINGS_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(HANDOFF_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -4876,7 +5151,7 @@
         <div class="graphic" aria-hidden="true">{@render HandoffMock()}</div>
         <h2 class="h h-md" id="onboarding-title-handoff" tabindex="-1" data-scene-heading>Answer, then run /handoff</h2>
         <p class="body">Work through every question until it says setup is finished, then send “/handoff” to save everything to HQ’s memory. You’ll do this at the end of every session.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(RUN_SETUP_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(BUILD_STEP_INDEX)}>Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(RUN_SETUP_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(BUILD_STEP_INDEX)}>Continue</button></div>
       </div>
     </section>
 
@@ -4890,7 +5165,7 @@
             Setup is saved on disk. Tap Retry to close this window.
           </p>
         {/if}
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(HANDOFF_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}>{finishing ? 'Finishing…' : finishError ? 'Retry' : 'Done'}</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(HANDOFF_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}><RailIcon name="check" />{finishing ? 'Finishing…' : finishError ? 'Retry' : 'Done'}</button></div>
       </div>
     </section>
   {/if}
@@ -4909,7 +5184,7 @@
         <span class="sr-only">Screen {chrome.currentTick + 2} of {chrome.tickCount + 1}</span>
       {/if}
       {#if chrome.skip}
-        <button class="btn btn-ghost skip" type="button" data-testid="welcome-skip" onclick={skipIntro}>Skip intro</button>
+        <button class="btn btn-ghost skip" type="button" data-testid="welcome-skip" disabled={leavingExplainers} onclick={skipIntro}>Skip intro</button>
       {/if}
     </div>
     <button
@@ -4923,6 +5198,44 @@
     >
       <svg class="barrow" viewBox="0 0 256 256" aria-hidden="true"><path fill="currentColor" d="M224,128a8,8,0,0,1-8,8H59.31l58.35,58.34a8,8,0,0,1-11.32,11.32l-72-72a8,8,0,0,1,0-11.32l72-72a8,8,0,0,1,11.32,11.32L59.31,120H216A8,8,0,0,1,224,128Z" /></svg>Back
     </button>
+  {/if}
+
+  {#if !replay && !consentOnly && cltPhase}
+    <!-- Apple's developer tools install. macOS shows its own windows; this
+         card explains them and waits. -->
+    <div
+      class="clt-card"
+      role="status"
+      aria-live="polite"
+      data-phase={cltPhase}
+      data-testid="onboarding-clt-card"
+    >
+      {#if cltPhase === 'installing'}
+        <p class="clt-title">{CLT_CARD_COPY.title}</p>
+        <p class="clt-line">{CLT_CARD_COPY.body}</p>
+        <span class="clt-bar" role="progressbar" aria-label={CLT_CARD_COPY.title} data-testid="onboarding-clt-progress"><i></i></span>
+        <p class="clt-line clt-muted">{CLT_CARD_COPY.duration} {CLT_CARD_COPY.resume}</p>
+        <button
+          type="button"
+          class="clt-action"
+          data-testid="onboarding-clt-show"
+          disabled={cltShowPending}
+          aria-busy={cltShowPending}
+          onclick={showAppleInstaller}
+        >{cltShowPending ? CLT_CARD_COPY.showingWindow : CLT_CARD_COPY.showWindow}</button>
+      {:else if cltPhase === 'cancelled' || cltPhase === 'timeout'}
+        <p class="clt-title">{CLT_CARD_COPY.retryTitle}</p>
+        <p class="clt-line">{cltPhase === 'timeout' ? CLT_CARD_COPY.timeoutBody : CLT_CARD_COPY.cancelledBody}</p>
+        <button
+          type="button"
+          class="clt-action"
+          data-testid="onboarding-clt-retry"
+          disabled={cltRetryPending}
+          aria-busy={cltRetryPending}
+          onclick={retryCommandLineTools}
+        >{cltRetryPending ? CLT_CARD_COPY.retrying : CLT_CARD_COPY.retry}</button>
+      {/if}
+    </div>
   {/if}
 
   {#if !replay && !consentOnly}
@@ -4995,17 +5308,12 @@
   <svg viewBox="0 0 120 120" aria-hidden="true"><g fill="currentColor"><path d="M117.6,61.36c0-4.25-.38-8.35-1.09-12.27H60v23.21h32.29c-1.39,7.5-5.62,13.85-11.97,18.11v15.06h19.39c11.35-10.45,17.89-25.83,17.89-44.1Z" /><path d="M60,120c16.2,0,29.78-5.37,39.71-14.54l-19.39-15.05c-5.37,3.6-12.25,5.73-20.32,5.73-15.63,0-28.85-10.55-33.57-24.74H6.38v15.55C16.25,106.55,36.55,120,60,120Z" /><path d="M26.43,71.4c-1.2-3.6-1.88-7.45-1.88-11.4s.68-7.8,1.88-11.4V33.05H6.38C2.32,41.15,0,50.32,0,60s2.32,18.85,6.38,26.95l20.05-15.55Z" /><path d="M60,23.86c8.81,0,16.72,3.03,22.94,8.98l17.21-17.21C89.75,5.95,76.17,0,60,0,36.55,0,16.25,13.45,6.38,33.05l20.05,15.55C31.15,34.42,44.37,23.86,60,23.86Z" /></g></svg>
 {/snippet}
 
-{#snippet ToolIcon(kind: LaunchKind | 'desktop')}
-  {#if kind === 'desktop'}
-    <!-- a window -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="M3.5 9.5h17" /></svg>
-  {:else if kind === 'codex'}
-    <!-- a terminal prompt -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5 9.5 12 5 16.5" /><path d="M12.5 16.5H19" /></svg>
-  {:else}
-    <!-- an eight-ray spark -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 3.5v17M3.5 12h17M6 6l12 12M18 6 6 18" /></svg>
-  {/if}
+{#snippet ToolIcon(kind: LaunchKind)}
+  <!-- The vendors' published marks in single-colour white (Claude Spark,
+       OpenAI Blossom), the same path data as the app's brand icons
+       (packages/ui rail-icons BRAND_ICONS; sources in docs/brand-marks.md). -->
+  {@const brand = BRAND_ICONS[kind === 'codex' ? 'codex' : 'claude-code']}
+  <svg viewBox={brand.viewBox} aria-hidden="true"><path d={brand.d} fill="currentColor" fill-rule="evenodd" /></svg>
 {/snippet}
 
 {#snippet MicrosoftMark()}
@@ -5111,6 +5419,46 @@
 {/snippet}
 
 <style>
+  /* Apple developer tools waiting card: square, monochrome, weight <= 500. */
+  .clt-card {
+    position: absolute;
+    left: 50%;
+    top: 56px;
+    transform: translateX(-50%);
+    z-index: 60;
+    width: min(420px, calc(100% - 44px));
+    padding: 16px 18px;
+    border-radius: 0;
+    background: #141414;
+    box-shadow: 0 18px 48px -12px rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .clt-title { margin: 0; font-family: 'Fraunces', Georgia, serif; font-size: 17px; font-weight: 400; }
+  .clt-line { margin: 0; font-size: 12.5px; font-weight: 400; line-height: 1.45; color: rgba(255, 255, 255, 0.82); }
+  .clt-muted { color: rgba(255, 255, 255, 0.55); }
+  .clt-bar { position: relative; display: block; height: 2px; overflow: hidden; background: rgba(255, 255, 255, 0.14); }
+  .clt-bar i { position: absolute; top: 0; left: -40%; width: 40%; height: 100%; background: #fff; animation: clt-indeterminate 1.6s ease-in-out infinite; }
+  @keyframes clt-indeterminate { from { left: -40%; } to { left: 100%; } }
+  @media (prefers-reduced-motion: reduce) { .clt-bar i { animation: none; left: 0; width: 100%; opacity: 0.4; } }
+  .clt-action {
+    align-self: flex-start;
+    margin-top: 2px;
+    padding: 6px 12px;
+    border-radius: 0;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    background: transparent;
+    color: #fff;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .clt-action:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); }
+  .clt-action:disabled { opacity: 0.55; cursor: default; }
   .link-inline {
     background: none;
     border: 0;
@@ -5119,6 +5467,10 @@
     color: inherit;
     text-decoration: underline;
     cursor: pointer;
+  }
+  .hq-anywhere-retry {
+    opacity: 0.68;
+    font-size: 11px;
   }
   /* The welcome flow's own styles live in ./welcome/welcome.css (plain CSS,
      because its motion engines add classes Svelte cannot see). What stays

@@ -57,9 +57,13 @@
 //!   the reopen fix's failure path: a drain that does not land escalates, never
 //!   silently clears.
 
+use std::process::Command;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use hq_desktop_core::git_mirror::drive_bulk_delete_decision_for_test;
+use hq_desktop_core::git_mirror::{
+    drive_bulk_delete_decision_for_test, drive_bulk_delete_decision_with_failure_for_test,
+};
 
 /// The recorded field shape of the 2026-09-05 MacBookPro event: 13,734 staged
 /// deletions of 17,036 tracked files (80.6%), an 8-day durable wedge.
@@ -95,6 +99,109 @@ fn captured(f: impl FnOnce()) -> Vec<sentry::protocol::Event<'static>> {
 
 fn kind<'a>(event: &'a sentry::protocol::Event<'static>) -> Option<&'a str> {
     event.tags.get("git_mirror_kind").map(String::as_str)
+}
+
+#[test]
+fn failed_git_commit_stderr_and_exit_status_reach_the_sanitized_event() {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after UNIX epoch")
+        .as_nanos();
+    let repo = std::env::temp_dir().join(format!("hq-desk-43-commit-failure-{nonce}"));
+    std::fs::create_dir_all(&repo).expect("create temporary git repository");
+
+    let init = Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&repo)
+        .output()
+        .expect("run git init");
+    assert!(init.status.success(), "git init failed: {:?}", init.stderr);
+    std::fs::write(repo.join("tracked.txt"), "test\n").expect("write tracked file");
+    let add = Command::new("git")
+        .args(["add", "tracked.txt"])
+        .current_dir(&repo)
+        .output()
+        .expect("run git add");
+    assert!(add.status.success(), "git add failed: {:?}", add.stderr);
+
+    let failed_commit = Command::new("git")
+        .args([
+            "-c",
+            "user.name=",
+            "-c",
+            "user.email=",
+            "commit",
+            "--no-gpg-sign",
+            "--no-verify",
+            "-m",
+            "forced test failure",
+        ])
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .current_dir(&repo)
+        .output()
+        .expect("run forced failing git commit");
+    assert!(
+        !failed_commit.status.success(),
+        "commit unexpectedly succeeded"
+    );
+    let status = failed_commit
+        .status
+        .code()
+        .expect("git returned an exit status");
+    let stderr = String::from_utf8_lossy(&failed_commit.stderr)
+        .trim()
+        .to_string();
+    assert!(
+        stderr.to_ascii_lowercase().contains("ident")
+            || stderr.to_ascii_lowercase().contains("identity"),
+        "expected Git identity failure, got {stderr:?}"
+    );
+    let error = format!(
+        "git commit --no-gpg-sign --no-verify -m 'forced test failure' failed (exit {status}): {stderr}"
+    );
+
+    let events = captured(|| {
+        assert_eq!(
+            drive_bulk_delete_decision_with_failure_for_test(
+                FIELD_DELETIONS,
+                FIELD_TRACKED,
+                Some(EIGHT_DAYS_SECS),
+                true,
+                CONFIRMED_OCCURRENCES,
+                EIGHT_DAYS_SECS,
+                FIRST_BANNER,
+                &hq_subtree_records(),
+                Some(&error),
+            ),
+            "bulk-delete-refused"
+        );
+    });
+    assert_eq!(events.len(), 1, "failed drain should emit one event");
+    let event = &events[0];
+    assert_eq!(
+        event.tags.get("drain_failure_exit_status"),
+        Some(&status.to_string())
+    );
+    let captured_stderr = event
+        .extra
+        .get("drain_failure_stderr")
+        .and_then(serde_json::Value::as_str)
+        .expect("sanitized Git stderr is present in event extra");
+    assert!(
+        captured_stderr.to_ascii_lowercase().contains("ident")
+            || captured_stderr.to_ascii_lowercase().contains("identity"),
+        "Git's failure reason did not reach the event: {captured_stderr:?}"
+    );
+    assert!(
+        !serde_json::to_string(event)
+            .unwrap()
+            .contains(repo.to_string_lossy().as_ref()),
+        "temporary user path must not reach the event"
+    );
+    std::fs::remove_dir_all(&repo).expect("remove temporary git repository");
 }
 
 /// NUL-terminated Git path records over HQ's own machine-managed subtrees, the

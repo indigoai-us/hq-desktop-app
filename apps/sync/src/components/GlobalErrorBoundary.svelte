@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import * as Sentry from '@sentry/svelte';
   import { invoke } from '@tauri-apps/api/core';
   import type { Component } from 'svelte';
@@ -170,7 +171,7 @@
       {/if}
 
       <div class="actions">
-        <button type="button" class="primary" onclick={() => handleStartOver(reset)}>Start over</button>
+        <button type="button" class="primary" onclick={() => handleStartOver(reset)}><RailIcon name="refresh" />Start over</button>
         {#if recoveredPath}
           <button
             type="button"

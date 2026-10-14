@@ -162,12 +162,17 @@ describe("SetupAgent", () => {
     expect(agent.mode).toBe("idle");
   });
 
-  it("reports a start failure and stays idle so Run Setup can be tried again", async () => {
-    const api = fakeSetupRun({ start: vi.fn(async () => { throw new Error("Could not start the session."); }) });
+  it("reports a start failure as plain copy and stays idle so Run Setup can be tried again", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
+    const api = fakeSetupRun({ start: vi.fn(async () => { throw raw; }) });
     const agent = new SetupAgent(api);
     await agent.start();
     expect(agent.mode).toBe("idle");
-    expect(agent.error).toBe("Could not start the session.");
+    expect(agent.error).toBe("Setup could not start. Try again.");
+    expect(agent.error).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[setup-agent] start failed", raw);
+    warn.mockRestore();
   });
 
   it("a typed reply answers the open structured question, otherwise it is the next turn", async () => {
@@ -419,7 +424,15 @@ describe("SetupAgent", () => {
     await settle();
     expect(stop).toHaveBeenCalledWith("sess-1");
     expect(agent.failure?.kind).toBe("auth");
-    expect(agent.failureDetail).not.toContain("Tried again");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // The engine's own words never reach the detail line; they go to the log.
+    expect(agent.failureDetail ?? "").not.toContain("OAuth session expired");
+    expect(warn).toHaveBeenCalledWith(
+      "[setup-agent] run stopped",
+      "Failed to authenticate: OAuth session expired and could not be refreshed",
+    );
+    warn.mockRestore();
+    expect(agent.failureDetail ?? "").not.toContain("Tried again");
     const modes: string[] = [];
     const pending = agent.runAgain("claude");
     modes.push(agent.mode);

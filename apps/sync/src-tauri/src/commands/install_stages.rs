@@ -53,6 +53,7 @@ pub(crate) enum OnboardingErrorCategory {
     CancelCleanupFailed,
     UnsupportedPlatform,
     Disk,
+    DiskFull,
     Unknown,
 }
 
@@ -71,6 +72,7 @@ impl OnboardingErrorCategory {
             Self::CancelCleanupFailed => "cancel-cleanup-failed",
             Self::UnsupportedPlatform => "unsupported-platform",
             Self::Disk => "disk",
+            Self::DiskFull => "disk-full",
             Self::Unknown => "unknown",
         }
     }
@@ -384,11 +386,15 @@ fn format_hq_failure(args: &[&str], output: &Output) -> String {
     )
 }
 
-async fn run_hq_output(
+async fn run_hq_output(args: &[&str], hq_root: &Path) -> Result<Output, StageCommandFailure> {
+    run_hq_output_with_invocation(args, hq_root, hq_resolver::resolve_hq()).await
+}
+
+async fn run_hq_output_with_invocation(
     args: &[&str],
     hq_root: &Path,
+    invocation: hq_resolver::HqInvocation,
 ) -> Result<Output, StageCommandFailure> {
-    let invocation = hq_resolver::resolve_hq();
     let path_env = paths::child_path();
     // Serialize concurrent npx self-heal installs against the shared
     // ~/.npm/_npx cache (HQ-SYNC-6); no-op on the resolved-local fast path.
@@ -502,12 +508,17 @@ async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), StageCommandFailure
     run_hq_output(args, hq_root).await.map(|_| ())
 }
 
-/// Run `hq <args>` in `hq_root` through the app's own CLI resolution (local
-/// binary or npx self-heal) with the app's child PATH, surfacing only the
-/// failure message. Shared with the Sessions setup self-heal, which has no
-/// use for the onboarding error category.
-pub(crate) async fn run_hq_plain(args: &[&str], hq_root: &Path) -> Result<(), String> {
-    run_hq(args, hq_root).await.map_err(|failure| failure.message)
+/// Run HQ Anywhere's global runtime command through its dedicated resolver so
+/// a newer CLI requirement cannot change the resolver used by shared flows.
+pub(crate) async fn run_hq_global_runtime_plain(
+    args: &[&str],
+    hq_root: &Path,
+) -> Result<(), String> {
+    let invocation = hq_resolver::resolve_hq_for_global_runtime();
+    run_hq_output_with_invocation(args, hq_root, invocation)
+        .await
+        .map(|_| ())
+        .map_err(|failure| failure.message)
 }
 
 async fn run_hq_json(
@@ -553,6 +564,14 @@ fn read_global_git_config(
 
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok((!value.is_empty()).then_some(value))
+}
+
+fn git_would_prompt_for_tools(git: &str) -> bool {
+    crate::commands::command_line_tools::git_would_prompt(
+        &crate::commands::command_line_tools::RealShell,
+        cfg!(target_os = "macos"),
+        git,
+    )
 }
 
 fn git_init_path(
@@ -626,6 +645,15 @@ pub fn git_init(
                 error_category: OnboardingErrorCategory::Unknown,
             })?;
         let git = paths::resolve_bin("git");
+        // Never run the macOS git shim without Apple's developer tools: it pops
+        // Apple's install dialog and blocks. The wizard installs the tools
+        // first; this is the backstop for any caller that skipped that.
+        if git_would_prompt_for_tools(&git) {
+            return Err(StageCommandFailure {
+                message: "Apple's developer tools are not installed yet".to_string(),
+                error_category: OnboardingErrorCategory::NotFound,
+            });
+        }
         let path_env = paths::child_path();
         let explicit_name = normalize_optional_git_config(name);
         let explicit_email = normalize_optional_git_config(email);
@@ -660,6 +688,9 @@ pub fn git_init(
 #[tauri::command]
 pub fn git_probe_user() -> Result<Option<GitUser>, String> {
     let git = paths::resolve_bin("git");
+    if git_would_prompt_for_tools(&git) {
+        return Ok(None);
+    }
     let path_env = paths::child_path();
     let name = read_global_git_config(&git, &path_env, "user.name").map_err(|e| e.message)?;
     let email = read_global_git_config(&git, &path_env, "user.email").map_err(|e| e.message)?;
@@ -932,6 +963,35 @@ fn write_auto_install_marker(path: &Path, marker: &AutoInstallMarker) -> Result<
 /// unit again. A unit the user had already removed is left alone.
 pub(crate) async fn retire_work_mesh_unit() -> Result<(), String> {
     let _guard = MESH_INSTALL_LOCK.lock().await;
+    run_if_production_bundle(
+        &crate::scratch_build::LaunchIdentity::current(),
+        "Work Mesh unit removal",
+        (),
+        retire_work_mesh_unit_unguarded,
+    )
+    .await
+}
+
+/// Run `launch_step` only for the shipped HQ bundle. Any other bundle (a
+/// scratch, Lane Check or worktree build sharing the owner's HQ) logs one
+/// skip line and gets `skipped` back without any `hq` command running.
+async fn run_if_production_bundle<T, F, Fut>(
+    identity: &crate::scratch_build::LaunchIdentity,
+    what: &str,
+    skipped: T,
+    launch_step: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    if !identity.allows(what) {
+        return Ok(skipped);
+    }
+    launch_step().await
+}
+
+async fn retire_work_mesh_unit_unguarded() -> Result<(), String> {
     let hq_root = PathBuf::from(resolve_hq_path()?);
     let status_value = run_hq_json(MESH_DAEMON_STATUS_ARGS, &hq_root)
         .await
@@ -959,6 +1019,25 @@ pub(crate) async fn retire_work_mesh_unit() -> Result<(), String> {
 #[tauri::command]
 pub async fn ensure_work_mesh_daemon() -> Result<EnsureOutcome, String> {
     let _guard = MESH_INSTALL_LOCK.lock().await;
+    run_if_production_bundle(
+        &crate::scratch_build::LaunchIdentity::current(),
+        "Work Mesh daemon launch install",
+        non_production_mesh_outcome(),
+        ensure_work_mesh_daemon_unguarded,
+    )
+    .await
+}
+
+fn non_production_mesh_outcome() -> EnsureOutcome {
+    EnsureOutcome {
+        installed: false,
+        already_installed: false,
+        skipped: true,
+        reason: "skipped: non-production bundle".to_string(),
+    }
+}
+
+async fn ensure_work_mesh_daemon_unguarded() -> Result<EnsureOutcome, String> {
     if crate::commands::hq_daemon_host::daemon_mode_active() {
         return Ok(EnsureOutcome {
             installed: false,
@@ -1655,6 +1734,89 @@ mod tests {
             None,
             "5.100.0"
         ));
+    }
+
+    fn launch_identity(id: Option<&str>) -> crate::scratch_build::LaunchIdentity {
+        crate::scratch_build::LaunchIdentity {
+            scratch_flag: false,
+            bundle_identifier: id.map(str::to_string),
+        }
+    }
+
+    /// The Work Mesh launch steps (`ensure_work_mesh_daemon` on SteadyState
+    /// launch, `retire_work_mesh_unit` when hq daemon mode starts) run `hq
+    /// mesh daemon status|install|uninstall` only for the shipped bundle.
+    #[test]
+    fn a_scratch_bundle_runs_no_work_mesh_install_or_uninstall_at_launch() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        for id in [
+            Some("ai.indigo.hq-lane-check.conflict-toast"),
+            Some("ai.indigo.hq-sync-menubar-dev"),
+            None,
+        ] {
+            let ran = std::cell::Cell::new(0);
+            let outcome = runtime
+                .block_on(run_if_production_bundle(
+                    &launch_identity(id),
+                    "Work Mesh daemon launch install",
+                    non_production_mesh_outcome(),
+                    || async {
+                        ran.set(ran.get() + 1);
+                        Ok(EnsureOutcome {
+                            installed: true,
+                            already_installed: false,
+                            skipped: false,
+                            reason: "installed".to_string(),
+                        })
+                    },
+                ))
+                .expect("skip is not an error");
+            assert_eq!(ran.get(), 0, "{id:?}");
+            assert!(outcome.skipped && !outcome.installed, "{id:?}");
+            assert_eq!(outcome.reason, "skipped: non-production bundle");
+
+            let ran = std::cell::Cell::new(0);
+            runtime
+                .block_on(run_if_production_bundle(
+                    &launch_identity(id),
+                    "Work Mesh unit removal",
+                    (),
+                    || async {
+                        ran.set(ran.get() + 1);
+                        Ok(())
+                    },
+                ))
+                .expect("skip is not an error");
+            assert_eq!(ran.get(), 0, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn the_production_bundle_still_runs_the_work_mesh_launch_steps() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let ran = std::cell::Cell::new(0);
+        let outcome = runtime
+            .block_on(run_if_production_bundle(
+                &launch_identity(Some(hq_platform::autostart::PRODUCTION_BUNDLE_IDENTIFIER)),
+                "Work Mesh daemon launch install",
+                non_production_mesh_outcome(),
+                || async {
+                    ran.set(ran.get() + 1);
+                    Ok(EnsureOutcome {
+                        installed: true,
+                        already_installed: false,
+                        skipped: false,
+                        reason: "installed".to_string(),
+                    })
+                },
+            ))
+            .expect("production runs the step");
+        assert_eq!(ran.get(), 1);
+        assert!(outcome.installed);
     }
 
     #[test]

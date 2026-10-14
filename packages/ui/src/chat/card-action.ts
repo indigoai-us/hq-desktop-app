@@ -58,11 +58,38 @@ export function endCardActionIdempotencyKey(
   if (existing.n <= 0) store.delete(id);
 }
 
-/** Strip adapter `[code] ` prefixes so the card shows the permission reason. */
+export const CARD_ACTION_FORBIDDEN_MESSAGE =
+  "You don't have permission to do this. Ask a workspace owner or admin.";
+export const CARD_ACTION_FAILED_MESSAGE = "That didn't work. Try again.";
+/** Transient copy keeps the word "connection" so the card stays open for retry. */
+export const CARD_ACTION_OFFLINE_MESSAGE = "Couldn't reach HQ. Check your connection and try again.";
+
+/**
+ * The failure's own words with the adapter's leading `[code] ` tag removed.
+ * For a caller that decides for itself what is fit to show: the New Bot
+ * create keeps a short refusal the server wrote for a person and replaces
+ * anything that reads like a backend error (`shownFailure`). Everything else
+ * uses `cardActionFailureMessage`.
+ */
+export function cardActionFailureText(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.replace(/^\[[^\]]+]\s*/, "").trim() || "This action isn't allowed";
+}
+
+/**
+ * Plain copy for a failed card/lifecycle action. The raw adapter/server text
+ * is logged, never shown.
+ */
 export function cardActionFailureMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
-  const stripped = raw.replace(/^\[[^\]]+]\s*/, "").trim();
-  return stripped || "This action isn't allowed";
+  console.warn("[card-action] action failed", raw);
+  if (/\b403\b|forbidden|permission|owners? only|only owners|cannot act|not allowed/i.test(raw)) {
+    return CARD_ACTION_FORBIDDEN_MESSAGE;
+  }
+  if (/timed? out|timeout|network|connection|unavailable|fetch failed|could not reach|\b50[234]\b/i.test(raw)) {
+    return CARD_ACTION_OFFLINE_MESSAGE;
+  }
+  return CARD_ACTION_FAILED_MESSAGE;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

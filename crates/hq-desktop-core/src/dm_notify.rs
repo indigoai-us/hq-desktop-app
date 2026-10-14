@@ -1041,6 +1041,23 @@ pub struct ThreadMessage {
     /// rows — treat as `"human"`. Mirrors `details` and `prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
+    /// Origin of a forwarded message (`{ senderUid, senderName, sourceKind,
+    /// originalCreatedAt }`). Raw JSON so the webview owns validation. Absent
+    /// on ordinary rows and older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<serde_json::Value>,
+    /// The forwarder's own note, when the server returns it separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_note: Option<String>,
+    /// Count of source files left out of a forward.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_attachments: Option<u32>,
+    /// Structured blocks the sender attached (hq-pro-core `richContent`: a bot's
+    /// connection cards, with their state). Raw JSON, passed through untouched:
+    /// the webview validates it where it draws it, and `body` stays the
+    /// plain-text fallback. Absent on older rows and servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rich_content: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1181,6 +1198,23 @@ pub struct ThreadReply {
     /// rows — treat as `"human"`. Mirrors `details` and `prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
+    /// Origin of a forwarded message (`{ senderUid, senderName, sourceKind,
+    /// originalCreatedAt }`). Raw JSON so the webview owns validation. Absent
+    /// on ordinary rows and older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<serde_json::Value>,
+    /// The forwarder's own note, when the server returns it separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_note: Option<String>,
+    /// Count of source files left out of a forward.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_attachments: Option<u32>,
+    /// Structured blocks the sender attached (hq-pro-core `richContent`: a bot's
+    /// connection cards, with their state). Raw JSON, passed through untouched:
+    /// the webview validates it where it draws it, and `body` stays the
+    /// plain-text fallback. Absent on older rows and servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rich_content: Option<serde_json::Value>,
 }
 
 /// The full thread view returned by `GET /v1/notify/threads`: the pinned root
@@ -2907,6 +2941,31 @@ mod tests {
     }
 
     #[test]
+    fn thread_message_and_reply_keep_rich_content_across_the_bridge() {
+        let json = r#"{
+            "eventId": "evt_t2",
+            "fromPersonUid": "agt_bot",
+            "fromEmail": "b@b.com",
+            "fromDisplayName": "Bot",
+            "body": "Apps: Slack (not added yet)",
+            "createdAt": "2026-10-05T10:00:00Z",
+            "direction": "in",
+            "richContent": {"v": 1, "blocks": [{"kind": "connect", "items": [{"app": "slack", "slack": {"installed": "absent"}}]}]}
+        }"#;
+        let msg: ThreadMessage = serde_json::from_str(json).expect("ThreadMessage with richContent parses");
+        let out = serde_json::to_value(&msg).expect("serializes");
+        assert_eq!(out["richContent"]["blocks"][0]["items"][0]["slack"]["installed"], "absent");
+        let reply: ThreadReply = serde_json::from_str(json).expect("ThreadReply with richContent parses");
+        let out = serde_json::to_value(&reply).expect("serializes");
+        assert_eq!(out["richContent"]["blocks"][0]["kind"], "connect");
+        // An older row has none, and none is written back.
+        let old = r#"{"eventId": "evt_t3", "fromPersonUid": "agt_bot", "fromEmail": "", "fromDisplayName": "Bot", "body": "hi", "createdAt": "2026-10-05T10:00:00Z", "direction": "in"}"#;
+        let msg: ThreadMessage = serde_json::from_str(old).expect("old ThreadMessage parses");
+        assert!(msg.rich_content.is_none());
+        assert!(serde_json::to_value(&msg).expect("serializes").get("richContent").is_none());
+    }
+
+    #[test]
     fn thread_reply_deserializes_audience_field() {
         let json = r#"{
             "eventId": "evt_r1",
@@ -3081,5 +3140,55 @@ mod tests {
         assert!(ids.contains(&"h1"));
         assert!(ids.contains(&"absent1"));
         assert!(!ids.contains(&"a1"));
+    }
+
+    #[test]
+    fn thread_message_forward_fields_round_trip() {
+        let raw = serde_json::json!({
+            "eventId": "e1", "fromPersonUid": "p1", "fromEmail": "a@b.c",
+            "fromDisplayName": "A", "body": "note", "createdAt": "2026-10-06T00:00:00Z",
+            "direction": "in",
+            "forwardedFrom": {"senderUid": "p2", "senderName": "Bea", "sourceKind": "dm", "originalCreatedAt": "2026-10-05T00:00:00Z"},
+            "forwardNote": "fyi",
+            "omittedAttachments": 2
+        });
+        let msg: ThreadMessage = serde_json::from_value(raw.clone()).unwrap();
+        let back = serde_json::to_value(&msg).unwrap();
+        assert_eq!(back["forwardedFrom"], raw["forwardedFrom"]);
+        assert_eq!(back["forwardNote"], "fyi");
+        assert_eq!(back["omittedAttachments"], 2);
+        let plain: ThreadMessage = serde_json::from_value(serde_json::json!({
+            "eventId": "e1", "fromPersonUid": "p1", "fromEmail": "", "fromDisplayName": "",
+            "body": "x", "createdAt": "t", "direction": "in"
+        })).unwrap();
+        let out = serde_json::to_value(&plain).unwrap();
+        assert!(out.get("forwardedFrom").is_none());
+        assert!(out.get("forwardNote").is_none());
+        assert!(out.get("omittedAttachments").is_none());
+    }
+
+    #[test]
+    fn thread_reply_forward_fields_round_trip() {
+        let raw = serde_json::json!({
+            "eventId": "e1", "fromPersonUid": "p1", "fromEmail": "a@b.c",
+            "fromDisplayName": "A", "body": "note", "createdAt": "2026-10-06T00:00:00Z",
+            "direction": "in",
+            "forwardedFrom": {"senderUid": "p2", "senderName": "Bea", "sourceKind": "dm", "originalCreatedAt": "2026-10-05T00:00:00Z"},
+            "forwardNote": "fyi",
+            "omittedAttachments": 2
+        });
+        let msg: ThreadReply = serde_json::from_value(raw.clone()).unwrap();
+        let back = serde_json::to_value(&msg).unwrap();
+        assert_eq!(back["forwardedFrom"], raw["forwardedFrom"]);
+        assert_eq!(back["forwardNote"], "fyi");
+        assert_eq!(back["omittedAttachments"], 2);
+        let plain: ThreadReply = serde_json::from_value(serde_json::json!({
+            "eventId": "e1", "fromPersonUid": "p1", "fromEmail": "", "fromDisplayName": "",
+            "body": "x", "createdAt": "t", "direction": "in"
+        })).unwrap();
+        let out = serde_json::to_value(&plain).unwrap();
+        assert!(out.get("forwardedFrom").is_none());
+        assert!(out.get("forwardNote").is_none());
+        assert!(out.get("omittedAttachments").is_none());
     }
 }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { AGENT_PATHS } from "../adapter.js";
+import { AGENT_PATHS, OUTPOST_PATHS } from "../adapter.js";
 import { TauriPlatformAdapter } from "./index.js";
-import { createSyncPlatformAdapter } from "./sync-adapter.js";
+import { CLAUDE_LOGIN_CODE_TIMEOUT_SECS, createSyncPlatformAdapter } from "./sync-adapter.js";
 
 interface Invocation {
   cmd: string;
@@ -119,6 +119,48 @@ describe("createSyncPlatformAdapter agents", () => {
       },
     ]);
   });
+
+  // Owner, New Bot with Claude: the first pasted code "disappeared and
+  // nothing happened". The server types the code on the bot's machine and
+  // waits up to 20 s for Claude's answer before it replies; the shared 15 s
+  // bound cut that wait off.
+  it("gives the Claude code paste-back a bound past the server's own wait", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ uid: "agt_1", ok: true, outcome: "accepted", reason: "ok", at: "2026-10-10T00:00:00.000Z" }) };
+      },
+    });
+    const result = await adapter.agents.submitClaudeLoginCode!("agt_1", "returned-code");
+    expect(CLAUDE_LOGIN_CODE_TIMEOUT_SECS).toBeGreaterThanOrEqual(30);
+    expect(calls).toEqual([
+      {
+        cmd: "hq_pro_fetch",
+        args: {
+          url: AGENT_PATHS.loginCode("agt_1"),
+          method: "POST",
+          body: JSON.stringify({ code: "returned-code" }),
+          timeoutSecs: CLAUDE_LOGIN_CODE_TIMEOUT_SECS,
+        },
+      },
+    ]);
+    expect(result).toMatchObject({ ok: true, value: { outcome: "accepted" } });
+  });
+
+  // Review of #1549: the New Bot screen tells a refusal (4xx) from a request
+  // whose fate is not known (5xx), so a failure keeps its HTTP status.
+  it.each([
+    [400, { error: "claude login code contains characters outside the URL-safe set", code: "LOGIN_CODE_INVALID" }, "LOGIN_CODE_INVALID"],
+    [504, { message: "Endpoint request timed out" }, "http-504"],
+  ])("keeps the HTTP status of a refused Claude code paste-back (%i)", async (status, body, code) => {
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => ({ status, body: JSON.stringify(body) }),
+      requestPolicy: { throttle: null },
+    });
+    const result = await adapter.agents.submitClaudeLoginCode!("agt_1", "returned-code");
+    expect(result).toMatchObject({ ok: false, status, code });
+  });
 });
 
 describe("bot removal that names the running machine", () => {
@@ -215,5 +257,53 @@ describe("a refused bot removal keeps its HTTP status (review A-I9)", () => {
     await expect(sync.agents.deprovision("agt_1")).resolves.toMatchObject({ ok: false, status, code });
     const tauri = new TauriPlatformAdapter({ invoke });
     await expect(tauri.agents.deprovision("agt_1")).resolves.toMatchObject({ ok: false, status, code });
+  });
+});
+
+describe("createSyncPlatformAdapter personal Outpost", () => {
+  it("reads the caller's Outpost status and job rows through hq_pro_fetch", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ statuses: [] }) };
+      },
+    });
+    const jobs = await adapter.agents.listMyOutpostJobs?.();
+    await adapter.agents.getMyOutpostStatus?.();
+    expect(jobs).toEqual({ ok: true, value: { statuses: [] } });
+    expect(calls).toEqual([
+      { cmd: "hq_pro_fetch", args: { url: OUTPOST_PATHS.jobsStatus, method: "GET", body: null } },
+      { cmd: "hq_pro_fetch", args: { url: OUTPOST_PATHS.status, method: "POST", body: "{}" } },
+    ]);
+  });
+
+  it("surfaces a missing Outpost as an http-404 failure", async () => {
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => ({ status: 404, body: JSON.stringify({ error: true, message: "not found" }) }),
+    });
+    const res = await adapter.agents.getMyOutpostStatus?.();
+    expect(res?.ok).toBe(false);
+    expect(res && !res.ok ? res.code : "").toBe("http-404");
+  });
+});
+
+describe("createSyncPlatformAdapter personal integrations", () => {
+  it("reads Google and personal Slack accounts on the console's routes", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ accounts: [] }) };
+      },
+    });
+    await adapter.agents.listMyGoogleAccounts?.();
+    await adapter.agents.listMySlackAccounts?.();
+    expect("disconnectMyGoogleAccount" in adapter.agents).toBe(false);
+    expect("disconnectMySlackAccount" in adapter.agents).toBe(false);
+    expect(calls.map((c) => [c.args?.method, c.args?.url])).toEqual([
+      ["GET", "/v1/google/accounts"],
+      ["GET", "/v1/slack/personal/accounts"],
+    ]);
   });
 });

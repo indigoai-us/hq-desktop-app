@@ -1,0 +1,23 @@
+/*
+ * The one button standard (owner, 2026-10-05: "the button height and padding
+ * on the top menubar should be set as the standard for all buttons across the
+ * app"). Values are measured from the titlebar Launch / Core pills
+ * (home/V4TitleBar.svelte `.v4-core-pill`): 13px label at 1.45 line height,
+ * 5px block padding, 10px inline padding, 1px border, 6px icon gap, 8px
+ * radius. Block size = 13 * 1.45 + 2 * 5 + 2 * 1 = 30.85px, the computed height
+ * of the pill. Label weight stays 500 (one label weight for every button).
+ * Every labelled, icon-only and pill button reads these tokens; none sets its
+ * own height or padding.
+ */
+:root {
+  --hq-btn-font-size: 13px;
+  --hq-btn-line-height: 1.45;
+  --hq-btn-font-weight: 500;
+  --hq-btn-pad-block: 5px;
+  --hq-btn-pad-inline: 10px;
+  --hq-btn-border: 1px;
+  --hq-btn-gap: 6px;
+  --hq-btn-radius: 8px;
+  --hq-btn-icon: 14px;
+  --hq-btn-h: calc(var(--hq-btn-font-size) * var(--hq-btn-line-height) + 2 * var(--hq-btn-pad-block) + 2 * var(--hq-btn-border));
+}

@@ -31,7 +31,6 @@ use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
-#[cfg(not(windows))]
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -2828,6 +2827,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let captured = recover_lock(&stderr_lines).clone();
         let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
+        let user_msg = hq_desktop_core::installer_disk_space::user_facing_install_error(
+            program, &stderr, &msg,
+        );
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
@@ -2836,10 +2838,10 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
-                error: Some(msg.clone()),
+                error: Some(user_msg.clone()),
             },
         );
-        Err(msg)
+        Err(user_msg)
     }
 }
 
@@ -2920,6 +2922,7 @@ pub fn format_install_error(exit_code: i32, stderr_lines: &[String]) -> String {
 #[cfg(not(windows))]
 #[tauri::command]
 pub async fn install_homebrew(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_homebrew")?;
     run_streaming(
         &app,
         "/bin/bash",
@@ -3555,6 +3558,7 @@ async fn install_jq_macos(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_jq(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_jq")?;
     #[cfg(not(windows))]
     {
         install_jq_macos(app).await
@@ -3965,6 +3969,12 @@ async fn run_managed_npm_install_with_cancellation<R: tauri::Runtime>(
     retry_public_registry: bool,
     cancellation: &InstallCancellationRegistration,
 ) -> Result<String, String> {
+    let app_cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("resolve app cache directory: {e}"))?;
+    hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at(Path::new(prefix))?;
+    hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at(&app_cache_dir)?;
     let npm_cache = crate::commands::hq_cli_update::app_npm_cache(app).map_err(|(_, error)| {
         emit_install_line(
             app,
@@ -4220,6 +4230,7 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_node<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_node")?;
     #[cfg(not(windows))]
     {
         install_node_macos(app).await
@@ -4250,6 +4261,7 @@ pub(crate) async fn install_node_for_repair<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn install_git(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_git")?;
     #[cfg(not(windows))]
     {
         install_git_macos(app).await
@@ -4262,6 +4274,7 @@ pub async fn install_git(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_gh(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_gh")?;
     #[cfg(not(windows))]
     {
         install_gh_macos(app).await
@@ -4274,6 +4287,7 @@ pub async fn install_gh(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_yq(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_yq")?;
     #[cfg(not(windows))]
     {
         install_yq_macos(app).await
@@ -4286,6 +4300,7 @@ pub async fn install_yq(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_claude_code")?;
     #[cfg(not(windows))]
     {
         install_claude_code_macos(app).await
@@ -4414,6 +4429,7 @@ async fn install_npm_cli_windows(
 /// Install the Codex CLI via `npm install -g @openai/codex`.
 #[tauri::command]
 pub async fn install_codex(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_codex")?;
     let (spec, bin) = session_provider_npm_spec("codex")?;
     #[cfg(not(windows))]
     {
@@ -4428,6 +4444,7 @@ pub async fn install_codex(app: AppHandle) -> Result<String, String> {
 /// Install the Grok CLI via `npm install -g @xai-official/grok`.
 #[tauri::command]
 pub async fn install_grok(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_grok")?;
     let (spec, bin) = session_provider_npm_spec("grok")?;
     #[cfg(not(windows))]
     {
@@ -4443,6 +4460,7 @@ pub async fn install_grok(app: AppHandle) -> Result<String, String> {
 /// hunting binaries. Ensures npm/Node first, then the provider package.
 #[tauri::command]
 pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_session_provider")?;
     match tool.as_str() {
         "claude" => {
             let _ = npm_bin_or_install_node(&app, "claude").await?;
@@ -4465,6 +4483,7 @@ pub async fn install_session_provider(app: AppHandle, tool: String) -> Result<St
 
 #[tauri::command]
 pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_qmd")?;
     #[cfg(not(windows))]
     {
         install_qmd_macos(app).await
@@ -4477,6 +4496,7 @@ pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn install_hq_cli(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_hq_cli")?;
     #[cfg(not(windows))]
     {
         install_hq_cli_macos(app).await
@@ -5522,6 +5542,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let captured = recover_lock(&stderr_lines).clone();
         let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
+        let user_msg = hq_desktop_core::installer_disk_space::user_facing_install_error(
+            program, &stderr, &msg,
+        );
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
@@ -5530,10 +5553,10 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
-                error: Some(msg.clone()),
+                error: Some(user_msg.clone()),
             },
         );
-        Err(msg)
+        Err(user_msg)
     }
 }
 
@@ -5989,6 +6012,7 @@ fn managed_node_arch() -> Option<&'static str> {
 #[cfg(windows)]
 #[tauri::command]
 pub async fn install_pnpm(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_pnpm")?;
     emit_progress(&app, "Installing pnpm via npm...");
     let prefix = managed_npm_prefix();
     let prefix = prefix.to_string_lossy().into_owned();
@@ -6609,6 +6633,7 @@ async fn rescue_rsync_is_ready() -> Result<(), String> {
 #[cfg(windows)]
 #[tauri::command]
 pub async fn install_rsync(app: AppHandle) -> Result<String, String> {
+    crate::scratch_build::refuse_install("install_rsync")?;
     install_rsync_with_progress(|message| emit_progress(&app, message)).await
 }
 
@@ -7271,6 +7296,21 @@ fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupComm
     if is_concurrent_install_skip_result(result) {
         return OnboardingErrorCategory::ConcurrentInstall;
     }
+    let preflight_disk_space_message =
+        hq_desktop_core::installer_disk_space::install_disk_space_message();
+    let refused_disk_space_preflight =
+        result.error.as_deref() == Some(preflight_disk_space_message.as_str());
+    let command_reported_disk_full = diagnostic.is_some_and(|diagnostic| {
+        hq_desktop_core::installer_disk_space::is_disk_full_output(&diagnostic.stdout)
+            || hq_desktop_core::installer_disk_space::is_disk_full_output(&diagnostic.stderr)
+            || hq_desktop_core::installer_disk_space::is_disk_full_output(&diagnostic.error)
+    });
+    let result_reports_disk_full = result.error.as_deref().is_some_and(
+        hq_desktop_core::installer_disk_space::is_disk_full_output,
+    );
+    if refused_disk_space_preflight || command_reported_disk_full || result_reports_disk_full {
+        return OnboardingErrorCategory::DiskFull;
+    }
     match setup_error_kind(diagnostic) {
         Some("winget_pinned_certificate_mismatch") => return OnboardingErrorCategory::Network,
         Some("qmd_not_resolved") => return OnboardingErrorCategory::NotFound,
@@ -7862,6 +7902,9 @@ static QMD_ABI_REPAIR_STARTED: AtomicBool = AtomicBool::new(false);
 /// Launch-time repair for a desktop-installed qmd whose sqlite addon was built
 /// for a different Node ABI than HQ's managed Node. Runs once per process.
 pub fn setup_qmd_abi_repair(app: &AppHandle) {
+    if !crate::scratch_build::launch_side_effect_allowed("qmd ABI repair") {
+        return;
+    }
     if QMD_ABI_REPAIR_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -7981,6 +8024,7 @@ pub async fn install_deps(
     app: AppHandle,
     failure_scope: Option<crate::commands::install_stages::OnboardingFailureScope>,
 ) -> Result<(), String> {
+    crate::scratch_build::refuse_install("install_deps")?;
     clear_onboarding_failure_detail("deps", failure_scope.as_ref());
     let deps = dependency_defs();
     let mut result_by_id = premark_optional_results(deps);
@@ -11109,6 +11153,36 @@ mod managed_node_health_tests {
 }
 
 #[cfg(test)]
+mod disk_space_install_wiring_tests {
+    #[test]
+    fn npm_install_wires_preflight_before_cache_creation_and_translates_failures_for_users() {
+        let source = include_str!("install_deps.rs");
+        let install = source
+            .split("async fn run_managed_npm_install_with_cancellation")
+            .nth(1)
+            .expect("managed npm install entry point");
+        let preflight = install
+            .find("installer_disk_space::ensure_setup_disk_space_at")
+            .expect("managed npm storage preflight");
+        let cache_creation = install
+            .find("app_npm_cache(app)")
+            .expect("app-owned npm cache creation");
+        assert!(preflight < cache_creation, "space must be checked before preparing npm cache");
+        let production_source = source
+            .split("#[cfg(test)]\nmod disk_space_install_wiring_tests")
+            .next()
+            .expect("production source before wiring tests");
+        assert_eq!(
+            production_source
+                .matches("installer_disk_space::user_facing_install_error(")
+                .count(),
+            2,
+            "both platform command runners must translate npm disk-full failures"
+        );
+    }
+}
+
+#[cfg(test)]
 mod dep_health_tests {
     use super::*;
 
@@ -11979,6 +12053,54 @@ mod cli_install_lock_skip_tests {
                 send_setup_dependency_failure(&scope, dependency, category, diagnostic, &blocked);
             }
         })
+    }
+
+    #[test]
+    fn preflight_disk_space_refusal_emits_disk_full_category_tag() {
+        let error = hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at_with(
+            Path::new("/tmp/hq-setup-prefix-not-created"),
+            |_| Ok(0),
+        )
+        .expect_err("preflight must refuse a disk below the free-space minimum");
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert("hq-cli", hq_cli_result(&error));
+
+        let events = capture_reporting_loop(&results, &HashMap::new());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["setup_error_category"], "disk-full");
+        assert!(matches!(
+            events[0].extra.get("setup_error"),
+            Some(sentry::protocol::Value::String(reason)) if reason.contains("1 GiB")
+        ));
+    }
+
+    #[test]
+    fn npm_enospc_with_exit_code_emits_disk_full_category_tag() {
+        let stderr = "npm error code ENOSPC: no space left on device (os error 28)";
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert(
+            "hq-cli",
+            hq_cli_result("Process exited with code 1: npm error code ENOSPC"),
+        );
+        let mut diagnostics: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
+        diagnostics.insert(
+            "hq-cli",
+            SetupCommandDiagnostic {
+                command: "npm install -g @indigoai-us/hq-cli".to_string(),
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: stderr.to_string(),
+                error: "Process exited with code 1".to_string(),
+            },
+        );
+
+        let events = capture_reporting_loop(&results, &diagnostics);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["setup_error_category"], "disk-full");
+        assert!(matches!(
+            events[0].extra.get("setup_stderr_tail"),
+            Some(sentry::protocol::Value::String(reason)) if reason.contains("ENOSPC")
+        ));
     }
 
     #[test]

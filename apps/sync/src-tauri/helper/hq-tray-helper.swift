@@ -395,18 +395,16 @@ final class TrayController: NSObject {
             controller.refreshStatus()
 
             // Badge and status snapshots are tiny local state, not a second
-            // poller. This timer only observes the app's latest atomic
-            // snapshots and updates AppKit on the main run loop.
-            Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
+            // poller. They change only when the app publishes new snapshots,
+            // so a two-second check keeps the menu current without waking the
+            // helper several times each second while it is otherwise idle.
+            // Snapshot equality gates below avoid reparsing/repainting when
+            // the app has not published a change.
+            Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
                 controller.refreshBadge()
                 controller.refreshStatus()
-            }
-
-            // Exit with the main HQ app so we never leave an orphan status item.
-            if hqPid > 0 {
-                Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
-                    if kill(hqPid, 0) != 0 { NSApp.terminate(nil) }
-                }
+                // Exit with the main HQ app so we never leave an orphan status item.
+                if hqPid > 0, kill(hqPid, 0) != 0 { NSApp.terminate(nil) }
             }
 
             app.run()

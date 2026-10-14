@@ -1,5 +1,6 @@
 import * as Sentry from "@sentry/svelte";
 import './styles/design-system.css';
+import '@hq/ui/button-standard.css';
 import App from './App.svelte';
 import MeetingsWindow from './components/MeetingsWindow.svelte';
 import NewFilesDetail from './components/NewFilesDetail.svelte';
@@ -17,6 +18,7 @@ import { beforeSend } from "./sentry-before-send";
 import { sentryEnvironmentForVersion } from './lib/sentry-environment';
 import { installDesktopZoom } from './lib/desktopZoom';
 import { installAppearancePreferences } from './lib/appearancePreferences';
+import { installLinkTitleFetcher } from './lib/linkTitleFetcher';
 import { signalUiBoot } from './lib/ui-hot';
 
 Sentry.init({
@@ -40,6 +42,7 @@ document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
 // One persisted preference governs every HQ WebView: desktop, Messages,
 // meetings, detail sheets, and the compact menubar surface.
 installDesktopZoom();
+installLinkTitleFetcher();
 installAppearancePreferences({
   ...(windowLabel === 'main' ? { applyNativeTheme: (theme) => setTheme(theme) } : {}),
   // Pre-Tahoe Macs get the vibrancy fallback, not Liquid Glass; the surfaces

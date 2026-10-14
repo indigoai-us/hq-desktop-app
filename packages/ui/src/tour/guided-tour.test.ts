@@ -17,6 +17,7 @@ import {
   tourCanGoBack,
   tourPrimaryLabel,
   tourProgressLabel,
+  tourSetupBlocked,
   tourSteps,
   unionTourRects,
   writeTourSeenLocally,
@@ -89,7 +90,7 @@ describe("tourSteps", () => {
 
   it("points steps 2 and 3 at the buttons that get there, not the surfaces", () => {
     const steps = tourSteps({ hasCompany: true });
-    expect(steps[1].targets).toEqual(['[data-testid="titlebar-files"]']);
+    expect(steps[1].targets).toEqual(['[data-testid="rail-library"]']);
     expect(steps[2].title).toBe("Make your own bots");
     expect(steps[2].body).toMatch(/^Click \+ to start a new bot/);
     expect(steps[2].targets).toEqual(['[data-testid="chat-new-message"]']);
@@ -100,9 +101,10 @@ describe("tourSteps", () => {
     expect(steps[3].title).toBe("Bring in your team");
     expect(steps[3].targets).toEqual([
       '[data-testid="team-invite"]',
+      '[data-testid="rail-company"]',
       '[data-testid="chat-companies-section"]',
     ]);
-    expect(steps[4].targets).toEqual(['[data-testid="titlebar-meetings"]']);
+    expect(steps[4].targets).toEqual(['[data-testid="rail-meetings"]']);
     expect(steps[7].title).toBe(`Find anything with ${formatShortcut("Mod+K")}`);
     expect(steps[7].targets).toEqual(['[data-testid="command-palette"]']);
   });
@@ -165,6 +167,7 @@ describe("shouldAutoStartTour", () => {
     shellReady: true,
     welcomeOnScreen: true,
     startedThisSession: false,
+    setupBlocked: false,
   };
 
   it("starts on a fresh install once the setup conversation is on screen", () => {
@@ -181,6 +184,29 @@ describe("shouldAutoStartTour", () => {
   it("waits for the shell and the welcome conversation", () => {
     expect(shouldAutoStartTour({ ...ready, shellReady: false })).toBe(false);
     expect(shouldAutoStartTour({ ...ready, welcomeOnScreen: false })).toBe(false);
+  });
+
+  it("waits while #welcome asks for a coding tool", () => {
+    expect(shouldAutoStartTour({ ...ready, setupBlocked: true })).toBe(false);
+  });
+});
+
+describe("tourSetupBlocked", () => {
+  const signedIn = { claude: true, codex: false, grok: false };
+  const none = { claude: false, codex: false, grok: false };
+
+  it("blocks while no coding tool is signed in, so the tour never covers Install Claude", () => {
+    expect(tourSetupBlocked({ hasSetupBot: true, runtimeReady: none, setupError: null })).toBe(true);
+  });
+
+  it("blocks until the host has answered, and while a setup error is on screen", () => {
+    expect(tourSetupBlocked({ hasSetupBot: true, runtimeReady: null, setupError: null })).toBe(true);
+    expect(tourSetupBlocked({ hasSetupBot: true, runtimeReady: signedIn, setupError: "failed" })).toBe(true);
+  });
+
+  it("clears once a tool is signed in, and never blocks a host without a setup bot", () => {
+    expect(tourSetupBlocked({ hasSetupBot: true, runtimeReady: signedIn, setupError: null })).toBe(false);
+    expect(tourSetupBlocked({ hasSetupBot: false, runtimeReady: none, setupError: "x" })).toBe(false);
   });
 });
 

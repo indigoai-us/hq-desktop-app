@@ -271,10 +271,9 @@ export function isWalkIn(person: OfficePerson, now: number): boolean {
 function failureOf(result: AdapterResult<unknown>): OfficeError {
   const failure = result.ok ? null : result;
   const code = failure?.code ?? "UNKNOWN";
-  const message =
-    FRIENDLY[code] ??
-    failure?.message ??
-    "The office could not be loaded. Try again.";
+  // AUDIT-3: the transport's own text goes to the log, never onto the screen.
+  if (!FRIENDLY[code]) console.warn("[office] call failed", code, failure?.message);
+  const message = FRIENDLY[code] ?? "The office could not be loaded. Try again.";
   return { code, message };
 }
 

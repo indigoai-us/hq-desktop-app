@@ -11,6 +11,9 @@ test('resizes and remembers the primary sidebar; keyboard and reset work', async
   await page.mouse.down(); await page.mouse.move(box.x + box.width / 2 + 80, box.y + 100); await page.mouse.up();
   await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeCloseTo(initial + 80, 0);
   await page.reload();
+  // Same readiness check as the first load: the app must boot before the
+  // sidebar has a box to measure.
+  await expect(handle).toBeVisible();
   await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeCloseTo(initial + 80, 0);
   await handle.focus(); await page.keyboard.press('Home');
   await expect.poll(async () => (await sidebar.boundingBox())!.width).toBe(220);

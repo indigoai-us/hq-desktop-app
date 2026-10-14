@@ -1,0 +1,268 @@
+<script lang="ts">
+  /**
+   * Account menu (console-rail US-010). 300 px popover on the You avatar.
+   * Paints from the cached identity. Companies are reached from the rail
+   * tiles and the More companies popover, so this menu lists none. Sign out
+   * uses the in-app confirm. window.confirm is a silent no-op in WKWebView.
+   */
+  import { focusReturn } from "./focus-return.js";
+  import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import type { AccountPageId } from "./account-menu.js";
+  import TierMark from "../badges/TierMark.svelte";
+  import type { ResolvedBadge } from "../badges/badge-catalog.js";
+
+  interface Props {
+    name: string;
+    email?: string;
+    initials?: string;
+    live?: boolean;
+    /** The badge behind your tier mark on the picture (badges/TierMark). */
+    topBadge?: ResolvedBadge | null;
+    anchorLeft?: number;
+    anchorBottom?: number;
+    onclose?: () => void;
+    onpage?: (page: AccountPageId) => void;
+    onsignout?: () => void;
+  }
+
+  let {
+    name,
+    email = "",
+    initials = "",
+    live = false,
+    topBadge = null,
+    anchorLeft = 64,
+    anchorBottom = 16,
+    onclose,
+    onpage,
+    onsignout,
+  }: Props = $props();
+
+  let signOutConfirmOpen = $state(false);
+
+  function mark(): string {
+    if (initials.trim()) return initials.trim().slice(0, 2).toUpperCase();
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+    return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
+  }
+
+  function choose(page: AccountPageId): void {
+    onpage?.(page);
+  }
+
+  function signOut(): void {
+    signOutConfirmOpen = true;
+  }
+
+  function acceptSignOut(): void {
+    signOutConfirmOpen = false;
+    onsignout?.();
+  }
+
+  function onKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      onclose?.();
+    }
+  }
+</script>
+
+<svelte:window onkeydown={onKeydown} />
+
+<button
+  type="button"
+  class="scrim"
+  aria-label="Close account menu"
+  data-testid="account-menu-scrim"
+  onclick={() => onclose?.()}
+></button>
+<div
+  class="menu"
+  role="menu"
+  tabindex="-1"
+  aria-label="Account"
+  data-testid="account-menu"
+  use:focusReturn
+  style="left: {anchorLeft}px; bottom: {anchorBottom}px;"
+>
+  <!-- OWNER-R21: the name block opens Settings at Profile; Profile and
+       Billing are items in the one Settings list, not separate entries. -->
+  <button type="button" class="who" role="menuitem" data-testid="account-identity" onclick={() => choose("profile")}>
+    <span class="avatar" aria-hidden="true">
+      {mark()}
+      {#if live}<span class="live" data-testid="account-menu-live"></span>{/if}
+      {#if topBadge}<TierMark tier={topBadge.tier} avatar={32} badge={topBadge} />{/if}
+    </span>
+    <span class="copy">
+      <span class="name">{name}</span>
+      {#if email}<span class="meta">{email}</span>{/if}
+    </span>
+  </button>
+  <button type="button" class="row" role="menuitem" data-testid="account-settings" onclick={() => choose("settings")}>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
+    <span class="t">Settings</span>
+  </button>
+  <div class="foot">
+    <button type="button" class="row signout" role="menuitem" data-testid="account-sign-out" onclick={signOut}>
+      <span class="t indent">Sign out</span>
+    </button>
+  </div>
+</div>
+
+<ConfirmDialog
+  open={signOutConfirmOpen}
+  title="Sign out"
+  message="Sign out of HQ Work on this machine?"
+  confirmLabel="Sign out"
+  danger
+  oncancel={() => (signOutConfirmOpen = false)}
+  onconfirm={acceptSignOut}
+/>
+
+<style>
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: default;
+  }
+
+  .menu {
+    position: fixed;
+    z-index: 31;
+    width: 300px;
+    max-height: calc(100vh - 24px);
+    overflow: auto;
+    padding: 8px;
+    background: var(--overlay-bg);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-popover, 8px);
+    box-shadow: var(--v4-shadow-popover);
+    color: var(--v4-text-1);
+  }
+
+  .who:hover { background: var(--overlay-hover); }
+  .who {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 6px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 6px 8px 10px;
+    border-bottom: 1px solid var(--v4-rowline);
+    margin-bottom: 6px;
+  }
+
+  .avatar {
+    --tier-cutout: var(--overlay-bg);
+    position: relative;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    font: 500 11px/1 var(--font-ui);
+    background: var(--v4-control-bg);
+    color: var(--v4-text-1);
+  }
+
+  /* Top right: the bottom right holds the tier mark (badges/TierMark). */
+  .live {
+    position: absolute;
+    right: -1px;
+    top: -1px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--v4-ok);
+    border: 2px solid var(--overlay-bg);
+  }
+
+  .copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .name {
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .meta {
+    font-size: 13px;
+    color: var(--v4-text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+
+  .row svg {
+    flex: 0 0 auto;
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    color: var(--v4-text-2);
+  }
+
+  .indent {
+    padding-left: 23px;
+  }
+
+  .row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 30px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: 400 13px/1.2 var(--font-ui);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .row:hover,
+  .row:focus-visible {
+    background: var(--v4-active-row);
+    outline: none;
+  }
+
+  .t {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .foot {
+    margin-top: 4px;
+    padding-top: 6px;
+    border-top: 1px solid var(--v4-rowline);
+  }
+
+  .signout {
+    color: var(--v4-text-1);
+  }
+</style>

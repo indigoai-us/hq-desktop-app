@@ -76,8 +76,8 @@ describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', 
 
   it('paints optimistically and rolls back the rendered status on failure', () => {
     // Local override drives the rendered status (optimistic), defaulting to the
-    // raw project status.
-    expect(detail).toContain('statusOverride ?? toEditableStatus(project.status)');
+    // board-aligned header status.
+    expect(detail).toContain('statusOverride ?? headerEditableStatus(project)');
     // Optimistic set before await; store rehydration + error surface on failure.
     expect(detail).toContain('statusOverride = next');
     expect(detail).toContain('projectsStore.statusOverride(project)');

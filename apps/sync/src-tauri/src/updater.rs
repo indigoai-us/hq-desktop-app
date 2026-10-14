@@ -115,6 +115,49 @@ fn emit_update_outcome(
     let _ = attempt.observe_result(stage, to_version, Ok::<(), ()>(()), send_update_outcome);
 }
 
+fn record_client_health_update_check<T, E: std::fmt::Display>(result: &Result<Option<T>, E>) {
+    use hq_desktop_core::client_health::{
+        ClientHealthUpdateCheckOutcome as Outcome, ClientHealthUpdaterErrorClass as ErrorClass,
+    };
+
+    match result {
+        Ok(Some(_)) => crate::commands::client_health::record_update_check_result(
+            Outcome::UpdateAvailable,
+            None,
+        ),
+        Ok(None) => {
+            crate::commands::client_health::record_update_check_result(Outcome::NoUpdate, None)
+        }
+        Err(error) => {
+            let message = error.to_string().to_ascii_lowercase();
+            let class = if message.contains("timed out") || message.contains("timeout") {
+                ErrorClass::Timeout
+            } else if message.contains("signature") {
+                ErrorClass::Signature
+            } else if message.contains("json")
+                || message.contains("parse")
+                || message.contains("manifest")
+            {
+                ErrorClass::ManifestParse
+            } else if message.contains("http") || message.contains("status code") {
+                ErrorClass::HttpStatus
+            } else if message.contains("network")
+                || message.contains("connect")
+                || message.contains("dns")
+                || message.contains("socket")
+            {
+                ErrorClass::Network
+            } else {
+                ErrorClass::Other
+            };
+            crate::commands::client_health::record_update_check_result(
+                Outcome::CheckError,
+                Some(class),
+            );
+        }
+    }
+}
+
 pub(crate) fn emit_update_download_progress(app: &AppHandle, downloaded: u64, total: Option<u64>) {
     let _ = app.emit(
         "update:progress",
@@ -1148,6 +1191,10 @@ async fn channel_aware_updater_with_mode(
     app: &AppHandle,
     mode: UpdateOfferMode,
 ) -> Result<ChannelAwareUpdater, String> {
+    if updater_disabled() {
+        log("updater", "update check skipped: HQ_UPDATER_DISABLED=1");
+        return Err(UPDATER_DISABLED_MESSAGE.to_string());
+    }
     let (channel, resolved) = resolve_endpoint().await;
     let endpoint =
         Url::parse(&resolved.url).map_err(|e| format!("invalid updater endpoint: {e}"))?;
@@ -1217,7 +1264,9 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    match updater.updater.check().await {
+    let check_result = updater.updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -1287,7 +1336,9 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    match updater.updater.check().await {
+    let check_result = updater.updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -1417,6 +1468,10 @@ async fn install_verified_update(
 /// A `force` result skips the 10-minute idle wait but still pauses new sync
 /// cycles and drains in-flight transfers for up to [`IN_FLIGHT_DRAIN_TIMEOUT`].
 pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String> {
+    if updater_disabled() {
+        log("updater", "stable install skipped: HQ_UPDATER_DISABLED=1");
+        return Err(UPDATER_DISABLED_MESSAGE.to_string());
+    }
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
     let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
@@ -1435,7 +1490,9 @@ pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String>
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    match updater.check().await {
+    let check_result = updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -1505,6 +1562,9 @@ async fn stage_plugin_update(
         downloaded_at: Instant::now(),
         telemetry_attempt: telemetry_attempt.clone(),
     });
+    crate::commands::client_health::record_staged_update_deferred(
+        hq_desktop_core::client_health::ClientHealthUpdateDeferReason::Other,
+    );
     log(
         "updater",
         &format!("desktop update v{version} downloaded; waiting for restart"),
@@ -1771,6 +1831,9 @@ async fn commit_staged_install_with_decision(
     let version = staged.info.version.clone();
     if decision == DeferralDecision::WaitForIdle {
         app.state::<DownloadedUpdate>().put(staged);
+        crate::commands::client_health::record_staged_update_deferred(
+            hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusySync,
+        );
         return Err(UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
     let telemetry_attempt = staged.telemetry_attempt.clone();
@@ -1840,6 +1903,9 @@ fn spawn_auto_install_waiter(app: AppHandle) {
             let (sync_is_active, decision) = sample_automatic_sync_state(sync_in_progress, elapsed);
             match decision {
                 DeferralDecision::WaitForIdle => {
+                    crate::commands::client_health::record_staged_update_deferred(
+                        hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusySync,
+                    );
                     emit_update_waiting_for_idle(&app, &version, remaining);
                     let wait_reason = UpdateDecision::Defer {
                         reason: DeferReason::Held {
@@ -1872,6 +1938,25 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                         let gate =
                             automatic_install_gate_decision(decision, focus.app_focus(), &holds.0);
                         if let UpdateDecision::Defer { .. } = &gate.decision {
+                            let defer_reason = match &gate.decision {
+                                UpdateDecision::Defer {
+                                    reason: DeferReason::Focused,
+                                } => hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusyActivity,
+                                UpdateDecision::Defer {
+                                    reason: DeferReason::Held { .. },
+                                } if sync_is_active => {
+                                    hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusySync
+                                }
+                                UpdateDecision::Defer {
+                                    reason: DeferReason::Held { .. },
+                                } => {
+                                    hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusyActivity
+                                }
+                                UpdateDecision::InstallNow => hq_desktop_core::client_health::ClientHealthUpdateDeferReason::Other,
+                            };
+                            crate::commands::client_health::record_staged_update_deferred(
+                                defer_reason,
+                            );
                             for reason in deferral_log_limiter
                                 .eligible_reasons(&gate.decision, Instant::now())
                             {
@@ -1969,6 +2054,11 @@ pub(crate) fn deferred_restart_is_safe(held: bool, focused: bool) -> bool {
 /// to consume. Wait on the same poll cadence, then require the normal
 /// automatic-update focus rule before exiting the app.
 pub(crate) fn defer_restart_until_safe(app: AppHandle, update_version: Option<String>) {
+    if update_version.is_some() {
+        crate::commands::client_health::record_staged_update_deferred(
+            hq_desktop_core::client_health::ClientHealthUpdateDeferReason::PendingRestart,
+        );
+    }
     if DEFERRED_RESTART_ACTIVE
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -2060,7 +2150,9 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     // anyway) and the stable fallback path skips the network entirely.
     let updater = channel_aware_updater(&app).await?;
     let authoritative = updater.provenance.absence_is_authoritative();
-    match updater.updater.check().await {
+    let check_result = updater.updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -2125,7 +2217,9 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    match updater.updater.check().await {
+    let check_result = updater.updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -2390,10 +2484,11 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
             match check_for_updates(handle.clone()).await {
                 // Update found: `check_for_updates` already emitted
                 // `update:available`, which every existing surface (Settings
-                // row, banner, version pop-out) listens for. Also raise the
-                // native recovery window so a stuck UI still has a path.
+                // row, banner, version pop-out) listens for. Bring up the
+                // normal Settings → Updates prompt; only a desktop shell the
+                // watchdog judged broken gets the native recovery window.
                 Ok(Some(_)) => {
-                    crate::recovery::spawn_tray_open_recovery(handle);
+                    crate::recovery::present_manual_update_found(handle).await;
                 }
                 Ok(None) => notify_manual_check(&handle, &up_to_date_body(&handle)),
                 Err(e) => {
@@ -2435,6 +2530,7 @@ fn shortcut_id_for_menu_item(menu_id: &str) -> Option<&'static str> {
     match menu_id {
         MENU_SHORTCUT_NEXT_CONVERSATION_ID => Some("conversation.next"),
         MENU_SHORTCUT_PREVIOUS_CONVERSATION_ID => Some("conversation.previous"),
+        // ⌘N opens exactly one thing, the search-first create dialog (QA-077).
         MENU_SHORTCUT_NEW_CHAT_ID => Some("chat.new"),
         MENU_SHORTCUT_CHEAT_SHEET_ID => Some("help.shortcuts"),
         _ => None,
@@ -2533,8 +2629,39 @@ fn notify_manual_check(app: &AppHandle, body: &str) {
 /// the auto-installer pulls it, hands off, and quits the dev process ten
 /// seconds after launch — every `tauri dev` session died to this on
 /// 2026-09-02 once 0.10.175 shipped. Manual "Check for updates" is untouched.
+///
+/// A `tauri build --debug` bundle is not `is_dev()` (it embeds its assets), so
+/// it used to self-update: on 2026-10-02 a local debug bundle at 0.10.373
+/// pulled stable 0.10.377 over itself and relaunched as the old app. Any build
+/// with debug assertions now skips the background checker too, unless
+/// `HQ_DEV_ALLOW_AUTO_UPDATE=1` is set to exercise the updater on purpose.
 pub fn background_updates_disabled() -> bool {
-    dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE") || tauri::is_dev()
+    background_updates_disabled_for(
+        tauri::is_dev(),
+        cfg!(debug_assertions),
+        dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE") || updater_disabled(),
+        dev_env_flag_set("HQ_DEV_ALLOW_AUTO_UPDATE"),
+    )
+}
+
+fn background_updates_disabled_for(
+    is_dev: bool,
+    debug_build: bool,
+    no_auto_update: bool,
+    allow_auto_update: bool,
+) -> bool {
+    if no_auto_update || is_dev {
+        return true;
+    }
+    debug_build && !allow_auto_update
+}
+
+/// Whether this build skips the background update checker (dev or debug
+/// build, or `HQ_DEV_NO_AUTO_UPDATE=1`). Settings → About uses it to say
+/// automatic updates are off instead of implying the app is current (QA-051).
+#[tauri::command]
+pub fn background_updates_off() -> bool {
+    background_updates_disabled()
 }
 
 /// Whether the bundled updater config names at least one feed endpoint.
@@ -2561,15 +2688,47 @@ fn bundled_updater_feed_configured(app: &AppHandle) -> bool {
 
 fn dev_env_flag_set(name: &str) -> bool {
     std::env::var(name)
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .map(|v| env_flag_value_enabled(&v))
         .unwrap_or(false)
+}
+
+fn env_flag_value_enabled(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+}
+
+const UPDATER_DISABLED_ENV: &str = "HQ_UPDATER_DISABLED";
+const UPDATER_DISABLED_MESSAGE: &str = "Updates are turned off for this build";
+
+/// HQ_UPDATER_DISABLED=1 turns every updater path off for a scratch build:
+/// the background checker, the hard version gate, and the manual check,
+/// download and reinstall commands. A scratch bundle shares the owner's HQ
+/// profile, so the channel resolver reads the stored channel and fetches
+/// GitHub releases even when plugins.updater.endpoints is empty. On
+/// 2026-10-08 a "HQ Lane Check" bundle pulled 0.11.0-beta.11 that way,
+/// installed it over itself and repointed the login LaunchAgent.
+///
+/// Any bundle that is not the shipped production bundle has the same switch
+/// on: a scratch build (`HQ_SCRATCH_BUILD`) or any other bundle identifier,
+/// decided by `scratch_build::LaunchIdentity::is_production`, the predicate
+/// launch-time autostart and the launch-time installers use. A test bundle
+/// opened from Finder (no shell env) is covered too.
+pub fn updater_disabled() -> bool {
+    updater_disabled_with(
+        dev_env_flag_set(UPDATER_DISABLED_ENV),
+        !crate::scratch_build::production_bundle(),
+    )
+}
+
+/// `updater_disabled` with its two inputs passed in (testable in any build).
+pub(crate) fn updater_disabled_with(env_switch: bool, non_production_bundle: bool) -> bool {
+    env_switch || non_production_bundle
 }
 
 pub fn setup_update_checker(app: &AppHandle) {
     if background_updates_disabled() {
         log(
             "updater",
-            "background update checker disabled (dev build or HQ_DEV_NO_AUTO_UPDATE=1)",
+            "background update checker disabled (dev or debug build, or HQ_DEV_NO_AUTO_UPDATE=1)",
         );
         return;
     }
@@ -2608,7 +2767,9 @@ pub fn setup_update_checker(app: &AppHandle) {
                                 UpdateOutcomeStage::CheckStarted,
                                 crate::app_version::current(),
                             );
-                            match updater.updater.check().await {
+                            let check_result = updater.updater.check().await;
+                            record_client_health_update_check(&check_result);
+                            match check_result {
                                 Ok(Some(update)) => {
                                     let info = discovered_update(
                                         update.version.clone(),
@@ -2786,6 +2947,17 @@ pub async fn update_install_pending(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn updater_disabled_flag_accepts_only_truthy_values() {
+        for value in ["1", "true", "TRUE", " yes "] {
+            assert!(super::env_flag_value_enabled(value), "{value}");
+        }
+        for value in ["", "0", "false", "no", "off"] {
+            assert!(!super::env_flag_value_enabled(value), "{value}");
+        }
+        assert_eq!(super::UPDATER_DISABLED_ENV, "HQ_UPDATER_DISABLED");
+    }
+
     use super::*;
 
     #[test]
@@ -3817,6 +3989,20 @@ mod tests {
         // the checker must be disabled even with the env flag unset. A release
         // build flips this to depend on the env flag alone.
         assert!(background_updates_disabled());
+    }
+
+    #[test]
+    fn debug_bundles_never_self_update_unless_opted_in() {
+        use super::background_updates_disabled_for as off;
+        // `tauri build --debug`: not is_dev, but debug assertions are on.
+        assert!(off(false, true, false, false));
+        assert!(!off(false, true, false, true));
+        // Release bundle: on by default, off with the opt-out flag.
+        assert!(!off(false, false, false, false));
+        assert!(off(false, false, true, false));
+        // `tauri dev` and the opt-out flag always win over the opt-in.
+        assert!(off(true, true, false, true));
+        assert!(off(false, true, true, true));
     }
 }
 

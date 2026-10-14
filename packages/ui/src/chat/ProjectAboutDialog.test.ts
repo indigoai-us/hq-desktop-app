@@ -55,7 +55,7 @@ describe("ProjectAboutDialog", () => {
   });
 
   it("uses a solid surface so timeline text cannot bleed through", () => {
-    expect(SRC).toContain("--v4-surface-solid");
+    expect(SRC).toContain("background: var(--overlay-bg)");
     expect(SRC).not.toMatch(/background:\s*var\(--v4-ground/);
   });
 });

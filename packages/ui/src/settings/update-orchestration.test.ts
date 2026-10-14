@@ -61,8 +61,10 @@ describe("update orchestration status mapping (adopted from the native pane)", (
   it("reads the native probe failure envelope", () => {
     expect(probeFailure(undefined)).toBeNull();
     expect(probeFailure({ status: "ok" })).toBeNull();
-    expect(probeFailure({ status: "failed", message: " nope " })).toBe("nope");
-    expect(probeFailure({ status: "failed" })).toBe("The native version probe failed.");
+    expect(probeFailure({ status: "failed", message: " nope " })).toBe(
+      "The version check didn't finish. Try again.",
+    );
+    expect(probeFailure({ status: "failed" })).toBe("The version check didn't finish. Try again.");
   });
 });
 
@@ -211,7 +213,8 @@ describe("update orchestration: versions, errors, and coalescing", () => {
       }),
     );
     expect(outcome.coreStatus).toBe("unchecked");
-    expect(outcome.coreProbeError).toContain("native gone");
+    // AUDIT-3c: the rejection text is logged, the row gets plain copy.
+    expect(outcome.coreProbeError).toBe("The Core update check didn't finish. Try again.");
   });
 
   it("createUpdateCheckRunner returns the same promise while in flight and calls the adapter once", async () => {
@@ -238,5 +241,51 @@ describe("update orchestration: versions, errors, and coalescing", () => {
     expect(third).not.toBe(first);
     await third;
     expect(checkCoreState).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("update orchestration raw errors (AUDIT-3c)", () => {
+  const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+
+  it("version probe failures never carry raw text into the Core/CLI rows", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const outcome = await runUpdateCheck(
+      adapter({
+        getVersions: async () => ({
+          ok: true,
+          value: {
+            coreProbe: { status: "failed", code: "invoke", message: RAW },
+            cliProbe: { status: "failed", code: "invoke", message: RAW },
+          },
+        }),
+      }),
+    );
+    expect(outcome.coreProbeError).toBe("The Core version check didn't finish. Try again.");
+    expect(outcome.cliProbeError).toBe("The CLI version check didn't finish. Try again.");
+    expect(warn).toHaveBeenCalledWith("[updates] Core version check failed", RAW);
+    expect(warn).toHaveBeenCalledWith("[updates] CLI version check failed", RAW);
+    warn.mockRestore();
+  });
+
+  it("a failed versions call never carries raw text into the rows", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const outcome = await runUpdateCheck(
+      adapter({ getVersions: async () => ({ ok: false, reason: "error", code: "invoke", message: RAW }) }),
+    );
+    expect(outcome.coreProbeError).not.toContain("boom");
+    expect(outcome.cliProbeError).not.toContain("boom");
+    expect(outcome.coreProbeError).toMatch(/Try again\.$/);
+    expect(warn).toHaveBeenCalledWith("[updates] Core version check failed", RAW);
+    warn.mockRestore();
+  });
+
+  it("a rejected core check never carries raw text into the row", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const outcome = await runUpdateCheck(
+      adapter({ checkCoreState: async () => { throw new Error(RAW); } }),
+    );
+    expect(outcome.coreProbeError).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[updates] Core update check failed", RAW);
+    warn.mockRestore();
   });
 });

@@ -38,6 +38,7 @@ export function liveInputsForCompanyProject(
       actorUid: p.actorUid,
       status: p.presence,
       actorType: p.actorType,
+      displayName: p.displayName,
     }),
   );
   const liveSessions: LiveReadSessionInput[] = liveSessionsForProject(

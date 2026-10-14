@@ -11,7 +11,6 @@ import {
   buildCoreNoticeRows,
   buildCorePopoverViewModel,
   buildCoreSyncHeader,
-  conflictNoticeBody,
   corePillDotTone,
   lastSyncLine,
   syncStateTone,
@@ -22,7 +21,6 @@ describe("syncStateWord", () => {
   it("uses the tray popover's words verbatim", () => {
     expect(syncStateWord("syncing")).toBe("Syncing");
     expect(syncStateWord("auth-error")).toBe("Sign in required");
-    expect(syncStateWord("conflict")).toBe("Sync paused");
     expect(syncStateWord("error")).toBe("Needs attention");
     expect(syncStateWord("idle")).toBe("All synced");
   });
@@ -30,13 +28,15 @@ describe("syncStateWord", () => {
   it("falls back to the healthy word for unknown or missing phases", () => {
     expect(syncStateWord(null)).toBe("All synced");
     expect(syncStateWord("setup-needed")).toBe("All synced");
+    // A parked sync conflict is not a sync state (owner decision 2026-10-13).
+    expect(syncStateWord("conflict")).toBe("All synced");
   });
 });
 
 describe("syncStateTone", () => {
   it("separates in-flight from trouble", () => {
     expect(syncStateTone("syncing")).toBe("active");
-    expect(syncStateTone("conflict")).toBe("warn");
+    expect(syncStateTone("conflict")).toBe("ok");
     expect(syncStateTone("error")).toBe("warn");
     expect(syncStateTone("auth-error")).toBe("warn");
     expect(syncStateTone("idle")).toBe("ok");
@@ -73,20 +73,6 @@ describe("buildCoreSyncHeader", () => {
     expect(idle.stateWord).toBe("All synced");
   });
 
-  it("reads Sync paused when conflicts exist on an otherwise idle journal", () => {
-    const header = buildCoreSyncHeader({ syncState: "idle", conflictCount: 2 });
-    expect(header.stateWord).toBe("Sync paused");
-    expect(header.tone).toBe("warn");
-  });
-
-  it("lets a run in flight outrank a stale conflict count", () => {
-    const header = buildCoreSyncHeader({
-      syncState: "syncing",
-      conflictCount: 2,
-    });
-    expect(header.stateWord).toBe("Syncing");
-  });
-
   it("never claims a caption it was not given", () => {
     expect(
       buildCoreSyncHeader({ syncState: "syncing", syncCaption: "  " }).caption,
@@ -100,9 +86,6 @@ describe("corePillDotTone", () => {
   });
 
   it("warns on trouble ahead of a run", () => {
-    expect(corePillDotTone({ syncState: "syncing", conflictCount: 1 })).toBe(
-      "warn",
-    );
     expect(corePillDotTone({ syncState: "syncing", cloudReachable: false })).toBe(
       "warn",
     );
@@ -118,43 +101,11 @@ describe("corePillDotTone", () => {
   });
 });
 
-describe("conflictNoticeBody", () => {
-  it("matches the tray popover's singular / plural copy", () => {
-    expect(conflictNoticeBody(1)).toBe(
-      "1 file changed in two places. Resolve in Claude Code, then Sync again.",
-    );
-    expect(conflictNoticeBody(3)).toBe(
-      "3 files changed in two places. Resolve in Claude Code, then Sync again.",
-    );
-    expect(conflictNoticeBody(0)).toBe(
-      "A file changed in two places. Resolve in Claude Code, then Sync again.",
-    );
-  });
-});
-
 describe("buildCoreNoticeRows", () => {
   it("renders nothing when everything is healthy", () => {
     expect(
       buildCoreNoticeRows({ syncState: "idle", cloudReachable: true }),
     ).toEqual([]);
-  });
-
-  it("renders the conflict row with the sync-conflict payload", () => {
-    const [row, ...rest] = buildCoreNoticeRows({
-      syncState: "conflict",
-      conflictCount: 2,
-      conflictCompany: "indigo",
-    });
-    expect(rest).toEqual([]);
-    expect(row.kind).toBe("conflict");
-    expect(row.title).toBe("Sync paused");
-    expect(row.body).toBe(conflictNoticeBody(2));
-    expect(row.openLabel).toBe("Resolve");
-    expect(row.copyLabel).toBe("Copy prompt");
-    expect(row.issue).toEqual({
-      kind: "sync-conflict",
-      payload: { count: 2, company: "indigo" },
-    });
   });
 
   it("renders the sync-failed row with the failure message in the payload", () => {
@@ -211,14 +162,14 @@ describe("buildCoreNoticeRows", () => {
 
   it("keeps the tray popover's row order when several states are live at once", () => {
     const rows = buildCoreNoticeRows({
-      syncState: "conflict",
-      conflictCount: 1,
+      syncState: "error",
+      errorMessage: "boom",
       manifestError: "bad yaml",
       cloudReachable: false,
       cloudError: "offline",
     });
     expect(rows.map((r) => r.kind)).toEqual([
-      "conflict",
+      "sync-failed",
       "manifest-error",
       "cloud-unreachable",
     ]);
@@ -228,28 +179,11 @@ describe("buildCoreNoticeRows", () => {
 describe("buildCorePopoverViewModel sync surface", () => {
   it("carries the header and the notices alongside the existing model", () => {
     const model = buildCorePopoverViewModel({
-      syncState: "conflict",
-      lastSyncLabel: "5m ago",
-      conflicts: [{ path: "companies/indigo/notes.md", status: "pending" }],
-      notices: { conflictCount: 1, conflictCompany: "indigo" },
-    });
-    expect(model.syncHeader.stateWord).toBe("Sync paused");
-    expect(model.syncHeader.lastSyncLine).toBe("Last sync · 5m ago");
-    expect(model.notices.map((r) => r.kind)).toEqual(["conflict"]);
-    // Existing behaviour is untouched.
-    expect(model.conflictRows).toHaveLength(1);
-    expect(model.conflictHeader).toContain("1 conflict needs you");
-  });
-
-  it("trusts the journal conflict count when the event stream has none", () => {
-    const model = buildCorePopoverViewModel({
       syncState: "idle",
-      notices: { conflictCount: 3 },
+      lastSyncLabel: "5m ago",
     });
-    expect(model.syncHeader.stateWord).toBe("Sync paused");
-    expect(model.notices[0]?.issue.payload).toEqual({
-      count: 3,
-      company: "",
-    });
+    expect(model.syncHeader.stateWord).toBe("All synced");
+    expect(model.syncHeader.lastSyncLine).toBe("Last sync · 5m ago");
+    expect(model.notices).toEqual([]);
   });
 });

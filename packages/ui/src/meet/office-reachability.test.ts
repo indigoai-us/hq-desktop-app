@@ -5,13 +5,13 @@
  *
  * Company channels hide Office entirely now: they show Chat only. This file
  * pins that Office is unreachable from a company channel, while the shared
- * `CompanyPage` surface (a different, non-channel destination) keeps its own
- * Office implementation intact:
+ * `OfficePanel` (the one Office implementation, formerly hosted by the deleted
+ * company Overview page) stays intact:
  *
  *   1. the company CHANNEL tab list never includes Office, regardless of
  *      adapter capabilities;
- *   2. `CompanyPage` — the shared company surface — still renders the Office
- *      panel for `tab: "office"` and NOT a blank when the host cannot call;
+ *   2. `OfficePanel` still renders the live office for a company and NOT a
+ *      blank when the host cannot call;
  *   3. the shipping shell (`DesktopApp.svelte`) no longer mounts OfficePanel
  *      for company channels, and never asks the company-tab endpoint for
  *      Office rows;
@@ -24,7 +24,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import { ok, type AdapterResult, type Json } from "@hq/platform";
 
-import CompanyPage from "../company/CompanyPage.svelte";
+import OfficePanel from "./OfficePanel.svelte";
 import {
   COMPANY_CHANNEL_TABS,
   COMPANY_OFFICE_TAB,
@@ -77,7 +77,7 @@ const COMPANY = {
 };
 
 /**
- * The narrow slice of PlatformAdapter CompanyPage + OfficePanel touch. Built by
+ * The narrow slice of PlatformAdapter OfficePanel touches. Built by
  * hand rather than with a real adapter so the test states exactly which seams
  * reachability depends on.
  */
@@ -106,7 +106,7 @@ function fakeAdapter(options: {
         ok({ personUid: options.personUid ?? "prs_self" } as never),
       getProfile: undefined,
     },
-    // CompanyPage wires these on mount; empty answers keep it quiet.
+    // Unused by OfficePanel; empty answers keep any stray read quiet.
     company: {
       listCompanies: async () => ok([] as never),
       getCompany: async () => ok({} as never),
@@ -143,7 +143,7 @@ describe("US-018 reachability: the company tab list is the door", () => {
     expect(withCalls).not.toContain("office");
     expect(withCalls).toEqual(COMPANY_CHANNEL_TABS.map((t) => t.id));
 
-    // The id is still recognized elsewhere (CompanyPage's own surface); it is
+    // The id is still recognized elsewhere (OfficePanel's own surface); it is
     // simply never listed as a company-channel tab.
     expect(COMPANY_OFFICE_TAB.id).toBe("office");
   });
@@ -157,16 +157,16 @@ describe("US-018 reachability: the company tab list is the door", () => {
   });
 });
 
-describe("US-018 reachability: CompanyPage renders the Office surface", () => {
+describe("US-018 reachability: OfficePanel renders the Office surface", () => {
   function render(props: Record<string, unknown>): HTMLElement {
     host = document.createElement("div");
     document.body.appendChild(host);
-    component = mount(CompanyPage, { target: host, props: props as never });
+    component = mount(OfficePanel, { target: host, props: props as never });
     flushSync();
     return host;
   }
 
-  it("renders the live office for tab:'office' when native calling is available", async () => {
+  it("renders the live office for the company when native calling is available", async () => {
     const discoverOffice = vi.fn(async () => ROSTER);
     const root = render({
       adapter: fakeAdapter({ nativeCalls: true, roster: discoverOffice }),
@@ -175,8 +175,8 @@ describe("US-018 reachability: CompanyPage renders the Office surface", () => {
         evidenceMaxAgeMs: 90 * 24 * 60 * 60 * 1000,
         openCallWindow: async () => {},
       },
-      company: COMPANY,
-      tab: "office",
+      companyUid: COMPANY.cloudUid,
+      companyLabel: COMPANY.displayName,
     });
     await settle();
 
@@ -193,8 +193,8 @@ describe("US-018 reachability: CompanyPage renders the Office surface", () => {
     const discoverOffice = vi.fn(async () => ROSTER);
     const root = render({
       adapter: fakeAdapter({ nativeCalls: false, roster: discoverOffice }),
-      company: COMPANY,
-      tab: "office",
+      companyUid: COMPANY.cloudUid,
+      companyLabel: COMPANY.displayName,
     });
     await settle();
 
@@ -213,8 +213,8 @@ describe("US-018 reachability: CompanyPage renders the Office surface", () => {
     const root = render({
       adapter: fakeAdapter({ nativeCalls: true }),
       callsHost: null,
-      company: COMPANY,
-      tab: "office",
+      companyUid: COMPANY.cloudUid,
+      companyLabel: COMPANY.displayName,
     });
     await settle();
     expect(

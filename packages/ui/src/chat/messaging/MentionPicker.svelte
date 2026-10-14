@@ -95,8 +95,8 @@
     overflow-y: auto;
     padding: 6px;
     border-radius: 14px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: #141418;
+    border: 1px solid var(--overlay-border);
+    background: var(--overlay-bg);
     box-shadow: var(--pop-shadow);
   }
 
@@ -124,7 +124,7 @@
 
   .mention-row.selected,
   .mention-row:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--overlay-hover);
   }
 
   .mention-ava {
@@ -135,20 +135,20 @@
     width: 28px;
     height: 28px;
     border-radius: 14px;
-    background: #27272f;
+    background: var(--overlay-field-bg);
     color: #f4f4f5;
     font-size: 11px;
     font-weight: 700;
   }
 
   .mention-ava.agent {
-    background: #312e81;
+    background: var(--overlay-field-bg);
     overflow: hidden;
   }
 
   /* @here is a broadcast, not a person — no initial, no generated avatar. */
   .mention-ava.here {
-    background: #3f3f46;
+    background: var(--overlay-field-bg);
     color: #e4e4e7;
   }
 
@@ -186,7 +186,7 @@
     max-width: 140px;
     padding: 1px 6px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--overlay-hover);
     color: #c9c9d1;
     font-size: 10px;
     font-weight: 600;

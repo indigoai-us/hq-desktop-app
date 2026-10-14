@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   attachmentKindForContentType,
   attachmentVaultScopeUid,
@@ -181,7 +181,8 @@ describe("chat attachment helpers", () => {
     expect(empty.checksumSha256).toBe("47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
   });
 
-  it("prefixes the server error verbatim when presign fails", async () => {
+  it("shows plain copy (not the server error) when presign fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const file = new File([new Uint8Array([1])], "shot.png", {
       type: "image/png",
     });
@@ -198,9 +199,9 @@ describe("chat attachment helpers", () => {
             "No active membership for caller in company prs_me",
         }),
       }),
-    ).rejects.toThrow(
-      "Could not upload shot.png: No active membership for caller in company prs_me",
-    );
+    ).rejects.toThrow("Could not upload shot.png. Try again.");
+    expect(warn.mock.calls.some((a) => a.some((x) => String(x).includes("No active membership")))).toBe(true);
+    warn.mockRestore();
   });
 
   it("reads a presign PUT result", () => {
@@ -261,22 +262,21 @@ describe("attachmentVaultScopeUid", () => {
 });
 
 describe("formatComposerSendError", () => {
-  it("keeps the server error verbatim behind a friendly prefix", () => {
+  // AUDIT-3c: server text is logged, not shown (was kept verbatim).
+  it("replaces unknown server text with plain copy", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(
       formatComposerSendError(
         "No active membership for caller in company prs_me",
         true,
       ),
-    ).toBe(
-      "Couldn't send — No active membership for caller in company prs_me",
-    );
+    ).toBe("Could not send the attachment. Try again.");
     expect(
       formatUploadServerError(
         "No active membership for caller in company prs_me",
         "shot.png",
       ),
-    ).toBe(
-      "Could not upload shot.png: No active membership for caller in company prs_me",
-    );
+    ).toBe("Could not upload shot.png. Try again.");
+    warn.mockRestore();
   });
 });

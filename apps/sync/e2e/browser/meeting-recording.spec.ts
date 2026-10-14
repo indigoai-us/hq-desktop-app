@@ -8,7 +8,13 @@ test(`desktop detection exposes recording controls at ${width}px`, async ({ page
   const card = page.getByTestId('meetings-live-now');
   await expect(card).toBeVisible();
   await expect(card.getByRole('button', { name: 'Start recording', exact: true })).toBeVisible();
-  await card.getByLabel('Record as').selectOption('');
+  // OWNER-R6: 'Record as' is the shared Dropdown (button + listbox), not a
+  // native select. Choose Personal through it and confirm the choice took.
+  const recordAs = card.getByTestId('live-company-select');
+  await recordAs.click();
+  await page.getByTestId('live-company-select-menu').getByRole('option', { name: 'Personal' }).click();
+  await expect(recordAs).toHaveAttribute('data-value', '');
+  await expect(recordAs).toHaveAccessibleName('Record as: Personal');
   await card.getByRole('button', { name: 'Start recording', exact: true }).click();
   await expect(card.getByRole('button', { name: 'Stop recording', exact: true })).toBeVisible();
   await card.getByRole('button', { name: 'Stop recording', exact: true }).click();

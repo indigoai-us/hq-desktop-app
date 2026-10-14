@@ -71,7 +71,7 @@ export const DESKTOP_APP_VIEW_ASSIGN_COUNT = 14;
 export const HQ_WORK_SHELL_NAVIGATE_RE = /navigation\.navigate\(/g;
 // Was 7 before the Sessions removal: the Sessions row-extras "New session"
 // and history-session navigations went with the feature.
-export const HQ_WORK_SHELL_NAVIGATE_COUNT = 5;
+export const HQ_WORK_SHELL_NAVIGATE_COUNT = 7;
 
 export const DESKTOP_APP_FUNCTION_RE =
   /(?:async )?function (open[A-Z]\w*|close[A-Z]\w*|apply[A-Z]\w*|toggle[A-Z]\w*|navigate[A-Z]\w*|handle[A-Z]\w*|leave[A-Z]\w*|changeTenantCompany|onOpenChannel|onMessagePerson|onOpenSettingsEvent|onEmbeddedNavigation|onKey|navigate|resolveDestination|commitDestination|goBack|goForward)\b/g;
@@ -89,16 +89,22 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   goBack: "replace",
   goForward: "replace",
   leaveCurrentDestination: "replace",
-  leaveLibrary: "replace",
   handleRecommendedUpdateNow: "none",
   applyFetchedTimeline: "none",
   openMemberProfile: "none",
   openNewChat: "none",
+  // Closes Settings (replace), then opens the New bot modal over the rail.
+  openNewBotFromSettings: "replace",
+  openNewMessage: "none",
+  openAtlasShortcut: "push",
   closeMemberProfile: "none",
   openAgentProfileFromHeader: "none",
   closeAgentDetail: "none",
   openAgentFromHeader: "none",
   openProfileForAuthor: "none",
+  // The You hover card: back to the open conversation (push) for your
+  // profile panel, or Profile settings when no conversation is open.
+  openSelfProfile: "push",
   applyCardFocus: "none",
   navigateToEntryTarget: "push",
   applyCardActionFailure: "none",
@@ -117,10 +123,14 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyPendingConversation: "push",
   changeTenantCompany: "push",
   openCompanyFromSetup: "push",
-  // Core popover "Resolve conflicts" → Settings › Sync, through navigate().
-  openConflictResolution: "push",
-  // Hands the file to the OS editor; the shell stays where it is.
-  openConflictInEditor: "none",
+  // More companies popover: opens a company through navigate(), or only
+  // toggles the popover.
+  openAccountPage: "push",
+  openCompanyFromMore: "push",
+  // Personal Connections → a company's Integrations page.
+  openCompanyIntegrations: "push",
+  toggleAccountMenu: "none",
+  toggleMoreCompanies: "none",
   // A connection card in a cloud bot's DM: opens a console page in the system
   // browser or changes the card's state. The shell stays in the conversation.
   handleConnectionAction: "none",
@@ -131,6 +141,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   closeConnectionModal: "none",
   // #welcome / Home setup card → the setup bot's DM (handleSelect).
   openSetupBotDm: "push",
+  // Daily Brief Team peek, Open thread: that person's DM (handleSelect).
+  openBriefDm: "push",
   applyChannelWake: "none",
   applyDmWake: "none",
   openAttachmentTray: "none",
@@ -150,6 +162,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // Guided tour: shuts the command palette it opened. The tour never
   // navigates.
   closeTourSurfaces: "none",
+  // Visual first run: puts the takeover away and records it as finished.
+  // The caller picks the conversation (the assistant's DM or #welcome).
+  closeVisualFirstRun: "none",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",
   applyCompanyDeepLink: "push",
@@ -158,11 +173,14 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   onMessagePerson: "push",
   onOpenSettingsEvent: "push",
   onEmbeddedNavigation: "push",
-  handleShowBotMessagesChange: "none",
   // Update-gate sidebar card: not navigation.
   handleUpdateInstall: "none",
   handleUpdateDismiss: "none",
   applyUpdateGateStatus: "none",
+  // Sync progress toast: hiding it is not navigation.
+  handleSyncToastDismiss: "none",
+  // Forward picker (US-009): opens a dialog over the current route, not navigation.
+  openForward: "none",
 };
 
 export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
@@ -334,7 +352,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "open-library",
     file: SHARED_SHELL_FILE,
-    needle: "function openLibrary(next: LibraryTab = \"skills\")",
+    needle: "function openLibrary(next: LibraryTab = \"marketplace\")",
     destinationKind: "library",
     history: "push",
     host: "shared-shell",
@@ -348,6 +366,16 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "push",
     host: "shared-shell",
     inScope: true,
+  },
+  {
+    id: "open-company-integrations",
+    file: SHARED_SHELL_FILE,
+    needle: "function openCompanyIntegrations(uid: string): void",
+    destinationKind: "extra",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Personal Connections link into the company's Integrations page.",
   },
   {
     id: "open-dm-requests",
@@ -482,40 +510,26 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
   },
   {
-    id: "keydown-cmd-1-notifications",
+    id: "keydown-cmd-digit-rail",
     file: SHARED_SHELL_FILE,
-    needle: 'id: "view.notifications"',
-    destinationKind: "notifications",
+    needle: "function selectRailIndex(index: number): void {",
+    destinationKind: "passthrough",
     history: "push",
     host: "shared-shell",
     inScope: true,
+    notes:
+      "⌘1–⌘9 (`view.rail.N` bindings) call selectRailIndex → selectRailItem, which navigates (console-rail US-003).",
   },
   {
-    id: "keydown-cmd-2-meetings",
+    id: "keydown-cmd-shift-a-atlas",
     file: SHARED_SHELL_FILE,
-    needle: 'id: "view.meetings"',
-    destinationKind: "meetings",
+    needle: "function openAtlasShortcut(): void {",
+    destinationKind: "extra",
     history: "push",
     host: "shared-shell",
     inScope: true,
-  },
-  {
-    id: "keydown-cmd-3-marketplace",
-    file: SHARED_SHELL_FILE,
-    needle: 'id: "view.marketplace"',
-    destinationKind: "library",
-    history: "push",
-    host: "shared-shell",
-    inScope: true,
-  },
-  {
-    id: "keydown-cmd-4-library",
-    file: SHARED_SHELL_FILE,
-    needle: 'id: "view.library"',
-    destinationKind: "library",
-    history: "push",
-    host: "shared-shell",
-    inScope: true,
+    notes:
+      "⌘⇧A (`view.atlas`) opens Atlas for the active company, else the first rail company, else a toast (QA-077).",
   },
   {
     id: "titlebar-create-extra-page",
@@ -536,13 +550,15 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
   },
   {
-    id: "titlebar-meetings",
+    id: "app-rail-select",
     file: SHARED_SHELL_FILE,
-    needle: "onopenMeetings={() => {",
-    destinationKind: "meetings",
+    needle: "function selectRailItem(item: RailItem): void {",
+    destinationKind: "passthrough",
     history: "push",
     host: "shared-shell",
     inScope: true,
+    notes:
+      "<AppRail onselect={selectRailItem}>: rail clicks route through navigate(railDestination(item)) (console-rail US-003).",
   },
   {
     id: "titlebar-settings",
@@ -556,7 +572,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "titlebar-library",
     file: SHARED_SHELL_FILE,
-    needle: 'onopenLibrary={() => openLibrary("skills")}',
+    needle: 'onopenLibrary={() => openLibrary("marketplace")}',
     destinationKind: "library",
     history: "push",
     host: "shared-shell",
@@ -807,16 +823,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     id: "library-overlay",
     file: SHARED_SHELL_FILE,
     needle: 'onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}',
-    destinationKind: "library",
-    history: "push",
-    host: "shared-shell",
-    inScope: true,
-  },
-  {
-    id: "library-item-select",
-    file: SHARED_SHELL_FILE,
-    needle:
-      "void navigate({ kind: \"library\", tab: libraryTab, itemId: id })",
     destinationKind: "library",
     history: "push",
     host: "shared-shell",
@@ -1215,6 +1221,46 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "push",
     host: "hq-work-host",
     inScope: true,
+  },
+  {
+    id: "hq-work-restore-pack-target",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "peek_pending_pack_target",
+    destinationKind: "none",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "hq-desktop://pack/{slug} cold start: opens the confirmation sheet, no route change until Add finishes.",
+  },
+  {
+    id: "hq-work-live-open-pack",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "PACK_OPEN_INSTALL_EVENT",
+    destinationKind: "none",
+    history: "none",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Live hq-desktop://pack/{slug}: same sheet as the cold-start path.",
+  },
+  {
+    id: "hq-work-pack-bot-dm",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "function focusPackBotDm(",
+    destinationKind: "dm",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "After `hq packages install --start-bot`: Messages on the DM with the bot the install named.",
+  },
+  {
+    id: "hq-work-pack-open-messages",
+    file: HQ_WORK_SHELL_FILE,
+    needle: "function openMessagesAfterPackInstall(",
+    destinationKind: "messages",
+    history: "push",
+    host: "hq-work-host",
+    inScope: true,
+    notes: "Pack installed with no bot DM to open: the sheet's Open Messages.",
   },
   {
     id: "hq-work-attach-bridge",

@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import {
+  localBotInCompany,
+  localBotsForCompany,
   isAlreadyExistsFailure,
   isRawBotFailureText,
   isValidLocalBotName,
@@ -12,6 +16,9 @@ import {
   localBotsAsContacts,
   localBotForRow,
   localBotNeedsOfflineNotice,
+  LOCAL_BOT_STARTUP_GRACE_MS,
+  localBotPeers,
+  thinkingAgentName,
   localBotOfflineNotice,
   localBotPresence,
 } from "./local-bots.js";
@@ -135,6 +142,20 @@ describe("plainBotFailure", () => {
     }
   });
 
+  it("shows the host's sentence for an older HQ that refuses numbers in a name", () => {
+    // Read from the host's own constant, so a change to the mapping in
+    // apps/sync bots.rs is checked here too.
+    const source = readFileSync(
+      fileURLToPath(new URL("../../../../apps/sync/src-tauri/src/commands/bots.rs", import.meta.url)),
+      "utf8",
+    );
+    const match = /const DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ: &str =\s*"([^"]+)";/.exec(source);
+    expect(match, "DISPLAY_NAME_NUMBERS_NEED_NEWER_HQ in bots.rs").not.toBeNull();
+    const sentence = match![1]!;
+    expect(isRawBotFailureText(sentence)).toBe(false);
+    expect(plainBotFailure(sentence, "Could not create setup.")).toBe(sentence);
+  });
+
   it("passes a written sentence through, and keeps only its first line", () => {
     expect(plainBotFailure("Claude Code is not signed in.", "x")).toBe("Claude Code is not signed in.");
     expect(plainBotFailure("Claude Code is not signed in.\nRun the sign-in again.", "x")).toBe(
@@ -210,5 +231,105 @@ describe("localBotNeedsOfflineNotice", () => {
 
   it("nothing to show without a bot", () => {
     expect(localBotNeedsOfflineNotice(null)).toBe(false);
+  });
+
+  it("says nothing while a just-started bot has not checked in yet", () => {
+    // The owner, adding a pack: "for a second there was a little box that said
+    // the agency guide was offline right as it started up. That can't happen."
+    const t0 = 1_000_000;
+    const starting = bot({ online: false, processAlive: false, daemonLoaded: true, lastHeartbeatAt: null, state: "starting" });
+    expect(localBotNeedsOfflineNotice(starting, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(false);
+    const alive = bot({ online: false, processAlive: true, lastHeartbeatAt: null, state: "running" });
+    expect(localBotNeedsOfflineNotice(alive, { startingSinceMs: t0, nowMs: t0 + LOCAL_BOT_STARTUP_GRACE_MS - 1 })).toBe(false);
+  });
+
+  it("says nothing for a bot the pack install just created, before its launchd agent loads", () => {
+    // Live walkthrough 2026-10-12: "agency-guide is offline — its computer is
+    // off or the bot is stopped" showed right after the pack installed it.
+    const t0 = 1_000_000;
+    const created = bot({ online: false, processAlive: false, daemonLoaded: false, lastHeartbeatAt: null, state: "stopped" });
+    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + 1_000, justCreated: true })).toBe(false);
+    // It still says so if the new bot never comes up.
+    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + LOCAL_BOT_STARTUP_GRACE_MS, justCreated: true })).toBe(true);
+    // A bot that was already listed when the app opened and is not running
+    // gets the notice at once, even if it never checked in.
+    expect(localBotNeedsOfflineNotice(created, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(true);
+  });
+
+  it("shows once a starting bot is past the grace period, or when it is not starting at all", () => {
+    const t0 = 1_000_000;
+    const alive = bot({ online: false, processAlive: true, state: "running" });
+    expect(localBotNeedsOfflineNotice(alive, { startingSinceMs: t0, nowMs: t0 + LOCAL_BOT_STARTUP_GRACE_MS })).toBe(true);
+    const stopped = bot({ online: false, processAlive: false, daemonLoaded: false });
+    expect(localBotNeedsOfflineNotice(stopped, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(true);
+    const failed = bot({ online: false, processAlive: true, state: "failed" });
+    expect(localBotNeedsOfflineNotice(failed, { startingSinceMs: t0, nowMs: t0 + 1_000 })).toBe(true);
+    expect(localBotNeedsOfflineNotice(alive)).toBe(true);
+  });
+});
+
+describe("localBotInCompany (OWNER-014)", () => {
+  const workspaces = [
+    { slug: "gt", cloudUid: "cmp_gt" },
+    { slug: "acme", cloudUid: "cmp_acme" },
+  ];
+
+  it("keeps a personal bot with no membership out of every company", () => {
+    const bot = { kind: "personal" as const, companies: [], promotionHold: null };
+    expect(localBotInCompany(bot, "cmp_gt", workspaces)).toBe(false);
+    expect(localBotInCompany(bot, "cmp_acme", workspaces)).toBe(false);
+  });
+
+  it("shows a personal bot in the one company it is a member of", () => {
+    const bot = { kind: "personal" as const, companies: ["acme"], promotionHold: null };
+    expect(localBotInCompany(bot, "cmp_acme", workspaces)).toBe(true);
+    expect(localBotInCompany(bot, "cmp_gt", workspaces)).toBe(false);
+  });
+
+  it("shows a bot being moved to a company only in that company", () => {
+    const bot = { companies: undefined, promotionHold: { companyUid: "cmp_gt" } };
+    expect(localBotInCompany(bot, "cmp_gt", workspaces)).toBe(true);
+    expect(localBotInCompany(bot, "cmp_acme", workspaces)).toBe(false);
+  });
+
+  it("filters a list to one company", () => {
+    const bots = [
+      { name: "dr-love", companies: [], promotionHold: null },
+      { name: "gt-bot", companies: ["gt"], promotionHold: null },
+    ];
+    expect(localBotsForCompany(bots, "cmp_gt", workspaces).map((b) => b.name)).toEqual(["gt-bot"]);
+    expect(localBotsForCompany(bots, null, workspaces)).toEqual([]);
+  });
+});
+
+describe("plainBotFailure host command text (AUDIT-3)", () => {
+  it("never shows a host command name, falls back to the plain sentence", () => {
+    const fallback = "Could not create setup.";
+    expect(plainBotFailure("harness: simulated failure for local_bots_create", fallback)).toBe(fallback);
+    expect(plainBotFailure("local_bots_create failed: spawn hq ENOENT", fallback)).toBe(fallback);
+    expect(isRawBotFailureText("Claude Code is not signed in on this Mac.")).toBe(false);
+  });
+});
+
+describe("local bot names before HQ's rosters list the bot", () => {
+  const guide = bot({ agentUid: "agt_guide", name: "agency-guide", displayName: "Agency Guide" });
+
+  it("thinking rows use the local bot's name instead of Unknown bot", () => {
+    expect(thinkingAgentName("Unknown bot", "agt_guide", [guide], "Bot")).toBe("Agency Guide");
+    expect(thinkingAgentName("", "agt_guide", [guide], "Bot")).toBe("Agency Guide");
+    expect(thinkingAgentName("agt_guide", "agt_guide", [guide], "Bot")).toBe("Agency Guide");
+  });
+
+  it("keeps a real title, and falls back when nothing names the bot", () => {
+    expect(thinkingAgentName("Scout", "agt_guide", [guide], "Bot")).toBe("Scout");
+    expect(thinkingAgentName("Unknown bot", "agt_other", [guide], "Bot")).toBe("Unknown bot");
+    expect(thinkingAgentName(null, "agt_other", [], "Bot")).toBe("Bot");
+  });
+
+  it("gives the sidebar a name for each local bot, by display name then handle", () => {
+    expect(localBotPeers([guide, bot({ agentUid: "agt_x", name: "scout", displayName: undefined })])).toEqual([
+      { personUid: "agt_guide", displayName: "Agency Guide" },
+      { personUid: "agt_x", displayName: "scout" },
+    ]);
   });
 });

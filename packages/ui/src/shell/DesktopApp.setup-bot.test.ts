@@ -167,7 +167,9 @@ async function mountWelcome(platform: PlatformAdapter, setupRun: SetupRunApi, wa
       },
     },
   });
-  await settle();
+  // The automatic first-open start opens the assistant's DM when it lands;
+  // let it land before #welcome is opened, so the click below is the last word.
+  await settle(40);
   const row = q<HTMLButtonElement>(`[data-conversation-id="${SETUP_ROW_ID}"]`);
   expect(row, "pinned #welcome row renders").toBeTruthy();
   row!.click();
@@ -218,7 +220,8 @@ describe("#welcome Run Setup creates the setup bot", () => {
     expect(scripted.start).not.toHaveBeenCalled();
     // The bot's DM is the open conversation, with the progress card in it…
     await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
-    expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup");
+    expect(q('[data-testid="channel-name"]')?.textContent).toContain(input.displayName);
+    expect(q('[data-testid="channel-name"]')?.textContent).not.toMatch(/\bsetup\b/i);
     // …and setup counts as run, so a later boot lands in the company channel.
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
   });
@@ -244,7 +247,11 @@ describe("#welcome Run Setup creates the setup bot", () => {
     const wakes = createChatWakeBus();
     await mountWelcome(adapter({ dm }), fakeSetupRun(), wakes);
     q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    const name = await vi.waitFor(() => {
+      const shown = q('[data-testid="channel-name"]')?.textContent?.trim() ?? "";
+      expect(SETUP_BOT_NAMES).toContain(shown);
+      return shown;
+    });
     // Before the intro lands there is nothing to be thinking after.
     expect(q('[data-testid="agent-thinking-row"]')).toBeNull();
 
@@ -259,7 +266,8 @@ describe("#welcome Run Setup creates the setup bot", () => {
       direction: "in",
     });
     wakes.emit("mesh:catchup", { reason: "focus" });
-    await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')?.textContent).toContain("setup is thinking"));
+    await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')?.textContent).toContain(`${name} is thinking`));
+    expect(q('[data-testid="agent-thinking-row"]')?.textContent).not.toMatch(/\bsetup is\b/i);
 
     // The first step's answer ends it.
     dm.push({
@@ -297,7 +305,7 @@ describe("#welcome Run Setup creates the setup bot", () => {
     (platform.messaging as unknown as Record<string, unknown>).sendDm = sendDm;
     await mountWelcome(platform, fakeSetupRun(), wakes);
     q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    await vi.waitFor(() => expect(SETUP_BOT_NAMES).toContain(q('[data-testid="channel-name"]')?.textContent?.trim()));
     expect(created).toBe(true);
 
     // hq-cli sends the offer in place of the intro and holds the kickoff.
@@ -355,7 +363,7 @@ describe("#welcome Run Setup creates the setup bot", () => {
     await settle();
 
     expect(create).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("Your assistant"));
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
   });
 
@@ -429,7 +437,8 @@ describe("#welcome Run Setup creates the setup bot", () => {
     expect(run.disabled).toBe(true);
     expect(q('[data-testid="setup-channel-intro"]')?.textContent).toContain("Your setup bot is starting");
     finish();
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    const chosen = (create.mock.calls as unknown as Array<[{ displayName: string }]>)[0]![0].displayName;
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain(chosen));
   });
 
   it("does not start by itself when setup already ran on this Mac", async () => {
