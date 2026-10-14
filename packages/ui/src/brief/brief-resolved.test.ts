@@ -5,17 +5,24 @@ import Harness from "./BriefResolvedHarness.test-support.svelte";
 import {
   RESOLVED_ROWS,
   RESOLVED_ROWS_SHORT,
+  SPLIT_MAX,
+  SPLIT_MIN,
+  SPLIT_UNKNOWN,
   TIMELINE_MAX,
   agoLabel,
+  durationLabel,
+  durationParts,
   moreRecoveredPeek,
   orderRecovered,
   plainTitle,
   postIncidentNotePrompt,
   recoveredPeek,
+  recoverySpan,
   resolvedCap,
   resolvedHeadline,
   timelineOf,
   utcClock,
+  utcHm,
 } from "./brief-resolved.js";
 import type { BriefOrigin, BriefRecovered } from "./brief-types.js";
 
@@ -123,6 +130,56 @@ describe("brief-resolved helpers", () => {
     expect(text).not.toContain("indigoai-us/");
   });
 
+  it("durations read as a big number with small units: minutes, hours and minutes, then days and hours", () => {
+    const m = 60_000;
+    expect(durationParts(38 * m)).toEqual([{ n: "38", u: "m" }]);
+    expect(durationParts(0)).toEqual([{ n: "0", u: "m" }]);
+    expect(durationParts((4 * 60 + 51) * m)).toEqual([{ n: "4", u: "h" }, { n: "51", u: "m" }]);
+    expect(durationParts(5 * 60 * m)).toEqual([{ n: "5", u: "h" }]);
+    expect(durationParts((51 * 60 + 20) * m)).toEqual([{ n: "2", u: "d" }, { n: "3", u: "h" }]);
+    expect(durationParts(72 * 60 * m)).toEqual([{ n: "3", u: "d" }]);
+    expect(durationLabel((4 * 60 + 51) * m)).toBe("4h 51m");
+    expect(utcHm("2026-10-11T06:27:00Z")).toBe("06:27");
+    expect(utcHm(null)).toBeNull();
+  });
+
+  it("the recovery span: down from the first timeline entry to the last, green from the fix to now", () => {
+    const span = recoverySpan(SYNC, NOW);
+    expect(span.brokeAt).toBe("2026-10-11T01:36:00Z");
+    expect(span.fixedAt).toBe("2026-10-11T06:27:00Z");
+    expect(durationLabel(span.downMs!)).toBe("4h 51m");
+    expect(durationLabel(span.upMs!)).toBe("8h 27m");
+    // 4h51m of 13h18m: in proportion, inside the clamp.
+    expect(span.split).toBeCloseTo(291 / 798, 3);
+    // The middle entry (01:51) sits on the red stretch, 15 minutes into it.
+    expect(span.marks).toEqual([Math.round((15 / 291) * span.split * 1000) / 1000]);
+  });
+
+  it("the recovery span without a timeline: start unknown, fixed at the item's time, green since", () => {
+    const span = recoverySpan({ ...SYNC, timeline: undefined }, NOW);
+    expect(span.brokeAt).toBeNull();
+    expect(span.downMs).toBeNull();
+    expect(span.fixedAt).toBe(SYNC.at);
+    expect(durationLabel(span.upMs!)).toBe("5h");
+    expect(span.split).toBe(SPLIT_UNKNOWN);
+    expect(span.marks).toEqual([]);
+    // One timed entry is not a span: it cannot say when it broke.
+    expect(recoverySpan({ ...SYNC, timeline: [SYNC.timeline![0]!] }, NOW).downMs).toBeNull();
+    // No time at all: no fix to draw.
+    const blind = recoverySpan({ ...SYNC, at: null, timeline: undefined }, NOW);
+    expect(blind.fixedAt).toBeNull();
+    expect(blind.upMs).toBeNull();
+  });
+
+  it("the recovery span keeps both stretches readable: the split is clamped", () => {
+    const long: BriefRecovered = { ...SYNC, timeline: [{ at: "2026-10-09T00:00:00Z", text: "Broke" }, { at: "2026-10-11T14:00:00Z", text: "Fixed" }] };
+    expect(recoverySpan(long, NOW).split).toBe(SPLIT_MAX);
+    const blip: BriefRecovered = { ...SYNC, timeline: [{ at: "2026-10-11T00:00:00Z", text: "Broke" }, { at: "2026-10-11T00:05:00Z", text: "Fixed" }] };
+    expect(recoverySpan(blip, NOW).split).toBe(SPLIT_MIN);
+    // A fix after `now` (clock skew) has no green stretch yet.
+    expect(recoverySpan({ ...SYNC, timeline: undefined, at: "2026-10-11T15:30:00Z" }, NOW).upMs).toBeNull();
+  });
+
   it("the +N more peek lists every row past the cap by plain title", () => {
     const rest = orderRecovered(seven()).slice(5);
     const p = moreRecoveredPeek(rest, NOW);
@@ -144,6 +201,11 @@ describe("BriefResolved", () => {
   }
   const q = (sel: string) => target.querySelector<HTMLElement>(sel);
   const qa = (sel: string) => [...target.querySelectorAll<HTMLElement>(sel)];
+  /** The big number and its two caption lines. */
+  const stat = () => {
+    const el = q('[data-testid="brief-resolved-stat"]');
+    return el ? [el.querySelector(".dur-n")!.textContent, ...[...el.querySelectorAll(".dur-c > span")].map((s) => s.textContent)] : null;
+  };
   async function hover(el: Element): Promise<void> {
     el.dispatchEvent(new MouseEvent("mouseenter"));
     await new Promise((r) => setTimeout(r, 260));
@@ -169,6 +231,8 @@ describe("BriefResolved", () => {
     expect(card.classList.contains("c-green")).toBe(true);
     expect(card.querySelector(".eyebrow")!.textContent!.trim()).toBe("Fixed since your last brief");
     expect(q('[data-testid="brief-resolved-headline"]')!.textContent).toBe("7 things recovered");
+    // The count leads as its own big number.
+    expect(q('[data-testid="brief-resolved-headline"] .count-n')!.textContent).toBe("7");
     const rows = qa('[data-testid="brief-resolved-row"]');
     expect(rows).toHaveLength(5);
     expect(rows.map((r) => r.getAttribute("aria-label"))).toEqual([
@@ -245,9 +309,11 @@ describe("BriefResolved", () => {
     expect(peek.textContent).not.toMatch(/\+\d+ more/);
     expect(q('[data-testid="brief-peek-prompt"]')!.textContent).toMatch(/^Write the post-incident note for: /);
 
-    // Start launches the prompt in the chosen engine.
-    expect(q(".hint")!.textContent).toBe("Post-incident note");
-    (q('[data-testid="brief-start"]') as HTMLButtonElement).click();
+    // The one action says what it does; the engine it runs in is in its title and the switch.
+    const start = q('[data-testid="brief-start"]') as HTMLButtonElement;
+    expect(start.textContent!.trim()).toBe("Write post-incident note");
+    expect(start.title).toBe("Write post-incident note in Claude");
+    start.click();
     await Promise.resolve();
     await Promise.resolve();
     flushSync();
@@ -272,12 +338,68 @@ describe("BriefResolved", () => {
     expect(onlaunch).toHaveBeenCalledWith("claude", "Draft the note for the sync outage.");
   });
 
-  it("one recovery in a one-row slot keeps the headline and source line, with no timeline or launch", () => {
+  it("one recovery in a one-row slot keeps the headline, source line and the outage, with no timeline list or launch", () => {
     render({ recovered: [SYNC], rows: 1 });
     expect(q('[data-testid="brief-resolved-headline"]')!.textContent).toBe("The nightly sync check is green again.");
     expect(q('[data-testid="brief-resolved-product"]')!.textContent).toBe("HQ Cloud");
     expect(q(".when")!.textContent).toBe("5h ago");
     expect(q('[data-testid="brief-resolved-timeline"]')).toBeNull();
     expect(q('[data-testid="brief-launch"]')).toBeNull();
+    // How long it was down still reads, as the number over the track.
+    expect(q('[data-testid="brief-resolved-track"]')!.dataset.down).toBe("4h 51m");
+    expect(stat()).toEqual(["4h51m", "down", "then fixed"]);
+  });
+
+  it("the track: how long it was down, red from the first entry, fixed at the last, then now", () => {
+    render({ recovered: [SYNC], rows: 2 });
+    const track = q('[data-testid="brief-resolved-track"]')!;
+    expect(track.dataset.down).toBe("4h 51m");
+    expect(stat()).toEqual(["4h51m", "down", "fixed 5h ago"]);
+    expect(q('[data-testid="brief-resolved-broke"]')!.textContent).toBe("Red01:36");
+    expect(q('[data-testid="brief-resolved-fixed"]')!.textContent).toBe("Fixed06:27 UTC");
+    expect(track.querySelector(".red")!.classList.contains("fade")).toBe(false);
+    expect(track.querySelectorAll(".mark")).toHaveLength(1);
+    // The big number already says when it was fixed, so the source line does not repeat "5h ago".
+    expect(q(".src .when")).toBeNull();
+    expect(q(".src .via")!.textContent).toBe("main CI");
+  });
+
+  it("without a timeline the track fades in from an unknown start and the number is how long it has been green", () => {
+    const gate: BriefRecovered = { id: "r1", title: "Staging main is green again", what: "The release gate passed", at: hoursAgo(5), source: "main_health", origin: origin("indigoai-us/hq-core-staging", "HQ core") };
+    render({ recovered: [gate], rows: 2 });
+    const track = q('[data-testid="brief-resolved-track"]')!;
+    expect(track.dataset.down).toBeUndefined();
+    expect(track.querySelector(".red")!.classList.contains("fade")).toBe(true);
+    expect(stat()).toEqual(["5h", "green", "since the fix"]);
+    expect(q('[data-testid="brief-resolved-broke"]')!.textContent).toBe("Red");
+    expect(q('[data-testid="brief-resolved-fixed"]')!.textContent).toBe("Fixed09:54 UTC");
+    expect(q('[data-testid="brief-resolved-timeline"]')).toBeNull();
+    // In a one-row slot "5h ago" stays on the source line and there is no number to repeat it.
+    unmount(app!);
+    target.remove();
+    render({ recovered: [gate], rows: 1 });
+    expect(q('[data-testid="brief-resolved-stat"]')).toBeNull();
+    expect(q(".when")!.textContent).toBe("5h ago");
+    expect(q('[data-testid="brief-resolved-track"]')).not.toBeNull();
+  });
+
+  it("with no time at all there is no track to draw", () => {
+    render({ recovered: [{ ...SYNC, at: null, timeline: undefined }], rows: 2 });
+    expect(q('[data-testid="brief-resolved-track"]')).toBeNull();
+    expect(q('[data-testid="brief-start"]')).not.toBeNull();
+  });
+
+  it("the note action follows the engine switch: pick Codex and it writes there", async () => {
+    const onlaunch = vi.fn(async () => null);
+    render({ recovered: [SYNC], rows: 2, onlaunch });
+    (q('[data-testid="brief-launch"] [data-engine="codex"]') as HTMLButtonElement).click();
+    flushSync();
+    const start = q('[data-testid="brief-start"]') as HTMLButtonElement;
+    expect(start.textContent!.trim()).toBe("Write post-incident note");
+    expect(start.title).toBe("Write post-incident note in Codex");
+    start.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onlaunch).toHaveBeenCalledWith("codex", postIncidentNotePrompt(SYNC));
   });
 });

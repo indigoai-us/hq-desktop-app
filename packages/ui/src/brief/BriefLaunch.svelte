@@ -28,12 +28,14 @@
     compact?: boolean;
     /** For a decide item: the two answers the pill splits into on hover. */
     choices?: [string, string] | null;
+    /** What the start button does, when a card names it ("Write post-incident note"); the engine shows in the switch. */
+    label?: string | null;
   }
-  let { id, prompt, compact = false, choices = null }: Props = $props();
+  let { id, prompt, compact = false, choices = null, label: named = null }: Props = $props();
   const brief = useBrief();
   let copied = $state(false);
   const engine = $derived(ENGINES.find((e) => e.id === brief.engine)!);
-  const label = $derived(compact ? engine.label : `Start in ${engine.label}`);
+  const label = $derived(named ?? (compact ? engine.label : `Start in ${engine.label}`));
 
   async function copy(): Promise<void> {
     copied = await copyBriefPrompt(prompt);
@@ -52,7 +54,7 @@
       </span>
     </span>
   {:else}
-    <button type="button" class="go" data-testid="brief-start" onclick={() => void brief.start(id, prompt)}>
+    <button type="button" class="go" data-testid="brief-start" title={named ? `${named} in ${engine.label}` : undefined} onclick={() => void brief.start(id, prompt)}>
       {label}
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
     </button>
