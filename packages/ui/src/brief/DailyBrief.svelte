@@ -46,6 +46,7 @@
     launchBriefPromptViaClipboard,
     provideBrief,
     type BriefCompanyLogo,
+    type BriefItemEvent,
     type BriefLaunch,
   } from "./brief-context.svelte.js";
   import { peek, type PeekContent } from "./brief-context.svelte.js";
@@ -77,13 +78,15 @@
     onopenthread?: (uid: string) => void;
     /** Opens the Meetings page. */
     onopenmeetings?: () => void;
+    /** Records what the person did with an item (dismiss, launch) in the brief log. */
+    onlog?: (event: BriefItemEvent) => void;
   }
-  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings }: Props = $props();
+  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog }: Props = $props();
 
   const briefState = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
     () => companies,
-    { dmApi: () => dmApi, openThread: () => onopenthread },
+    { dmApi: () => dmApi, openThread: () => onopenthread, log: () => onlog },
   );
   provideBrief(briefState);
 

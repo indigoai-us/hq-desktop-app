@@ -52,7 +52,8 @@ pub use hq_desktop_core::desktop_alt::{
     parse_crm_projection_response, parse_deploy_apps_response, parse_deployment_entries, parse_deployments_response,
     parse_project_creators, parse_project_creators_response, parse_secret_envs,
     parse_secrets_response, prefix_company_resolution_error, read_file_bytes_capped,
-    read_file_content, read_file_content_capped, resolve_company_uid_from_workspaces,
+    append_brief_log_line, read_file_content, read_file_content_capped,
+    resolve_company_uid_from_workspaces,
     resolve_hq_folder, secret_env_and_key, secret_key, secret_rotation, secret_rows,
     secret_structure_summary, secret_updated_at, secrets_url, string_field, subdomain_from_url,
     summary_count_or_auth, validate_hq_relative_path, workspace_grants_company_file_access,
@@ -1611,6 +1612,21 @@ pub async fn get_company_file_content(
     let target = revalidate_authorized_file_target(&target).await?;
     enforce_desktop_read_scope(&target.relative_path, &scope)?;
     read_file_content(&target.hq_root, &target.relative_path)
+}
+
+/// Append one event to the Daily Brief preference log
+/// (`personal/brief/brief-log.jsonl`), the only HQ file the brief page writes.
+/// The path is fixed and the line validated in the core; the renderer never
+/// names a path.
+#[tauri::command]
+pub async fn append_brief_log(line: String) -> Result<(), String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("the brief log requires a signed-in user".to_string());
+    }
+    let (hq, _workspaces) = hydrated_file_context().await?;
+    tauri::async_runtime::spawn_blocking(move || append_brief_log_line(&hq, &line))
+        .await
+        .map_err(|e| format!("brief log write did not finish: {e}"))?
 }
 
 /// Return a size-capped supported text/media preview after resolving and authorizing the

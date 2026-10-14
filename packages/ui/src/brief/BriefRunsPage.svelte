@@ -14,8 +14,10 @@
   import BriefFindings from "./BriefFindings.svelte";
   import { parseFindings, parseSamples } from "./brief-findings.js";
   import { parseActivity } from "./brief-runs.js";
-  import { BRIEF_IDLE_MS, elapsedLabel, estimateLabel, stillWorkingLine } from "./brief-runs.js";
+  import { BRIEF_IDLE_MS, elapsedLabel, estimateLabel, stillWorkingLine, waitingStep } from "./brief-runs.js";
   import { briefDemoFromUrl } from "./brief-demo.js";
+  import { createBriefLogger } from "./brief-log.js";
+  import type { BriefItemEvent } from "./brief-context.svelte.js";
   import type { DawnPhase } from "./brief-dawn.js";
   import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
   import { adapterSweepSource, gatherBriefInput, readRunHousekeeping, type BriefAdapter, type BriefSweepSource } from "./brief-data.js";
@@ -73,6 +75,14 @@
   }
   const store = storage();
   const openedBefore = store?.getItem(LAST_KEY) ?? null;
+  // The brief log: what was shown and what the person did with it. Hosts
+  // without the append (web, harness, demo) log nothing.
+  // svelte-ignore state_referenced_locally
+  const appendLog = demo ? null : adapter.files?.appendBriefLog?.bind(adapter.files);
+  const logBrief = createBriefLogger(appendLog);
+  function logItem(event: BriefItemEvent): void {
+    if (shownRunId) logBrief({ ...event, runId: shownRunId });
+  }
 
   async function loadIndex(): Promise<BriefIndexEntry[]> {
     if (!source) return [];
@@ -110,6 +120,7 @@
       if (!alive || mine !== seq) return;
       input = day;
       shownRunId = runId;
+      if (runId) logBrief({ event: "shown", runId });
       housekeeping = hk;
       missing = runId ? failures.filter((f) => f.endsWith(".json")) : [];
       now = new Date();
@@ -159,7 +170,7 @@
       case "dispatching":
         return { phase: "running", progress: 0, step: "Waking your bot…" };
       case "waiting":
-        return { phase: "running", progress: 0, step: "Waiting for your bot to start" };
+        return { phase: "running", progress: 0, step: waitingStep(cp.bot) };
       case "running":
         return { phase: "running", progress: cp.progress, step: cp.step };
       case "ready":
@@ -305,7 +316,7 @@
   <div class="daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
   {#if dawn}<div class="masthead-wrap">{@render dawnScene("masthead")}</div>{/if}
-  <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} header={entries.length || run ? runBar : undefined} />
+  <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} onlog={logItem} header={entries.length || run ? runBar : undefined} />
 {:else if failed}
   <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
 {:else}

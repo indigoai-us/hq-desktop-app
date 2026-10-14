@@ -191,7 +191,7 @@ describe("BriefRunsPage", () => {
       q("brief-create")!.click();
       await settle();
       // No runs yet: the progress plays in the full-page sunrise.
-      expect(q("brief-dawn-step")?.textContent).toContain("Waiting for your bot to start");
+      expect(q("brief-dawn-step")?.textContent).toContain("waiting for it to start");
       expect(q("brief-dawn")?.getAttribute("data-progress")).toBe("0.00");
       await vi.advanceTimersByTimeAsync(2_100);
       await settle();
