@@ -234,7 +234,13 @@ Where you tag depends on the channel:
   contained in at least one `release/*` branch; creating those branches is
   restricted to the Release Managers team. A prerelease tag that is on `main`
   or not contained in a `release/*` branch is rejected. Prerelease releases
-  never stamp their version back to `main`.
+  never stamp their version back to `main`. The usual shape is a
+  `chore(release): vX.Y.Z-beta.N` commit on top of `main`, pushed to
+  `release/vX.Y.Z-beta.N` and tagged there. The local `.githooks/pre-push`
+  hook refuses an alpha/beta tag whose commit is on `origin/main` before the
+  push starts a release; `HQ_ALLOW_TAG_PUSH` does not skip that check, and the
+  explicit `HQ_ALLOW_PRERELEASE_FROM_MAIN=1` override is logged and still
+  rejected by CI.
 
 There is no version bump to make first and no release pull request. The tag is
 the single source of truth for the version: the `validate` job stamps
