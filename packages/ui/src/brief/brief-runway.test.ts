@@ -7,6 +7,7 @@ import { buildContext, CATALOGUE } from "./brief-catalogue.js";
 import { empty } from "./brief-catalogue-fixtures.js";
 import {
   calendarDraft,
+  captionLayout,
   clockMin,
   focusGaps,
   focusRunway,
@@ -16,6 +17,7 @@ import {
   pct,
   priorityLaunchId,
   priorityPrompt,
+  runwayHero,
   runwayTitle,
   suggestionFor,
   WORKDAY_END_MIN,
@@ -152,6 +154,92 @@ describe("runway words", () => {
     ]);
     expect(calendarDraft(focusRunway(DAY, NOW).protect!, null, "Wed, Oct 14")).toMatch(/^Focus block\n/);
   });
+
+  it("the hero is the protected block's length; the rest of the line is its caption, one sentence a line", () => {
+    expect(runwayHero(focusRunway(DAY, NOW))).toEqual({ num: "3h 25m", lines: ["clear after Standup.", "Protect it."] });
+    expect(runwayHero(focusRunway(DAY, at(10, 30)))).toEqual({ num: "2h 20m", lines: ["clear before Cut30 office hours.", "Protect it."] });
+    // A line that does not lead with the block says it plainly.
+    expect(runwayHero(focusRunway([], NOW))).toBeNull();
+    expect(runwayHero(focusRunway(SOLID_DAY, NOW))).toBeNull();
+    expect(runwayHero(focusRunway(DAY, at(19, 0)))).toBeNull();
+  });
+});
+
+describe("captionLayout", () => {
+  const total = (spots: { left: number; width: number }[]) => spots.reduce((a, s) => Math.max(a, s.left + s.width), 0);
+  const ordered = (spots: { left: number; width: number }[]) => spots.every((s, i) => i === 0 || s.left >= spots[i - 1]!.left + spots[i - 1]!.width - 1e-6);
+
+  it("hangs each caption from its own block's start when there is room, and grows it to the next one", () => {
+    // The fixture day at 634px: 8:00–9:50, 10:40–11:50, 12:40–6:00.
+    const spots = captionLayout(
+      [
+        { start: 0, end: 18.333 },
+        { start: 26.667, end: 38.333 },
+        { start: 46.667, end: 100 },
+      ],
+      [23, 25, 26],
+    );
+    expect(spots.map((s) => s.side)).toEqual(["start", "start", "start"]);
+    expect(spots.map((s) => s.moved)).toEqual([false, false, false]);
+    expect(spots[0]).toMatchObject({ left: 0, width: 26.667 });
+    expect(spots[1]!.left).toBe(26.667);
+    // The third cannot start at 46.667 (the second needs 25%), so it hangs from further along its own block.
+    expect(spots[2]!.left).toBeCloseTo(51.667, 3);
+    expect(spots[2]!.left).toBeGreaterThan(46.667);
+    expect(spots[2]!.left + spots[2]!.width).toBeCloseTo(100, 3);
+    expect(ordered(spots)).toBe(true);
+  });
+
+  it("hangs a caption from its block's end, reading leftwards, when the day runs out to the right", () => {
+    // Two late gaps: 2:40–3:20 and 5:10–6:00.
+    const spots = captionLayout(
+      [
+        { start: 66.667, end: 73.333 },
+        { start: 91.667, end: 100 },
+      ],
+      [25, 27],
+    );
+    expect(spots.map((s) => s.side)).toEqual(["end", "end"]);
+    expect(spots.map((s) => s.moved)).toEqual([false, false]);
+    // Each caption's right edge (its stem) sits on its own block: the first as far along it
+    // as the second caption's 27% allows, the second at the day's end.
+    expect(spots[0]!.left + spots[0]!.width).toBeCloseTo(73, 3);
+    expect(spots[0]!.left + spots[0]!.width).toBeGreaterThan(66.667);
+    expect(spots[1]!.left + spots[1]!.width).toBeCloseTo(100, 3);
+    expect(spots[1]!.left).toBeCloseTo(73, 3);
+    // Grown leftwards into the free morning, but never past half the track.
+    expect(spots[0]!.width).toBeCloseTo(50, 3);
+    expect(ordered(spots)).toBe(true);
+  });
+
+  it("on a crowded day spreads the captions in time order and marks the ones that missed their block", () => {
+    // Fifty minutes at 8:00 then twenty-five at 9:25: the second caption cannot sit under its block.
+    const spots = captionLayout(
+      [
+        { start: 0, end: 8.333 },
+        { start: 14.167, end: 18.333 },
+        { start: 74.167, end: 100 },
+      ],
+      [24, 24, 26],
+    );
+    expect(spots.map((s) => s.moved)).toEqual([false, true, false]);
+    expect(spots[1]!.left).toBe(24);
+    // The elbow leaves the block from inside it.
+    expect(spots[1]!.reach).toBeGreaterThanOrEqual(14.167);
+    expect(spots[1]!.reach).toBeLessThanOrEqual(18.333);
+    expect(ordered(spots)).toBe(true);
+    expect(total(spots)).toBeLessThanOrEqual(100);
+  });
+
+  it("never overflows the track, even when the captions ask for more than all of it", () => {
+    const blocks = [0, 20, 40, 60, 80].map((x) => ({ start: x, end: x + 5 }));
+    const spots = captionLayout(blocks, [30, 30, 30, 30, 30]);
+    expect(spots).toHaveLength(5);
+    expect(ordered(spots)).toBe(true);
+    expect(total(spots)).toBeLessThanOrEqual(100 + 1e-6);
+    expect(spots.every((s) => s.width >= 19.99)).toBe(true);
+    expect(captionLayout([], [])).toEqual([]);
+  });
 });
 
 describe("picker agreement", () => {
@@ -199,12 +287,18 @@ describe("BriefRunway", () => {
     target?.remove();
   });
 
-  it("draws the runway: calls as pills, gaps classed, the longest glowing, the needle from now", () => {
+  it("draws the runway: calls as pills, gaps classed in time order, the longest in the accent, the needle from now", () => {
     render();
     expect(text('[data-testid="brief-runway-title"]')).toBe("3h 25m clear after Standup. Protect it.");
+    // The hero is the protected block's length, inside the line so it still reads as one sentence.
+    expect(text('[data-testid="brief-runway-hero"]')).toBe("3h 25m");
+    expect(q('[data-testid="brief-runway-title"] [data-testid="brief-runway-hero"]')).not.toBeNull();
     expect(qa('[data-testid="brief-runway-pill"]').map((p) => p.textContent?.trim())).toEqual(["Standup", "Cut30 office hours", "Investor call"]);
     const gaps = qa('[data-testid="brief-runway-gap"]');
     expect(gaps.map((g) => g.dataset.cls)).toEqual(["solid", "deep", "shallow", "deep"]);
+    // Blocks run left to right with the day.
+    const lefts = gaps.map((g) => parseFloat(g.style.left));
+    expect(lefts).toEqual([...lefts].sort((a, b) => a - b));
     const pro = gaps.filter((g) => g.classList.contains("pro"));
     expect(pro).toHaveLength(1);
     expect(pro[0]!.dataset.rank).toBe("1");
@@ -218,19 +312,26 @@ describe("BriefRunway", () => {
     expect(q('[data-testid="brief-runway-now"]')!.style.left).toBe("50%");
   });
 
-  it("rows take the ranked gaps in order, priority 1 on the longest, in plain words; +N more lists the rest", async () => {
+  it("captions take the longest gaps, priority 1 on the longest, in plain words, read in time order; +N more lists the rest", async () => {
     render();
     const rows = qa('[data-testid="brief-runway-row"]');
     expect(rows).toHaveLength(3);
-    expect(rows.map((r) => r.dataset.rank)).toEqual(["1", "2", "3"]);
+    // The three longest of the four gaps make the cut (the 40-minute one does not) ...
+    expect(rows.map((r) => r.dataset.rank).sort()).toEqual(["1", "2", "3"]);
+    // ... and read left to right with the day: 8:00, 9:25, 3:55.
+    expect(rows.map((r) => r.dataset.rank)).toEqual(["3", "1", "2"]);
     expect(qa('[data-testid="brief-runway-task"]').map((t) => t.textContent)).toEqual([
+      "Reply to Jacob about the memo folder",
       "Close out the SAFE allotment",
       "Cut the desktop release",
-      "Reply to Jacob about the memo folder",
     ]);
-    expect(rows[0]!.textContent).toContain("3h 25m · 9:25–12:50");
-    expect(rows[0]!.textContent).toContain("protect");
-    expect(rows.map((r) => r.dataset.launch)).toEqual(["d1", "d6", "priority:3"]);
+    const pro = q('[data-testid="brief-runway-row"][data-rank="1"]')!;
+    expect(pro.textContent).toContain("3h 25m · 9:25–12:50");
+    expect(pro.textContent).toContain("protect");
+    // Its length is the hero's number: said once on screen, kept for screen readers.
+    expect(pro.querySelector(".du")!.classList.contains("vh")).toBe(true);
+    expect(q('[data-testid="brief-runway-row"][data-rank="2"] .du')!.classList.contains("vh")).toBe(false);
+    expect(rows.map((r) => r.dataset.launch)).toEqual(["priority:3", "d1", "d6"]);
     const more = q('[data-testid="brief-runway-more"]')!;
     expect(more.textContent?.trim()).toBe("+1 more");
     await hover(more);
@@ -311,6 +412,9 @@ describe("BriefRunway", () => {
     render({ events: [] });
     expect(text('[data-testid="brief-runway-title"]')).toBe("Whole day open. Pick the hardest thing first.");
     expect(qa('[data-testid="brief-runway-pill"]')).toHaveLength(0);
+    // The line does not lead with the block, so the hero sits beside it.
+    expect(text('[data-testid="brief-runway-hero"]')).toBe("10h");
+    expect(q('[data-testid="brief-runway-title"] [data-testid="brief-runway-hero"]')).toBeNull();
     const rows = qa('[data-testid="brief-runway-row"]');
     expect(rows).toHaveLength(1);
     expect(rows[0]!.textContent).toContain("10h · 8:00–6:00");
@@ -324,11 +428,43 @@ describe("BriefRunway", () => {
     expect(qa('[data-testid="brief-runway-row"]')).toHaveLength(0);
     expect(qa('[data-testid="brief-runway-gap"]')).toHaveLength(0);
     expect(q(".gaps")).toBeNull();
+    expect(q('[data-testid="brief-runway-hero"]')).toBeNull();
   });
 
   it("a gap with no priority left reads Unassigned", () => {
     render({ priorities: PRIORITIES.slice(0, 1), rows: 2 });
-    expect(qa('[data-testid="brief-runway-task"]').map((t) => t.textContent)).toEqual(["Close out the SAFE allotment", "Unassigned", "Unassigned", "Unassigned"]);
+    // Time order: 8:00, 9:25 (the longest, priority 1), 2:10, 3:55.
+    expect(qa('[data-testid="brief-runway-task"]').map((t) => t.textContent)).toEqual(["Unassigned", "Close out the SAFE allotment", "Unassigned", "Unassigned"]);
+  });
+
+  it("a caption and its block light together, from either side", () => {
+    render();
+    const block = q('[data-testid="brief-runway-gap"][data-rank="2"]')!;
+    const row = q('[data-testid="brief-runway-row"][data-rank="2"]')!;
+    row.dispatchEvent(new MouseEvent("mouseenter"));
+    flushSync();
+    expect(block.classList.contains("on")).toBe(true);
+    expect(qa('[data-testid="brief-runway-gap"].on')).toHaveLength(1);
+    row.dispatchEvent(new MouseEvent("mouseleave"));
+    flushSync();
+    expect(block.classList.contains("on")).toBe(false);
+    q('[data-testid="brief-runway-gap"][data-rank="1"]')!.dispatchEvent(new MouseEvent("mouseenter"));
+    flushSync();
+    expect(q('[data-testid="brief-runway-row"][data-rank="1"]')!.classList.contains("on")).toBe(true);
+    expect(q('[data-testid="brief-runway-row"][data-rank="2"]')!.classList.contains("on")).toBe(false);
+  });
+
+  it("in a one-row slot each caption gets its own column under its block; a tall slot lists them", () => {
+    render();
+    const cols = q(".gaps")!.style.gridTemplateColumns.split(" ");
+    // A spacer and a caption per shown gap.
+    expect(cols).toHaveLength(6);
+    expect(qa('[data-testid="brief-runway-row"]').map((r) => r.style.gridColumn.split(" ")[0])).toEqual(["2", "4", "6"]);
+    unmount(app!);
+    app = null;
+    render({ rows: 2 });
+    expect(q(".gaps")!.classList.contains("list")).toBe(true);
+    expect(q(".gaps")!.style.gridTemplateColumns).toBe("");
   });
 
   it("the component's CSS is flat: no inner shadow, no glow, no backdrop-filter; the protected block is the terracotta accent", () => {
@@ -339,5 +475,11 @@ describe("BriefRunway", () => {
     expect(style).not.toMatch(/backdrop-filter/);
     expect(style).not.toMatch(/box-shadow:[^;]*\d+px rgba\(52, 199, 89/);
     expect(style).toMatch(/\.gp\.pro\s*\{[^}]*background:\s*var\(--b-hot/);
+    // The protected caption's stem wears the accent too; calls are hatched, not filled.
+    expect(style).toMatch(/\.g\.pro\s*\{[^}]*--stem:\s*var\(--b-hot/);
+    expect(style).toMatch(/\.mt\s*\{[^}]*repeating-linear-gradient/);
+    // No rims on inner elements; mono text is always caps.
+    expect(style).not.toMatch(/border(-\w+)?:\s*(?!0)[^;]*solid/);
+    for (const rule of style.match(/[^{}]+\{[^}]*var\(--b-code\)[^}]*\}/g) ?? []) expect(rule).toMatch(/text-transform:\s*uppercase/);
   });
 });

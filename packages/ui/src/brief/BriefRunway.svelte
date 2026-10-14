@@ -1,19 +1,22 @@
 <script lang="ts">
   /**
    * Focus time: where today's one clear block is, which priority fits it, and
-   * that it is worth protecting. The runway runs 8 AM to 6 PM on one thin
-   * track: the padded gaps are filled segments in page ink (deep and solid
-   * full, shallow lighter), every call is empty track with a thin tick at its
-   * middle (fainter when projected or a busy hold). The longest gap is the
-   * one terracotta segment and takes priority 1; the next gap takes
-   * priority 2, and so on. Hover a gap for its neighbours, the suggested
-   * task, Start in <engine>, and an event draft that blocks it (copied to the
+   * that it is worth protecting. The hero is the protected block's length. The
+   * runway under it is the workday to scale, 8 AM to 6 PM: every free stretch
+   * is a solid block in page ink, every call a hatched sliver, padding and
+   * scraps the faint track between. The longest gap is the one terracotta
+   * block and takes priority 1; the next gap takes priority 2, and so on.
+   * Each shown gap drops a stem into its caption (what to do with it), so the
+   * captions read left to right in time order, under their own stretch of the
+   * day. Hover a block or a caption for its neighbours, the suggested task,
+   * Start in <engine>, and an event draft that blocks it (copied to the
    * clipboard; the brief never writes the calendar).
    */
   import { copyBriefPrompt, peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import { humanTitle } from "./brief-distill.js";
   import {
     calendarDraft,
+    captionLayout,
     focusRunway,
     gapRange,
     gapWhere,
@@ -22,6 +25,7 @@
     priorityLaunchId,
     priorityPrompt,
     RULER_HOURS,
+    runwayHero,
     runwayTitle,
     suggestionFor,
     WORKDAY_END_MIN,
@@ -49,23 +53,51 @@
   const runway = $derived(focusRunway(events, now));
   const provisional = $derived(sample || (runway.events.length > 0 && runway.events.every((e) => e.projected)));
   const title = $derived(runwayTitle(runway));
-  // At most five rows in a list; a "+N more" row opens the rest in the peek.
-  const cap = $derived(rows > 1 ? 5 : cols >= 3 ? 3 : 2);
-  const shown = $derived(runway.ranked.slice(0, cap));
+  const hero = $derived(runwayHero(runway));
+  /** The headline as a caption: one line per sentence. */
+  const lines = $derived(hero ? hero.lines : title.split(/(?<=\.)\s+/));
+  const tall = $derived(rows > 1);
+  // At most five captions in a tall slot; a "+N more" chip by the hero opens the rest in the peek.
+  const cap = $derived(tall ? 5 : cols >= 3 ? 3 : 2);
+  /** The longest gaps make the cut; they are captioned in time order, under their own blocks. */
+  const shown = $derived(
+    runway.ranked.slice(0, cap).sort((a, b) => a.startMin - b.startMin),
+  );
   const rest = $derived(runway.ranked.slice(cap));
   const needle = $derived(runway.nowMin != null && runway.nowMin >= WORKDAY_START_MIN && runway.nowMin <= WORKDAY_END_MIN ? pct(runway.nowMin) : null);
   const dateLabel = $derived(new Date(now).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }));
   let copied = $state<string | null>(null);
-
+  /** The gap under the pointer or focus: its block and its caption light together. */
+  let hot = $state<string | null>(null);
+  const gapLabel = (g: FocusGap) => `${minutesText(g.minutes)} · ${gapRange(g)}`;
+  /** The captions' width in px (a nominal one until measured). */
+  let capW = $state(0);
+  /** Each caption keeps room for its mono meta on one line (and the protect chip), and a readable task. */
+  const minPx = (g: FocusGap) => Math.max(140, 30 + 7.1 * (g.rank === 1 ? gapRange(g).length + 10 : gapLabel(g).length));
+  const layout = $derived(
+    captionLayout(
+      shown.map((g) => ({ start: pct(g.startMin), end: pct(g.endMin) })),
+      shown.map((g) => (minPx(g) / (capW > 0 ? capW : 634)) * 100),
+    ),
+  );
+  /** Grid columns: a spacer before each caption, then the caption. */
+  const columns = $derived(
+    layout
+      .flatMap((at, i) => [at.left - (i ? layout[i - 1]!.left + layout[i - 1]!.width : 0), at.width])
+      .map((x) => `${Math.max(0, Math.floor(x * 1000) / 1000)}%`)
+      .join(" "),
+  );
   /** The suggested task in plain words: no repo, PR or commit prefix. */
   const task = (g: FocusGap): string | null => {
     const p = suggestionFor(priorities, g);
     return p ? humanTitle(p.text).text : null;
   };
   const promptFor = (p: BriefPriority, g: FocusGap): string => prompts[p.itemId ?? ""] ?? priorityPrompt(p, g);
-  const gapLabel = (g: FocusGap) => `${minutesText(g.minutes)} · ${gapRange(g)}`;
   /** A ruler hour in plain words: 8 AM, 12 PM, 2 PM. */
   const hourLabel = (h: number) => `${h % 12 || 12} ${h >= 12 ? "PM" : "AM"}`;
+  /** Every hour of the workday, for the faint dotted gridlines. */
+  const hours = Array.from({ length: (WORKDAY_END_MIN - WORKDAY_START_MIN) / 60 - 1 }, (_, i) => WORKDAY_START_MIN / 60 + 1 + i);
+  const light = (id: string) => ({ onmouseenter: () => (hot = id), onmouseleave: () => (hot = null), onfocus: () => (hot = id), onblur: () => (hot = null) });
 
   async function block(g: FocusGap): Promise<void> {
     if (await copyBriefPrompt(calendarDraft(g, task(g), dateLabel))) {
@@ -114,92 +146,119 @@
   const provisionalPeek = (): PeekContent => ({
     title: "Provisional",
     status: sample ? "No live calendar in this preview" : "Calendar not loaded",
-    sections: [{ label: "Why dashed", text: "Today's calls are drawn from recurring series, not read from the calendar. The runway firms up once it loads." }],
+    sections: [{ label: "Why faint", text: "Today's calls are drawn from recurring series, not read from the calendar. The runway firms up once it loads." }],
   });
 </script>
 
-<div class="w" data-testid="brief-runway" data-protect={runway.protect?.id ?? ""} data-gaps={runway.gaps.length}>
+<div class="w" class:tall data-testid="brief-runway" data-protect={runway.protect?.id ?? ""} data-gaps={runway.gaps.length}>
   <div class="hd">
     <div class="hdt">
       <div class="eyebrow">
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>
         Focus time{#if provisional}<span data-testid="brief-runway-provisional"> · provisional</span>{/if}
       </div>
-      <h3 data-testid="brief-runway-title">{title}</h3>
+      <!-- The hero: how long the protected block runs, big; the rest of the line beside it, one sentence a line. -->
+      <div class="hero">
+        {#if !hero && runway.protect}<span class="num" data-testid="brief-runway-hero">{minutesText(runway.protect.minutes)}</span>{/if}
+        <h3 data-testid="brief-runway-title">
+          {#if hero}<span class="num" data-testid="brief-runway-hero">{hero.num}</span>{" "}{/if}<span class="cap"
+            >{#each lines as l, i (i)}{#if i}{" "}{/if}<span class="ln">{l}</span>{/each}</span
+          >
+        </h3>
+      </div>
     </div>
-    {#if provisional}
-      <span class="tag" role="note" use:peek={{ state: brief, content: provisionalPeek }}>{sample ? "sample calendar" : "calendar not loaded"}</span>
+    {#if provisional || rest.length}
+      <div class="aside">
+        {#if provisional}
+          <span class="tag" role="note" use:peek={{ state: brief, content: provisionalPeek }}>{sample ? "sample calendar" : "calendar not loaded"}</span>
+        {/if}
+        {#if rest.length}
+          <div class="more" role="button" tabindex="0" data-testid="brief-runway-more" use:peek={{ state: brief, content: morePeek }}>+{rest.length} more</div>
+        {/if}
+      </div>
     {/if}
   </div>
 
-  <div class="rw" data-testid="brief-runway-bar">
-    {#each runway.gaps as g (g.id)}
-      <div
-        class="gp {g.cls}"
-        class:pro={g.rank === 1}
-        role="button"
-        tabindex="0"
-        aria-label="{minutesText(g.minutes)} clear {gapWhere(g)}, {gapRange(g)}"
-        data-testid="brief-runway-gap"
-        data-rank={g.rank}
-        data-cls={g.cls}
-        style="left:{pct(g.startMin)}%;width:{pct(g.endMin) - pct(g.startMin)}%"
-        use:peek={{ state: brief, content: () => gapPeek(g) }}
-      ></div>
-    {/each}
-    {#each runway.pills as p (p.event.id)}
-      <!-- A call is empty track with a thin tick at its middle; the title is for the hover and screen readers. -->
-      <div
-        class="mt"
-        class:proj={p.event.projected}
-        class:busy={p.event.busy}
-        class:tent={p.event.tentative}
-        role="group"
-        aria-label="{p.event.busy ? 'Busy' : p.event.title}, {rangeText(p.event)}"
-        data-testid="brief-runway-pill"
-        style="left:{pct(p.startMin)}%;width:{pct(p.endMin) - pct(p.startMin)}%"
-        use:peek={{ state: brief, content: () => pillPeek(p) }}
-      >{#if !p.event.busy}<span class="vh" aria-hidden="true">{p.event.title}</span>{/if}</div>
-    {/each}
-    {#if needle != null}<div class="ndl" data-testid="brief-runway-now" style="left:{needle}%"></div>{/if}
-  </div>
-  <div class="rul" aria-hidden="true">
-    {#each RULER_HOURS as h (h)}
-      <span class:first={h === RULER_HOURS[0]} class:last={h === RULER_HOURS[RULER_HOURS.length - 1]} style="left:{pct(h * 60)}%">{hourLabel(h)}</span>
-    {/each}
+  <div class="day">
+    <div class="rul" aria-hidden="true">
+      {#each RULER_HOURS as h (h)}
+        <span class:first={h === RULER_HOURS[0]} class:last={h === RULER_HOURS[RULER_HOURS.length - 1]} style="left:{pct(h * 60)}%">{hourLabel(h)}</span>
+      {/each}
+    </div>
+    <div class="rw" data-testid="brief-runway-bar">
+      {#each hours as h (h)}<i class="hl" aria-hidden="true" style="left:{pct(h * 60)}%"></i>{/each}
+      {#each runway.pills as p (p.event.id)}
+        <!-- A call: a hatched sliver over its own time; the title is for the hover and screen readers. -->
+        <div
+          class="mt"
+          class:proj={p.event.projected}
+          class:busy={p.event.busy}
+          class:tent={p.event.tentative}
+          class:done={runway.nowMin != null && p.endMin <= runway.nowMin}
+          role="group"
+          aria-label="{p.event.busy ? 'Busy' : p.event.title}, {rangeText(p.event)}"
+          data-testid="brief-runway-pill"
+          style="left:{pct(p.startMin)}%;width:{pct(p.endMin) - pct(p.startMin)}%"
+          use:peek={{ state: brief, content: () => pillPeek(p) }}
+        >{#if !p.event.busy}<span class="vh" aria-hidden="true">{p.event.title}</span>{/if}</div>
+      {/each}
+      {#each runway.gaps as g (g.id)}
+        <div
+          class="gp {g.cls}"
+          class:pro={g.rank === 1}
+          class:on={hot === g.id}
+          role="button"
+          tabindex="0"
+          aria-label="{minutesText(g.minutes)} clear {gapWhere(g)}, {gapRange(g)}"
+          data-testid="brief-runway-gap"
+          data-rank={g.rank}
+          data-cls={g.cls}
+          style="left:{pct(g.startMin)}%;width:{pct(g.endMin) - pct(g.startMin)}%"
+          {...light(g.id)}
+          use:peek={{ state: brief, content: () => gapPeek(g) }}
+        ></div>
+      {/each}
+      {#if needle != null}<div class="ndl" data-testid="brief-runway-now" style="left:{needle}%"></div>{/if}
+    </div>
   </div>
 
   {#if shown.length}
-    <div class="gaps" class:list={rows > 1} style="--n:{rows > 1 ? 1 : shown.length}">
-      {#each shown as g (g.id)}
+    <div class="gaps" class:list={tall} class:dense={tall && shown.length > 3} bind:clientWidth={capW} style:grid-template-columns={tall ? undefined : columns}>
+      {#each shown as g, i (g.id)}
         {@const p = suggestionFor(priorities, g)}
+        {@const at = layout[i]!}
+        {@const moved = !tall && at.moved}
         <div
           class="g"
           class:pro={g.rank === 1}
+          class:on={hot === g.id}
+          class:moved
+          class:end={!tall && at.side === "end"}
           role="button"
           tabindex="0"
           aria-label="{gapLabel(g)}{task(g) ? `, ${task(g)}` : ''}"
           data-testid="brief-runway-row"
           data-rank={g.rank}
           data-launch={p ? priorityLaunchId(p) : undefined}
+          style:grid-column={tall ? undefined : 2 * i + 2}
+          {...light(g.id)}
           use:peek={{ state: brief, content: () => gapPeek(g) }}
         >
-          <!-- What to do with the gap at the top; how long and when at the tile's foot. -->
+          <!-- On a crowded day a caption may miss its block: an elbow leads from the block to it. -->
+          {#if moved}
+            <i class="lk" class:back={at.left < at.reach} aria-hidden="true" style="--span:{Math.abs(at.left - at.reach) / at.width}"></i>
+          {/if}
+          <!-- The protected caption's length is the hero's number: said once, kept for screen readers. -->
+          <div class="mta">
+            {#if g.rank === 1}<em class="pr">protect</em>{/if}<span class="du" class:vh={g.rank === 1}>{minutesText(g.minutes)}<span class="sep">{" · "}</span></span><span class="rg">{gapRange(g)}</span>
+          </div>
           <div class="tx">
             <div class="tk" class:un={!p} data-testid="brief-runway-task">{task(g) ?? "Unassigned"}</div>
-            {#if p?.because}<div class="fit">{p.because}</div>{/if}
-            {#if copied === g.id}<div class="note" role="status">Event draft copied</div>{/if}
-          </div>
-          <div class="ft">
-            <span class="du">{minutesText(g.minutes)}</span><span class="rg"><span class="sep">{" · "}</span>{gapRange(g)}</span>
-            {#if g.rank === 1}<em class="pr">protect</em>{/if}
+            {#if copied === g.id}<div class="note" role="status">Event draft copied</div>{:else if p?.because}<div class="fit">{p.because}</div>{/if}
           </div>
         </div>
       {/each}
     </div>
-    {#if rest.length}
-      <div class="more" role="button" tabindex="0" data-testid="brief-runway-more" use:peek={{ state: brief, content: morePeek }}>+{rest.length} more</div>
-    {/if}
   {/if}
 </div>
 
@@ -208,129 +267,113 @@
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    gap: 10px;
+    gap: 12px;
+    flex: none;
   }
   .hdt {
     min-width: 0;
   }
-  /* Provisional: a mono caps chip, soft fill, no rim. */
-  .tag {
+  /* The hero: the protected block's length, big and light; the rest of the line beside it. */
+  .hero {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+  .hero h3 {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    margin: 0;
+  }
+  .num {
     flex: none;
+    font-size: var(--b-fs-num, 32px);
+    font-weight: 400;
+    letter-spacing: -0.035em;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--b-t1);
+    white-space: nowrap;
+  }
+  .cap {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .ln {
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+    color: var(--b-t1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ln + .ln {
+    font-weight: 400;
+    color: var(--b-t2);
+  }
+  .aside {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* Chips: mono caps, soft fill, no rim. Provisional reads; +N more opens the rest. */
+  .tag,
+  .more {
     display: inline-flex;
     align-items: center;
-    height: 18px;
-    margin-top: 8px;
-    padding: 0 7px;
+    height: 20px;
+    padding: 0 8px;
     border-radius: 999px;
     font-family: var(--b-code);
     font-size: 10px;
     font-weight: 500;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--b-t3);
-    background: rgb(var(--b-ink) / 0.06);
-    border: 0;
+    color: var(--b-t2);
+    background: var(--b-row-bg, rgb(var(--b-ink) / 0.06));
     white-space: nowrap;
     cursor: default;
+    transition: background 0.2s, color 0.2s;
   }
-
-  /* The runway: one thin track. Free time is filled in page ink, calls are the empty
-     stretches between, each marked by a thin tick. No rims, no blur filters. */
-  .rw {
-    position: relative;
-    flex: none;
-    height: 8px;
-    margin-top: 22px;
-    border-radius: 999px;
-    background: rgb(var(--b-ink) / 0.06);
+  .tag {
+    color: var(--b-t3);
   }
-  .gp {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    border-radius: 999px;
-    background: rgb(var(--b-ink) / 0.55);
-    cursor: default;
-    transition: background 0.2s, filter 0.2s;
-  }
-  /* A taller hit area than the 8 px it draws. */
-  .gp::after {
-    content: "";
-    position: absolute;
-    top: -8px;
-    bottom: -8px;
-    left: 0;
-    right: 0;
-  }
-  .gp.shallow {
-    background: rgb(var(--b-ink) / 0.3);
-  }
-  .gp:hover,
-  .gp:focus-visible {
-    background: rgb(var(--b-ink) / 0.8);
+  .more:hover,
+  .more:focus-visible {
+    color: var(--b-t1);
+    background: var(--b-row-hover, rgb(var(--b-ink) / 0.1));
     outline: none;
   }
-  /* The one to protect: the card's single accent. */
-  .gp.pro {
-    background: var(--b-hot, #c9765a);
-  }
-  .gp.pro:hover,
-  .gp.pro:focus-visible {
-    background: var(--b-hot, #c9765a);
-    filter: brightness(0.9);
-  }
-  /* A call: empty track, a thin dark tick at its middle. */
-  .mt {
-    position: absolute;
-    top: -8px;
-    bottom: -8px;
-    cursor: default;
-  }
-  .mt::before {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 4px;
-    bottom: 4px;
-    width: 2px;
-    translate: -50% 0;
-    border-radius: 1px;
-    background: rgb(var(--b-ink) / 0.5);
-    transition: background 0.2s;
-  }
-  .mt:hover::before {
-    background: rgb(var(--b-ink) / 0.9);
-  }
-  .mt.proj::before,
-  .mt.tent::before,
-  .mt.busy::before {
-    background: rgb(var(--b-ink) / 0.25);
-  }
-  .vh {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-  .ndl {
-    position: absolute;
-    top: -6px;
-    bottom: -6px;
-    width: 1px;
-    translate: -50% 0;
-    background: var(--b-t1);
-    z-index: 2;
-    pointer-events: none;
+
+  /* The day: the workday to scale, a mono ruler over it. Free time is solid, calls are
+     hatched, the faint track between is padding and scraps. No rims, no blur filters. */
+  /* Spare height grows the blocks a little, then opens the air above the ruler, so the
+     stems always meet their blocks. */
+  .day {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    min-height: 56px;
+    margin-top: 16px;
   }
   .rul {
     position: relative;
     flex: none;
-    height: 14px;
-    margin-top: 10px;
-    font-size: 11px;
-    line-height: 14px;
+    height: 12px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    line-height: 12px;
+    text-transform: uppercase;
     font-variant-numeric: tabular-nums;
     color: var(--b-t3);
   }
@@ -345,35 +388,238 @@
   .rul span.last {
     translate: -100% 0;
   }
+  .rw {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 36px;
+    max-height: 84px;
+    margin-top: 8px;
+    border-radius: 8px;
+    background: rgb(var(--b-ink) / 0.04);
+  }
+  .tall .rw {
+    max-height: 120px;
+  }
+  /* Hour gridlines: faint dots over everything, the day's scale even across a block. */
+  .hl {
+    z-index: 1;
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    width: 1px;
+    translate: -50% 0;
+    background: radial-gradient(circle, rgb(var(--b-ink) / 0.16) 0.6px, transparent 0.9px) center top / 1px 4px repeat-y;
+    pointer-events: none;
+  }
+  /* A free stretch: a solid block in page ink, deeper for longer. */
+  .gp {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 6px;
+    background: rgb(var(--b-ink) / 0.2);
+    cursor: default;
+    transition: background 0.2s, filter 0.2s;
+  }
+  .gp.solid {
+    background: rgb(var(--b-ink) / 0.16);
+  }
+  .gp.shallow {
+    background: rgb(var(--b-ink) / 0.11);
+  }
+  .gp:hover,
+  .gp:focus-visible,
+  .gp.on {
+    background: rgb(var(--b-ink) / 0.3);
+    outline: none;
+  }
+  /* The one to protect: the card's single accent. */
+  .gp.pro {
+    background: var(--b-hot, #c9765a);
+  }
+  .gp.pro:hover,
+  .gp.pro:focus-visible,
+  .gp.pro.on {
+    background: var(--b-hot, #c9765a);
+    filter: brightness(0.92);
+  }
+  /* A call: hatched over its own time; projected, tentative and busy holds fainter. */
+  .mt {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 4px;
+    background: repeating-linear-gradient(135deg, rgb(var(--b-ink) / 0.24) 0 1px, transparent 1px 5px), rgb(var(--b-ink) / 0.03);
+    cursor: default;
+    transition: opacity 0.2s;
+  }
+  .mt:hover {
+    background: repeating-linear-gradient(135deg, rgb(var(--b-ink) / 0.42) 0 1px, transparent 1px 5px), rgb(var(--b-ink) / 0.05);
+  }
+  .mt.proj,
+  .mt.tent,
+  .mt.busy {
+    background: repeating-linear-gradient(135deg, rgb(var(--b-ink) / 0.13) 0 1px, transparent 1px 5px);
+  }
+  /* Calls already behind the needle step back. */
+  .mt.done {
+    opacity: 0.5;
+  }
+  .vh {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  /* Now: a thin ink needle with a dot on top, over the blocks. */
+  .ndl {
+    position: absolute;
+    top: -5px;
+    bottom: -3px;
+    width: 1.5px;
+    translate: -50% 0;
+    border-radius: 1px;
+    background: var(--b-t1);
+    z-index: 2;
+    pointer-events: none;
+  }
+  .ndl::before {
+    content: "";
+    position: absolute;
+    top: -3px;
+    left: 50%;
+    width: 7px;
+    height: 7px;
+    translate: -50% 0;
+    border-radius: 50%;
+    background: var(--b-t1);
+  }
 
-  /* Ranked gaps: glass tiles that fill the rest of the card, three across in a one-row
-     slot, a list in a tall one. */
+  /* Captions: one per shown gap, in time order. In a one-row slot each starts under its own
+     block (the columns come from captionLayout), hung from it by a thin stem. */
   .gaps {
-    flex: 1;
+    position: relative;
+    flex: none;
     display: grid;
-    grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr));
-    grid-auto-rows: 1fr;
-    gap: 8px;
-    margin-top: 18px;
+    margin-top: 12px;
   }
   .g {
+    --stem: rgb(var(--b-ink) / 0.24);
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 7px;
     min-width: 0;
-    padding: 12px 14px;
-    border-radius: 10px;
-    background: var(--b-row-bg, rgb(var(--b-ink) / 0.12));
-    border: 0;
-    box-shadow: none;
+    padding: 0 14px 0 14px;
+    border-radius: 0;
     cursor: default;
+  }
+  .g.pro {
+    --stem: var(--b-hot, #c9765a);
+  }
+  /* The stem: from the block's foot down the caption's edge, just inside the block's
+     rounded corner so the two meet. */
+  .g::before {
+    content: "";
+    position: absolute;
+    left: 3px;
+    top: -12px;
+    bottom: 1px;
+    width: 1.5px;
+    border-radius: 1px;
+    background: var(--stem);
     transition: background 0.2s;
   }
-  .g:hover,
+  .g.moved::before {
+    top: -6px;
+  }
+  /* Hung from the block's end: the stem on the right, the text reading back towards it. */
+  .g.end {
+    padding: 0 11px 0 14px;
+    text-align: right;
+  }
+  .g.end::before {
+    left: auto;
+    right: 3px;
+  }
+  .g.end .mta {
+    justify-content: flex-end;
+  }
+  .g:hover::before,
+  .g:focus-visible::before,
+  .g.on::before {
+    background: rgb(var(--b-ink) / 0.6);
+  }
+  .g.pro:hover::before,
+  .g.pro:focus-visible::before,
+  .g.pro.on::before {
+    background: var(--b-hot, #c9765a);
+  }
   .g:focus-visible {
-    background: var(--b-row-hover, rgb(var(--b-ink) / 0.2));
     outline: none;
+  }
+  /* The elbow: down from the block, across, down into the stem. --span is its run as a
+     share of this caption's width. */
+  .lk {
+    position: absolute;
+    top: -12px;
+    left: 3px;
+    width: calc(var(--span) * 100%);
+    height: 6.75px;
+    translate: -100% 0;
+    background:
+      linear-gradient(var(--stem), var(--stem)) left top / 1.5px 100% no-repeat,
+      linear-gradient(var(--stem), var(--stem)) left bottom / 100% 1.5px no-repeat;
+    pointer-events: none;
+  }
+  .lk.back {
+    translate: 0 0;
+    left: 3px;
+    background:
+      linear-gradient(var(--stem), var(--stem)) right top / 1.5px 100% no-repeat,
+      linear-gradient(var(--stem), var(--stem)) left bottom / 100% 1.5px no-repeat;
+  }
+  /* Meta: mono caps, the protect chip first, then how long and when. */
+  .mta {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    min-width: 0;
+    height: 18px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--b-t3);
+  }
+  .du {
+    flex: none;
+    color: var(--b-t2);
+  }
+  .sep {
+    white-space: pre;
+  }
+  .rg {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pr {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    margin-right: 8px;
+    padding: 0 7px;
+    border-radius: 999px;
+    font-style: normal;
+    color: var(--b-on-hot, #fff);
+    background: var(--b-hot, #c9765a);
   }
   .tx {
     min-width: 0;
@@ -392,11 +638,12 @@
   .tk.un {
     color: var(--b-t3);
   }
-  .fit {
-    margin-top: 4px;
+  .fit,
+  .note {
+    margin-top: 3px;
     font-size: 12px;
     line-height: 1.35;
-    color: var(--b-t2);
+    color: var(--b-t3);
     overflow: hidden;
     display: -webkit-box;
     -webkit-box-orient: vertical;
@@ -404,110 +651,70 @@
     line-clamp: 2;
   }
   .note {
-    margin-top: 4px;
-    font-size: 11px;
     color: var(--b-t2);
   }
-  /* The foot: how long, and when underneath, muted; the protected gap carries the
-     highlight label on the right. */
-  .ft {
-    margin-top: auto;
+  .g:hover .tk,
+  .g:focus-visible .tk,
+  .g.on .tk {
+    text-decoration: underline;
+    text-decoration-color: rgb(var(--b-ink) / 0.3);
+    text-underline-offset: 3px;
+  }
+
+  /* A tall slot: one caption a row, a soft ink tile, the stem down its left; task left,
+     meta right. */
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .list .g {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    column-gap: 8px;
     align-items: center;
-    min-width: 0;
-    white-space: nowrap;
+    column-gap: 14px;
+    padding: 8px 14px 8px 16px;
+    border-radius: 6px;
+    background: var(--b-row-bg, rgb(var(--b-ink) / 0.06));
+    transition: background 0.2s;
   }
-  .du {
-    grid-area: 1 / 1;
-    font-size: 15px;
-    font-weight: 500;
-    letter-spacing: -0.01em;
-    line-height: 1.3;
-    color: var(--b-t1);
+  .list .g:hover,
+  .list .g:focus-visible,
+  .list .g.on {
+    background: var(--b-row-hover, rgb(var(--b-ink) / 0.1));
   }
-  .rg {
-    grid-area: 2 / 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    margin-top: 1px;
-    font-size: 11px;
-    line-height: 1.3;
-    font-variant-numeric: tabular-nums;
-    color: var(--b-t3);
+  .list .g::before {
+    left: 6px;
+    top: 8px;
+    bottom: 8px;
   }
-  /* The " · " joins duration and range for screen readers and copy; the line break does it here. */
-  .sep {
-    display: none;
-  }
-  .pr {
+  .list .mta {
     grid-area: 1 / 2;
-    justify-self: end;
-    display: inline-flex;
-    align-items: center;
-    height: 18px;
-    padding: 0 7px;
-    border-radius: 999px;
-    font-family: var(--b-code);
-    font-style: normal;
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--b-on-hot, #fff);
-    background: var(--b-hot, #c9765a);
-  }
-  /* A tall slot: one gap per row, the task on the left and the time on the right. */
-  .list .g {
-    flex-direction: row;
-    align-items: center;
-    gap: 12px;
   }
   .list .tx {
-    flex: 1;
+    grid-area: 1 / 1;
   }
   .list .tk {
     -webkit-line-clamp: 1;
     line-clamp: 1;
   }
-  .list .fit {
+  .list .fit,
+  .list .note {
     display: block;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
-  /* In a row the foot reads on one line: tag, duration, range. */
-  .list .ft {
-    flex: none;
-    margin: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
+  /* Four or five rows: one line each; the fit is in the hover. */
+  .dense .g {
+    padding-top: 9px;
+    padding-bottom: 9px;
   }
-  .list .pr {
-    order: -1;
-    align-self: center;
-    margin-right: 4px;
+  .dense .fit {
+    display: none;
   }
-  .list .rg {
-    margin: 0;
-  }
-  .more {
-    flex: none;
-    margin-top: 8px;
-    text-align: center;
-    padding: 6px 10px;
-    border-radius: 10px;
-    font-size: 13px;
-    color: var(--b-t2);
-    background: var(--b-row-bg, rgb(var(--b-ink) / 0.12));
-    cursor: default;
-    transition: background 0.2s;
-  }
-  .more:hover,
-  .more:focus-visible {
-    background: var(--b-row-hover, rgb(var(--b-ink) / 0.2));
-    outline: none;
+  .list .g:hover .tk,
+  .list .g:focus-visible .tk,
+  .list .g.on .tk {
+    text-decoration: none;
   }
 </style>
