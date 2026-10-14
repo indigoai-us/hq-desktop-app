@@ -89,9 +89,10 @@
   --b-knob: rgba(255, 255, 255, 0.07);
   /* Inner glass tile fill; colour fields raise it. */
   --b-glass: rgb(var(--b-ink) / 0.04);
-  /* Neutral glass panels in the top section. */
-  --b-panel: rgb(var(--b-ink) / 0.035);
-  --b-panel-line: rgb(var(--b-ink) / 0.08);
+  /* Neutral glass panels (Next call, monochrome cards): light transparent white in dark mode,
+     so they read as lit glass rather than dimmed holes. */
+  --b-panel: rgba(255, 255, 255, 0.08);
+  --b-panel-line: rgba(255, 255, 255, 0.1);
   --b-field-drop: 0 1px 2px rgba(0, 0, 0, 0.3), 0 18px 36px -16px rgba(0, 0, 0, 0.7);
   /* One padding and one type scale for every card. */
   --b-pad: 18px 20px;
@@ -1435,9 +1436,9 @@
   --b-field-glow: rgba(40, 40, 70, 0.35);
   --b-edge: linear-gradient(transparent, transparent);
   /* Glass rows in page ink are much lighter than white glass on colour. */
-  --b-row-bg: rgb(var(--b-ink) / 0.05);
+  --b-row-bg: rgb(var(--b-ink) / 0.06);
   --b-row-line: rgb(var(--b-ink) / 0.08);
-  --b-row-hover: rgb(var(--b-ink) / 0.07);
+  --b-row-hover: rgb(var(--b-ink) / 0.1);
   color: var(--b-t1);
   text-shadow: none;
   border: 1px solid var(--b-panel-line);
