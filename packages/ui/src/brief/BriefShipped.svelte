@@ -250,7 +250,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 6px;
-    margin-bottom: 5px;
+    margin-bottom: 10px;
     min-width: 0;
   }
   .hd :global(.org) {
@@ -317,21 +317,23 @@
     opacity: 0.95;
   }
   .v {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     line-height: 1.25;
   }
-  /* Highlights wrap to two lines each and stack; the tile clips whatever does not fit. */
+  /* Highlights as a calm list: one line each, hairlines between, the count above them. */
   .s {
-    font-size: 11px;
-    line-height: 1.4;
-    color: rgb(var(--b-ink) / 0.72);
-    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.35;
+    color: rgb(var(--b-ink) / 0.78);
+    padding: 7px 0;
+    border-top: 1px solid rgb(var(--b-ink) / 0.12);
     overflow: hidden;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .v + .s {
+    margin-top: 10px;
   }
   /* The rest of the products, in one quiet tile; no foil (nothing shipped here). */
   .run.more {
