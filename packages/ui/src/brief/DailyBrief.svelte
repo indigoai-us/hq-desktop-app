@@ -237,6 +237,8 @@
   const tiles = $derived(allCards ? reviewTiles : liveTiles);
   // When the Handoffs card is on the page, the Waiting card leaves handoff rows to it.
   const handoffsPlaced = $derived(tiles.some((t) => t.type === "card" && t.w.kind === "handoffs"));
+  // When the Settled card is on the page, it lists the decisions; the Meetings card keeps to the meetings.
+  const decidedPlaced = $derived(tiles.some((t) => t.type === "card" && t.w.kind === "decided"));
   const partsOf = (kind: string) => {
     const s = plan.scored.find((x) => x.kind === kind);
     return s ? `value ${s.parts.value} · priority ${s.parts.priority} · day ${s.parts.day} · pref ${s.parts.pref} · rotation -${s.parts.rotation}` : undefined;
@@ -459,6 +461,7 @@
               windowFrom={plan.dayType === "catch-up" ? input.lastBriefAt : null}
               days={input.days ?? []}
               today={ctx.today}
+              settled={decidedPlaced}
             />
           {:else if w.kind === "decided"}
             <BriefDecided meetings={input.meetingsYesterday} now={input.now} rows={w.rows} windowFrom={ctx.windowFrom} userName={input.userName} />

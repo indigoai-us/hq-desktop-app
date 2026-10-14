@@ -264,9 +264,23 @@ describe("Yesterday card (14, 19)", () => {
   };
 
   it("says 'n decisions from m meetings' and each row shows its first decision", () => {
-    render(base({ meetingsYesterday: [m, { ...m, id: "m2", title: "Standup", decisions: 1, decided: ["Move standup"] }] }));
+    // Two decided lines: under the Settled card's gate, so the Meetings card carries the decisions itself.
+    render(base({ meetingsYesterday: [{ ...m, decided: ["Ship the trial page Friday"] }, { ...m, id: "m2", title: "Standup", decisions: 1, decided: ["Move standup"] }] }));
+    expect(target.querySelector('[data-widget="decided"]')).toBeNull();
     expect(q("brief-meetings-sub")!.textContent).toBe("decisions from 2 meetings");
     expect(qa("brief-meeting-first").map((e) => e.textContent)).toEqual(["Ship the trial page Friday", "Move standup"]);
+  });
+
+  it("with the Settled card on the page the decisions live there, under their meeting, and Meetings keeps to counts", () => {
+    render(base({ meetingsYesterday: [{ ...m, decided: ["Ship the trial page Friday", "Drop the old pricing"] }, { ...m, id: "m2", title: "Standup", decisions: 1, decided: ["Move standup"] }] }));
+    expect(target.querySelector('[data-widget="decided"]')).not.toBeNull();
+    expect(q("brief-meetings-sub")!.textContent).toBe("meetings since yesterday");
+    expect(qa("brief-meeting-first")).toEqual([]);
+    expect(qa("brief-meeting-decided").map((e) => e.textContent)).toEqual(["5 decided", "1 decided"]);
+    const groups = qa("brief-decided-group");
+    expect(groups.map((g) => g.querySelector('[data-testid="brief-decided-src-text"]')!.textContent!.split(" · ")[0])).toEqual(["HQ <> Sales Sync", "Standup"]);
+    expect([...groups[0]!.querySelectorAll('[data-testid="brief-decided-line"]')].map((e) => e.textContent)).toEqual(["Ship the trial page Friday", "Drop the old pricing"]);
+    expect(groups[1]!.querySelector('[data-testid="brief-decided-line"]')!.textContent).toBe("Move standup");
   });
 
   it("the peek shows Decided and To do (yours first, tagged, with Start and Copy) and +N more only when there is more", async () => {
@@ -277,7 +291,7 @@ describe("Yesterday card (14, 19)", () => {
     expect(p.status).toBe("+4 more in Meetings");
     expect(meetingPeek({ ...m, decisions: 1, actions: 1, decided: ["x"], todo: [{ text: "y" }] }).status).toBeUndefined();
     render(base({ meetingsYesterday: [m] }));
-    await hover(target.querySelector('[data-testid="brief-meetings"] .row')!);
+    await hover(q("brief-meeting-row")!);
     expect(q("brief-peek-tag")!.textContent).toBe("you");
     expect(qa("brief-peek-line-launch")).toHaveLength(1);
     expect(q("brief-peek-line-launch")!.textContent).toContain("Start in Claude");
