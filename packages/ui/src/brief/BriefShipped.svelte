@@ -130,7 +130,7 @@
           aria-label={`${t.product} · ${t.headline}`}
           data-testid="brief-shipped-tile"
           onpointermove={track}
-          use:peek={{ state: brief, content: () => tilePeek(t) }}
+          use:peek={{ state: brief, content: () => tilePeek(t), place: "below" }}
         >
           <div class="hd">
             <BriefOrigin origin={t.origin} product />
@@ -143,7 +143,7 @@
         </div>
       {/each}
       {#if rest.length}
-        <div class="run more" role="button" tabindex="0" data-testid="brief-shipped-more" use:peek={{ state: brief, content: morePeek }}>
+        <div class="run more" role="button" tabindex="0" data-testid="brief-shipped-more" use:peek={{ state: brief, content: morePeek, place: "below" }}>
           +{rest.length} more
         </div>
       {/if}

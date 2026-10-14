@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Who you are waiting on. The hourglass runs because you are waiting.
+   * Who you are waiting on: the total in the top-right corner, then glass rows.
    * Rows: 3 in a one-column slot, 5 in wider ones, then a "+N more" row whose
    * peek lists the rest. Each row carries a mono age (amber past a day); its
    * peek says since when, what kind of wait it is, and offers the nudge prompt.
@@ -50,116 +50,110 @@
 </script>
 
 <div class="w c-amber" data-testid="brief-waiting">
-  <svg class="glass" viewBox="0 0 34 40" fill="none" aria-hidden="true">
-    <path d="M7 3h20M7 37h20M9 3c0 9 8 11 8 17S9 28 9 37M25 3c0 9-8 11-8 17s8 8 8 17" stroke="rgb(var(--b-ink) / .8)" stroke-width="1.6" stroke-linecap="round" />
-    <path class="top" d="M11 7h12c-1 5-6 7-6 9 0-2-5-4-6-9z" fill="rgb(var(--b-ink) / .85)" />
-    <path class="bot" d="M11 35h12c-1-4-5-6-6-6s-5 2-6 6z" fill="rgb(var(--b-ink) / .85)" />
-    <line class="stream" x1="17" y1="17" x2="17" y2="30" stroke="currentColor" stroke-width="1.4" />
-  </svg>
-  <div class="eyebrow">Waiting on</div>
-  <div class="big" style="margin-top:6px" use:countUp={rows.length}>0</div>
-  {#each shown as w (w.id)}
-    {@const age = waitingAge(w.ageHours)}
-    <div class="row" role="group" aria-label={label(w)} data-testid="brief-waiting-row" use:peek={{ state: brief, content: () => content(w) }}>
-      <span class="bul" style="background:var(--b-t1)"></span>
-      <div class="tx">{w.who} <em>{w.what}</em></div>
-      {#if age}<span class="age" class:old={age.old} data-testid="brief-waiting-age">{age.label}</span>{/if}
-    </div>
-  {/each}
-  {#if rest.length}
-    <div class="row more" role="button" tabindex="0" data-testid="brief-waiting-more" use:peek={{ state: brief, content: morePeek }}>+{rest.length} more</div>
-  {/if}
+  <!-- The total sits in the top-right corner, level with the card label. -->
+  <div class="big total" use:countUp={rows.length}>0</div>
+  <div class="list">
+    {#each shown as w (w.id)}
+      {@const age = waitingAge(w.ageHours)}
+      <div class="row" role="group" aria-label={label(w)} data-testid="brief-waiting-row" use:peek={{ state: brief, content: () => content(w) }}>
+        <span class="ini" aria-hidden="true">{w.who.trim().charAt(0).toUpperCase()}</span>
+        <div class="tx"><b>{w.who}</b> <em>{w.what}</em></div>
+        {#if age}<span class="age" class:old={age.old} data-testid="brief-waiting-age">{age.label}</span>{/if}
+      </div>
+    {/each}
+    {#if rest.length}
+      <div class="row more" role="button" tabindex="0" data-testid="brief-waiting-more" use:peek={{ state: brief, content: morePeek }}>+{rest.length} more</div>
+    {/if}
+  </div>
 </div>
 
 <style>
-  /* Below the corner arrow. */
-  .glass {
+  .total {
     position: absolute;
-    top: 42px;
-    right: 18px;
-    width: 30px;
-    height: 36px;
+    z-index: 4;
+    top: 12px;
+    right: 20px;
+    font-size: var(--b-fs-num);
+    line-height: 1;
   }
-  .glass .top {
-    transform-box: fill-box;
-    transform-origin: 50% 100%;
-    animation: drain 4s linear infinite;
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
-  .glass .bot {
-    transform-box: fill-box;
-    transform-origin: 50% 100%;
-    animation: fill 4s linear infinite;
-  }
-  .glass .stream {
-    stroke-dasharray: 2 3;
-    animation: fall 0.5s linear infinite;
-  }
-  @keyframes drain {
-    to {
-      transform: scaleY(0.15);
-    }
-  }
-  @keyframes fill {
-    from {
-      transform: scaleY(0.15);
-    }
-  }
-  @keyframes fall {
-    to {
-      stroke-dashoffset: -5;
-    }
-  }
+  /* Glass rows: who in a soft initial circle, the task beside it, the age as a pill. */
   .row {
+    display: flex;
     align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 10px;
+    font-size: var(--b-row-fs, 13px);
+    line-height: 1.3;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    transition: background 0.2s;
   }
-  .row .bul {
-    margin-top: 0;
+  .row:hover,
+  .row:focus-visible {
+    background: rgba(255, 255, 255, 0.22);
+    outline: none;
   }
-  /* Two lines before cutting off: a 213px column cannot fit a name and a task on one. */
+  .ini {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 500;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.2);
+  }
   .tx {
     flex: 1;
     min-width: 0;
     overflow: hidden;
-    white-space: normal;
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
     overflow-wrap: anywhere;
   }
-  .row em {
-    color: rgb(var(--b-ink) / 0.76) !important;
+  .tx b {
+    font-weight: 500;
   }
-  /* Age in mono at the row end; past a day it sits on a darker pill in warm amber. */
+  .row em {
+    font-style: normal;
+    color: rgba(255, 255, 255, 0.78) !important;
+  }
   .age {
     flex: none;
     margin-left: auto;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    line-height: 16px;
-    color: rgb(var(--b-ink) / 0.72);
-  }
-  .age.old {
-    padding: 0 6px;
+    height: 20px;
+    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
     border-radius: 999px;
-    color: var(--b-warn);
-    background: color-mix(in srgb, var(--b-warn) 14%, transparent);
+    font-size: 11px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: rgba(255, 255, 255, 0.88);
+    background: rgba(255, 255, 255, 0.16);
+  }
+  /* Past a day: a warm yellow tint. */
+  .age.old {
+    color: #fff4d6;
+    background: rgba(255, 205, 110, 0.32);
   }
   .more {
     justify-content: center;
-    margin-top: 10px;
-    padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 13px;
-    color: rgb(var(--b-ink) / 0.82);
-    background: rgb(var(--b-ink) / 0.08);
-    border: 1px solid rgb(var(--b-ink) / 0.12);
+    padding: 6px 10px;
+    font-size: var(--b-row-fs, 13px);
+    color: rgba(255, 255, 255, 0.85);
     cursor: default;
-  }
-  .more:hover,
-  .more:focus-visible {
-    background: rgb(var(--b-ink) / 0.14);
-    outline: none;
   }
 </style>

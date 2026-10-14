@@ -2,7 +2,7 @@
  * The brief's hover layer (Sunrise Terminal, phase 2), after the badge card
  * (badges/card-hover.ts): cards stay flat at rest; under the pointer a
  * soft light follows it.
- * Reward cards (shipped, firsts, resolved) also tilt a little toward the
+ * Every card also tilts a little toward the
  * pointer, the badge card's camera at a third of its angle. Decision titles
  * decode from ASCII glyphs when you reach for them.
  *

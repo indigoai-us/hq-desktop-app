@@ -946,6 +946,8 @@
    the empty corner. No grain, no inner shadows, no backdrop-filter.
    ------------------------------------------------------------------------ */
 .daily-brief .slot[data-field] > .w {
+  /* Ink for things drawn on the card (glass rows, pills): white on a colour field. */
+  --b-on: 255 255 255;
   --b-t1: #fff;
   --b-t2: rgba(255, 255, 255, 0.9);
   --b-t3: rgba(255, 255, 255, 0.82);
@@ -1397,4 +1399,48 @@
 .daily-brief .slot[data-field] > .w > .hd > .hdt > .eyebrow:first-child,
 .daily-brief .slot[data-field] > .w > .hd > .eyebrow:first-child {
   display: none;
+}
+
+/* Monochrome cards: the page's own glass panel (like the Next call panel), page ink,
+   no corner motif and no white text shadow. Kept for the cards that are background
+   to the day, so colour stays on what needs you. */
+.daily-brief .slot[data-field="mono"] > .w {
+  --b-on: var(--b-ink);
+  --b-t1: inherit;
+  --b-t2: inherit;
+  --b-t3: inherit;
+  --b-line: rgb(var(--b-ink) / 0.08);
+  --b-top-light: rgb(var(--b-ink) / 0.04);
+  --b-glass: rgb(var(--b-ink) / 0.04);
+  --b-ok: inherit;
+  --b-warn: inherit;
+  --b-red: inherit;
+  --b-decision: inherit;
+  --b-well-bg: rgb(var(--b-ink) / 0.04);
+  --b-deco: linear-gradient(transparent, transparent);
+  --b-field-bg: linear-gradient(var(--b-panel), var(--b-panel));
+  --b-field-glow: rgba(40, 40, 70, 0.35);
+  --b-edge: linear-gradient(transparent, transparent);
+  /* Glass rows in page ink are much lighter than white glass on colour. */
+  --b-row-bg: rgb(var(--b-ink) / 0.035);
+  --b-row-line: rgb(var(--b-ink) / 0.08);
+  --b-row-hover: rgb(var(--b-ink) / 0.07);
+  color: var(--b-t1);
+  text-shadow: none;
+  border: 1px solid var(--b-panel-line);
+}
+.daily-brief .slot[data-field="mono"] > .w::after {
+  display: none;
+}
+.daily-brief .slot[data-field="mono"] > .w .b-glass {
+  border-color: rgb(var(--b-ink) / 0.08);
+}
+.daily-brief .slot[data-field="mono"] > .why {
+  color: var(--b-t2);
+  background: rgb(var(--b-ink) / 0.06);
+}
+
+/* Small (one-column) cards set their rows a size down. */
+.daily-brief .slot[data-size="S"] {
+  --b-row-fs: 12px;
 }

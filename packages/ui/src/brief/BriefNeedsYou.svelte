@@ -458,7 +458,7 @@
       display: none;
     }
   }
-  /* Info pill (app standard): fully rounded glass, 11px. An age past a day gets a small tone dot rather than coloured text. */
+  /* Info pill (app standard): fully rounded glass, 11px. Old ages are tinted (below). */
   .chip-m {
     flex: none;
     display: inline-flex;
@@ -482,17 +482,14 @@
     min-width: 36px;
     justify-content: center;
   }
-  .age.warn::before,
-  .age.red::before {
-    content: "";
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #ffd27a;
+  /* Past a day the tag takes a warm yellow tint; past two days, coral. */
+  .age.warn {
+    color: #fff4d6;
+    background: rgba(255, 205, 110, 0.32);
   }
-  .age.red::before {
-    background: #ff6b5e;
-    box-shadow: 0 0 0 2px rgba(255, 107, 94, 0.25), 0 0 8px rgba(255, 107, 94, 0.9);
+  .age.red {
+    color: #ffe3df;
+    background: rgba(255, 107, 94, 0.42);
   }
   .more-row {
     justify-content: center;

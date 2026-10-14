@@ -143,7 +143,7 @@ describe("todayStats", () => {
 describe("placePeekBelow", () => {
   it("opens under the hovered stat, left-aligned, so it never covers the stats beside it", () => {
     const view = { w: 1400, h: 900 };
-    expect(placePeekBelow({ left: 200, right: 260, top: 300, bottom: 380 }, view)).toEqual({ x: 200, anchorTop: 398, side: "b" });
+    expect(placePeekBelow({ left: 200, right: 260, top: 300, bottom: 380 }, view)).toEqual({ x: 200, anchorTop: 400, side: "b" });
     // Kept inside the window at the right edge.
     expect(placePeekBelow({ left: 1300, right: 1360, top: 300, bottom: 380 }, view).x).toBe(1400 - 340 - 8);
   });

@@ -52,7 +52,7 @@
     {#each list.shown as r (r.id)}
       <div class="rk" role="group" aria-label={r.title} data-testid="brief-risk-row" use:peek={{ state: brief, content: () => riskPeek(r, promptOf(r), now) }}>
         {#if r.origin.companyUid}
-          <span class="lg"><BriefLogo company={brief.company(r.origin.companyUid)} fallback={r.origin.companyUid} size={16} /></span>
+          <span class="lg"><BriefLogo company={brief.company(r.origin.companyUid)} fallback={r.origin.companyUid} size={20} /></span>
         {:else}
           <span class="bul" aria-hidden="true"></span>
         {/if}
@@ -68,9 +68,15 @@
     {/if}
   </div>
   {#if health}
+    <!-- Main health: a mono label, one cell per product (red ones in coral), and the count. -->
     <div class="foot hl" data-testid="brief-risk-foot" role="group" aria-label="Main health" use:peek={{ state: brief, content: () => mainHealthPeek(mainHealth ?? []) }}>
-      <span>{mainHealthLabel(health).split(" · ")[0]}</span>
-      <span class:bad={health.red.length > 0} data-testid="brief-risk-health">{mainHealthLabel(health).split(" · ")[1]}</span>
+      <span class="hl-l">{mainHealthLabel(health).split(" · ")[0]}</span>{" "}
+      <span class="hl-v">
+        <span class="cells" aria-hidden="true">
+          {#each Array.from({ length: health.total }, (_, i) => i) as i (i)}<i class:bad={i >= health.green}></i>{/each}
+        </span>
+        <span class:bad={health.red.length > 0} data-testid="brief-risk-health">{mainHealthLabel(health).split(" · ")[1]}</span>
+      </span>
     </div>
   {/if}
 </div>
@@ -79,60 +85,56 @@
   .rows {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    margin-top: 10px;
+    gap: 6px;
     min-height: 0;
   }
-  /* Glass row: translucent fill lit from the top, hairline rim, no inset well. */
+  /* Glass rows on the field: logo circle, the title (two lines at most), a RED tag for a red main. */
   .rk {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: 10px;
     min-width: 0;
-    padding: 6px 9px;
-    border-radius: 6px;
-    background: rgb(var(--b-ink) / 0.04);
-    border: 1px solid rgb(var(--b-ink) / 0.07);
+    padding: 8px 10px;
+    border-radius: 10px;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.18);
     transition: background 0.2s;
   }
   .rk:hover,
   .rk:focus-visible {
-    background: rgb(var(--b-ink) / 0.08);
+    background: rgba(255, 255, 255, 0.22);
     outline: none;
   }
   .rows.tall .rk {
     align-items: flex-start;
-    padding: 7px 10px;
   }
   .lg {
     flex: none;
     display: inline-grid;
     place-items: center;
-    width: 16px;
-    height: 16px;
-    border-radius: 5px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
     overflow: hidden;
-  }
-  .rows.tall .lg {
-    margin-top: 1px;
   }
   .bul {
     flex: none;
     width: 6px;
     height: 6px;
-    margin: 0 5px;
+    margin: 0 7px;
     border-radius: 50%;
-    background: var(--b-warn);
+    background: #ffd27a;
   }
   .tx {
     flex: 1;
     min-width: 0;
   }
   .t {
-    font-size: 13px;
+    font-size: var(--b-row-fs, 13px);
     font-weight: 500;
     line-height: 1.3;
-    color: var(--b-t1);
+    color: #fff;
     overflow: hidden;
     white-space: normal;
     display: -webkit-box;
@@ -142,36 +144,75 @@
     overflow-wrap: anywhere;
   }
   .y {
-    margin-top: 1px;
+    margin-top: 2px;
     font-size: 11px;
     line-height: 1.35;
-    color: var(--b-t2);
+    color: rgba(255, 255, 255, 0.75);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .red {
     flex: none;
-    font-family: var(--b-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    line-height: 16px;
-    padding: 0 6px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 8px;
     border-radius: 999px;
-    color: var(--b-red);
-    border: 1px solid rgba(255, 69, 58, 0.35);
-    background: rgba(255, 69, 58, 0.08);
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #fff;
+    background: rgba(255, 90, 80, 0.45);
   }
   .rk.more {
     justify-content: center;
-    font-size: 13px;
-    color: var(--b-t2);
+    font-size: var(--b-row-fs, 13px);
+    color: rgba(255, 255, 255, 0.85);
     cursor: default;
   }
+  /* Foot: label above, cells and the count below, over the card's hairline. */
   .foot.hl {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 8px;
     cursor: default;
+  }
+  .hl-l {
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.62);
+  }
+  .hl-v {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: var(--b-row-fs, 13px);
+    font-weight: 500;
+    color: #fff;
+  }
+  .cells {
+    display: inline-flex;
+    gap: 3px;
+  }
+  .cells i {
+    width: 8px;
+    height: 8px;
+    border-radius: 1.5px;
+    background: rgba(255, 255, 255, 0.9);
+  }
+  .cells i.bad {
+    background: #ff6b5e;
+    box-shadow: 0 0 6px rgba(255, 107, 94, 0.8);
   }
   .foot .bad {
-    color: var(--b-red);
+    color: #fff;
   }
 </style>

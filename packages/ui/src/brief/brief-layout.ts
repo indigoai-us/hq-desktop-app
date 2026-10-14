@@ -97,9 +97,11 @@ export function inLabel(min: number, live: boolean): string {
  * reference). Each kind keeps one field so a card is recognisable day to day:
  * violet for calls you make, dusk for the sunrise, hot pink for a live fire,
  * sunset for things to watch, sky for people and waiting, teal for what got
- * done, periwinkle for your own day.
+ * done. Background cards (your calls, your day, the week, the team, meetings,
+ * what was settled) are monochrome: the page's own glass panel, so colour is
+ * kept for what needs you, what is on fire and what you shipped.
  */
-export const FIELD: Record<string, "violet" | "dusk" | "pink" | "sunset" | "sky" | "teal" | "peri"> = {
+export const FIELD: Record<string, "violet" | "dusk" | "pink" | "sunset" | "sky" | "teal" | "peri" | "mono"> = {
   needs: "violet",
   oneThing: "violet",
   catchup: "dusk",
@@ -113,16 +115,16 @@ export const FIELD: Record<string, "violet" | "dusk" | "pink" | "sunset" | "sky"
   waiting: "sky",
   carry: "sky",
   handoffs: "sky",
-  team: "sky",
-  meetings: "sky",
-  decided: "sky",
+  team: "mono",
+  meetings: "mono",
+  decided: "mono",
   shipped: "teal",
   firsts: "teal",
   resolved: "teal",
-  weekArc: "teal",
-  focus: "teal",
-  agenda: "peri",
-  runway: "peri",
+  weekArc: "mono",
+  focus: "mono",
+  agenda: "mono",
+  runway: "mono",
 };
 
 type Box = { left: number; right: number; top: number; bottom: number };
@@ -144,7 +146,7 @@ export function placePeek(anchor: Box, view: { w: number; h: number }, width = 3
  * Below the hovered thing, left edges aligned: for a row of neighbours (the
  * stats) where a peek on the side would cover the next one.
  */
-export function placePeekBelow(anchor: Box, view: { w: number; h: number }, width = 340, gap = 12): { x: number; anchorTop: number; side: "b" } {
+export function placePeekBelow(anchor: Box, view: { w: number; h: number }, width = 340, gap = 14): { x: number; anchorTop: number; side: "b" } {
   return { x: Math.max(8, Math.min(view.w - width - 8, anchor.left)), anchorTop: anchor.bottom + gap + 6, side: "b" };
 }
 

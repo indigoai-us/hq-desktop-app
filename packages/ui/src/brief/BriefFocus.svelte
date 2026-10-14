@@ -105,7 +105,7 @@
           role="group"
           aria-label="{rest.length} more {rest.length === 1 ? 'product' : 'products'}"
           data-testid="brief-focus-more"
-          use:peek={{ state: brief, content: moreTilesPeek }}
+          use:peek={{ state: brief, content: moreTilesPeek, place: "below" }}
         >
           <b>+{rest.length} more</b>
           <span class="n">{plural(restSessions, "session")}</span>

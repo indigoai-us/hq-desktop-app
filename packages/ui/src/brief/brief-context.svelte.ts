@@ -164,7 +164,7 @@ export class BriefState {
       // Beside what the hovered thing shows (its text), level with it; or under it for a row of neighbours.
       const at =
         place === "below"
-          ? placePeekBelow(contentBox(anchor), view)
+          ? placePeekBelow(anchor.getBoundingClientRect(), view)
           : placePeek(place === "row" ? anchor.getBoundingClientRect() : contentBox(anchor), view);
       this.peek = { content, ...at };
     };
