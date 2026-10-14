@@ -204,6 +204,33 @@ fn core_drift_inputs_are_cacheable(
     !drift_scan_possible || (target_tree_available && floor_blobs_available)
 }
 
+fn refresh_staging_entries(
+    modified: &mut [DriftEntry],
+    added: &mut [DriftEntry],
+    index: Option<&hq_core_staging::StagingIndex>,
+) {
+    for entry in modified.iter_mut().chain(added.iter_mut()) {
+        entry.staging_status = index.and_then(|index| {
+            entry
+                .git_sha_local
+                .as_deref()
+                .map(|sha| index.classify(&entry.path, sha))
+        });
+    }
+}
+
+fn cached_staging_status_needs_refresh(
+    channel: Channel,
+    modified: &[DriftEntry],
+    added: &[DriftEntry],
+) -> bool {
+    matches!(channel, Channel::Staging)
+        && modified
+            .iter()
+            .chain(added.iter())
+            .any(|entry| entry.git_sha_local.is_some())
+}
+
 fn cached_core_drift_state(key: &CoreDriftCacheKey, enabled: bool) -> Option<CoreState> {
     if !enabled {
         return None;
@@ -4528,7 +4555,20 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         None
     };
     if let Some(key) = core_cache_key.as_ref() {
-        if let Some(state) = cached_core_drift_state(key, true) {
+        if let Some(mut state) = cached_core_drift_state(key, true) {
+            if cached_staging_status_needs_refresh(
+                state.channel,
+                &state.drift_report.modified,
+                &state.drift_report.added,
+            ) {
+                let index = hq_core_staging::build_index_if_eligible().await;
+                refresh_staging_entries(
+                    &mut state.drift_report.modified,
+                    &mut state.drift_report.added,
+                    index.as_ref(),
+                );
+                store_core_drift_state(key.clone(), state.clone());
+            }
             log(
                 "hq-core-state",
                 "reusing cached core drift state for unchanged target and local metadata",
@@ -4925,13 +4965,8 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
             // PR #110: "Respect the staging-channel opt-out for
             // badges"). Fail-quiet: ineligible users see None.
             if matches!(channel, Channel::Staging) {
-                if let Some(index) = hq_core_staging::build_index_if_eligible().await {
-                    for entry in user_edit.iter_mut().chain(user_only.iter_mut()) {
-                        if let Some(sha) = entry.git_sha_local.as_deref() {
-                            entry.staging_status = Some(index.classify(&entry.path, sha));
-                        }
-                    }
-                }
+                let index = hq_core_staging::build_index_if_eligible().await;
+                refresh_staging_entries(&mut user_edit, &mut user_only, index.as_ref());
             }
 
             let user_only_count = user_only.len() as u32;
@@ -10894,6 +10929,64 @@ error: clone failed";
         assert!(core_drift_inputs_are_cacheable(true, true, true));
         assert!(!core_drift_inputs_are_cacheable(true, false, true));
         assert!(!core_drift_inputs_are_cacheable(true, true, false));
+    }
+
+    #[test]
+    fn cached_staging_drift_status_refreshes_with_the_index_and_clears_on_failure() {
+        let mut modified = vec![DriftEntry {
+            path: "personal/main.md".to_string(),
+            size: 1,
+            git_sha_local: Some("main-sha".to_string()),
+            git_sha_upstream: None,
+            staging_status: Some(hq_core_staging::StagingStatus::StagingPr(181)),
+        }];
+        let mut added = vec![DriftEntry {
+            path: "personal/pr.md".to_string(),
+            size: 1,
+            git_sha_local: Some("pr-sha".to_string()),
+            git_sha_upstream: None,
+            staging_status: Some(hq_core_staging::StagingStatus::StagingPr(181)),
+        }];
+
+        assert!(cached_staging_status_needs_refresh(
+            Channel::Staging,
+            &modified,
+            &added
+        ));
+        assert!(!cached_staging_status_needs_refresh(
+            Channel::Release,
+            &modified,
+            &added
+        ));
+        assert!(!cached_staging_status_needs_refresh(
+            Channel::Staging,
+            &[],
+            &[]
+        ));
+
+        let main = BTreeMap::from([(
+            "personal/main.md".to_string(),
+            BTreeSet::from(["main-sha".to_string()]),
+        )]);
+        let pr_files = BTreeMap::from([(
+            "personal/pr.md".to_string(),
+            BTreeSet::from(["pr-sha".to_string()]),
+        )]);
+        let index = hq_core_staging::StagingIndex::from_parts(main, vec![(182, pr_files)]);
+        refresh_staging_entries(&mut modified, &mut added, Some(&index));
+
+        assert_eq!(
+            modified[0].staging_status,
+            Some(hq_core_staging::StagingStatus::StagingMain)
+        );
+        assert_eq!(
+            added[0].staging_status,
+            Some(hq_core_staging::StagingStatus::StagingPr(182))
+        );
+
+        refresh_staging_entries(&mut modified, &mut added, None);
+        assert_eq!(modified[0].staging_status, None);
+        assert_eq!(added[0].staging_status, None);
     }
 
     #[test]
