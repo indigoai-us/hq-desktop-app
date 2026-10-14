@@ -99,6 +99,10 @@
             <span class="n"><b>{g.count}</b> {g.count === 1 ? "session" : "sessions"}</span>
             {#if i === 0}<span class="share" data-testid="brief-focus-share">{Math.round(g.share * 100)}% of your day</span>{/if}
           </div>
+          {#if i === 0}
+            <!-- The same share as a bar: a full-width track under the count, filled to the percentage. -->
+            <div class="track" aria-hidden="true"><i class="bar" style="width:{Math.round(g.share * 100)}%" data-testid="brief-focus-bar"></i></div>
+          {/if}
         </div>
       {/each}
       {#if rest.length}
@@ -230,6 +234,19 @@
     font-size: 11px;
     color: var(--b-t3);
     white-space: nowrap;
+  }
+  .track {
+    flex: none;
+    height: 4px;
+    border-radius: 99px;
+    background: rgb(var(--b-ink) / 0.08);
+    overflow: hidden;
+  }
+  .bar {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: rgb(var(--b-ink) / 0.45);
   }
   .rest {
     justify-content: center;

@@ -166,6 +166,9 @@ describe("BriefFocus", () => {
     // The lead tile says its share of the day in words (no unlabelled bar).
     expect(tiles[0]!.querySelector('[data-testid="brief-focus-share"]')!.textContent).toBe("57% of your day");
     expect(tiles[1]!.querySelector('[data-testid="brief-focus-share"]')).toBeNull();
+    // ...and as a bar under it, filled to the same share.
+    expect(tiles[0]!.querySelector('[data-testid="brief-focus-bar"]')!.getAttribute("style")).toMatch(/width:\s*57%/);
+    expect(tiles[1]!.querySelector('[data-testid="brief-focus-bar"]')).toBeNull();
     expect(tiles[0]!.querySelectorAll('[data-testid="brief-logo"]')).toHaveLength(1);
     const foot = q('[data-testid="brief-focus-foot"]')!.textContent!.replace(/\s+/g, " ").trim();
     expect(foot).toBe(`6 context switches first ${clockLabel(hoursAgo(20))} · last ${clockLabel(hoursAgo(2))}`);
