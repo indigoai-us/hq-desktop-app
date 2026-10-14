@@ -136,7 +136,7 @@
           <span class="st" data-testid="brief-blocked-state">{p.state}</span>
         {/if}
         {#if folded.length}
-          <span class="chip" data-testid="brief-blocked-more" role="button" tabindex="0" use:peek={{ state: brief, content: () => morePartiesPeek(folded, titles) }}>+{folded.length} more</span>
+          <span class="moretxt" data-testid="brief-blocked-more" role="button" tabindex="0" use:peek={{ state: brief, content: () => morePartiesPeek(folded, titles) }}>+{folded.length} more</span>
         {/if}
       </span>
     {/if}
@@ -177,7 +177,7 @@
             </span>
           {/each}
           {#if ch.more.length}
-            <span class="more chip" data-testid="brief-blocked-more" role="button" tabindex="0" use:peek={{ state: brief, content: () => morePartiesPeek(ch.more, titles) }}>+{ch.more.length} more</span>
+            <span class="more moretxt" data-testid="brief-blocked-more" role="button" tabindex="0" use:peek={{ state: brief, content: () => morePartiesPeek(ch.more, titles) }}>+{ch.more.length} more</span>
           {/if}
         </div>
       </div>
@@ -199,7 +199,7 @@
       {/each}
       {#if lay.moreCalls.length}
         <div class="morecalls" class:dim={focus} role="button" tabindex="0" data-testid="brief-blocked-more-pills" use:peek={{ state: brief, content: () => morePillsPeek(lay.moreCalls, s, titles) }}>
-          <span class="chip">+{lay.moreCalls.length} more call{lay.moreCalls.length === 1 ? "" : "s"}</span>
+          <span class="moretxt">+{lay.moreCalls.length} more call{lay.moreCalls.length === 1 ? "" : "s"}</span>
         </div>
       {/if}
     </div>
@@ -511,28 +511,33 @@
   .fr.freed {
     opacity: 0.62;
   }
-  /* "+N more": a small glass pill. */
-  .chip {
-    height: 20px;
-    padding: 0 8px;
+  /* "+N more": quiet mono caps text, no fill; it brightens on hover and opens its peek. */
+  .moretxt {
     display: inline-flex;
     align-items: center;
-    border-radius: 999px;
-    font-size: 11px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    font-family: var(--b-code);
+    font-size: 10px;
     font-weight: 500;
-    line-height: 1;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    line-height: 1.4;
     white-space: nowrap;
-    color: rgba(255, 255, 255, 0.9);
-    background: rgba(255, 255, 255, 0.16);
-    transition: background 0.2s;
+    color: rgba(255, 255, 255, 0.7);
+    background: none;
+    box-shadow: none;
+    transition: color 0.2s;
   }
-  .chip[role="button"] {
+  .moretxt[role="button"] {
     cursor: default;
   }
-  .chip:hover,
-  .morecalls:focus-visible .chip,
-  .chip:focus-visible {
-    background: rgba(255, 255, 255, 0.22);
+  .moretxt:hover,
+  .morecalls:focus-visible .moretxt,
+  .moretxt:focus-visible {
+    color: #fff;
+    background: none;
     outline: none;
   }
   .morecalls {
@@ -655,23 +660,7 @@
   .chain.done .flow {
     opacity: 0.62;
   }
-  /* "+N more": a quiet mono caps line under the list, not another pill. */
   .flow .more {
     justify-self: start;
-    height: auto;
-    padding: 0;
-    background: none;
-    font-family: var(--b-code);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.7);
-    cursor: default;
-  }
-  .flow .more:hover,
-  .flow .more:focus-visible {
-    background: none;
-    color: #fff;
   }
 </style>

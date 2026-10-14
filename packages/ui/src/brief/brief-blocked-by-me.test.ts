@@ -238,8 +238,10 @@ describe("BriefBlockedByMe", () => {
     expect(rule(src, ".chain")).not.toMatch(/margin-top:\s*auto/);
     expect(rule(src, ".flow")).toMatch(/display: grid/);
     expect(rule(src, ".flow > .node,\n  .flow > .more")).toMatch(/grid-column: 2/);
-    expect(rule(src, ".flow .more")).toMatch(/background: none/);
-    expect(rule(src, ".flow .more")).toMatch(/text-transform: uppercase/);
+    // Every "+N more" in this card is plain mono caps text: no fill at rest or on hover.
+    expect(rule(src, ".moretxt")).toMatch(/background: none/);
+    expect(rule(src, ".moretxt")).toMatch(/text-transform: uppercase/);
+    expect(rule(src, ".moretxt:hover,\n  .morecalls:focus-visible .moretxt,\n  .moretxt:focus-visible")).toMatch(/background: none/);
   });
 
   it("two rows: the list form, each call over who it frees, the age warm only past a day", () => {
