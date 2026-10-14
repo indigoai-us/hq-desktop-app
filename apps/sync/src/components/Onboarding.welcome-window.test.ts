@@ -18,6 +18,12 @@ const win = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: tauri.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
+const shell = vi.hoisted(() => ({ open: vi.fn(async (..._args: unknown[]) => undefined) }));
+vi.mock('@tauri-apps/plugin-shell', () => ({ open: shell.open }));
+vi.mock('@tauri-apps/plugin-notification', () => ({
+  isPermissionGranted: vi.fn(async () => true),
+  sendNotification: vi.fn(),
+}));
 vi.mock('@tauri-apps/api/window', async () => {
   const actual = await vi.importActual<typeof import('@tauri-apps/api/window')>(
     '@tauri-apps/api/window',
@@ -51,10 +57,17 @@ function commands(): string[] {
   return tauri.invoke.mock.calls.map(([command]) => String(command));
 }
 
+/** A first install opens on the heads-up; "Start now" goes on to the flow. */
+async function startNow(): Promise<void> {
+  host.querySelector<HTMLButtonElement>('[data-testid="heads-up-start"]')?.click();
+  await settle();
+}
+
 const WALLPAPER = 'data:image/jpeg;base64,/9j/';
 
+let host: HTMLDivElement;
+
 describe('Onboarding: the welcome flow window', () => {
-  let host: HTMLDivElement;
   let component: Record<string, unknown> | null = null;
 
   beforeEach(() => {
@@ -63,6 +76,8 @@ describe('Onboarding: the welcome flow window', () => {
     win.setSize.mockClear();
     win.setShadow.mockClear();
     win.center.mockClear();
+    shell.open.mockClear();
+    localStorage.clear();
     host = document.createElement('div');
     document.body.appendChild(host);
   });
@@ -73,18 +88,93 @@ describe('Onboarding: the welcome flow window', () => {
     host.remove();
   });
 
-  it('opens a first install straight on the welcome flow, filling the screen over the blurred desktop', async () => {
+  it('opens a first install on the small heads-up window, not the full-screen flow', async () => {
     component = mount(Onboarding, {
       target: host,
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
 
+    expect(host.querySelector('[data-testid="heads-up"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="wizard-stub"]')).toBeNull();
+    // The native first-run window is handed back and sized to a centred card.
+    expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: false });
+    expect(tauri.invoke).not.toHaveBeenCalledWith('set_welcome_window', { enabled: true });
+    const size = win.setSize.mock.calls.at(-1)?.[0] as { width: number; height: number };
+    expect([size.width, size.height]).toEqual([440, 380]);
+    expect(win.center).toHaveBeenCalled();
+    expect(commands()).not.toContain('get_desktop_wallpaper');
+  });
+
+  it('starts the session scan as soon as the heads-up opens, before sign-in', async () => {
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    expect(commands()).toContain('scan_local_sessions');
+    expect(host.querySelector('[data-testid="wizard-stub"]')).toBeNull();
+  });
+
+  it('warns and carries on when this build has no session scan', async () => {
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    tauri.invoke.mockImplementation(async (command: unknown) => {
+      if (command === 'scan_local_sessions') throw 'Command scan_local_sessions not found';
+      return undefined;
+    });
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    expect(warned).toHaveBeenCalledWith(
+      expect.stringContaining('scan_local_sessions is not available'),
+      'Command scan_local_sessions not found',
+    );
+    expect(host.querySelector('[data-testid="heads-up"]')).not.toBeNull();
+    warned.mockRestore();
+  });
+
+  it('logs heads-up screen enter and leave timing lines', async () => {
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    const lines = () =>
+      tauri.invoke.mock.calls
+        .filter(([command]) => command === 'frontend_log')
+        .map(([, args]) => (args as { tag: string; message: string }));
+    expect(lines()).toContainEqual({
+      tag: 'first-run',
+      message: 'kind=screen event=enter surface=welcome id=heads-up',
+    });
+    await startNow();
+    expect(
+      lines().some(
+        (line) =>
+          line.tag === 'first-run' &&
+          /^kind=screen event=leave surface=welcome id=heads-up elapsed_ms=\d+$/.test(line.message),
+      ),
+    ).toBe(true);
+  });
+
+  it('"Start now" closes the heads-up and opens the welcome flow over the whole screen', async () => {
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    tauri.invoke.mockClear();
+    win.setSize.mockClear();
+    await startNow();
+
+    expect(host.querySelector('[data-testid="heads-up"]')).toBeNull();
     const stub = host.querySelector<HTMLElement>('[data-testid="wizard-stub"]');
     expect(stub?.dataset.mode).toBe('onboarding');
     expect(stub?.dataset.initialStep).toBe('0');
-    // The native side fits the window to the work area; the renderer no
-    // longer sizes it to a card.
+    // The native side fits the window to the work area; the renderer does
+    // not size it.
     expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: true });
     expect(win.setSize).not.toHaveBeenCalled();
     // The popover material comes off first.
@@ -93,6 +183,36 @@ describe('Onboarding: the welcome flow window', () => {
       commands().indexOf('set_welcome_window'),
     );
     expect(commands()).toContain('get_desktop_wallpaper');
+    expect(commands()).not.toContain('mark_first_run_complete');
+  });
+
+  it('"Do it later" sets a reminder and hides HQ to the tray without finishing first run', async () => {
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="heads-up-later"]')?.click();
+    await settle();
+
+    expect(commands()).toContain('hide_main_window');
+    expect(Number(localStorage.getItem('hq.firstRun.headsUpRemindAt'))).toBeGreaterThan(Date.now());
+    expect(commands()).not.toContain('mark_first_run_complete');
+    expect(tauri.invoke).not.toHaveBeenCalledWith('set_welcome_window', { enabled: true });
+  });
+
+  it('"Manual setup" opens the manual setup guide and hides HQ to the tray', async () => {
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="heads-up-manual"]')?.click();
+    await settle();
+
+    expect(shell.open).toHaveBeenCalledWith('https://hq.computer/docs/manual-setup');
+    expect(commands()).toContain('hide_main_window');
+    expect(commands()).not.toContain('mark_first_run_complete');
   });
 
   it('paints the wallpaper and does not ask for the native blur when the wallpaper is available', async () => {
@@ -104,6 +224,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
+    await startNow();
 
     const stub = host.querySelector<HTMLElement>('[data-testid="wizard-stub"]');
     expect(stub?.dataset.wallpaper).toBe(WALLPAPER);
@@ -123,6 +244,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
+    await startNow();
 
     expect(host.querySelector<HTMLElement>('[data-testid="wizard-stub"]')?.dataset.wallpaper).toBe('');
     expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_backdrop', {
@@ -141,6 +263,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
+    await startNow();
 
     expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_backdrop', {
       enabled: true,
@@ -154,6 +277,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
+    await startNow();
     tauri.invoke.mockClear();
     win.setSize.mockClear();
 
@@ -215,6 +339,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
+    await startNow();
 
     const stub = host.querySelector<HTMLElement>('[data-testid="wizard-stub"]');
     expect(stub?.dataset.initialStep).toBe('0');
@@ -248,6 +373,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding', onfinish },
     });
     await settle();
+    await startNow();
     host.querySelector<HTMLButtonElement>('[data-testid="wizard-stub-finish"]')?.click();
     await settle();
 
@@ -286,6 +412,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
+    await startNow();
 
     expect(logged).toHaveBeenCalledWith('onboarding: window vibrancy failed', error);
     expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: true });
@@ -306,6 +433,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
+    await startNow();
 
     expect(logged).toHaveBeenCalledWith('onboarding: welcome window failed', error);
     expect(tauri.invoke).toHaveBeenCalledWith('get_desktop_wallpaper');
@@ -324,6 +452,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
+    await startNow();
 
     expect(logged).toHaveBeenCalledWith('onboarding: welcome backdrop failed', error);
     expect(host.querySelector('[data-testid="wizard-stub"]')).not.toBeNull();
@@ -339,6 +468,7 @@ describe('Onboarding: the welcome flow window', () => {
       props: { state: 'NeedsInstall', mode: 'onboarding' },
     });
     await settle();
+    await startNow();
     logged.mockClear();
 
     unmount(component);

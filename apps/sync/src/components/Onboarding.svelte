@@ -1,7 +1,17 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
-  import { onDestroy, onMount } from 'svelte';
+  import { isPermissionGranted, sendNotification } from '@tauri-apps/plugin-notification';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import { createScreenTimer, FIRST_RUN_TIMING_TAG } from '@hq/ui/first-run-timing';
+  import { onDestroy, onMount, untrack } from 'svelte';
+  import {
+    HEADS_UP_SCREEN_ID,
+    HEADS_UP_WINDOW_SIZE,
+    runHeadsUpAction,
+    startSessionScan,
+    type HeadsUpAction,
+  } from '../lib/heads-up';
   import {
     CONSENT_STEP_INDEX,
     initialStepForLifecycle,
@@ -11,6 +21,7 @@
   } from '../lib/onboarding-wizard';
   import type { StartupSetupEvidence } from '../lib/unexpected-startup-surface';
   import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
+  import HeadsUpWindow from './onboarding/HeadsUpWindow.svelte';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
 
   interface Props {
@@ -58,6 +69,29 @@
   let initialStep = $state(0);
   let onboardingFlow = $state<OnboardingFlow>('first_install');
   let activeLifecycleState = $state<string | null>(null);
+
+  /**
+   * A genuine first install opens on a small heads-up window before the flow
+   * takes the screen (install-flow-rethink US-002). Resumes, folder recovery,
+   * consent-only runs and the replay go straight to the wizard. Read once at
+   * mount: the window setup in onMount depends on it.
+   */
+  const opensOnHeadsUp = untrack(
+    () =>
+      mode === 'onboarding' &&
+      lifecycleStateProp !== 'InstallResume' &&
+      lifecycleStateProp !== 'NeedsAuthForInstall' &&
+      !isMissingRootRecovery(lifecycleStateProp, setupEvidence) &&
+      initialStepForLifecycle(lifecycleStateProp, setupEvidence) === WELCOME_SIGNIN_STEP_INDEX,
+  );
+  let showHeadsUp = $state(opensOnHeadsUp);
+
+  const headsUpTimer = createScreenTimer('welcome', (message) => {
+    if (typeof invoke !== 'function') return;
+    void invoke('frontend_log', { tag: FIRST_RUN_TIMING_TAG, message }).catch((error) => {
+      console.warn('onboarding: first-run timing line failed', error);
+    });
+  });
 
   // The main window carries the frosted popover vibrancy. The welcome flow
   // takes it off and re-applies it on the hand-back.
@@ -130,12 +164,67 @@
     }
   }
 
+  /**
+   * Show the heads-up as a small centred card. The native side may already
+   * have fitted the window to the screen for the first run, so hand that back
+   * first, then size and centre it.
+   */
+  async function enterHeadsUpWindow() {
+    await setWelcomeWindow(false);
+    if (destroyed) return;
+    try {
+      const win = getCurrentWindow();
+      await win.setSize(new LogicalSize(HEADS_UP_WINDOW_SIZE.width, HEADS_UP_WINDOW_SIZE.height));
+      await win.center();
+    } catch (error) {
+      console.warn('onboarding: could not size the heads-up window', error);
+    }
+  }
+
+  async function notify(title: string, body: string) {
+    if (await isPermissionGranted()) {
+      sendNotification({ title, body });
+    } else {
+      console.warn('onboarding: notifications are off; the setup reminder only reopens the window');
+    }
+  }
+
+  async function handleHeadsUpAction(action: HeadsUpAction) {
+    await runHeadsUpAction(action, {
+      startFlow: async () => {
+        headsUpTimer.close();
+        showHeadsUp = false;
+        await enterWelcomeWindow();
+      },
+      hideToTray: async () => {
+        if (typeof invoke !== 'function') return;
+        await invoke('hide_main_window');
+      },
+      openUrl: async (url) => {
+        await openExternal(url);
+      },
+      notify,
+      bringToFront: async () => {
+        if (typeof invoke !== 'function') return;
+        await invoke('bring_main_window_to_front');
+      },
+      storage: typeof localStorage === 'undefined' ? null : localStorage,
+    });
+  }
+
   onMount(() => {
-    void enterWelcomeWindow();
+    if (opensOnHeadsUp) {
+      headsUpTimer.show(HEADS_UP_SCREEN_ID);
+      void startSessionScan(typeof invoke === 'function' ? invoke : undefined);
+      void enterHeadsUpWindow();
+    } else {
+      void enterWelcomeWindow();
+    }
   });
 
   onDestroy(() => {
     destroyed = true;
+    headsUpTimer.close();
     void restorePopoverSize();
   });
 
@@ -186,12 +275,16 @@
   }
 </script>
 
-<OnboardingWizard
-  {initialStep}
-  {onboardingFlow}
-  recoveringMissingRoot={isMissingRootRecovery(lifecycleStateProp, setupEvidence)}
-  {mode}
-  {repromptPersonUid}
-  {wallpaper}
-  onfinish={handleFinish}
-/>
+{#if showHeadsUp}
+  <HeadsUpWindow onaction={handleHeadsUpAction} />
+{:else}
+  <OnboardingWizard
+    {initialStep}
+    {onboardingFlow}
+    recoveringMissingRoot={isMissingRootRecovery(lifecycleStateProp, setupEvidence)}
+    {mode}
+    {repromptPersonUid}
+    {wallpaper}
+    onfinish={handleFinish}
+  />
+{/if}
