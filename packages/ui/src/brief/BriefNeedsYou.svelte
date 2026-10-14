@@ -117,8 +117,9 @@
     for (const d of decisions) if (!used.has(d.id)) out.push({ key: `d:${d.id}`, d, p: null, rank: null, risk: null });
     return out;
   });
-  // At most five rows in a list; a "+N more" row opens the rest in the peek.
-  const shown = $derived(tall ? entries.slice(0, 5) : entries.slice(0, 2));
+  // At most five rows in a list; a "+N more" row opens the rest in the peek. Never "+1 more": that one row takes its place.
+  const cap = $derived(tall ? 5 : 2);
+  const shown = $derived(entries.length === cap + 1 ? entries : entries.slice(0, cap));
   const rest = $derived(entries.slice(shown.length));
   const entryTitle = (e: Entry) => e.p?.text ?? e.d!.title;
   const entryDone = (e: Entry) => (e.d ? !!brief.cleared[e.d.id] : e.risk ? !!brief.cleared[e.risk.id] : false);

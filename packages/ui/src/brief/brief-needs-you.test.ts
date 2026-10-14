@@ -213,4 +213,11 @@ describe("Needs you rows", () => {
     const lines = [...q("brief-peek")!.querySelectorAll('[data-testid="brief-peek-line"]')].map((l) => l.textContent!.replace(/\s+/g, " ").trim());
     expect(lines).toEqual(["Decision number 63d", "Decision number 52d", "Decision number 440h"]);
   });
+
+  it("never shows '+1 more': when one row is left over, that row takes its place", () => {
+    render(day(Array.from({ length: 5 }, (_, i) => decision(i + 1, { ageHours: 10 * (i + 1) }))));
+    const rows = [...target.querySelectorAll<HTMLElement>("[data-brief-row]")];
+    expect(rows).toHaveLength(6);
+    expect(q("brief-need-more")).toBeNull();
+  });
 });
