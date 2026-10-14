@@ -162,6 +162,11 @@
    */
   let pageLive = $state(false);
   const cp = $derived(run?.phase ?? { kind: "idle" as const });
+  /** The ready run the page has already handed off to. */
+  let handedOff = $state<string | null>(null);
+  $effect.pre(() => {
+    if (cp.kind === "ready" && (bloomDone || !pageLive) && shownRunId === cp.runId) handedOff = cp.runId;
+  });
   /** Where the sun was when a run failed, so it stalls there. */
   let lastProgress = 0;
   $effect.pre(() => {
@@ -184,8 +189,9 @@
       case "ready":
         // Hold "Your brief is ready" until the new run's brief is loaded, so
         // the page swaps once and never flashes a placeholder brief.
-        // A scene that cannot draw has no bloom to wait for.
-        return (bloomDone || !pageLive) && shownRunId === cp.runId ? null : { phase: "ready", progress: 1, step: "Your brief is ready" };
+        // A scene that cannot draw has no bloom to wait for. Once handed off,
+        // stepping to another brief never brings the scene back.
+        return handedOff === cp.runId || ((bloomDone || !pageLive) && shownRunId === cp.runId) ? null : { phase: "ready", progress: 1, step: "Your brief is ready" };
       case "failed":
         return { phase: "failed", progress: lastProgress, step: cp.message };
       default:
