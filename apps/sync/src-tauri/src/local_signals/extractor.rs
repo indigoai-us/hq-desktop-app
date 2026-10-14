@@ -568,6 +568,10 @@ pub fn handle_provider_failure(
     failure: ProviderFailure,
 ) -> Result<(JobRecord, Recovery), String> {
     let r = recovery_for(provider, failure);
-    let rec = runs::release_for_provider_loss(runs_dir, job_id, session_id, &r.message)?;
+    let action = match r.action {
+        RecoveryAction::SignInAgain => "sign_in_again",
+        RecoveryAction::Resume => "resume",
+    };
+    let rec = runs::release_for_provider_loss(runs_dir, job_id, session_id, &r.message, action)?;
     Ok((rec, r))
 }

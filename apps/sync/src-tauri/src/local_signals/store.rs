@@ -263,18 +263,29 @@ pub fn run_record_path(company_root: &Path, job_id: &str) -> Result<PathBuf, Str
         .join(format!("{job_id}.json")))
 }
 
+/// Path segment for an audience key. Real keys are `sha256:<hex>`; `:` is
+/// not path-safe, so it maps to `sha256-<hex>` exactly as hq-pro
+/// `audienceKeySegment` does. The observation id still hashes the full key.
+pub fn audience_segment(audience_key: &str) -> String {
+    match audience_key.strip_prefix("sha256:") {
+        Some(hex) => format!("sha256-{hex}"),
+        None => audience_key.to_string(),
+    }
+}
+
 pub fn observation_path(
     company_root: &Path,
     audience_key: &str,
     signal_type: SignalType,
     observation_id: &str,
 ) -> Result<PathBuf, String> {
-    if !valid_segment(audience_key) || !valid_segment(observation_id) {
+    let segment = audience_segment(audience_key);
+    if !valid_segment(&segment) || !valid_segment(observation_id) {
         return Err("Invalid observation path".into());
     }
     Ok(company_root
         .join("meetings")
-        .join(format!("@{audience_key}"))
+        .join(format!("@{segment}"))
         .join(signal_type.as_str())
         .join(format!("{observation_id}.md")))
 }
@@ -395,7 +406,7 @@ impl RunContext {
             &self.job_id,
             &self.company_uid,
             &self.source_id,
-            &self.audience_key,
+            &audience_segment(&self.audience_key),
         ] {
             if !valid_segment(seg) {
                 return Err("Invalid run context".into());

@@ -2306,7 +2306,7 @@ pub async fn emit_version_heartbeat_after_update(installed_version: &str) {
     let _ = emit_version_heartbeat_once(Some(installed_version)).await;
 }
 
-fn read_machine_id() -> String {
+pub(crate) fn read_machine_id() -> String {
     let home = telemetry_home_dir().unwrap_or_default();
     let path = home.join(".hq/menubar.json");
     if let Ok(contents) = fs::read_to_string(&path) {

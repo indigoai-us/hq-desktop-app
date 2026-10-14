@@ -164,6 +164,11 @@ pub struct RunRecord {
     pub parsed_result_digest: Option<String>,
     /// Number of button activations that resolved to this job.
     pub activations: u32,
+    /// US-009: the one recovery action Meetings offers after a provider
+    /// logout or transport loss (`sign_in_again` or `resume`). Cleared when a
+    /// session claims or recovers the run.
+    #[serde(default)]
+    pub recovery: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -371,6 +376,7 @@ pub fn request(dir: &Path, input: RunRequestInput) -> Result<RunRecord, String> 
         owner_pid: None,
         parsed_result_digest: None,
         activations: 1,
+        recovery: None,
     };
     save(dir, &rec)?;
     Ok(rec)
@@ -405,6 +411,7 @@ pub fn claim(
         return Err("Signal run is not waiting to be claimed".into());
     }
     rec.claimed_by = Some(session.provider);
+    rec.recovery = None;
     rec.provider_session_id = Some(session.session_id.clone());
     rec.owner_pid = pid;
     transition(&mut rec, RunState::Claimed, None);
@@ -527,6 +534,7 @@ pub fn release_for_provider_loss(
     job_id: &str,
     session_id: &str,
     status: &str,
+    recovery: &str,
 ) -> Result<RunRecord, String> {
     let mut rec = load(dir, job_id)?;
     if rec.provider_session_id.is_some() {
@@ -536,6 +544,7 @@ pub fn release_for_provider_loss(
         return Ok(rec);
     }
     release_owner(&mut rec);
+    rec.recovery = Some(bounded_status(recovery));
     let state = if rec.parsed_result_digest.is_none() {
         RunState::Pending
     } else {
@@ -578,6 +587,7 @@ pub fn recover(
         }
     }
     rec.claimed_by = Some(session.provider);
+    rec.recovery = None;
     rec.provider_session_id = Some(session.session_id.clone());
     rec.owner_pid = pid;
     let resume_at = if rec.parsed_result_digest.is_some() {

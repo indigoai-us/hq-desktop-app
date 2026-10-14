@@ -27,6 +27,18 @@
     planRequiredUpgradeUrl,
   } from '../lib/invite-errors';
   import PlanUpgradeAction from './PlanUpgradeAction.svelte';
+  import {
+    emptyRowUi,
+    isActive as signalsActive,
+    nextRetryDelay,
+    plainError,
+    shouldUpload,
+    signalsRowView,
+    type MeetingSignalsStatus,
+    type SignalsAction,
+    type SignalsRowUi,
+    type UploadSummary,
+  } from '../lib/localMeetingSignals';
   import { openApprovedExternalUrl } from '../desktop-alt/external-open';
   import {
     buildPastMeetingRows,
@@ -1489,6 +1501,143 @@
     ),
   );
 
+  // ── signals-local-meetings-v1 US-009: Generate signals on a completed row ──
+  // Status comes from `meeting_signals_status` (flag, eligibility, durable run,
+  // local receipt, upload ledger). `localMeetingSignals.ts` turns it into the
+  // one inline line each row renders. Raw errors only go to console diagnostics.
+  let signalStatus = $state<Record<string, MeetingSignalsStatus>>({});
+  let signalUi = $state<Record<string, SignalsRowUi>>({});
+  const signalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function signalsRowUi(botId: string): SignalsRowUi {
+    return signalUi[botId] ?? emptyRowUi();
+  }
+  function setSignalsUi(botId: string, patch: Partial<SignalsRowUi>) {
+    signalUi = { ...signalUi, [botId]: { ...signalsRowUi(botId), ...patch } };
+  }
+  function signalsView(botId: string) {
+    return signalsRowView(signalStatus[botId] ?? null, signalsRowUi(botId));
+  }
+  function signalsArgs(bot: ScheduledBot) {
+    return { companyUid: bot.companyId, botId: bot.botId, memberUid: signedInPersonUid };
+  }
+  function signalsCandidate(bot: ScheduledBot): boolean {
+    return Boolean(signedInPersonUid && bot.companyId && rowButtonKind(bot) === 'done');
+  }
+
+  async function loadSignalStatus(bot: ScheduledBot) {
+    if (!signalsCandidate(bot)) return;
+    try {
+      const status = await invoke<MeetingSignalsStatus>('meeting_signals_status', signalsArgs(bot));
+      signalStatus = { ...signalStatus, [bot.botId]: status };
+      if (shouldUpload(status, signalsRowUi(bot.botId))) void uploadSignals(bot, false);
+    } catch (err) {
+      // Status failures never fabricate a state: the row simply shows nothing.
+      console.warn('[local-signals] status failed', err);
+    }
+  }
+
+  function scheduleSignalsRetry(bot: ScheduledBot, run: () => Promise<void>) {
+    const ui = signalsRowUi(bot.botId);
+    const delay = nextRetryDelay(ui.attempts);
+    if (delay === null) {
+      setSignalsUi(bot.botId, { autoRetrying: false });
+      return;
+    }
+    setSignalsUi(bot.botId, { autoRetrying: true, attempts: ui.attempts + 1 });
+    clearTimeout(signalTimers.get(bot.botId));
+    signalTimers.set(
+      bot.botId,
+      setTimeout(() => {
+        setSignalsUi(bot.botId, { autoRetrying: false, error: null });
+        void run();
+      }, delay),
+    );
+  }
+
+  async function uploadSignals(bot: ScheduledBot, manual: boolean) {
+    if (signalsRowUi(bot.botId).uploading) return;
+    setSignalsUi(bot.botId, { uploading: true, ...(manual ? { attempts: 0, error: null } : {}) });
+    try {
+      const summary = await invoke<UploadSummary>('meeting_signals_upload', signalsArgs(bot));
+      const prev = signalStatus[bot.botId];
+      if (prev) signalStatus = { ...signalStatus, [bot.botId]: { ...prev, upload: summary } };
+      setSignalsUi(bot.botId, { uploading: false });
+      if (summary.retryable > 0) scheduleSignalsRetry(bot, () => uploadSignals(bot, false));
+      else setSignalsUi(bot.botId, { attempts: 0 });
+    } catch (err) {
+      console.warn('[local-signals] upload failed', err);
+      setSignalsUi(bot.botId, { uploading: false, error: plainError(err) });
+      scheduleSignalsRetry(bot, () => uploadSignals(bot, false));
+    }
+  }
+
+  async function runSignalsAction(bot: ScheduledBot, action: SignalsAction) {
+    const ui = signalsRowUi(bot.botId);
+    if (ui.submitting || ui.uploading) return; // duplicate activation
+    const status = signalStatus[bot.botId];
+    if (action === 'retry' && status?.localComplete) {
+      void uploadSignals(bot, true);
+      return;
+    }
+    // Acknowledge immediately, before any backend round-trip.
+    setSignalsUi(bot.botId, { submitting: true, error: null, ...(action === 'retry' ? { attempts: 0 } : {}) });
+    const perform = async () => {
+      const args = signalsArgs(bot);
+      const jobId = status?.run?.request.jobId;
+      switch (action) {
+        case 'generate':
+        case 'retry':
+          return invoke<MeetingSignalsStatus>('meeting_signals_generate', { ...args, provider: 'any' });
+        case 'cancel':
+          if (jobId) await invoke('meeting_signals_cancel', { jobId });
+          return null;
+        case 'open_claude':
+        case 'sign_in_claude':
+          await invoke('meeting_signals_open_session', { ...args, provider: 'claude' });
+          return null;
+        case 'open_codex':
+        case 'sign_in_codex':
+          await invoke('meeting_signals_open_session', { ...args, provider: 'codex' });
+          return null;
+        case 'resume': {
+          const provider = status?.run?.request.provider === 'codex' ? 'codex' : 'claude';
+          await invoke('meeting_signals_open_session', { ...args, provider });
+          return null;
+        }
+      }
+    };
+    try {
+      const next = await perform();
+      if (next) signalStatus = { ...signalStatus, [bot.botId]: next };
+      setSignalsUi(bot.botId, { submitting: false, attempts: 0 });
+      await loadSignalStatus(bot);
+    } catch (err) {
+      console.warn('[local-signals] action failed', action, err);
+      setSignalsUi(bot.botId, { submitting: false, error: plainError(err) });
+      scheduleSignalsRetry(bot, () => runSignalsAction(bot, action));
+    }
+  }
+
+  // Load status for completed rows; keep polling only while a job is moving.
+  $effect(() => {
+    if (!signedInPersonUid) return;
+    for (const bot of recordedBots) {
+      if (signalsCandidate(bot) && !(bot.botId in untrack(() => signalStatus))) void loadSignalStatus(bot);
+    }
+  });
+  $effect(() => {
+    const active = recordedBots.filter((bot) => signalsActive(signalStatus[bot.botId] ?? null));
+    if (active.length === 0) return;
+    const timer = setInterval(() => {
+      for (const bot of active) void loadSignalStatus(bot);
+    }, 4_000);
+    return () => clearInterval(timer);
+  });
+  $effect(() => () => {
+    for (const t of signalTimers.values()) clearTimeout(t);
+  });
+
   /** Count of events the link-only filter is currently hiding. Drives
    *  the "X hidden — show all" recovery affordance so the user doesn't
    *  hit an empty list and assume the calendar is broken. */
@@ -1923,6 +2072,30 @@
       </div>
     {/if}
 
+    {#snippet localSignals(bot: ScheduledBot)}
+      {@const signals = signalsView(bot.botId)}
+      {#if signals.visible}
+        <span
+          class="signals-line"
+          data-tone={signals.tone}
+          data-testid="meeting-signals"
+          aria-live="polite"
+          aria-busy={signals.busy}
+        >
+          {#if signals.text}<span class="signals-text" title={signals.text}>{signals.text}</span>{/if}
+          {#each signals.actions as action (action.id)}
+            <button
+              type="button"
+              class="signals-action"
+              disabled={signals.busy}
+              onclick={() => runSignalsAction(bot, action.id)}
+            >
+              {action.label}
+            </button>
+          {/each}
+        </span>
+      {/if}
+    {/snippet}
     {#snippet companyAssign(bot: ScheduledBot)}
       {@const companyPending = attributionPending.has(bot.botId)}
       <div class="attribution-control">
@@ -2221,6 +2394,7 @@
                     {row.bot.meetingTitle ?? '(no title)'}
                   </span>
                 </div>
+                {@render localSignals(row.bot)}
                 {@render companyAssign(row.bot)}
               </li>
             {:else}
@@ -2633,6 +2807,56 @@
     color: var(--c-text);
     font-size: var(--text-base);
     text-overflow: ellipsis;
+  }
+  /* signals-local-meetings-v1 US-009: one inline status line in the existing
+     row. No panel, border, accent bar, radius, or heavy weight; color only
+     carries the semantic tone. */
+  .signals-line {
+    flex: 0 1 auto;
+    min-width: 0;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: var(--text-base);
+    font-weight: 400;
+    line-height: 17px;
+    color: var(--c-muted);
+  }
+  .signals-line[data-tone='active'] {
+    color: var(--c-text);
+  }
+  .signals-line[data-tone='ok'] {
+    color: var(--c-success, #4ade80);
+  }
+  .signals-line[data-tone='warn'] {
+    color: var(--c-warning, #fbbf24);
+  }
+  .signals-line[data-tone='danger'] {
+    color: var(--c-danger, #f87171);
+  }
+  .signals-text {
+    min-width: 0;
+    max-width: 320px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .signals-action {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--c-text);
+    font: inherit;
+    font-weight: 500;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .signals-action:disabled {
+    color: var(--c-muted);
+    cursor: default;
   }
   .series-chip {
     flex: 0 0 auto;
