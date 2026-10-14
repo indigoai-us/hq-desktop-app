@@ -878,13 +878,15 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
         // sign-in screen instead of signing back in as the outpost.
         record_last_auth_transition("sign_out_machine");
         hq_desktop_core::machine_session::set_opted_out(true)?;
+        set_active_session_source(None);
         crate::commands::dm_notify::detach_notification_session(&app).await?;
+        crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     } else {
         record_last_auth_transition("sign_out");
+        set_active_session_source(None);
         crate::commands::dm_notify::clear_notification_credentials(&app).await?;
+        crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     }
-    set_active_session_source(None);
-    crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     clear_sentry_user();
     // The next account must not inherit this one's plan-limit upload pause.
     crate::commands::uploads_paused::clear(&app);
