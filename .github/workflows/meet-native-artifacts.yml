@@ -30,7 +30,7 @@ jobs:
       VITE_SENTRY_DSN: ""
       RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -43,8 +43,8 @@ jobs:
           if (-not $env:SIGN_CLIENT -or -not $env:SIGN_TENANT -or -not $env:SIGN_SUBSCRIPTION) {
             throw 'Existing Indigo Azure signing configuration is required; unsigned fallback is forbidden.'
           }
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -124,7 +124,7 @@ jobs:
           }
           @{ schema='hq-meet-test-artifact/v1'; commit='${{ github.sha }}'; feature='meet-native-webdriver'; platform='windows'; architecture='x64'; diagnosticOnly=$true; nativeCallCertified=$false; artifacts=$records } | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $root 'manifest.json')
       - name: Retain test artifacts only
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: meet-native-windows-x64-${{ github.sha }}
           path: meet-native-artifacts/
