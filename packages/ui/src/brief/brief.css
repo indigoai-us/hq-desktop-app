@@ -1024,95 +1024,67 @@
   color: rgba(255, 255, 255, 0.78);
 }
 
-/* Colour fields: soft mesh gradients, light through frosted glass. Every field is the same
-   four eased blobs over a base (paint order): a pale light pooling from the top edge (kept
-   shallow, clear of the titles), a luminous glow in the empty bottom-right corner, a hue shift
-   on the left, and a deep pool at the bottom left, so white ink holds 3:1+ where text sits.
-   Blob alphas follow a smoothstep falloff, so no edge or band shows. */
 .daily-brief .slot[data-field="violet"] > .w {
-  /* Calls you make. Lilac-white light pooling from the top, an orchid haze on the left,
-     a lilac glow in the empty corner, deep indigo gathering at the bottom left. */
+  /* Reference "Average investment": milky lavender at the top left deepening to violet,
+     one soft lilac bloom at the top right. Two hues, no hard-edged blobs. */
   --b-field-bg:
-    radial-gradient(70% 38% at 56% -12%, rgba(246, 228, 255, 0.9) 0%, rgba(246, 228, 255, 0.774) 15%, rgba(246, 228, 255, 0.495) 32%, rgba(246, 228, 255, 0.198) 48%, rgba(246, 228, 255, 0.054) 60%, rgba(246, 228, 255, 0) 70%),
-    radial-gradient(70% 62% at 104% 104%, rgba(214, 140, 246, 0.7) 0%, rgba(214, 140, 246, 0.602) 15%, rgba(214, 140, 246, 0.385) 32%, rgba(214, 140, 246, 0.154) 48%, rgba(214, 140, 246, 0.042) 60%, rgba(214, 140, 246, 0) 70%),
-    radial-gradient(70% 62% at 0% 30%, rgba(176, 70, 214, 0.5) 0%, rgba(176, 70, 214, 0.43) 15%, rgba(176, 70, 214, 0.275) 32%, rgba(176, 70, 214, 0.11) 48%, rgba(176, 70, 214, 0.03) 60%, rgba(176, 70, 214, 0) 70%),
-    radial-gradient(85% 60% at 6% 112%, rgba(70, 30, 160, 0.8) 0%, rgba(70, 30, 160, 0.688) 15%, rgba(70, 30, 160, 0.44) 32%, rgba(70, 30, 160, 0.176) 48%, rgba(70, 30, 160, 0.048) 60%, rgba(70, 30, 160, 0) 70%),
-    linear-gradient(158deg, #a35ddf 0%, #8c48d6 42%, #7637c8 100%);
-  --b-field-glow: rgba(120, 60, 210, 0.45);
+    radial-gradient(95% 85% at 100% 0%, rgba(242, 196, 246, 0.6) 0%, rgba(242, 196, 246, 0) 72%),
+    linear-gradient(155deg, #d48de6 0%, #b468d9 38%, #9c4ed2 74%, #a65ad6 100%);
+  --b-field-glow: rgba(160, 80, 220, 0.4);
 }
 .daily-brief .slot[data-field="dusk"] > .w {
-  /* Dawn sky: indigo overhead warming through rose to a peach glow on the horizon (where the
-     sun sits), the water below a step deeper so the timeline stays legible. */
+  /* Dawn sky: violet overhead warming through rose to a peach horizon. */
   background:
     var(--b-dim),
-    radial-gradient(75% 50% at 0% -4%, rgba(84, 40, 176, 0.55) 0%, rgba(84, 40, 176, 0.473) 15%, rgba(84, 40, 176, 0.303) 32%, rgba(84, 40, 176, 0.121) 48%, rgba(84, 40, 176, 0.033) 60%, rgba(84, 40, 176, 0) 70%),
-    radial-gradient(75% 32% at 62% 64%, rgba(255, 170, 120, 0.55) 0%, rgba(255, 170, 120, 0.473) 15%, rgba(255, 170, 120, 0.303) 32%, rgba(255, 170, 120, 0.121) 48%, rgba(255, 170, 120, 0.033) 60%, rgba(255, 170, 120, 0) 70%),
-    radial-gradient(60% 40% at 100% 40%, rgba(255, 140, 190, 0.15) 0%, rgba(255, 140, 190, 0.129) 15%, rgba(255, 140, 190, 0.083) 32%, rgba(255, 140, 190, 0.033) 48%, rgba(255, 140, 190, 0.009) 60%, rgba(255, 140, 190, 0) 70%),
-    radial-gradient(80% 45% at 20% 108%, rgba(120, 36, 100, 0.6) 0%, rgba(120, 36, 100, 0.516) 15%, rgba(120, 36, 100, 0.33) 32%, rgba(120, 36, 100, 0.132) 48%, rgba(120, 36, 100, 0.036) 60%, rgba(120, 36, 100, 0) 70%),
-    linear-gradient(180deg, #6e40c2 0%, #9446b0 32%, #c8508c 60%, #e46a74 78%, #d05a7a 100%);
+    radial-gradient(70% 45% at 70% 100%, #ffb27a 0%, rgba(255, 178, 122, 0) 72%),
+    linear-gradient(180deg, #7442c4 0%, #a64aa8 40%, #e2628c 72%, #ff9e6a 100%);
   --b-field-glow: rgba(200, 90, 140, 0.45);
 }
 .daily-brief .slot[data-field="pink"] > .w {
-  /* Live fire. Blush light from the top, hot magenta on the left, a rose glow in the
-     corner, deep raspberry pooling at the bottom where the rows end. */
+  /* Reference "Marketing information": soft pink at the top, hot pink pooling at the bottom. */
   --b-field-bg:
-    radial-gradient(70% 38% at 55% -12%, rgba(255, 216, 236, 0.9) 0%, rgba(255, 216, 236, 0.774) 15%, rgba(255, 216, 236, 0.495) 32%, rgba(255, 216, 236, 0.198) 48%, rgba(255, 216, 236, 0.054) 60%, rgba(255, 216, 236, 0) 70%),
-    radial-gradient(70% 62% at 104% 104%, rgba(255, 150, 190, 0.65) 0%, rgba(255, 150, 190, 0.559) 15%, rgba(255, 150, 190, 0.358) 32%, rgba(255, 150, 190, 0.143) 48%, rgba(255, 150, 190, 0.039) 60%, rgba(255, 150, 190, 0) 70%),
-    radial-gradient(70% 70% at 0% 45%, rgba(226, 52, 140, 0.5) 0%, rgba(226, 52, 140, 0.43) 15%, rgba(226, 52, 140, 0.275) 32%, rgba(226, 52, 140, 0.11) 48%, rgba(226, 52, 140, 0.03) 60%, rgba(226, 52, 140, 0) 70%),
-    radial-gradient(90% 60% at 10% 112%, rgba(160, 24, 84, 0.8) 0%, rgba(160, 24, 84, 0.688) 15%, rgba(160, 24, 84, 0.44) 32%, rgba(160, 24, 84, 0.176) 48%, rgba(160, 24, 84, 0.048) 60%, rgba(160, 24, 84, 0) 70%),
-    linear-gradient(172deg, #e5579a 0%, #db4688 45%, #c4336f 100%);
-  --b-field-glow: rgba(220, 50, 130, 0.45);
+    radial-gradient(75% 65% at 55% 100%, rgba(255, 64, 146, 0.55) 0%, rgba(255, 64, 146, 0) 72%),
+    linear-gradient(172deg, #ec7fb8 0%, #ee64a7 45%, #ec4692 82%, #ee55a0 100%);
+  --b-field-glow: rgba(240, 70, 150, 0.4);
 }
 .daily-brief .slot[data-field="sunset"] > .w {
-  /* Watch. Pale gold light from the top over rose-coral, a tangerine glow in the
-     corner, deep crimson gathering at the bottom left. */
+  /* Reference "Opportunity information": pink at the top right blending into peach at the
+     bottom, a golden glow rising from the bottom. */
   --b-field-bg:
-    radial-gradient(70% 38% at 58% -12%, rgba(255, 230, 200, 0.9) 0%, rgba(255, 230, 200, 0.774) 15%, rgba(255, 230, 200, 0.495) 32%, rgba(255, 230, 200, 0.198) 48%, rgba(255, 230, 200, 0.054) 60%, rgba(255, 230, 200, 0) 70%),
-    radial-gradient(70% 62% at 104% 104%, rgba(250, 170, 90, 0.7) 0%, rgba(250, 170, 90, 0.602) 15%, rgba(250, 170, 90, 0.385) 32%, rgba(250, 170, 90, 0.154) 48%, rgba(250, 170, 90, 0.042) 60%, rgba(250, 170, 90, 0) 70%),
-    radial-gradient(70% 70% at 0% 40%, rgba(226, 72, 110, 0.5) 0%, rgba(226, 72, 110, 0.43) 15%, rgba(226, 72, 110, 0.275) 32%, rgba(226, 72, 110, 0.11) 48%, rgba(226, 72, 110, 0.03) 60%, rgba(226, 72, 110, 0) 70%),
-    radial-gradient(85% 60% at 6% 112%, rgba(170, 36, 80, 0.8) 0%, rgba(170, 36, 80, 0.688) 15%, rgba(170, 36, 80, 0.44) 32%, rgba(170, 36, 80, 0.176) 48%, rgba(170, 36, 80, 0.048) 60%, rgba(170, 36, 80, 0) 70%),
-    linear-gradient(200deg, #e45f78 0%, #e05a58 45%, #cf4a4c 100%);
-  --b-field-glow: rgba(220, 80, 80, 0.45);
+    radial-gradient(60% 55% at 60% 110%, rgba(252, 196, 120, 0.55) 0%, rgba(252, 196, 120, 0) 70%),
+    linear-gradient(205deg, #ec6aa8 0%, #f3868e 38%, #f39a66 72%, #f5a466 100%);
+  --b-field-glow: rgba(245, 120, 110, 0.4);
 }
 .daily-brief .slot[data-field="sky"] > .w {
-  /* People and waiting. Ice-white light from the top over azure, a cyan glow in the
-     corner, cobalt deepening to indigo at the bottom left. */
+  /* Reference "Application map": cyan at the top left into azure, a light sky haze at the right. */
   --b-field-bg:
-    radial-gradient(70% 38% at 56% -12%, rgba(230, 244, 255, 0.9) 0%, rgba(230, 244, 255, 0.774) 15%, rgba(230, 244, 255, 0.495) 32%, rgba(230, 244, 255, 0.198) 48%, rgba(230, 244, 255, 0.054) 60%, rgba(230, 244, 255, 0) 70%),
-    radial-gradient(70% 62% at 104% 104%, rgba(130, 210, 252, 0.7) 0%, rgba(130, 210, 252, 0.602) 15%, rgba(130, 210, 252, 0.385) 32%, rgba(130, 210, 252, 0.154) 48%, rgba(130, 210, 252, 0.042) 60%, rgba(130, 210, 252, 0) 70%),
-    radial-gradient(70% 70% at 0% 35%, rgba(52, 104, 228, 0.5) 0%, rgba(52, 104, 228, 0.43) 15%, rgba(52, 104, 228, 0.275) 32%, rgba(52, 104, 228, 0.11) 48%, rgba(52, 104, 228, 0.03) 60%, rgba(52, 104, 228, 0) 70%),
-    radial-gradient(85% 60% at 6% 112%, rgba(46, 52, 186, 0.8) 0%, rgba(46, 52, 186, 0.688) 15%, rgba(46, 52, 186, 0.44) 32%, rgba(46, 52, 186, 0.176) 48%, rgba(46, 52, 186, 0.048) 60%, rgba(46, 52, 186, 0) 70%),
-    linear-gradient(165deg, #357ee8 0%, #3264de 45%, #344ecb 100%);
-  --b-field-glow: rgba(50, 100, 230, 0.45);
+    radial-gradient(65% 70% at 90% 25%, rgba(140, 218, 250, 0.5) 0%, rgba(140, 218, 250, 0) 72%),
+    radial-gradient(60% 55% at 0% 100%, rgba(140, 140, 245, 0.35) 0%, rgba(140, 140, 245, 0) 72%),
+    linear-gradient(160deg, #52c3ef 0%, #42a5ef 45%, #4a6cf0 100%);
+  --b-field-glow: rgba(60, 150, 240, 0.4);
 }
 .daily-brief .slot[data-field="teal"] > .w {
-  /* Shipped. Mint light from the top over sea-green teal, a jade glow in the corner,
-     deep forest-teal gathering at the bottom left. */
+  /* Reference big card: quiet sea-glass teal, a cyan light along the top edge, paler at the bottom left. */
   --b-field-bg:
-    radial-gradient(70% 38% at 56% -12%, rgba(218, 252, 240, 0.9) 0%, rgba(218, 252, 240, 0.774) 15%, rgba(218, 252, 240, 0.495) 32%, rgba(218, 252, 240, 0.198) 48%, rgba(218, 252, 240, 0.054) 60%, rgba(218, 252, 240, 0) 70%),
-    radial-gradient(70% 62% at 104% 104%, rgba(110, 214, 186, 0.65) 0%, rgba(110, 214, 186, 0.559) 15%, rgba(110, 214, 186, 0.358) 32%, rgba(110, 214, 186, 0.143) 48%, rgba(110, 214, 186, 0.039) 60%, rgba(110, 214, 186, 0) 70%),
-    radial-gradient(70% 70% at 0% 40%, rgba(30, 140, 110, 0.45) 0%, rgba(30, 140, 110, 0.387) 15%, rgba(30, 140, 110, 0.248) 32%, rgba(30, 140, 110, 0.099) 48%, rgba(30, 140, 110, 0.027) 60%, rgba(30, 140, 110, 0) 70%),
-    radial-gradient(85% 60% at 6% 112%, rgba(14, 84, 92, 0.8) 0%, rgba(14, 84, 92, 0.688) 15%, rgba(14, 84, 92, 0.44) 32%, rgba(14, 84, 92, 0.176) 48%, rgba(14, 84, 92, 0.048) 60%, rgba(14, 84, 92, 0) 70%),
-    linear-gradient(165deg, #23958f 0%, #1c8584 45%, #176f74 100%);
-  --b-field-glow: rgba(20, 120, 115, 0.4);
+    radial-gradient(70% 40% at 85% 0%, rgba(170, 235, 245, 0.7) 0%, rgba(170, 235, 245, 0) 70%),
+    radial-gradient(85% 65% at 0% 100%, rgba(172, 214, 220, 0.5) 0%, rgba(172, 214, 220, 0) 72%),
+    linear-gradient(180deg, #58a2ae 0%, #6fb2bc 60%, #8fcad2 100%);
+  --b-field-glow: rgba(80, 150, 160, 0.35);
 }
 .daily-brief .slot[data-field="peri"] > .w {
-  /* Periwinkle. White-lavender light from the top, a lilac glow in the corner, deep
-     blue-violet gathering at the bottom left. */
+  /* Periwinkle (no reference card): soft lavender light at the top right over blue-violet. */
   --b-field-bg:
-    radial-gradient(70% 38% at 56% -12%, rgba(244, 242, 255, 0.92) 0%, rgba(244, 242, 255, 0.791) 15%, rgba(244, 242, 255, 0.506) 32%, rgba(244, 242, 255, 0.202) 48%, rgba(244, 242, 255, 0.055) 60%, rgba(244, 242, 255, 0) 70%),
-    radial-gradient(70% 62% at 104% 104%, rgba(190, 176, 255, 0.7) 0%, rgba(190, 176, 255, 0.602) 15%, rgba(190, 176, 255, 0.385) 32%, rgba(190, 176, 255, 0.154) 48%, rgba(190, 176, 255, 0.042) 60%, rgba(190, 176, 255, 0) 70%),
-    radial-gradient(70% 70% at 0% 45%, rgba(110, 100, 236, 0.45) 0%, rgba(110, 100, 236, 0.387) 15%, rgba(110, 100, 236, 0.248) 32%, rgba(110, 100, 236, 0.099) 48%, rgba(110, 100, 236, 0.027) 60%, rgba(110, 100, 236, 0) 70%),
-    radial-gradient(85% 60% at 6% 112%, rgba(62, 52, 190, 0.8) 0%, rgba(62, 52, 190, 0.688) 15%, rgba(62, 52, 190, 0.44) 32%, rgba(62, 52, 190, 0.176) 48%, rgba(62, 52, 190, 0.048) 60%, rgba(62, 52, 190, 0) 70%),
-    linear-gradient(160deg, #7f86f0 0%, #6a6eea 45%, #5a55dc 100%);
-  --b-field-glow: rgba(90, 80, 220, 0.45);
+    radial-gradient(80% 70% at 100% 0%, rgba(204, 208, 255, 0.55) 0%, rgba(204, 208, 255, 0) 72%),
+    radial-gradient(60% 60% at 100% 100%, rgba(201, 184, 255, 0.4) 0%, rgba(201, 184, 255, 0) 72%),
+    linear-gradient(160deg, #98a0f5 0%, #7c83ef 50%, #8570e9 100%);
+  --b-field-glow: rgba(110, 110, 235, 0.4);
 }
 /* One quiet motif on every field (not the sunrise, which has its sun): a glass
    shape and a dotted line in the bottom-right corner, drawn from the card's
    content (brief-deco.ts, set per slot as --b-deco). Sized to the card's height
    (250-300px), drawn faint (DECO_OPACITY) so it reads as a backdrop, never over the text. */
 .daily-brief .slot[data-field]:not([data-field="dusk"]) > .w {
-  /* The motif, the glass edge, the dark-mode veil, then the field (four blobs over a base): 8 layers. */
+  /* The motif, then the field: one soft bloom (two for teal) over a two-hue base, smooth like the reference. */
   background-image: var(--b-deco), var(--b-edge), var(--b-dim), var(--b-field-bg);
   background-position: right bottom, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0, 0 0;
   /* The motif is capped, so on the big cards it stays a corner accent instead of running under the rows. */
