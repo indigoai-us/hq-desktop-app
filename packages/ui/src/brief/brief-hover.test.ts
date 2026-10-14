@@ -1,5 +1,6 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
-import { HQ_GLYPHS, decodeFrame, decodeMs, hoverTilt, pointerOn, tiltTransform } from "./brief-hover.js";
+import { HQ_GLYPHS, asciiDecode, decodeFrame, decodeMs, hoverTilt, pointerOn, tiltTransform } from "./brief-hover.js";
 
 describe("brief hover", () => {
   it("maps the pointer to -1..1 from the element's center and clamps outside it", () => {
@@ -30,5 +31,35 @@ describe("brief hover", () => {
   it("keeps decodes short", () => {
     expect(decodeMs(0)).toBe(240);
     expect(decodeMs(200)).toBe(520);
+  });
+});
+
+describe("asciiDecode", () => {
+  function row(done: boolean) {
+    const host = document.createElement("div");
+    host.setAttribute("data-decode-host", "");
+    if (done) host.classList.add("done");
+    const title = document.createElement("span");
+    title.textContent = "Cut the hq-core release";
+    host.append(title);
+    document.body.append(host);
+    const action = asciiDecode(title);
+    host.dispatchEvent(new Event("pointerenter"));
+    return { host, title, action };
+  }
+
+  it("decodes a title when its row is reached for", () => {
+    const { host, title, action } = row(false);
+    expect(title.classList.contains("decoding")).toBe(true);
+    action.destroy();
+    host.remove();
+  });
+
+  it("leaves a done row's title still", () => {
+    const { host, title, action } = row(true);
+    expect(title.classList.contains("decoding")).toBe(false);
+    expect(title.querySelector(".decode-overlay")).toBeNull();
+    action.destroy();
+    host.remove();
   });
 });

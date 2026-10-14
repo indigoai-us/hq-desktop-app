@@ -94,9 +94,11 @@
               >
             {/if}
           </div>
-          <!-- The count at the tile's foot; on the lead tile a hairline shows its share of the day. -->
-          <span class="n"><b>{g.count}</b> {g.count === 1 ? "session" : "sessions"}</span>
-          {#if i === 0}<i class="bar" style="width:{Math.round(g.share * 100)}%" data-testid="brief-focus-bar" aria-hidden="true"></i>{/if}
+          <!-- The count at the tile's foot; the lead tile also says its share of the day, in words. -->
+          <div class="foot-n">
+            <span class="n"><b>{g.count}</b> {g.count === 1 ? "session" : "sessions"}</span>
+            {#if i === 0}<span class="share" data-testid="brief-focus-share">{Math.round(g.share * 100)}% of your day</span>{/if}
+          </div>
         </div>
       {/each}
       {#if rest.length}
@@ -217,16 +219,17 @@
     letter-spacing: -0.02em;
     color: var(--b-t1);
   }
-  /* The lead product's share of the day: a hairline along the tile's foot. */
-  .bar {
-    position: absolute;
-    left: 14px;
-    bottom: 8px;
-    max-width: calc(100% - 28px);
-    height: 2px;
-    border-radius: 2px;
-    background: rgb(var(--b-ink) / 0.3);
-    pointer-events: none;
+  .foot-n {
+    flex: none;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .share {
+    font-size: 11px;
+    color: var(--b-t3);
+    white-space: nowrap;
   }
   .rest {
     justify-content: center;

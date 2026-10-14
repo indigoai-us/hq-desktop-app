@@ -163,8 +163,9 @@ describe("BriefFocus", () => {
     const tiles = qa('[data-testid="brief-focus-tile"]');
     expect(tiles.map((t) => t.dataset.product)).toEqual(["Desktop app", "HQ Cloud", "HQ core"]);
     expect(tiles.map((t) => t.querySelector(".n")!.textContent)).toEqual(["4 sessions", "2 sessions", "1 session"]);
-    expect(tiles[0]!.querySelector('[data-testid="brief-focus-bar"]')!.getAttribute("style")).toMatch(/width:\s*57%/);
-    expect(tiles[1]!.querySelector('[data-testid="brief-focus-bar"]')).toBeNull();
+    // The lead tile says its share of the day in words (no unlabelled bar).
+    expect(tiles[0]!.querySelector('[data-testid="brief-focus-share"]')!.textContent).toBe("57% of your day");
+    expect(tiles[1]!.querySelector('[data-testid="brief-focus-share"]')).toBeNull();
     expect(tiles[0]!.querySelectorAll('[data-testid="brief-logo"]')).toHaveLength(1);
     const foot = q('[data-testid="brief-focus-foot"]')!.textContent!.replace(/\s+/g, " ").trim();
     expect(foot).toBe(`6 context switches first ${clockLabel(hoursAgo(20))} · last ${clockLabel(hoursAgo(2))}`);

@@ -166,8 +166,10 @@ export function asciiDecode(node: HTMLElement) {
     node.classList.remove("decoding");
   }
 
+  const host = node.closest<HTMLElement>("[data-decode-host]") ?? node;
   const start = () => {
-    if (raf || prefersReducedMotion() || document.hidden) return;
+    // A finished item (its row marked .done) stays still: nothing left to reach for.
+    if (raf || prefersReducedMotion() || document.hidden || host.classList.contains("done")) return;
     const text = node.textContent ?? "";
     if (!text.trim()) return;
     overlay = document.createElement("span");
@@ -207,7 +209,6 @@ export function asciiDecode(node: HTMLElement) {
     raf = requestAnimationFrame(tick);
   };
 
-  const host = node.closest<HTMLElement>("[data-decode-host]") ?? node;
   host.addEventListener("pointerenter", start);
   return {
     destroy() {
