@@ -209,10 +209,14 @@ export function channelActivityFromTimeline<
  * A row may also carry `lastHumanMessageAt`, or `hasHumanMessage: false` when
  * the pair is known to hold no human message. Both are copied through; a row
  * with neither stays without them (unknown).
+ *
+ * The self pair (notes to self) is kept: it is a real conversation the
+ * sidebar shows, and its stamp orders it among the other DMs. It carries no
+ * unread signal here, so it can never light a badge.
  */
 export function dmActivityFromThreadsPage(
   page: unknown,
-  opts?: { selfUid?: string },
+  _opts?: { selfUid?: string },
 ): InboxDmActivity[] {
   const rec =
     page && typeof page === "object" && !Array.isArray(page)
@@ -220,13 +224,12 @@ export function dmActivityFromThreadsPage(
       : null;
   if (!rec) return [];
   const threads = Array.isArray(rec.threads) ? rec.threads : [];
-  const selfUid = opts?.selfUid?.trim() ?? "";
   const latest = new Map<string, InboxDmActivity>();
   for (const item of threads) {
     if (!item || typeof item !== "object") continue;
     const row = item as Record<string, unknown>;
     const uid = typeof row.peerUid === "string" ? row.peerUid.trim() : "";
-    if (!uid || uid === selfUid) continue;
+    if (!uid) continue;
     const at = row.lastActivityAt;
     if (typeof at !== "string" || !at) continue;
     const prev = latest.get(uid);
