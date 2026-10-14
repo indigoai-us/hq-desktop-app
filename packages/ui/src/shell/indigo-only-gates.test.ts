@@ -70,7 +70,7 @@ describe("RELEASE-001 isIndigoOnlySurface", () => {
 
   it("every gate key is read at a call site in the shell", () => {
     const shell = read("./DesktopApp.svelte");
-    const names = ["RAIL_TELEMETRY_FLAG", "RAIL_OUTPOST_FLAG", "RAIL_DEPLOYMENTS_ACTIONS_FLAG", "RAIL_WORKFORCE_LIMITS_FLAG", "RAIL_ATLAS_FLAG"];
+    const names = ["RAIL_TELEMETRY_FLAG", "RAIL_OUTPOST_FLAG", "RAIL_DEPLOYMENTS_ACTIONS_FLAG", "RAIL_WORKFORCE_LIMITS_FLAG", "RAIL_ATLAS_FLAG", "RAIL_BRIEF_FLAG"];
     expect(names).toHaveLength(INDIGO_ONLY_GATE_KEYS.length);
     for (const name of names) expect(shell).toContain(`railGate(${name})`);
   });

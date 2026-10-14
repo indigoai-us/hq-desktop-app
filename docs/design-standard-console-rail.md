@@ -182,5 +182,6 @@ Each key is also an hq-flags registry row (`packages/platform/src/flags.ts`). A 
 | `desktop.rail-deployments-actions-v1` | Redeploy (personal and company Deployments), the "Your bots" filter, the Selected people access mode | Controls hidden; list, links and the other access modes stay | Desktop redeploy route, bot-owner attribution and selected-people grants in hq-deploy |
 | `desktop.rail-workforce-limits-v1` | Plan seat-limit line on the Workforce card ("of N" and the limits-unavailable note) | Seat count from Team stays | Plan limits read from hq-billing for every plan |
 | `desktop.rail-atlas-v1` | Atlas company landing (on for everyone by default) | Company Activity | hq-pro Atlas endpoint for large companies; then delete the key |
+| `desktop.rail-brief-v1` | Daily Brief rail entry, page, palette entry and OS notification (owner hold 2026-10-14) | Hidden for people who are not Indigo members: no rail item and no palette entry; a deep link or open page falls back to the open company's landing, or Home with no company open | The daily-brief writer skill shipped with every HQ install; then set the value to `true` |
 
 When a gate's follow-up ships, set its registry value to `true`, then remove the key, its branch at each call site and its row here in the next release.

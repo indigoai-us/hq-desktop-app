@@ -73,6 +73,7 @@
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
     RAIL_ATLAS_FLAG,
+    RAIL_BRIEF_FLAG,
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
     RAIL_OUTPOST_FLAG,
     RAIL_TELEMETRY_FLAG,
@@ -5340,6 +5341,7 @@
     });
     for (const [id, page] of Object.entries(extraPages ?? {})) {
       if (!telemetryVisible && railPlaceholderForPage(id)?.id === "telemetry") continue;
+      if (!briefVisible && railPlaceholderForPage(id)?.id === "brief") continue;
       nav.push({
         id: `command-go-${id}`,
         label: page.label,
@@ -13038,9 +13040,12 @@
         liveCount: companyLiveCount(snap, company.uid),
         unreadCount: companyChannelUnread(railRows, company.uid),
       }));
-    // OWNER-D 3: members without Telemetry do not see its rail entry.
+    // OWNER-D 3: members without Telemetry do not see its rail entry. The
+    // Daily Brief entry follows the same rule (owner hold 2026-10-14).
     return railItems(pinned, resolvedAccountLabel ?? "You").filter(
-      (item) => item.id !== "telemetry" || telemetryVisible,
+      (item) =>
+        (item.id !== "telemetry" || telemetryVisible) &&
+        (item.id !== "brief" || briefVisible),
     );
   });
   const activeRailId = $derived(
@@ -13130,6 +13135,19 @@
   );
   $effect(() => {
     if (railPlaceholder?.id !== "telemetry" || telemetryVisible) return;
+    const company = tenantCompanyId;
+    untrack(() => {
+      void navigate(company ? companyRowDestination("atlas", company) : { kind: "messages" });
+    });
+  });
+  // Daily Brief (owner hold 2026-10-14): Indigo members keep it; everyone
+  // else sees it once the registry opens it. Same fallback as Telemetry.
+  const briefVisible = $derived(
+    railGate(RAIL_BRIEF_FLAG) ||
+      railCompanyRoster.some((company) => isIndigoCompany({ slug: company.slug ?? null })),
+  );
+  $effect(() => {
+    if (railPlaceholder?.id !== "brief" || briefVisible) return;
     const company = tenantCompanyId;
     untrack(() => {
       void navigate(company ? companyRowDestination("atlas", company) : { kind: "messages" });
@@ -14864,15 +14882,17 @@
             {/snippet}
           </LazyDoor>
         {:else if railPlaceholder?.id === "brief"}
-          <BriefRailHost
-            {adapter}
-            companies={railCompanyRoster.map((company) => ({ uid: company.uid, slug: company.slug, label: company.label, iconUrl: company.iconUrl }))}
-            onlaunch={launchBriefPrompt}
-            creator={briefCreator}
-            run={briefRun}
-            onopenthread={openBriefDm}
-            onopenmeetings={() => void navigate({ kind: "meetings" })}
-          />
+          {#if briefVisible}
+            <BriefRailHost
+              {adapter}
+              companies={railCompanyRoster.map((company) => ({ uid: company.uid, slug: company.slug, label: company.label, iconUrl: company.iconUrl }))}
+              onlaunch={launchBriefPrompt}
+              creator={briefCreator}
+              run={briefRun}
+              onopenthread={openBriefDm}
+              onopenmeetings={() => void navigate({ kind: "meetings" })}
+            />
+          {/if}
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}
             <TelemetryRailHost

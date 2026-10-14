@@ -481,6 +481,7 @@ export function switchedHandler(
         'desktop.rail-deployments-actions-v1': true,
         'desktop.rail-shortcut-editing-v1': true,
         'desktop.rail-workforce-limits-v1': true,
+        'desktop.rail-brief-v1': true,
       };
       return { value: { status: 200, body: JSON.stringify({ version: 1, flags }) } };
     }
