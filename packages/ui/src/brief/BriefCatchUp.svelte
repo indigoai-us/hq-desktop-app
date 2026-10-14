@@ -121,7 +121,7 @@
           {#each stats as s (s.key)}
             {#if s.peek}
               {@const content = s.peek}
-              <div class="st" class:focus={s.focus} role="button" tabindex="0" aria-label={`${s.value} ${s.label.toLowerCase()}`} data-testid="brief-catchup-stat" data-stat={s.key} use:peek={{ state: brief, content: () => content }}>
+              <div class="st" class:focus={s.focus} role="button" tabindex="0" aria-label={`${s.value} ${s.label.toLowerCase()}`} data-testid="brief-catchup-stat" data-stat={s.key} use:peek={{ state: brief, content: () => content, place: "below" }}>
                 <span class="sl">{s.label}</span><span class="sv">{s.value}</span>
               </div>
             {:else}

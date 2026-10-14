@@ -192,6 +192,14 @@ describe("Welcome back", () => {
     expect(peek.textContent).toContain("HANDED OFF");
   });
 
+  it("the numbers peek below the row, never beside it, so the next number stays reachable", async () => {
+    render(awayDay());
+    for (const stat of qa("brief-catchup-stat")) {
+      await hover(stat);
+      expect(q("brief-peek")!.classList.contains("b")).toBe(true);
+    }
+  });
+
   it("the numbers peek: the merged number lists what shipped by product, waiting lists every call", async () => {
     render(awayDay());
     const [waiting, merged] = qa("brief-catchup-stat");
