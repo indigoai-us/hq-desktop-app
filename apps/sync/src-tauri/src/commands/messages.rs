@@ -425,6 +425,16 @@ async fn parse_body<T: serde::de::DeserializeOwned>(
 
 // ── Read commands ───────────────────────────────────────────────────────────
 
+/// The contacts surface (`GET /v1/notify/contacts`) is an account operation
+/// hq-pro refuses for an outpost principal (403 "Outpost machine principals
+/// cannot perform account or access-control operations"). An outpost has no
+/// connections and no teammates of its own, so it gets the empty list with one
+/// log line instead of a refusal every poll.
+fn outpost_contacts(site: &'static str) -> Option<ContactsResponse> {
+    crate::commands::auth::skip_person_only_call(site)
+        .then(|| ContactsResponse { contacts: Vec::new() })
+}
+
 /// Tauri command: list everyone the caller can DM (active connections + company
 /// teammates). `GET /v1/notify/contacts`.
 ///
@@ -436,6 +446,9 @@ async fn parse_body<T: serde::de::DeserializeOwned>(
 pub async fn list_contacts(
     show_bot_messages: Option<bool>,
 ) -> Result<ContactsResponse, String> {
+    if let Some(empty) = outpost_contacts("MESSAGES_CONTACTS") {
+        return Ok(empty);
+    }
     let (base, token) = auth_and_base("MESSAGES_CONTACTS").await?;
     let url = format!("{base}/v1/notify/contacts");
     let mut out: ContactsResponse = get_json(&url, &token, "MESSAGES_CONTACTS").await?;
@@ -460,6 +473,9 @@ pub async fn list_company_members(
     let target = company_uid.trim();
     if target.is_empty() {
         return Err("companyUid must not be empty".to_string());
+    }
+    if let Some(empty) = outpost_contacts("MESSAGES_MEMBERS") {
+        return Ok(empty);
     }
     let (base, token) = auth_and_base("MESSAGES_MEMBERS").await?;
     let url = format!("{base}/v1/notify/contacts?companyUid={target}");
@@ -1666,6 +1682,28 @@ pub async fn fetch_reactions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::auth::{
+        reset_skipped_person_only_calls, set_active_session_source_for_test, SOURCE_TEST_LOCK,
+    };
+    use hq_desktop_core::cognito::TokenSource;
+
+    #[test]
+    fn contacts_are_fetched_for_a_person_and_empty_for_an_outpost() {
+        let _serial = SOURCE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_skipped_person_only_calls();
+        set_active_session_source_for_test(Some(TokenSource::Person));
+        assert!(outpost_contacts("MESSAGES_CONTACTS").is_none());
+        set_active_session_source_for_test(None);
+        assert!(outpost_contacts("MESSAGES_CONTACTS").is_none());
+
+        set_active_session_source_for_test(Some(TokenSource::Machine));
+        let empty = outpost_contacts("MESSAGES_CONTACTS").expect("an outpost gets the empty list");
+        assert!(empty.contacts.is_empty());
+        assert!(outpost_contacts("MESSAGES_MEMBERS").is_some());
+        set_active_session_source_for_test(None);
+        reset_skipped_person_only_calls();
+    }
+
     use std::sync::Mutex;
     use tauri::Manager;
 
@@ -2026,10 +2064,7 @@ mod tests {
         )
         .await
         .expect_err("403 is an error");
-        assert!(
-            err.contains("Viewer cannot act on this card"),
-            "got: {err}"
-        );
+        assert!(err.contains("Viewer cannot act on this card"), "got: {err}");
     }
 
     #[test]

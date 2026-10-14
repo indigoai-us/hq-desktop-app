@@ -100,6 +100,16 @@ pub(crate) fn skip_person_only_call(site: &'static str) -> bool {
     true
 }
 
+/// Serializes tests that flip the process-wide session source, in this
+/// module and in the modules whose person-only skips depend on it.
+#[cfg(test)]
+pub(crate) static SOURCE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn set_active_session_source_for_test(source: Option<TokenSource>) {
+    set_active_session_source(source);
+}
+
 #[cfg(test)]
 pub(crate) fn reset_skipped_person_only_calls() {
     if let Some(cell) = SKIPPED_PERSON_ONLY_CALLS.get() {
@@ -273,6 +283,11 @@ pub(crate) fn publish_auth_session(
             AUTH_SESSION_CHANGED_EVENT,
             &current.0,
         );
+        // The welcome wizard in the main window re-checks the session on this
+        // event: the machine identity resolves in the background at launch, so
+        // its session can land after the sign-in screen mounted. Same
+        // envelope, no bearer material.
+        let _ = app.emit_to("main", AUTH_SESSION_CHANGED_EVENT, &current.0);
     }
     current.0
 }
@@ -1121,8 +1136,6 @@ mod tests {
         assert!(!machine_session_is_active());
         assert!(set_active_session_source(None));
     }
-
-    static SOURCE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn person_only_calls_run_for_a_person_and_are_skipped_for_an_outpost() {

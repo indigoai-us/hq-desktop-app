@@ -311,7 +311,19 @@
    * the ready screen and records the answer when the person finishes from
    * there. Consent-only runs keep their own blocking consent screen.
    */
-  const consentOnReady = $derived(!consentOnly && !replay);
+  /**
+   * This machine's own outpost (machine) identity: whether it has one, and
+   * whether that identity is the live session. An outpost is a fleet agent,
+   * not a person: it gets no usage-data question, no company to name and no
+   * teammate to invite.
+   */
+  let machineIdentity = $state<{ available: boolean; active: boolean }>({
+    available: false,
+    active: false,
+  });
+  /** The live session is this outpost's machine identity (no person entity). */
+  let outpostSession = $state(false);
+  const consentOnReady = $derived(!consentOnly && !replay && !outpostSession);
   const onboardingTelemetry = createOnboardingStepTelemetry();
   const onboardingFeatureFlags = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
@@ -469,6 +481,24 @@
   let signedInEmail = $state<string | null>(null);
   /** A session already on this machine when onboarding opened (old ~/.hq). */
   let existingSessionEmail = $state<string | null>(null);
+  /**
+   * The outpost session shown on the sign-in screen: the outpost's uid and
+   * its owner's email. Never shown as a bare owner email, which would read as
+   * the owner being signed in as a person.
+   */
+  let existingSessionOutpost = $state<{ uid: string | null; ownerEmail: string | null } | null>(null);
+  const existingSessionOutpostLabel = $derived.by(() => {
+    if (!existingSessionOutpost) return '';
+    const { uid, ownerEmail } = existingSessionOutpost;
+    if (uid && ownerEmail) return `${uid} · owner ${ownerEmail}`;
+    return uid ?? (ownerEmail ? `owner ${ownerEmail}` : 'this machine');
+  });
+  let existingSessionShownRecorded = false;
+  /** Polls left for a machine session minted shortly after launch. */
+  let machineSessionPollsLeft = 0;
+  let machineSessionPollTimer: ReturnType<typeof setTimeout> | null = null;
+  let usingMachineIdentity = $state(false);
+  let machineIdentityError = $state<string | null>(null);
   let switchingAccount = $state(false);
   let resumeAfterAccountSwitch = false;
   /** First-sync self-heal: "Finishing setup…" while hq-pro provisions a bucket. */
@@ -497,6 +527,10 @@
   let companyRouteResolved = $state(false);
   /** Leaving the explainers waits this long at most for the company lookup. */
   const COMPANY_ROUTE_WAIT_MS = 3_000;
+  const MACHINE_SESSION_POLL_MS = 1_500;
+  const MACHINE_SESSION_POLLS = 14;
+  const MACHINE_IDENTITY_SIGN_IN_FAILED = 'We couldn’t sign in as this outpost. Try again.';
+  let machineSessionPollSpent = false;
   let leavingExplainers = false;
   let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
@@ -951,6 +985,7 @@
         })
         .catch(() => {});
       if (currentStep === WELCOME_SIGNIN_STEP_INDEX) void checkExistingSession();
+      else void probeMachineIdentity();
     }
 
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -980,7 +1015,7 @@
   onMount(() => {
     let active = true;
     const unlisteners: UnlistenFn[] = [];
-    function subscribeFirstFolderSyncEvent<Payload>(
+    function subscribeTauriEvent<Payload>(
       eventName: string,
       handler: (payload: Payload) => void,
     ): void {
@@ -997,25 +1032,32 @@
         });
     }
 
-    subscribeFirstFolderSyncEvent<{ errors?: unknown }>(
+    subscribeTauriEvent<{ errors?: unknown }>(
       'sync:all-complete',
       handleFirstFolderSyncComplete,
     );
-    subscribeFirstFolderSyncEvent<{ aborted?: unknown }>('sync:complete', (payload) => {
+    subscribeTauriEvent<{ aborted?: unknown }>('sync:complete', (payload) => {
       if (firstFolderSyncAwaitingCompletion && payload.aborted === true) {
         firstFolderSyncObservedFailure = true;
       }
     });
-    subscribeFirstFolderSyncEvent<{ message?: unknown }>('sync:error', (payload) => {
+    subscribeTauriEvent<{ message?: unknown }>('sync:error', (payload) => {
       if (!firstFolderSyncAwaitingCompletion) return;
       const uid = companyUidFromMissingBucket(payload?.message);
       if (uid) firstFolderMissingBucketUids.add(uid);
       else firstFolderSyncObservedFailure = true;
     });
-    subscribeFirstFolderSyncEvent('sync:auth-error', handleFirstFolderSyncAuthError);
+    subscribeTauriEvent('sync:auth-error', handleFirstFolderSyncAuthError);
+    // A session minted after this screen mounted (the outpost machine identity
+    // resolves in the background at launch) must show up without a relaunch.
+    // The envelope carries an account id and a generation, no bearer material.
+    subscribeTauriEvent('auth:session-changed', () => {
+      if (currentStep === WELCOME_SIGNIN_STEP_INDEX) void checkExistingSession();
+    });
 
     return () => {
       active = false;
+      stopMachineSessionPoll();
       for (const unlisten of unlisteners) unlisten();
     };
   });
@@ -1083,6 +1125,7 @@
     }
 
     existingSessionEmail = null;
+    existingSessionOutpost = null;
     const call = ++currentSignInCall;
     loadingProvider = provider;
     signInError = '';
@@ -1593,25 +1636,127 @@
    * (a reinstall over an old ~/.hq) may be someone else's. Show it on the
    * sign-in screen before anything is created.
    */
+  /** Whether this machine holds an outpost identity and whether it is the live session. */
+  async function probeMachineIdentity(): Promise<{ available: boolean; active: boolean }> {
+    try {
+      const status = await invokeCommand<{ available?: unknown; active?: unknown } | null>(
+        'get_machine_identity_status',
+      );
+      machineIdentity = { available: status?.available === true, active: status?.active === true };
+    } catch (error) {
+      console.warn('onboarding: machine identity status unavailable', error);
+      machineIdentity = { available: false, active: false };
+    }
+    outpostSession = machineIdentity.active;
+    return machineIdentity;
+  }
+
+  /** The outpost behind the live machine session: its uid and its owner's email. */
+  async function resolveOutpostIdentity(): Promise<{ uid: string | null; ownerEmail: string | null }> {
+    try {
+      const who = await invokeCommand<{ personUid?: unknown; email?: unknown } | null>('whoami');
+      const uid =
+        typeof who?.personUid === 'string' && who.personUid.startsWith('out_') ? who.personUid : null;
+      const ownerEmail = typeof who?.email === 'string' && who.email.trim() ? who.email.trim() : null;
+      return { uid, ownerEmail };
+    } catch (error) {
+      console.warn('onboarding: outpost identity lookup failed', error);
+      return { uid: null, ownerEmail: null };
+    }
+  }
+
+  function recordExistingSessionShown(): void {
+    if (existingSessionShownRecorded) return;
+    existingSessionShownRecorded = true;
+    recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_shown' });
+  }
+
+  function stopMachineSessionPoll(): void {
+    if (machineSessionPollTimer !== null) clearTimeout(machineSessionPollTimer);
+    machineSessionPollTimer = null;
+    machineSessionPollsLeft = 0;
+  }
+
+  /**
+   * A machine identity resolves its session in the background at launch, a
+   * little after this screen mounts. Look again every 1.5s for about 20s while
+   * the sign-in screen waits with an identity available but no session yet.
+   */
+  function scheduleMachineSessionPoll(): void {
+    if (machineSessionPollTimer !== null) return;
+    if (machineSessionPollsLeft <= 0) return;
+    machineSessionPollsLeft -= 1;
+    machineSessionPollTimer = setTimeout(() => {
+      machineSessionPollTimer = null;
+      if (!mounted || currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
+      void checkExistingSession();
+    }, MACHINE_SESSION_POLL_MS);
+  }
+
+  /**
+   * Signed-in-as guard: a token already on this machine when onboarding opens
+   * (a reinstall over an old ~/.hq) may be someone else's. Show it on the
+   * sign-in screen before anything is created. The machine's own outpost
+   * identity is shown whatever the launch classified as: it is this
+   * machine's, not a leftover, and it may land after this screen mounted
+   * (the auth session event and a short poll call back in here).
+   */
   async function checkExistingSession(): Promise<void> {
     try {
+      const machine = await probeMachineIdentity();
+      if (machine.active) {
+        const [email, outpost] = await Promise.all([resolveSignedInEmail(), resolveOutpostIdentity()]);
+        if (currentStep !== WELCOME_SIGNIN_STEP_INDEX) return;
+        stopMachineSessionPoll();
+        existingSessionEmail = null;
+        existingSessionOutpost = { uid: outpost.uid, ownerEmail: outpost.ownerEmail ?? email };
+        recordExistingSessionShown();
+        return;
+      }
+      if (machine.available && currentStep === WELCOME_SIGNIN_STEP_INDEX) {
+        if (machineSessionPollsLeft === 0 && machineSessionPollTimer === null && !machineSessionPollSpent) {
+          machineSessionPollSpent = true;
+          machineSessionPollsLeft = MACHINE_SESSION_POLLS;
+        }
+        scheduleMachineSessionPoll();
+      }
       const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
       if (!firstLaunch) return;
       const email = await resolveSignedInEmail();
       if (email && currentStep === WELCOME_SIGNIN_STEP_INDEX) {
+        existingSessionOutpost = null;
         existingSessionEmail = email;
-        recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_shown' });
+        recordExistingSessionShown();
       }
     } catch (error) {
       console.warn('onboarding: existing session check failed', error);
     }
   }
 
+  /** Sign in as this machine's outpost (the local opt-out is cleared natively). */
+  async function useMachineIdentity(): Promise<void> {
+    if (usingMachineIdentity) return;
+    usingMachineIdentity = true;
+    machineIdentityError = null;
+    try {
+      await invokeCommand('use_machine_identity');
+      await checkExistingSession();
+      if (!existingSessionOutpost) machineIdentityError = MACHINE_IDENTITY_SIGN_IN_FAILED;
+    } catch (error) {
+      console.warn('onboarding: use machine identity failed', error);
+      machineIdentityError = MACHINE_IDENTITY_SIGN_IN_FAILED;
+    } finally {
+      usingMachineIdentity = false;
+    }
+  }
+
   /** Keep the session that was already here. */
   function continueExistingSession(): void {
-    if (!existingSessionEmail) return;
+    if (!existingSessionEmail && !existingSessionOutpost) return;
+    const outcome = existingSessionOutpost ? 'outpost_session_continued' : 'existing_session_continued';
     existingSessionEmail = null;
-    void completeAuthenticatedSignIn(++currentSignInCall, { outcome: 'existing_session_continued' });
+    existingSessionOutpost = null;
+    void completeAuthenticatedSignIn(++currentSignInCall, { outcome });
   }
 
   /** Sign out and go back to the sign-in buttons. Used by the guard and by the invite mismatch. */
@@ -1633,7 +1778,12 @@
     membershipMeRead = null;
     await selectCompany(null, true);
     existingSessionEmail = null;
+    existingSessionOutpost = null;
+    existingSessionShownRecorded = false;
     signedInEmail = null;
+    // Signing out of the outpost session is a local opt-out: the identity
+    // stays available, so the sign-in screen offers it again.
+    void probeMachineIdentity();
     if (from === 'company') {
       companyPath = null;
       companyPriorPlan = null;
@@ -2921,6 +3071,22 @@
   }
 
   async function lookUpCompanyRoute(stillCurrent: () => boolean): Promise<void> {
+    if ((await probeMachineIdentity()).active) {
+      // An outpost has no person entity: there is no membership to look up,
+      // no company to name and no teammate to invite. Its company is the
+      // app's active one (the outpost was enrolled into it), used only for
+      // the connector import.
+      const active = await activeCompanyForConnectorImport();
+      if (!stillCurrent()) return;
+      companyPath = null;
+      companyPriorPlan = null;
+      companyNamePrefillEnabled = false;
+      inviteTeammateContext = null;
+      showInviteTeammateStep = false;
+      connectorImportCompany = active;
+      companyRouteResolved = true;
+      return;
+    }
     const retryCompanyLookup = resolveCompanyRouteLookupRetryFlag();
     const [email, anonId] = await Promise.all([
       resolveSignedInEmail(),
@@ -4294,13 +4460,29 @@
               {/if}
             {/if}
           </div>
-          {#if existingSessionEmail}
+          {#if existingSessionOutpost}
+            <p class="status inline-note" role="status" data-testid="onboarding-signed-in-as">
+              You're signed in as this outpost ({existingSessionOutpostLabel}).
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-continue" disabled={switchingAccount} onclick={continueExistingSession}>Continue</button>
+              or
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount('welcome')}>switch account</button>?
+            </p>
+          {:else if existingSessionEmail}
             <p class="status inline-note" role="status" data-testid="onboarding-signed-in-as">
               You're signed in as {existingSessionEmail}.
               <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-continue" disabled={switchingAccount} onclick={continueExistingSession}>Continue</button>
               or
               <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount('welcome')}>switch account</button>?
             </p>
+          {:else if machineIdentity.available}
+            <!-- This machine has its own outpost identity, not in use (opted out, or not resolved yet). -->
+            <p class="status inline-note" role="status" data-testid="onboarding-use-outpost-note">
+              This machine has its own outpost identity.
+              <button class="link-inline" type="button" data-testid="onboarding-use-outpost" disabled={usingMachineIdentity || loadingProvider !== null} aria-busy={usingMachineIdentity} onclick={() => void useMachineIdentity()}>{usingMachineIdentity ? 'Signing in as this outpost…' : "Use this outpost's identity"}</button>
+            </p>
+            {#if machineIdentityError}
+              <p class="status error inline-note" role="alert" data-testid="onboarding-use-outpost-error">{machineIdentityError}</p>
+            {/if}
           {/if}
           {#if signInError}
             <p class="status error inline-note" role="alert">{signInError}</p>
@@ -4977,7 +5159,9 @@
             </div>
           {/if}
         </div>
-        <!-- Usage data: one quiet line, recorded when the person finishes. -->
+        <!-- Usage data: one quiet line, recorded when the person finishes.
+             Not asked of an outpost: a fleet agent has no consent dialog. -->
+        {#if consentOnReady}
         <div class="alt ready-consent" class:on={scene === 'ready' && navRevealed} data-testid="ready-consent">
           <label class="rc-check">
             <input
@@ -5037,6 +5221,7 @@
             <span class="consent-link-error" role="alert">Couldn’t open the page.</span>
           {/if}
         </div>
+        {/if}
         {#if consentFailure}
           <div
             class="note consent-error"
