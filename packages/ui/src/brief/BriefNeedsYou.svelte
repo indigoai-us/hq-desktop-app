@@ -487,7 +487,7 @@
   }
   /* Past a day the tag takes a warm yellow tint; past two days, coral. */
   .age.warn {
-    color: #fff4d6;
+    color: #ffe08a;
     background: rgba(255, 205, 110, 0.32);
   }
   .age.red {

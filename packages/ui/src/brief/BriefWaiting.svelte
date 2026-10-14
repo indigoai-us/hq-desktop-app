@@ -158,7 +158,7 @@
   }
   /* Past a day: a warm yellow tint. */
   .age.old {
-    color: #fff4d6;
+    color: #ffe08a;
     background: rgba(255, 205, 110, 0.32);
   }
   /* "+N more": a plain glass pill, no rim. */
