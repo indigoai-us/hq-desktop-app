@@ -135,6 +135,7 @@
     applyChannelNotifyLevel,
     applyDirectoryRows,
     applyPairUnreads,
+    withSelfContact,
     incrementPairUnread,
     applySidebarFilters,
     clearDmDot,
@@ -1114,9 +1115,15 @@
   let botRemovals = $state<BotRemoval[]>(loadAccountBotRemovals(accountStorage, legacyRemovalStorage));
   /** Bots the server confirmed removed. Their conversation stays off the list. */
   let removedBotUids = $state<string[]>(loadAccountRemovedBots(accountStorage, legacyRemovalStorage));
-  // The assistant's row reads its name, never its handle or slug.
+  // The assistant's row reads its name, never its handle or slug. The
+  // signed-in person is added so notes to self always have a row.
   const contactsWithUnreads = $derived(
-    withAssistantNames(applyPairUnreads(contacts, pairUnreads), assistantName, "personUid", "displayName"),
+    withAssistantNames(
+      applyPairUnreads(withSelfContact(contacts, self), pairUnreads),
+      assistantName,
+      "personUid",
+      "displayName",
+    ),
   );
 
   /**
@@ -1228,6 +1235,7 @@
           homeChannelIdByUid,
           companyDisplayNamesByUid,
           peerDirectory,
+          selfUid: self?.uid ?? null,
         }), botSetupChannels),
       ),
       // A cancel whose create has no known outcome names no bot and has no row.
@@ -1466,6 +1474,7 @@
         includeContactsWithoutConversation: true,
         homeChannelIdByUid,
         peerDirectory,
+        selfUid: self?.uid ?? null,
       }),
       retiredEntities,
       liveCompanyUids,
@@ -1535,8 +1544,12 @@
 
   /** US-016: open the newest rail row when the shell has no selection. */
   let autoOpenRequestedId = $state<string | null>(null);
+  /** Notes to self: always present, so it never counts as a real conversation to land on. */
+  function isSelfDmRow(row: ConversationRow): boolean {
+    return row.kind === "dm" && Boolean(self?.uid) && row.personUid === self?.uid;
+  }
   const hasNonSetupRows = $derived(
-    allRows.some((row) => !isSetupChannel(row.channelId)),
+    allRows.some((row) => !isSetupChannel(row.channelId) && !isSelfDmRow(row)),
   );
   /**
    * The roster already names a company (created on the website or another
@@ -1601,7 +1614,7 @@
           // its own (it did not before they joined the date buckets).
           omitCompanyScopedChannels(inboxRows);
     const live = pickAutoOpenConversation(
-      livePool.filter((row) => !isSetupChannel(row.channelId)),
+      livePool.filter((row) => !isSetupChannel(row.channelId) && !isSelfDmRow(row)),
       selectedId,
       humanOnly,
     );
@@ -1613,7 +1626,9 @@
     if (!bootAttempted || loading) return;
     if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
     const fallback = pickSettledBootConversation(
-      companyScoped ? filteredRows : omitCompanyScopedChannels(inboxRows),
+      (companyScoped ? filteredRows : omitCompanyScopedChannels(inboxRows)).filter(
+        (row) => !isSelfDmRow(row),
+      ),
       selectedId,
       humanOnly,
     );

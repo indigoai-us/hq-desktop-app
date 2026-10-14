@@ -44,7 +44,9 @@ pub(crate) fn scoped_home(path: &Path) -> ScopedHome {
 pub(crate) fn write_usable_managed_git(home: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
-    let git = home.join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
+    // Never the process's XDG_DATA_HOME: callers may run this before
+    // `scoped_home`, and a real data home would get its Git overwritten.
+    let git = hq_desktop_core::paths::managed_toolchain_dir_with(home, None).join("git/bin/git");
     std::fs::create_dir_all(git.parent().expect("managed Git parent")).unwrap();
     std::fs::write(&git, "#!/bin/sh\nprintf 'git version fixture'\n").unwrap();
     std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();

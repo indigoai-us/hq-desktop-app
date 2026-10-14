@@ -151,16 +151,16 @@ describe('SignInPrompt session retry (OWNER-015)', () => {
     const actions = host.querySelector('.sign-in-actions')!;
     expect(actions.compareDocumentPosition(retry!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    // main #1287 added a native get_auth_state recheck on mount; that is a
-    // local session probe, not a data call. Retry itself must add no call.
+    // main #1287 added a native get_auth_state recheck on mount, and the
+    // outpost identity probe (get_machine_identity_status) reads a local file
+    // mode. Both are local probes, not data calls. Retry itself must add no call.
     const callsBeforeRetry = tauri.invoke.mock.calls.length;
     retry!.click();
     expect(onretry).toHaveBeenCalledTimes(1);
     expect(tauri.invoke.mock.calls.length).toBe(callsBeforeRetry);
+    const localProbes = ['desktop_continuation_context', 'get_auth_state', 'get_machine_identity_status'];
     const commands = tauri.invoke.mock.calls.map(([command]) => command);
-    expect(
-      commands.every((command) => command === 'desktop_continuation_context' || command === 'get_auth_state'),
-    ).toBe(true);
+    expect(commands.every((command) => localProbes.includes(command))).toBe(true);
   });
 
   it('omits Retry when no handler is passed and never renders a password control', async () => {
@@ -184,6 +184,110 @@ describe('SignInPrompt session retry (OWNER-015)', () => {
     expect(host.querySelector('[data-testid="sign-in-description"]')?.textContent?.trim()).toBe(
       'Your session expired.',
     );
+  });
+});
+
+describe('SignInPrompt outpost machine identity', () => {
+  function invokeWith(
+    status: unknown,
+    overrides: Record<string, () => Promise<unknown>> = {},
+  ): void {
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command in overrides) return overrides[command]!();
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_machine_identity_status':
+          return Promise.resolve(status);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+  }
+
+  function outpostButton(): HTMLButtonElement | null {
+    return host.querySelector<HTMLButtonElement>('[data-testid="sign-in-use-outpost"]');
+  }
+
+  it('offers the outpost identity only when the device has one that is not in use', async () => {
+    invokeWith({ available: true, active: false });
+    component = mount(SignInPrompt, { target: host, props: { onretry: vi.fn() } });
+    await flushUntil(() => outpostButton() !== null);
+
+    const button = outpostButton()!;
+    expect(button.textContent?.trim()).toBe("Use this outpost's identity");
+    expect(button.querySelector('svg')).not.toBeNull();
+    expect(host.querySelector('.sign-in-card')?.contains(button)).toBe(true);
+    const retry = host.querySelector('[data-testid="sign-in-session-retry"]')!;
+    expect(button.compareDocumentPosition(retry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(host.querySelector('input[type="password"]')).toBeNull();
+  });
+
+  it('hides the outpost action when the identity is absent, already active, or unknown', async () => {
+    for (const status of [{ available: false, active: false }, { available: true, active: true }, null]) {
+      invokeWith(status);
+      component = mount(SignInPrompt, { target: host });
+      await flush();
+      await flush();
+      expect(outpostButton()).toBeNull();
+      await unmount(component);
+      component = null;
+    }
+  });
+
+  it('signs in as the outpost and hands the native session to the host once', async () => {
+    const onsuccess = vi.fn();
+    let signedIn = false;
+    invokeWith(
+      { available: true, active: false },
+      {
+        use_machine_identity: () => {
+          signedIn = true;
+          return Promise.resolve({ accountId: 'out_01ABC', generation: 2, status: 'active', reason: null });
+        },
+        get_auth_state: () =>
+          Promise.resolve(
+            signedIn
+              ? { authenticated: true, expiresAt: '2026-10-14T08:00:00Z' }
+              : { authenticated: false, expiresAt: '' },
+          ),
+      },
+    );
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flushUntil(() => outpostButton() !== null);
+
+    outpostButton()!.click();
+    await flushUntil(() => onsuccess.mock.calls.length > 0);
+
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(commands).toContain('use_machine_identity');
+    expect(onsuccess).toHaveBeenCalledTimes(1);
+    expect(onsuccess).toHaveBeenCalledWith({ authenticated: true, expiresAt: '2026-10-14T08:00:00Z' });
+    expect(host.querySelector('.error')).toBeNull();
+  });
+
+  it('keeps a failed outpost sign-in plain and leaves the action available', async () => {
+    const onsuccess = vi.fn();
+    invokeWith(
+      { available: true, active: false },
+      {
+        use_machine_identity: () => Promise.reject(new Error('invoke failed: 500 Internal Server Error')),
+      },
+    );
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flushUntil(() => outpostButton() !== null);
+
+    outpostButton()!.click();
+    await flushUntil(() => host.querySelector('.error') !== null);
+
+    const message = host.querySelector('.error')?.textContent ?? '';
+    expect(message).toBe('We couldn’t sign in as this outpost. Try again.');
+    expect(message).not.toMatch(/500|Internal Server Error|invoke/);
+    expect(onsuccess).not.toHaveBeenCalled();
+    expect(outpostButton()).not.toBeNull();
+    expect(outpostButton()!.disabled).toBe(false);
   });
 });
 

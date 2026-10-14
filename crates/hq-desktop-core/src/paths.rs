@@ -47,13 +47,41 @@ const EXE_EXT: &str = ".exe";
 const EXE_EXT: &str = "";
 
 /// Returns the managed HQ toolchain directory installed by hq-installer.
-/// Path mirrors `managed_toolchain_dir_in()` in hq-installer's `deps.rs`.
+///
+/// macOS: `~/Library/Application Support/Indigo HQ/toolchain` (mirrors
+/// `managed_toolchain_dir_in()` in hq-installer's `deps.rs`).
+/// Linux: `$XDG_DATA_HOME/IndigoHQ/toolchain` when `XDG_DATA_HOME` is set to
+/// an absolute path, else `~/.local/share/IndigoHQ/toolchain` (the XDG
+/// default; the macOS `Library` layout is never used on Linux).
 #[cfg(not(target_os = "windows"))]
 fn managed_toolchain_dir(home: &Path) -> PathBuf {
-    home.join("Library")
-        .join("Application Support")
-        .join("Indigo HQ")
-        .join("toolchain")
+    managed_toolchain_dir_with(home, std::env::var_os("XDG_DATA_HOME").as_deref())
+}
+
+/// The managed HQ toolchain directory for an explicit home directory.
+#[cfg(not(target_os = "windows"))]
+pub fn managed_toolchain_dir_in(home: &Path) -> PathBuf {
+    managed_toolchain_dir(home)
+}
+
+/// [`managed_toolchain_dir`] with the `XDG_DATA_HOME` value passed in. Test
+/// fixtures pass `None` so they never resolve the process's real data home.
+#[cfg(not(target_os = "windows"))]
+pub fn managed_toolchain_dir_with(home: &Path, xdg_data_home: Option<&std::ffi::OsStr>) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return home
+            .join("Library")
+            .join("Application Support")
+            .join("Indigo HQ")
+            .join("toolchain");
+    }
+    let data_home = match xdg_data_home {
+        Some(value) if !value.is_empty() && Path::new(value).is_absolute() => {
+            PathBuf::from(value)
+        }
+        _ => home.join(".local").join("share"),
+    };
+    data_home.join("IndigoHQ").join("toolchain")
 }
 
 /// Returns the canonical managed HQ toolchain directory installed by
@@ -500,8 +528,10 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// Terminal.
 ///
 /// Resolution order:
-/// 1. Managed HQ toolchain (`~/Library/Application Support/Indigo HQ/toolchain/`)
-///    — npm-global/bin and node/bin directories installed by hq-installer
+/// 1. Managed HQ toolchain (`~/Library/Application Support/Indigo HQ/toolchain/`
+///    on macOS, `$XDG_DATA_HOME/IndigoHQ/toolchain/` or
+///    `~/.local/share/IndigoHQ/toolchain/` on Linux) — npm-global/bin and
+///    node/bin directories installed by hq-installer
 /// 2. `$HOME/.npm-global/bin/{name}` — user-level npm prefix (no-sudo installs)
 /// 3. `/opt/homebrew/bin/{name}` — Apple Silicon homebrew
 /// 4. `/usr/local/bin/{name}` — Intel homebrew / system-wide installs
@@ -1160,10 +1190,25 @@ pub fn managed_git_shim_dir_in(home: &Path) -> PathBuf {
     managed_toolchain_dir(home).join("git-shim")
 }
 
-/// Render the portable Git wrapper installed next to the managed toolchain.
+/// Render the portable Git wrapper installed next to the managed toolchain
+/// for `home`.
 #[cfg(not(target_os = "windows"))]
-fn managed_git_shim_script() -> String {
-    "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n".to_string()
+fn managed_git_shim_script_in(home: &Path) -> String {
+    managed_git_shim_script_for(home, &managed_toolchain_dir(home))
+}
+
+/// Render the portable Git wrapper for an explicit toolchain root. A root
+/// under `home` is written as `$HOME/<relative>` so the wrapper follows the
+/// user's home at run time (today's macOS text); any other root is absolute.
+#[cfg(not(target_os = "windows"))]
+fn managed_git_shim_script_for(home: &Path, toolchain: &Path) -> String {
+    let git_dir = match toolchain.strip_prefix(home) {
+        Ok(relative) => format!("$HOME/{}", relative.join("git").display()),
+        Err(_) => toolchain.join("git").display().to_string(),
+    };
+    format!(
+        "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"{git_dir}\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n"
+    )
 }
 
 /// Number of spawn attempts made while a freshly written binary is still busy.
@@ -1323,7 +1368,7 @@ pub fn ensure_managed_git_shim_in(home: &Path) -> Result<PathBuf, String> {
     let git_bin = managed_git_bin_in(home);
     let shim_dir = managed_git_shim_dir_in(home);
     let shim = shim_dir.join("git");
-    let script = managed_git_shim_script();
+    let script = managed_git_shim_script_in(home);
     if let Err(reason) = managed_git_health(&git_bin) {
         if std::fs::read_to_string(&shim).ok().as_deref() == Some(script.as_str()) {
             std::fs::remove_file(&shim).map_err(|error| {
@@ -4623,8 +4668,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
         let foreign = tmp.path().join("foreign").join("git");
-        let managed = home.join("Library/Application Support/Indigo HQ/toolchain/git/bin/git");
-        let shim = home.join("Library/Application Support/Indigo HQ/toolchain/git-shim/git");
+        let managed = managed_git_bin_in(&home);
+        let shim = managed_git_shim_dir_in(&home).join("git");
         let settings = home.join("HQ/.claude/settings.local.json");
         write_unix_exec(&foreign);
         write_unix_exec(&managed);
@@ -4652,7 +4697,7 @@ mod tests {
     fn managed_git_env_requires_the_resolved_managed_binary() {
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join("home");
-        let git_dir = home.join("Library/Application Support/Indigo HQ/toolchain/git");
+        let git_dir = managed_toolchain_dir(&home).join("git");
         let managed_git = git_dir.join("bin/git");
         let foreign_git = tmp.path().join("foreign/git");
         write_unix_exec(&managed_git);
@@ -4689,7 +4734,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_managed_toolchain_path_matches_installer() {
         let home = PathBuf::from("/Users/testuser");
@@ -4698,6 +4743,100 @@ mod tests {
             toolchain,
             PathBuf::from("/Users/testuser/Library/Application Support/Indigo HQ/toolchain"),
             "must match hq-installer's managed_toolchain_dir_in()"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_managed_toolchain_path_follows_the_xdg_data_home_rule() {
+        use std::ffi::OsStr;
+        let home = PathBuf::from("/home/testuser");
+        let default = PathBuf::from("/home/testuser/.local/share/IndigoHQ/toolchain");
+        assert_eq!(managed_toolchain_dir_with(&home, None), default);
+        assert_eq!(
+            managed_toolchain_dir_with(&home, Some(OsStr::new("/srv/xdg-data"))),
+            PathBuf::from("/srv/xdg-data/IndigoHQ/toolchain")
+        );
+        // A relative or empty XDG_DATA_HOME is invalid per the XDG spec and
+        // must be ignored, not joined onto the current directory.
+        assert_eq!(
+            managed_toolchain_dir_with(&home, Some(OsStr::new("relative/xdg-data"))),
+            default
+        );
+        assert_eq!(managed_toolchain_dir_with(&home, Some(OsStr::new(""))), default);
+        assert!(
+            !managed_toolchain_dir(&home).starts_with(home.join("Library")),
+            "Linux must never use the macOS Library layout"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_managed_toolchain_roots_follow_home_and_xdg_data_home() {
+        let _guard = crate::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _home = crate::test_support::ScopedEnv::set("HOME", "/tmp/hq-home");
+        let default = vec![PathBuf::from("/tmp/hq-home/.local/share/IndigoHQ/toolchain")];
+        {
+            let _xdg = crate::test_support::ScopedEnv::unset("XDG_DATA_HOME");
+            assert_eq!(managed_toolchain_roots(), default);
+            assert_eq!(managed_toolchain_roots_checked().unwrap(), default);
+        }
+        {
+            let _xdg = crate::test_support::ScopedEnv::set("XDG_DATA_HOME", "/tmp/hq-xdg");
+            assert_eq!(
+                managed_toolchain_roots(),
+                vec![PathBuf::from("/tmp/hq-xdg/IndigoHQ/toolchain")]
+            );
+        }
+        {
+            let _xdg = crate::test_support::ScopedEnv::set("XDG_DATA_HOME", "relative/xdg");
+            assert_eq!(managed_toolchain_roots(), default);
+        }
+    }
+
+    /// Today's macOS wrapper text, byte for byte. The wrapper is rendered from
+    /// the resolved toolchain root now, and macOS must keep producing exactly
+    /// this (an installed shim is compared against it to detect staleness).
+    #[cfg(not(target_os = "windows"))]
+    const MACOS_GIT_WRAPPER: &str = "#!/bin/sh\n# Indigo HQ managed toolchain — portable git wrapper (auto-generated)\nd=\"$HOME/Library/Application Support/Indigo HQ/toolchain/git\"\nexport GIT_EXEC_PATH=\"$d/libexec/git-core\"\nexport GIT_TEMPLATE_DIR=\"$d/share/git-core/templates\"\n[ -f /etc/ssl/cert.pem ] && export GIT_SSL_CAINFO=/etc/ssl/cert.pem\nexec \"$d/bin/git\" \"$@\"\n";
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn git_wrapper_rendered_from_the_macos_root_is_byte_identical_to_before() {
+        let home = PathBuf::from("/Users/testuser");
+        let toolchain = home.join("Library/Application Support/Indigo HQ/toolchain");
+        assert_eq!(managed_git_shim_script_for(&home, &toolchain), MACOS_GIT_WRAPPER);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_git_wrapper_text_is_unchanged() {
+        assert_eq!(
+            managed_git_shim_script_in(Path::new("/Users/testuser")),
+            MACOS_GIT_WRAPPER
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_git_wrapper_points_at_the_resolved_toolchain_root() {
+        let home = PathBuf::from("/home/testuser");
+        let under_home = managed_git_shim_script_for(
+            &home,
+            Path::new("/home/testuser/.local/share/IndigoHQ/toolchain"),
+        );
+        assert!(
+            under_home.contains("\nd=\"$HOME/.local/share/IndigoHQ/toolchain/git\"\n"),
+            "{under_home}"
+        );
+        assert!(!under_home.contains("Library"));
+        let outside_home =
+            managed_git_shim_script_for(&home, Path::new("/srv/xdg-data/IndigoHQ/toolchain"));
+        assert!(
+            outside_home.contains("\nd=\"/srv/xdg-data/IndigoHQ/toolchain/git\"\n"),
+            "{outside_home}"
         );
     }
 
@@ -4979,10 +5118,8 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path();
-        let managed_prefix =
-            home.join("Library/Application Support/Indigo HQ/toolchain/npm-global");
-        let managed_node_bin =
-            home.join("Library/Application Support/Indigo HQ/toolchain/node/bin");
+        let managed_prefix = managed_toolchain_dir(home).join("npm-global");
+        let managed_node_bin = managed_toolchain_dir(home).join("node/bin");
         let nvm_prefix = home.join(".nvm/versions/node/v22.14.0");
         let nvm_bin = nvm_prefix.join("bin");
         let hq = nvm_bin.join("hq");

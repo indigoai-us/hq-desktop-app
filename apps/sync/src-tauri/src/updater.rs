@@ -115,6 +115,58 @@ fn emit_update_outcome(
     let _ = attempt.observe_result(stage, to_version, Ok::<(), ()>(()), send_update_outcome);
 }
 
+/// Name of the Linux bundle this process runs from, for log lines.
+fn linux_bundle_label() -> &'static str {
+    use tauri::utils::config::BundleType;
+    match tauri::utils::platform::bundle_type() {
+        Some(BundleType::Deb) => ".deb",
+        Some(BundleType::AppImage) => "AppImage",
+        Some(BundleType::Rpm) => ".rpm",
+        Some(_) => "other",
+        None => "none",
+    }
+}
+
+static MISSING_LINUX_PLATFORM_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a check failed only because `latest.json` has no entry for this
+/// bundle (`linux-x86_64-deb` / `linux-x86_64-appimage`, or the `linux-x86_64`
+/// fallback). The updater plugin resolves the platform entry BEFORE it
+/// compares versions, so a channel whose manifest predates the Linux
+/// artifacts (every release before 0.11.8) reports `TargetsNotFound` even
+/// when the app is current. That is "no update available", not a failure.
+pub(crate) fn missing_linux_platform(error: &tauri_plugin_updater::Error) -> bool {
+    missing_linux_platform_for(cfg!(target_os = "linux"), error)
+}
+
+fn missing_linux_platform_for(linux: bool, error: &tauri_plugin_updater::Error) -> bool {
+    use tauri_plugin_updater::Error;
+    linux && matches!(error, Error::TargetsNotFound(_) | Error::TargetNotFound(_))
+}
+
+/// Maps a missing Linux platform entry to `Ok(None)` and logs it once per
+/// process, so the background loop and the manual check both read it as "up
+/// to date" instead of an error.
+fn without_missing_linux_platform<T>(
+    result: Result<Option<T>, tauri_plugin_updater::Error>,
+) -> Result<Option<T>, tauri_plugin_updater::Error> {
+    match result {
+        Err(error) if missing_linux_platform(&error) => {
+            if !MISSING_LINUX_PLATFORM_LOGGED.swap(true, Ordering::SeqCst) {
+                log(
+                    "updater",
+                    &format!(
+                        "latest.json has no Linux platform entry for this {} bundle; no update available ({error})",
+                        linux_bundle_label()
+                    ),
+                );
+            }
+            Ok(None)
+        }
+        other => other,
+    }
+}
+
 fn record_client_health_update_check<T, E: std::fmt::Display>(result: &Result<Option<T>, E>) {
     use hq_desktop_core::client_health::{
         ClientHealthUpdateCheckOutcome as Outcome, ClientHealthUpdaterErrorClass as ErrorClass,
@@ -1191,8 +1243,8 @@ async fn channel_aware_updater_with_mode(
     app: &AppHandle,
     mode: UpdateOfferMode,
 ) -> Result<ChannelAwareUpdater, String> {
-    if updater_disabled() {
-        log("updater", "update check skipped: HQ_UPDATER_DISABLED=1");
+    if let Some(reason) = updater_disabled_reason() {
+        log("updater", &format!("update check skipped: {reason}"));
         return Err(UPDATER_DISABLED_MESSAGE.to_string());
     }
     let (channel, resolved) = resolve_endpoint().await;
@@ -1264,7 +1316,8 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    let check_result = updater.updater.check().await;
+    let check_result =
+        without_missing_linux_platform(updater.updater.check().await);
     record_client_health_update_check(&check_result);
     match check_result {
         Ok(Some(update)) => {
@@ -1336,7 +1389,8 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    let check_result = updater.updater.check().await;
+    let check_result =
+        without_missing_linux_platform(updater.updater.check().await);
     record_client_health_update_check(&check_result);
     match check_result {
         Ok(Some(update)) => {
@@ -1468,8 +1522,8 @@ async fn install_verified_update(
 /// A `force` result skips the 10-minute idle wait but still pauses new sync
 /// cycles and drains in-flight transfers for up to [`IN_FLIGHT_DRAIN_TIMEOUT`].
 pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String> {
-    if updater_disabled() {
-        log("updater", "stable install skipped: HQ_UPDATER_DISABLED=1");
+    if let Some(reason) = updater_disabled_reason() {
+        log("updater", &format!("stable install skipped: {reason}"));
         return Err(UPDATER_DISABLED_MESSAGE.to_string());
     }
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
@@ -1490,7 +1544,7 @@ pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String>
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    let check_result = updater.check().await;
+    let check_result = without_missing_linux_platform(updater.check().await);
     record_client_health_update_check(&check_result);
     match check_result {
         Ok(Some(update)) => {
@@ -2150,7 +2204,8 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     // anyway) and the stable fallback path skips the network entirely.
     let updater = channel_aware_updater(&app).await?;
     let authoritative = updater.provenance.absence_is_authoritative();
-    let check_result = updater.updater.check().await;
+    let check_result =
+        without_missing_linux_platform(updater.updater.check().await);
     record_client_health_update_check(&check_result);
     match check_result {
         Ok(Some(update)) => {
@@ -2217,7 +2272,8 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    let check_result = updater.updater.check().await;
+    let check_result =
+        without_missing_linux_platform(updater.updater.check().await);
     record_client_health_update_check(&check_result);
     match check_result {
         Ok(Some(update)) => {
@@ -2635,12 +2691,21 @@ fn notify_manual_check(app: &AppHandle, body: &str) {
 /// pulled stable 0.10.377 over itself and relaunched as the old app. Any build
 /// with debug assertions now skips the background checker too, unless
 /// `HQ_DEV_ALLOW_AUTO_UPDATE=1` is set to exercise the updater on purpose.
+///
+/// On Linux only an installed bundle (`.deb` or AppImage) can update itself:
+/// the release feed carries `linux-x86_64-deb` and `linux-x86_64-appimage`
+/// entries and the updater plugin installs them (dpkg via pkexec, AppImage
+/// self-replace). A bare binary (`cargo run`, the release binary next to its
+/// `ui/` dir) has no install path, so it skips the checker unless
+/// `HQ_DEV_ALLOW_AUTO_UPDATE=1` opts in.
 pub fn background_updates_disabled() -> bool {
     background_updates_disabled_for(
         tauri::is_dev(),
         cfg!(debug_assertions),
         dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE") || updater_disabled(),
         dev_env_flag_set("HQ_DEV_ALLOW_AUTO_UPDATE"),
+        cfg!(target_os = "linux"),
+        linux_installed_bundle(),
     )
 }
 
@@ -2649,12 +2714,60 @@ fn background_updates_disabled_for(
     debug_build: bool,
     no_auto_update: bool,
     allow_auto_update: bool,
+    linux: bool,
+    installed_bundle: bool,
 ) -> bool {
     if no_auto_update || is_dev {
         return true;
     }
+    if linux_updater_off(linux, installed_bundle, allow_auto_update) {
+        return true;
+    }
     debug_build && !allow_auto_update
 }
+
+/// A Linux build updates itself only as an installed bundle: the `.deb`
+/// (installed with dpkg, updated through `pkexec dpkg -i`) or the AppImage
+/// (replaces its own file). The bundler stamps the bundle type into the
+/// binary, so a bare binary reports no bundle and every updater path is off
+/// for it unless `HQ_DEV_ALLOW_AUTO_UPDATE=1` opts in to exercise the updater
+/// on purpose. macOS and Windows never hit this rule.
+pub(crate) fn linux_updater_off(
+    linux: bool,
+    installed_bundle: bool,
+    allow_auto_update: bool,
+) -> bool {
+    linux && !installed_bundle && !allow_auto_update
+}
+
+/// Whether this process runs from a Linux bundle the updater can replace.
+/// `bundle_type()` reads the `__TAURI_BUNDLE_TYPE` symbol the bundler injects
+/// into `.deb`, `.rpm` and AppImage builds; a plain `cargo build` has none.
+/// Only the two bundle kinds the release feed publishes count.
+pub(crate) fn linux_installed_bundle() -> bool {
+    linux_installed_bundle_for(
+        cfg!(target_os = "linux"),
+        tauri::utils::platform::bundle_type(),
+    )
+}
+
+fn linux_installed_bundle_for(
+    linux: bool,
+    bundle: Option<tauri::utils::config::BundleType>,
+) -> bool {
+    use tauri::utils::config::BundleType;
+    linux && matches!(bundle, Some(BundleType::Deb | BundleType::AppImage))
+}
+
+fn linux_without_install_path() -> bool {
+    linux_updater_off(
+        cfg!(target_os = "linux"),
+        linux_installed_bundle(),
+        dev_env_flag_set("HQ_DEV_ALLOW_AUTO_UPDATE"),
+    )
+}
+
+const LINUX_BARE_BINARY_REASON: &str = "bare Linux binary (not an installed .deb or AppImage)";
 
 /// Whether this build skips the background update checker (dev or debug
 /// build, or `HQ_DEV_NO_AUTO_UPDATE=1`). Settings → About uses it to say
@@ -2712,11 +2825,37 @@ const UPDATER_DISABLED_MESSAGE: &str = "Updates are turned off for this build";
 /// decided by `scratch_build::LaunchIdentity::is_production`, the predicate
 /// launch-time autostart and the launch-time installers use. A test bundle
 /// opened from Finder (no shell env) is covered too.
+///
+/// A bare Linux binary is off the same way (`linux_updater_off`): nothing
+/// could install the update, so a manual check would only download in vain.
 pub fn updater_disabled() -> bool {
-    updater_disabled_with(
+    updater_disabled_reason().is_some()
+}
+
+/// Why the updater is off for this process, or `None` when it may run.
+fn updater_disabled_reason() -> Option<&'static str> {
+    updater_disabled_reason_for(
         dev_env_flag_set(UPDATER_DISABLED_ENV),
         !crate::scratch_build::production_bundle(),
+        linux_without_install_path(),
     )
+}
+
+/// `updater_disabled_reason` with its inputs passed in (testable in any build).
+fn updater_disabled_reason_for(
+    env_switch: bool,
+    non_production_bundle: bool,
+    linux_bare_binary: bool,
+) -> Option<&'static str> {
+    if env_switch {
+        Some("HQ_UPDATER_DISABLED=1")
+    } else if non_production_bundle {
+        Some("non-production bundle")
+    } else if linux_bare_binary {
+        Some(LINUX_BARE_BINARY_REASON)
+    } else {
+        None
+    }
 }
 
 /// `updater_disabled` with its two inputs passed in (testable in any build).
@@ -2726,11 +2865,25 @@ pub(crate) fn updater_disabled_with(env_switch: bool, non_production_bundle: boo
 
 pub fn setup_update_checker(app: &AppHandle) {
     if background_updates_disabled() {
+        let reason = if linux_without_install_path() {
+            LINUX_BARE_BINARY_REASON
+        } else {
+            "dev or debug build, or HQ_DEV_NO_AUTO_UPDATE=1"
+        };
         log(
             "updater",
-            "background update checker disabled (dev or debug build, or HQ_DEV_NO_AUTO_UPDATE=1)",
+            &format!("background update checker disabled ({reason})"),
         );
         return;
+    }
+    if cfg!(target_os = "linux") {
+        log(
+            "updater",
+            &format!(
+                "background update checker enabled for the installed {} bundle",
+                linux_bundle_label()
+            ),
+        );
     }
     if !bundled_updater_feed_configured(app) {
         log(
@@ -2767,7 +2920,8 @@ pub fn setup_update_checker(app: &AppHandle) {
                                 UpdateOutcomeStage::CheckStarted,
                                 crate::app_version::current(),
                             );
-                            let check_result = updater.updater.check().await;
+                            let check_result =
+        without_missing_linux_platform(updater.updater.check().await);
                             record_client_health_update_check(&check_result);
                             match check_result {
                                 Ok(Some(update)) => {
@@ -3995,14 +4149,128 @@ mod tests {
     fn debug_bundles_never_self_update_unless_opted_in() {
         use super::background_updates_disabled_for as off;
         // `tauri build --debug`: not is_dev, but debug assertions are on.
-        assert!(off(false, true, false, false));
-        assert!(!off(false, true, false, true));
+        assert!(off(false, true, false, false, false, false));
+        assert!(!off(false, true, false, true, false, false));
         // Release bundle: on by default, off with the opt-out flag.
-        assert!(!off(false, false, false, false));
-        assert!(off(false, false, true, false));
+        assert!(!off(false, false, false, false, false, false));
+        assert!(off(false, false, true, false, false, false));
         // `tauri dev` and the opt-out flag always win over the opt-in.
-        assert!(off(true, true, false, true));
-        assert!(off(false, true, true, true));
+        assert!(off(true, true, false, true, false, false));
+        assert!(off(false, true, true, true, false, false));
+    }
+
+    #[test]
+    fn linux_runs_the_background_update_checker_only_for_installed_bundles() {
+        use super::background_updates_disabled_for as off;
+        // A bare Linux release binary has no install path: off by default,
+        // on only with HQ_DEV_ALLOW_AUTO_UPDATE=1.
+        assert!(off(false, false, false, false, true, false));
+        assert!(!off(false, false, false, true, true, false));
+        // An installed .deb or AppImage release bundle is on by default.
+        assert!(!off(false, false, false, false, true, true));
+        // The opt-out flag and `tauri dev` still win on Linux, bundle or not.
+        assert!(off(false, false, true, false, true, true));
+        assert!(off(true, false, false, false, true, true));
+        assert!(off(false, false, true, true, true, false));
+        assert!(off(true, false, false, true, true, false));
+        // A Linux debug bundle follows the debug rule.
+        assert!(off(false, true, false, false, true, true));
+        assert!(!off(false, true, false, true, true, true));
+    }
+
+    #[test]
+    fn linux_turns_every_updater_path_off_for_a_bare_binary_without_the_opt_in() {
+        use super::linux_updater_off;
+        // bare binary: off unless opted in
+        assert!(linux_updater_off(true, false, false));
+        assert!(!linux_updater_off(true, false, true));
+        // installed .deb / AppImage: on
+        assert!(!linux_updater_off(true, true, false));
+        assert!(!linux_updater_off(true, true, true));
+        // macOS and Windows never hit the Linux rule.
+        assert!(!linux_updater_off(false, false, false));
+        assert!(!linux_updater_off(false, false, true));
+        assert!(!linux_updater_off(false, true, false));
+    }
+
+    #[test]
+    fn only_deb_and_appimage_count_as_installed_linux_bundles() {
+        use super::linux_installed_bundle_for as installed;
+        use tauri::utils::config::BundleType;
+        assert!(installed(true, Some(BundleType::Deb)));
+        assert!(installed(true, Some(BundleType::AppImage)));
+        // No Linux .rpm in the release feed, and a bare binary has no type.
+        assert!(!installed(true, Some(BundleType::Rpm)));
+        assert!(!installed(true, None));
+        // The bundle type never matters off Linux.
+        assert!(!installed(false, Some(BundleType::Deb)));
+        assert!(!installed(false, Some(BundleType::AppImage)));
+    }
+
+    #[test]
+    fn updater_disabled_reason_names_the_first_matching_gate() {
+        use super::updater_disabled_reason_for as reason;
+        assert_eq!(reason(true, true, true), Some("HQ_UPDATER_DISABLED=1"));
+        assert_eq!(reason(false, true, true), Some("non-production bundle"));
+        assert_eq!(
+            reason(false, false, true),
+            Some("bare Linux binary (not an installed .deb or AppImage)")
+        );
+        assert_eq!(reason(false, false, false), None);
+    }
+
+    #[test]
+    fn a_manifest_without_a_linux_platform_entry_is_no_update_on_linux() {
+        use super::missing_linux_platform_for as missing;
+        use tauri_plugin_updater::Error;
+        let targets = Error::TargetsNotFound(vec![
+            "linux-x86_64-deb".to_string(),
+            "linux-x86_64".to_string(),
+        ]);
+        let target = Error::TargetNotFound("linux-x86_64-appimage".to_string());
+        let other = Error::ReleaseNotFound;
+        assert!(missing(true, &targets));
+        assert!(missing(true, &target));
+        // Every other failure stays an error.
+        assert!(!missing(true, &other));
+        // macOS and Windows manifests always carry their platform; a missing
+        // one there is a real publication bug and stays an error.
+        assert!(!missing(false, &targets));
+        assert!(!missing(false, &target));
+    }
+
+    #[test]
+    fn a_missing_linux_platform_entry_reads_as_up_to_date() {
+        use super::without_missing_linux_platform as classify;
+        use tauri_plugin_updater::Error;
+        let classified: Result<Option<()>, Error> =
+            classify(Err(Error::TargetsNotFound(vec!["linux-x86_64-deb".into()])));
+        if cfg!(target_os = "linux") {
+            assert!(matches!(classified, Ok(None)));
+        } else {
+            assert!(matches!(classified, Err(Error::TargetsNotFound(_))));
+        }
+        // Everything else passes through untouched.
+        let passthrough: Result<Option<()>, Error> = classify(Err(Error::ReleaseNotFound));
+        assert!(matches!(passthrough, Err(Error::ReleaseNotFound)));
+        let found: Result<Option<u8>, Error> = classify(Ok(Some(7)));
+        assert!(matches!(found, Ok(Some(7))));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_linux_build_reports_updates_by_its_bundle_type_and_the_opt_in() {
+        // `cargo test` builds no bundle, so the bundler never injected a
+        // bundle type: this binary is a bare Linux binary and the opt-in flag
+        // is the only thing that can turn its updater gate off.
+        assert!(!super::linux_installed_bundle());
+        let opted_in = super::dev_env_flag_set("HQ_DEV_ALLOW_AUTO_UPDATE");
+        assert_eq!(super::linux_without_install_path(), !opted_in);
+        if !opted_in {
+            assert!(super::updater_disabled());
+            assert!(super::background_updates_disabled());
+            assert_eq!(super::updater_disabled_reason().is_some(), true);
+        }
     }
 }
 

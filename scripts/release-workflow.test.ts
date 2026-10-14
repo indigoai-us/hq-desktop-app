@@ -617,8 +617,8 @@ describe("release workflow channel contract", () => {
     );
   });
 
-  it("stamps the tag's own commit into both build jobs for the Sentry build_commit tag", () => {
-    for (const job of ["macos", "windows"]) {
+  it("stamps the tag's own commit into every build job for the Sentry build_commit tag", () => {
+    for (const job of ["macos", "windows", "linux"]) {
       const step = stepBody(jobBody(job), "Stamp build commit identity");
       expect(step).toContain(
         'echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"',
@@ -695,6 +695,7 @@ describe("release workflow channel contract", () => {
 
     expect(jobBody("macos")).toContain("needs: validate");
     expect(jobBody("windows")).toContain("needs: validate");
+    expect(jobBody("linux")).toContain("needs: validate");
     for (const job of [
       "shell-key",
       "shell-macos",
@@ -707,17 +708,17 @@ describe("release workflow channel contract", () => {
     ]) {
       expect(jobBody(job)).toMatch(/needs: (validate|\[validate,)/);
     }
-    // validate, macos (legacy), windows (legacy), publish, and the eight
-    // prebuilt-shell jobs each check out the exact tag.
-    expect(workflow.match(/ref: refs\/tags\//g)).toHaveLength(12);
+    // validate, macos (legacy), windows (legacy), linux, publish, and the
+    // eight prebuilt-shell jobs each check out the exact tag.
+    expect(workflow.match(/ref: refs\/tags\//g)).toHaveLength(13);
   });
 
-  it("hands both platform builds the same stamped version bytes", () => {
-    // One artifact, produced once, consumed by every builder — so macOS and
-    // Windows can never bundle different versions from the same tag.
+  it("hands every platform build the same stamped version bytes", () => {
+    // One artifact, produced once, consumed by every builder — so macOS,
+    // Windows and Linux can never bundle different versions from the same tag.
     expect(jobBody("validate")).toContain("name: release-version-stamp");
 
-    for (const job of ["macos", "windows"]) {
+    for (const job of ["macos", "windows", "linux"]) {
       const body = jobBody(job);
       expect(body).toContain(
         "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4",
@@ -986,9 +987,9 @@ exec "$REAL_NODE" "$@"
   it("publishes prereleases without advancing the stable latest alias", () => {
     const publish = jobBody("publish");
 
-    expect(publish).toContain("needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64]");
+    expect(publish).toContain("needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64, linux]");
     expect(publish).toContain(
-      "(needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && (needs.windows.result == 'success' || (needs.assemble-windows-x64.result == 'success' && needs.assemble-windows-arm64.result == 'success'))",
+      "(needs.macos.result == 'success' || needs.assemble-macos.result == 'success') && (needs.windows.result == 'success' || (needs.assemble-windows-x64.result == 'success' && needs.assemble-windows-arm64.result == 'success')) && needs.linux.result == 'success'",
     );
     expect(publish).not.toContain("needs.windows.result == 'failure'");
     expect(publish).toContain("Validate complete release artifact set");
@@ -1007,9 +1008,72 @@ exec "$REAL_NODE" "$@"
       "x64-setup.exe.sig",
       "x64.msi",
       "x64.msi.sig",
+      "amd64.deb",
+      "amd64.deb.sig",
+      "amd64.AppImage",
+      "amd64.AppImage.sig",
     ]) {
       expect(publish).toContain(artifact);
     }
+  });
+
+  it("builds signed Linux .deb and AppImage bundles with the UI inside", () => {
+    const linux = jobBody("linux");
+
+    expect(linux).toContain("runs-on: ubuntu-22.04");
+    expect(linux).toContain("needs: validate");
+    // Linux has no prebuilt shell, so the job runs on both dispatch paths.
+    expect(linux).not.toContain("legacy_build");
+    expect(linux).toContain("TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}");
+    expect(linux).toContain("TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}");
+    for (const pkg of ["libwebkit2gtk-4.1-dev", "libgtk-3-dev", "libayatana-appindicator3-dev", "librsvg2-dev", "patchelf", "libfuse2", "desktop-file-utils", "xdg-utils"]) {
+      expect(linux).toContain(pkg);
+    }
+    // The checked-in Linux config keeps createUpdaterArtifacts off for local
+    // builds; the release job turns it on through a generated overlay.
+    expect(linux).toContain("--bundles deb appimage");
+    expect(linux).toContain("--config src-tauri/tauri.linux.conf.json");
+    expect(linux).toContain('--config "$TAURI_LINUX_RELEASE_CONFIG"');
+    expect(linux).toContain('"createUpdaterArtifacts":true');
+    expect(linux).toContain('"../dist/":"ui/"');
+    expect(linux).toContain('"assemble-stamp/version.json":"version.json"');
+    expect(linux).toContain("scripts/stamp-version.mjs");
+    expect(linux).toContain("APPIMAGE_EXTRACT_AND_RUN: 1");
+    for (const artifact of [
+      'HQ_${VERSION}_amd64.deb',
+      'HQ_${VERSION}_amd64.AppImage',
+    ]) {
+      expect(linux).toContain(artifact);
+    }
+    expect(linux).toContain("Required updater signature is missing");
+    expect(linux).toContain("name: hq-linux-x86_64-unknown-linux-gnu");
+    expect(linux).toContain("if-no-files-found: error");
+
+    const publish = jobBody("publish");
+    expect(publish).toContain("name: hq-linux-x86_64-unknown-linux-gnu");
+    expect(publish).toContain("needs.linux.result == 'success'");
+  });
+
+  it("publishes the Linux updater platforms and versionless aliases", () => {
+    const publish = jobBody("publish");
+    const generate = stepBody(publish, "Generate latest.json");
+
+    expect(generate).toContain("readSig(`release/HQ_${version}_amd64.deb.sig`)");
+    expect(generate).toContain("readSig(`release/HQ_${version}_amd64.AppImage.sig`)");
+    expect(generate).toContain("url: `${base}/HQ_${version}_amd64.deb`");
+    expect(generate).toContain("`${base}/HQ_${version}_amd64.AppImage`");
+    expect(generate).toContain('"linux-x86_64-deb"');
+    expect(generate).toContain('"linux-x86_64-appimage"');
+    expect(generate).toContain('"linux-x86_64"');
+    // The versionless aliases serve human downloads; the updater keeps
+    // using the versioned URLs from latest.json.
+    const aliases = stepBody(publish, "Create versionless download aliases");
+    expect(aliases).toContain('cp "HQ_${VERSION}_amd64.deb" HQ_amd64.deb');
+    expect(aliases).toContain('cp "HQ_${VERSION}_amd64.AppImage" HQ_amd64.AppImage');
+    // macOS and Windows aliases are unchanged.
+    expect(aliases).toContain('cp "HQ_${VERSION}_universal.dmg" HQ.dmg');
+    expect(aliases).toContain('cp "HQ_${VERSION}_x64-setup.exe" HQ_x64-setup.exe');
+    expect(aliases).toContain('cp "HQ_${VERSION}_arm64-setup.exe" HQ_arm64-setup.exe');
   });
 
   it("uploads and verifies a hidden draft before making a release public", () => {
@@ -1264,7 +1328,7 @@ exec "$REAL_NODE" "$@"
     expect(macos.indexOf("- name: Sign app bundle")).toBeLessThan(
       macos.indexOf("- name: Non-Indigo artifact smoke"),
     );
-    expect(publish).toContain("needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64]");
+    expect(publish).toContain("needs: [validate, shell-key, shell-windows-x64, shell-windows-arm64, macos, assemble-macos, windows, assemble-windows-x64, assemble-windows-arm64, linux]");
     // The prebuilt-shell path runs the identical smoke after signing.
     const assemble = jobBody("assemble-macos");
     const untilLaunch = (body: string) => body.slice(0, body.indexOf("--launch"));
@@ -1298,6 +1362,7 @@ exec "$REAL_NODE" "$@"
     expect(versionsToml).toContain(
       'windows = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]',
     );
+    expect(versionsToml).toContain('linux = ["x86_64-unknown-linux-gnu"]');
   });
 
   it("gives WiX a numeric MSI ProductVersion while preserving app SemVer", () => {

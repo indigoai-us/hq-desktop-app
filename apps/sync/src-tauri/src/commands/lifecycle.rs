@@ -665,12 +665,26 @@ pub fn get_setup_status() -> SetupStatus {
         hq_root_valid: root_valid,
         configured: config.is_some(),
         hq_folder_path: hq_root.to_string_lossy().to_string(),
-        // Do not surface another setup route when the settings file itself is
-        // the unavailable state that made launch conservative.
-        welcome_setup_owed: !settings_unavailable
-            && hq_desktop_core::lifecycle::welcome_setup_owed(&menubar, root_valid),
+        welcome_setup_owed: welcome_setup_owed_here(settings_unavailable, &menubar, root_valid),
         welcome_tour_shown: hq_desktop_core::lifecycle::welcome_tour_shown(&menubar),
     }
+}
+
+/// Whether the desktop window still owes the welcome setup on this machine.
+///
+/// Not when the settings file itself is the unavailable state that made launch
+/// conservative (no second setup route on top of that), and not while the
+/// device is signed in as its outpost: the welcome setup creates a
+/// person-owned setup bot through `hq bot`, which a machine identity cannot
+/// own, so an outpost session lands in the ordinary shell instead.
+fn welcome_setup_owed_here(settings_unavailable: bool, menubar: &Map<String, Value>, root_valid: bool) -> bool {
+    if settings_unavailable {
+        return false;
+    }
+    if crate::commands::auth::skip_person_only_call("welcome setup bot") {
+        return false;
+    }
+    hq_desktop_core::lifecycle::welcome_setup_owed(menubar, root_valid)
 }
 
 /// The welcome channel's guided setup finished: it is never owed again on
@@ -957,6 +971,41 @@ pub fn report_unexpected_startup_surface(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::auth::{
+        reset_skipped_person_only_calls, set_active_session_source_for_test, SOURCE_TEST_LOCK,
+    };
+    use hq_desktop_core::cognito::TokenSource;
+
+    /// A fresh menubar on a valid root: a person is owed the welcome setup.
+    fn fresh_menubar() -> Map<String, Value> {
+        Map::new()
+    }
+
+    #[test]
+    fn welcome_setup_is_owed_to_a_person_on_a_fresh_machine() {
+        let _serial = SOURCE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_skipped_person_only_calls();
+        set_active_session_source_for_test(Some(TokenSource::Person));
+        assert!(welcome_setup_owed_here(false, &fresh_menubar(), true));
+        set_active_session_source_for_test(None);
+        assert!(welcome_setup_owed_here(false, &fresh_menubar(), true));
+        assert!(
+            !welcome_setup_owed_here(true, &fresh_menubar(), true),
+            "unavailable settings never add a setup route"
+        );
+    }
+
+    /// An outpost session has no person entity, and the welcome setup's
+    /// bot is person-owned, so the outpost is never owed it.
+    #[test]
+    fn welcome_setup_is_not_owed_to_an_outpost_session() {
+        let _serial = SOURCE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_skipped_person_only_calls();
+        set_active_session_source_for_test(Some(TokenSource::Machine));
+        assert!(!welcome_setup_owed_here(false, &fresh_menubar(), true));
+        set_active_session_source_for_test(None);
+        reset_skipped_person_only_calls();
+    }
 
     #[test]
     fn first_run_always_shows_the_setup_card() {

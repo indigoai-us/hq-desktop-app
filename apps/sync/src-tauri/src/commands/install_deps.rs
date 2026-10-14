@@ -1835,12 +1835,13 @@ fn sweep_stale_toolchain_siblings(toolchain_dir: &Path, min_age: Duration) {
     }
 }
 
+/// Where HQ installs its managed toolchain for `home`. Resolved by
+/// `hq_desktop_core::paths` so the installer and every PATH/git lookup agree
+/// (`~/Library/Application Support/Indigo HQ/toolchain` on macOS, the XDG
+/// data dir on Linux).
 #[cfg(not(windows))]
 fn managed_toolchain_dir_in(home: &std::path::Path) -> PathBuf {
-    home.join("Library")
-        .join("Application Support")
-        .join("Indigo HQ")
-        .join("toolchain")
+    hq_desktop_core::paths::managed_toolchain_dir_in(home)
 }
 
 #[cfg(not(windows))]
@@ -2028,19 +2029,47 @@ pub fn shell_profile_path_in(home: &std::path::Path) -> PathBuf {
     home.join(profile_name)
 }
 
-/// Check whether the managed toolchain PATH block has already been written to
-/// a shell profile. Exposed for testing.
+/// The profile text to write so it carries `block`, or `None` when it already
+/// does. A profile without the marker gets the block appended. On Linux a
+/// marked block whose `export PATH=` line differs (written by a build that used
+/// the macOS toolchain path, or before `XDG_DATA_HOME` changed) has that line
+/// replaced; elsewhere a marked profile is left alone, as before.
 #[cfg(not(windows))]
-pub fn is_shell_path_configured(profile_path: &std::path::Path) -> bool {
-    std::fs::read_to_string(profile_path)
-        .map(|contents| contents.contains(SHELL_PATH_MARKER))
-        .unwrap_or(false)
+fn shell_profile_with_block(contents: &str, block: &str, replace_stale: bool) -> Option<String> {
+    let Some(marker_at) = contents.find(SHELL_PATH_MARKER) else {
+        return Some(format!("{contents}{block}"));
+    };
+    if !replace_stale {
+        return None;
+    }
+    let wanted = block.lines().find(|line| line.starts_with("export PATH="))?;
+    let after_marker = marker_at + SHELL_PATH_MARKER.len();
+    let rest = &contents[after_marker..];
+    let line_start = after_marker + rest.find('\n')? + 1;
+    let line_end = contents[line_start..]
+        .find('\n')
+        .map_or(contents.len(), |end| line_start + end);
+    let current = &contents[line_start..line_end];
+    if current == wanted || !current.starts_with("export PATH=") {
+        return None;
+    }
+    Some(format!("{}{wanted}{}", &contents[..line_start], &contents[line_end..]))
 }
 
 /// Build the block that gets appended to the shell profile. Exposed for
 /// testing so assertions don't depend on the home directory.
 #[cfg(not(windows))]
 pub fn shell_path_block() -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    shell_path_block_for(&home, &managed_toolchain_dir_in(&home))
+}
+
+/// [`shell_path_block`] for an explicit home and toolchain root. A root under
+/// `home` is written as `$HOME/<relative>` so the profile line follows the
+/// user's home at run time; any other root (an `XDG_DATA_HOME` outside the
+/// home directory) is written as an absolute path.
+#[cfg(not(windows))]
+fn shell_path_block_for(home: &std::path::Path, toolchain: &std::path::Path) -> String {
     // Every managed bin dir a user-facing tool lands in — node, the npm
     // global prefix (qmd, hq, claude), the portable dugite git, and
     // ~/.local/bin (yq's direct-binary fallback). The git dir MUST come
@@ -2048,8 +2077,12 @@ pub fn shell_path_block() -> String {
     // that pops the "install developer tools" dialog. The install matrix
     // (sonoma-consumer:bare:full-fresh-install, 2026-09-03) caught both
     // `yq: command not found` and the stub git after a reported-OK install.
+    let root = match toolchain.strip_prefix(home) {
+        Ok(relative) => format!("$HOME/{}", relative.display()),
+        Err(_) => toolchain.display().to_string(),
+    };
     format!(
-        "\n{SHELL_PATH_MARKER}\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git-shim:$HOME/.local/bin:$PATH\"\n"
+        "\n{SHELL_PATH_MARKER}\nexport PATH=\"{root}/node/bin:{root}/npm-global/bin:{root}/git-shim:$HOME/.local/bin:$PATH\"\n"
     )
 }
 
@@ -2106,17 +2139,31 @@ pub(crate) fn ensure_shell_path_configured(home: &std::path::Path, app: &AppHand
     }
     let block = shell_path_block();
     for profile_path in shell_profile_paths_in(home) {
-        if is_shell_path_configured(&profile_path) {
+        let existing = match std::fs::read_to_string(&profile_path) {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                emit_preflight_line(
+                    app,
+                    &format!("[path] failed to read {}: {e}", profile_path.display()),
+                );
+                continue;
+            }
+        };
+        let Some(updated) =
+            shell_profile_with_block(&existing, &block, cfg!(target_os = "linux"))
+        else {
             continue;
-        }
+        };
         match std::fs::OpenOptions::new()
             .create(true)
-            .append(true)
+            .write(true)
+            .truncate(true)
             .open(&profile_path)
         {
             Ok(mut f) => {
                 use std::io::Write;
-                if let Err(e) = f.write_all(block.as_bytes()) {
+                if let Err(e) = f.write_all(updated.as_bytes()) {
                     emit_preflight_line(
                         app,
                         &format!("[path] failed to write to {}: {e}", profile_path.display()),
@@ -9410,9 +9457,7 @@ mod install_deps_tests {
     fn test_managed_git_env_set_when_installed() {
         let home = tempfile::TempDir::new().unwrap();
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
-        let git_bin_dir = home
-            .path()
-            .join("Library/Application Support/Indigo HQ/toolchain/git/bin");
+        let git_bin_dir = managed_toolchain_dir_in(home.path()).join("git/bin");
         make_fake_bin_at(&git_bin_dir, "git");
         ensure_managed_git_shim_in(home.path()).expect("managed git shim");
         let _home = scoped_home(home.path());
@@ -9433,9 +9478,8 @@ mod install_deps_tests {
     #[test]
     fn test_composed_settings_env_path_orders_and_dedupes_sources() {
         let home = tempfile::TempDir::new().unwrap();
-        let managed_node = home
-            .path()
-            .join("Library/Application Support/Indigo HQ/toolchain/node/bin")
+        let managed_node = managed_toolchain_dir_in(home.path())
+            .join("node/bin")
             .to_string_lossy()
             .into_owned();
 
@@ -11072,6 +11116,68 @@ mod shell_path_block_tests {
     }
 
     #[test]
+    fn profile_without_the_marker_gets_the_block_appended() {
+        let block = "\n# Indigo HQ managed toolchain\nexport PATH=\"/new:$PATH\"\n";
+        assert_eq!(
+            shell_profile_with_block("alias ll='ls -l'\n", block, true).as_deref(),
+            Some("alias ll='ls -l'\n\n# Indigo HQ managed toolchain\nexport PATH=\"/new:$PATH\"\n")
+        );
+    }
+
+    #[test]
+    fn stale_marked_block_is_replaced_in_place_on_linux_only() {
+        let block = "\n# Indigo HQ managed toolchain\nexport PATH=\"$HOME/.local/share/IndigoHQ/toolchain/node/bin:$PATH\"\n";
+        let stale = "a\n# Indigo HQ managed toolchain\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$PATH\"\nb\n";
+        assert_eq!(
+            shell_profile_with_block(stale, block, true).as_deref(),
+            Some("a\n# Indigo HQ managed toolchain\nexport PATH=\"$HOME/.local/share/IndigoHQ/toolchain/node/bin:$PATH\"\nb\n")
+        );
+        assert_eq!(shell_profile_with_block(stale, block, false), None);
+    }
+
+    #[test]
+    fn current_or_hand_edited_marked_block_is_left_alone() {
+        let block = "\n# Indigo HQ managed toolchain\nexport PATH=\"/new:$PATH\"\n";
+        let current = format!("x\n{}", &block[1..]);
+        assert_eq!(shell_profile_with_block(&current, block, true), None);
+        let edited = "# Indigo HQ managed toolchain\n# my note\nexport PATH=\"/old:$PATH\"\n";
+        assert_eq!(shell_profile_with_block(edited, block, true), None);
+    }
+
+    #[test]
+    fn path_block_for_the_macos_root_is_byte_identical_to_before() {
+        let home = std::path::Path::new("/Users/x");
+        let toolchain = home.join("Library/Application Support/Indigo HQ/toolchain");
+        assert_eq!(
+            shell_path_block_for(home, &toolchain),
+            "\n# Indigo HQ managed toolchain\nexport PATH=\"$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git-shim:$HOME/.local/bin:$PATH\"\n"
+        );
+    }
+
+    #[test]
+    fn path_block_follows_the_linux_xdg_root() {
+        let home = std::path::Path::new("/home/x");
+        let under_home = shell_path_block_for(home, &home.join(".local/share/IndigoHQ/toolchain"));
+        assert!(under_home.contains("export PATH=\"$HOME/.local/share/IndigoHQ/toolchain/node/bin:"));
+        assert!(!under_home.contains("Library"));
+        let outside_home =
+            shell_path_block_for(home, std::path::Path::new("/srv/xdg-data/IndigoHQ/toolchain"));
+        assert!(outside_home.contains("export PATH=\"/srv/xdg-data/IndigoHQ/toolchain/node/bin:"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_toolchain_installs_under_the_xdg_data_dir() {
+        let home = std::path::Path::new("/home/x");
+        let root = managed_toolchain_dir_in(home);
+        assert!(
+            root.ends_with("IndigoHQ/toolchain") && !root.starts_with(home.join("Library")),
+            "{}",
+            root.display()
+        );
+    }
+
+    #[test]
     fn zsh_gets_zshrc_and_zprofile() {
         let home = std::path::Path::new("/Users/x");
         let primary = shell_profile_path_in(home);
@@ -11327,7 +11433,7 @@ mod foreign_copy_rejection_tests {
         assert!(!dep_status_satisfies(hq, &foreign));
         #[cfg(not(windows))]
         {
-            let managed = dirs::home_dir().unwrap().join("Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq");
+            let managed = managed_toolchain_dir_in(&dirs::home_dir().unwrap()).join("npm-global/bin/hq");
             let ok = DepStatus { installed: true, version: Some("5.107.1".into()), path: Some(managed) };
             assert!(dep_status_satisfies(hq, &ok));
         }

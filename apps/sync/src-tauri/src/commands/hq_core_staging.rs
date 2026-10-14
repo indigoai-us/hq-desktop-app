@@ -1199,8 +1199,8 @@ mod tests {
         assert_eq!(
             env.get("GIT_EXEC_PATH").map(String::as_str),
             Some(
-                home.path()
-                    .join("Library/Application Support/Indigo HQ/toolchain/git/libexec/git-core")
+                hq_desktop_core::paths::managed_toolchain_dir_in(home.path())
+                    .join("git/libexec/git-core")
                     .to_string_lossy()
                     .as_ref()
             )
@@ -1208,8 +1208,8 @@ mod tests {
         assert_eq!(
             env.get("GIT_TEMPLATE_DIR").map(String::as_str),
             Some(
-                home.path()
-                    .join("Library/Application Support/Indigo HQ/toolchain/git/share/git-core/templates")
+                hq_desktop_core::paths::managed_toolchain_dir_in(home.path())
+                    .join("git/share/git-core/templates")
                     .to_string_lossy()
                     .as_ref()
             )

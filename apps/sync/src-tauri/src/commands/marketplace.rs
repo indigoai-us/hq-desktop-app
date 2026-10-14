@@ -222,6 +222,12 @@ pub async fn decide_moderation_listing(
 /// admin/owner of `company_slug`. Default-deny: any failure to positively
 /// confirm an admin/owner membership for that exact company → error.
 async fn assert_company_admin(company_slug: &str) -> Result<(), String> {
+    if crate::commands::auth::machine_session_is_active() {
+        return Err(
+            "Sign in as a person to manage packs for a company. This device is signed in as its outpost."
+                .to_string(),
+        );
+    }
     let vault_url = resolve_vault_api_url()?;
     let jwt = resolve_jwt().await?;
     let vault = VaultClient::new(&vault_url, &jwt);

@@ -224,7 +224,8 @@
     | 'credentials_read_error'
     | 'credentials_invalid'
     | 'refresh_temporarily_unavailable'
-    | 'non_human_principal';
+    | 'non_human_principal'
+    | 'machine_unavailable';
   interface AuthSessionEnvelope {
     accountId: string | null;
     generation: number;
@@ -232,7 +233,9 @@
     reason: string | null;
   }
   let lifecycle = $state<Lifecycle>('loading');
-  let signedOutReason = $state<'signed-out' | 'expired' | 'invalid' | 'non-human'>(
+  let signedOutReason = $state<
+    'signed-out' | 'expired' | 'invalid' | 'non-human' | 'machine-unavailable'
+  >(
     'signed-out',
   );
   let identityError = $state<string | null>(null);
@@ -511,7 +514,8 @@
       value === 'credentials_read_error' ||
       value === 'credentials_invalid' ||
       value === 'refresh_temporarily_unavailable' ||
-      value === 'non_human_principal'
+      value === 'non_human_principal' ||
+      value === 'machine_unavailable'
     );
   }
 
@@ -1481,7 +1485,9 @@
               ? 'Your saved sign-in is no longer valid.'
               : signedOutReason === 'non-human'
                 ? 'The sign-in saved here belongs to an agent, not a person.'
-                : undefined}
+                : signedOutReason === 'machine-unavailable'
+                  ? 'We couldn’t sign in as this outpost. Try again, or sign in with your account.'
+                  : undefined}
           reauth={signedOutReason === 'expired' ||
             signedOutReason === 'invalid' ||
             signedOutReason === 'non-human'}

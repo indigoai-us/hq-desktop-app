@@ -90,7 +90,7 @@ pub fn mode() -> UiHotMode {
 }
 
 fn resources_dir() -> Option<PathBuf> {
-    hq_desktop_core::runtime_version::resources_dir_from_current_exe()
+    crate::app_version::resources_dir()
 }
 
 /// The running shell's key (`Resources/shell-key.txt`). `None` for dev runs

@@ -297,9 +297,24 @@ async fn spawn_hq_bot(args: &[&str], timeout: Duration) -> Result<(std::process:
     Ok((output.status, stdout, stderr))
 }
 
+/// The plain refusal an outpost session gets from every bot command. `hq bot`
+/// mints and owns bots as a person (a machine identity can own no bot), so
+/// without this the CLI's own "No valid HQ session… Run `hq login` first"
+/// sentence would surface in the window.
+pub(crate) const OUTPOST_BOTS_MESSAGE: &str = "Sign in as a person to use bots.";
+
+/// `Some(refusal)` while the device is signed in as its outpost.
+fn outpost_bot_refusal() -> Option<String> {
+    crate::commands::auth::skip_person_only_call("hq bot")
+        .then(|| OUTPOST_BOTS_MESSAGE.to_string())
+}
+
 /// Run `hq bot <args…> --json` and parse its stdout as JSON. A non-zero exit
 /// surfaces the CLI's own (already user-facing) message.
 async fn run_hq_bot(args: &[&str], timeout: Duration) -> Result<Value, String> {
+    if let Some(refusal) = outpost_bot_refusal() {
+        return Err(refusal);
+    }
     let (status, stdout, stderr) = spawn_hq_bot(args, timeout).await?;
     if !status.success() {
         let fallback = format!("hq bot {} exited with status {}", args.join(" "), status.code().unwrap_or(-1));
@@ -512,6 +527,10 @@ fn restore_args(all: bool) -> Vec<String> {
 /// lastHeartbeatAt, here, settings }] }`.
 #[tauri::command]
 pub async fn local_bots_list_remote() -> Result<Value, String> {
+    // An outpost owns no bots; answer the empty list instead of a refusal.
+    if outpost_bot_refusal().is_some() {
+        return Ok(serde_json::json!({ "bots": [] }));
+    }
     let args = list_remote_args();
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     run_hq_bot(&argv, Duration::from_secs(60)).await
@@ -770,6 +789,32 @@ mod repair_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::auth::{
+        reset_skipped_person_only_calls, set_active_session_source_for_test, SOURCE_TEST_LOCK,
+    };
+    use hq_desktop_core::cognito::TokenSource;
+
+    #[test]
+    fn bots_run_for_a_person_and_are_refused_plainly_for_an_outpost() {
+        let _serial = SOURCE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_skipped_person_only_calls();
+        set_active_session_source_for_test(Some(TokenSource::Person));
+        assert_eq!(outpost_bot_refusal(), None);
+        set_active_session_source_for_test(None);
+        assert_eq!(outpost_bot_refusal(), None);
+
+        set_active_session_source_for_test(Some(TokenSource::Machine));
+        assert_eq!(outpost_bot_refusal().as_deref(), Some(OUTPOST_BOTS_MESSAGE));
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        assert_eq!(
+            runtime.block_on(local_bots_list_remote()).unwrap(),
+            serde_json::json!({ "bots": [] })
+        );
+        let refused = runtime.block_on(run_hq_bot(&["create", "setup"], Duration::from_secs(1)));
+        assert_eq!(refused, Err(OUTPOST_BOTS_MESSAGE.to_string()));
+        set_active_session_source_for_test(None);
+        reset_skipped_person_only_calls();
+    }
 
     #[test]
     fn configure_args_set_reset_and_reject() {

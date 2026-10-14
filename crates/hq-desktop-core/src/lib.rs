@@ -87,6 +87,7 @@ pub mod library_local;
 pub mod local_sessions;
 pub mod lifecycle;
 pub mod logfile;
+pub mod machine_session;
 pub mod marketplace;
 pub mod meeting_auto_record;
 pub mod meeting_ledger;

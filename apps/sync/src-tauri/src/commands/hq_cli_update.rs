@@ -7404,11 +7404,9 @@ exit 0
         let temp = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", temp.path());
 
-        // The unix managed layout: <HOME>/Library/Application Support/Indigo HQ/
-        // toolchain/node/bin/{node,npm}.
-        let bin = temp
-            .path()
-            .join("Library/Application Support/Indigo HQ/toolchain/node/bin");
+        // The unix managed layout: <managed toolchain root>/node/bin/{node,npm},
+        // where the root follows the host OS rule in `hq_desktop_core::paths`.
+        let bin = hq_desktop_core::paths::managed_toolchain_dir_in(temp.path()).join("node/bin");
         fs::create_dir_all(&bin).unwrap();
         fs::write(bin.join("npm"), "#!/bin/sh\nexit 0\n").unwrap();
 

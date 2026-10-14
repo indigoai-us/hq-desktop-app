@@ -1411,6 +1411,26 @@ describe('embedded Work navigation and lifecycle', () => {
     ).toBe('Grace');
   });
 
+  it('puts a failed outpost mint on the sign-in screen, not the retry-only recovery screen', async () => {
+    // PR 1612 review: a persistent machine_unavailable (broken CLI, revoked
+    // machine credentials) left the person on "Reconnecting" with only Retry.
+    await mountShell({
+      calls: [],
+      authSession: {
+        accountId: null,
+        generation: 1,
+        status: 'machine_unavailable',
+        reason: 'outpost session unavailable',
+      },
+    });
+    expect(host.querySelector('[data-testid="hq-work-auth-recovery"]')).toBeNull();
+    const signedOut = host.querySelector('[data-testid="hq-work-signed-out"]');
+    expect(signedOut).toBeTruthy();
+    expect(signedOut?.querySelector('[data-testid="sign-in-description"]')?.textContent).toContain(
+      'sign in as this outpost',
+    );
+  });
+
   it('retries only the recoverable native refresh state on coalesced online/focus recovery', async () => {
     const calls: string[] = [];
     const auth: Options = {

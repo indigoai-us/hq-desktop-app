@@ -47,7 +47,8 @@ export type AuthSessionStatus =
   | "credentials_absent"
   | "credentials_read_error"
   | "credentials_invalid"
-  | "refresh_temporarily_unavailable";
+  | "refresh_temporarily_unavailable"
+  | "machine_unavailable";
 
 export interface AuthSessionEnvelope {
   accountId: string | null;
@@ -65,7 +66,8 @@ function isAuthSessionStatus(value: unknown): value is AuthSessionStatus {
     value === "credentials_absent" ||
     value === "credentials_read_error" ||
     value === "credentials_invalid" ||
-    value === "refresh_temporarily_unavailable"
+    value === "refresh_temporarily_unavailable" ||
+    value === "machine_unavailable"
   );
 }
 
