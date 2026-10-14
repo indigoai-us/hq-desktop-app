@@ -172,22 +172,26 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* Session titles, always shown, as many as the tile has room for. */
+  /* Session titles as a calm list, like the Shipped tiles: one line each, hairlines between,
+     as many as the tile has room for. */
   .ss {
     flex: 1;
     min-height: 0;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    margin-top: 4px;
   }
   .st {
     all: unset;
     display: block;
+    flex: none;
     max-width: 100%;
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--b-t3);
+    padding: 6px 0;
+    border-top: 1px solid rgb(var(--b-ink) / 0.08);
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--b-t2);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
