@@ -16,6 +16,7 @@ import {
   connectionGrantBody,
   failure,
   integrationAppRefBody,
+  integrationOAuthStartBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
@@ -665,9 +666,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("POST", INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
     catalogSearch: (companyUid, query, limit) =>
       this.hqProRequestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
-    // No redirectUri: the server's default lands on the console's callback.
+    // redirectUri only when the caller passes one; without it the server's
+    // default lands on the console's callback.
     startOAuth: (input) =>
-      this.hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+      this.hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationOAuthStartBody(input)),
+    // The API base comes from the native side, the same one hq_pro_fetch uses.
+    oauthCallbackUrl: async () => {
+      const base = await this.call<string>("hq_pro_api_base");
+      return base.ok ? ok(`${base.value}${INTEGRATION_PATHS.oauthCallback}`) : base;
+    },
     // The key goes in the body only, and is taken out of any failure's text.
     install: async (input) =>
       withoutSecret(await this.hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),

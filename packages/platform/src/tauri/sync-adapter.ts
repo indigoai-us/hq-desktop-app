@@ -25,6 +25,7 @@ import {
   SLACK_ATTACH_BODY,
   INTEGRATION_PATHS,
   integrationAppRefBody,
+  integrationOAuthStartBody,
   type IntegrationOAuthStart,
   buildSendReplyRequest,
   connectionGrantBody,
@@ -1349,9 +1350,15 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', INTEGRATION_PATHS.revokeAccess, connectionGrantBody(input)),
       catalogSearch: (companyUid, query, limit) =>
         hqProRequestWithStatus('GET', INTEGRATION_PATHS.catalog(companyUid, query, limit)),
-      // No redirectUri: the server's default lands on the console's callback.
+      // redirectUri only when the caller passes one; without it the server's
+      // default lands on the console's callback.
       startOAuth: (input) =>
-        hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+        hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationOAuthStartBody(input)),
+      // The API base comes from the native side, the same one hq_pro_fetch uses.
+      oauthCallbackUrl: async () => {
+        const base = await call<string>('hq_pro_api_base');
+        return base.ok ? ok(`${base.value}${INTEGRATION_PATHS.oauthCallback}`) : base;
+      },
       // The key goes in the body only, and is taken out of any failure's text.
       install: async (input) =>
         withoutSecret(await hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ''),

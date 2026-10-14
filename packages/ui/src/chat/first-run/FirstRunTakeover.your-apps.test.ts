@@ -177,11 +177,15 @@ describe("Your apps", () => {
     expect(q<HTMLButtonElement>('[data-testid="first-run-connect-linear.app"]')?.textContent).toBe("Try again");
   });
 
-  it("sends Slack to Integrations when the company does not have it", async () => {
-    const { onopenintegrations } = render({ load: { ...LOAD, connections: [] } });
+  it("tells the person to connect Slack later in Integrations, with no button that opens a browser", async () => {
+    const { onopenintegrations, yourAppsHost } = render({ load: { ...LOAD, connections: [] } });
     await settle();
-    q<HTMLButtonElement>('[data-testid="first-run-connect-slack.com"]')!.click();
-    expect(onopenintegrations).toHaveBeenCalledWith("cmp_acme");
+    const tile = q('[data-testid="first-run-app-slack.com"]');
+    expect(tile?.getAttribute("data-action")).toBe("later");
+    expect(text('[data-testid="first-run-app-note-slack.com"]')).toBe("Connect later in Integrations");
+    expect(q('[data-testid="first-run-connect-slack.com"]')).toBeNull();
+    expect(onopenintegrations).not.toHaveBeenCalled();
+    expect(yourAppsHost!.connect).not.toHaveBeenCalled();
   });
 
   it("a member auto-connects nothing and sees admin-only tiles", async () => {
@@ -326,7 +330,7 @@ describe("Your apps", () => {
     acmeAnswers[0]!(LOAD);
     await settle();
     expect(q('[data-testid="first-run-chip-slack.com"]')).toBeNull();
-    expect(q('[data-testid="first-run-app-slack.com"]')?.getAttribute("data-action")).toBe("integrations");
+    expect(q('[data-testid="first-run-app-slack.com"]')?.getAttribute("data-action")).toBe("later");
   });
 
   it("a company change also cancels the old company's docs setup", async () => {

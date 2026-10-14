@@ -120,6 +120,54 @@ describe("createYourAppsHost", () => {
     expect(res).toEqual({ ok: true, connectionId: "c-lin", installationId: null });
   });
 
+  it("sends the hq-pro browser callback as the OAuth redirect, so a browser with no HQ session can finish the sign-in", async () => {
+    let reads = 0;
+    const listConnections = vi.fn(async () => {
+      reads += 1;
+      return ok({ connections: reads < 2 ? [] : [{ id: "c-lin", provider: "factory:linear", status: "connected", installation: { domain: "mcp.linear.app" } }] });
+    });
+    const startOAuth = vi.fn(async () => ok({ authorizationUrl: "https://linear.app/oauth" } as never));
+    const oauthRedirectUri = vi.fn(async () => " https://hqapi.test/v1/integrations/factory/oauth/callback ");
+    const host = createYourAppsHost(deps({ listConnections, startOAuth, oauthRedirectUri }));
+    const res = await host.connect("cmp_acme", tile());
+    expect(startOAuth).toHaveBeenCalledWith({
+      companyUid: "cmp_acme",
+      domain: "linear.app",
+      catalogEntryId: "e-linear",
+      redirectUri: "https://hqapi.test/v1/integrations/factory/oauth/callback",
+    });
+    expect(res).toMatchObject({ ok: true, connectionId: "c-lin" });
+  });
+
+  it("sends the callback on the docs-discovery OAuth path too", async () => {
+    let reads = 0;
+    const startOAuth = vi.fn(async () => ok({ authorizationUrl: "https://vercel.com/oauth" } as never));
+    const host = createYourAppsHost(
+      deps({
+        discoverDocs: async () => ok({ ok: true, discoveryReceiptId: "r2", discovery: { authMode: "oauth", verification: "pending-auth" } }),
+        startOAuth,
+        oauthRedirectUri: async () => "https://hqapi.test/v1/integrations/factory/oauth/callback",
+        listConnections: async () => {
+          reads += 1;
+          return ok({ connections: reads < 2 ? [] : [{ id: "c-v", provider: "factory:vercel", status: "connected", installation: { domain: "mcp.vercel.com" } }] });
+        },
+      }),
+    );
+    await host.setup("cmp_acme", tile({ domain: "vercel.com", name: "Vercel", action: "setup", docsUrl: "https://vercel.com/docs/mcp/vercel-mcp" }));
+    expect(startOAuth).toHaveBeenCalledWith({ companyUid: "cmp_acme", discoveryReceiptId: "r2", redirectUri: "https://hqapi.test/v1/integrations/factory/oauth/callback" });
+  });
+
+  it("starts the sign-in without a redirect when the callback address is blank or cannot be read", async () => {
+    for (const oauthRedirectUri of [async () => "  ", async () => null, async () => Promise.reject(new Error("no base"))]) {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const startOAuth = vi.fn(async () => ok({ authorizationUrl: "https://linear.app/oauth" } as never));
+      const host = createYourAppsHost(deps({ listConnections: async () => ok({ connections: [] }), startOAuth, oauthRedirectUri, timeoutMs: 1 }));
+      await host.connect("cmp_acme", tile());
+      expect(startOAuth).toHaveBeenCalledWith({ companyUid: "cmp_acme", domain: "linear.app", catalogEntryId: "e-linear" });
+      warn.mockRestore();
+    }
+  });
+
   it("stops with a retry when the list before sign-in cannot be read (an old connection never counts as new)", async () => {
     let reads = 0;
     const listConnections = vi.fn(async () => {
