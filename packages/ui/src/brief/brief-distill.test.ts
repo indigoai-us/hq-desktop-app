@@ -8,6 +8,7 @@ import {
   shippedDigest,
   shippedStreak,
   shippedTiles,
+  withoutPrRefs,
   shortDay,
   streakTitle,
   whyHighlights,
@@ -204,5 +205,30 @@ describe("shippedStreak", () => {
     expect(streakTitle({ days: 3, from: "2026-10-06", to: "2026-10-08" })).toBe("Shipped Oct 6, 7 and 8");
     expect(streakTitle({ days: 2, from: "2026-09-30", to: "2026-10-01" })).toBe("Shipped Sep 30 and Oct 1");
     expect(streakTitle({ days: 7, from: "2026-10-06", to: "2026-10-12" })).toBe("Shipped every day from Oct 6 to Oct 12");
+  });
+});
+
+describe("withoutPrRefs", () => {
+  it("takes PR references out of a highlight, wherever they sit", () => {
+    expect(withoutPrRefs("Restore plan-limit-exempt env dropped from vault-service by #4823")).toBe("Restore plan-limit-exempt env dropped from vault-service");
+    expect(withoutPrRefs("Only the installed HQ sets the login item on launch (cherry-pick of #1219)")).toBe("Only the installed HQ sets the login item on launch");
+    expect(withoutPrRefs("Fix the gate #12 and docs")).toBe("Fix the gate and docs");
+    expect(withoutPrRefs("Plain line")).toBe("Plain line");
+  });
+
+  it("shipped tile highlights never carry a PR number", () => {
+    const [t] = shippedTiles([
+      { status: "shipped", title: "fix(billing): restore plan-limit-exempt env dropped from vault-service by #4823", lines: [], origin: { companyUid: "c", repo: "hq-cloud" } } as unknown as BriefShipped,
+    ]);
+    for (const h of t!.highlights) expect(h.label).not.toMatch(/#\d+/);
+  });
+});
+
+describe("shipped highlights", () => {
+  it("list a change once when it shipped to beta and to stable", () => {
+    const [t] = shippedTiles([
+      { status: "shipped", title: "", lines: [], highlights: ["Wait for Apple's developer tools before setup runs git (beta)", "Wait for Apple's developer tools before setup runs git"], origin: { companyUid: "c", repo: "hq-desktop-app" } } as unknown as BriefShipped,
+    ]);
+    expect(t!.highlights.map((h) => h.label)).toEqual(["Wait for Apple's developer tools before setup runs git (beta)"]);
   });
 });

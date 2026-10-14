@@ -68,6 +68,9 @@
     flex: none;
   }
   .rail-btn:hover:not(:disabled) { background: var(--hover); }
+  /* Secondary matches the titlebar pills (V4TitleBar `.v4-core-pill`): no rim at rest, the rim on hover. */
+  .rail-btn.secondary { border-color: transparent; }
+  .rail-btn.secondary:hover:not(:disabled) { border-color: var(--line2, var(--v4-control-border)); }
   .rail-btn.primary { background: var(--t1, var(--v4-primary-bg)); color: var(--panel-bg, var(--v4-primary-fg)); border-color: transparent; }
   .rail-btn.primary:hover:not(:disabled) { background: var(--t1, var(--v4-primary-bg)); opacity: 0.9; }
   .rail-btn.ghost { background: transparent; border-color: transparent; color: var(--t2, var(--v4-text-2)); }

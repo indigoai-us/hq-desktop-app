@@ -73,12 +73,11 @@ describe("BriefShipped", () => {
     expect(tiles.map((t) => text(t.querySelector('[data-testid="brief-shipped-headline"]')))).toEqual(["1 merged", "4 merged", "3 merged", "1 merged", "1 merged"]);
     // Company logo on every tile.
     for (const t of tiles) expect(t.querySelector('[data-testid="brief-logo"]')).not.toBeNull();
-    // FIRST foil only where earned.
-    expect(qa('[data-testid="brief-shipped-first"]')).toHaveLength(1);
-    expect(tiles[0]!.querySelector('[data-testid="brief-shipped-first"]')).not.toBeNull();
-    // Two highlight lines at L, in plain words: no PR numbers, no conventional prefixes, no repo slugs on the face.
+    // No FIRST tag on the tile face (it crowded the product name); the peek says "a first".
+    expect(qa('[data-testid="brief-shipped-first"]')).toHaveLength(0);
+    // Highlights fill the tile, in plain words: no PR numbers, no conventional prefixes, no repo slugs on the face.
     const desk = tiles[1]!;
-    expect([...desk.querySelectorAll('[data-testid="brief-shipped-highlight"]')].map(text)).toEqual(["Rich card icons", "Login item for installed HQ only"]);
+    expect([...desk.querySelectorAll('[data-testid="brief-shipped-highlight"]')].map(text).slice(0, 2)).toEqual(["Rich card icons", "Login item for installed HQ only"]);
     expect(text(card())).not.toMatch(/#\d+|\b\d{3,4}\b\s|\b(feat|fix|chore|docs)\(|indigoai-us|hq-core-staging/);
     // Totals keep the sweep's numbers.
     expect(text(card())).toContain("merged");
@@ -118,14 +117,15 @@ describe("BriefShipped", () => {
     ]);
   });
 
-  it("on the Oct 8 fixture (one-row W slot) the card shows two product tiles, no highlight lines, and folds the rest", () => {
+  it("on the Oct 8 fixture (one-row W slot) the card shows two product tiles, up to five highlights each, and folds the rest", () => {
     const input = { ...octoberEightBrief(new Date(2026, 9, 8, 7, 42)), today: "2026-10-08" };
     const w = generateBrief(input).widgets.find((x) => x.kind === "shipped")!;
     expect(w.rows).toBe(1);
     render(input);
     const tiles = qa('[data-testid="brief-shipped-tile"]');
     expect(tiles).toHaveLength(w.cols >= 3 ? 3 : 2);
-    expect(qa('[data-testid="brief-shipped-highlight"]')).toHaveLength(0);
+    // Tiles fill the card's height, so each lists what was worth knowing (five at most).
+    for (const t of tiles) expect(t.querySelectorAll('[data-testid="brief-shipped-highlight"]').length).toBeLessThanOrEqual(5);
     const products = new Set(input.shipped.map((s) => s.origin.repo));
     expect(text(q('[data-testid="brief-shipped-more"]'))).toBe(`+${products.size - tiles.length} more`);
     const labels = tiles.map((t) => text(t.querySelector('[data-testid="brief-origin-label"]')));

@@ -7,7 +7,7 @@ import { octoberEightBrief } from "./brief-fixture.js";
 import { humanTitle } from "./brief-distill.js";
 import { keepNativeSession } from "./brief-data.js";
 import { gridStyle } from "./brief-generate.js";
-import { monogram, productName, repoShort } from "./brief-origin.js";
+import { companyDisplayName, monogram, monogramHue, productName, repoShort } from "./brief-origin.js";
 import { briefPriorities, meetingPeek, redAge, todoPrompt } from "./brief-peeks.js";
 import { parseBriefItems } from "./brief-run-files.js";
 import { sweepToInput, type BriefSweep } from "./brief-sweep.js";
@@ -108,7 +108,7 @@ describe("session strip (10) and session peek (15)", () => {
     render(base({ recentSessions: [...sessions, { id: "s5", title: "auto-checkpoint", startedAt: at(1), workstream: "Work", company: "cmp_indigo" }] }));
     const head = q("brief-timeline-head")!;
     expect(head.textContent!.trim()).toBe("Last 24h · 2 sessions");
-    expect(head.getAttribute("title")).toBe("1 background session hidden");
+    expect(head.getAttribute("data-hidden")).toBe("1 background session hidden");
     expect(qa("brief-session-dot")).toHaveLength(2);
   });
 
@@ -147,7 +147,8 @@ describe("session strip (10) and session peek (15)", () => {
 
 describe("Needs you (8, 11, 16, 17)", () => {
   it("shows five rows and a '+N more' row whose peek lists the rest", async () => {
-    render(base({ decisions: Array.from({ length: 7 }, (_, i) => decision(i + 1)) }));
+    // Calls only (no priorities, no incident), so every row is a call.
+    render(base({ decisions: Array.from({ length: 7 }, (_, i) => decision(i + 1)), priorities: undefined, risks: [] }));
     expect(qa("brief-need")).toHaveLength(5);
     const more = q("brief-need-more")!;
     expect(more.textContent!.trim()).toBe("+2 more");
@@ -173,6 +174,13 @@ describe("Needs you (8, 11, 16, 17)", () => {
     expect(repoShort("indigoai-us/hq-finance")).toBe("hq-finance");
     expect(monogram("Indigo")).toBe("IN");
     expect(monogram("Live Recover")).toBe("LR");
+    // A raw company uid (no company list from the host) reads as the company, not "CI" for "cmp_…".
+    expect(monogram("cmp_indigo")).toBe("IN");
+    expect(monogram("cmp_liverecover")).toBe("LI");
+    expect(monogram("cmp_live_recover")).toBe("LR");
+    expect(companyDisplayName("cmp_live_recover")).toBe("live recover");
+    expect(monogramHue("cmp_indigo")).toBe(monogramHue("Indigo"));
+    expect(monogramHue("cmp_indigo")).not.toBe(monogramHue("cmp_liverecover"));
   });
 
   it("titles read like a to-do: PR reference and conventional prefix stripped, sentence-cased", () => {
@@ -210,7 +218,9 @@ describe("incident card (12) and grid rows (13)", () => {
     expect(q("brief-incident-title")!.textContent).toBe("Recheck hq-core release gate");
     const facts = q("brief-incident-facts")!.textContent!;
     expect(facts).toContain("verify-release");
-    expect(facts).toContain("Red for 5h");
+    // The red age is drawn as the "red for" track with its pill.
+    expect(q("brief-incident-duration")!.getAttribute("aria-label")).toBe("Red for 5 hours");
+    expect(q("brief-incident-duration-pill")!.textContent).toBe("5 HOURS");
   });
 
   it("the facts grid adds the changes merged on top of the red main when the writer counted them", () => {
@@ -254,9 +264,23 @@ describe("Yesterday card (14, 19)", () => {
   };
 
   it("says 'n decisions from m meetings' and each row shows its first decision", () => {
-    render(base({ meetingsYesterday: [m, { ...m, id: "m2", title: "Standup", decisions: 1, decided: ["Move standup"] }] }));
+    // Two decided lines: under the Settled card's gate, so the Meetings card carries the decisions itself.
+    render(base({ meetingsYesterday: [{ ...m, decided: ["Ship the trial page Friday"] }, { ...m, id: "m2", title: "Standup", decisions: 1, decided: ["Move standup"] }] }));
+    expect(target.querySelector('[data-widget="decided"]')).toBeNull();
     expect(q("brief-meetings-sub")!.textContent).toBe("decisions from 2 meetings");
     expect(qa("brief-meeting-first").map((e) => e.textContent)).toEqual(["Ship the trial page Friday", "Move standup"]);
+  });
+
+  it("with the Settled card on the page the decisions live there, under their meeting, and Meetings keeps to counts", () => {
+    render(base({ meetingsYesterday: [{ ...m, decided: ["Ship the trial page Friday", "Drop the old pricing"] }, { ...m, id: "m2", title: "Standup", decisions: 1, decided: ["Move standup"] }] }));
+    expect(target.querySelector('[data-widget="decided"]')).not.toBeNull();
+    expect(q("brief-meetings-sub")!.textContent).toBe("meetings since yesterday");
+    expect(qa("brief-meeting-first")).toEqual([]);
+    expect(qa("brief-meeting-decided").map((e) => e.textContent)).toEqual(["5 decided", "1 decided"]);
+    const groups = qa("brief-decided-group");
+    expect(groups.map((g) => g.querySelector('[data-testid="brief-decided-src-text"]')!.textContent!.split(" · ")[0])).toEqual(["HQ <> Sales Sync", "Standup"]);
+    expect([...groups[0]!.querySelectorAll('[data-testid="brief-decided-line"]')].map((e) => e.textContent)).toEqual(["Ship the trial page Friday", "Drop the old pricing"]);
+    expect(groups[1]!.querySelector('[data-testid="brief-decided-line"]')!.textContent).toBe("Move standup");
   });
 
   it("the peek shows Decided and To do (yours first, tagged, with Start and Copy) and +N more only when there is more", async () => {
@@ -267,7 +291,7 @@ describe("Yesterday card (14, 19)", () => {
     expect(p.status).toBe("+4 more in Meetings");
     expect(meetingPeek({ ...m, decisions: 1, actions: 1, decided: ["x"], todo: [{ text: "y" }] }).status).toBeUndefined();
     render(base({ meetingsYesterday: [m] }));
-    await hover(target.querySelector('[data-testid="brief-meetings"] .row')!);
+    await hover(q("brief-meeting-row")!);
     expect(q("brief-peek-tag")!.textContent).toBe("you");
     expect(qa("brief-peek-line-launch")).toHaveLength(1);
     expect(q("brief-peek-line-launch")!.textContent).toContain("Start in Claude");
@@ -291,8 +315,8 @@ describe("Yesterday card (14, 19)", () => {
   });
 });
 
-describe("Today's priorities (18)", () => {
-  it("renders the writer's priorities, at most five, before the grid", () => {
+describe("Today's priorities (18), folded into the main card", () => {
+  it("renders the writer's priorities, at most five, each with its because, as the main card's first rows", () => {
     const text = JSON.stringify({
       priorities: Array.from({ length: 6 }, (_, i) => ({ n: i + 1, text: `Priority ${i + 1}`, because: `because ${i + 1}`, item_id: i === 0 ? "d1" : null })),
       items: {},
@@ -301,12 +325,20 @@ describe("Today's priorities (18)", () => {
     expect(items.priorities).toHaveLength(5);
     expect(items.priorities[0]).toEqual({ n: 1, text: "Priority 1", because: "because 1", itemId: "d1" });
     render(base({ priorities: items.priorities, decisions: [decision(1)] }));
-    const card = q("brief-priorities")!;
-    expect(qa("brief-priority")).toHaveLength(5);
-    expect(card.textContent).toContain("Today's priorities");
-    expect(qa("brief-priority")[0]!.textContent).toContain("Priority 1 · because 1");
-    // Before the grid.
-    expect(card.compareDocumentPosition(target.querySelector("main.b-grid")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const card = q("brief-needs")!;
+    expect(q("brief-priorities")!.textContent).toContain("Today's priorities");
+    const rows = [...card.querySelectorAll<HTMLElement>("[data-priority]")];
+    expect(rows).toHaveLength(5);
+    expect(rows.map((r) => r.getAttribute("data-priority"))).toEqual(["1", "2", "3", "4", "5"]);
+    // Priority 1 opens d1, so it is that call's row, titled in the writer's words with its because.
+    expect(rows[0]!.getAttribute("data-testid")).toBe("brief-need");
+    expect(rows[0]!.textContent).toContain("Priority 1");
+    expect(rows[0]!.textContent).toContain("because 1");
+    // The others open no item: plain rows with their because.
+    expect(rows[1]!.getAttribute("data-testid")).toBe("brief-need-priority");
+    expect(rows[1]!.textContent).toContain("because 2");
+    // There is no separate priorities strip any more.
+    expect(target.querySelector("section.prio")).toBeNull();
   });
 
   it("older briefs derive priorities from the top three decisions, then the live incident by product, never by repo slug", () => {
@@ -342,8 +374,9 @@ describe("Today's priorities (18)", () => {
       { n: 2, text: "Decision number 2", because: null, itemId: "d2" },
     ];
     render(base({ priorities, decisions: [d1, decision(2)] }));
-    const rows = qa("brief-priority");
-    expect(rows[0]!.querySelector('[data-testid="brief-priority-logo"]')).not.toBeNull();
+    const rows = [...target.querySelectorAll<HTMLElement>("[data-priority]")];
+    // The row carries its company logo (the call's origin chip).
+    expect(rows[0]!.querySelector('[data-testid="brief-origin"] [data-testid="brief-logo"]')).not.toBeNull();
     await hover(rows[0]!);
     expect(q("brief-peek")!.textContent).toContain("unblocks 3 people and revenue · 44h old");
     await hover(rows[1]!);
@@ -354,7 +387,7 @@ describe("Today's priorities (18)", () => {
   it("hovering a priority opens its item's peek, and a cleared item is struck through", async () => {
     const onlaunch = vi.fn(async () => null);
     render(base({ priorities: undefined, decisions: [decision(1)] }), { onlaunch });
-    const row = qa("brief-priority")[0]!;
+    const row = target.querySelector<HTMLElement>('[data-priority="1"]')!;
     await hover(row);
     expect(q("brief-peek")!.textContent).toContain("Decision number 1");
     (q("brief-need")!.querySelector('[data-testid="brief-start"]') as HTMLButtonElement).click();

@@ -6,7 +6,7 @@
    */
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import type { BriefCompanyLogo } from "./brief-context.svelte.js";
-  import { monogram, monogramHue } from "./brief-origin.js";
+  import { companyDisplayName, monogram, monogramHue } from "./brief-origin.js";
 
   let { company, fallback = null, size = 20 }: { company: BriefCompanyLogo | null; fallback?: string | null; size?: number } = $props();
   const name = $derived(company?.label ?? fallback ?? "");
@@ -16,7 +16,7 @@
   {#if company}
     <CompanyLabel name={company.label} iconUrl={company.iconUrl} companyUid={company.uid} {size} iconOnly />
   {:else}
-    <span class="mono" role="img" aria-label={name} data-testid="brief-logo-monogram">{monogram(name)}</span>
+    <span class="mono" role="img" aria-label={companyDisplayName(name)} data-testid="brief-logo-monogram">{monogram(name)}</span>
   {/if}
 </span>
 
@@ -27,7 +27,7 @@
     flex: none;
     width: var(--s);
     height: var(--s);
-    border-radius: 6px;
+    border-radius: 50%;
     overflow: hidden;
   }
   .mono,
@@ -36,13 +36,16 @@
     place-items: center;
     width: var(--s);
     height: var(--s);
-    border-radius: 6px;
+    box-sizing: border-box;
+    border-radius: 50%;
     font-family: var(--b-ui, system-ui);
-    font-size: calc(var(--s) * 0.45);
-    font-weight: 600;
-    letter-spacing: 0;
-    color: #fff;
-    background: linear-gradient(145deg, hsl(var(--h) 70% 58%), hsl(var(--h) 60% 38%));
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    font-size: calc(var(--s) * 0.42);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    /* A quiet glass circle in the surrounding ink (white on a coloured card, dark on a hover card), not a loud swatch. */
+    color: inherit;
+    opacity: 0.9;
+    background: color-mix(in srgb, currentColor 16%, transparent);
+    box-shadow: none;
   }
 </style>

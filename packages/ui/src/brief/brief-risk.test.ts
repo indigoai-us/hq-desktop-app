@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import Harness from "./BriefHealthHarness.test-support.svelte";
@@ -183,10 +185,10 @@ describe("Watch card", () => {
     expect(peek.textContent).toContain("Main health");
     expect(peek.textContent).toContain("6 of 7 products green · Desktop app red");
     const lines = [...peek.querySelectorAll('[data-testid="brief-peek-line"]')];
-    expect(lines).toHaveLength(5); // the peek itself shows five, then +N more
+    expect(lines).toHaveLength(7); // every product, in full
     expect(lines[0]!.textContent).toContain("Desktop app");
     expect(lines[0]!.textContent).toContain("RED");
-    expect(peek.textContent).toContain("+2 more");
+    expect(peek.textContent).not.toMatch(/\+\d+ more/);
   });
 
   it("without main health there is no footer; without any row the card is empty but mounts", () => {
@@ -226,5 +228,16 @@ describe("Watch card through DailyBrief", () => {
     await new Promise((r) => setTimeout(r, 260));
     flushSync();
     expect(target.querySelector('[data-testid="brief-peek-prompt"]')!.textContent).toBe(plan.prompts.w1);
+  });
+});
+
+describe("BriefRisk main health look", () => {
+  it("matches the incident card's workflow cells: faint healthy squares, red ones lit, count in mono caps under them, no coral glow", () => {
+    const style = readFileSync(resolve(process.cwd(), "src/brief/BriefRisk.svelte"), "utf8").match(/<style>([\s\S]*)<\/style>/)![1]!;
+    expect(style).toMatch(/\.cells i \{[^}]*border-radius: 1\.5px[^}]*background: rgba\(255, 255, 255, 0\.16\)/);
+    expect(style).toMatch(/\.cells i\.bad \{[^}]*background: rgba\(255, 255, 255, 0\.92\)/);
+    expect(style).toMatch(/\.cells i:hover \{[^}]*scale: 1\.35/);
+    expect(style).toMatch(/\.hl-v \{[^}]*flex-direction: column[^}]*text-transform: uppercase/);
+    expect(style).not.toMatch(/#ff6b5e|box-shadow/);
   });
 });

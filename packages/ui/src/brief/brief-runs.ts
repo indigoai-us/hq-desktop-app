@@ -129,6 +129,19 @@ export function latestReadyRun(entries: readonly BriefIndexEntry[]): BriefIndexE
 }
 
 /**
+ * What the header's create control is: "create" (the orange Create brief)
+ * when there is no brief yet or the newest ready brief is from an earlier
+ * local day than `now`; "refresh" (a quiet Refresh) once today's brief exists.
+ */
+export function createControl(entries: readonly BriefIndexEntry[], now: Date): "create" | "refresh" {
+  const latest = latestReadyRun(entries);
+  if (!latest) return "create";
+  const made = new Date(latest.createdAt);
+  if (Number.isNaN(made.getTime())) return "create";
+  return made.getFullYear() === now.getFullYear() && made.getMonth() === now.getMonth() && made.getDate() === now.getDate() ? "refresh" : "create";
+}
+
+/**
  * The ready run before `runId`, for "days away" and rotation. When the run is
  * in the index (newest first), the next ready entry after it; when it is not
  * listed yet (a run that just finished), the newest ready run that started

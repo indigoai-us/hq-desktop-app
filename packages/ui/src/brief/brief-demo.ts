@@ -56,9 +56,12 @@ function demoActivity(progress: number, start: number) {
   return done.slice(-12);
 }
 
-/** Findings that grow as sources land, like a real run's status.json. */
+/**
+ * Findings that grow as sources land, like a real run's status.json: a count
+ * is only reported once its source has been read (so its tile waits until then).
+ */
 function demoFindings(p: number) {
-  const k = (from: number, to: number, v: number) => Math.round(v * Math.max(0, Math.min(1, (p - from) / (to - from))));
+  const k = (from: number, to: number, v: number) => (p < from ? undefined : Math.round(v * Math.max(0, Math.min(1, (p - from) / (to - from)))));
   return {
     signals: { decision: k(0.26, 0.4, 7), action_item: k(0.26, 0.4, 12), risk: k(0.3, 0.42, 3), commitment: k(0.3, 0.42, 5), key_point: k(0.3, 0.44, 19) },
     sessions: k(0.16, 0.26, 42),

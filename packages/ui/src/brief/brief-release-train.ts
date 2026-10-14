@@ -21,7 +21,8 @@ export type TrainCar = BriefRelease["pending"][number] & { titles?: string[] };
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const LIGHT_WORD: Record<TrainLight, string> = { ok: "Green", warn: "Amber", red: "Red" };
+/** The light in plain words (never "Amber"/"Green"): the next cut's state under its dot and in peeks. */
+const LIGHT_WORD: Record<TrainLight, string> = { ok: "Ready", warn: "Your call", red: "Red check" };
 
 export const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
 
@@ -117,19 +118,31 @@ export function trainTitle(release: BriefRelease): string {
   return `Cut the ${release.product.trim()} release`;
 }
 
-/** The line under the title: "12 changes waiting since Thursday · 2 held". */
-export function trainSub(release: BriefRelease, today: string): string {
-  const parts: string[] = [];
-  const oldest = trainCars(release)[0];
-  if (release.pendingCount > 0) {
-    const since = oldest ? dayLong(oldest.day, today) : null;
-    const when = since === "today" ? " merged today" : since ? ` waiting since ${since}` : " waiting";
-    parts.push(`${plural(release.pendingCount, "change")}${when}`);
-  } else {
-    parts.push(release.version ? `Nothing merged since ${release.version}` : "Nothing merged since the last release");
+/**
+ * The card's hero, read as "4 | changes waiting / since yesterday": the
+ * pending count (null when nothing is merged), what it counts, and the
+ * caption under it (since when, then how much is held). Together they say
+ * what the old one-line sub said: "12 changes waiting since Monday · 3 held".
+ */
+export function trainWait(release: BriefRelease, today: string): { count: number | null; what: string; caption: string } {
+  const held = release.held.length ? `${release.held.length} held` : "";
+  const join = (...parts: string[]) => parts.filter(Boolean).join(" · ");
+  if (release.pendingCount <= 0) {
+    return { count: null, what: "Nothing merged", caption: join(release.version ? `since ${release.version}` : "since the last release", held) };
   }
-  if (release.held.length) parts.push(`${release.held.length} held`);
-  return parts.join(" · ");
+  const oldest = trainCars(release)[0];
+  const since = oldest ? dayLong(oldest.day, today) : null;
+  return {
+    count: release.pendingCount,
+    what: release.pendingCount === 1 ? "change waiting" : "changes waiting",
+    caption: join(since === "today" ? "merged today" : since ? `since ${since}` : "", held),
+  };
+}
+
+/** The first station on the line: the last release ("1.4", "3 days ago"); "Last release" when the writer gave no version. */
+export function lastStation(release: BriefRelease, nowMs: number): { value: string; age: string | null } {
+  const age = ageLabel(release.releasedAt, nowMs);
+  return { value: release.version?.trim() || "Last release", age: age ? `${age} ago` : null };
 }
 
 /** "2 days", "5h", "under an hour"; null when the start is unknown. */
@@ -153,16 +166,20 @@ export function redCheck(release: BriefRelease, mainHealth: readonly BriefMainHe
   return null;
 }
 
-/** Footer, plain: "Red: release gate on HQ core · 2 days" | "Amber: waiting on your cut" | "Green: ready to cut". */
+/**
+ * The status in plain words, no traffic-light jargon: "Release gate is red on
+ * Desktop app · 2 days" | "Waiting on your cut" | "Ready to cut".
+ */
 export function trainFooter(release: BriefRelease, mainHealth: readonly BriefMainHealth[] | undefined, nowMs: number): string {
   const light = trainLight(release, mainHealth);
   if (light === "red") {
     const red = redCheck(release, mainHealth, nowMs);
-    if (!red) return "Red: a check on main is red";
-    return `Red: ${red.workflow} on ${red.product}${red.age ? ` · ${red.age}` : ""}`;
+    if (!red) return "A check on main is red";
+    const check = red.workflow.trim();
+    return `${check.charAt(0).toUpperCase()}${check.slice(1)} is red on ${red.product}${red.age ? ` · ${red.age}` : ""}`;
   }
-  if (light === "warn") return "Amber: waiting on your cut";
-  return "Green: ready to cut";
+  if (light === "warn") return "Waiting on your cut";
+  return "Ready to cut";
 }
 
 /** "Why not green": main health per product, red first then by name; each line GREEN or RED. */
@@ -202,5 +219,5 @@ export function releasePrompt(release: BriefRelease, mainHealth: readonly BriefM
   );
 }
 
-/** "Red", "Amber" or "Green", for peeks and the engine's status line. */
+/** "Ready", "Your call" or "Red check": the next cut's state in plain words. */
 export const lightWord = (light: TrainLight): string => LIGHT_WORD[light];

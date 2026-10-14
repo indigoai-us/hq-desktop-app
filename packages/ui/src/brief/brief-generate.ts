@@ -207,7 +207,7 @@ export function generateBrief(input: BriefInput): BriefPlan {
   // Host guarantee: a priority whose item has no card today is said so (the list above still shows it).
   const hosted = new Set([...picked.slots.values()].flatMap((s) => s.ev.items));
   for (const p of ctx.priorities) {
-    if (p.itemId && !hosted.has(p.itemId)) dropped.push({ kind: `priority-${p.rank}`, why: `priority ${p.rank} has no card; shown in the list above` });
+    if (p.itemId && !hosted.has(p.itemId)) dropped.push({ kind: `priority-${p.rank}`, why: `priority ${p.rank} has no card; shown in Today's priorities` });
   }
   dropped.push(...picked.skipped);
 

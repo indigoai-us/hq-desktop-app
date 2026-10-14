@@ -154,3 +154,83 @@ export function sampleTone(kind: string): FindingTone {
   if (k.includes("dm") || k.includes("wait")) return "warn";
   return "neutral";
 }
+
+/**
+ * Every counter before the run has reported anything: the same fixed tiles,
+ * all without a value, so the bento holds its shape from the first frame.
+ */
+export function pendingFindingRows(): FindingRow[] {
+  return findingRows({
+    signals: { decision: 0, action_item: 0, risk: 0, commitment: 0, key_point: 0 },
+    sessions: 0,
+    meetings: 0,
+    dms: { total: 0, need_you: 0 },
+    prs: { merged: 0, open: 0, review_requested: 0 },
+    ci_red: 0,
+    agents: { total: 0, attention: 0 },
+    integrations: {},
+    seen: [],
+  });
+}
+
+/** Where a counter tile is: no value yet, counted and empty, or counted with something in it. */
+export type FindingState = "pending" | "zero" | "found";
+
+export function findingState(row: Pick<FindingRow, "value">): FindingState {
+  return row.value == null ? "pending" : row.value > 0 ? "found" : "zero";
+}
+
+/** The brief's colour fields a counter tile can wear (brief.css `.slot[data-field]`). */
+export type FindingField = "violet" | "teal" | "pink" | "sunset" | "sky" | "mono";
+
+/**
+ * The colour field a counter fills with once it has something in it, by
+ * meaning, as the finished brief colours the same things: decisions violet,
+ * done work teal, risk and red CI pink, commitments sunset, DMs sky. Every
+ * other count, and any count that came back empty, stays a monochrome tile in
+ * page ink, so colour lands only on what the brief will be about.
+ */
+export function findingField(row: Pick<FindingRow, "key" | "tone" | "value">): FindingField {
+  if (findingState(row) !== "found") return "mono";
+  if (row.key === "dms") return "sky";
+  switch (row.tone) {
+    case "decision":
+      return "violet";
+    case "ok":
+      return "teal";
+    case "red":
+      return "pink";
+    case "sun":
+      return "sunset";
+    default:
+      return "mono";
+  }
+}
+
+export interface SampleCompany {
+  /** Display name for CompanyLabel. */
+  name: string;
+  uid: string | null;
+  iconUrl: string | null;
+}
+
+/**
+ * The company a sample card names, matched against the companies the page
+ * knows (by uid, slug or label, any case) so it shows the real label and
+ * icon. A company the page does not know keeps its own name, made readable.
+ */
+export function sampleCompany(
+  company: string,
+  companies: readonly { uid: string; slug?: string | null; label: string; iconUrl?: string | null }[] = [],
+): SampleCompany {
+  const k = norm(company);
+  const hit = companies.find((c) => [c.uid, c.slug ?? "", c.label].some((v) => v && norm(v) === k));
+  if (hit) return { name: hit.label, uid: hit.uid, iconUrl: hit.iconUrl ?? null };
+  const plain = company.trim().replace(/^cmp_/i, "").replace(/[_-]+/g, " ").trim();
+  return { name: plain ? plain[0]!.toUpperCase() + plain.slice(1) : company, uid: company.trim() || null, iconUrl: null };
+}
+
+/** A sample's kind as a short label for its mono pill: "action_item" -> "action item". */
+export function sampleKindLabel(kind: string): string {
+  return kind.replace(/[_-]+/g, " ").trim() || "item";
+}
