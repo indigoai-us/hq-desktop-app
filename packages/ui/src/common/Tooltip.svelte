@@ -134,7 +134,9 @@
     left: 50%;
     transform: translateX(-50%);
     z-index: 10001;
-    max-width: 220px;
+    /* Short labels stay on one line; a long one wraps inside the bubble instead of running past it. */
+    width: max-content;
+    max-width: 260px;
     padding: 4px 8px;
     border: 1px solid var(--panel-border, var(--line2));
     border-radius: 6px;
@@ -144,7 +146,9 @@
     font-size: 11px;
     font-weight: 500;
     line-height: 1.35;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: break-word;
+    text-wrap: pretty;
     pointer-events: none;
     animation: tooltip-in 100ms ease-out;
   }
