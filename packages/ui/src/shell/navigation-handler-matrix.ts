@@ -719,7 +719,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "projects-page",
     file: SHARED_SHELL_FILE,
-    needle: '{#if view === "projects"}',
+    needle: '{:else if view === "projects"}',
     destinationKind: "projects",
     history: "push",
     host: "shared-shell",

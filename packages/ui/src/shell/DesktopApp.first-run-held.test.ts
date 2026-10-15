@@ -9,7 +9,7 @@
  * status wait), and the host hears once when the first screen is painted.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mount, tick, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
@@ -132,6 +132,24 @@ describe("first run holds the shell", () => {
     expect(q("first-run-held-page")).toBeTruthy();
     expect(q("channel-loading")).toBeNull();
     expect(q("first-run-takeover")).toBeNull();
+  });
+
+  it("never holds the first frame when no first run is possible", async () => {
+    // No flag service on this host: the route is the ordinary shell before
+    // anything is read, so not even one frame shows the held backdrop.
+    const { adapter } = makeAdapter({ hasFeature: () => never(), getSetupStatus: () => never() });
+    delete (adapter as { identity?: unknown }).identity;
+    let heldSeen = false;
+    const seen = new MutationObserver(() => {
+      if (q("first-run-held") || q("first-run-held-page")) heldSeen = true;
+    });
+    seen.observe(document.body, { childList: true, subtree: true });
+    mountShell(adapter);
+    if (q("first-run-held") || q("first-run-held-page")) heldSeen = true;
+    flushSync();
+    await settle();
+    seen.disconnect();
+    expect(heldSeen).toBe(false);
   });
 
   it("shows the shell's page once the route settles on the ordinary shell", async () => {

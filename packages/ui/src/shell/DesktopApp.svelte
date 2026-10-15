@@ -3481,26 +3481,31 @@
   const firstRunDev = FIRST_RUN_DEV_SWITCHES;
   /** US-010: a hidden window may run no frames; report the paint after this. */
   const FIRST_RUN_PAINTED_FALLBACK_MS = 50;
-  let visualFirstRunFlag = $state<boolean | null>(firstRunDev.force ? true : null);
   let visualFirstRunFinished = $state(firstRunDev.force ? false : hasFinishedVisualFirstRun());
+  /**
+   * The flag's answer when it is known before mount, so the first frame is
+   * never held for an answer that needs no read: no first run (no bots, the
+   * welcome setup already ran, the visual first run finished, no flag
+   * service) counts as off, and the welcome window's hint is used as is.
+   */
+  function knownVisualFirstRunFlag(): boolean | null {
+    if (firstRunDev.force) return true;
+    const identity = adapter.identity;
+    if (!adapter.bots || hasRunWelcomeSetup() || hasFinishedVisualFirstRun() || !identity || typeof identity.hasFeature !== "function") {
+      return false;
+    }
+    const hinted = untrack(() => firstRunHandoff?.flags.visualFirstRun);
+    return typeof hinted === "boolean" ? hinted : null;
+  }
+  let visualFirstRunFlag = $state<boolean | null>(knownVisualFirstRunFlag());
   function settleVisualFirstRunFlag(value: boolean): void {
     if (visualFirstRunFlag === null) visualFirstRunFlag = value;
   }
   onMount(() => {
-    // FORCE: the flag service is not read.
-    if (firstRunDev.force) return;
-    const identity = adapter.identity;
-    // Only a first run needs the answer: no read at all otherwise.
-    if (!adapter.bots || welcomeSetupRun || visualFirstRunFinished || !identity || typeof identity.hasFeature !== "function") {
-      visualFirstRunFlag = false;
-      return;
-    }
-    // The welcome window already read the flag: no second read, no wait.
-    const hinted = firstRunHandoff?.flags.visualFirstRun;
-    if (typeof hinted === "boolean") {
-      visualFirstRunFlag = hinted;
-      return;
-    }
+    // Known before mount (FORCE, no first run, or the welcome window's hint):
+    // the flag service is not read.
+    if (visualFirstRunFlag !== null) return;
+    const identity = adapter.identity!;
     let active = true;
     void Promise.resolve()
       .then(() => identity.hasFeature(VISUAL_FIRST_RUN_FLAG))
