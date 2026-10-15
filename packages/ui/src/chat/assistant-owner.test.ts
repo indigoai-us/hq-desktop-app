@@ -151,6 +151,11 @@ describe("the owner", () => {
       ),
     ).toBe(true);
     expect(isAssistantAlreadyThere('HQ API /v1/agents → 409: Entity with type="agent" already exists')).toBe(true);
+    expect(
+      isAssistantAlreadyThere(
+        'You already have a bot named "setup" in HQ — it is just not set up on this computer. Bring it back with: hq bot adopt setup',
+      ),
+    ).toBe(true);
     expect(isAssistantAlreadyThere("Claude Code is not signed in.")).toBe(false);
   });
 
@@ -172,6 +177,51 @@ describe("the owner", () => {
     expect(h.rename).toHaveBeenCalledWith({ agentUid: UID, handle: "setup" }, "Hazel");
     expect(changes).toEqual(["running", "done"]);
     expect(owner.attempt().state).toBe("done");
+  });
+
+  it("a create that stops at the cloud's 409 on a fresh install adopts the account's assistant here, then names it (owner run 2026-10-15)", async () => {
+    // Not here; the account owns it (Hazel) and it is not running elsewhere.
+    const { h, setRows } = host({ cloudAssistant: () => ({ ref: { agentUid: UID, handle: "setup" }, adoptable: true }) });
+    h.create.mockImplementation(async () => ({
+      ok: false,
+      reason: "Could not create setup.",
+      raw: 'You already have a bot named "setup" in HQ — it is just not set up on this computer. Bring it back with: hq bot adopt setup',
+    }));
+    h.adopt.mockImplementation(async () => {
+      setRows([row({ displayName: "Hazel" })]);
+      return { ok: true as const };
+    });
+    const owner = createAssistantOwner(h);
+    const result = await owner.start({ name: "Nibbles" });
+    expect(result).toEqual({ ok: true, bot: { agentUid: UID, handle: "setup" }, outcome: "adopted" });
+    expect(h.adopt).toHaveBeenCalledWith("setup");
+    expect(h.rename).toHaveBeenCalledWith({ agentUid: UID, handle: "setup" }, "Nibbles");
+  });
+
+  it("the 409 path never adopts an assistant that is running on another computer: it is named, not taken", async () => {
+    const { h } = host({ cloudAssistant: () => ({ ref: { agentUid: UID, handle: "setup" }, adoptable: false }) });
+    h.create.mockImplementation(async () => ({
+      ok: false,
+      reason: "Could not create setup.",
+      raw: 'HQ API /v1/agents → 409: Entity with type="agent" already exists',
+    }));
+    h.findCloud = vi.fn(async () => ({ agentUid: UID, handle: "setup" }));
+    const owner = createAssistantOwner(h);
+    const result = await owner.start({ name: "Nibbles" });
+    expect(result).toEqual({ ok: true, bot: { agentUid: UID, handle: "setup" }, outcome: "existing" });
+    expect(h.adopt).not.toHaveBeenCalled();
+    expect(h.rename).toHaveBeenCalledWith({ agentUid: UID, handle: "setup" }, "Nibbles");
+  });
+
+  it("a failed adopt on the 409 path falls back to the cloud record, as before", async () => {
+    const { h } = host();
+    h.create.mockImplementation(async () => ({ ok: false, reason: "Could not create setup.", raw: "→ 409 conflict" }));
+    h.adopt.mockImplementation(async () => ({ ok: false as const, raw: "boom" }));
+    h.findCloud = vi.fn(async () => ({ agentUid: UID, handle: "setup" }));
+    const owner = createAssistantOwner(h);
+    const result = await owner.start({ name: "Nibbles" });
+    expect(result).toEqual({ ok: true, bot: { agentUid: UID, handle: "setup" }, outcome: "existing" });
+    expect(h.adopt).toHaveBeenCalledTimes(1);
   });
 
   it("runs one operation at a time: two starts at once make one create, and both get the assistant", async () => {

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LocalScanApi, LocalScanView } from "@hq/platform";
 
 import { createImportRunner, importResultOf } from "./import-runner.js";
-import { createNativeScanHost, nativeScanEvents } from "./native-scan-host.js";
+import { createNativeScanHost, nativeScanEvents, companyFolderOf } from "./native-scan-host.js";
 import { isScanNotRun, parseScanEvent, type ScanEvent } from "./scan-stream.js";
 
 const NOW = 1_760_000_000_000;
@@ -95,7 +95,7 @@ describe("nativeScanEvents", () => {
     expect(events.at(-1)).toEqual({
       type: "done",
       report: null,
-      summary: { projects: 3, sessions: 17, repos: 2, apps: 2, sources: 4 },
+      summary: { companies: 0, projects: 3, sessions: 17, repos: 2, apps: 2, sources: 4 },
     });
   });
 
@@ -128,12 +128,47 @@ describe("nativeScanEvents", () => {
     ]);
   });
 
+  it("a folder holding two or more repos is a company limb; home folders and lone repos are not (owner, 2026-10-15)", () => {
+    const events = nativeScanEvents(
+      scanOf({
+        projects: [{ tool: "claude-code", name: "hq-cli", sessions: 4, last_active_at: null }],
+        repos: [
+          { path: "/Users/admin/dev/indigo/hq-cli", last_commit_at: null },
+          { path: "/Users/admin/dev/indigo/hq-pro", last_commit_at: null },
+          { path: "/Users/admin/dev/solo/one-off", last_commit_at: null },
+          { path: "/Users/admin/scratch", last_commit_at: null },
+        ],
+      }),
+    );
+    const companies = events.filter((e) => e.type === "company");
+    expect(companies).toEqual([{ v: 1, type: "company", id: "folder:indigo", name: "indigo", basis: "folder" }]);
+    // The company comes before any project on it.
+    expect(events.findIndex((e) => e.type === "company")).toBeLessThan(events.findIndex((e) => e.type === "project"));
+    const projects = events.filter((e) => e.type === "project") as { name: string; company: string | null }[];
+    expect(projects.map((p) => [p.name, p.company])).toEqual([
+      ["hq-cli", "folder:indigo"],
+      ["hq-pro", "folder:indigo"],
+      ["one-off", null],
+      ["scratch", null],
+    ]);
+    const done = events.find((e) => e.type === "done") as { summary: Record<string, number> };
+    expect(done.summary.companies).toBe(1);
+  });
+
+  it("companyFolderOf: the parent folder, unless it is a home folder or the root", () => {
+    expect(companyFolderOf("/Users/admin/dev/indigo/hq-cli")).toBe("indigo");
+    expect(companyFolderOf("/Users/admin/hq-cli")).toBe("");
+    expect(companyFolderOf("/home/admin/hq-cli")).toBe("");
+    expect(companyFolderOf("/hq-cli")).toBe("");
+    expect(companyFolderOf("C:\\Users\\admin\\work\\acme\\site")).toBe("acme");
+  });
+
   it("an empty computer still reads as a scan that ran", () => {
     const done = parsed(scanOf()).at(-1)!;
     expect(done.type).toBe("done");
     if (done.type !== "done") return;
     expect(isScanNotRun(done)).toBe(false);
-    expect(done.summary).toEqual({ projects: 0, sessions: 0, repos: 0, apps: 0, sources: 4 });
+    expect(done.summary).toEqual({ companies: 0, projects: 0, sessions: 0, repos: 0, apps: 0, sources: 4 });
   });
 
   it("names that are not safe ids become safe ids, and odd shapes are skipped", () => {
@@ -241,7 +276,7 @@ describe("native scan through the import runner", () => {
     runner.start();
     await vi.waitFor(() => expect(runner.current().phase).toBe("done"));
     expect(importResultOf(runner.current().events)).toEqual({
-      summary: { projects: 3, sessions: 17, repos: 2, apps: 2, sources: 4 },
+      summary: { companies: 0, projects: 3, sessions: 17, repos: 2, apps: 2, sources: 4 },
       report: null,
     });
     runner.dispose();

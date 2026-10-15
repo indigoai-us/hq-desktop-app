@@ -326,9 +326,10 @@ export const FIRST_RUN_DECISION_COPY = {
   toolQuestion: "Where do you want to keep working?",
   toolLead: (tool: string, noun = "Mac") => `You use ${tool} most on this ${noun}. HQ can open there with everything it just found.`,
   toolPrimary: (tool: string) => `Continue in ${tool}`,
-  toolOther: "Name your HQ bot instead",
-  botQuestion: "Name your HQ bot.",
-  botLead: "Your bot works alongside you in HQ and starts out knowing what it found here.",
+  // Two equal paths (owner, 2026-10-15): the tool and naming the assistant.
+  toolOther: "Name Your Assistant",
+  botQuestion: "Name your assistant.",
+  botLead: "Your assistant works alongside you in HQ and starts out knowing what it found here.",
   botPrimary: "Continue",
   backToTool: (tool: string) => `Continue in ${tool} instead`,
   scanning: "Looking through this Mac first.",

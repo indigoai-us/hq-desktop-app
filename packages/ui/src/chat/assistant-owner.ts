@@ -270,6 +270,10 @@ export function isAssistantAlreadyThere(raw: string | null | undefined): boolean
   const text = (raw ?? "").toLowerCase();
   if (!text) return false;
   if (/already set up on this computer/.test(text)) return true;
+  // hq-cli's own 409 wording on a fresh install: "You already have a bot
+  // named "setup" in HQ — it is just not set up on this computer. Bring it
+  // back with: hq bot adopt setup".
+  if (/already have a bot named/.test(text)) return true;
   if (/already exists/.test(text)) return true;
   if (/\b(?:entity_exists|already_exists|duplicate_entity)\b/.test(text)) return true;
   if (/→\s*409\b/.test(text)) return true;
@@ -412,6 +416,23 @@ export function createAssistantOwner(host: AssistantOwnerHost): AssistantOwner {
     if (isAssistantAlreadyThere(created.raw ?? created.reason)) {
       const found = await here();
       if (found) return keep(found, chosen, false);
+      // The account owns it but this computer does not run it (a fresh
+      // install, a second Mac) and this hq-cli's create stopped at the
+      // cloud's 409. Bring it here the way "Start on this computer" does,
+      // then name it. Naming the cloud record alone left the assistant bound
+      // to the other computer: the owner's fresh install showed the new name
+      // over "set up on another computer" (run 2026-10-15). One running on
+      // another computer is still never taken.
+      const listed = host.cloudAssistant?.() ?? null;
+      if (host.adopt && (!listed || listed.adoptable)) {
+        const adopted = await host.adopt(SETUP_BOT_NAME);
+        const brought = await here();
+        if (brought) {
+          if (chosen) await host.rename(brought, chosen);
+          return succeed(brought, chosen, "adopted");
+        }
+        if (!adopted.ok) console.warn("[hq-desktop] assistant adopt after create failed:", adopted.raw);
+      }
       const cloud = (await host.findCloud?.()) ?? null;
       if (cloud) return keep(cloud, chosen, false);
       return fail(label, host.copy.alreadyElsewhere);
