@@ -3170,6 +3170,24 @@ describe('ready screen: usage data before the handoff (US-010)', () => {
     expect(optInPosts()).toHaveLength(1);
     expect(optInPosts()[0][1]).toMatchObject({ enabled: false, surface: 'onboarding' });
   });
+
+  it('finishes once when a tool launch finishes before the automatic handoff', async () => {
+    const onfinish = mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, { ...NO_AI_TOOLS, claude_desktop: true, any: true });
+    await revealWithoutDwell();
+
+    // The person opens Claude Code while the usage-data line is still in its
+    // wait. That launch finishes setup, so the automatic handoff must not
+    // finish it a second time once the wait runs out.
+    const launchClaude = host.querySelector<HTMLButtonElement>('[data-testid="onboarding-launch-claude"]')!;
+    expect(launchClaude.disabled).toBe(false);
+    launchClaude.click();
+    await flushUntil(() => onfinish.mock.calls.length > 0);
+    expect(tauri.invoke).toHaveBeenCalledWith('open_claude_code_link', expect.any(Object));
+
+    await wait(READY_CONSENT_DWELL_MS * 2);
+    expect(onfinish).toHaveBeenCalledOnce();
+    expect(optInPosts()).toHaveLength(1);
+  });
 });
 
 describe('setup restart', () => {

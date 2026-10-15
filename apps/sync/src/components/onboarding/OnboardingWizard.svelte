@@ -3720,6 +3720,9 @@
       }
       await onfinish?.();
       onboardingCompleted = true;
+      // A finish from a Claude Code or Codex launch also ends the wait for
+      // the automatic handoff, so it never finishes a second time.
+      autoHandoffTried = true;
       recordStep(currentStep, 'completed', { outcome: 'finished' });
       return true;
     } catch (err) {
