@@ -102,10 +102,21 @@ export function installQueueAttentionNotice(failed: readonly string[], opts: { n
   const noun = opts.noun?.trim() || "computer";
   const names = failed.map(installItemName);
   const list = names.length <= 1 ? (names[0] ?? "a setup item") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  const onlyGh = failed.length === 1 && failed[0] === "gh";
+  if (onlyGh) {
+    // gh installs only through Homebrew; quitting and reopening does not help.
+    return [
+      `[HQ desktop] Background setup on this ${noun} did not finish: ${list}.`,
+      "The GitHub CLI installs through Homebrew, and the install did not go through.",
+      "Tell the person in one plain line that the GitHub CLI is optional and needs Homebrew first (brew.sh), after which HQ adds it on its next launch. Do not show error text.",
+    ].join(" ");
+  }
+  const rest = failed.filter((id) => id !== "gh");
+  const ghNote = rest.length < failed.length ? " The GitHub CLI is optional and needs Homebrew first (brew.sh); say so in the same line." : "";
   return [
     `[HQ desktop] Background setup on this ${noun} did not finish: ${list}.`,
     "HQ resumes the unfinished items the next time it launches.",
-    "Tell the person in one plain line what did not finish and that quitting and reopening HQ finishes it. Do not show error text, and do not ask them to run commands.",
+    `Tell the person in one plain line what did not finish and that quitting and reopening HQ finishes it.${ghNote} Do not show error text, and do not ask them to run commands.`,
   ].join(" ");
 }
 

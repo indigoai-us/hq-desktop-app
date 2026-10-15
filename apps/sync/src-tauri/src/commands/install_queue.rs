@@ -23,6 +23,7 @@ use futures_util::FutureExt;
 use hq_desktop_core::install_queue::{
     self as core_queue, is_settled, plan_next, ItemOutcome, ItemState, LoadOutcome, Presence,
     QueueChoices, QueueItemId, QueueManifest, QueueStatus, INSTALL_ITEMS, SKIP_ALREADY_PRESENT,
+    SKIP_NO_HOMEBREW,
 };
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
@@ -386,6 +387,13 @@ async fn execute_item(
         // install below runs.
         QueueItemId::HqCli if core_queue::hq_cli_bundled_outcome(bundled_hq_cli_version()).is_some() => {
             core_queue::hq_cli_bundled_outcome(bundled_hq_cli_version()).expect("checked by the guard")
+        }
+        // The GitHub CLI is optional and only installs through Homebrew. With
+        // no Homebrew there is nothing to run, so the item ends as skipped and
+        // nobody is told about a failure (owner feedback 14, 2026-10-15).
+        #[cfg(not(windows))]
+        QueueItemId::Gh if install_deps::homebrew_present().is_none() => {
+            ItemOutcome::Skipped(SKIP_NO_HOMEBREW.to_string())
         }
         QueueItemId::Node | QueueItemId::HqCli | QueueItemId::Gh | QueueItemId::Yq | QueueItemId::Jq => {
             let dep_id = id.as_str();
@@ -871,9 +879,18 @@ mod tests {
         }
         assert_eq!(wait_failure_message(&m, &INSTALL_ITEMS), None);
 
-        // An optional failure (gh) leaves the stage green; the chip shows it.
+        // An optional failure (gh) leaves the stage green; the assistant reports it.
         m.mark_finished(QueueItemId::Gh, &ItemOutcome::Failed("gh download failed".into()), 1);
         assert_eq!(wait_failure_message(&m, &INSTALL_ITEMS), None);
+
+        // gh with no Homebrew ends as skipped, with its reason in telemetry and
+        // nothing in the failed list the assistant is told about.
+        m.mark_finished(QueueItemId::Gh, &ItemOutcome::Skipped(SKIP_NO_HOMEBREW.to_string()), 1);
+        assert_eq!(m.item(QueueItemId::Gh).unwrap().state, ItemState::Skipped);
+        let props = telemetry_properties(QueueItemId::Gh, &ItemOutcome::Skipped(SKIP_NO_HOMEBREW.to_string()), 1);
+        assert_eq!(props["outcome"], "skipped");
+        assert_eq!(props["skipReason"], "no-homebrew");
+        assert!(core_queue::status(&m, false).failed.is_empty());
 
         m.mark_finished(QueueItemId::Qmd, &ItemOutcome::Failed("npm exited 1".into()), 1);
         let message = wait_failure_message(&m, &INSTALL_ITEMS).unwrap();
