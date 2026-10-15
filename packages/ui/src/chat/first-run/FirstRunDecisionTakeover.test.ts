@@ -109,7 +109,7 @@ describe("FirstRunDecisionTakeover", () => {
     await waitForDecision();
     expect(byId("first-run-decision")?.getAttribute("data-path")).toBe("tool");
     expect(text("first-run-decision-question")).toBe(FIRST_RUN_DECISION_COPY.toolQuestion);
-    expect(text("first-run-decision-lead")).toMatch(/^You use Codex most on this /);
+    expect(text("first-run-decision-lead")).toMatch(/^We noticed you use Codex the most on this \w+, \d+ sessions so far\. Want to keep working there\?$/);
     expect(text("first-run-decision-primary")).toBe("Continue in Codex");
     expect(text("first-run-decision-other")).toBe("Name Your Assistant");
     expect(byId("first-run-bot-name")).toBeNull();

@@ -13,8 +13,7 @@ import {
   FIRST_RUN_FLOW,
   decisionToolFor,
   mostUsedTool,
-  type FirstRunToolUsage,
-} from "./visual-first-run.js";
+  type FirstRunToolUsage, toolSessionCount } from "./visual-first-run.js";
 
 const NOW = 1_760_000_000_000;
 
@@ -86,10 +85,18 @@ describe("decisionToolFor", () => {
 });
 
 describe("decision copy", () => {
-  it("names the tool and the computer", () => {
-    expect(FIRST_RUN_DECISION_COPY.toolLead("Codex", "Mac")).toBe(
-      "You use Codex most on this Mac. HQ can open there with everything it just found.",
+  it("gives the reason for the recommendation, with the scan's count when it has one (item 6, standup 2026-10-15)", () => {
+    expect(FIRST_RUN_DECISION_COPY.toolLead("Codex", "Mac", 42)).toBe(
+      "We noticed you use Codex the most on this Mac, 42 sessions so far. Want to keep working there?",
     );
+    expect(FIRST_RUN_DECISION_COPY.toolLead("Claude Code", "Mac", 1)).toBe(
+      "We noticed you use Claude Code the most on this Mac, 1 session so far. Want to keep working there?",
+    );
+    expect(FIRST_RUN_DECISION_COPY.toolLead("Codex", "Mac")).toBe("We noticed Codex on this Mac. Want to keep working there?");
+    expect(FIRST_RUN_DECISION_COPY.toolLead("Codex", "Mac", 42)).not.toMatch(/!/);
+    expect(toolSessionCount([usage("codex", 3, 7, null)], "codex")).toBe(7);
+    expect(toolSessionCount([usage("codex", 0, 0, null)], "codex")).toBeNull();
+    expect(toolSessionCount(null, "claude")).toBeNull();
     expect(FIRST_RUN_DECISION_COPY.toolPrimary("Claude Code")).toBe("Continue in Claude Code");
     expect(FIRST_RUN_DECISION_COPY.backToTool("Codex")).toBe("Continue in Codex instead");
   });

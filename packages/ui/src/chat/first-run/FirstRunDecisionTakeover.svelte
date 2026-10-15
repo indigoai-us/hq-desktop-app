@@ -36,6 +36,7 @@
     firstRunTalkLabel,
     normalizeAssistantName,
     runtimeLabel,
+    toolSessionCount,
     type FirstRunCreation,
     type FirstRunFlowScreen,
     type FirstRunImportHandoff,
@@ -168,6 +169,7 @@
   );
   const tool = $derived(decisionToolFor(scanTools, installed));
   const toolName = $derived(tool ? runtimeLabel(tool) : "");
+  const toolSessions = $derived(tool ? toolSessionCount(scanTools, tool) : null);
   let choseBot = $state(untrack(() => initialChoseBot));
   const showBot = $derived(choseBot || tool === null);
 
@@ -313,7 +315,7 @@
     {:else if tool}
       <div class="fr-decision-head">
         <p class="fr-decision-q" data-testid="first-run-decision-question">{COPY.toolQuestion}</p>
-        <p class="fr-decision-lead" data-testid="first-run-decision-lead">{COPY.toolLead(toolName, hostNoun)}</p>
+        <p class="fr-decision-lead" data-testid="first-run-decision-lead">{COPY.toolLead(toolName, hostNoun, toolSessions)}</p>
       </div>
       <!-- Two equal paths (owner, 2026-10-15): the tool, or naming the assistant. -->
       <div class="new-bot-foot-actions">
