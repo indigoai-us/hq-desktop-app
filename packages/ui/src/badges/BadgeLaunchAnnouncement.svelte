@@ -18,7 +18,6 @@
    */
   import RailIcon from "../common/button/RailIcon.svelte";
   import { suspendShortcuts } from "../common/keyboard-shortcuts.js";
-  import { portal } from "../chat/portal.js";
   import { inertOutside, restoreFocus, trapTab } from "../chat/messaging/card-modal.js";
   import BadgeCard from "./BadgeCard.svelte";
   import BadgeMark from "./BadgeMark.svelte";
@@ -89,7 +88,11 @@
   function layer(node: HTMLElement) {
     const active = document.activeElement;
     const opener = active instanceof HTMLElement && active !== document.body ? active : null;
-    const ported = portal(node);
+    // Straight under <body>, not into the app shell like the other overlays:
+    // the shell carries the Interface size zoom (0.9 / 1.12), and a full-window
+    // layer inside it came out 12% taller than the window at Large, cutting off
+    // the buttons. Nothing here reads the shell's tokens.
+    document.body.appendChild(node);
     const releaseInert = inertOutside(node);
     const releaseShortcuts = suspendShortcuts();
     // The one thing to do here is the primary action, so it starts focused.
@@ -98,7 +101,7 @@
       destroy() {
         releaseShortcuts();
         releaseInert();
-        ported.destroy?.();
+        node.remove();
         restoreFocus(opener);
       },
     };
@@ -212,7 +215,8 @@
     --ink-2: oklch(0.97 0.004 75 / 0.68);
     --ink-3: oklch(0.97 0.004 75 / 0.46);
     position: fixed; inset: 0; z-index: 9100;
-    background: oklch(0.15 0.006 285 / 0.985);
+    /* Opaque: window transparency must not let the app read through. */
+    background: oklch(0.15 0.006 285);
     color: var(--ink); color-scheme: dark;
     overscroll-behavior: contain;
     animation: la-fade 320ms ease-out both;
