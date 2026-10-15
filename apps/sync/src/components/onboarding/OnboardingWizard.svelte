@@ -4970,19 +4970,38 @@
            the tools detection says are installed. Nothing shows for them
            while detection is in flight. -->
       <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers">
+        {#if installPending}
+          <!-- Item 7 (owner and Corey, standup 2026-10-15): while the blocking
+               install runs this is not the primary action, so no white card.
+               A quiet line with a greyed Continue that reads as waiting; the
+               white Open HQ Desktop card takes its place once the blocking
+               phase is done. -->
+          <p class="ready-wait" data-testid="onboarding-ready-wait" aria-live="polite">
+            <span class="ready-wait-line">{openDesktop.label}</span>
+            <button
+              class="btn btn-secondary ready-wait-continue"
+              type="button"
+              data-testid="onboarding-open-desktop"
+              aria-label="Continue, once the install finishes"
+              disabled
+              aria-busy="true"
+            >Continue</button>
+          </p>
+        {:else}
         <button
           class="tool-card tool-card-desktop"
           type="button"
           data-testid="onboarding-open-desktop"
           aria-label="Open HQ Desktop"
           disabled={!openDesktop.enabled}
-          aria-busy={finishing || installPending}
+          aria-busy={finishing}
           onclick={() => void handleFinish()}
         >
           <span class="tc-icon" aria-hidden="true"><img src={hqAppIcon} alt="" width="32" height="32" /></span>
           <span class="tc-name">{openDesktop.label}</span>
           {#if !openDesktop.enabled}<span class="tc-spin" aria-hidden="true"></span>{/if}
         </button>
+        {/if}
         {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
           <div
             class="tool-pills tool-pills-status ai-tools-status-stack"

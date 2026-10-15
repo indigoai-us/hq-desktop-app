@@ -115,6 +115,61 @@ pub fn welcome_frame_from_work_area(
     })
 }
 
+/// Where the heads-up card opens: centred in the monitor's work area (given
+/// in physical pixels, converted with the scale factor), at the card's own
+/// logical size. Computed up front and applied with one `set_position`, so the
+/// window never shows at the hidden window's default frame (the top-left of
+/// the screen) and then slides to the centre (owner run 2026-10-15, item 8).
+/// `None` when the work area is not usable.
+pub fn heads_up_frame_from_work_area(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+    card: (f64, f64),
+) -> Option<LogicalFrame> {
+    let area = welcome_frame_from_work_area(x, y, width, height, scale)?;
+    let (card_w, card_h) = card;
+    if !(card_w.is_finite() && card_h.is_finite()) || card_w < 1.0 || card_h < 1.0 {
+        return None;
+    }
+    Some(LogicalFrame {
+        x: area.x + ((area.width - card_w) / 2.0).max(0.0),
+        y: area.y + ((area.height - card_h) / 2.0).max(0.0),
+        width: card_w,
+        height: card_h,
+    })
+}
+
+/// Place the hidden `main` window at the heads-up card's centred frame before
+/// it is first shown. Returns false when no monitor could be read; the caller
+/// then falls back to the platform's own centring.
+pub fn place_heads_up_card(window: &tauri::WebviewWindow) -> bool {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return false;
+    };
+    let area = monitor.work_area();
+    let Some(frame) = heads_up_frame_from_work_area(
+        area.position.x as f64,
+        area.position.y as f64,
+        area.size.width as f64,
+        area.size.height as f64,
+        monitor.scale_factor(),
+        FIRST_RUN_WINDOW_SIZE,
+    ) else {
+        return false;
+    };
+    let _ = window.set_size(tauri::LogicalSize::new(frame.width, frame.height));
+    let _ = window.set_position(tauri::LogicalPosition::new(frame.x, frame.y));
+    true
+}
+
 /// Pixel size to scale an image of `width` x `height` down to so its long edge
 /// is at most `max_edge`. Never scales up. `None` for unusable sizes.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -804,6 +859,25 @@ mod tests {
         assert_eq!(welcome_fade_ms(Some(-5.0)), 0.0);
         assert_eq!(welcome_fade_ms(Some(10_000.0)), 3000.0);
         assert_eq!(welcome_fade_ms(Some(700.0)), 700.0);
+    }
+
+    #[test]
+    fn the_heads_up_card_is_centred_in_the_work_area_at_its_own_size() {
+        // A 2x display, work area 2880x1710 physical at (0, 50): logical 1440x855 at (0, 25).
+        let frame = heads_up_frame_from_work_area(0.0, 50.0, 2880.0, 1710.0, 2.0, (440.0, 380.0)).unwrap();
+        assert_eq!(frame.width, 440.0);
+        assert_eq!(frame.height, 380.0);
+        assert_eq!(frame.x, 500.0);
+        assert_eq!(frame.y, 25.0 + (855.0 - 380.0) / 2.0);
+        // A second monitor to the right keeps its own origin.
+        let right = heads_up_frame_from_work_area(1440.0, 0.0, 1440.0, 900.0, 1.0, (440.0, 380.0)).unwrap();
+        assert_eq!(right.x, 1440.0 + 500.0);
+        assert_eq!(right.y, 260.0);
+        // A work area smaller than the card pins the card to the area's origin.
+        let tiny = heads_up_frame_from_work_area(10.0, 20.0, 300.0, 200.0, 1.0, (440.0, 380.0)).unwrap();
+        assert_eq!((tiny.x, tiny.y), (10.0, 20.0));
+        assert!(heads_up_frame_from_work_area(0.0, 0.0, 0.0, 900.0, 1.0, (440.0, 380.0)).is_none());
+        assert!(heads_up_frame_from_work_area(0.0, 0.0, 1440.0, 900.0, 1.0, (0.0, 380.0)).is_none());
     }
 
     #[test]

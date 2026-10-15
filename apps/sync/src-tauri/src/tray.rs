@@ -955,6 +955,17 @@ pub fn show_window_centered(app: &AppHandle) {
     crate::util::window_focus::bring_webview_to_front(&window);
 }
 
+/// Show `main` where it already is. For the first-run heads-up card, whose
+/// frame was computed and set before this call: a second `center()` here
+/// moved the window once more after it was shown (item 8, 2026-10-15).
+pub fn show_window_placed(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    hide_desktop_alt(app);
+    crate::util::window_focus::bring_webview_to_front(&window);
+}
+
 // `show_main_window` (the Svelte-invokable wrapper) lives in
 // commands/banner.rs now — the meeting-detect notification's "open" action
 // hits the same handler as the update banner's body-click, and both open the

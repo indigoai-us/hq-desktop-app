@@ -315,10 +315,12 @@ describe('welcome flow: the install runs in the background', () => {
     const open = () => byId('onboarding-open-desktop')!;
     const title = () => host.querySelector('#onboarding-title-ready')?.textContent?.trim();
     expect(open().disabled).toBe(true);
-    // One label, and it says why the button waits; a spinner beside it.
-    expect(open().querySelector('.tc-name')?.textContent?.trim()).toBe('Getting ready…');
-    expect(open().querySelector('.tc-spin')).not.toBeNull();
-    expect(open().querySelector('.tc-line')).toBeNull();
+    // Item 7 (standup 2026-10-15): while the blocking install runs there is
+    // no white card. A quiet line says why it waits, with a greyed Continue.
+    expect(open().classList.contains('tool-card')).toBe(false);
+    expect(open().textContent?.trim()).toBe('Continue');
+    expect(byId('onboarding-ready-wait')?.textContent).toContain('Getting ready…');
+    expect(host.querySelector('[data-scene="ready"] .tool-card-desktop')).toBeNull();
     expect(title()).toBe('Almost ready.');
     // The Claude Code and Codex options wait with it.
     expect(byId('onboarding-launch-claude')!.disabled).toBe(true);
