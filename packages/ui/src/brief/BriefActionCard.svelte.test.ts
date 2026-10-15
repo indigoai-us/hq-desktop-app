@@ -33,14 +33,14 @@ const DECISION: BriefDecision = {
   detail: { why: "Launch is Friday", unlocks: [{ label: "Sam", state: "waiting since Monday" }], source: "prs" },
 };
 
-function render(destinations: BriefActionDestinations, over: Partial<{ onassistant: (prompt: string, idempotencyKey: string) => Promise<string | null>; onlaunch: (engine: "claude" | "codex", prompt: string) => Promise<string | null> }> = {}) {
+function render(destinations: BriefActionDestinations, over: Partial<{ runId: string | null; onassistant: (prompt: string, idempotencyKey: string) => Promise<string | null>; onlaunch: (engine: "claude" | "codex", prompt: string) => Promise<string | null> }> = {}) {
   const onassistant = vi.fn(async () => null);
   const onlaunch = vi.fn(async () => null);
   target = document.createElement("div");
   document.body.appendChild(target);
   component = mount(BriefActionCard, {
     target,
-    props: { card: actionCardData(DECISION)!, destinations, runId: "run-7", onassistant, onlaunch, ...over },
+    props: { card: actionCardData(DECISION)!, destinations, runId: "run-7", now: "2026-10-15T09:00:00", onassistant, onlaunch, ...over },
   });
   return { onassistant, onlaunch };
 }
@@ -73,8 +73,25 @@ describe("BriefActionCard", () => {
     const { onassistant, onlaunch } = render(ALL);
     q('[data-testid="brief-action-assistant"]')!.click();
     await settle();
-    expect(onassistant).toHaveBeenCalledWith("Review PR 42 and leave comments.", assistantIdempotencyKey("run-7", "d1"));
+    expect(onassistant).toHaveBeenCalledWith("Review PR 42 and leave comments.", "brief-action:run-7:d1");
     expect(onlaunch).not.toHaveBeenCalled();
+  });
+
+  it("shows the note the send resolves to, so a sent item is distinguishable from nothing", async () => {
+    render(ALL, { onassistant: async () => "Sent to Ada." });
+    q('[data-testid="brief-action-assistant"]')!.click();
+    await settle();
+    expect(q('[role="status"]')?.textContent).toBe("Sent to Ada.");
+  });
+
+  it("shows the failure note when the send rejects", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    render(ALL, { onassistant: () => Promise.reject(new Error("offline")) });
+    q('[data-testid="brief-action-assistant"]')!.click();
+    await settle();
+    expect(q('[role="status"]')?.textContent).toBe("Could not send this to Ada. Try again in a moment.");
+    expect((q('[data-testid="brief-action-assistant"]') as HTMLButtonElement).disabled).toBe(false);
+    warn.mockRestore();
   });
 
   it("opens Claude Code and Codex with the prompt", async () => {
@@ -99,8 +116,17 @@ describe("BriefActionCard", () => {
     expect(actionCardData({ ...DECISION, prompt: undefined })).toBeNull();
   });
 
-  it("keys a send by run and item", () => {
-    expect(assistantIdempotencyKey("run-7", "d1")).toBe(assistantIdempotencyKey("run-7", "d1"));
-    expect(assistantIdempotencyKey("run-7", "d1")).not.toBe(assistantIdempotencyKey("run-8", "d1"));
+  it("keys a send by run and item, or by local day when the brief has no run id", () => {
+    expect(assistantIdempotencyKey("run-7", "d1", "2026-10-15T09:00:00")).toBe("brief-action:run-7:d1");
+    expect(assistantIdempotencyKey(null, "d1", "2026-10-15T09:00:00")).toBe("brief-action:day-2026-10-15:d1");
+    // The same item on the next day's brief is a new send.
+    expect(assistantIdempotencyKey(null, "d1", "2026-10-16T09:00:00")).toBe("brief-action:day-2026-10-16:d1");
+  });
+
+  it("keys a card's send by local day when the brief has no run id", async () => {
+    const { onassistant } = render(ALL, { runId: null });
+    q('[data-testid="brief-action-assistant"]')!.click();
+    await settle();
+    expect(onassistant).toHaveBeenCalledWith("Review PR 42 and leave comments.", "brief-action:day-2026-10-15:d1");
   });
 });

@@ -74,6 +74,7 @@
   import BriefRailHost from "./BriefRailHost.svelte";
   import WelcomeReport from "../brief/WelcomeReport.svelte";
   import { welcomeMadeBy } from "../brief/welcome-made-by.js";
+  import { briefActionsFor } from "../brief/brief-action-cards.js";
   import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
   import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
@@ -4080,24 +4081,19 @@
       ? { detect: () => welcomeAppsHost.detect(), cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) } }
       : null,
   );
-  /** Report action cards: where each item can be done, and the assistant DM send. */
-  const briefActions = $derived({
-    destinations: {
-      assistantName: assistantUid ? assistantLabel : null,
-      claudeCode: Boolean(aiTools?.claude_cli),
-      codex: Boolean(aiTools?.codex_cli),
-    },
-    async onassistant(prompt: string, idempotencyKey: string): Promise<string | null> {
-      if (!assistantUid) return "Your assistant is not set up yet.";
-      const res = await adapter.messaging.sendDm(assistantUid, prompt, { audience: "agent", idempotencyKey });
-      if (res.ok) return null;
-      console.warn("[daily-brief] action send failed", res.reason, res.code ?? "", res.message ?? "");
-      return `Could not send this to ${assistantLabel}. Try again in a moment.`;
-    },
-  });
+  /** Report action cards: where each item can be done, and the assistant DM send (only when it runs here). */
+  const briefActions = $derived(
+    briefActionsFor(
+      assistantUid ? { uid: assistantUid, name: assistantLabel, runsHere: botRunsHere(localBotRecords, assistantUid) } : null,
+      { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) },
+      (uid, prompt, idempotencyKey) => adapter.messaging.sendDm(uid, prompt, { audience: "agent", idempotencyKey }),
+    ),
+  );
   // The cards and the AI apps card need launch detection; ask for it once the report shows.
+  // The call is untracked: a host whose request reads its own state (a probing flag) would
+  // otherwise re-run this effect when that state changes and probe forever after a failure.
   $effect(() => {
-    if ((briefVisible || welcomeReportOwed) && aiTools === null) onrequestaitools?.();
+    if ((briefVisible || welcomeReportOwed) && aiTools === null) untrack(() => onrequestaitools?.());
   });
   function openWelcomeReport(): void {
     welcomeReportOwed = true;

@@ -20,6 +20,7 @@
   import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
   import type { FoundWorkApps } from "@hq/platform";
   import ConnectAiAppsCard from "./ConnectAiAppsCard.svelte";
+  import { assistantNameInSentence } from "./brief-action-cards.js";
 
   interface Props {
     /** The report is ready: the brief page replaces the loading card. */
@@ -72,7 +73,7 @@
         <p class="made-by" data-testid="welcome-report-made-by">
           {#if madeBy}
             <span>{madeBy.name} made this report.</span>
-            <button type="button" data-testid="welcome-report-meet" onclick={() => madeBy.onmeet()}>Meet {madeBy.name}</button>
+            <button type="button" data-testid="welcome-report-meet" onclick={() => madeBy.onmeet()}>Meet {assistantNameInSentence(madeBy.name)}</button>
           {:else}
             <span>Your assistant will make the next one.</span>
           {/if}

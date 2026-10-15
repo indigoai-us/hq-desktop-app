@@ -439,6 +439,7 @@
           {card}
           destinations={actions.destinations}
           runId={input.runId ?? null}
+          now={input.now}
           onassistant={actions.onassistant}
           onlaunch={(engine, prompt) => launchAction(card.id, engine, prompt)}
         />

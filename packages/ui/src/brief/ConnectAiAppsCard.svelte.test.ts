@@ -94,8 +94,9 @@ describe("foundConnectorApps", () => {
       foundConnectorApps(apps, cli).map((a) => a.id);
     expect(ids([{ bundleId: "com.anthropic.claudefordesktop", name: "Claude" }])).toEqual(["claude"]);
     expect(ids([{ bundleId: "com.openai.chat", name: "ChatGPT" }])).toEqual(["chatgpt"]);
-    // ChatGPT ships Codex inside it under this bundle id.
-    expect(ids([{ bundleId: "com.openai.codex", name: "ChatGPT" }])).toEqual(["chatgpt", "codex"]);
+    // The ChatGPT app can carry this bundle id; Codex is listed only when the CLI was found.
+    expect(ids([{ bundleId: "com.openai.codex", name: "ChatGPT" }])).toEqual(["chatgpt"]);
+    expect(ids([{ bundleId: "com.openai.codex", name: "ChatGPT" }], { claudeCode: false, codex: true })).toEqual(["chatgpt", "codex"]);
     expect(ids([{ bundleId: "ai.x.GrokApp", name: "Grok" }])).toEqual(["grok-bot"]);
     expect(ids([], { claudeCode: true, codex: true })).toEqual(["claude-code", "codex"]);
     expect(ids([{ bundleId: "com.linear", name: "Linear" }])).toEqual([]);

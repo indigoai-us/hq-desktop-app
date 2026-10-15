@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { IntegrationInstallInput } from "@hq/platform";
+import type { FoundWorkApps, IntegrationInstallInput } from "@hq/platform";
 
 import { SIGNATURE_DOMAINS } from "./found-apps.js";
 import { CANT_CONNECT_YET, LOOKUP_FAILED, createYourAppsHost, isHttpsUrl, readDocsDiscovery, readStepConnections, type YourAppsHostDeps } from "./your-apps-host.js";
@@ -282,6 +282,18 @@ describe("createYourAppsHost", () => {
     expect((await host.autoConnect("c", "e", "n")).ok).toBe(true);
     expect((await host.connect("c", tile())).ok).toBe(true);
     expect(install).not.toHaveBeenCalled();
+  });
+
+  it("detect shares one scan between callers that ask at the same time, and scans again later", async () => {
+    const found: FoundWorkApps = { platform: "macos", scannedAtMs: 1, apps: [{ bundleId: "com.linear", name: "Linear" }], mcpServers: [], sources: [], truncated: false };
+    const detectWorkApps = vi.fn(async () => ok(found));
+    const host = createYourAppsHost(deps({ detectWorkApps }));
+    const [a, b] = await Promise.all([host.detect(), host.detect()]);
+    expect(a).toEqual(found);
+    expect(b).toEqual(found);
+    expect(detectWorkApps).toHaveBeenCalledTimes(1);
+    await host.detect();
+    expect(detectWorkApps).toHaveBeenCalledTimes(2);
   });
 
   it("detect answers null when the host has no scan or it fails", async () => {

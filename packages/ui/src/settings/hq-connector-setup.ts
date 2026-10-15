@@ -133,14 +133,15 @@ export async function copyConnectorSetup(copyText: string): Promise<boolean> {
 
 /**
  * The desktop apps the launch scan reports, by macOS bundle id, matched to a
- * connector. ChatGPT ships Codex inside it under `com.openai.codex`, so that
- * bundle counts as both. Grok's id is matched by its `ai.x.` prefix or the
+ * connector. The ChatGPT app can carry the `com.openai.codex` id, so that
+ * bundle counts as ChatGPT only; Codex is listed only when the launch
+ * detection found the Codex CLI. Grok's id is matched by its `ai.x.` prefix or the
  * app name, because the Grok app's exact id has changed between builds.
  */
 const CONNECTOR_BUNDLE_IDS: Readonly<Record<string, readonly ConnectorApp["id"][]>> = {
   "com.anthropic.claudefordesktop": ["claude"],
   "com.openai.chat": ["chatgpt"],
-  "com.openai.codex": ["chatgpt", "codex"],
+  "com.openai.codex": ["chatgpt"],
 };
 
 /**

@@ -4,6 +4,9 @@
  * or Codex).
  */
 
+import type { AdapterResult } from "@hq/platform";
+
+import { ASSISTANT_FALLBACK_NAME } from "../chat/assistant-owner.js";
 import type { BriefDecision } from "./brief-types.js";
 
 export interface BriefActionCardData {
@@ -20,7 +23,7 @@ export interface BriefActionCardData {
 
 /** Where a card's work can be done. */
 export interface BriefActionDestinations {
-  /** The assistant's display name; null when no assistant exists yet. */
+  /** The assistant's name inside a sentence; null when no assistant runs on this computer. */
   assistantName: string | null;
   claudeCode: boolean;
   codex: boolean;
@@ -29,8 +32,45 @@ export interface BriefActionDestinations {
 /** The shell inputs for the report action cards. */
 export interface BriefActions {
   destinations: BriefActionDestinations;
-  /** Sends the prompt to the assistant DM; resolves to an error message or null. */
+  /** Sends the prompt to the assistant DM; resolves to the note to show (sent or failed). */
   onassistant: (prompt: string, idempotencyKey: string) => Promise<string | null>;
+}
+
+/** The assistant's name inside a sentence: "your assistant" when it has no name yet. */
+export function assistantNameInSentence(name: string): string {
+  return name === ASSISTANT_FALLBACK_NAME ? "your assistant" : name;
+}
+
+/**
+ * The report action cards' destinations and assistant send. The assistant
+ * button shows only when the assistant runs on this computer: a cloud-only
+ * one would accept the DM and nothing would happen here. A send always
+ * leaves a note, so success is distinguishable from nothing.
+ */
+export function briefActionsFor(
+  assistant: { uid: string; name: string; runsHere: boolean } | null,
+  cli: { claudeCode: boolean; codex: boolean },
+  send: (uid: string, prompt: string, idempotencyKey: string) => Promise<AdapterResult<unknown>>,
+): BriefActions {
+  const here = assistant?.runsHere ? assistant : null;
+  const name = here ? assistantNameInSentence(here.name) : null;
+  return {
+    destinations: { assistantName: name, claudeCode: cli.claudeCode, codex: cli.codex },
+    async onassistant(prompt, idempotencyKey) {
+      if (!here) return "Your assistant is not set up on this computer yet.";
+      const failed = `Could not send this to ${name}. Try again in a moment.`;
+      let res: AdapterResult<unknown>;
+      try {
+        res = await send(here.uid, prompt, idempotencyKey);
+      } catch (err) {
+        console.warn("[daily-brief] action send threw", err);
+        return failed;
+      }
+      if (res.ok) return `Sent to ${name}.`;
+      console.warn("[daily-brief] action send failed", res.reason, res.code ?? "", res.message ?? "");
+      return failed;
+    },
+  };
 }
 
 export function actionCardData(d: BriefDecision, prompts: Record<string, string> = {}): BriefActionCardData | null {
@@ -43,7 +83,18 @@ export function actionCardData(d: BriefDecision, prompts: Record<string, string>
   return { id: d.id, title: d.title, why: d.detail?.why?.trim() || d.summary, evidence, prompt };
 }
 
-/** One send per run and item, so a repeated click reaches the assistant once. */
-export function assistantIdempotencyKey(runId: string | null | undefined, itemId: string): string {
-  return `brief-action:${runId ?? "local"}:${itemId}`;
+/**
+ * One send per run and item, so a repeated click reaches the assistant once.
+ * A brief with no run id is keyed by its local day, so the same item on a
+ * later day's brief can be sent again.
+ */
+export function assistantIdempotencyKey(runId: string | null | undefined, itemId: string, now: string): string {
+  return `brief-action:${runId ?? `day-${localDay(now)}`}:${itemId}`;
+}
+
+function localDay(now: string): string {
+  const d = new Date(now);
+  if (Number.isNaN(d.getTime())) return "unknown";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }

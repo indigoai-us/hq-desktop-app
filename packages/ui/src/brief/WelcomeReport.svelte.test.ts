@@ -138,6 +138,13 @@ describe("WelcomeReport", () => {
     expect(onmeet).toHaveBeenCalledTimes(1);
   });
 
+  it("names an unnamed assistant in lower case inside the Meet button", async () => {
+    mountReport({ ready: true, madeBy: { name: "Your assistant", onmeet: vi.fn() }, children: briefPage });
+    await settle();
+    expect(q('[data-testid="welcome-report-made-by"]')?.textContent).toContain("Your assistant made this report.");
+    expect(q('[data-testid="welcome-report-meet"]')?.textContent).toBe("Meet your assistant");
+  });
+
   it("with no assistant yet, says the assistant will make the next one and has no button", async () => {
     mountReport({ ready: true, madeBy: null, children: briefPage });
     await settle();

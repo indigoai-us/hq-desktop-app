@@ -10,20 +10,25 @@
     card: BriefActionCardData;
     destinations: BriefActionDestinations;
     runId?: string | null;
-    /** Sends the prompt to the assistant's DM; resolves to an error message or null. */
+    /** The brief's time, for the idempotency key of a brief with no run id. */
+    now: string;
+    /** Sends the prompt to the assistant's DM; resolves to the note to show (sent or failed). */
     onassistant: (prompt: string, idempotencyKey: string) => Promise<string | null>;
     /** Opens the tool in the HQ folder with the prompt; resolves to an error message or null. */
     onlaunch: (engine: "claude" | "codex", prompt: string) => Promise<string | null>;
   }
-  let { card, destinations, runId = null, onassistant, onlaunch }: Props = $props();
+  let { card, destinations, runId = null, now, onassistant, onlaunch }: Props = $props();
   let note = $state<string | null>(null);
   let busy = $state(false);
 
-  async function run(go: () => Promise<string | null>): Promise<void> {
+  async function run(go: () => Promise<string | null>, failed: string): Promise<void> {
     if (busy) return;
     busy = true;
     try {
       note = await go();
+    } catch (err) {
+      console.warn("[daily-brief] action failed", err);
+      note = failed;
     } finally {
       busy = false;
     }
@@ -44,14 +49,18 @@
         type="button"
         data-testid="brief-action-assistant"
         disabled={busy}
-        onclick={() => void run(() => onassistant(card.prompt, assistantIdempotencyKey(runId, card.id)))}
+        onclick={() =>
+          void run(
+            () => onassistant(card.prompt, assistantIdempotencyKey(runId, card.id, now)),
+            `Could not send this to ${destinations.assistantName}. Try again in a moment.`,
+          )}
       >Do it with {destinations.assistantName}</button>
     {/if}
     {#if destinations.claudeCode}
-      <button type="button" data-testid="brief-action-claude" disabled={busy} onclick={() => void run(() => onlaunch("claude", card.prompt))}>Open in Claude Code</button>
+      <button type="button" data-testid="brief-action-claude" disabled={busy} onclick={() => void run(() => onlaunch("claude", card.prompt), "Could not open Claude Code. Try again in a moment.")}>Open in Claude Code</button>
     {/if}
     {#if destinations.codex}
-      <button type="button" data-testid="brief-action-codex" disabled={busy} onclick={() => void run(() => onlaunch("codex", card.prompt))}>Open in Codex</button>
+      <button type="button" data-testid="brief-action-codex" disabled={busy} onclick={() => void run(() => onlaunch("codex", card.prompt), "Could not open Codex. Try again in a moment.")}>Open in Codex</button>
     {/if}
   </div>
   {#if note}<p class="note" role="status">{note}</p>{/if}
