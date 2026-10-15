@@ -128,6 +128,26 @@ export function localBotNeedsCodingTool(
   return ready[runtime] !== true;
 }
 
+/**
+ * What the DM offers for a local bot whose coding tool is not ready here:
+ * "install" when the host found no such tool on this computer, "signIn" when
+ * it is installed but not signed in, null when it is ready or unknown.
+ *
+ * "Not ready" alone cannot pick between them: it is installed AND signed in,
+ * so a signed-out Claude Code read as missing and the DM offered Install
+ * Claude under the signed-out repair card. Only the install guide fixes
+ * "install"; only the signed-out repair card fixes "signIn".
+ */
+export function localBotCodingToolNeed(
+  bot: Pick<LocalBotRow, "runtime"> | null | undefined,
+  ready: Record<string, boolean> | null | undefined,
+  installed: Record<string, boolean> | null | undefined,
+): "install" | "signIn" | null {
+  if (!localBotNeedsCodingTool(bot, ready)) return null;
+  const runtime = (bot?.runtime ?? "").trim().toLowerCase();
+  return installed?.[runtime] === true ? "signIn" : "install";
+}
+
 /** The one line above the install guide in a bot's DM. */
 export function botNeedsCodingToolNotice(
   bot: { name?: string | null; displayName?: string | null; runtime?: string | null },
