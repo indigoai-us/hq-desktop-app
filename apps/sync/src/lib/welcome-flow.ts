@@ -369,6 +369,15 @@ export interface ReadyGateInput {
 /** What the ready screen says while it waits to hand off to HQ Desktop. */
 export const READY_WAIT_LABEL = 'Getting ready…';
 
+/**
+ * US-010: how long the usage-data line on the ready screen stays answerable
+ * before the automatic handoff records it. The wait starts when the line is
+ * revealed (install time counts toward it), starts again after the person
+ * changes the checkbox or opens What's collected, and is held while the
+ * pointer or focus is on the line.
+ */
+export const READY_CONSENT_DWELL_MS = 4000;
+
 /** Whether Open HQ Desktop can be pressed, and what it says. */
 export function readyGate({ installPending, consent, finishing, launching }: ReadyGateInput): {
   enabled: boolean;

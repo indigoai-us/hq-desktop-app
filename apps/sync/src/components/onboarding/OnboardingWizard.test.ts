@@ -122,6 +122,7 @@ import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 import { stageTimeoutMs } from '../../lib/onboarding-setup';
 import { appendChildFolderPath } from '../../lib/onboarding-path';
+import { READY_CONSENT_DWELL_MS } from '../../lib/welcome-flow';
 
 const NO_AI_TOOLS = {
   claude_cli: false,
@@ -463,6 +464,10 @@ async function revealReadyLaunchers(): Promise<void> {
   }
   observer.disconnect();
   expect(shown).toBe(true);
+  // The handoff records the usage-data answer, so it waits until the line has
+  // been on screen for the consent dwell. Every caller wants the handoff.
+  await vi.advanceTimersByTimeAsync(READY_CONSENT_DWELL_MS);
+  await flush();
 }
 
 /**
@@ -3105,6 +3110,65 @@ describe('ready screen: Open HQ Desktop', () => {
       .map(([command]) => command)
       .filter((command) => /^(open_claude_code_link|launch_claude_code|launch_codex_workspace|launch_codex_desktop|launch_cli_in_terminal)$/.test(String(command)));
     expect(launchCommands).toEqual([]);
+  });
+});
+
+describe('ready screen: usage data before the handoff (US-010)', () => {
+  function optInPosts() {
+    return tauri.invoke.mock.calls.filter(([command]) => command === 'post_telemetry_opt_in');
+  }
+
+  /** Reveals the ready options without letting the consent dwell run out. */
+  async function revealWithoutDwell(): Promise<void> {
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-launchers"]')));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (host.querySelector('[data-testid="onboarding-launchers"]')?.classList.contains('on')) break;
+      await vi.advanceTimersByTimeAsync(16);
+      await flush();
+    }
+    expect(host.querySelector('[data-testid="onboarding-launchers"]')?.classList.contains('on')).toBe(true);
+  }
+
+  async function wait(ms: number): Promise<void> {
+    await vi.advanceTimersByTimeAsync(ms);
+    await flush();
+  }
+
+  it('records nothing and does not hand off until the usage-data line has been answerable', async () => {
+    const onfinish = mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, { ...NO_AI_TOOLS, claude_desktop: true, any: true });
+    await revealWithoutDwell();
+
+    await wait(READY_CONSENT_DWELL_MS - 500);
+    expect(optInPosts()).toHaveLength(0);
+    expect(onfinish).not.toHaveBeenCalled();
+
+    // Unticking the box starts the wait again, so the old deadline passes quietly.
+    const box = host.querySelector<HTMLInputElement>('[data-testid="ready-consent-share"]')!;
+    expect(box.disabled).toBe(false);
+    box.checked = false;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(READY_CONSENT_DWELL_MS - 500);
+    expect(optInPosts()).toHaveLength(0);
+    expect(onfinish).not.toHaveBeenCalled();
+
+    // Pointer on the line holds the handoff for as long as it stays there.
+    const line = host.querySelector<HTMLElement>('[data-testid="ready-consent"]')!;
+    line.dispatchEvent(new Event('pointerenter'));
+    await wait(READY_CONSENT_DWELL_MS * 3);
+    expect(optInPosts()).toHaveLength(0);
+    expect(onfinish).not.toHaveBeenCalled();
+
+    // Leaving the line starts a full wait, then the changed answer is recorded.
+    line.dispatchEvent(new Event('pointerleave'));
+    await wait(READY_CONSENT_DWELL_MS - 500);
+    expect(onfinish).not.toHaveBeenCalled();
+    await wait(500);
+    await flushUntil(() => onfinish.mock.calls.length > 0);
+
+    expect(onfinish).toHaveBeenCalledOnce();
+    expect(optInPosts()).toHaveLength(1);
+    expect(optInPosts()[0][1]).toMatchObject({ enabled: false, surface: 'onboarding' });
   });
 });
 

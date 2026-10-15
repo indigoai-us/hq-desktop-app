@@ -104,7 +104,9 @@ async function mountAt(initialStep: number, mode?: 'consent') {
   onfinish = vi.fn();
   component = mount(OnboardingWizard, {
     target: host,
-    props: { initialStep, onfinish, ...(mode ? { mode } : {}) },
+    // The consent dwell has its own coverage in OnboardingWizard.test.ts; a
+    // short dwell keeps these real-timer tests about what gets recorded.
+    props: { initialStep, onfinish, consentDwellMs: 20, ...(mode ? { mode } : {}) },
   });
   await flush();
 }

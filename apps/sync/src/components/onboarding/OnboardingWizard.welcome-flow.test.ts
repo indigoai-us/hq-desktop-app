@@ -116,7 +116,10 @@ function mountAt(initialStep: number, props: Record<string, unknown> = {}) {
   const onfinish = vi.fn();
   component = mount(OnboardingWizard, {
     target: host,
-    props: { initialStep, onfinish, ...props },
+    // The ready screen's usage-data dwell has its own coverage in
+    // OnboardingWizard.test.ts; these tests keep it short so the handoff
+    // they check is not held for the full four seconds.
+    props: { initialStep, onfinish, consentDwellMs: 20, ...props },
   });
   return onfinish;
 }

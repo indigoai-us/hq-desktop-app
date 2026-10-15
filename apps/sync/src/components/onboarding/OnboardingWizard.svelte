@@ -39,6 +39,7 @@
     previousScene,
     readyGate,
     READY_WAIT_LABEL,
+    READY_CONSENT_DWELL_MS,
     sceneForStep,
     stepForScene,
     storyScenes,
@@ -258,6 +259,11 @@
      * native behind-window blur instead.
      */
     wallpaper?: string | null;
+    /**
+     * US-010: how long the ready screen's usage-data line stays answerable
+     * before the automatic handoff records it. Tests shorten it.
+     */
+    consentDwellMs?: number;
   }
 
   interface DetectHqResult {
@@ -302,6 +308,7 @@
     recoveringMissingRoot = false,
     repromptPersonUid = null,
     wallpaper = null,
+    consentDwellMs = READY_CONSENT_DWELL_MS,
   }: Props = $props();
 
   const isReprompt = $derived(mode === 'reprompt');
@@ -654,6 +661,37 @@
    * only when the handoff fails and the recovery card shows.
    */
   const handingOff = $derived(autoHandoffTried && !autoHandoffFailed);
+  /**
+   * US-010: the automatic handoff records the usage-data answer, so it waits
+   * until the person has had the line on screen for `consentDwellMs`. A change
+   * to the checkbox or opening What's collected starts the wait again, and
+   * pointer or focus on the line holds it.
+   */
+  let consentDwellDone = $state(false);
+  let consentDwellStarted = false;
+  let consentHeld = false;
+  let consentDwellTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearConsentDwell(): void {
+    if (consentDwellTimer !== null) clearTimeout(consentDwellTimer);
+    consentDwellTimer = null;
+  }
+
+  function restartConsentDwell(): void {
+    clearConsentDwell();
+    consentDwellDone = false;
+    if (consentHeld) return;
+    consentDwellTimer = setTimeout(() => {
+      consentDwellTimer = null;
+      consentDwellDone = true;
+    }, consentDwellMs);
+  }
+
+  function holdConsentDwell(held: boolean): void {
+    if (consentHeld === held || !consentDwellStarted) return;
+    consentHeld = held;
+    restartConsentDwell();
+  }
 
   type StepTelemetryDetails = Omit<
     RecordOnboardingStep['properties'],
@@ -1094,6 +1132,7 @@
   });
 
   onDestroy(() => {
+    clearConsentDwell();
     screenTimer.close();
     recordOnboardingAbandonment();
     mounted = false;
@@ -3698,8 +3737,24 @@
   }
 
   $effect(() => {
+    if (scene !== 'ready' || !navRevealed || !consentOnReady) {
+      if (scene !== 'ready' && consentDwellStarted) {
+        consentDwellStarted = false;
+        consentHeld = false;
+        clearConsentDwell();
+        consentDwellDone = false;
+      }
+      return;
+    }
+    if (consentDwellStarted) return;
+    consentDwellStarted = true;
+    restartConsentDwell();
+  });
+
+  $effect(() => {
     if (consentOnly || replay || scene !== 'ready') return;
     if (!navRevealed || autoHandoffTried || !openDesktop.enabled) return;
+    if (consentOnReady && !readyConsentRecorded && !consentDwellDone) return;
     autoHandoffTried = true;
     void finishWithRecovery().then((finished) => {
       if (!finished) autoHandoffFailed = true;
@@ -5145,7 +5200,17 @@
         <!-- Usage data: one quiet line, recorded when the person finishes.
              Not asked of an outpost: a fleet agent has no consent dialog. -->
         {#if consentOnReady}
-        <div class="alt ready-consent" class:on={scene === 'ready' && navRevealed} data-testid="ready-consent">
+        <div
+          class="alt ready-consent"
+          class:on={scene === 'ready' && navRevealed}
+          data-testid="ready-consent"
+          role="group"
+          aria-label="Usage data"
+          onpointerenter={() => holdConsentDwell(true)}
+          onpointerleave={() => holdConsentDwell(false)}
+          onfocusin={() => holdConsentDwell(true)}
+          onfocusout={() => holdConsentDwell(false)}
+        >
           <label class="rc-check">
             <input
               type="checkbox"
@@ -5155,6 +5220,7 @@
               onchange={(event) => {
                 telemetryChoice = event.currentTarget.checked ? 'share' : 'decline';
                 consentFailure = null;
+                restartConsentDwell();
               }}
             />
             <span>Share anonymous usage data</span>
@@ -5165,7 +5231,10 @@
             class="consent-link"
             disabled={privacyOpening}
             aria-busy={privacyOpening}
-            onclick={() => void handleOpenPrivacy()}
+            onclick={() => {
+              if (consentDwellStarted) restartConsentDwell();
+              void handleOpenPrivacy();
+            }}
           >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
           {#if hqAnywhereRuntimeEnabled}
             <label class="rc-check rc-check-next">

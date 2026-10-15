@@ -114,7 +114,9 @@ async function mountReady() {
   onfinish = vi.fn();
   component = mount(OnboardingWizard, {
     target: host,
-    props: { initialStep: READY_STEP_INDEX, onfinish },
+    // The consent dwell has its own coverage in OnboardingWizard.test.ts; a
+    // short dwell keeps these real-timer tests about what gets recorded.
+    props: { initialStep: READY_STEP_INDEX, onfinish, consentDwellMs: 20 },
   });
   await flush();
 }
