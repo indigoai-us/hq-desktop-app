@@ -81,6 +81,8 @@ interface Options {
   messages?: Array<Record<string, unknown>>;
   /** The installed hq-cli version (`getVersions().cli`); absent reads as unknown. */
   cliVersion?: string;
+  /** Claude Code's stored login (default: signed in). */
+  claudeLoggedIn?: boolean;
 }
 
 function adapter(opts: Options = {}) {
@@ -116,7 +118,7 @@ function adapter(opts: Options = {}) {
       preflight: async () =>
         ok({
           claudeAvailable: true,
-          claudeLoggedIn: true,
+          claudeLoggedIn: opts.claudeLoggedIn ?? true,
           codexAvailable: false,
           codexLoggedIn: false,
           grokAvailable: false,
@@ -321,6 +323,32 @@ describe("first-run create racing automatic restore", () => {
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));
     expect(screenText()).not.toMatch(/couldn't start/i);
     expectNoSlug("the assistant's conversation");
+  });
+
+  it("no coding tool signed in: the typed name never labels the account's remote assistant (owner run 2026-10-15)", async () => {
+    // Fresh machine, Hazel on the account only (with her DM history), Claude
+    // Code not signed in: the start cannot run, so nothing is created or
+    // adopted here, and the rail keeps calling her Hazel.
+    const a = adapter({
+      flag: true,
+      claudeLoggedIn: false,
+      remote: () => [{ ...remoteRow(), displayName: "Hazel" }],
+      contacts: [{ personUid: ASSISTANT_UID, displayName: "Hazel", companyUid: null }],
+    });
+    boot(a.platform, dmRow(ASSISTANT_UID, "Hazel"));
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));
+    await nameAssistant("Nibbles");
+    await settle(20);
+    expect(a.create).not.toHaveBeenCalled();
+    expect(a.adopt).not.toHaveBeenCalled();
+    // Her conversation, under the takeover, still carries her name.
+    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel");
+    // The done screen offers Continue; the person lands in the shell.
+    q<HTMLButtonElement>('[data-testid="first-run-done-continue"]')!.click();
+    await settle(20);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    expect(screenText()).not.toContain("Nibbles");
+    expectNoSlug("after a name with no signed-in tool");
   });
 
   it("a create refused because the assistant arrived first ends ready, named, with no error", async () => {

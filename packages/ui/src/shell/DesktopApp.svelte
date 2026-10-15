@@ -3174,7 +3174,12 @@
     const uid = assistantUid ?? "";
     const local = uid ? localBotRecords.find((row) => row.agentUid.trim() === uid) : undefined;
     return assistantName({
-      confirmed: firstRunDev.dry ? null : firstRunConfirmedName,
+      // The typed name labels the assistant only once it is actually on this
+      // computer. Before that the account's remote assistant kept its own
+      // name: the owner's fresh install (2026-10-15) showed "Nibbles" over
+      // Hazel's remote record, with her history, while nothing had been
+      // created or adopted here.
+      confirmed: firstRunDev.dry || !existingSetupBot ? null : firstRunConfirmedName,
       listed: local?.displayName ?? null,
       cloud: remoteAssistantRow?.displayName ?? null,
       cached: uid ? (botDisplayNames[uid] ?? null) : null,
