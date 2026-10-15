@@ -28,12 +28,12 @@ const DECISION: BriefDecision = {
   title: "Review the pricing page PR",
   summary: "Open for two days",
   action: "go",
-  origin: { companyUid: "indigo", label: "Indigo" },
+  origin: { companyUid: "indigo", repo: null },
   prompt: "Review PR 42 and leave comments.",
   detail: { why: "Launch is Friday", unlocks: [{ label: "Sam", state: "waiting since Monday" }], source: "prs" },
 };
 
-function render(destinations: BriefActionDestinations, over: Partial<{ onassistant: unknown; onlaunch: unknown }> = {}) {
+function render(destinations: BriefActionDestinations, over: Partial<{ onassistant: (prompt: string, idempotencyKey: string) => Promise<string | null>; onlaunch: (engine: "claude" | "codex", prompt: string) => Promise<string | null> }> = {}) {
   const onassistant = vi.fn(async () => null);
   const onlaunch = vi.fn(async () => null);
   target = document.createElement("div");

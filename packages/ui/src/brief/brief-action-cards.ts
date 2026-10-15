@@ -26,6 +26,13 @@ export interface BriefActionDestinations {
   codex: boolean;
 }
 
+/** The shell inputs for the report action cards. */
+export interface BriefActions {
+  destinations: BriefActionDestinations;
+  /** Sends the prompt to the assistant DM; resolves to an error message or null. */
+  onassistant: (prompt: string, idempotencyKey: string) => Promise<string | null>;
+}
+
 export function actionCardData(d: BriefDecision, prompts: Record<string, string> = {}): BriefActionCardData | null {
   const prompt = (prompts[d.id] ?? d.prompt ?? "").trim();
   if (!prompt) return null;

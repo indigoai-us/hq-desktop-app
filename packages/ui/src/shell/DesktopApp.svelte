@@ -4073,6 +4073,40 @@
     if (welcome) handleSelect(welcome);
     else requestChannelOpen(SETUP_CHANNEL_ID);
   }
+  /** The welcome report's "made this report" line; null when no assistant exists yet. */
+  const welcomeMadeBy = $derived(
+    assistantUid
+      ? {
+          name: assistantLabel,
+          onmeet: () => openSetupBotDm({ agentUid: assistantUid, handle: existingSetupBot?.handle ?? "" }),
+        }
+      : null,
+  );
+  /** The "Connect your AI apps" card: the launch scan plus the CLIs launch detection found. */
+  const welcomeAiApps = $derived(
+    welcomeAppsHost
+      ? { detect: () => welcomeAppsHost.detect(), cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) } }
+      : null,
+  );
+  /** Report action cards: where each item can be done, and the assistant DM send. */
+  const briefActions = $derived({
+    destinations: {
+      assistantName: assistantUid ? assistantLabel : null,
+      claudeCode: Boolean(aiTools?.claude_cli),
+      codex: Boolean(aiTools?.codex_cli),
+    },
+    async onassistant(prompt: string, idempotencyKey: string): Promise<string | null> {
+      if (!assistantUid) return "Your assistant is not set up yet.";
+      const res = await adapter.messaging.sendDm(assistantUid, prompt, { audience: "agent", idempotencyKey });
+      if (res.ok) return null;
+      console.warn("[daily-brief] action send failed", res.reason, res.code ?? "", res.message ?? "");
+      return `Could not send this to ${assistantLabel}. Try again in a moment.`;
+    },
+  });
+  // The cards and the AI apps card need launch detection; ask for it once the report shows.
+  $effect(() => {
+    if ((briefVisible || welcomeReportOwed) && aiTools === null) onrequestaitools?.();
+  });
   function openWelcomeReport(): void {
     welcomeReportOwed = true;
     void navigate({ kind: "extra", page: railPlaceholderPage("brief") });
@@ -15086,6 +15120,7 @@
               run={briefRun}
               onopenthread={openBriefDm}
               onopenmeetings={() => void navigate({ kind: "meetings" })}
+              actions={briefActions}
             />
           {/snippet}
           {#if welcomeReportOwed}
@@ -15094,6 +15129,8 @@
               progress={welcomeReportProgress}
               connect={welcomeConnect}
               onsetup={welcomeReportNeedsAssistant ? openWelcomeSetup : null}
+              madeBy={welcomeMadeBy}
+              aiApps={welcomeAiApps}
             >
               {@render briefPage()}
             </WelcomeReport>
