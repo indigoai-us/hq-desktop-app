@@ -301,6 +301,7 @@
   import { createLaunchActions } from "../settings/launch-actions";
   import FirstRunDecisionTakeover from "../chat/first-run/FirstRunDecisionTakeover.svelte";
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
+  import { continueInTool } from "../chat/first-run/continue-in-tool.js";
   import {
     assistantNameIssue,
     firstRunHandoffNotice,
@@ -2474,12 +2475,19 @@
   // RELEASE-001: Indigo-only rail gates. Registry answers keep each key
   // current; until they arrive every key uses its everyone-default.
   let railGateValues = $state<GateRegistryValues>({});
+  let railGatesSettled = $state(false);
   $effect(() => {
     const identity = adapter?.identity;
     return untrack(() =>
-      watchIndigoOnlyGates(identity, (values) => {
-        railGateValues = values;
-      }),
+      watchIndigoOnlyGates(
+        identity,
+        (values) => {
+          railGateValues = values;
+        },
+        () => {
+          railGatesSettled = true;
+        },
+      ),
     );
   });
 
@@ -3753,38 +3761,19 @@
   /** Per-tool session counts from the launch scan: picks the most-used tool for the decision. */
   let firstRunScanTools = $state<FirstRunToolUsage[] | null>(null);
   /**
-   * "Continue in <tool>" on the decision screen (US-008): install HQ's global
-   * runtime setup for that one tool, then open the tool in the HQ folder. The
-   * takeover's button reads "Opening <tool>…" while this runs. No setup bot,
-   * no #welcome, no sign-in probe. A failed install still opens the tool; a
-   * failed open leaves the takeover up so the person can press again.
+   * "Continue in <tool>" on the decision screen (US-008): the press is the
+   * person's HQ Anywhere opt-in, so continueInTool saves it, installs HQ's
+   * global runtime setup for that one tool (bounded), then opens the tool in
+   * the HQ folder. No setup bot, no #welcome, no sign-in probe. No HQ folder:
+   * the chat path. A failed open returns its sentence for the takeover.
    */
-  async function continueFirstRunInTool(runtime: FirstRunRuntime): Promise<void> {
+  async function continueFirstRunInTool(runtime: FirstRunRuntime): Promise<string | null> {
     firstRunRuntime = runtime;
-    const startedAt = Date.now();
-    firstRunTimingLog(`continue-in-tool start runtime=${runtime}`);
-    const status = await adapter.settings.getSetupStatus();
-    const folder = status.ok ? ((status.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
-    if (!folder) {
-      console.warn("[first-run] no HQ folder to open the coding tool in");
-      return;
-    }
-    if (runtime !== "grok") {
-      const installed = await adapter.settings.installRuntimeForTool?.(runtime);
-      if (installed && !installed.ok) console.warn("[first-run] runtime install failed", installed.message);
-      firstRunTimingLog(`continue-in-tool installed runtime=${runtime} ok=${installed?.ok ?? "skipped"} ms=${Date.now() - startedAt}`);
-    }
-    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder });
-    const error =
-      runtime === "claude" ? await actions.launchClaude()
-      : runtime === "codex" ? await actions.launchCodex()
-      : await actions.launchGrok();
-    firstRunTimingLog(`continue-in-tool opened runtime=${runtime} ok=${!error} ms=${Date.now() - startedAt}`);
-    if (error) {
-      console.warn("[first-run] could not open the coding tool:", error);
-      return;
-    }
-    closeVisualFirstRun();
+    const outcome = await continueInTool({ runtime, settings: adapter.settings, shell: adapter.shell, log: firstRunTimingLog });
+    if (outcome.kind === "open-failed") return outcome.message;
+    if (outcome.kind === "no-folder") await continueFirstRunInChat();
+    else closeVisualFirstRun();
+    return null;
   }
   /** The finished scan's counts and report path, for the setup bot's handoff. */
   let firstRunImport: FirstRunImportHandoff | null = null;
@@ -13186,7 +13175,8 @@
       railCompanyRoster.some((company) => isIndigoCompany({ slug: company.slug ?? null })),
   );
   $effect(() => {
-    if (railPlaceholder?.id !== "brief" || briefVisible) return;
+    // A cold-start hq://brief lands before the gates answer; wait for them.
+    if (railPlaceholder?.id !== "brief" || briefVisible || !railGatesSettled) return;
     const company = tenantCompanyId;
     untrack(() => {
       void navigate(company ? companyRowDestination("atlas", company) : { kind: "messages" });

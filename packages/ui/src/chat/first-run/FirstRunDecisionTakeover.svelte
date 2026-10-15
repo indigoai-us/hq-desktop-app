@@ -63,8 +63,11 @@
     onretry: () => void;
     /** Done: open the bot's chat. */
     ontalk: () => void | Promise<void>;
-    /** "Continue in <tool>": open HQ in that coding tool. */
-    oncontinueintool: (runtime: FirstRunRuntime) => void | Promise<void>;
+    /**
+     * "Continue in <tool>": open HQ in that coding tool. A returned sentence
+     * means the tool did not open; the takeover shows it and stays up.
+     */
+    oncontinueintool: (runtime: FirstRunRuntime) => string | null | void | Promise<string | null | void>;
     /** Done without a signed-in tool: the setup chat takes it from there. */
     oncontinueinchat: () => void | Promise<void>;
     /** The scan finished: its counts and report path, for the handoff. */
@@ -178,6 +181,18 @@
   let tried = $state(false);
   const issue = $derived(assistantNameIssue(name));
   let pressed = $state<"tool" | "name" | "talk" | "chat" | "retry" | null>(null);
+  /** Why the tool did not open on the last press (a plain sentence), or null. */
+  let toolError = $state<string | null>(null);
+
+  async function continueInTool(runtime: FirstRunRuntime): Promise<void> {
+    toolError = null;
+    try {
+      toolError = (await oncontinueintool(runtime)) || null;
+    } catch (error) {
+      console.warn("[first-run] tool failed", error);
+      toolError = `Could not open ${toolName}. Try again.`;
+    }
+  }
 
   async function press(kind: NonNullable<typeof pressed>, action: () => void | Promise<void>): Promise<void> {
     if (pressed !== null) return;
@@ -317,6 +332,9 @@
       <div class="fr-decision-head">
         <p class="fr-decision-q" data-testid="first-run-decision-question">{COPY.toolQuestion}</p>
         <p class="fr-decision-lead" data-testid="first-run-decision-lead">{COPY.toolLead(toolName, hostNoun, toolSessions)}</p>
+        {#if toolError && pressed === null}
+          <p class="fr-decision-lead fr-decision-failed" role="alert" data-testid="first-run-decision-error">{toolError}</p>
+        {/if}
       </div>
       <!-- Two equal paths (owner, 2026-10-15): the tool, or naming the assistant. -->
       <div class="new-bot-foot-actions">
@@ -326,8 +344,12 @@
           data-testid="first-run-decision-primary"
           disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
-          onclick={() => void press("tool", () => oncontinueintool(tool))}
-        >{pressed === "tool" ? firstRunOpeningLabel(toolName) : COPY.toolPrimary(toolName)}</button>
+          onclick={() => void press("tool", () => continueInTool(tool))}
+        >{pressed === "tool"
+          ? firstRunOpeningLabel(toolName)
+          : toolError
+            ? FIRST_RUN_COPY.retry
+            : COPY.toolPrimary(toolName)}</button>
         <button
           type="button"
           class="new-bot-create-submit"

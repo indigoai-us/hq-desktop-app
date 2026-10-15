@@ -171,13 +171,24 @@ fn global_runtime_is_installed(home: &Path, runtime: GlobalRuntime) -> bool {
     }
 }
 
+/// The CLI's own install record, `~/.hq/anywhere/<runtime>-install.json`. A
+/// plugin-mode install (`hq install --global --via plugin`) writes this and
+/// neither the managed block nor the MCP entry.
+fn install_state_file(home: &Path, runtime: GlobalRuntime) -> PathBuf {
+    home.join(".hq/anywhere")
+        .join(format!("{}-install.json", runtime.as_str()))
+}
+
 /// True when any part of the HQ Anywhere setup is on disk for `runtime`: the
-/// managed instructions block or the HQ MCP entry. `hq uninstall` exits 1 with
-/// "No HQ global install found" when nothing is there, so an opted-out person
-/// must not run it against a clean home. Before this check the startup
-/// reconcile ran it on every launch and the renderer retried it twice more.
+/// managed instructions block, the HQ MCP entry or the CLI's install record.
+/// `hq uninstall` exits 1 with "No HQ global install found" when nothing is
+/// there, so an opted-out person must not run it against a clean home. Before
+/// this check the startup reconcile ran it on every launch and the renderer
+/// retried it twice more. `~/.hq/root` alone is not counted: the CLI also
+/// accepts it, but it only points at the HQ folder and exists on homes with no
+/// runtime install.
 fn global_runtime_has_any_install(home: &Path, runtime: GlobalRuntime) -> bool {
-    match runtime {
+    let wrote_files = match runtime {
         GlobalRuntime::Claude => {
             has_managed_block(&home.join(".claude/CLAUDE.md"), CLAUDE_BLOCK_BEGIN)
                 || claude_mcp_is_hq_anywhere(home)
@@ -186,7 +197,8 @@ fn global_runtime_has_any_install(home: &Path, runtime: GlobalRuntime) -> bool {
             has_managed_block(&home.join(".codex/AGENTS.md"), CODEX_BLOCK_BEGIN)
                 || codex_mcp_is_hq_anywhere(home)
         }
-    }
+    };
+    wrote_files || install_state_file(home, runtime).is_file()
 }
 
 fn global_install_lock() -> &'static Mutex<()> {
@@ -215,9 +227,13 @@ pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String>
 /// [`set_hq_anywhere_global_install`].
 #[tauri::command]
 pub async fn install_hq_runtime_for_tool(runtime: String) -> Result<(), String> {
-    let runtime = GlobalRuntime::parse(&runtime)
-        .ok_or_else(|| format!("Unsupported coding tool: {runtime}"))?;
+    let runtime = parse_tool_runtime(&runtime)?;
     run_global_install(true, Some(runtime)).await
+}
+
+/// The webview supplies `runtime`, so the error never echoes it back.
+fn parse_tool_runtime(runtime: &str) -> Result<GlobalRuntime, String> {
+    GlobalRuntime::parse(runtime).ok_or_else(|| "Unsupported coding tool".to_string())
 }
 
 async fn run_global_install(enabled: bool, only: Option<GlobalRuntime>) -> Result<(), String> {
@@ -348,7 +364,8 @@ mod tests {
 
     use super::{
         apply_global_install, detect_present_runtimes, global_runtime_args,
-        global_runtime_is_installed, safe_renderer_failure, GlobalRuntime, RuntimeAction,
+        global_runtime_is_installed, parse_tool_runtime, safe_renderer_failure, GlobalRuntime,
+        RuntimeAction,
     };
     use crate::scratch_build::LaunchIdentity;
 
@@ -537,6 +554,33 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_removes_a_plugin_mode_install_known_only_by_its_install_record() {
+        let (result, calls, _) = run_global_install_in(production(), false, None, |home| {
+            fs::create_dir_all(home.join(".claude")).unwrap();
+            fs::create_dir_all(home.join(".hq/anywhere")).unwrap();
+            fs::write(
+                home.join(".hq/anywhere/claude-install.json"),
+                r#"{"plugin":{"pluginId":"hq@hq"}}"#,
+            )
+            .unwrap();
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["uninstall", "--global", "--runtime", "claude"]]);
+    }
+
+    #[test]
+    fn the_hq_root_pointer_alone_is_not_an_install() {
+        let (result, calls, _) = run_global_install_in(production(), false, None, |home| {
+            fs::create_dir_all(home.join(".claude")).unwrap();
+            fs::create_dir_all(home.join(".codex")).unwrap();
+            fs::create_dir_all(home.join(".hq")).unwrap();
+            fs::write(home.join(".hq/root"), "/tmp/HQ\n").unwrap();
+        });
+        assert_eq!(result, Ok(()));
+        assert!(calls.is_empty(), "ran hq {calls:?}");
+    }
+
+    #[test]
     fn installing_for_one_tool_runs_only_that_runtime_even_before_its_folder_exists() {
         let (result, calls, resolved) =
             run_global_install_in(production(), true, Some(GlobalRuntime::Codex), |home| {
@@ -569,6 +613,15 @@ mod tests {
         assert_eq!(GlobalRuntime::parse("codex"), Some(GlobalRuntime::Codex));
         assert_eq!(GlobalRuntime::parse("grok"), None);
         assert_eq!(GlobalRuntime::parse("Claude --global"), None);
+    }
+
+    #[test]
+    fn an_unsupported_tool_error_does_not_echo_the_renderer_string() {
+        assert_eq!(parse_tool_runtime("claude"), Ok(GlobalRuntime::Claude));
+        assert_eq!(
+            parse_tool_runtime("<img src=x> --global"),
+            Err("Unsupported coding tool".to_string())
+        );
     }
 
     struct TempHome(PathBuf);

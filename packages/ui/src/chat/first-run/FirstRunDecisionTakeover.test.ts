@@ -57,7 +57,7 @@ interface Opts {
   importHost?: ImportScanHost | null;
   initialScreen?: FirstRunFlowScreen;
   initialChoseBot?: boolean;
-  oncontinueintool?: (runtime: string) => void | Promise<void>;
+  oncontinueintool?: (runtime: string) => string | null | void | Promise<string | null | void>;
   onretry?: () => void | Promise<void>;
 }
 
@@ -214,6 +214,40 @@ describe("FirstRunDecisionTakeover", () => {
     await settle();
     expect(warn).toHaveBeenCalled();
     expect(primary.disabled).toBe(false);
+    // A thrown error shows a fixed sentence, never the raw error text.
+    expect(text("first-run-decision-error")).toBe("Could not open Codex. Try again.");
+    expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("no launch");
+  });
+
+  it("shows the sentence the host returns when the tool does not open, offers Retry, and clears it on the next press", async () => {
+    const replies: Array<string | null> = ["Codex was not detected. Open your HQ folder in the ChatGPT app's Codex tab (or the codex CLI).", null];
+    let release: () => void = () => undefined;
+    const { handlers } = render({
+      oncontinueintool: vi.fn(async () => {
+        const reply = replies.shift() ?? null;
+        if (reply === null) await new Promise<void>((resolve) => (release = resolve));
+        return reply;
+      }),
+    });
+    await waitForDecision();
+    expect(byId("first-run-decision-error")).toBeNull();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await vi.waitFor(() => expect(byId("first-run-decision-error")).toBeTruthy());
+    const error = byId("first-run-decision-error")!;
+    expect(error.getAttribute("role")).toBe("alert");
+    expect(error.textContent).toBe("Codex was not detected. Open your HQ folder in the ChatGPT app's Codex tab (or the codex CLI).");
+    expect(text("first-run-decision-primary")).toBe(FIRST_RUN_COPY.retry);
+    expect(byId<HTMLButtonElement>("first-run-decision-other")!.disabled).toBe(false);
+
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(byId("first-run-decision-error")).toBeNull();
+    expect(text("first-run-decision-primary")).toBe("Opening Codex…");
+    release();
+    await settle();
+    expect(handlers.oncontinueintool).toHaveBeenCalledTimes(2);
+    expect(byId("first-run-decision-error")).toBeNull();
+    expect(text("first-run-decision-primary")).toBe("Continue in Codex");
   });
 
   it("confirming a name starts the bot with the named tool's runtime and moves to done", async () => {

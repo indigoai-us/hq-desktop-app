@@ -146,6 +146,45 @@ describe("DesktopApp hq:// links (US-008)", () => {
     await settle();
   });
 
+  it("a cold-start hq://brief waits for the gates instead of redirecting to Messages", async () => {
+    const pending: Array<() => void> = [];
+    let briefOpen = true;
+    const adapter = webAdapter();
+    (adapter as unknown as { identity: unknown }).identity = {
+      whoami: async () => ok({ personUid: "prs_fixture", email: "" }),
+      hasFeature: (flag: string) =>
+        new Promise((resolve) => {
+          pending.push(() => resolve(ok(flag === "desktop.rail-brief-v1" && briefOpen)));
+        }),
+      subscribeFeature: () => () => {},
+    };
+    await mountShell(adapter);
+    dispatchEmbeddedNavigation(HQ_BRIEF_TARGET);
+    await settle();
+    // The gates have not answered: the link is held, not bounced to Messages.
+    expect(pending.length).toBeGreaterThan(0);
+    for (const answer of pending.splice(0)) answer();
+    await settle();
+    expect(host.querySelector('[data-testid="brief-host"]')).not.toBeNull();
+    expect(current()).toBe("brief");
+    await loadBrief();
+    await settle();
+
+    // Same race, gate answered off: the redirect still runs once it is known.
+    await unmount(component!);
+    component = null;
+    host.remove();
+    briefOpen = false;
+    await mountShell(adapter);
+    dispatchEmbeddedNavigation(HQ_BRIEF_TARGET);
+    await settle();
+    for (const answer of pending.splice(0)) answer();
+    await settle();
+    expect(host.querySelector('[data-testid="brief-host"]')).toBeNull();
+    expect(current()).not.toBeNull();
+    expect(current()).not.toBe("brief");
+  });
+
   it("hq://vault opens the Files page with the rail on Files", async () => {
     await mountShell(localFilesAdapter());
     expect(host.querySelector('[data-testid="rail-files-host"]')).toBeNull();

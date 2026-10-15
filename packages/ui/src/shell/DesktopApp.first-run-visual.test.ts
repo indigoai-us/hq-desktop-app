@@ -57,6 +57,8 @@ interface AdapterOptions {
   listRemote?: () => Promise<unknown>;
   /** The global runtime install for one coding tool (US-008). */
   installRuntimeForTool?: (runtime: string) => Promise<unknown>;
+  /** The HQ Anywhere person-setting write ("Continue in <tool>" is the opt-in). */
+  putHqAnywherePersonSetting?: (value: boolean) => Promise<unknown>;
   /** Shell launch methods for "Continue in <tool>"; detection reports nothing by default. */
   shell?: Record<string, unknown>;
 }
@@ -75,6 +77,7 @@ function adapter({
   listRemote,
   listImpl,
   installRuntimeForTool,
+  putHqAnywherePersonSetting,
   shell,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
@@ -99,6 +102,7 @@ function adapter({
         setupStatusImpl ??
         (async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true })),
       ...(installRuntimeForTool ? { installRuntimeForTool } : {}),
+      ...(putHqAnywherePersonSetting ? { putHqAnywherePersonSetting } : {}),
     },
     shell: {
       detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
@@ -439,11 +443,16 @@ describe("visual first run, flag on", () => {
       order.push(`open:${folder}`);
       return ok(undefined);
     });
+    const putHqAnywherePersonSetting = vi.fn(async (value: boolean) => {
+      order.push(`opt-in:${value}`);
+      return ok(undefined);
+    });
     const { platform, sendDm } = adapter({
       create,
       flag: true,
       probe,
       installRuntimeForTool,
+      putHqAnywherePersonSetting,
       shell: {
         detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
         launchClaudeCode,
@@ -470,7 +479,8 @@ describe("visual first run, flag on", () => {
 
     finishInstall();
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
-    expect(order).toEqual(["install:claude", "open:/tmp/HQ"]);
+    // The press is the HQ Anywhere opt-in, saved before the install so the next launch keeps it.
+    expect(order).toEqual(["opt-in:true", "install:claude", "open:/tmp/HQ"]);
     expect(installRuntimeForTool).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     await settle();
@@ -480,12 +490,13 @@ describe("visual first run, flag on", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it("keeps the takeover up when the coding tool does not open", async () => {
+  it("keeps the takeover up and says why when the coding tool does not open", async () => {
     const installRuntimeForTool = vi.fn(async () => ok(undefined));
-    const launchClaudeCode = vi.fn(async () => failure("unavailable", "no terminal"));
+    const launchClaudeCode = vi.fn(async () => failure("spawn", "no terminal"));
     const { platform } = adapter({
       flag: true,
       installRuntimeForTool,
+      putHqAnywherePersonSetting: async () => ok(undefined),
       shell: {
         detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
         launchClaudeCode,
@@ -496,12 +507,59 @@ describe("visual first run, flag on", () => {
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() => expect(launchClaudeCode).toHaveBeenCalledOnce());
-    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-decision-error"]')).toBeTruthy());
+    expect(q('[data-testid="first-run-decision-error"]')?.textContent).toBe("Could not open Claude Code. Try again.");
+    expect(q('[data-testid="first-run-takeover"]')?.textContent ?? "").not.toContain("no terminal");
+    expect(q('[data-testid="first-run-decision-primary"]')?.textContent?.trim()).toBe("Retry");
     expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBeNull();
   });
-});
 
+  it("a failed install still opens the coding tool and closes the takeover", async () => {
+    const installRuntimeForTool = vi.fn(async () => failure("hq-install", "exit 1"));
+    const launchClaudeCode = vi.fn(async () => ok(undefined));
+    const { platform } = adapter({
+      flag: true,
+      installRuntimeForTool,
+      putHqAnywherePersonSetting: async () => ok(undefined),
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+        launchClaudeCode,
+      },
+    });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    expect(installRuntimeForTool).toHaveBeenCalledWith("claude");
+    expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ");
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+  });
+
+  it("with no HQ folder to open, takes the chat path instead of leaving the button silent", async () => {
+    const installRuntimeForTool = vi.fn(async () => ok(undefined));
+    const launchClaudeCode = vi.fn(async () => ok(undefined));
+    const { platform } = adapter({
+      flag: true,
+      installRuntimeForTool,
+      putHqAnywherePersonSetting: async () => ok(undefined),
+      setupStatusImpl: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "", welcomeSetupOwed: true }),
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+        launchClaudeCode,
+      },
+    });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+  });
+});
 
 describe("visual first run, a name confirmed with no signed-in tool", () => {
   /** Signed out at the first readiness read, signed in on every later one. */
