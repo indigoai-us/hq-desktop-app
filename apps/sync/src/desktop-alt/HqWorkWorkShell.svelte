@@ -1048,6 +1048,42 @@
   const HANDOFF_READ_TIMEOUT_MS = 500;
   let firstRunHandoff = $state<FirstRunHandoffHint | null>(null);
   let handoffRead = $state(false);
+  // US-010: a hidden window may not run animation frames, so the painted
+  // signal also goes after this bound.
+  const FIRST_RUN_PAINTED_FALLBACK_MS = 50;
+
+  /**
+   * US-010: tells the first-run handoff the desktop window has painted, so it
+   * shows the window and hides the welcome window. A launch with no handoff
+   * waiting ignores it.
+   */
+  function sendFirstRunPainted(): void {
+    void Promise.resolve()
+      .then(() => invokeFn('desktop_first_run_takeover_painted'))
+      .catch(() => undefined);
+  }
+
+  // US-010: the signed-out, reconnecting and account-error screens mount no
+  // shell, so they send the painted signal themselves once they are on
+  // screen. Without it the handoff waits for its watchdog.
+  $effect(() => {
+    if (lifecycle !== 'signed-out' && lifecycle !== 'recovery' && lifecycle !== 'identity-error') {
+      return;
+    }
+    let sent = false;
+    const send = () => {
+      if (sent) return;
+      sent = true;
+      sendFirstRunPainted();
+    };
+    const frame = requestAnimationFrame(() => requestAnimationFrame(send));
+    const fallback = setTimeout(send, FIRST_RUN_PAINTED_FALLBACK_MS);
+    return () => {
+      sent = true;
+      cancelAnimationFrame(frame);
+      clearTimeout(fallback);
+    };
+  });
 
   onMount(() => {
     postReadyActionReady = isPostReadyActionReady();
@@ -1599,11 +1635,7 @@
           void invokeFn('shell_ready');
         }}
         {firstRunHandoff}
-        onFirstRunPainted={() => {
-          void Promise.resolve()
-            .then(() => invokeFn('desktop_first_run_takeover_painted'))
-            .catch(() => undefined);
-        }}
+        onFirstRunPainted={sendFirstRunPainted}
         onembeddednavigationready={() => {
           detachNavigation?.();
           // Pending-route bridge only: the shared shell converts `target`
