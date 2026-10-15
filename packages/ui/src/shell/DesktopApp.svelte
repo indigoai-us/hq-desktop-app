@@ -93,10 +93,19 @@
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
-  import { badgesFor } from "../badges/badge-source.js";
+  import { badgeProgressFor, badgesEnabledFor, badgesFor, type BadgeSubject } from "../badges/badge-source.js";
+  import BadgeLaunchAnnouncement from "../badges/BadgeLaunchAnnouncement.svelte";
+  import {
+    LAUNCH_OPEN_DELAY_MS,
+    hasSeenLaunch,
+    launchPreview,
+    markLaunchSeen,
+    setLaunchPreview,
+    shouldShowLaunch,
+  } from "../badges/badge-launch.js";
   import { installBadgeLoader } from "../badges/badge-loader.svelte.js";
   import { topBadge } from "../badges/badge-tier.js";
-  import type { ResolvedBadge } from "../badges/badge-catalog.js";
+  import { resolveEarned, type ResolvedBadge } from "../badges/badge-catalog.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
   import {
     atlasLiveActors,
@@ -13264,10 +13273,41 @@
    */
   onDestroy(installBadgeLoader(untrack(() => adapter.identity)));
 
+  const youSubject = $derived<BadgeSubject>({
+    kind: "person",
+    name: resolvedAccountLabel ?? "",
+    email: self?.email ?? null,
+    uid: self?.uid ?? null,
+  });
   /** Your earned badges, for the hover card on the rail's You button. */
-  const youBadges = $derived(
-    badgesFor({ kind: "person", name: resolvedAccountLabel ?? "", email: self?.email ?? null, uid: self?.uid ?? null }),
-  );
+  const youBadges = $derived(badgesFor(youSubject));
+
+  /**
+   * hq-accomplishment-badges US-016: the launch announcement, once, over the
+   * whole window, when the server has badges on for you (badge-launch.ts).
+   * It waits for first-run setup and the guided tour, which own the window.
+   */
+  let launchOpen = $state(false);
+  const youBadgesEnabled = $derived(badgesEnabledFor(youSubject));
+  $effect(() => {
+    const uid = self?.uid?.trim() || null;
+    const busy = launchOpen || visualFirstRunOpen || Boolean(tourStep);
+    const show = launchPreview()
+      ? !busy
+      : shouldShowLaunch({ uid, enabled: youBadgesEnabled, seen: uid ? hasSeenLaunch(uid) : true, busy });
+    if (!show) return;
+    const timer = window.setTimeout(() => (launchOpen = true), LAUNCH_OPEN_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  });
+  function closeLaunch(): void {
+    launchOpen = false;
+    if (launchPreview()) {
+      setLaunchPreview(false);
+      return;
+    }
+    const uid = self?.uid?.trim();
+    if (uid) markLaunchSeen(uid);
+  }
   /** The badge behind your tier mark, on your picture in the account menu. */
   const youTopBadge = $derived(topBadge(youBadges));
 
@@ -16190,6 +16230,18 @@
 
   {#if cheatSheetOpen}
     <ShortcutCheatSheet onclose={() => (cheatSheetOpen = false)} />
+  {/if}
+
+  {#if launchOpen}
+    <BadgeLaunchAnnouncement
+      badges={resolveEarned(youBadges)}
+      progress={badgeProgressFor(youSubject)}
+      onclose={closeLaunch}
+      onopenbadges={() => {
+        closeLaunch();
+        void openSelfProfile({ view: "badges" });
+      }}
+    />
   {/if}
 
   <!-- Visual first-run setup (desktop.visual-first-run). Over the whole window. -->
