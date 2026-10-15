@@ -7,6 +7,11 @@
     startInstallTimer,
     type InstallTimer,
   } from '@hq/ui/first-run-timing';
+  import {
+    INSTALL_QUEUE_PROGRESS_EVENT,
+    parseInstallQueueStatus,
+    type InstallQueueStatus,
+  } from '@hq/ui/finishing-setup';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
@@ -609,7 +614,16 @@
   let blockingPhaseDone = $state(false);
   // True while the background phase of backgroundRunId is still running, so
   // unmounting the wizard does not cancel it.
-  let backgroundPhaseRunning = false;
+  let backgroundPhaseRunning = $state(false);
+  // The host's background install queue, read on the ready step and kept
+  // current from its progress event. `start_install_queue` returns once the
+  // queue has started, so the wizard's own stages can all settle while the
+  // queue is still installing, and a launch that opens on the ready step
+  // never started a run here at all.
+  let hostQueue = $state<InstallQueueStatus | null>(null);
+  // Counts progress events, so a status read that an event overtook does not
+  // put back an older status (a stale "running" would never clear).
+  let hostQueueEvents = 0;
   let backgroundRunId = 0;
   const loggedFirstRunPhases = new Set<string>();
   let currentSetupRunId = '';
@@ -912,11 +926,27 @@
   // ─── Welcome flow: chrome, install card, ready gate ─────────────────────
   /** An install this flow started is still running. */
   const installPending = $derived(setupStarted && !blockingPhaseDone && !setupCompleted);
+  const hostQueueRunning = $derived(hostQueue?.state === 'running');
+  /** Every install item has settled: this flow's stages and the host's queue. */
+  const installSettled = $derived(setupCompleted && !hostQueueRunning);
+  /**
+   * Some part of the install is still running, the background phase included.
+   * The ready screen's heading and progress line follow this; the control
+   * follows installPending, so the background phase never blocks opening HQ.
+   */
+  const readyInstallRunning = $derived(
+    (setupStarted && !setupCompleted && (!blockingPhaseDone || backgroundPhaseRunning)) ||
+      hostQueueRunning,
+  );
   const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
   const installCard = $derived(
     installCardModel({
-      percent: overallPercent,
-      completed: setupCompleted,
+      // A run this flow did not start shows the host queue's own progress.
+      percent:
+        !setupStarted && hostQueue && hostQueueRunning && hostQueue.total > 0
+          ? Math.floor((hostQueue.done * 100) / hostQueue.total)
+          : overallPercent,
+      completed: installSettled,
       retryText:
         setupRetry && setupRetry.stageId === currentStageId
           ? setupRetrySubStatusText(setupRetry.attempt)
@@ -987,6 +1017,14 @@
     if (consentOnly || replay || currentStep !== SETUP_STEP_INDEX || setupStarted) return;
     setupStarted = true;
     void startSetupRun();
+  });
+
+  // Entering the ready step reads the host's queue, so a run this wizard did
+  // not start (or one still going after this flow's stages settled) keeps the
+  // screen from saying the install is done.
+  $effect(() => {
+    if (consentOnly || replay || currentStep !== READY_STEP_INDEX) return;
+    void refreshHostQueueStatus();
   });
 
   $effect(() => {
@@ -1117,6 +1155,12 @@
       else firstFolderSyncObservedFailure = true;
     });
     subscribeTauriEvent('sync:auth-error', handleFirstFolderSyncAuthError);
+    subscribeTauriEvent<unknown>(INSTALL_QUEUE_PROGRESS_EVENT, (payload) => {
+      const status = parseInstallQueueStatus(payload);
+      if (!status) return;
+      hostQueueEvents += 1;
+      hostQueue = status;
+    });
     // A session minted after this screen mounted (the outpost machine identity
     // resolves in the background at launch) must show up without a relaunch.
     // The envelope carries an account id and a generation, no bearer material.
@@ -1149,6 +1193,16 @@
       return JSON.stringify(err);
     } catch {
       return String(err);
+    }
+  }
+
+  async function refreshHostQueueStatus(): Promise<void> {
+    const eventsBefore = hostQueueEvents;
+    try {
+      const status = parseInstallQueueStatus(await invokeCommand<unknown>('get_install_queue_status'));
+      if (status && mounted && hostQueueEvents === eventsBefore) hostQueue = status;
+    } catch (err) {
+      console.warn('[onboarding] install queue status unavailable:', err);
     }
   }
 
@@ -4291,6 +4345,7 @@
       launchEscape,
       detectionFailed,
       installPending,
+      readyInstallRunning,
       deferredConsent,
       signInActionsReady,
       readyConsentRecorded,
@@ -4301,7 +4356,7 @@
 
   // The corner card says "HQ is installed" for a moment, then gets out of the way.
   $effect(() => {
-    if (!setupCompleted) {
+    if (!installSettled) {
       installCardRetired = false;
       return;
     }
@@ -5043,20 +5098,20 @@
       <canvas bind:this={refs.readyCanvas} aria-hidden="true"></canvas>
       <div class="copy" bind:this={refs.readyCopy}>
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
-          {installPending ? 'Almost ready.' : 'HQ is ready.'}
+          {readyInstallRunning ? 'Almost ready.' : 'HQ is ready.'}
         </h2>
         <p class="body">
           HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.<br />Open HQ Desktop and your setup bot will walk you through the rest.
         </p>
       </div>
-      <div class="prog" class:done={!installPending} bind:this={refs.readyProg}>
+      <div class="prog" class:done={!readyInstallRunning} bind:this={refs.readyProg}>
         <div class="pwrap">
           <!-- One indicator for every outcome: a turning ring while the install
                runs, a check once it has settled. A failed stage is recorded for
                the setup skill and never turns this into a warning. -->
           <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
-          <span class="pl">{installPending ? installCard.line : READY_PROGRESS_DONE_TEXT}</span>
-          <span class="pbar" aria-hidden="true"><b style:width={`${installPending ? installCard.percent : 100}%`}></b></span>
+          <span class="pl">{readyInstallRunning ? installCard.line : READY_PROGRESS_DONE_TEXT}</span>
+          <span class="pbar" aria-hidden="true"><b style:width={`${readyInstallRunning ? installCard.percent : 100}%`}></b></span>
         </div>
       </div>
       <!-- HQ Desktop is the primary option: the large white card. Claude Code

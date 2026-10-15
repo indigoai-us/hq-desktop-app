@@ -40,6 +40,7 @@ import {
   READY_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
 } from '../../lib/onboarding-wizard';
+import { READY_PROGRESS_DONE_TEXT } from '../../lib/welcome-flow';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 
 const TOOLS = {
@@ -351,6 +352,94 @@ describe('welcome flow: the install runs in the background', () => {
     await flush();
     expect(onfinish).toHaveBeenCalledTimes(1);
     expect(readyScene().hasAttribute('data-handoff')).toBe(true);
+  });
+
+  // Owner item 7 (2026-10-15): the ready screen said "Installed and synced
+  // across your devices." while the install queue was at 9 of 12.
+  const readyTitle = () => host.querySelector('#onboarding-title-ready')?.textContent?.trim();
+  const readyLine = () => host.querySelector('[data-scene="ready"] .pl')?.textContent?.trim();
+  const queueStatus = (state: string, done: number, total = 12) => ({
+    state,
+    current: state === 'running' ? 'Claude Code' : null,
+    currentId: state === 'running' ? 'claude-code' : null,
+    done,
+    total,
+    failed: [],
+  });
+
+  it('keeps the progress line and Almost ready. while the background phase runs', async () => {
+    const template = deferred();
+    const deps = deferred();
+    stubInvoke({
+      fetch_and_extract_template: () => template.promise,
+      start_install_queue: () => deps.promise,
+    });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+
+    template.resolve();
+    await flushUntil(() => commands().includes('start_install_queue'), 'the background phase');
+    // The blocking phase is done, so the control rules hand off as before.
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the handoff');
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(readyLine()).not.toBe(READY_PROGRESS_DONE_TEXT);
+    expect(readyLine()).toMatch(/Step \d of 5 · /);
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain(READY_PROGRESS_DONE_TEXT);
+
+    // start_install_queue returns once the queue has started: this flow's
+    // stages can settle while the host queue is still installing.
+    events.handlers.get('install-queue:progress')!({ payload: queueStatus('running', 9) });
+    deps.resolve();
+    await flushUntil(() => commands().includes('record_install_complete'), 'the settled stages');
+    await flush();
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(readyLine()).not.toBe(READY_PROGRESS_DONE_TEXT);
+
+    events.handlers.get('install-queue:progress')!({ payload: queueStatus('complete', 12) });
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the settled queue');
+    expect(readyLine()).toBe(READY_PROGRESS_DONE_TEXT);
+  });
+
+  it('shows the done text and HQ is ready. once the whole queue has settled', async () => {
+    stubInvoke({ get_install_queue_status: () => queueStatus('complete', 12) });
+    mountAt(2);
+    await flushUntil(() => commands().includes('record_install_complete'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
+    await flush();
+    expect(readyTitle()).toBe('HQ is ready.');
+    expect(readyLine()).toBe(READY_PROGRESS_DONE_TEXT);
+  });
+
+  it('reads the host queue on the ready step and waits while a run it did not start is going', async () => {
+    stubInvoke({ get_install_queue_status: () => queueStatus('running', 9) });
+    mountAt(READY_STEP_INDEX);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
+    await flushUntil(() => readyTitle() === 'Almost ready.', 'the pending state');
+    expect(commands()).not.toContain('fetch_and_extract_template');
+    expect(readyLine()).not.toBe(READY_PROGRESS_DONE_TEXT);
+    // The bar shows the host queue's own progress: 9 of 12.
+    expect(readyLine()).toMatch(/Step \d of 5 · /);
+
+    events.handlers.get('install-queue:progress')!({ payload: queueStatus('complete', 12) });
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the settled queue');
+    expect(readyLine()).toBe(READY_PROGRESS_DONE_TEXT);
+  });
+
+  it('does not let a queue read that a progress event overtook bring back a running queue', async () => {
+    const read = deferred<unknown>();
+    stubInvoke({ get_install_queue_status: () => read.promise });
+    mountAt(READY_STEP_INDEX);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
+    events.handlers.get('install-queue:progress')!({ payload: queueStatus('complete', 12) });
+    read.resolve(queueStatus('running', 11));
+    await flush();
+    await flush();
+    expect(readyTitle()).toBe('HQ is ready.');
+    expect(readyLine()).toBe(READY_PROGRESS_DONE_TEXT);
   });
 
   it('brings back Open HQ Desktop only when the handoff fails, and retries on a press', async () => {
