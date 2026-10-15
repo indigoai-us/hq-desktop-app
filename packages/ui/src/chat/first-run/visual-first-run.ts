@@ -262,6 +262,78 @@ export function runtimeLabel(runtime: FirstRunRuntime): string {
   return LOCAL_BOT_RUNTIMES.find((r) => r.id === runtime)?.label ?? runtime;
 }
 
+// ── decision (US-007) ───────────────────────────────────────────────────────
+
+/**
+ * The first run after the blocking install: the knowledge tree fills in, then
+ * one question, continue in the coding tool used most or name the bot. The
+ * old company, Bring it in, Coding tools and name steps are gone from it.
+ */
+export const FIRST_RUN_FLOW = ["decision", "done"] as const;
+export type FirstRunFlowScreen = (typeof FIRST_RUN_FLOW)[number];
+
+/** One coding tool's session counts, as the local scan reports them. */
+export interface FirstRunToolUsage {
+  tool: string;
+  sessions_total: number;
+  sessions_last_30d: number;
+  last_active_at: number | null;
+}
+
+/** The scan's tool ids, mapped to the bot runtimes they run as. */
+const SCAN_TOOL_RUNTIME: Readonly<Record<string, FirstRunRuntime>> = {
+  "claude-code": "claude",
+  codex: "codex",
+};
+
+/**
+ * The coding tool this person uses most on this computer, from the local
+ * scan alone (no sign-in probe, no model turn). Most sessions in the last 30
+ * days wins, then most sessions overall, then the newest session, then the
+ * setup order. A tool with no sessions at all does not count.
+ */
+export function mostUsedTool(tools: readonly FirstRunToolUsage[] | null | undefined): FirstRunRuntime | null {
+  const ranked = (tools ?? [])
+    .map((usage) => ({ usage, runtime: SCAN_TOOL_RUNTIME[usage.tool] }))
+    .filter((row): row is { usage: FirstRunToolUsage; runtime: FirstRunRuntime } =>
+      row.runtime !== undefined && row.usage.sessions_total > 0,
+    )
+    .sort(
+      (a, b) =>
+        b.usage.sessions_last_30d - a.usage.sessions_last_30d ||
+        b.usage.sessions_total - a.usage.sessions_total ||
+        (b.usage.last_active_at ?? 0) - (a.usage.last_active_at ?? 0) ||
+        SETUP_BOT_RUNTIME_ORDER.indexOf(a.runtime) - SETUP_BOT_RUNTIME_ORDER.indexOf(b.runtime),
+    );
+  return ranked[0]?.runtime ?? null;
+}
+
+/**
+ * The tool the decision offers to continue in: the most used one, else the
+ * first installed tool in setup order (installed, read from the tools
+ * without a model turn), else null and the person sees only the bot path.
+ */
+export function decisionToolFor(
+  tools: readonly FirstRunToolUsage[] | null | undefined,
+  installed: Record<string, boolean> | null | undefined,
+): FirstRunRuntime | null {
+  return mostUsedTool(tools) ?? SETUP_BOT_RUNTIME_ORDER.find((runtime) => installed?.[runtime] === true) ?? null;
+}
+
+/** The decision's copy. `{tool}` is a coding tool's label. */
+export const FIRST_RUN_DECISION_COPY = {
+  kicker: "Your context",
+  toolQuestion: "Where do you want to keep working?",
+  toolLead: (tool: string, noun = "Mac") => `You use ${tool} most on this ${noun}. HQ can open there with everything it just found.`,
+  toolPrimary: (tool: string) => `Continue in ${tool}`,
+  toolOther: "Name your HQ bot instead",
+  botQuestion: "Name your HQ bot.",
+  botLead: "Your bot works alongside you in HQ and starts out knowing what it found here.",
+  botPrimary: "Continue",
+  backToTool: (tool: string) => `Continue in ${tool} instead`,
+  scanning: "Looking through this Mac first.",
+} as const;
+
 // ── name ────────────────────────────────────────────────────────────────────
 
 /** `hq bot create --display-name` limit (Slack's display-name bound). */

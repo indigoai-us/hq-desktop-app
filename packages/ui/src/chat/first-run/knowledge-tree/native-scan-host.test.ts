@@ -179,6 +179,20 @@ describe("createNativeScanHost", () => {
     expect(warn).toHaveBeenCalled();
   });
 
+  it("an ok answer with no scan ends failed, emits nothing and skips onscan", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const onscan = vi.fn();
+    const host = createNativeScanHost(
+      { scan: async () => ({ ok: true as const, value: null as unknown as LocalScanView }) },
+      onscan,
+    )!;
+    const seen: unknown[] = [];
+    expect(await host.run("scan-null", (raw) => seen.push(raw))).toEqual({ status: "failed" });
+    expect(seen).toEqual([]);
+    expect(onscan).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith("[first-run] native scan returned no scan");
+  });
+
   it("a throwing host ends failed and is logged", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const host = createNativeScanHost({
@@ -231,5 +245,57 @@ describe("native scan through the import runner", () => {
       report: null,
     });
     runner.dispose();
+  });
+});
+
+describe("createNativeScanHost onscan (US-007)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("hands the finished scan to the listener before any event goes out", async () => {
+    const order: string[] = [];
+    let seen: LocalScanView | null = null;
+    const host = createNativeScanHost(apiReturning(BOTH), (scan) => {
+      seen = scan;
+      order.push("scan");
+    })!;
+    expect(await host.run("scan-us007-1", () => order.push("event"))).toEqual({ status: "done" });
+    expect(seen).toBe(BOTH);
+    expect(order[0]).toBe("scan");
+    expect(order.filter((step) => step === "scan")).toHaveLength(1);
+    expect(order.length).toBeGreaterThan(1);
+  });
+
+  it("logs a throwing listener and still ends the scan done with its events", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const host = createNativeScanHost(apiReturning(BOTH), () => {
+      throw new Error("listener broke");
+    })!;
+    const events: unknown[] = [];
+    expect(await host.run("scan-us007-2", (raw) => events.push(raw))).toEqual({ status: "done" });
+    expect(warn).toHaveBeenCalled();
+    expect(events.length).toBe(nativeScanEvents(BOTH).length);
+  });
+
+  it("does not call the listener when the scan fails", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const onscan = vi.fn();
+    const host = createNativeScanHost(
+      {
+        scan: async () => {
+          throw new Error("bridge gone");
+        },
+      },
+      onscan,
+    )!;
+    expect(await host.run("scan-us007-3", () => undefined)).toEqual({ status: "failed" });
+    expect(onscan).not.toHaveBeenCalled();
+  });
+
+  it("does not call the listener for a cancelled scan", async () => {
+    const onscan = vi.fn();
+    const host = createNativeScanHost(apiReturning(BOTH), onscan)!;
+    await host.cancel("scan-us007-4");
+    expect(await host.run("scan-us007-4", () => undefined)).toEqual({ status: "cancelled" });
+    expect(onscan).not.toHaveBeenCalled();
   });
 });

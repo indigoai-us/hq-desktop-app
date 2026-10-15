@@ -184,18 +184,26 @@ function step(): string | null {
   return q('[data-testid="first-run-step"]')?.getAttribute("data-step") ?? null;
 }
 
+/** Pick the bot path on the decision screen (a signed-in coding tool opens on the tool path). */
+async function chooseBot(): Promise<void> {
+  await vi.waitFor(() => expect(q('[data-testid="first-run-decision-question"]')).toBeTruthy(), { timeout: 5000 });
+  const path = () => q('[data-testid="first-run-decision"]')?.getAttribute("data-path");
+  if (path() === "tool") {
+    q<HTMLButtonElement>('[data-testid="first-run-decision-other"]')!.click();
+    await settle();
+  }
+  expect(path()).toBe("bot");
+}
+
 function typeName(value: string): void {
-  const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+  const input = q<HTMLInputElement>('[data-testid="first-run-bot-name"]')!;
   input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function pressEnter(): void {
-  q<HTMLInputElement>('[data-testid="new-bot-name"]')!.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-  );
+function confirmName(): void {
+  q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
 }
-
 
 function workspace(slug: string, displayName: string, status: "active" | "pending"): Record<string, unknown> {
   return {
@@ -228,8 +236,9 @@ describe("VITE_HQ_DEV_FIRST_RUN_FORCE alone (a real walk)", () => {
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     expect(hasFeature).not.toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
+    await chooseBot();
     typeName("Biscuit");
-    pressEnter();
+    confirmName();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ displayName: "Biscuit", worker: "setup" }));
   });

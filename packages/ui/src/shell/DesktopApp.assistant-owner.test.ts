@@ -221,13 +221,23 @@ function boot(platform: PlatformAdapter, initialRow?: ConversationRow): void {
   });
 }
 
-/** Name the assistant on the takeover's name step and go on to Done. */
+/**
+ * Name the assistant on the takeover's decision screen: pick the bot path
+ * (a signed-in coding tool opens on the tool path), type the name, Continue.
+ */
 async function nameAssistant(name: string): Promise<void> {
   await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-  const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+  await vi.waitFor(() => expect(q('[data-testid="first-run-decision-question"]')).toBeTruthy(), { timeout: 5000 });
+  const choice = () => q('[data-testid="first-run-decision"]')?.getAttribute("data-path");
+  if (choice() === "tool") {
+    q<HTMLButtonElement>('[data-testid="first-run-decision-other"]')!.click();
+    await settle();
+  }
+  expect(choice()).toBe("bot");
+  const input = q<HTMLInputElement>('[data-testid="first-run-bot-name"]')!;
   input.value = name;
   input.dispatchEvent(new Event("input", { bubbles: true }));
-  q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+  q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
   await settle();
 }
 
@@ -286,7 +296,6 @@ describe("first-run create racing automatic restore", () => {
     await nameAssistant("Hazel");
 
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     // The other bot still comes back by itself, on its own.
     await vi.waitFor(() => expect(adopt).toHaveBeenCalledWith("test-bot"));
@@ -328,7 +337,6 @@ describe("first-run create racing automatic restore", () => {
     });
     boot(platform);
     await nameAssistant("Hazel");
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     expect(create).toHaveBeenCalledTimes(1);
     expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Hazel");
@@ -351,7 +359,6 @@ describe("first-run create racing automatic restore", () => {
     boot(platform);
     await nameAssistant("Hazel");
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     await settle(20);
     const writes = setItem.mock.calls.filter(([key]) => key === "hq.bot-display-names.v1");
@@ -567,7 +574,6 @@ describe("round 2 review items", () => {
     });
     boot(platform);
     await nameAssistant("Hazel");
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     // Nothing goes while the takeover is open: the assistant would answer it now.
     await settle(30);
@@ -666,7 +672,6 @@ describe("the hq-cli version gate (5.345.87, hq-cli #1812)", () => {
     await nameAssistant("Hazel");
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "setup", displayName: "Hazel" }));
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     await settle(20);
     expect(updateAgentProfile).not.toHaveBeenCalledWith(ASSISTANT_UID, expect.objectContaining({ displayName: expect.anything() }));
@@ -699,7 +704,6 @@ describe("the hq-cli version gate (5.345.87, hq-cli #1812)", () => {
     boot(platform);
     await nameAssistant("Hazel");
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')?.click();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     await settle(20);
     const keys = (sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string }]>).map((c) => c[2]?.idempotencyKey);

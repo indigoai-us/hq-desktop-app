@@ -19,23 +19,18 @@
  * points) is unchanged underneath: this module only maps it onto screens and
  * owns the chrome rules, so they can be tested without mounting anything.
  *
- * `company` (name a company or join an invite, then pick a plan, for anyone
- * with no company yet), `first-folder` (the optional, flag-gated first-folder
- * sync), `invite` (the
+ * `first-folder` (the optional, flag-gated first-folder sync), `invite` (the
  * optional, flag-gated teammate invite), `connectors` (the optional Claude
  * Desktop connector import) and the post-ready tutorial steps are not story
  * screens. They keep their own panels. The three optional steps are offered
  * from the ready screen once the install is done, in that order, and read as
  * the ready position on the progress strip.
  *
- * The company step is different: it is a real screen of the run for anyone
- * who needs one (it comes between the shortcut screen and ready), so when the
- * run includes it the strip gains a tick for it and ready moves one along.
- * Nobody sees "the last screen" while they still have a company to make.
+ * There is no company screen (US-007): companies the person already belongs
+ * to connect on their own, and a personal setup needs no company.
  */
 import {
   BUILD_STEP_INDEX,
-  COMPANY_STEP_INDEX,
   CONNECTOR_IMPORT_STEP_INDEX,
   CONSENT_STEP_INDEX,
   DIRECTORY_STEP_INDEX,
@@ -59,7 +54,7 @@ export const REPLAY_SCENES = ['welcome', 'folder', 'cloud', 'shortcut'] as const
 
 export type TutorialSceneId = 'trust' | 'settings' | 'run-setup' | 'handoff' | 'build';
 /** The optional steps offered from the ready screen once the install is done. */
-export type FollowOnSceneId = 'company' | 'first-folder' | 'invite' | 'connectors';
+export type FollowOnSceneId = 'first-folder' | 'invite' | 'connectors';
 export type SceneId = StorySceneId | 'consent' | FollowOnSceneId | TutorialSceneId;
 
 /**
@@ -83,8 +78,6 @@ export function sceneForStep(step: number): SceneId {
       return 'folder';
     case SETUP_STEP_INDEX:
       return 'cloud';
-    case COMPANY_STEP_INDEX:
-      return 'company';
     case FIRST_FOLDER_SYNC_STEP_INDEX:
       return 'first-folder';
     case INVITE_TEAMMATE_STEP_INDEX:
@@ -121,8 +114,6 @@ export function stepForScene(scene: SceneId): number {
       // Both explainers play while the install runs: to the wizard they are
       // the setup step.
       return SETUP_STEP_INDEX;
-    case 'company':
-      return COMPANY_STEP_INDEX;
     case 'first-folder':
       return FIRST_FOLDER_SYNC_STEP_INDEX;
     case 'invite':
@@ -155,17 +146,15 @@ export function isStoryScene(scene: SceneId): scene is StorySceneId {
  * steps (first-folder sync, teammate invite, connector import) are offered
  * from the ready screen, so they read as the ready position.
  */
-function storyIndex(scene: SceneId, companyInRun: boolean): number | null {
+function storyIndex(scene: SceneId): number | null {
   const ready = STORY_SCENES.indexOf('ready');
-  if (scene === 'company') return ready;
-  const afterCompany = companyInRun ? 1 : 0;
-  if (scene === 'ready') return ready + afterCompany;
   if (
+    scene === 'ready' ||
     scene === 'first-folder' ||
     scene === 'invite' ||
     scene === 'connectors'
   ) {
-    return ready + afterCompany;
+    return ready;
   }
   return isStoryScene(scene) ? STORY_SCENES.indexOf(scene) : null;
 }
@@ -185,7 +174,6 @@ export function nextScene(scene: SceneId, replay: boolean): StorySceneId | 'end'
 }
 
 export function previousScene(scene: SceneId, replay: boolean): StorySceneId | null {
-  if (scene === 'company' && !replay) return 'shortcut';
   if (!isStoryScene(scene)) return null;
   const order = storyScenes(replay);
   const index = order.indexOf(scene);
@@ -197,16 +185,6 @@ export interface WelcomeChromeInput {
   replay: boolean;
   /** The install finished: the folder can no longer be changed from here. */
   setupCompleted: boolean;
-  /**
-   * This run includes the company step (a person with no company yet). It
-   * gets its own tick, between the shortcut screen and ready.
-   */
-  companyInRun?: boolean;
-  /**
-   * The company step is on a screen Back can leave (its first question,
-   * before anything is created). Back returns to the shortcut screen.
-   */
-  companyBack?: boolean;
 }
 
 export interface WelcomeChrome {
@@ -236,13 +214,10 @@ export function welcomeChrome({
   scene,
   replay,
   setupCompleted,
-  companyInRun = false,
-  companyBack = false,
 }: WelcomeChromeInput): WelcomeChrome {
   const order = storyScenes(replay);
-  const withCompany = companyInRun && !replay;
-  const index = storyIndex(scene, withCompany);
-  const tickCount = order.length - 1 + (withCompany ? 1 : 0);
+  const index = storyIndex(scene);
+  const tickCount = order.length - 1;
   if (index === null) {
     return { ticks: false, tickCount, currentTick: -1, back: false, skip: null, installCard: false };
   }
@@ -263,18 +238,13 @@ export function welcomeChrome({
   // a running install so the folder can change. Once the install is done the
   // folder is final, so that way back closes.
   if (scene === 'cloud') back = !setupCompleted;
-  // The company step's first question can go back to the shortcut screen;
-  // once a company is being made there is no way back.
-  if (scene === 'company') back = companyBack;
   return {
     ticks,
     tickCount,
     currentTick,
     back,
     skip: scene === 'cloud' || scene === 'shortcut' ? 'ready' : null,
-    // The install keeps running while a company is made, so its card stays.
-    installCard:
-      scene === 'cloud' || scene === 'shortcut' || (scene === 'company' && !setupCompleted),
+    installCard: scene === 'cloud' || scene === 'shortcut',
   };
 }
 

@@ -208,16 +208,30 @@ function step(): string | null {
   return q('[data-testid="first-run-step"]')?.getAttribute("data-step") ?? null;
 }
 
+/** The decision is on screen (it renders inside the lazily loaded context scene). */
+async function decisionShown(): Promise<void> {
+  await vi.waitFor(() => expect(q('[data-testid="first-run-decision-question"]')).toBeTruthy(), { timeout: 5000 });
+}
+
+/** Take the bot path: with a signed-in coding tool the takeover opens on the tool path. */
+async function chooseBot(): Promise<void> {
+  await decisionShown();
+  if (q('[data-testid="first-run-decision"]')?.getAttribute("data-path") === "tool") {
+    q<HTMLButtonElement>('[data-testid="first-run-decision-other"]')!.click();
+    await settle();
+  }
+  expect(q('[data-testid="first-run-decision"]')?.getAttribute("data-path")).toBe("bot");
+}
+
 function typeName(value: string): void {
-  const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+  const input = q<HTMLInputElement>('[data-testid="first-run-bot-name"]')!;
   input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function pressEnter(): void {
-  q<HTMLInputElement>('[data-testid="new-bot-name"]')!.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-  );
+/** The bot path's one action: Continue confirms the name. */
+function confirmName(): void {
+  q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
 }
 
 describe("visual first run, flag off", () => {
@@ -263,17 +277,17 @@ describe("visual first run, flag on", () => {
     await boot(platform);
 
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    expect(step()).toBe("name");
+    expect(step()).toBe("decision");
+    await chooseBot();
     // A friendly name is prefilled; nothing is created before it is confirmed.
-    expect(SETUP_BOT_NAMES).toContain(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value);
+    expect(SETUP_BOT_NAMES).toContain(q<HTMLInputElement>('[data-testid="first-run-bot-name"]')?.value);
     await settle();
     expect(create).not.toHaveBeenCalled();
 
     typeName("Biscuit");
-    // Enter, a second Enter and a click on Next, as fast as a person can.
-    pressEnter();
-    pressEnter();
-    q<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')?.click();
+    // Continue twice, as fast as a person can.
+    confirmName();
+    confirmName();
     await vi.waitFor(() => expect(create).toHaveBeenCalled());
     await settle();
     expect(create).toHaveBeenCalledTimes(1);
@@ -282,15 +296,10 @@ describe("visual first run, flag on", () => {
       displayName: "Biscuit",
       worker: "setup",
       runtime: "claude",
-      intro: firstRunIntro({ name: "Biscuit", runtime: "claude" }),
+      // No sign-in check runs in the first run, so the hello does not claim one.
+      intro: firstRunIntro({ name: "Biscuit", runtime: "claude", signInChecked: false }),
     });
-    // The person is on the coding tools step while that runs.
-    expect(step()).toBe("tools");
-
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
-    await settle();
     expect(step()).toBe("done");
-    expect(q('[data-testid="first-run-summary-name"]')?.textContent).toBe("Biscuit");
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Biscuit");
 
@@ -300,7 +309,10 @@ describe("visual first run, flag on", () => {
     // The assistant gets everything the takeover settled, in one note, now.
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     expect((sendDm.mock.calls[0] as unknown as [string, string])[1]).toBe(
-      firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true }, { noun: "computer" }),
+      firstRunHandoffNotice(
+        { name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: false, team: null, apps: {} },
+        { noun: "computer" },
+      ),
     );
     // The assistant's chat is open, the takeover is gone for good.
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
@@ -322,16 +334,15 @@ describe("visual first run, flag on", () => {
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
 
+    await chooseBot();
     typeName("Biscuit");
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
-    await vi.waitFor(() =>
-      expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("failed"),
-    );
+    confirmName();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-done-failed"]')).toBeTruthy());
     expect(step()).toBe("done");
-    expect(q('[data-testid="first-run-create-status"]')?.textContent).toContain("not signed in");
-    expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(true);
+    expect(q('[data-testid="first-run-done-failed"]')?.textContent).toContain("not signed in");
+    expect(q('[data-testid="first-run-talk"]')).toBeNull();
 
-    q<HTMLButtonElement>('[data-testid="first-run-retry"]')!.click();
+    q<HTMLButtonElement>('[data-testid="first-run-done-retry"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
@@ -345,146 +356,74 @@ describe("visual first run, flag on", () => {
     const { platform } = adapter({ create: create as never, flag: true });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await chooseBot();
     typeName("Biscuit");
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    confirmName();
     await vi.waitFor(() =>
-      expect(q('[data-testid="first-run-create-status"]')?.textContent).toContain("Couldn't start Biscuit."),
+      expect(q('[data-testid="first-run-done-failed"]')?.textContent).toContain("Couldn't start Biscuit."),
     );
-    expect(q('[data-testid="first-run-create-status"]')?.textContent).not.toContain("create setup");
+    expect(q('[data-testid="first-run-done-failed"]')?.textContent).not.toContain("create setup");
   });
 
-  it("without a signed-in coding tool nothing is created and the tools step is required", async () => {
+  it("without a signed-in coding tool only the bot path shows; naming it creates nothing and offers Continue", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const { platform } = adapter({ create, flag: true, claudeLoggedIn: false });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await decisionShown();
 
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    expect(q('[data-testid="first-run-decision"]')?.getAttribute("data-path")).toBe("bot");
+    expect(q('[data-testid="first-run-decision-other"]')).toBeNull();
+    typeName("Biscuit");
+    confirmName();
     await settle();
-    expect(step()).toBe("tools");
-    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
-    expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("waiting");
+    expect(step()).toBe("done");
+    expect(q('[data-testid="first-run-done-continue"]')).toBeTruthy();
+    expect(q('[data-testid="first-run-talk"]')).toBeNull();
     expect(create).not.toHaveBeenCalled();
   });
 
-  // The owner's test Mac kept a Claude Code login whose refresh token was
-  // dead. `auth status` still said signed in, so the assistant was created
-  // saying "signed in Claude Code" and its first turn failed to sign in.
-  it("a stored but dead login: nothing is created, the row offers Sign in, and Sign in replaces the login", async () => {
+  // US-007 removed the Coding tools step and its real sign-in check: sign-in
+  // state is the stored login, read without a model turn.
+  it("runs no sign-in probe and shows no coding tools or defaults step; the hello and the note do not claim a sign-in", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const probe = vi.fn(async () => ok({ ok: false, class: "signed-out", detail: "OAuth session expired" }));
-    const loginStart = vi.fn(async () => ok({ state: "waiting" }));
-    const loginStatus = vi.fn(async () => ok({ state: "connected" }));
-    const { platform } = adapter({ create, flag: true, probe, loginStart, loginStatus });
+    const probe = vi.fn(async () => ok({ ok: true, class: null }));
+    const { platform, sendDm } = adapter({ create, flag: true, probe });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await chooseBot();
+    const text = q('[data-testid="first-run-takeover"]')?.textContent ?? "";
+    expect(text).not.toContain("Coding tools");
+    expect(text).not.toContain("Finish with defaults");
+    expect(text).not.toContain("Bring it in");
     typeName("Popcorn");
-    pressEnter();
-    await settle();
-    await vi.waitFor(() =>
-      expect(probe).toHaveBeenCalledWith("claude", null, expect.objectContaining({ timeoutSecs: 15 })),
-    );
-    await settle();
-    expect(step()).toBe("tools");
-    expect(create).not.toHaveBeenCalled();
-    expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("signIn");
-    expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
-
-    q<HTMLButtonElement>('[data-testid="first-run-tool-claude-signin"]')!.click();
-    await vi.waitFor(() => expect(loginStart).toHaveBeenCalledWith("claude", { force: true }));
-    // The fresh login counts: the assistant is created, once, and may say so.
-    // (The sign-in's status is polled every 1.5 s.)
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1), { timeout: 5000 });
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ runtime: "claude", intro: firstRunIntro({ name: "Popcorn", runtime: "claude" }) }),
-    );
-  });
-
-  it("a dead login replaced in a terminal: back in the window, HQ checks again and creates the assistant", async () => {
-    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const answers = [ok({ ok: false, class: "signed-out" })];
-    const probe = vi.fn(async () => answers.shift() ?? ok({ ok: true, class: null }));
-    const { platform } = adapter({ create, flag: true, probe });
-    await boot(platform);
-    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    typeName("Popcorn");
-    pressEnter();
-    await vi.waitFor(() => expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("signIn"));
-    expect(create).not.toHaveBeenCalled();
-
-    window.dispatchEvent(new Event("focus"));
-    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ intro: firstRunIntro({ name: "Popcorn", runtime: "claude" }) }),
-    );
-  });
-
-  it.each([
-    ["fails for another reason", async () => ok({ ok: false, class: "transient" })],
-    ["could not run", async () => failure("unavailable", "probe exited with status 1")],
-  ])("a sign-in check that %s does not block, and the hello does not claim signed in", async (_label, answer) => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform, sendDm } = adapter({ create, flag: true, probe: vi.fn(answer) });
-    await boot(platform);
-    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    typeName("Popcorn");
-    pressEnter();
+    confirmName();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     const input = (create.mock.calls[0] as unknown[])[0] as { intro: string; kickoff?: string };
     expect(input.intro).toBe(firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: false }));
     expect(input.intro).not.toContain("signed in");
     expect(input.kickoff).toBeUndefined();
-    // The note at close carries the same caution.
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const body = (sendDm.mock.calls[0] as unknown as [string, string])[1];
     expect(body).not.toContain("Claude Code is signed in");
     expect(body).toContain("HQ could not confirm its sign-in");
-    warn.mockRestore();
+    expect(probe).not.toHaveBeenCalled();
   });
 
-  it("a readiness check that fails does not strand the tools step: each row offers Try again, which recovers", async () => {
-    let fail = true;
-    const preflightImpl = vi.fn(async () =>
-      fail
-        ? { ok: false as const, reason: "error", message: "Setup lookup timed out. Please retry." }
-        : ok({
-            claudeAvailable: true,
-            claudeLoggedIn: true,
-            codexAvailable: false,
-            codexLoggedIn: false,
-            grokAvailable: false,
-            grokLoggedIn: false,
-            claudeStatus: { state: "signedIn" },
-            codexStatus: { state: "notInstalled", searched: [] },
-          }),
-    );
-    const { platform } = adapter({ flag: true, preflightImpl });
-    await boot(platform);
-    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    q<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
-    await settle();
-    expect(step()).toBe("tools");
-    await vi.waitFor(() => expect(q('[data-testid="first-run-tool-claude"]')?.getAttribute("data-kind")).toBe("recheck"));
-    expect(q('[data-testid="first-run-continue-in-chat"]')).toBeNull();
-    expect(document.body.textContent).not.toContain("timed out");
-    fail = false;
-    q<HTMLButtonElement>('[data-testid="first-run-tool-claude-recheck"]')!.click();
-    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false));
-    expect(q('[data-testid="first-run-tools-signin"]')).toBeNull();
-  });
-
-  it("Continue in chat leaves for #welcome, starts nothing by itself, and the takeover never opens again", async () => {
+  it("Continue in the coding tool leaves for #welcome, starts nothing by itself, and the takeover never opens again", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform } = adapter({ create, flag: true, claudeLoggedIn: false });
+    const { platform } = adapter({ create, flag: true });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await decisionShown();
 
-    q<HTMLButtonElement>('[data-testid="first-run-continue-in-chat"]')!.click();
+    expect(q('[data-testid="first-run-decision"]')?.getAttribute("data-path")).toBe("tool");
+    expect(q('[data-testid="first-run-decision-question"]')?.textContent).toBe("Where do you want to keep working?");
+    const primary = q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!;
+    expect(primary.textContent).toContain("Continue in Claude Code");
+    primary.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
@@ -494,135 +433,72 @@ describe("visual first run, flag on", () => {
   });
 });
 
-describe("visual first run, leaving for chat while the assistant is being created", () => {
-  function deferredCreate() {
-    let resolve!: (value: unknown) => void;
-    const create = vi.fn(
-      () =>
-        new Promise((r) => {
-          resolve = r;
-        }),
-    );
-    return { create, resolve: (value: unknown) => resolve(value) };
+describe("visual first run, leaving for chat with a name and no signed-in tool", () => {
+  /** Signed out at the first readiness read, signed in on every later one. */
+  function signsInLater() {
+    let calls = 0;
+    return vi.fn(async () => {
+      calls += 1;
+      const signedIn = calls > 1;
+      return ok({
+        claudeAvailable: true,
+        claudeLoggedIn: signedIn,
+        codexAvailable: false,
+        codexLoggedIn: false,
+        grokAvailable: false,
+        grokLoggedIn: false,
+      });
+    });
   }
 
   async function confirmAndLeave(name = "Biscuit"): Promise<void> {
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await chooseBot();
     typeName(name);
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    confirmName();
     await settle();
-    q<HTMLButtonElement>('[data-testid="first-run-continue-in-chat"]')!.click();
+    q<HTMLButtonElement>('[data-testid="first-run-done-continue"]')!.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
   }
 
-  it("#welcome holds its start while the first-run create runs, and never makes a second setup bot", async () => {
-    const pending = deferredCreate();
-    // `hq bot list` shows the setup bot once its create has landed: the list
-    // is what every later start reads.
-    const listed: unknown[] = [];
-    const { platform } = adapter({ create: pending.create as never, flag: true, bots: listed });
+  it("#welcome's start uses the name the person confirmed", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform } = adapter({ create, flag: true, preflightImpl: signsInLater() });
     await boot(platform);
     await confirmAndLeave();
-    await vi.waitFor(() => expect(pending.create).toHaveBeenCalledTimes(1));
-
-    // The start button says the setup bot is starting and holds, and the
-    // hero does not promise a conversation that opens by itself.
-    expect(q('[data-testid="setup-hero"]')?.textContent).toContain("Biscuit is starting on this computer.");
-    const run = q<HTMLButtonElement>('[data-testid="setup-run"]')!;
-    expect(run.disabled).toBe(true);
-    run.click();
-    await settle();
-
-    listed.push({
-      name: "setup",
-      agentUid: SETUP_BOT_UID,
-      ownerUid: "prs_test",
-      runtime: "claude",
-      state: "running",
-      pid: 1,
-      processAlive: true,
-      online: true,
-      lastHeartbeatAt: new Date().toISOString(),
-      daemonInstalled: true,
-      daemonLoaded: true,
-      dir: "/tmp/.hq/bots/setup",
-    });
-    pending.resolve(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    await settle();
-    // Once it lands the button opens that bot; it still never creates again.
-    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
-    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
-    await settle();
-    expect(pending.create).toHaveBeenCalledTimes(1);
-  });
-
-  it("a create that lands after Continue in chat leaves the person on #welcome", async () => {
-    const pending = deferredCreate();
-    const { platform } = adapter({ create: pending.create as never, flag: true });
-    await boot(platform);
-    await confirmAndLeave();
-    await vi.waitFor(() => expect(pending.create).toHaveBeenCalledTimes(1));
-    expect(q('[data-testid="channel-name"]')?.textContent).toContain("welcome");
-
-    pending.resolve(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    await settle(12);
-    expect(q('[data-testid="channel-name"]')?.textContent).toContain("welcome");
-    expect(q('[data-testid="setup-hero"]')).toBeTruthy();
-  });
-
-  it("after a failed create, #welcome's start uses the name the person confirmed", async () => {
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, message: "Claude Code is not signed in." })
-      .mockResolvedValue(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform } = adapter({ create: create as never, flag: true });
-    await boot(platform);
-    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    typeName("Biscuit");
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
-    await vi.waitFor(() =>
-      expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("failed"),
-    );
-    q<HTMLButtonElement>('[data-testid="first-run-failed-chat"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
+    expect(create).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
 
     q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
-    expect(create.mock.calls[1]![0]).toEqual(expect.objectContaining({ displayName: "Biscuit", worker: "setup" }));
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toEqual(expect.objectContaining({ displayName: "Biscuit", worker: "setup" }));
   });
 
-  // The takeover settled the name (and here the coding tool) before the
-  // person left for chat; #welcome's create used to run today's kickoff,
-  // which carries none of it, so the assistant asked again.
+  // The takeover settled the name before the person left for chat;
+  // #welcome's create used to run today's kickoff, which carries none of it,
+  // so the assistant asked again.
   it("a create from #welcome after the takeover runs no kickoff and the assistant gets the takeover's note", async () => {
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, message: "Claude Code is not signed in." })
-      .mockResolvedValue(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform, sendDm } = adapter({ create: create as never, flag: true });
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform, sendDm } = adapter({ create, flag: true, preflightImpl: signsInLater() });
     await boot(platform);
-    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    typeName("Biscuit");
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
-    await vi.waitFor(() =>
-      expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("failed"),
-    );
-    q<HTMLButtonElement>('[data-testid="first-run-failed-chat"]')!.click();
+    await confirmAndLeave();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
     expect(sendDm).not.toHaveBeenCalled();
 
     q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
-    expect(create.mock.calls[1]![0]).not.toHaveProperty("kickoff");
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).not.toHaveProperty("kickoff");
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
     expect(to).toBe(SETUP_BOT_UID);
     expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
     expect(body).toBe(
-      firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true }, { noun: "computer" }),
+      firstRunHandoffNotice(
+        { name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true, team: null, apps: {} },
+        { noun: "computer" },
+      ),
     );
   });
 });
@@ -633,8 +509,9 @@ describe("visual first run, names with stray whitespace", () => {
     const { platform, sendDm } = adapter({ create, flag: true });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await chooseBot();
     typeName(" Mr\tBiscuit  Pants ");
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    confirmName();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     const input = (create.mock.calls as unknown as Array<[{ displayName: string; intro: string; kickoff?: string }]>)[0]![0];
     expect(input.displayName).toBe("Mr Biscuit Pants");
@@ -717,8 +594,9 @@ describe("visual first run with a setup bot that already exists", () => {
     const { platform, sendDm, updateAgentProfile } = adapter({ create, flag: true, bots: [existing] });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await chooseBot();
     typeName("Biscuit");
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    confirmName();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
 
     expect(create).not.toHaveBeenCalled();
@@ -732,7 +610,10 @@ describe("visual first run with a setup bot that already exists", () => {
     expect(to).toBe(SETUP_BOT_UID);
     expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
     expect(body).toBe(
-      firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"] }, { noun: "computer" }),
+      firstRunHandoffNotice(
+        { name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: false, team: null, apps: {} },
+        { noun: "computer" },
+      ),
     );
   });
 });
@@ -753,11 +634,13 @@ describe("visual first run: the name step on an account that already has an assi
     };
   }
 
-  function nameField(): string | undefined {
-    return q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value;
+  /** The bot name field's value, read on the bot path. */
+  async function nameField(): Promise<string | undefined> {
+    await chooseBot();
+    return q<HTMLInputElement>('[data-testid="first-run-bot-name"]')?.value;
   }
 
-  it("a returning account on a new computer: the step opens with the assistant's cloud name, and Continue keeps it", async () => {
+  it("a returning account on a new computer: the name field opens with the assistant's cloud name, and Continue keeps it", async () => {
     const create = vi.fn(async () => ok({ ok: true, outcome: "adopted", name: "setup", agentUid: SETUP_BOT_UID }));
     // The listing answers after the flag and the setup-owed answer, as it
     // can on a real network: the name step waits for it.
@@ -770,10 +653,10 @@ describe("visual first run: the name step on an account that already has an assi
 
     answer(ok({ bots: [cloudAssistant()] }));
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    expect(step()).toBe("name");
-    expect(nameField()).toBe("Fluffy");
+    expect(step()).toBe("decision");
+    expect(await nameField()).toBe("Fluffy");
 
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    confirmName();
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "setup", displayName: "Fluffy" }));
   });
@@ -785,7 +668,7 @@ describe("visual first run: the name step on an account that already has an assi
     const { platform } = adapter({ flag: true, listRemote });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    expect(SETUP_BOT_NAMES).toContain(nameField());
+    expect(SETUP_BOT_NAMES).toContain(await nameField());
   });
 
   it("a fresh account with no assistant anywhere gets a friendly free name", async () => {
@@ -794,7 +677,7 @@ describe("visual first run: the name step on an account that already has an assi
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     expect(listRemote).toHaveBeenCalled();
-    expect(SETUP_BOT_NAMES).toContain(nameField());
+    expect(SETUP_BOT_NAMES).toContain(await nameField());
   });
 
   it("a listing that fails still opens the step with a friendly free name, and shows nothing of the failure", async () => {
@@ -802,7 +685,7 @@ describe("visual first run: the name step on an account that already has an assi
     const { platform } = adapter({ flag: true, listRemote });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    expect(SETUP_BOT_NAMES).toContain(nameField());
+    expect(SETUP_BOT_NAMES).toContain(await nameField());
     expect(q('[data-testid="first-run-takeover"]')?.textContent ?? "").not.toMatch(/500|Internal Server Error/);
   });
 
@@ -819,7 +702,7 @@ describe("visual first run: the name step on an account that already has an assi
       expect(q('[data-testid="first-run-takeover"]')).toBeNull();
       await vi.advanceTimersByTimeAsync(1100);
       await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-      expect(SETUP_BOT_NAMES).toContain(nameField());
+      expect(SETUP_BOT_NAMES).toContain(await nameField());
     } finally {
       vi.useRealTimers();
     }
@@ -836,7 +719,7 @@ describe("visual first run: the name step on an account that already has an assi
       expect(q('[data-testid="first-run-takeover"]')).toBeNull();
       await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS + 100);
       await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-      expect(SETUP_BOT_NAMES).toContain(nameField());
+      expect(SETUP_BOT_NAMES).toContain(await nameField());
     } finally {
       vi.useRealTimers();
     }
@@ -860,7 +743,7 @@ describe("visual first run: the found-apps flag is settled before the takeover o
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     answerFoundApps(ok(false));
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    expect(step()).toBe("name");
+    expect(step()).toBe("decision");
   });
 
   it("a found-apps answer that never comes holds the takeover for at most the first run's wait (counts as off)", async () => {
@@ -931,7 +814,8 @@ describe("visual first run: #welcome's start while the takeover waits for the bo
 
   async function walkTheTakeoverToDone(): Promise<void> {
     await vi.waitFor(() => expect(takeoverOpen()).toBe(true));
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    await chooseBot();
+    confirmName();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
   }
@@ -1003,9 +887,9 @@ describe("visual first run: Bring in your context", () => {
   const IMPORTED = { summary: { companies: 0, projects: 0, sessions: 12 }, report: "workspace/reports/import.json" };
 
   /**
-   * Boot with the flag on, name the assistant, and run the scan to its end.
-   * Timers are fake from the scan on, so the notice ledger's waits can be
-   * stepped through.
+   * Boot with the flag on, run the scan (it starts by itself) to its end,
+   * then name the assistant. Timers are fake from the scan on, so the notice
+   * ledger's waits can be stepped through.
    */
   async function finishAScan(firstSend: () => Promise<unknown>) {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
@@ -1049,16 +933,9 @@ describe("visual first run: Bring in your context", () => {
     await settle();
 
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    typeName("Biscuit");
-    pressEnter();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    await settle();
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
-    await settle();
-    expect(step()).toBe("context");
-    await vi.waitFor(() => expect(q('[data-testid="first-run-import-start"]')).toBeTruthy(), { timeout: 3000 });
-    q<HTMLButtonElement>('[data-testid="first-run-import-start"]')!.click();
+    // The scan starts by itself, with no question first.
     await vi.waitFor(() => expect(scanStart).toHaveBeenCalledTimes(1));
+    expect(q('[data-testid="first-run-decision-question"]')).toBeNull();
     // The ledger reads Date.now(), so the clock moves with the timers.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const scanId = scanStart.mock.calls[0]![0];
@@ -1072,13 +949,17 @@ describe("visual first run: Bring in your context", () => {
     // The host's short tail wait: the import is recorded, and nothing is sent.
     await vi.advanceTimersByTimeAsync(1000);
     await settle();
+    // The question shows once the scan is done; the bot is named there.
+    await chooseBot();
+    typeName("Biscuit");
+    confirmName();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    await settle();
     return { sendDm, scanCancel };
   }
 
   /** Leave the takeover through Done ("Talk to Biscuit"). */
   async function talk(): Promise<void> {
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
-    await settle();
     expect(step()).toBe("done");
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
@@ -1092,7 +973,15 @@ describe("visual first run: Bring in your context", () => {
       expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
       expect(body).toBe(
         firstRunHandoffNotice(
-          { name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true, imported: IMPORTED },
+          {
+            name: "Biscuit",
+            runtime: "claude",
+            toolsReady: ["claude"],
+            signInChecked: false,
+            imported: IMPORTED,
+            team: null,
+            apps: {},
+          },
           { noun: "computer" },
         ),
       );

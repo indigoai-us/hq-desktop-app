@@ -296,7 +296,7 @@
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
   import { createLaunchActions } from "../settings/launch-actions";
-  import FirstRunTakeover from "../chat/first-run/FirstRunTakeover.svelte";
+  import FirstRunDecisionTakeover from "../chat/first-run/FirstRunDecisionTakeover.svelte";
   import {
     assistantNameIssue,
     firstRunHandoffNotice,
@@ -310,11 +310,12 @@
     type FirstRunCreation,
     type FirstRunHandoff,
     type FirstRunImportHandoff,
+    type FirstRunRuntime,
+    type FirstRunToolUsage,
   } from "../chat/first-run/visual-first-run.js";
   import {
     checkedReadiness,
     createSignInChecker,
-    TOOL_SIGNIN_CHECK_TIMEOUT_SECS,
     type SignInTool,
     type ToolSignInChecks,
   } from "../chat/first-run/tools-signin.js";
@@ -322,13 +323,7 @@
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
-  import { activeCloudCompanyBySlug, teamOptionsFrom } from "../chat/first-run/team-step.js";
-  import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
-  import {
-    createFirstRunAppsHost,
-    createFirstRunTeamHost,
-    type FirstRunSettled,
-  } from "../chat/first-run/first-run-hosts.js";
+  import type { FirstRunSettled } from "../chat/first-run/first-run-hosts.js";
   import {
     hasRunWelcomeSetup,
     isSetupChannel,
@@ -852,7 +847,7 @@
   } from "@hq/platform";
   import BotProgressCard, { type BotProgressState } from "../chat/create-bot/BotProgressCard.svelte";
   import type { CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
-  import { PROBE_EFFORT, PROBE_TIMEOUT_SECS } from "../chat/create-bot/runtime-probe.js";
+  import { PROBE_TIMEOUT_SECS } from "../chat/create-bot/runtime-probe.js";
   import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import type {
@@ -3686,11 +3681,10 @@
   }
   const firstRunSignInChecker = createSignInChecker({
     timingLog: firstRunTimingLog,
-    probe:
-      adapter.bots?.probe && !firstRunDev.dry
-        ? (tool) =>
-            adapter.bots!.probe!(tool, null, { effort: PROBE_EFFORT, timeoutSecs: TOOL_SIGNIN_CHECK_TIMEOUT_SECS })
-        : null,
+    // US-007: no sign-in probe in the first run. Sign-in state is the stored
+    // login, read without a model turn
+    // (indigo-onboarding-setup-steps-stay-deterministic).
+    probe: null,
     onchange: (checks) => {
       firstRunSignInChecks = checks;
     },
@@ -3716,11 +3710,6 @@
     const ready = localBotRuntimeReady;
     untrack(() => firstRunSignInChecker.sync(ready));
   });
-  /** A sign-in on the coding tools screen finished: it counts, then read readiness again. */
-  async function onFirstRunToolSignedIn(runtime: LocalBotRow["runtime"]): Promise<void> {
-    if (runtime === "claude" || runtime === "codex") firstRunSignInChecker.signedIn(runtime satisfies SignInTool);
-    await onBotRuntimeSignedIn();
-  }
   /**
    * "Bring in your context" (slice 4). The scan runs inside the takeover; the
    * host supplies the command (`adapter.contextImport`) and the event bus.
@@ -3729,20 +3718,30 @@
    * hq-cli is not on the critical path; the hq-cli import is the fallback.
    */
   const firstRunImportHost =
-    createNativeScanHost(adapter.localScan) ?? createImportScanHost(adapter.contextImport, syncEvents);
+    createNativeScanHost(adapter.localScan, (scan) => {
+      firstRunScanTools = scan.tools;
+    }) ?? createImportScanHost(adapter.contextImport, syncEvents);
+  /** Per-tool session counts from the launch scan: picks the most-used tool for the decision. */
+  let firstRunScanTools = $state<FirstRunToolUsage[] | null>(null);
+  /**
+   * "Continue in <tool>" on the decision screen.
+   * TODO(US-008): open HQ in that coding tool with the scan's context. Until
+   * then it hands off to the setup chat, as the old flow's last step did.
+   */
+  async function continueFirstRunInTool(runtime: FirstRunRuntime): Promise<void> {
+    firstRunRuntime = runtime;
+    await continueFirstRunInChat();
+  }
   /** The finished scan's counts and report path, for the setup bot's handoff. */
   let firstRunImport: FirstRunImportHandoff | null = null;
   function recordFirstRunImport(result: FirstRunImportHandoff): void {
     firstRunImport = result;
   }
   /**
-   * "Your team", Note taker and Project management (slices 2 and 5): what
-   * they settled, for the handoff note.
+   * "Your team" and the apps steps left the first run in US-007: the handoff
+   * note says nothing was settled there.
    */
-  let firstRunSettled: FirstRunSettled = { team: null, apps: {} };
-  function recordFirstRunSettled(next: FirstRunSettled): void {
-    firstRunSettled = next;
-  }
+  const firstRunSettled: FirstRunSettled = { team: null, apps: {} };
   /** The takeover closed (Done or Continue in chat): what it settled is final. */
   let firstRunLeft = false;
   /** The name the handoff gives the assistant (the one the person confirmed). */
@@ -3837,99 +3836,7 @@
       }, Math.max(0, nextAt - Date.now()));
     });
   }
-  /** The person's companies and invites, once the roster answered. */
-  const firstRunTeamOptions = $derived(rosterStatus === "loading" ? null : teamOptionsFrom(companies ?? []));
-  /** The create_company card needs card actions (`canRunEntryPoints`, declared further down). */
-  const firstRunCanCreateCompany = $derived(typeof adapter.messaging?.runCardAction === "function");
-  const firstRunTeamHost = $derived(
-    adapter.company || firstRunCanCreateCompany || firstRunDev.dry
-      ? createFirstRunTeamHost({
-          dry: firstRunDev.dry,
-          claimInvite: adapter.company ? (slug: string) => adapter.company!.claimPendingInvite(slug) : null,
-          createCompany: firstRunCanCreateCompany ? createFirstRunCompany : null,
-          joined: async (companyUid) => {
-            if (companyUid) {
-              const pinned = pinCompany(pinnedCompanyIds ?? [], companyUid);
-              if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
-            }
-            await readWorkspaceHealth();
-            void onrefreshroster?.();
-          },
-          created: () => {
-            createCompanyRequested = true;
-            void onrefreshroster?.();
-          },
-          findCompany: async (slug) => {
-            await onrefreshroster?.();
-            await svelteTick();
-            return activeCloudCompanyBySlug(companies ?? [], slug);
-          },
-        })
-      : null,
-  );
-  /**
-   * The New company sheet's create, without its navigation: the takeover is
-   * on screen, and the company opens once it closes.
-   */
-  async function createFirstRunCompany(
-    name: string,
-    slug: string,
-  ): Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string }> {
-    const draft = await openCreateCompanyDraft(conversationApi);
-    if (!draft.ok) return { ok: false, reason: draft.reason };
-    const values: Record<string, string> = {};
-    if (draft.form.nameFieldId) values[draft.form.nameFieldId] = name;
-    const slugId = slugFieldOf(draft.form.fields);
-    if (slugId) values[slugId] = slug;
-    const result = await submitCreateCompany(conversationApi, draft.form, values, []);
-    if (!result.ok) return { ok: false, reason: result.reason };
-    return { ok: true, companyUid: result.company.companyUid };
-  }
-  const firstRunAppsHost = $derived(
-    adapter.integrations?.catalogSearch
-      ? createFirstRunAppsHost({
-          dry: firstRunDev.dry,
-          catalogSearch: (uid, query, limit) => adapter.integrations.catalogSearch(uid, query, limit),
-          listConnections: adapter.integrations.listConnections
-            ? (uid) => adapter.integrations.listConnections(uid)
-            : null,
-          startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
-          install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
-          openUrl: openConnectionUrl,
-        })
-      : null,
-  );
 
-  /**
-   * First-run "Your apps" (flag `desktop.first-run-found-apps-v1`): the names-only
-   * scan, the fixed-list catalog lookup, connects, docs-based setup and Undo,
-   * all over the platform adapter. Null keeps Note taker and Project management.
-   */
-  const firstRunYourAppsHost = $derived(
-    foundAppsFlag && adapter.integrations
-      ? createYourAppsHost({
-          dry: firstRunDev.dry,
-          detectWorkApps: adapter.shell?.detectWorkApps ? () => adapter.shell.detectWorkApps!() : null,
-          catalogLookup: adapter.integrations.catalogLookup
-            ? (uid, domains) => adapter.integrations.catalogLookup!(uid, domains)
-            : null,
-          listConnections: adapter.integrations.listConnections
-            ? (uid) => adapter.integrations.listConnections(uid)
-            : null,
-          startOAuth: adapter.integrations.startOAuth ? (input) => adapter.integrations.startOAuth(input) : null,
-          oauthRedirectUri: adapter.integrations.oauthCallbackUrl
-            ? async () => {
-                const url = await adapter.integrations.oauthCallbackUrl!();
-                return url.ok ? url.value : null;
-              }
-            : null,
-          install: adapter.integrations.install ? (input) => adapter.integrations.install(input) : null,
-          discoverDocs: adapter.integrations.discoverDocs ? (input) => adapter.integrations.discoverDocs!(input) : null,
-          uninstall: adapter.integrations.uninstall ? (input) => adapter.integrations.uninstall!(input) : null,
-          openUrl: openConnectionUrl,
-        })
-      : null,
-  );
 
   /** The takeover is done on this computer: it never opens again. */
   function closeVisualFirstRun(): void {
@@ -16209,34 +16116,20 @@
 
   <!-- Visual first-run setup (desktop.visual-first-run). Over the whole window. -->
   {#if visualFirstRunOpen}
-    <FirstRunTakeover
+    <!-- TODO(US-005): progress chip for the background setup goes here. -->
+    <FirstRunDecisionTakeover
       initialName={firstRunSuggestedName}
-      runtimeReady={localBotRuntimeReady}
-      runtimeStatus={localBotRuntimeStatus}
-      signInChecks={firstRunSignInChecks}
-      timingLog={firstRunTimingLog}
-      signInApi={botSignIn}
-      onsignedin={onFirstRunToolSignedIn}
-      onrecheck={recheckLocalBotRuntimes}
-      {aiTools}
-      hqFolderPath={hqFolderPath ?? ""}
-      {onopenassistant}
-      {onassistedinstall}
-      {onrequestaitools}
+      importHost={firstRunImportHost}
+      scanTools={firstRunScanTools}
+      installed={localBotRuntimeReady}
       creation={firstRunCreation}
       onconfirmname={confirmFirstRunName}
-      onruntime={(runtime) => (firstRunRuntime = runtime)}
       onretry={retryFirstRunAssistant}
-      importHost={firstRunImportHost}
-      onimport={recordFirstRunImport}
-      teamOptions={firstRunTeamOptions}
-      teamHost={firstRunTeamHost}
-      appsHost={firstRunAppsHost}
-      yourAppsHost={firstRunYourAppsHost}
-      onopenintegrations={(companyUid) => openConnectionUrl(companyIntegrationsUrl(companySlugForUid(companyUid)))}
-      onsettled={recordFirstRunSettled}
       ontalk={talkToFirstRunAssistant}
+      oncontinueintool={continueFirstRunInTool}
       oncontinueinchat={continueFirstRunInChat}
+      onimport={recordFirstRunImport}
+      timingLog={firstRunTimingLog}
     />
   {/if}
 

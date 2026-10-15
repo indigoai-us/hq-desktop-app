@@ -184,18 +184,26 @@ function step(): string | null {
   return q('[data-testid="first-run-step"]')?.getAttribute("data-step") ?? null;
 }
 
+/** Pick the bot path on the decision screen (a signed-in coding tool opens on the tool path). */
+async function chooseBot(): Promise<void> {
+  await vi.waitFor(() => expect(q('[data-testid="first-run-decision-question"]')).toBeTruthy(), { timeout: 5000 });
+  const path = () => q('[data-testid="first-run-decision"]')?.getAttribute("data-path");
+  if (path() === "tool") {
+    q<HTMLButtonElement>('[data-testid="first-run-decision-other"]')!.click();
+    await settle();
+  }
+  expect(path()).toBe("bot");
+}
+
 function typeName(value: string): void {
-  const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+  const input = q<HTMLInputElement>('[data-testid="first-run-bot-name"]')!;
   input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function pressEnter(): void {
-  q<HTMLInputElement>('[data-testid="new-bot-name"]')!.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-  );
+function confirmName(): void {
+  q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
 }
-
 
 function workspace(slug: string, displayName: string, status: "active" | "pending"): Record<string, unknown> {
   return {
@@ -225,10 +233,11 @@ describe("VITE_HQ_DEV_FIRST_RUN_FORCE + VITE_HQ_DEV_FIRST_RUN_DRY", () => {
     const { platform } = adapter({ create, flag: false });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await chooseBot();
     typeName("Biscuit");
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    confirmName();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
-    q<HTMLButtonElement>('[data-testid="first-run-continue-in-chat"]')!.click();
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
@@ -247,25 +256,18 @@ describe("VITE_HQ_DEV_FIRST_RUN_FORCE + VITE_HQ_DEV_FIRST_RUN_DRY", () => {
     expect(hasFeature).not.toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
   });
 
-  it("walks every screen without creating, joining, connecting or sending anything, and leaves no marker", async () => {
+  it("walks the decision and Done without creating, joining or sending anything, and leaves no marker", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const claim = vi.fn(async () => ok({ ok: true }));
     const { platform, sendDm, updateAgentProfile } = adapter({ create, flag: false, claim });
     await boot(platform, ROSTER);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await chooseBot();
     typeName("Biscuit");
-    pressEnter();
-    await settle();
-    expect(step()).toBe("team");
-    q<HTMLButtonElement>('[data-testid="first-run-team-invite:acme"]')!.click();
-    await settle();
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
-    await vi.waitFor(() => expect(step()).toBe("tools"));
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
-    await settle();
+    confirmName();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
-    expect(q('[data-testid="first-run-summary-team"]')?.textContent).toMatch(/^Joined /);
-    expect(q('[data-testid="first-run-summary-team"] .company-label-name')?.textContent).toBe("Acme Robotics");
+    expect(step()).toBe("done");
+    expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Biscuit");
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();

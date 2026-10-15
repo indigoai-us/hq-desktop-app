@@ -132,7 +132,15 @@ export function nativeScanEvents(scan: LocalScanView): Record<string, unknown>[]
   return events;
 }
 
-export function createNativeScanHost(api: LocalScanApi | null | undefined): ImportScanHost | null {
+/**
+ * `onscan` gets the finished scan before its events go out, so the first run
+ * can read which coding tool the person uses most (US-007) without a second
+ * scan or a model turn.
+ */
+export function createNativeScanHost(
+  api: LocalScanApi | null | undefined,
+  onscan?: ((scan: LocalScanView) => void) | null,
+): ImportScanHost | null {
   if (!api) return null;
   const cancelled: string[] = [];
   const takeCancelled = (scanId: string) => {
@@ -152,6 +160,10 @@ export function createNativeScanHost(api: LocalScanApi | null | undefined): Impo
           return { status: "failed" };
         }
         scan = result.value;
+        if (!scan || typeof scan !== "object" || !Array.isArray(scan.tools)) {
+          console.warn("[first-run] native scan returned no scan");
+          return { status: "failed" };
+        }
       } catch (err) {
         console.warn("[first-run] native scan threw:", err);
         return { status: "failed" };
@@ -159,6 +171,13 @@ export function createNativeScanHost(api: LocalScanApi | null | undefined): Impo
       // The host scan cannot be stopped mid-walk (it is bounded at 8 s);
       // a cancel that landed meanwhile drops its result here.
       if (takeCancelled(scanId)) return { status: "cancelled" };
+      if (onscan) {
+        try {
+          onscan(scan);
+        } catch (err) {
+          console.warn("[first-run] native scan listener threw:", err);
+        }
+      }
       for (const event of nativeScanEvents(scan)) onevent(event);
       return { status: "done" };
     },

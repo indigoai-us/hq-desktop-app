@@ -575,7 +575,7 @@ describe('onboarding step telemetry', () => {
       sessionId: '11111111-1111-4111-8111-111111111111',
       occurredAt: '2026-10-03T10:00:00.000Z',
       properties: {
-        step: 'company',
+        step: 'setup',
         action: 'completed',
         namePrefill: 'offered_kept',
         companyUid: 'cmp_test',
@@ -590,7 +590,7 @@ describe('onboarding step telemetry', () => {
       sessionId: '11111111-1111-4111-8111-111111111111',
       occurredAt: '2026-10-03T10:00:00.000Z',
       properties: {
-        step: 'company',
+        step: 'setup',
         action: 'completed',
         namePrefill: 'Acme Corporation',
         surface: 'desktop_installer',
@@ -1046,7 +1046,7 @@ describe('invite-teammate failure telemetry', () => {
       sessionId: '11111111-1111-4111-8111-111111111111',
       occurredAt: '2026-10-02T10:00:00.000Z',
       properties: {
-        step: 'company',
+        step: 'setup',
         action: 'started',
         decision: 'paid_existing',
         existingCompanies: 2,
@@ -1089,7 +1089,7 @@ describe('invite-teammate failure telemetry', () => {
       sessionId: '11111111-1111-4111-8111-111111111111',
       occurredAt: '2026-10-02T10:00:00.000Z',
       properties: {
-        step: 'company',
+        step: 'setup',
         action: 'started',
         decision: 'lookup_failed',
         outcome: 'route_lookup_failed',

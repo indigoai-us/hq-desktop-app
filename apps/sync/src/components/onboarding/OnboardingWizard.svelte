@@ -20,7 +20,6 @@
   import {
     HQ_MARK_H,
     HQ_MARK_Q,
-    createCompanyEngine,
     createConsentEngine,
     createFolderEngine,
     createKeyboardEngine,
@@ -151,7 +150,7 @@
     emitDesktopOperationalTelemetry,
     type DesktopAuthProgressStep,
   } from '../../lib/desktop-telemetry';
-  import { inviteFailedEvent, inviteSentEvent, planSelectedEvent } from '../../lib/cdp-funnel-events';
+  import { inviteFailedEvent, inviteSentEvent } from '../../lib/cdp-funnel-events';
   import {
     createOnboardingStepTelemetry,
     type InviteStepHiddenReason,
@@ -161,7 +160,6 @@
   } from '../../lib/onboarding-step-telemetry';
   import {
     BUILD_STEP_INDEX,
-    COMPANY_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
     FIRST_FOLDER_SYNC_STEP_INDEX,
@@ -189,7 +187,6 @@
     type CommandLineToolsPhase,
   } from '../../lib/command-line-tools-gate';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
-  import CompanyStep, { type CompanyStepEvent, type CompanyStepResult } from './CompanyStep.svelte';
   import hqAppIcon from '../../assets/onboarding/hq-app-icon.png';
   import {
     companyUidFromMissingBucket,
@@ -201,7 +198,6 @@
     resolveFirstRunCompanyRoute,
     waitForProvisioning,
     type FirstRunCompanyPath,
-    type FirstRunPlan,
   } from '../../lib/first-run-company';
   import {
     createSyncPlatformAdapter,
@@ -210,7 +206,6 @@
     hqAnywhereRuntimeEnabled as resolveHqAnywhereRuntimeEnabled,
     putHqAnywherePersonSetting,
     setHqAnywhereGlobalRuntime,
-    COMPANY_NAME_PREFILL_FLAG,
     FIRST_LAUNCH_JOIN_KEY_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
     FIRST_FOLDER_SYNC_STEP_FLAG,
@@ -498,9 +493,6 @@
    * `existing` or null (lookup failed) to skip it.
    */
   let companyPath = $state<FirstRunCompanyPath | null>(null);
-  /** The plan already picked on the website, when hq-pro says so; skips "Choose a plan". */
-  let companyPriorPlan = $state<FirstRunPlan | null>(null);
-  let companyNamePrefillEnabled = $state(false);
   /** Signed-in email, read once for the signed-in-as notice and invite matching. */
   let signedInEmail = $state<string | null>(null);
   /** A session already on this machine when onboarding opened (old ~/.hq). */
@@ -524,14 +516,12 @@
   let usingMachineIdentity = $state(false);
   let machineIdentityError = $state<string | null>(null);
   let switchingAccount = $state(false);
-  let resumeAfterAccountSwitch = false;
   /** First-sync self-heal: "Finishing setup…" while hq-pro provisions a bucket. */
   let firstFolderSelfHealing = $state(false);
   let firstFolderMissingBucketUids = new Set<string>();
   let firstFolderSelfHealAttempted = false;
   const firstFolderSelfHealTimeoutMs = 90_000;
   const firstFolderSelfHealIntervalMs = 2_000;
-  let companyStepVisited = false;
   /**
    * The company picked, joined or created in this flow, as the reference the
    * connector import passes to `hq integrations import --company` (slug, or
@@ -549,14 +539,7 @@
   let companyRouteGeneration = 0;
   /** The company lookup has answered with a usable route (or none needed). */
   let companyRouteResolved = $state(false);
-  /** Leaving the explainers waits this long at most for the company lookup. */
-  /**
-   * How long leaving the explainers waits for the company lookup. Long enough
-   * that the person goes straight to the right screen rather than seeing the
-   * ready screen and being pulled back from it.
-   */
-  const COMPANY_ROUTE_WAIT_MS = 12_000;
-  /** Leaving the explainers waits on the company lookup; the forward button says so. */
+  /** Leaving the explainers is in progress; the forward button says so. */
   let leavingExplainers = $state(false);
   const MACHINE_SESSION_POLL_MS = 1_500;
   const MACHINE_SESSION_POLLS = 14;
@@ -673,7 +656,6 @@
     currentStep = step;
     currentStepVisibleAt = Date.now();
     if (step === CONNECTOR_IMPORT_STEP_INDEX) connectorImportVisited = true;
-    if (step === COMPANY_STEP_INDEX) companyStepVisited = true;
     if (step === FIRST_FOLDER_SYNC_STEP_INDEX) firstFolderSyncVisited = true;
     if (step === INVITE_TEAMMATE_STEP_INDEX) inviteTeammateVisited = true;
   }
@@ -720,9 +702,7 @@
         ? (typeof details.companyUid === 'string'
             ? details.companyUid
             : inviteTeammateContext?.companyUid ?? companyStepCompanyUid ?? undefined)
-        : stepId === 'company'
-          ? (companyStepCompanyUid ?? undefined)
-          : undefined;
+        : undefined;
     onboardingTelemetry.record({
       properties: {
         step: stepIdFor(step),
@@ -882,16 +862,7 @@
   // ─── Welcome flow: chrome, install card, ready gate ─────────────────────
   /** An install this flow started is still running. */
   const installPending = $derived(setupStarted && !blockingPhaseDone && !setupCompleted);
-  /** The company step's current screen offers Back (within the step, or out to the shortcut screen). */
-  let companyBack = $state(false);
-  let companyStepRef = $state<{ back: () => boolean } | null>(null);
-  /** This run has a company step (a person with no company yet). */
-  const companyInRun = $derived(
-    !consentOnly && !replay && Boolean(companyPath && companyPath.kind !== 'skip'),
-  );
-  const chrome = $derived(
-    welcomeChrome({ scene, replay, setupCompleted, companyInRun, companyBack: companyBack && !leavingExplainers }),
-  );
+  const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
   const installCard = $derived(
     installCardModel({
       percent: overallPercent,
@@ -1491,23 +1462,6 @@
     void resolveInstallerPersonUid();
     await refocusWindow();
     if (!isCurrentSignInCall(call)) return;
-    if (resumeAfterAccountSwitch && setupCompleted) {
-      // Setup already ran on this machine; look again for the new account.
-      resumeAfterAccountSwitch = false;
-      advanceTo(READY_STEP_INDEX, 'completed', { ...details, outcome: 'authenticated' }, 'ready');
-      void resolvePostSetupSteps(() => mounted);
-      return;
-    }
-    if (resumeAfterAccountSwitch && setupStarted && !setupCancelled) {
-      // Switched account from the company step while the install still runs:
-      // the folder is chosen and the install carries on, so look up the new
-      // account's company and go on from the ready screen (the company step
-      // comes back first when this account needs it).
-      resumeAfterAccountSwitch = false;
-      void resolveCompanyStep();
-      advanceTo(READY_STEP_INDEX, 'completed', { ...details, outcome: 'authenticated' }, 'ready');
-      return;
-    }
     // The consent question is asked later as its own step after setup.
     // Operational setup telemetry is emitted independently; skill usage
     // remains governed by that choice.
@@ -1590,27 +1544,6 @@
         'onboarding: company route lookup retry flag failed; leaving retry off',
         error,
       );
-      return false;
-    }
-  }
-
-  async function resolveCompanyNamePrefillFlag(): Promise<boolean> {
-    try {
-      // A create route can follow an account switch. Refresh before reading so
-      // this suggestion uses the newly authenticated person's flag snapshot.
-      await onboardingFeatureFlags.identity.refreshFeatureFlags?.();
-      const result = await onboardingFeatureFlags.identity.hasFeature(COMPANY_NAME_PREFILL_FLAG);
-      if (!result.ok) {
-        console.warn(
-          'onboarding: company name prefill flag unavailable; leaving prefill off',
-          result.reason,
-          result.code,
-        );
-        return false;
-      }
-      return result.value === true;
-    } catch (error) {
-      console.warn('onboarding: company name prefill flag failed; leaving prefill off', error);
       return false;
     }
   }
@@ -1811,7 +1744,7 @@
   }
 
   /** Sign out and go back to the sign-in buttons. Used by the guard and by the invite mismatch. */
-  async function switchAccount(from: 'welcome' | 'company'): Promise<void> {
+  async function switchAccount(): Promise<void> {
     if (switchingAccount) return;
     switchingAccount = true;
     try {
@@ -1835,18 +1768,7 @@
     // Signing out of the outpost session is a local opt-out: the identity
     // stays available, so the sign-in screen offers it again.
     void probeMachineIdentity();
-    if (from === 'company') {
-      companyPath = null;
-      companyPriorPlan = null;
-      companyStepVisited = false;
-      connectorImportCompany = null;
-      resetCompanyRoute();
-      postSetupStepsResolved = false;
-      resumeAfterAccountSwitch = true;
-      advanceTo(WELCOME_SIGNIN_STEP_INDEX, 'completed', { outcome: 'switch_account' }, 'welcome');
-    } else {
-      recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_switched' });
-    }
+    recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_switched' });
   }
 
   function companyStepHqProJson(
@@ -3224,8 +3146,6 @@
       const active = await activeCompanyForConnectorImport();
       if (!stillCurrent()) return;
       companyPath = null;
-      companyPriorPlan = null;
-      companyNamePrefillEnabled = false;
       inviteTeammateContext = null;
       showInviteTeammateStep = false;
       connectorImportCompany = active;
@@ -3247,14 +3167,7 @@
         membershipMeRead = null;
       },
     });
-    const companyNamePrefillPromise = firstRunCompanyPathPromise.then((resolved) => {
-      if (!resolved || !('route' in resolved) || resolved.route.kind !== 'create') return false;
-      return resolveCompanyNamePrefillFlag();
-    });
-    const [firstRunCompanyPath, namePrefillEnabled] = await Promise.all([
-      firstRunCompanyPathPromise,
-      companyNamePrefillPromise,
-    ]);
+    const firstRunCompanyPath = await firstRunCompanyPathPromise;
     // Resolve invite eligibility after the company route has completed its
     // retry so it can use the recovered shared membership response.
     const inviteResolution =
@@ -3265,9 +3178,6 @@
     if (!stillCurrent()) return;
     if (firstRunCompanyPath && 'route' in firstRunCompanyPath) {
       companyPath = firstRunCompanyPath.route;
-      companyPriorPlan = firstRunCompanyPath.priorPlan;
-      companyNamePrefillEnabled =
-        namePrefillEnabled && firstRunCompanyPath.route.kind === 'create';
       recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
       inviteTeammateContext = inviteContext;
       showInviteTeammateStep = inviteContext !== null;
@@ -3286,8 +3196,6 @@
       return;
     }
     companyPath = null;
-    companyPriorPlan = null;
-    companyNamePrefillEnabled = false;
     inviteTeammateContext = null;
     showInviteTeammateStep = false;
     if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
@@ -3317,30 +3225,18 @@
     postSetupStepsResolved = true;
   }
 
-  /** Whether the company step still has to be shown; null while the lookup runs. */
-  function companyStepPending(): boolean | null {
-    if (!companyRouteResolved) return null;
-    return Boolean(companyPath && companyPath.kind !== 'skip' && !companyStepVisited);
-  }
-
   /**
-   * Leave the setup explainers. The company step comes first when this
-   * person needs one, then the ready ("Open HQ Desktop") screen. A lookup
-   * that has not answered yet is waited for (COMPANY_ROUTE_WAIT_MS, the
-   * forward button reads "One moment…"); only one slower than that lets the
-   * ready screen show, and the company step is then offered once the install
-   * is done, with the other follow-ons.
+   * Leave the setup explainers for the ready ("Open HQ Desktop") screen.
+   * There is no company screen (US-007): the membership lookup keeps running
+   * in the background, a company the person already belongs to connects on
+   * its own, and a personal setup needs no company.
    */
   async function leaveExplainers(): Promise<void> {
     if (leavingExplainers) return;
     leavingExplainers = true;
     try {
-      if (!consentOnly && !replay && companyStepPending() === null) {
-        const lookup = resolveCompanyStep();
-        await Promise.race([lookup, new Promise((resolve) => setTimeout(resolve, COMPANY_ROUTE_WAIT_MS))]);
-        if (!mounted) return;
-      }
-      advanceTo(!consentOnly && !replay && companyStepPending() ? COMPANY_STEP_INDEX : READY_STEP_INDEX, null);
+      if (!consentOnly && !replay) void resolveCompanyStep();
+      advanceTo(READY_STEP_INDEX, null);
     } finally {
       leavingExplainers = false;
     }
@@ -3938,11 +3834,6 @@
     const nextScene =
       targetScene ?? (next === CONNECTOR_IMPORT_STEP_INDEX ? scene : sceneForStep(next));
     if (next === currentStep) {
-      // Back from the company step can leave the router on it (a finished
-      // install closes the way back into setup), so coming forward again does
-      // not change step. Showing the company step still counts as visiting it,
-      // or the ready screen would send the person through it a second time.
-      if (next === COMPANY_STEP_INDEX && nextScene === 'company') companyStepVisited = true;
       scene = nextScene;
       return;
     }
@@ -3988,15 +3879,14 @@
         handleInstall();
         return;
       case 'cloud':
-        // Look up the company step while the second explainer plays, so it
-        // can come right after the explainers, before the ready screen.
+        // Look up memberships while the second explainer plays, so a company
+        // the person already belongs to is connected by the ready screen.
         void resolveCompanyStep();
         scene = 'shortcut';
         return;
       case 'shortcut':
         // Leaving the explainers is not the setup step "completing": the
-        // install records its own completion when it finishes. The company
-        // step, when needed, comes before the ready screen.
+        // install records its own completion when it finishes.
         void leaveExplainers();
         return;
       case 'consent':
@@ -4012,11 +3902,6 @@
 
   function goBack(): void {
     if (!chrome.back) return;
-    // The company step goes back through its own screens first.
-    if (scene === 'company' && companyStepRef?.back()) return;
-    // Leaving the company step by Back means it has not been done: the next
-    // Next comes back to it.
-    if (scene === 'company') companyStepVisited = false;
     const target = previousScene(scene, replay);
     if (!target) return;
     if (target === 'welcome') enterSettled = true;
@@ -4232,14 +4117,6 @@
         ),
       );
     }
-    if (refs['panel:company'] && refs.companyCanvas) {
-      controller.register(
-        'company',
-        createCompanyEngine(refs['panel:company'], refs.companyCanvas as HTMLCanvasElement, {
-          reveal: revealNav,
-        }),
-      );
-    }
     for (const id of ['first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
       const block = refs[`panel:${id}`];
       if (block) controller.register(id, createPanelEngine(block, { reveal: revealNav }));
@@ -4364,18 +4241,11 @@
   // the teammate invite (flag-gated, sole active member only), then the
   // connector import, which only shows itself if it has something to offer.
   // Each hands back to the ready screen, which picks the next one up here.
-  // The company step comes before the ready screen: leaving the explainers
-  // waits for the lookup (COMPANY_ROUTE_WAIT_MS), so a person is not shown the
-  // ready screen and then pulled away from it. Only a lookup slower than that
-  // hands over later, once the install is done, with the other follow-ons.
+  // There is no company step (US-007): memberships connect on their own.
 
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
     if (currentStep !== READY_STEP_INDEX) return;
-    if (companyPath && companyPath.kind !== 'skip' && !companyStepVisited) {
-      advanceTo(COMPANY_STEP_INDEX, null);
-      return;
-    }
     if (showFirstFolderSyncStep && !firstFolderSyncVisited) {
       advanceTo(FIRST_FOLDER_SYNC_STEP_INDEX, null);
       return;
@@ -4394,44 +4264,19 @@
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX, null);
   });
 
-  /** Telemetry for the company step. Never carries names, handles or emails. */
-  function recordCompanyStep(event: CompanyStepEvent): void {
-    if ('companyUid' in event) companyStepCompanyUid = event.companyUid;
-    if (event.action === 'plan_chosen') void emitDesktopOperationalTelemetry(planSelectedEvent(event.plan));
-    const failed =
-      event.action === 'company_create_failed' ||
-      event.action === 'invite_join_failed' ||
-      event.action === 'checkout_failed' ||
-      event.action === 'provisioning_failed';
-    const outcome =
-      event.action === 'plan_chosen'
-        ? `plan_${event.plan}`
-        : event.action === 'company_created' && event.inviteQueuedCount > 0
-          ? 'company_created_invites_queued'
-          : event.action === 'provisioning_wait' && event.retry
-            ? 'provisioning_retry'
-            : event.action;
-    const details: StepTelemetryDetails = { outcome };
-    if (event.action === 'company_created') details.namePrefill = event.namePrefill;
-    if (event.action === 'provisioning_failed') details.provisioningStep = event.step;
-    if (event.action === 'provisioning_ready') details.attemptCount = event.attemptCount;
-    if (event.action === 'create_another') details.decision = 'created_another';
-    if (event.action === 'existing_used') details.decision = 'used_existing';
-    recordStep(COMPANY_STEP_INDEX, failed ? 'failed' : 'started', details);
-  }
-
-  /** One row per run: what the company step found and which way it went. */
+  /** One row per run: what the membership lookup found and which way it went. */
   function recordCompanyRoute(route: FirstRunCompanyPath, summary: CompanyRouteSummary): void {
     if (route.kind === 'skip') {
       companyStepCompanyUid = route.company.companyUid;
       recordWorkspaceSelected(route.company.companyUid);
     }
-    recordStep(COMPANY_STEP_INDEX, route.kind === 'skip' ? 'skipped' : 'started', {
+    recordStep(SETUP_STEP_INDEX, route.kind === 'skip' ? 'skipped' : 'started', {
       outcome: `route_${route.decision}`,
       decision: route.decision,
       existingCompanies: summary.existingCompanies,
       paidCompany: summary.paidCompany,
       pendingInvites: summary.pendingInvites,
+      ...(route.kind === 'skip' ? { companyUid: route.company.companyUid } : {}),
     });
     if (route.kind === 'skip') {
       connectorImportCompany = route.company.slug ?? route.company.companyUid;
@@ -4441,7 +4286,7 @@
 
   /** A failed lookup keeps the existing #setup create-company recovery in place. */
   function recordCompanyRouteLookupFailed(): void {
-    recordStep(COMPANY_STEP_INDEX, 'started', {
+    recordStep(SETUP_STEP_INDEX, 'started', {
       outcome: 'route_lookup_failed',
       decision: 'lookup_failed',
     });
@@ -4473,51 +4318,6 @@
     } catch (error) {
       console.warn('onboarding: could not select the company', error);
     }
-  }
-
-  /** Leave the company step: made, joined, used, or skipped. Back to ready for the rest. */
-  function leaveCompanyStep(result: CompanyStepResult): void {
-    const outcome =
-      result.outcome === 'created'
-        ? result.paid
-          ? 'workforce_paid'
-          : `created_${result.plan}`
-        : result.outcome === 'joined'
-          ? 'joined_invite'
-          : result.outcome;
-    const details: StepTelemetryDetails = { outcome };
-    connectorImportCompany = result.outcome === 'skipped' ? (result.company ?? null) : null;
-    if (result.outcome === 'created') {
-      connectorImportCompany = result.companyUid;
-      recordWorkspaceSelected(result.companyUid);
-      // The company step asked about invites itself: never ask twice.
-      inviteTeammateVisited = true;
-    } else if (result.outcome === 'joined') {
-      details.decision = 'joined_invite';
-      const joinedInvite =
-        companyPath?.kind === 'join'
-          ? companyPath.invites.find((invite) => invite.slug !== null && result.slugs.includes(invite.slug))
-          : undefined;
-      const companyUid = result.companyUid ?? joinedInvite?.companyUid;
-      if (companyUid) {
-        companyStepCompanyUid = companyUid;
-        recordWorkspaceSelected(companyUid);
-      }
-      connectorImportCompany = result.slugs[0] ?? companyUid ?? null;
-      void selectCompany(result.slugs[0] ?? null);
-    } else if (result.outcome === 'used_existing') {
-      details.decision = 'used_existing';
-      companyStepCompanyUid = result.companyUid;
-      connectorImportCompany = result.slug ?? result.companyUid;
-      recordWorkspaceSelected(result.companyUid);
-      void selectCompany(result.slug);
-    }
-    advanceTo(
-      READY_STEP_INDEX,
-      result.outcome === 'skipped' ? 'skipped' : 'completed',
-      details,
-      'ready',
-    );
   }
 
   /** Leave the teammate invite: sent (Continue) or skipped. */
@@ -4629,14 +4429,14 @@
               You're signed in as this outpost ({existingSessionOutpostLabel}).
               <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-continue" disabled={switchingAccount} onclick={continueExistingSession}>Continue</button>
               or
-              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount('welcome')}>switch account</button>?
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount()}>switch account</button>?
             </p>
           {:else if existingSessionEmail}
             <p class="status inline-note" role="status" data-testid="onboarding-signed-in-as">
               You're signed in as {existingSessionEmail}.
               <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-continue" disabled={switchingAccount} onclick={continueExistingSession}>Continue</button>
               or
-              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount('welcome')}>switch account</button>?
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount()}>switch account</button>?
             </p>
           {:else if machineIdentity.available}
             <!-- This machine has its own outpost identity, not in use (opted out, or not resolved yet). -->
@@ -4987,36 +4787,6 @@
       </div>
     </section>
     {/if}
-
-    <!-- Name a company (or join an invite) and pick a plan, for anyone with
-         no company yet: right after the setup explainers, before the ready
-         ("Open HQ Desktop") screen, while the install carries on. -->
-    <section
-      class="scene s-follow-on s-company"
-      class:on={scene === 'company'}
-      data-scene="company"
-      aria-labelledby="onboarding-title-company"
-    >
-      <canvas class="company-art" aria-hidden="true" bind:this={refs.companyCanvas}></canvas>
-      <div class="panel-block" bind:this={refs['panel:company']}>
-        {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'skip'}
-          <CompanyStep
-            bind:this={companyStepRef}
-            path={companyPath}
-            priorPlan={companyPriorPlan}
-            namePrefillEnabled={companyNamePrefillEnabled}
-            signedInEmail={signedInEmail}
-            invoke={invokeCommand}
-            onswitchaccount={() => void switchAccount('company')}
-            openUrl={(url) => openExternal(url)}
-            listen={(event, handler) => listen(event, (message) => handler(message.payload))}
-            onTelemetry={recordCompanyStep}
-            oncomplete={leaveCompanyStep}
-            onbackchange={(canGoBack) => (companyBack = canGoBack)}
-          />
-        {/if}
-      </div>
-    </section>
 
     <!-- Optional, flag-gated: sync the HQ folder, offered once the install is
          done. The section is always there so its panel engine can register;

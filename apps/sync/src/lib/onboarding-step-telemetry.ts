@@ -504,7 +504,7 @@ export function desktopPropertiesForOnboardingStep(
   }
   if (
     (event.properties.step === 'invite-teammate' ||
-      event.properties.step === 'company' ||
+      event.properties.step === 'setup' ||
       event.properties.selfHeal !== undefined) &&
     typeof event.properties.companyUid === 'string' &&
     event.properties.companyUid.startsWith('cmp_')

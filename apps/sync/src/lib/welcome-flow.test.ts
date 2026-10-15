@@ -155,73 +155,22 @@ describe('welcome flow chrome and gating', () => {
   });
 });
 
-describe('welcome flow chrome with the company step in the run', () => {
-  const chromeFor = (
-    scene: Parameters<typeof welcomeChrome>[0]['scene'],
-    extra: Partial<Parameters<typeof welcomeChrome>[0]> = {},
-  ) => welcomeChrome({ scene, replay: false, setupCompleted: false, companyInRun: true, ...extra });
+describe('welcome flow chrome with no company step (US-007)', () => {
+  const without = { replay: false, setupCompleted: false } as const;
 
-  it('adds a tick for the company step, between the shortcut screen and ready', () => {
-    expect(chromeFor('folder')).toMatchObject({ ticks: true, tickCount: 5, currentTick: 0 });
-    expect(chromeFor('shortcut')).toMatchObject({ ticks: true, tickCount: 5, currentTick: 2 });
-    expect(chromeFor('company')).toMatchObject({ ticks: true, tickCount: 5, currentTick: 3 });
-    expect(chromeFor('ready')).toMatchObject({ ticks: true, tickCount: 5, currentTick: 4 });
-    expect(chromeFor('ready', { setupCompleted: true })).toMatchObject({ tickCount: 5, currentTick: 4 });
-  });
-
-  it("reads the follow-on steps as ready's tick, with no chrome of their own", () => {
-    const ready = chromeFor('ready', { setupCompleted: true });
-    for (const scene of ['first-folder', 'invite', 'connectors'] as const) {
-      expect(chromeFor(scene, { setupCompleted: true })).toEqual({
-        ...ready,
-        currentTick: 4,
-        back: false,
-        skip: null,
-        installCard: false,
-      });
-    }
-  });
-
-  it('shows Back on the company step exactly when its screen allows it', () => {
-    expect(chromeFor('company', { companyBack: true }).back).toBe(true);
-    expect(chromeFor('company', { companyBack: false }).back).toBe(false);
-    expect(chromeFor('company').back).toBe(false);
-    // Skip intro is for the explainers, never the company step.
-    expect(chromeFor('company', { companyBack: true }).skip).toBeNull();
-  });
-
-  it('keeps the install card on the company step while the install runs, and drops it once done', () => {
-    expect(chromeFor('company', { setupCompleted: false }).installCard).toBe(true);
-    expect(chromeFor('company', { setupCompleted: true }).installCard).toBe(false);
-    expect(chromeFor('ready', { setupCompleted: false }).installCard).toBe(false);
-  });
-
-  it('steps back from the company step to the shortcut screen', () => {
-    expect(previousScene('company', false)).toBe('shortcut');
-    // Replay has no company step.
-    expect(previousScene('company', true)).toBeNull();
-  });
-
-  it('keeps the four-tick strip when the run has no company step', () => {
-    const without = { replay: false, setupCompleted: false } as const;
+  it('keeps the four-tick strip, with ready on the last tick', () => {
+    expect(welcomeChrome({ scene: 'folder', ...without })).toMatchObject({ ticks: true, tickCount: 4, currentTick: 0 });
+    expect(welcomeChrome({ scene: 'shortcut', ...without })).toMatchObject({ tickCount: 4, currentTick: 2 });
     expect(welcomeChrome({ scene: 'ready', ...without })).toMatchObject({ tickCount: 4, currentTick: 3 });
-    expect(welcomeChrome({ scene: 'ready', ...without, companyInRun: false })).toMatchObject({
-      tickCount: 4,
-      currentTick: 3,
-    });
     expect(welcomeChrome({ scene: 'invite', ...without, setupCompleted: true })).toMatchObject({
       tickCount: 4,
       currentTick: 3,
     });
-    expect(welcomeChrome({ scene: 'shortcut', ...without })).toMatchObject({ tickCount: 4, currentTick: 2 });
   });
 
-  it('ignores companyInRun in replay, which has no company step', () => {
-    for (const scene of REPLAY_SCENES) {
-      expect(welcomeChrome({ scene, replay: true, setupCompleted: false, companyInRun: true })).toEqual(
-        welcomeChrome({ scene, replay: true, setupCompleted: false }),
-      );
-    }
+  it('goes from the shortcut screen straight to ready', () => {
+    expect(nextScene('shortcut', false)).toBe('ready');
+    expect(previousScene('ready', false)).toBe('shortcut');
   });
 });
 

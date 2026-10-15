@@ -1,13 +1,12 @@
 // @vitest-environment happy-dom
 
 /**
- * Visual first run, slices 2 and 5, through the real shell: "Your team"
- * joins an invite through the invite claim, Note taker and Project
- * management read the integrations catalog and connect inline. The setup
- * bot is created with no kickoff while the takeover is open, and everything
- * the takeover settled (the import included) reaches it as ONE bot-only note
- * when the takeover closes. Flag off, none of it runs: no claim, no catalog
- * read.
+ * Visual first run through the real shell, with the team and apps hosts
+ * available. The decision takeover has no team or apps screens: it joins no
+ * invite and reads no integrations catalog. The setup bot is created with no
+ * kickoff while the takeover is open, and everything the takeover settled
+ * (the import included) reaches it as ONE bot-only note when the takeover
+ * closes. Flag off, none of it runs: no claim, no catalog read.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -186,18 +185,30 @@ function step(): string | null {
   return q('[data-testid="first-run-step"]')?.getAttribute("data-step") ?? null;
 }
 
+/** Wait for the decision screen's question. */
+async function decisionShown(timeout = 1000): Promise<void> {
+  await vi.waitFor(() => expect(q('[data-testid="first-run-decision-question"]')).toBeTruthy(), { timeout });
+}
+
+/** Pick the bot path (a signed-in coding tool opens on the tool path). */
+async function chooseBot(): Promise<void> {
+  const path = () => q('[data-testid="first-run-decision"]')?.getAttribute("data-path");
+  if (path() === "tool") {
+    q<HTMLButtonElement>('[data-testid="first-run-decision-other"]')!.click();
+    await settle();
+  }
+  expect(path()).toBe("bot");
+}
+
 function typeName(value: string): void {
-  const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+  const input = q<HTMLInputElement>('[data-testid="first-run-bot-name"]')!;
   input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function pressEnter(): void {
-  q<HTMLInputElement>('[data-testid="new-bot-name"]')!.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-  );
+function confirmName(): void {
+  q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
 }
-
 
 function workspace(slug: string, displayName: string, status: "active" | "pending"): Record<string, unknown> {
   return {
@@ -243,58 +254,32 @@ function integrationsApi() {
   };
 }
 
-describe("visual first run with Your team, Note taker and Project management", () => {
-  it("joins the invite once, connects a note taker, skips project management, and hands it all to the assistant", async () => {
+describe("visual first run with a pending invite and the integrations host available", () => {
+  it("joins nothing, reads no catalog, shows no team or apps screen, and the one closing note settles no team and no apps", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const claim = vi.fn(async () => ok({ ok: true, claimedSlugs: ["acme"], message: "Joined" }));
     const integrations = integrationsApi();
     const { platform, sendDm } = adapter({ create, flag: true, claim, integrations });
     await boot(platform, ROSTER);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-
+    await decisionShown();
+    await chooseBot();
     typeName("Biscuit");
-    pressEnter();
+    confirmName();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    await settle();
-    expect(step()).toBe("team");
-    // Nothing is joined by default: Just me is picked until the person picks the invite.
-    expect(q('[data-testid="first-run-team-personal"]')?.getAttribute("aria-checked")).toBe("true");
-    q<HTMLButtonElement>('[data-testid="first-run-team-invite:acme"]')!.click();
-    await settle();
-    const next = () => q<HTMLButtonElement>('[data-testid="first-run-next"]')!;
-    next().click();
-    next().click();
-    await vi.waitFor(() => expect(step()).toBe("tools"));
-    expect(claim).toHaveBeenCalledTimes(1);
-    expect(claim).toHaveBeenCalledWith("acme");
-
-    next().click();
-    await settle();
-    expect(step()).toBe("notes");
-    await vi.waitFor(() => expect(q('[data-testid="first-run-connect-granola.ai"]')).toBeTruthy());
-    expect(integrations.catalogSearch).toHaveBeenCalledWith("cmp_acme", "", 100);
-    // Only note takers: Linear and Notion are not on this screen.
-    expect(q('[data-testid="first-run-app-linear.app"]')).toBeNull();
-    q<HTMLButtonElement>('[data-testid="first-run-connect-granola.ai"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="first-run-notes-connected"]')).toBeTruthy());
-    expect(integrations.install).toHaveBeenCalledWith({ companyUid: "cmp_acme", domain: "granola.ai" });
-
-    next().click();
-    await settle();
-    expect(step()).toBe("projects");
-    await vi.waitFor(() => expect(q('[data-testid="first-run-connect-linear.app"]')).toBeTruthy());
-    next().click();
-    await settle();
-    expect(step()).toBe("done");
-    expect(q('[data-testid="first-run-summary-team"]')?.textContent).toMatch(/^Joined /);
-    expect(q('[data-testid="first-run-summary-team"] .company-label-name')?.textContent).toBe("Acme Robotics");
-    expect(q('[data-testid="first-run-summary-notes"]')?.textContent?.trim()).toBe("Granola, connected");
-    expect(q('[data-testid="first-run-summary-projects"]')?.textContent?.trim()).toBe("Skipped");
-    expect(sendDm).not.toHaveBeenCalled();
-    // The create ran no kickoff: the assistant has said nothing past its hello.
-    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).not.toHaveProperty("kickoff");
-
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    expect(step()).toBe("done");
+    // No team or apps screen, and no summary rows for them.
+    expect(q('[data-testid="first-run-team-personal"]')).toBeNull();
+    expect(q('[data-testid="first-run-team-invite:acme"]')).toBeNull();
+    expect(q('[data-testid="first-run-summary-team"]')).toBeNull();
+    expect(q('[data-testid="first-run-summary-notes"]')).toBeNull();
+    expect(q('[data-testid="first-run-summary-projects"]')).toBeNull();
+    // The create ran no kickoff, and nothing is sent while the takeover is open.
+    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).not.toHaveProperty("kickoff");
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
+
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
@@ -302,53 +287,23 @@ describe("visual first run with Your team, Note taker and Project management", (
     expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
     expect(body).toBe(
       firstRunHandoffNotice(
-        {
-          name: "Biscuit",
-          runtime: "claude",
-          toolsReady: ["claude"],
-          signInChecked: true,
-          team: { kind: "company", how: "joined", name: "Acme Robotics", slug: "acme" },
-          apps: { notes: { name: "Granola", domain: "granola.ai" }, projects: null },
-        },
+        { name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: false, team: null, apps: {} },
         { noun: "computer" },
       ),
     );
+    expect(JSON.parse(body.match(/Handoff from the app: (\{.*?\})\. /)![1]!).done).toEqual(["name", "codingTools"]);
     await settle(12);
     expect(sendDm).toHaveBeenCalledTimes(1);
     expect(create).toHaveBeenCalledTimes(1);
-  });
-
-  it("Finish with defaults settles Just me; the create runs no kickoff and Continue in chat sends the one note", async () => {
-    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const claim = vi.fn(async () => ok({ ok: true }));
-    const { platform, sendDm } = adapter({ create, flag: true, claim, integrations: integrationsApi() });
-    await boot(platform, ROSTER);
-    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    typeName("Biscuit");
-    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
-    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
-    expect(q('[data-testid="first-run-summary-team"]')?.textContent).toBe("Just me");
-    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).not.toHaveProperty("kickoff");
-    expect(sendDm).not.toHaveBeenCalled();
-    q<HTMLButtonElement>('[data-testid="first-run-continue-in-chat"]')!.click();
-    await settle();
-    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
-    expect((sendDm.mock.calls[0] as unknown as [string, string])[1]).toBe(
-      firstRunHandoffNotice(
-        { name: "Biscuit", runtime: "claude", toolsReady: ["claude"], signInChecked: true, team: { kind: "personal" }, apps: {} },
-        { noun: "computer" },
-      ),
-    );
     expect(claim).not.toHaveBeenCalled();
+    expect(integrations.catalogSearch).not.toHaveBeenCalled();
+    expect(integrations.install).not.toHaveBeenCalled();
   });
 });
 
-describe("settled parts reach the assistant whatever the order", () => {
-  it("a create that runs after the team is settled still carries no kickoff; the one closing note has the team and the apps", async () => {
-    // The first create fails (it runs at the name step, before Your team);
-    // Retry runs it after the team is settled, as a create that waited for a
-    // coding tool would.
+describe("a create that runs again on Retry", () => {
+  it("still carries no kickoff; the one closing note goes out at close with no team and no apps", async () => {
+    // The first create fails; Retry on the done screen runs it again.
     const create = vi
       .fn()
       .mockResolvedValueOnce({ ok: false as const, reason: "unavailable" as const, message: "Claude Code is not signed in." })
@@ -358,51 +313,35 @@ describe("settled parts reach the assistant whatever the order", () => {
     const { platform, sendDm } = adapter({ create: create as never, flag: true, claim, integrations });
     await boot(platform, ROSTER);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await decisionShown();
+    await chooseBot();
     typeName("Biscuit");
-    pressEnter();
+    confirmName();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    await settle();
-    expect(step()).toBe("team");
-    q<HTMLButtonElement>('[data-testid="first-run-team-invite:acme"]')!.click();
-    await settle();
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
-    await vi.waitFor(() => expect(step()).toBe("tools"));
-    await vi.waitFor(() => expect(q('[data-testid="first-run-retry"]')).toBeTruthy());
-    q<HTMLButtonElement>('[data-testid="first-run-retry"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-done-retry"]')).toBeTruthy());
+    expect(q('[data-testid="first-run-done-failed"]')).toBeTruthy();
+    q<HTMLButtonElement>('[data-testid="first-run-done-retry"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    expect((create.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0]).not.toHaveProperty("kickoff");
     expect((create.mock.calls as unknown as Array<[Record<string, unknown>]>)[1]![0]).not.toHaveProperty("kickoff");
-    await vi.waitFor(() => expect(q('[data-testid="first-run-create-status"]')?.getAttribute("data-state")).toBe("ready"));
-
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
-    await vi.waitFor(() => expect(step()).toBe("notes"));
-    await vi.waitFor(() => expect(q('[data-testid="first-run-connect-granola.ai"]')).toBeTruthy());
-    q<HTMLButtonElement>('[data-testid="first-run-connect-granola.ai"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="first-run-notes-connected"]')).toBeTruthy());
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
-    await vi.waitFor(() => expect(step()).toBe("projects"));
-    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
-    await vi.waitFor(() => expect(step()).toBe("done"));
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const body = (sendDm.mock.calls[0] as unknown as [string, string])[1];
-    // Everything, whatever order it settled in, in the one note.
-    expect(JSON.parse(body.match(/Handoff from the app: (\{.*?\})\. /)![1]!).done).toEqual([
-      "name",
-      "codingTools",
-      "company",
-      "noteTaker",
-      "projectManagement",
-    ]);
-    expect(body).toContain('"team":{"kind":"company","how":"joined","name":"Acme Robotics","slug":"acme"}');
-    expect(body).toContain('"apps":{"notes":{"name":"Granola","domain":"granola.ai"},"projects":"skipped"}');
+    const json = JSON.parse(body.match(/Handoff from the app: (\{.*?\})\. /)![1]!);
+    expect(json.done).toEqual(["name", "codingTools"]);
+    expect(json).not.toHaveProperty("team");
+    expect(json).not.toHaveProperty("apps");
     await settle(12);
     expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(claim).not.toHaveBeenCalled();
   });
 });
 
 /**
- * The scan host the context step runs on: `scanStart` waits for `finish`,
+ * The scan host the takeover runs on: `scanStart` waits for `finish`,
  * and `emit` pushes the scan's progress lines through the event bus.
  */
 function contextImportHost(platform: PlatformAdapter) {
@@ -441,7 +380,7 @@ function contextImportHost(platform: PlatformAdapter) {
  * one note at close carrying every outcome, the import included.
  */
 describe("owner run rc-run-1011-1449: the assistant gets every outcome before its first turn", () => {
-  it("creates with no kickoff, sends nothing while the takeover is open, then one note with the import, the team and the apps", async () => {
+  it("scans first, creates with no kickoff, sends nothing while the takeover is open, then one note with the import", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const claim = vi.fn(async () => ok({ ok: true, claimedSlugs: ["acme"], message: "Joined" }));
     const integrations = integrationsApi();
@@ -449,65 +388,46 @@ describe("owner run rc-run-1011-1449: the assistant gets every outcome before it
     const scan = contextImportHost(platform);
     await boot(platform, ROSTER, scan.syncEvents);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
-    const next = () => q<HTMLButtonElement>('[data-testid="first-run-next"]')!;
 
-    // 1. The assistant is created early, as in the run, but runs no turn.
-    typeName("Fluffy");
-    pressEnter();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    const input = (create.mock.calls[0] as unknown as [Record<string, unknown>])[0];
-    expect(input).not.toHaveProperty("kickoff");
-    expect(String(input.intro)).not.toContain("checking your");
-    await settle();
-    expect(step()).toBe("team");
-    q<HTMLButtonElement>('[data-testid="first-run-team-invite:acme"]')!.click();
-    await settle();
-    next().click();
-    next().click();
-    await vi.waitFor(() => expect(step()).toBe("tools"));
-    next().click();
-    await vi.waitFor(() => expect(step()).toBe("context"));
-
-    // 2. The takeover's scan runs and finishes after the create.
-    await vi.waitFor(() => expect(q('[data-testid="first-run-import-start"]')).toBeTruthy(), { timeout: 3000 });
-    q<HTMLButtonElement>('[data-testid="first-run-import-start"]')!.click();
-    await vi.waitFor(() => expect(scan.scanStart).toHaveBeenCalledTimes(1));
+    // 1. The takeover's scan starts by itself and finishes.
+    await vi.waitFor(() => expect(scan.scanStart).toHaveBeenCalledTimes(1), { timeout: 3000 });
     scan.finish([
       { type: "start", sources: [{ id: "claude-code", label: "Claude Code" }] },
       { type: "source", id: "claude-code", status: "done", counts: { sessions: 7 } },
       { type: "done", report: "workspace/imports/20261011T221646Z/report.json", summary: { companies: 3, projects: 6, sessions: 7 } },
     ]);
-    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false), { timeout: 3000 });
+    await decisionShown(3000);
     await settle(12);
-    // No note for the import: the assistant hears nothing while the takeover is open.
+    // No note for the import: the assistant does not exist yet, and hears nothing.
     expect(sendDm).not.toHaveBeenCalled();
 
-    // 3. Note taker and Project management, both passed.
-    next().click();
-    await vi.waitFor(() => expect(step()).toBe("notes"));
-    next().click();
-    await vi.waitFor(() => expect(step()).toBe("projects"));
-    next().click();
-    await vi.waitFor(() => expect(step()).toBe("done"));
-    await settle(12);
-    expect(sendDm).not.toHaveBeenCalled();
-
-    // 4. Done: exactly one note, with everything.
+    // 2. The assistant is created, and runs no turn.
+    await chooseBot();
+    typeName("Fluffy");
+    confirmName();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const input = (create.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+    expect(input).not.toHaveProperty("kickoff");
+    expect(String(input.intro)).not.toContain("checking your");
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    expect(step()).toBe("done");
+    await settle(12);
+    expect(sendDm).not.toHaveBeenCalled();
+
+    // 3. Done: exactly one note, with everything.
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
     expect(to).toBe(SETUP_BOT_UID);
     expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
     const json = JSON.parse(body.match(/Handoff from the app: (\{.*?\})\. /)![1]!);
-    expect(json.done).toEqual(["name", "codingTools", "company", "import", "noteTaker", "projectManagement"]);
+    expect(json.done).toEqual(["name", "codingTools", "import"]);
     expect(json.import).toEqual({
       companies: 3,
       projects: 6,
       sessions: 7,
       report: "workspace/imports/20261011T221646Z/report.json",
     });
-    expect(json.apps).toEqual({ notes: "skipped", projects: "skipped" });
     expect(body).toContain("do not offer it, ask me about it or scan this computer again");
     expect(body).toBe(
       firstRunHandoffNotice(
@@ -515,19 +435,20 @@ describe("owner run rc-run-1011-1449: the assistant gets every outcome before it
           name: "Fluffy",
           runtime: "claude",
           toolsReady: ["claude"],
-          signInChecked: true,
+          signInChecked: false,
           imported: { summary: { companies: 3, projects: 6, sessions: 7 }, report: "workspace/imports/20261011T221646Z/report.json" },
-          team: { kind: "company", how: "joined", name: "Acme Robotics", slug: "acme" },
-          apps: { notes: null, projects: null },
+          team: null,
+          apps: {},
         },
         { noun: "computer" },
       ),
     );
 
-    // 5. Nothing after it: no second note for the assistant to answer.
+    // 4. Nothing after it: no second note for the assistant to answer.
     await settle(20);
     expect(sendDm).toHaveBeenCalledTimes(1);
     expect(scan.scanCancel).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
   });
 });
 

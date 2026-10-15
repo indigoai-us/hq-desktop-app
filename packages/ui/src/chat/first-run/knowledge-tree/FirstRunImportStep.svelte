@@ -19,7 +19,7 @@
    * reduced motion it draws the settled frame for the data in so far, and
    * the rows still update.
    */
-  import { onMount, untrack } from "svelte";
+  import { onMount, untrack, type Snippet } from "svelte";
   import RailIcon from "../../../common/button/RailIcon.svelte";
   import {
     countValue,
@@ -96,6 +96,12 @@
      * this computer (first-run "Your apps"). Null when it does not.
      */
     appsConsent?: string | null;
+    /**
+     * The first run's decision (US-007): these replace the step's own
+     * buttons, the kicker drops its step number when there are no bars, and
+     * the runner starts by itself (no "Bring it in").
+     */
+    actions?: Snippet | null;
   }
 
   let {
@@ -118,6 +124,7 @@
     reducedMotion = null,
     onannounce = null,
     appsConsent = null,
+    actions = null,
   }: Props = $props();
 
   const shownName = $derived(name.trim() || "your assistant");
@@ -433,13 +440,17 @@
       show(consent, r.o, r.y);
     }
 
-    // rows
+    // rows. With a host's actions (the US-007 decision), they step aside once
+    // the scan rests: the summary line keeps the counts and the question
+    // needs the room above the footer.
+    const rest = p.settle ?? (p.failure ? p.lastBeat : null);
+    const rowsOut = actions && rest !== null ? easeOut(clamp01((t - rest - 0.4) / 0.6)) : 0;
     el.querySelectorAll<HTMLElement>("[data-fr-row]").forEach((rowEl) => {
       const i = Number(rowEl.dataset.frRow);
       const row = p.rows[i];
       if (!row) return;
       const rr = riseIn(t, row.appear, 0.7, 8);
-      show(rowEl, rr.o, rr.y);
+      show(rowEl, rr.o * (1 - rowsOut), rr.y);
       const pending = rowEl.querySelector<HTMLElement>("[data-fr-pending]");
       const txt = rowEl.querySelector("[data-fr-txt]");
       const full = `Reading ${row.label}`;
@@ -579,7 +590,7 @@
         ><RailIcon name="arrow-left" />Back</button>{/if}
       {#if total > 0}<div class="new-bot-progress" data-testid="new-bot-progress" role="img" aria-label={`Step ${stepNumber} of ${total}`}>{#each Array(total) as _, index}<span class:done={index + 1 < stepNumber} class:active={index + 1 === stepNumber}></span>{/each}</div>{/if}
     </div>
-    <p class="fr-kicker" data-fr-kicker>Step {stepNumber} · Your context</p>
+    <p class="fr-kicker" data-fr-kicker>{#if total > 0}Step {stepNumber} · {/if}Your context</p>
     <div class="fr-stack">
       <h1 class="fr-h" id="new-bot-takeover-title" data-fr-t1 data-testid="first-run-import-title">Let's bring <em>{shownName}</em><br />up to speed.</h1>
       {#if empty}
@@ -640,7 +651,9 @@
   </div>
 
   <div class="fr-actions" data-fr-actions>
-    {#if asking}
+    {#if actions}
+      {@render actions()}
+    {:else if asking}
       <!-- Importing is the main path (owner, 2026-10-10): one full-width
            primary button, and declining is a quiet text link under it. -->
       <div class="new-bot-foot-actions single">

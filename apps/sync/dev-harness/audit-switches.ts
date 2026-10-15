@@ -207,6 +207,54 @@ export function resetHarnessSignIns(): void {
   harnessSignInStarted.clear();
 }
 
+/**
+ * `scan_local_sessions`, the native launch scan (US-007). Codex has the most
+ * recent sessions, so the decision names it over Claude Code; the no-tool
+ * switches find no sessions at all.
+ */
+function firstRunLocalScan(firstRun: FirstRunSwitch): unknown {
+  const day = 86_400_000;
+  const now = Date.now();
+  const noTool = NO_TOOL_SWITCHES.has(firstRun);
+  const tool = (name: string, last30: number, total: number, ago: number, share: number) => ({
+    tool: name,
+    sessions_total: noTool ? 0 : total,
+    sessions_last_30d: noTool ? 0 : last30,
+    last_active_at: noTool ? null : now - ago,
+    share_last_30d: noTool ? 0 : share,
+  });
+  const project = (name: string, toolName: string, sessions: number, ago: number) => ({
+    tool: toolName,
+    name,
+    sessions,
+    last_active_at: now - ago,
+  });
+  return {
+    tools: [tool('claude-code', 6, 41, 3 * day, 0.25), tool('codex', 18, 22, day / 4, 0.75)],
+    projects: noTool
+      ? []
+      : [
+          project('hq-desktop-app', 'codex', 12, day / 4),
+          project('install-flow-rethink', 'codex', 6, day),
+          project('hq-cli', 'claude-code', 4, 3 * day),
+        ],
+    repos: [
+      { path: '/Users/corey/Code/hq-desktop-app', last_commit_at: now - day / 4 },
+      { path: '/Users/corey/Code/hq-cli', last_commit_at: now - 3 * day },
+    ],
+    apps: ['Linear', 'Slack', 'Figma'],
+    mcp_servers: [],
+    sources: [
+      { source: 'claude-code', outcome: noTool ? 'missing' : 'read', count: noTool ? 0 : 41 },
+      { source: 'codex', outcome: noTool ? 'missing' : 'read', count: noTool ? 0 : 22 },
+      { source: 'repos', outcome: 'read', count: 2 },
+      { source: 'apps', outcome: 'read', count: 3 },
+    ],
+    truncated: false,
+    elapsed_ms: 640,
+  };
+}
+
 function firstRunPreflight(firstRun: FirstRunSwitch): unknown {
   const noTool = NO_TOOL_SWITCHES.has(firstRun);
   const claudeMissing = firstRun === 'visual-desktop';
@@ -431,6 +479,7 @@ export function switchedHandler(
     const signIn = firstRunSignInAnswer(firstRun, cmd, args, search);
     if (signIn) return signIn;
     if (cmd === 'local_bots_list') return { value: { bots: [] } };
+    if (cmd === 'scan_local_sessions') return { value: firstRunLocalScan(firstRun) };
     // "Bring in your context": replay a scan (import-scan-fixture.ts). The
     // other first-run switches leave the command unhandled, which the screen
     // shows as a scan that could not finish.
