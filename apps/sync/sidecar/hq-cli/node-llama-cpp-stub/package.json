@@ -1,0 +1,9 @@
+{
+  "name": "node-llama-cpp",
+  "version": "0.0.0-hq-bundle-stub",
+  "private": true,
+  "description": "Build-time placeholder so the bundled hq-cli install skips node-llama-cpp. The build script deletes it before packaging.",
+  "type": "module",
+  "main": "index.js",
+  "exports": "./index.js"
+}

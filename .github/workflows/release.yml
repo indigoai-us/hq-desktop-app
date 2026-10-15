@@ -674,6 +674,31 @@ jobs:
           set -euo pipefail
           echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
+      # US-006: build the per-arch bundled hq-cli payloads from
+      # sidecar/hq-cli/pin.json so tauri copies them into Resources/hq-cli.
+      # The build script pins hq-cli and Node from the pin, checks the Node
+      # tarball sha256 and strips node-llama-cpp; this step re-checks the
+      # finished payloads against the pin, so a version or checksum mismatch
+      # fails the release before anything is signed.
+      - name: Build bundled hq-cli payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/check-bundled-hq-cli-pin.sh
+          bash scripts/build-bundled-hq-cli.sh arm64
+          bash scripts/build-bundled-hq-cli.sh x64
+          PIN_VERSION="$(node -p "require('./sidecar/hq-cli/pin.json').version")"
+          PIN_NODE="$(node -p "require('./sidecar/hq-cli/pin.json').node_version")"
+          for arch in arm64 x64; do
+            payload="sidecar/hq-cli/bundle/darwin-$arch"
+            node scripts/bundled-hq-cli-manifest.mjs verify "$payload" \
+              --version "$PIN_VERSION" --node-version "$PIN_NODE" --arch "$arch"
+            if [ -n "$(find "$payload" -name 'node-llama-cpp*' -print -quit)" ]; then
+              echo "::error::node-llama-cpp is in the bundled hq-cli payload for $arch"
+              exit 1
+            fi
+          done
+
       - name: Build unsigned universal app and updater archive
         env:
           HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
@@ -758,7 +783,21 @@ jobs:
             echo "::error::macOS app binary exceeds 120 MB budget: ${APP_BINARY_KB} KB (native-symbol bloat? a healthy stripped universal binary is ~80 MB)"
             exit 1
           fi
-          BUNDLE_KB="$(du -sk "$APP_BUNDLE" | awk '{print $1}')"
+          # The bundled hq-cli payloads (US-006, about 410 MB for both arches)
+          # have their own budget so the 300 MB ceiling still catches growth in
+          # the rest of the bundle.
+          HQ_CLI_DIR="$APP_BUNDLE/Contents/Resources/hq-cli"
+          HQ_CLI_KB=0
+          if [ -d "$HQ_CLI_DIR" ]; then
+            HQ_CLI_KB="$(du -sk "$HQ_CLI_DIR" | awk '{print $1}')"
+          fi
+          HQ_CLI_BUDGET_KB=$((480 * 1024))
+          if [ "$HQ_CLI_KB" -ge "$HQ_CLI_BUDGET_KB" ]; then
+            echo "::error::bundled hq-cli payloads exceed 480 MB budget: ${HQ_CLI_KB} KB"
+            exit 1
+          fi
+          echo "bundled hq-cli payloads: ${HQ_CLI_KB} KB (< ${HQ_CLI_BUDGET_KB} KB)"
+          BUNDLE_KB="$(( $(du -sk "$APP_BUNDLE" | awk '{print $1}') - HQ_CLI_KB ))"
           BUNDLE_BUDGET_KB=$((300 * 1024))
           if [ "$BUNDLE_KB" -ge "$BUNDLE_BUDGET_KB" ]; then
             echo "::error::macOS app bundle exceeds 300 MB budget: ${BUNDLE_KB} KB"
@@ -896,6 +935,32 @@ jobs:
             fi
             echo "stapler validate attempt $attempt failed; retrying in $((attempt * 10))s"
             sleep $((attempt * 10))
+          done
+          # US-006: the bundled hq-cli payloads must come out of notarization
+          # signed and matching the pin. A codesign failure on any of their
+          # Mach-O files, or a manifest that no longer matches the bytes or the
+          # pinned versions, fails the release.
+          PIN_VERSION="$(node -p "require('./sidecar/hq-cli/pin.json').version")"
+          PIN_NODE="$(node -p "require('./sidecar/hq-cli/pin.json').node_version")"
+          for arch in arm64 x64; do
+            payload="$APP_PATH/Contents/Resources/hq-cli/darwin-$arch"
+            test -d "$payload" || { echo "::error::bundled hq-cli payload missing: darwin-$arch"; exit 1; }
+            signed=0
+            while IFS= read -r -d '' f; do
+              case "$(file -b "$f")" in
+                *Mach-O*)
+                  if ! codesign --verify --strict "$f"; then
+                    echo "::error::bundled hq-cli Mach-O failed codesign verification: ${f#"$payload/"}"
+                    exit 1
+                  fi
+                  signed=$((signed + 1))
+                  ;;
+              esac
+            done < <(find "$payload" -type f -print0)
+            [ "$signed" -gt 0 ] || { echo "::error::no Mach-O in bundled hq-cli payload darwin-$arch"; exit 1; }
+            node scripts/bundled-hq-cli-manifest.mjs verify "$payload" \
+              --version "$PIN_VERSION" --node-version "$PIN_NODE" --arch "$arch"
+            echo "bundled hq-cli darwin-$arch: $signed Mach-O files signed and notarized"
           done
 
       - name: Regenerate updater archive and signature
@@ -1206,6 +1271,32 @@ jobs:
           set -euo pipefail
           echo "HQ_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
+      # US-006: build the per-arch bundled hq-cli payloads from
+      # sidecar/hq-cli/pin.json so tauri copies them into Resources/hq-cli.
+      # The build script pins hq-cli and Node from the pin, checks the Node
+      # tarball sha256 and strips node-llama-cpp; this step re-checks the
+      # finished payloads against the pin, so a version or checksum mismatch
+      # fails the release before anything is signed.
+      - name: Build bundled hq-cli payloads
+        if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/check-bundled-hq-cli-pin.sh
+          bash scripts/build-bundled-hq-cli.sh arm64
+          bash scripts/build-bundled-hq-cli.sh x64
+          PIN_VERSION="$(node -p "require('./sidecar/hq-cli/pin.json').version")"
+          PIN_NODE="$(node -p "require('./sidecar/hq-cli/pin.json').node_version")"
+          for arch in arm64 x64; do
+            payload="sidecar/hq-cli/bundle/darwin-$arch"
+            node scripts/bundled-hq-cli-manifest.mjs verify "$payload" \
+              --version "$PIN_VERSION" --node-version "$PIN_NODE" --arch "$arch"
+            if [ -n "$(find "$payload" -name 'node-llama-cpp*' -print -quit)" ]; then
+              echo "::error::node-llama-cpp is in the bundled hq-cli payload for $arch"
+              exit 1
+            fi
+          done
+
       # Placeholder UI only (tauri.conf.json frontendDist = shell-placeholder),
       # no frontend build, no updater artifacts and no signing: the shell is
       # version- and UI-agnostic. assemble-macos adds both and signs.
@@ -1295,7 +1386,21 @@ jobs:
             echo "::error::macOS app binary exceeds 120 MB budget: ${APP_BINARY_KB} KB (native-symbol bloat? a healthy stripped universal binary is ~80 MB)"
             exit 1
           fi
-          BUNDLE_KB="$(du -sk "$APP_BUNDLE" | awk '{print $1}')"
+          # The bundled hq-cli payloads (US-006, about 410 MB for both arches)
+          # have their own budget so the 300 MB ceiling still catches growth in
+          # the rest of the bundle.
+          HQ_CLI_DIR="$APP_BUNDLE/Contents/Resources/hq-cli"
+          HQ_CLI_KB=0
+          if [ -d "$HQ_CLI_DIR" ]; then
+            HQ_CLI_KB="$(du -sk "$HQ_CLI_DIR" | awk '{print $1}')"
+          fi
+          HQ_CLI_BUDGET_KB=$((480 * 1024))
+          if [ "$HQ_CLI_KB" -ge "$HQ_CLI_BUDGET_KB" ]; then
+            echo "::error::bundled hq-cli payloads exceed 480 MB budget: ${HQ_CLI_KB} KB"
+            exit 1
+          fi
+          echo "bundled hq-cli payloads: ${HQ_CLI_KB} KB (< ${HQ_CLI_BUDGET_KB} KB)"
+          BUNDLE_KB="$(( $(du -sk "$APP_BUNDLE" | awk '{print $1}') - HQ_CLI_KB ))"
           BUNDLE_BUDGET_KB=$((300 * 1024))
           if [ "$BUNDLE_KB" -ge "$BUNDLE_BUDGET_KB" ]; then
             echo "::error::macOS app bundle exceeds 300 MB budget: ${BUNDLE_KB} KB"
@@ -1364,6 +1469,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/shell-out"
+          # Resources/hq-cli (US-006) stays in the archive on purpose: it is a
+          # build output of the pin (npm install plus the Node download, about
+          # 110 MB compressed for both arches), keyed into the shell hash, and
+          # assemble-macos cannot recreate it without repeating that build.
           tar -C src-tauri/target/universal-apple-darwin/release/bundle/macos -czf "$GITHUB_WORKSPACE/shell-out/shell-macos.tar.gz" HQ.app
           ls -la "$GITHUB_WORKSPACE/shell-out"
 
@@ -1676,6 +1785,32 @@ jobs:
             fi
             echo "stapler validate attempt $attempt failed; retrying in $((attempt * 10))s"
             sleep $((attempt * 10))
+          done
+          # US-006: the bundled hq-cli payloads must come out of notarization
+          # signed and matching the pin. A codesign failure on any of their
+          # Mach-O files, or a manifest that no longer matches the bytes or the
+          # pinned versions, fails the release.
+          PIN_VERSION="$(node -p "require('./sidecar/hq-cli/pin.json').version")"
+          PIN_NODE="$(node -p "require('./sidecar/hq-cli/pin.json').node_version")"
+          for arch in arm64 x64; do
+            payload="$APP_PATH/Contents/Resources/hq-cli/darwin-$arch"
+            test -d "$payload" || { echo "::error::bundled hq-cli payload missing: darwin-$arch"; exit 1; }
+            signed=0
+            while IFS= read -r -d '' f; do
+              case "$(file -b "$f")" in
+                *Mach-O*)
+                  if ! codesign --verify --strict "$f"; then
+                    echo "::error::bundled hq-cli Mach-O failed codesign verification: ${f#"$payload/"}"
+                    exit 1
+                  fi
+                  signed=$((signed + 1))
+                  ;;
+              esac
+            done < <(find "$payload" -type f -print0)
+            [ "$signed" -gt 0 ] || { echo "::error::no Mach-O in bundled hq-cli payload darwin-$arch"; exit 1; }
+            node scripts/bundled-hq-cli-manifest.mjs verify "$payload" \
+              --version "$PIN_VERSION" --node-version "$PIN_NODE" --arch "$arch"
+            echo "bundled hq-cli darwin-$arch: $signed Mach-O files signed and notarized"
           done
 
       - name: Regenerate updater archive and signature

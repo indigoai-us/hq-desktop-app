@@ -143,6 +143,11 @@ fn lock_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "could not resolve home directory for the cli-update lock".to_string())
 }
 
+/// The lock directory this process uses (`HQ_LOCK_DIR` or `~/.hq/locks`).
+pub fn default_lock_dir() -> Result<PathBuf, String> {
+    lock_dir()
+}
+
 /// Acquire the shared cli-update lock for this process.
 ///
 /// `tool` identifies the writer (e.g. `hq-desktop-app-cli-update`) and

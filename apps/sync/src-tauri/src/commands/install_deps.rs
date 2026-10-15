@@ -4147,73 +4147,9 @@ fn preferred_npm_binary() -> Result<PathBuf, String> {
 
 #[cfg(not(windows))]
 const HQ_CLI_REGISTRY_SPEC: &str = "@indigoai-us/hq-cli";
-#[cfg(not(windows))]
-const BUNDLED_HQ_CLI_RESOURCE_PATH: &str = "hq-cli/hq-cli.tgz";
-
-/// Pick the fixed, app-bundled HQ CLI tarball when it exists.
-///
-/// Canonicalizing both paths rejects a symlink at the fixed resource slot that
-/// escapes the signed application resources directory. Missing resources and
-/// path-resolution failures deliberately preserve the ordinary release path.
-#[cfg(not(windows))]
-fn hq_cli_install_spec_with_mode(resource_dir: Option<&Path>) -> (String, &'static str) {
-    let Some(resource_dir) = resource_dir.and_then(|path| path.canonicalize().ok()) else {
-        return (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback");
-    };
-    let Some(package) = resource_dir
-        .join(BUNDLED_HQ_CLI_RESOURCE_PATH)
-        .canonicalize()
-        .ok()
-    else {
-        return (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback");
-    };
-
-    if package.is_file() && package.starts_with(&resource_dir) {
-        match package.into_os_string().into_string() {
-            Ok(spec) => (spec, "resource"),
-            Err(_) => (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback"),
-        }
-    } else {
-        (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback")
-    }
-}
-
-#[cfg(not(windows))]
-fn hq_cli_install_spec(resource_dir: Option<&Path>) -> String {
-    hq_cli_install_spec_with_mode(resource_dir).0
-}
-
-/// A test/release bundle can require its own CLI version. Keep the marker
-/// alongside the package inside signed resources; never consult a neighboring kit.
-#[cfg(not(windows))]
-pub fn bundled_hq_cli_ready(app: &AppHandle) -> bool {
-    bundled_hq_cli_diagnostics(app).0
-}
-
-#[cfg(not(windows))]
-pub fn bundled_hq_cli_diagnostics(app: &AppHandle) -> (bool, &'static str) {
-    let resource_dir = app.path().resource_dir().ok();
-    let (spec, mode) = hq_cli_install_spec_with_mode(resource_dir.as_deref());
-    if mode == "registry_fallback" {
-        return (true, mode);
-    }
-    let expected = Path::new(&spec).parent()
-        .and_then(|dir| std::fs::read_to_string(dir.join("version.txt")).ok());
-    let actual = check_dep_impl("hq", None).version;
-    (bundled_cli_version_matches(expected.as_deref(), actual.as_deref()), mode)
-}
-
-#[cfg(not(windows))]
-fn bundled_cli_version_matches(expected: Option<&str>, actual: Option<&str>) -> bool {
-    match (expected, actual) {
-        (Some(expected), Some(actual)) if !expected.trim().is_empty() =>
-            expected.trim() == actual.trim(),
-        _ => false,
-    }
-}
-
-/// Install the HQ CLI from the app-bundled package when present, otherwise via
-/// `npm install -g @indigoai-us/hq-cli`.
+/// Install the HQ CLI from the registry via `npm install -g @indigoai-us/hq-cli`.
+/// The macOS app's bundled CLI is installed at launch (`commands::bundled_hq_cli`);
+/// the install queue only reaches this path when that bundle is missing or bad.
 ///
 /// Errors if npm is not available.
 #[cfg(not(windows))]
@@ -4252,16 +4188,11 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
                 if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
                     emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
                 }
-                let resource_dir = app.path().resource_dir().ok();
-                let install_spec = hq_cli_install_spec(resource_dir.as_deref());
-                if install_spec != HQ_CLI_REGISTRY_SPEC {
-                    emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
-                }
                 run_managed_npm_install_with_cancellation(
                     &app,
                     npm.to_str().unwrap_or("npm"),
                     &prefix,
-                    &install_spec,
+                    HQ_CLI_REGISTRY_SPEC,
                     "@indigoai-us/hq-cli",
                     "hq",
                     &[],
@@ -8002,9 +7933,7 @@ pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
     path.starts_with(&root)
 }
 
-fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
-    #[cfg(not(windows))]
-    if dep.id == "hq-cli" && !bundled_hq_cli_ready(app) { return false; }
+fn dep_is_satisfied(_app: &AppHandle, dep: &DepDef) -> bool {
     // Setup npm installs need the npm bundled with HQ's pinned Node. A system
     // Node that passes the broad runtime floor can still be too old for the
     // system npm selected from /usr/local/bin, so it cannot satisfy this dep.
@@ -11882,78 +11811,6 @@ mod npm_bin_cleanup_tests {
     }
 }
 
-#[cfg(all(test, not(windows)))]
-mod bundled_hq_cli_tests {
-    use super::*;
-
-    #[test]
-    fn bundled_cli_requires_its_version_not_merely_a_managed_install() {
-        assert!(bundled_cli_version_matches(Some("5.199.0-local.0\n"), Some("5.199.0-local.0")));
-        assert!(!bundled_cli_version_matches(Some("5.199.0-local.0"), Some("5.109.16")));
-        assert!(!bundled_cli_version_matches(Some("5.199.0-local.0"), None));
-        assert!(!bundled_cli_version_matches(None, Some("5.199.0-local.0")));
-    }
-
-    #[test]
-    fn exact_bundled_resource_is_selected() {
-        let temp = tempfile::tempdir().unwrap();
-        let resource_dir = temp.path().join("Resources");
-        let package = resource_dir.join(BUNDLED_HQ_CLI_RESOURCE_PATH);
-        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
-        std::fs::write(&package, b"package bytes").unwrap();
-
-        assert_eq!(
-            hq_cli_install_spec(Some(&resource_dir)),
-            package.canonicalize().unwrap().to_string_lossy()
-        );
-        assert_eq!(
-            hq_cli_install_spec_with_mode(Some(&resource_dir)).1,
-            "resource"
-        );
-    }
-
-    #[test]
-    fn absent_bundle_preserves_the_registry_install() {
-        let temp = tempfile::tempdir().unwrap();
-        let resource_dir = temp.path().join("Resources");
-        std::fs::create_dir_all(&resource_dir).unwrap();
-
-        assert_eq!(
-            hq_cli_install_spec(Some(&resource_dir)),
-            HQ_CLI_REGISTRY_SPEC
-        );
-        assert_eq!(hq_cli_install_spec(None), HQ_CLI_REGISTRY_SPEC);
-        assert_eq!(
-            hq_cli_install_spec_with_mode(Some(&resource_dir)).1,
-            "registry_fallback"
-        );
-        assert_eq!(hq_cli_install_spec_with_mode(None).1, "registry_fallback");
-    }
-
-    #[test]
-    fn neighboring_or_symlinked_user_file_is_rejected() {
-        let temp = tempfile::tempdir().unwrap();
-        let resource_dir = temp.path().join("HQ.app/Contents/Resources");
-        let package_dir = resource_dir.join("hq-cli");
-        std::fs::create_dir_all(&package_dir).unwrap();
-
-        let neighboring_package = temp.path().join("hq-cli.tgz");
-        std::fs::write(&neighboring_package, b"untrusted package bytes").unwrap();
-        assert_eq!(
-            hq_cli_install_spec(Some(&resource_dir)),
-            HQ_CLI_REGISTRY_SPEC,
-            "a package beside the app must not be discovered"
-        );
-
-        std::os::unix::fs::symlink(&neighboring_package, package_dir.join("hq-cli.tgz")).unwrap();
-        assert_eq!(
-            hq_cli_install_spec(Some(&resource_dir)),
-            HQ_CLI_REGISTRY_SPEC,
-            "the fixed resource slot must not escape via symlink"
-        );
-    }
-}
-
 #[cfg(test)]
 mod foreign_copy_rejection_tests {
     use super::*;
@@ -12148,7 +12005,11 @@ mod npm_setup_recovery_tests {
     #[test]
     fn setup_npm_install_wires_the_resolved_cache_into_the_runner() {
         let source = include_str!("install_deps.rs");
-        let call = "run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await";
+        // Split so this needle does not count itself in the source.
+        let call = concat!(
+            "run_streaming_with_npm_cache(app, npm, &arg_refs, ",
+            "Some(npm_cache)).await"
+        );
 
         assert_eq!(
             source.matches(call).count(),

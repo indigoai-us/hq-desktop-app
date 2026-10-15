@@ -23,3 +23,6 @@ src-tauri/gen/schemas/windows-schema.json
 test-results/
 playwright-report/
 dist-preview/
+
+# Bundled hq-cli payload - produced by scripts/build-bundled-hq-cli.sh.
+sidecar/hq-cli/bundle/darwin-*

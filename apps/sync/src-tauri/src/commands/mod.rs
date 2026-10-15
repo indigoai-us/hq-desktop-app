@@ -55,6 +55,7 @@ pub mod hq_pro;
 pub mod hq_work;
 pub mod headless_install;
 pub mod import_scan;
+pub mod bundled_hq_cli;
 pub mod install_deps;
 pub mod install_directory;
 pub mod install_queue;

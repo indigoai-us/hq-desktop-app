@@ -1279,6 +1279,10 @@ fn main() {
                 == commands::first_run::LaunchKind::FirstRun;
             prepare_first_run_welcome_window(app.handle(), early_first_run);
 
+            // US-006: verify the hq-cli bundled in the app and copy it into the
+            // managed toolchain before lifecycle probes `hq` and before the
+            // install queue decides whether hq-cli still needs the registry.
+            commands::bundled_hq_cli::ensure_on_launch(app.handle());
             commands::lifecycle::setup_lifecycle(app.handle());
             // US-005: an unfinished background install queue resumes here,
             // without the setup card.

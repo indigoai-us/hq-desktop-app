@@ -234,6 +234,46 @@ else
   exit 1
 fi
 
+# ─── 5c. Sign the bundled hq-cli payloads (US-006) ─────────────────────────
+# Contents/Resources/hq-cli/darwin-<arch>/ holds the pinned Node runtime plus
+# the hq-cli package and its production dependencies, a few of which ship
+# native .node addons. Each is a nested Mach-O the notary rejects unsigned, so
+# sign every Mach-O by content, the same way Phase 1 does. Signing rewrites
+# those files, so the payload manifest's per-file hashes are restamped
+# afterwards; the app verifies the bundle against that manifest before it
+# installs it. Then verify the restamped manifest and every signature so a
+# stale hash or an unsigned binary fails here, not on a user's first launch.
+# Both of these happen before the Phase 8 seal, which hashes the final bytes.
+HQ_CLI_RES="$APP/Contents/Resources/hq-cli"
+HQ_CLI_MANIFEST_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bundled-hq-cli-manifest.mjs"
+if [ -d "$HQ_CLI_RES" ]; then
+  echo "  Phase 5c: bundled hq-cli payloads"
+  for payload in "$HQ_CLI_RES"/darwin-*; do
+    [ -d "$payload" ] || continue
+    cli_macho=0
+    while IFS= read -r -d '' f; do
+      desc=$(file -b "$f" 2>/dev/null) || true
+      case "$desc" in
+        *Mach-O*)
+          sign_file "$f"
+          if ! codesign --verify --strict "$f" 2>/dev/null; then
+            echo "ERROR: bundled hq-cli Mach-O failed verification after signing: $f" >&2
+            exit 1
+          fi
+          cli_macho=$((cli_macho + 1))
+          ;;
+      esac
+    done < <(find "$payload" -type f -print0)
+    if [ "$cli_macho" -eq 0 ]; then
+      echo "ERROR: no Mach-O found in $payload (the Node runtime is missing)" >&2
+      exit 1
+    fi
+    node "$HQ_CLI_MANIFEST_TOOL" restamp "$payload"
+    node "$HQ_CLI_MANIFEST_TOOL" verify "$payload"
+    echo "    ($(basename "$payload"): $cli_macho Mach-O binaries signed, manifest restamped)"
+  done
+fi
+
 # ─── 6. Assert Contents/MacOS holds ONLY Mach-O executables ─────────────────
 # THE INVARIANT THIS WHOLE FIX EXISTS TO PROTECT.
 #

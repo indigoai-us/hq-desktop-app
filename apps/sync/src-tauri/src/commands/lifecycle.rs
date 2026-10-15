@@ -424,7 +424,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         let hq_resolved = hq_program.kind != ResolvedProgramKind::NotResolved;
         let node_resolved = node_program.kind != ResolvedProgramKind::NotResolved;
         let (bundled_cli_ready, bundled_cli_mode) =
-            crate::commands::install_deps::bundled_hq_cli_diagnostics(app);
+            crate::commands::bundled_hq_cli::bundled_hq_cli_diagnostics();
         // A missing hq or node that the background install queue still owes
         // is not a reason to show the setup card again: the queue resumes on
         // launch and installs it.

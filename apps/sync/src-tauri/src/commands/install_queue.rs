@@ -370,6 +370,10 @@ fn record_finish(app: &AppHandle, id: QueueItemId, outcome: &ItemOutcome, elapse
     emit_status(app, &status);
 }
 
+fn bundled_hq_cli_version() -> Option<&'static str> {
+    crate::commands::bundled_hq_cli::status().and_then(|status| status.satisfied_version())
+}
+
 async fn execute_item(
     app: &AppHandle,
     id: QueueItemId,
@@ -377,6 +381,12 @@ async fn execute_item(
     hq_path: Option<String>,
 ) -> ItemOutcome {
     match id {
+        // US-006: the hq-cli bundled in the app was verified and installed at
+        // launch. A missing or bad bundle leaves no status and the registry
+        // install below runs.
+        QueueItemId::HqCli if core_queue::hq_cli_bundled_outcome(bundled_hq_cli_version()).is_some() => {
+            core_queue::hq_cli_bundled_outcome(bundled_hq_cli_version()).expect("checked by the guard")
+        }
         QueueItemId::Node | QueueItemId::HqCli | QueueItemId::Gh | QueueItemId::Yq | QueueItemId::Jq => {
             let dep_id = id.as_str();
             let required = id != QueueItemId::Gh;

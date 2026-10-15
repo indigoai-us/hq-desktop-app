@@ -1,0 +1,8 @@
+{
+  "version": "5.125.0",
+  "node_version": "v22.17.0",
+  "node_sha256": {
+    "arm64": "615dda58b5fb41fad2be43940b6398ca56554cbe05800953afadc724729cb09e",
+    "x64": "c39c8ec3cdadedfcc75de0cb3305df95ae2aecebc5db8d68a9b67bd74616d2ad"
+  }
+}

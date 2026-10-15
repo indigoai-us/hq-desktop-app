@@ -1,0 +1,3 @@
+#!/bin/sh
+[ "$2" = "--version" ] && exec cat "$1"
+exit 3

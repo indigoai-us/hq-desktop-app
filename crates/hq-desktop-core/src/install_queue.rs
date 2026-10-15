@@ -279,6 +279,13 @@ pub const SKIP_NOT_CHOSEN: &str = "not-chosen";
 pub const SKIP_ALREADY_PRESENT: &str = "already-present";
 pub const SKIP_BUNDLED: &str = "bundled";
 
+/// The hq-cli item's outcome when the app-bundled hq-cli was verified and
+/// installed on launch: skip with `bundled`. `None` means run the registry
+/// install as before.
+pub fn hq_cli_bundled_outcome(bundled_version: Option<&str>) -> Option<ItemOutcome> {
+    bundled_version.map(|_| ItemOutcome::Skipped(SKIP_BUNDLED.to_string()))
+}
+
 /// Record the user's choices. Codex not chosen is skipped with
 /// `not-chosen`; choosing it later puts a not-chosen skip back to pending.
 pub fn apply_choices(manifest: &mut QueueManifest, choices: QueueChoices) {
@@ -1184,5 +1191,21 @@ mod tests {
         finish(&mut manifest, QueueItemId::Node, ItemOutcome::Done);
         assert!(!queue_owes_missing_tools(&manifest, false, false));
         assert!(queue_owes_missing_tools(&manifest, false, true));
+    }
+
+    #[test]
+    fn verified_bundle_skips_hq_cli_and_missing_bundle_falls_back() {
+        let mut manifest = manifest_with(QueueChoices {
+            tool: "claude".into(),
+            codex: false,
+        });
+        assert_eq!(hq_cli_bundled_outcome(None), None);
+        let outcome = hq_cli_bundled_outcome(Some("5.125.0")).unwrap();
+        assert_eq!(outcome, ItemOutcome::Skipped(SKIP_BUNDLED.into()));
+        finish(&mut manifest, QueueItemId::HqCli, outcome);
+        let record = manifest.item(QueueItemId::HqCli).unwrap();
+        assert_eq!(record.state, ItemState::Skipped);
+        assert_eq!(record.skip_reason.as_deref(), Some(SKIP_BUNDLED));
+        assert!(manifest.state(QueueItemId::HqCli).satisfied());
     }
 }

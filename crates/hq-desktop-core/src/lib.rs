@@ -45,6 +45,8 @@ pub mod atlas_index;
 pub mod authenticated_receipts;
 pub mod bandwidth;
 pub mod banner;
+#[cfg(unix)]
+pub mod bundled_hq_cli;
 pub mod cdp_mirror;
 pub mod claude_launch;
 pub mod cli_update_lock;

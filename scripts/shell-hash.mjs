@@ -46,6 +46,14 @@ const SHELL_SOURCE_FILES = [
   "apps/sync/sidecar/recall-sdk-bridge/recording-tracker.mjs",
   "apps/sync/sidecar/recall-sdk-bridge/package.json",
   "apps/sync/sidecar/recall-sdk-bridge/pnpm-lock.yaml",
+  // The bundled hq-cli payload (US-006) is built from the pin by these
+  // scripts and copied into Resources/hq-cli, so a cached shell must change
+  // when any of them does.
+  "apps/sync/sidecar/hq-cli/pin.json",
+  "apps/sync/scripts/build-bundled-hq-cli.sh",
+  "apps/sync/scripts/bundled-hq-cli-manifest.mjs",
+  "apps/sync/sidecar/hq-cli/node-llama-cpp-stub/index.js",
+  "apps/sync/sidecar/hq-cli/node-llama-cpp-stub/package.json",
 ];
 
 // The app package's own version is stamped from the release tag into

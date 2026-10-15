@@ -1,0 +1,2 @@
+Build output slot for the per-arch bundled hq-cli (darwin-arm64, darwin-x64).
+scripts/build-bundled-hq-cli.sh fills it; the arch directories are not committed.
