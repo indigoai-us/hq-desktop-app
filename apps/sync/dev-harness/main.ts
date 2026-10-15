@@ -32,7 +32,6 @@ if (!new URLSearchParams(window.location.search).get('briefRun')) {
 // production loader (hq-pro GET /v1/badges) stays out of the harness.
 setBadgeSource(sampleBadges);
 setBadgeProgressSource(sampleProgress);
-setBadgesEnabledSource(() => true);
 
 // ?launch: the launch announcement (badges/BadgeLaunchAnnouncement.svelte)
 // over the shell, with the sample badges. `?launch=empty` shows it to someone
@@ -41,6 +40,9 @@ const launch = new URLSearchParams(window.location.search).get('launch');
 // `&launchBadges=og,maker:2` shows it with exactly those badges (same format as ?earn).
 const launchBadges = new URLSearchParams(window.location.search).get('launchBadges');
 if (launch !== null) {
+  // Badges count as on only here, so the announcement never opens over the
+  // other harness views (the browser suite drives toasts and menus there).
+  setBadgesEnabledSource(() => true);
   if (launch === 'empty') setBadgeSource(() => []);
   else if (launchBadges) {
     const chosen = earnedFromUrl('?earn=' + encodeURIComponent(launchBadges));
