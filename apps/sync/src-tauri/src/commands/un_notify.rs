@@ -3,9 +3,9 @@
 //! On macOS Sequoia the legacy `NSUserNotification` / `mac-notification-sys`
 //! deliver path is permanently denied once any code touches
 //! `UNUserNotificationCenter` (which the permission probe in `notifications.rs`
-//! does at launch — and `register_delegate` below always does at startup). The
-//! app falls back to `osascript display notification`, which renders fine but
-//! **cannot carry a click callback**. To get a banner the user can click — to
+//! does at launch — and `register_delegate` below always does at startup).
+//! `osascript display notification` renders a banner but **cannot carry a click
+//! callback** and is credited to Script Editor. To get a banner the user can click — to
 //! open the desktop-alt window — we deliver through `UNUserNotificationCenter`
 //! *and* install a `UNUserNotificationCenterDelegate` to intercept the click.
 //!
@@ -13,10 +13,13 @@
 //! native fallback (the default surface is the in-app custom banner):
 //!   * [`deliver_clickable`] — meeting-detected prompts (opens the Meetings
 //!     screen on click, cold or warm).
-//!   * [`deliver_message`] — DM / share notifications. These previously fired
-//!     through the now-dead `mac_notification_sys` path and so produced no OS
-//!     banner at all; they now take the same UN-when-granted / osascript-else
-//!     route as meetings. `userInfo` carries `kind`, an explicit `route` string
+//!   * [`deliver_message`] — DM / share / mention notifications. These go
+//!     through `UNUserNotificationCenter` only. They used to fall back to
+//!     `osascript display notification` when authorization was missing, which
+//!     macOS credits to Script Editor: the banner showed its icon and a click
+//!     opened Script Editor instead of the DM (feedback_97e1771c). Without
+//!     authorization there is now no OS banner; the in-app bell still lists the
+//!     message. `userInfo` carries `kind`, an explicit `route` string
 //!     (e.g. `inbox:dm:<uid>`), thread ids, and a JSON action payload so a
 //!     body-click can open the named thread on a cold launch and dropdown
 //!     actions can emit `notification:dm-action` / `notification:share-action`.
@@ -72,11 +75,10 @@ static BLOCKED_NOTICE_SENT: OnceLock<()> = OnceLock::new();
 /// user reopening the screen.
 pub const EVENT_PERMISSION_BLOCKED: &str = "notification:permission-blocked";
 
-/// Tell the user once that OS banners are not authorized. Notifications are NOT
-/// dropped in this state — `deliver_osascript` below still shows a banner via
-/// NotificationCenter's scripting bridge, which is not subject to the UN
-/// authorization gate — but the click-through and Notification Center entry are
-/// lost, and the fix is a two-click trip to System Settings.
+/// Tell the user once that OS banners are not authorized. DM, share and mention
+/// notifications get no OS banner in this state (they stay in the in-app bell);
+/// meeting prompts still use their own osascript path in `meetings.rs`. The fix
+/// is a two-click trip to System Settings, surfaced in Settings > Notifications.
 fn note_permission_blocked(state: &str) {
     if BLOCKED_NOTICE_SENT.set(()).is_err() {
         return;
@@ -84,8 +86,8 @@ fn note_permission_blocked(state: &str) {
     crate::util::logfile::log(
         "notify",
         &format!(
-            "system notifications not authorized (state={state}) — \
-             falling back to osascript; remediation in Settings > Notifications"
+            "WARN system notifications not authorized (state={state}) — \
+             no OS banner for messages; remediation in Settings > Notifications"
         ),
     );
     if let Some(app) = DELEGATE_APP.get() {
@@ -95,7 +97,8 @@ fn note_permission_blocked(state: &str) {
 }
 
 /// Ask macOS for notification authorization exactly once, the first time a
-/// notification-worthy event reaches the native path.
+/// notification-worthy event reaches the native path, then run `on_granted`
+/// if the answer is "granted".
 ///
 /// System notifications are the default surface now, so a fresh install lands
 /// here before macOS has ever asked. `UNUserNotificationCenter` only shows its
@@ -105,22 +108,13 @@ fn note_permission_blocked(state: &str) {
 ///
 /// The request runs on a detached thread because
 /// `requestAuthorizationWithOptions` blocks until the user dismisses the dialog
-/// (up to 60s) and this runs inside the DM / share poll. THIS event therefore
-/// takes the osascript fallback; from the next one on, the granted UN path is
-/// used. The one-shot marker (`notify_authz`) means we never ask twice.
-fn ensure_authorization_requested() {
-    let state = hq_platform::notifications::permission_state_without_app();
-    if state == "granted" {
-        return;
-    }
-    if !hq_desktop_core::notify_authz::should_request_authorization(
-        &state,
-        hq_desktop_core::notify_authz::already_requested(),
-    ) {
-        // Denied (macOS will not re-show the dialog) or already asked once.
-        note_permission_blocked(&state);
-        return;
-    }
+/// (up to 60s) and this runs inside the DM / share poll. The one-shot marker
+/// (`notify_authz`) means we never ask twice. The caller has already checked
+/// that asking is allowed (`notify_authz::native_delivery`).
+fn request_authorization_then<F>(on_granted: F)
+where
+    F: FnOnce() + Send + 'static,
+{
     // Claim the one-shot BEFORE asking, so a second event arriving while the
     // dialog is up can't stack a second request.
     hq_desktop_core::notify_authz::mark_requested();
@@ -128,16 +122,37 @@ fn ensure_authorization_requested() {
         "notify",
         "requesting macOS notification authorization (one-time, system surface is the default)",
     );
-    std::thread::spawn(|| {
+    std::thread::spawn(move || {
         let after = hq_platform::notifications::request_permission();
         crate::util::logfile::log(
             "notify",
             &format!("macOS notification authorization request resolved: {after}"),
         );
-        if after != "granted" {
+        if after == "granted" {
+            on_granted();
+        } else {
             note_permission_blocked(&after);
         }
     });
+}
+
+/// Meeting-prompt variant of the one-time request: ask if allowed, deliver
+/// nothing from the request thread (the meeting path decides its own delivery).
+fn ensure_authorization_requested() {
+    let state = hq_platform::notifications::permission_state_without_app();
+    match hq_desktop_core::notify_authz::native_delivery(
+        &state,
+        hq_desktop_core::notify_authz::already_requested(),
+    ) {
+        hq_desktop_core::notify_authz::NativeDelivery::Deliver => {}
+        hq_desktop_core::notify_authz::NativeDelivery::RequestThenDeliver => {
+            request_authorization_then(|| {});
+        }
+        hq_desktop_core::notify_authz::NativeDelivery::Suppress => {
+            // Denied (macOS will not re-show the dialog) or already asked once.
+            note_permission_blocked(&state);
+        }
+    }
 }
 
 define_class!(
@@ -599,15 +614,6 @@ fn click_action_for_kind(kind: &str, window_id: &str) -> Option<&'static str> {
     }
 }
 
-/// Build the `osascript` `display notification` script, escaping backslashes and
-/// double-quotes so a title/body containing either can't break out of the
-/// AppleScript string literal. Pure so the escaping is unit-tested.
-fn osascript_notification_script(title: &str, body: &str) -> String {
-    let osa_body = body.replace('\\', "\\\\").replace('"', "\\\"");
-    let osa_title = title.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("display notification \"{osa_body}\" with title \"{osa_title}\"")
-}
-
 /// Monotonic-ish suffix so each `UNNotificationRequest` gets a unique
 /// identifier (a reused identifier replaces the previous banner in place).
 fn unique_suffix() -> u128 {
@@ -785,39 +791,59 @@ pub fn deliver_clickable(title: &str, body: &str, window_id: &str, platform: &st
     );
 }
 
-/// Deliver a native DM / share notification the correct way for modern macOS.
+/// Deliver a native DM / share / mention notification as HQ.
 ///
 /// The legacy `NSUserNotification` / `mac-notification-sys` deliver path is
 /// silently denied for the whole process once anything touches
 /// `UNUserNotificationCenter` — and this app always does at launch
 /// (`register_delegate` above installs a UN delegate, and the Settings
-/// permission probe reads UN status). That poisoning is why the old
-/// `mac_notification_sys::send()` fallback in `dm_notify` / `share_notify`
-/// produced no banner at all on Sonoma/Sequoia/Tahoe.
+/// permission probe reads UN status). So the only sender is
+/// `UNUserNotificationCenter`: the banner attributes to HQ, lands in
+/// Notification Center, and a click opens the DM or thread named in
+/// `userInfo` (the delegate routes it, cold or warm).
 ///
-/// Delivery strategy, mirroring `meetings.rs`:
-///   * When notification permission is **granted**, deliver through
-///     `UNUserNotificationCenter` so the banner attributes to HQ, lands in
-///     Notification Center, and is clickable (the delegate routes the click by
-///     `kind`).
-///   * Otherwise fall back to `osascript display notification`, which uses
-///     NotificationCenter's scripting bridge and is not subject to the
-///     per-process legacy/modern gate, so it still shows a banner.
+/// There is no `osascript display notification` fallback. macOS credits those
+/// banners to Script Editor, so they showed its icon and a click launched
+/// Script Editor instead of the DM (feedback_97e1771c). The decision is
+/// `notify_authz::native_delivery`:
+///   * granted → deliver now;
+///   * never asked → ask once, deliver this notification if granted;
+///   * denied / already asked / unknown → no OS banner, logged once with the
+///     state; the message stays in the in-app bell and Settings shows the fix.
 ///
-/// `kind` must be `"dm"`, `"share"`, or `"mention"` — it rides along in
-/// `userInfo` so a click opens the right desktop-alt surface. Thread ids in
-/// `info` name the inbox
-/// route; `info.route` (or a route computed from those ids) is written as
-/// `userInfo["route"]` so a cold click does not have to rebuild it. No-op-safe
-/// on every path.
+/// `kind` must be `"dm"`, `"share"`, or `"mention"`. Thread ids in `info` name
+/// the inbox route; `info.route` (or a route computed from those ids) is written
+/// as `userInfo["route"]` so a cold click does not have to rebuild it.
 pub fn deliver_message(title: &str, body: &str, kind: &str, info: &MessageUserInfo) {
-    ensure_authorization_requested();
-    let granted = hq_platform::notifications::permission_state_without_app() == "granted";
-    if granted && deliver_un_message(title, body, kind, info) {
-        crate::util::logfile::log("notify", &format!("UN {kind} notification fired"));
-        return;
+    use hq_desktop_core::notify_authz::{already_requested, native_delivery, NativeDelivery};
+    let state = hq_platform::notifications::permission_state_without_app();
+    match native_delivery(&state, already_requested()) {
+        NativeDelivery::Deliver => send_un_message(title, body, kind, info),
+        NativeDelivery::RequestThenDeliver => {
+            let (title, body, kind, info) =
+                (title.to_string(), body.to_string(), kind.to_string(), info.clone());
+            request_authorization_then(move || send_un_message(&title, &body, &kind, &info));
+        }
+        NativeDelivery::Suppress => {
+            note_permission_blocked(&state);
+            crate::util::logfile::log(
+                "notify",
+                &format!("UN {kind} notification not shown: not authorized (state={state})"),
+            );
+        }
     }
-    deliver_osascript(title, body, kind);
+}
+
+/// Send one message banner through `UNUserNotificationCenter` and log the
+/// outcome, including the reason when it fails.
+fn send_un_message(title: &str, body: &str, kind: &str, info: &MessageUserInfo) {
+    match deliver_un_message(title, body, kind, info) {
+        Ok(()) => crate::util::logfile::log("notify", &format!("UN {kind} notification fired")),
+        Err(reason) => crate::util::logfile::log(
+            "notify",
+            &format!("WARN UN {kind} notification send failed: {reason}"),
+        ),
+    }
 }
 
 fn set_user_info_string(user_info: *mut AnyObject, key: &str, value: &str) {
@@ -830,13 +856,19 @@ fn set_user_info_string(user_info: *mut AnyObject, key: &str, value: &str) {
     }
 }
 
-/// Deliver a non-actionable UN banner tagged with `kind` plus thread ids in
-/// `userInfo`. Returns `false` (so the caller can fall back to osascript) when
-/// unbundled or when any Cocoa hop fails. Mirrors `deliver_clickable` minus
+/// Deliver a UN banner tagged with `kind` plus thread ids in `userInfo`.
+/// Returns the reason when it cannot be queued (unbundled binary, or a Cocoa
+/// hop returned nil). A rejection by `usernoted` arrives later in the
+/// completion handler and is logged there. Mirrors `deliver_clickable` minus
 /// the meeting-only payload.
-fn deliver_un_message(title: &str, body: &str, kind: &str, info: &MessageUserInfo) -> bool {
+fn deliver_un_message(
+    title: &str,
+    body: &str,
+    kind: &str,
+    info: &MessageUserInfo,
+) -> Result<(), &'static str> {
     if !is_bundled() {
-        return false;
+        return Err("not running from an app bundle");
     }
     objc2::rc::autoreleasepool(|_pool| unsafe {
         let content: Retained<AnyObject> = msg_send![class!(UNMutableNotificationContent), new];
@@ -881,54 +913,37 @@ fn deliver_un_message(title: &str, body: &str, kind: &str, info: &MessageUserInf
             trigger: trigger
         ];
         if request.is_null() {
-            return false;
+            return Err("UNNotificationRequest could not be built");
         }
 
         let center: *mut AnyObject =
             msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
         if center.is_null() {
-            return false;
+            return Err("UNUserNotificationCenter is unavailable");
         }
-        let completion = RcBlock::new(|_err: *mut AnyObject| {});
+        let kind_for_log = kind.to_string();
+        let completion = RcBlock::new(move |err: *mut AnyObject| {
+            if err.is_null() {
+                return;
+            }
+            let reason: *mut AnyObject = msg_send![err, localizedDescription];
+            let reason = ns_to_string(reason);
+            crate::util::logfile::log(
+                "notify",
+                &format!("WARN UN {kind_for_log} notification rejected by macOS: {reason}"),
+            );
+        });
         let _: () =
             msg_send![center, addNotificationRequest: request, withCompletionHandler: &*completion];
-        true
+        Ok(())
     })
-}
-
-/// Always-visible fallback via NotificationCenter's AppleScript bridge. Not
-/// gated by the per-process legacy/modern notification split, so it shows even
-/// when UN authorization is not granted. Quotes are escaped for the `-e` script.
-fn deliver_osascript(title: &str, body: &str, kind: &str) {
-    let script = osascript_notification_script(title, body);
-    match std::process::Command::new("/usr/bin/osascript")
-        .args(["-e", &script])
-        .output()
-    {
-        Ok(out) if out.status.success() => {
-            crate::util::logfile::log("notify", &format!("osascript {kind} notification fired"));
-        }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            crate::util::logfile::log(
-                "notify",
-                &format!("osascript {kind} notification non-zero exit ({}): {stderr}", out.status),
-            );
-        }
-        Err(e) => {
-            crate::util::logfile::log(
-                "notify",
-                &format!("osascript {kind} notification spawn failed: {e}"),
-            );
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         category_id_for_kind, click_action_for_kind, click_destination_route, click_route_for_kind,
-        dropdown_action_from_identifier, encode_action_payload, osascript_notification_script,
+        dropdown_action_from_identifier, encode_action_payload,
         resolve_click_route, route_label_for_log, thread_route_from_ids, truncate_chars,
         ACTION_CLAUDE, ACTION_COPY, ACTION_OPEN, ACTION_TITLE_CLAUDE, ACTION_TITLE_COPY,
         ACTION_TITLE_OPEN, CATEGORY_DM, CATEGORY_SHARE, UN_DEFAULT_ACTION, UN_DISMISS_ACTION,
@@ -1031,28 +1046,6 @@ mod tests {
         assert_eq!(click_route_for_kind("meeting"), Some("meetings"));
         assert_eq!(click_route_for_kind(""), Some("meetings"));
         assert_eq!(click_route_for_kind("something-unexpected"), Some("meetings"));
-    }
-
-    #[test]
-    fn osascript_script_escapes_quotes_and_backslashes() {
-        // A body containing a double-quote or backslash must be escaped so it
-        // can't terminate the AppleScript string literal early (or inject).
-        let script = osascript_notification_script(
-            r#"Ann "Q" O'Neil"#,
-            r#"say "hi" \ done"#,
-        );
-        assert_eq!(
-            script,
-            r#"display notification "say \"hi\" \\ done" with title "Ann \"Q\" O'Neil""#
-        );
-    }
-
-    #[test]
-    fn osascript_script_passes_plain_text_through() {
-        assert_eq!(
-            osascript_notification_script("Corey Epstein", "Sent you a file"),
-            r#"display notification "Sent you a file" with title "Corey Epstein""#
-        );
     }
 
     #[test]
