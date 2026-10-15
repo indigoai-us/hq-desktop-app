@@ -15,10 +15,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 
 import TierMark from "./TierMark.svelte";
+import BadgeNoticeMarks from "./BadgeNoticeMarks.svelte";
 import IdentityMark from "../chat/messaging/IdentityMark.svelte";
 import { highestTier, tierMarkPx, topBadge } from "./badge-tier.js";
 import { BADGES, resolveEarned } from "./badge-catalog.js";
-import { BADGE_GLYPH, BADGE_GLYPH_SCALE, BADGE_GLYPH_STROKE, BADGE_RING_STROKE, badgeGlyphUrl } from "./badge-glyph.js";
+import { BADGE_DUOTONE, BADGE_GLYPH, BADGE_GLYPH_SCALE, BADGE_GLYPH_STROKE, BADGE_RING_STROKE, badgeGlyphUrl, badgeTune } from "./badge-glyph.js";
 import { setBadgeSource } from "./badge-source.js";
 import type { EarnedBadge } from "./badge-catalog.js";
 
@@ -107,6 +108,24 @@ describe("TierMark", () => {
 
   it("has a Phosphor icon for every badge", () => {
     for (const def of BADGES) expect(BADGE_GLYPH[def.icon], def.id).toMatch(/^M/);
+  });
+
+  // Owner pick 2026-10-15: the smallest marks match the drawn ones. The Bold
+  // line stays, so it reads at 12px, over the Duotone tint at 0.2, both
+  // with the icon's tuning about the centre of the 256 grid.
+  it("draws the glyph as the Bold line over the Duotone tint, with the icon's tuning", () => {
+    for (const def of BADGES) {
+      const svg = decodeURIComponent(badgeGlyphUrl(def.icon));
+      const [f, dx, dy] = badgeTune(def.icon);
+      expect(svg, def.id).toContain(`<g transform="translate(128 128) scale(${f}) translate(${dx - 128} ${dy - 128})">`);
+      expect(svg, def.id).toContain(`<path d="${BADGE_DUOTONE[def.icon].tint}" fill-opacity="0.2"/><path d="${BADGE_GLYPH[def.icon]}"/>`);
+    }
+    expect(decodeURIComponent(badgeGlyphUrl("crown"))).toContain("translate(128 128) scale(1) translate(-128 -117)");
+    // The notice marks use the same glyph.
+    const c = mount(BadgeNoticeMarks, { target: host, props: { badges: [OG] } });
+    flushSync();
+    expect(host.querySelector<HTMLElement>("[data-testid='badge-notice-mark']")?.style.getPropertyValue("--glyph")).toBe(badgeGlyphUrl("crown"));
+    unmount(c);
   });
 
   it("shows the badge after a short hover, and hides on leave", () => {

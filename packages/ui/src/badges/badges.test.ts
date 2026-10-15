@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { BADGES, BADGE_BY_ID, MICRO_ICONS, SMALL_ICONS, earnableTiers, earnedTier, isAwarded, resolveEarned } from "./badge-catalog.js";
+import { BADGES, BADGE_BY_ID, earnableTiers, earnedTier, isAwarded, resolveEarned } from "./badge-catalog.js";
+import { BADGE_DUOTONE } from "./badge-glyph.js";
 import { badgesFor, setBadgeSource } from "./badge-source.js";
 import { badgeMarkPx } from "./badge-mark.js";
 import { badgeTheme, inkForLight } from "./badge-theme.js";
@@ -7,12 +8,14 @@ import { badgeTheme, inkForLight } from "./badge-theme.js";
 afterEach(() => setBadgeSource(null));
 
 describe("badge catalog", () => {
-  it("has 19 badges with unique ids and art for both sizes", () => {
+  // Owner pick 2026-10-15, option B: every mark is a drawn Phosphor Duotone icon.
+  it("has 19 badges with unique ids and a Duotone icon, tint and line, for each", () => {
     expect(BADGES).toHaveLength(19);
     expect(new Set(BADGES.map((b) => b.id)).size).toBe(19);
     for (const b of BADGES) {
-      expect(SMALL_ICONS[b.icon]?.art.length).toBeGreaterThan(0);
-      expect(MICRO_ICONS[b.icon]?.art.length).toBeGreaterThan(0);
+      expect(BADGE_DUOTONE[b.icon]?.tint, b.id).toMatch(/^M[\d.,\s\-A-Za-z]+$/);
+      expect(BADGE_DUOTONE[b.icon]?.line, b.id).toMatch(/^M[\d.,\s\-A-Za-z]+$/);
+      expect(BADGE_DUOTONE[b.icon].tint).not.toBe(BADGE_DUOTONE[b.icon].line);
     }
   });
 
@@ -49,20 +52,6 @@ describe("badge catalog", () => {
   it("marks only the single-level honors as awarded", () => {
     expect(BADGES.filter(isAwarded).map((b) => b.id)).toEqual(["og", "captain", "patientzero"]);
     expect(isAwarded(BADGE_BY_ID.corebuilder)).toBe(false);
-  });
-
-  // Rows are laid out on a grid from the left, so a row narrower than the
-  // one above sits half a cell off: Patient Zero's "(0)" over "_/\_" read
-  // as lopsided (owner review 2026-10-12).
-  it("keeps every micro icon's rows the same width, so they line up", () => {
-    for (const [icon, { art }] of Object.entries(MICRO_ICONS)) {
-      expect(new Set(art.map((row) => row.length)).size, icon).toBe(1);
-    }
-  });
-
-  it("draws OG's micro crown with three points and Patient Zero's as a heart on a pulse line", () => {
-    expect(MICRO_ICONS.crown.art).toEqual(["|\\^/|", "|_o_|"]);
-    expect(MICRO_ICONS.pulse.art).toEqual(["(\\/)", "-\\/-"]);
   });
 
   it("sizes marks at 54px (micro) and 108px (small)", () => {
@@ -167,30 +156,10 @@ describe("light-mode badges", () => {
   // Owner review 2026-10-12: Founder is only ever Gold, so its Bronze and
   // Silver art was dead weight. Art exists only for tiers a badge can reach.
   it("has no full-size art for a tier a badge can't be earned at", async () => {
-    const [{ FULL_ASCII }, { FULL_ASCII_LIGHT }] = await Promise.all([
-      import("./full-ascii-data.js"),
-      import("./full-ascii-data-light.js"),
-    ]);
+    const { FULL_ASCII } = await import("./full-ascii-data.js");
     const reachable = new Set(BADGES.flatMap((def) => earnableTiers(def).map((tier) => `${def.id}:${tier}`)));
     expect(Object.keys(FULL_ASCII).filter((key) => !reachable.has(key))).toEqual([]);
-    expect(Object.keys(FULL_ASCII_LIGHT).filter((key) => !reachable.has(key))).toEqual([]);
     expect(FULL_ASCII["founder:3"]).toBeDefined();
-  });
-
-  it("has light colours for every full-size badge, on the same character grid", async () => {
-    const [{ FULL_ASCII }, { FULL_ASCII_LIGHT }] = await Promise.all([
-      import("./full-ascii-data.js"),
-      import("./full-ascii-data-light.js"),
-    ]);
-    expect(Object.keys(FULL_ASCII_LIGHT).sort()).toEqual(Object.keys(FULL_ASCII).sort());
-    for (const [id, art] of Object.entries(FULL_ASCII)) {
-      const light = FULL_ASCII_LIGHT[id];
-      expect(light.colors).toHaveLength(art.colors.length);
-      light.colors.forEach((row, y) => {
-        // An ink wherever the dark art has one, and nowhere else.
-        expect([...row].map((c) => c === ".").join()).toBe([...art.colors[y]].map((c) => c === ".").join());
-      });
-    }
   });
 });
 
@@ -198,20 +167,17 @@ describe("light-mode badges", () => {
  * Owner request (2026-10-12): Founding Member moved from Legendary to Gold,
  * but its full-size art kept the Legendary ring in the HQ gradient. Every
  * badge at a tier wears the same frame, so Founding Member's must be the
- * gold one, in dark and in light.
+ * gold one. The full-size art is only drawn dark (the holographic card and
+ * the share image), so only the dark frames remain (owner pick 2026-10-15).
  */
 describe("full-size frames", async () => {
-  const [{ FULL_ASCII, PALETTE_ALPHABET }, { FULL_ASCII_LIGHT }] = await Promise.all([
-    import("./full-ascii-data.js"),
-    import("./full-ascii-data-light.js"),
-  ]);
+  const { FULL_ASCII, PALETTE_ALPHABET } = await import("./full-ascii-data.js");
   type Cell = [number, number];
   const ink = (palette: readonly string[], colors: readonly string[], [y, x]: Cell) => {
     const ch = colors[y][x];
     return ch === "." ? null : palette[PALETTE_ALPHABET.indexOf(ch)];
   };
   const dark = (key: string, cell: Cell) => ink(FULL_ASCII[key].palette, FULL_ASCII[key].colors, cell);
-  const light = (key: string, cell: Cell) => ink(FULL_ASCII_LIGHT[key].palette, FULL_ASCII_LIGHT[key].colors, cell);
   const glyph = (key: string, [y, x]: Cell) => FULL_ASCII[key].chars[y][x];
   const keys = Object.keys(FULL_ASCII);
   const tierOf = (key: string) => key.split(":")[1];
@@ -237,7 +203,7 @@ describe("full-size frames", async () => {
       const [ref, ...rest] = legendary;
       const own = dark(ref, [y, x]);
       if (!own || hsl(own).s <= 0.25) continue;
-      if (rest.every((k) => glyph(k, [y, x]) === glyph(ref, [y, x]) && dark(k, [y, x]) === own && light(k, [y, x]) === light(ref, [y, x]))) frame.push([y, x]);
+      if (rest.every((k) => glyph(k, [y, x]) === glyph(ref, [y, x]) && dark(k, [y, x]) === own)) frame.push([y, x]);
     }
   }
 
@@ -281,12 +247,12 @@ describe("full-size frames", async () => {
     expect(frame.length).toBeGreaterThan(200);
   });
 
-  it("gives every badge at a tier the same frame, glyph for glyph, in dark and light", () => {
+  it("gives every badge at a tier the same frame, glyph for glyph", () => {
     for (const tier of ["1", "2", "3", "L"]) {
       const [ref, ...rest] = keys.filter((k) => tierOf(k) === tier);
       for (const key of rest) {
         for (const cell of frame) {
-          expect([glyph(key, cell), dark(key, cell), light(key, cell)], `${key} at ${cell}`).toEqual([glyph(ref, cell), dark(ref, cell), light(ref, cell)]);
+          expect([glyph(key, cell), dark(key, cell)], `${key} at ${cell}`).toEqual([glyph(ref, cell), dark(ref, cell)]);
         }
       }
     }
@@ -296,15 +262,13 @@ describe("full-size frames", async () => {
     expect(BADGE_BY_ID.founding.tier).toBe(3);
     const gold = keys.filter((k) => tierOf(k) === "3" && k !== "founding:3");
     for (const cell of frame) {
-      for (const read of [dark, light]) {
-        const own = read("founding:3", cell)!;
-        // The same ink every other Gold badge has here.
-        expect(gold.every((k) => read(k, cell) === own), `founding:3 at ${cell}: ${own}`).toBe(true);
-        // Coloured ring inks are gold, amber or orange: no indigo, violet or pink from the HQ gradient.
-        const { h, s } = hsl(own);
-        if (s > 0.25) expect(h, `founding:3 at ${cell}: ${own}`).toBeGreaterThanOrEqual(20);
-        if (s > 0.25) expect(h, `founding:3 at ${cell}: ${own}`).toBeLessThanOrEqual(60);
-      }
+      const own = dark("founding:3", cell)!;
+      // The same ink every other Gold badge has here.
+      expect(gold.every((k) => dark(k, cell) === own), `founding:3 at ${cell}: ${own}`).toBe(true);
+      // Coloured ring inks are gold, amber or orange: no indigo, violet or pink from the HQ gradient.
+      const { h, s } = hsl(own);
+      if (s > 0.25) expect(h, `founding:3 at ${cell}: ${own}`).toBeGreaterThanOrEqual(20);
+      if (s > 0.25) expect(h, `founding:3 at ${cell}: ${own}`).toBeLessThanOrEqual(60);
     }
   });
 });

@@ -119,7 +119,8 @@ describe("BadgesPane", () => {
     expect(card?.getAttribute("role")).toBe("tooltip");
     expect(card?.textContent).toBe("Different skills used");
     expect(toolbox.querySelector('[data-testid="badges-progress"]')?.textContent).toBe("3 of 5 skills");
-    expect(toolbox.querySelector("canvas")?.getAttribute("aria-label") ?? toolbox.querySelector("[aria-label]")?.getAttribute("aria-label")).toContain("not earned yet");
+    expect(toolbox.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain("not earned yet");
+    expect(toolbox.querySelector('[role="img"] svg[data-badge="toolbox"]')).not.toBeNull();
     const liftoff = host.querySelector('[data-testid="badges-tile"][data-badge-id="liftoff"]') as HTMLButtonElement;
     expect(liftoff.getAttribute("data-state")).toBe("earned");
     expect(liftoff.textContent).toContain("Silver");
