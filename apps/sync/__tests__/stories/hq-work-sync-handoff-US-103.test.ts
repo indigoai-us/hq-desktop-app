@@ -1070,9 +1070,15 @@ describe('US-103 embedded desktop window', () => {
       const calls: MessagingCall[] = [];
       mountMessagingSidebar(messagingInvoke(calls));
       await flush();
-      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-show-history"]')).not.toBeNull());
-      (host.querySelector('[data-testid="chat-show-history"]') as HTMLButtonElement).click();
+      // With nothing hidden behind the rail there is no "Show all history"
+      // control (owner feedback 11, 2026-10-15); message search opens the way
+      // the native app opens it, through the Cmd+F shortcut binding.
+      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy());
+      const invokeShortcut = tauriEvents.listeners.get('shortcut:invoke');
+      expect(invokeShortcut).toBeTypeOf('function');
+      invokeShortcut?.({ payload: { id: 'search.messages' } });
       await flush();
+      await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-history-search"]')).not.toBeNull());
       setInput('chat-history-search', 'known');
       await new Promise((resolve) => setTimeout(resolve, 260));
       await flush();
