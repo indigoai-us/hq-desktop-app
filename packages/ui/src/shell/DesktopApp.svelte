@@ -4050,10 +4050,10 @@
   /** Bots this takeover created in this session (their DM and progress card are already set up). */
   const firstRunCreatedUids = new Set<string>();
   /**
-   * Done: "Talk to <Name>" lands on the welcome report (US-009); the
-   * assistant's DM opens from its profile, or from the rail once it has
-   * messages there. One that already existed keeps the
-   * setup bot's runnability check, so a bot that cannot run here says so.
+   * Done: "Talk to <Name>" opens the assistant's DM directly (owner,
+   * 2026-10-15); the welcome report is still owed and its job still goes
+   * out. One that already existed keeps the setup bot's runnability check,
+   * so a bot that cannot run here says so.
    */
   function talkToFirstRunAssistant(): void {
     const creation = firstRunCreation;
@@ -4061,28 +4061,41 @@
     closeVisualFirstRun();
     if (firstRunDev.dry) return;
     const bot = creation.bot;
-    // One that already existed keeps its runnability check; its DM says so.
+    if (!firstRunCreatedUids.has(bot.agentUid)) {
+      openSetupBotDm(bot);
+      return;
+    }
+    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${bot.agentUid}`,
+        kind: "dm",
+        title: assistantLabel,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: bot.agentUid,
+      },
+    );
+    recordWelcomeSetupRun();
+  }
+  /**
+   * "Continue in chat" and the automatic handoff: the welcome report
+   * (US-009), with the assistant's setup recorded when it is ready. One that
+   * already existed keeps its runnability check; its DM says so.
+   */
+  function continueFirstRunInChat(): void {
+    closeVisualFirstRun();
+    if (firstRunDev.dry) return;
+    const creation = firstRunCreation;
+    if (creation.state !== "ready") return;
+    const bot = creation.bot;
     if (!firstRunCreatedUids.has(bot.agentUid) && !botRunsHere(localBotRecords, bot.agentUid)) {
       noteBotCannotRunHere(bot.agentUid);
       void refreshRemoteBots(true);
     }
     recordWelcomeSetupRun();
-  }
-  /**
-   * "Continue in chat": the welcome report, with the assistant's setup
-   * recorded when it is ready. Without one yet the assistant's chat asks for
-   * the sign-in it needs.
-   */
-  function continueFirstRunInChat(): void {
-    if (firstRunDev.dry) {
-      closeVisualFirstRun();
-      return;
-    }
-    if (firstRunCreation.state === "ready") {
-      talkToFirstRunAssistant();
-      return;
-    }
-    closeVisualFirstRun();
   }
   /** Retry from the progress card: start the bot if it exists, else re-run the same create. */
   async function retryBotProgress(uid: string): Promise<void> {

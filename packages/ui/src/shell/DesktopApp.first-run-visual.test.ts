@@ -328,10 +328,13 @@ describe("visual first run, flag on", () => {
         { noun: "computer" },
       ),
     );
-    // The welcome report is open, the takeover is gone for good.
+    // The assistant's chat is open, the takeover is gone for good.
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
-    expect(q('[data-testid="setup-hero"]')).toBeNull();
+    // (The rail labels the setup bot's DM the same way today's flow does.)
+    await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
+    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit");
+    // Talk opens the DM directly (owner, 2026-10-15), never the welcome report.
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     // The legacy automatic start never ran alongside it.
@@ -642,7 +645,7 @@ describe("welcome report (US-009)", () => {
     expect(q('[data-testid="setup-hero"]')).toBeNull();
   });
 
-  it("sends the brief job to the assistant once, only after it appears", async () => {
+  it("sends the brief job to the assistant once, only after it appears, even when Talk opens its DM", async () => {
     let created = false;
     const create = vi.fn(async () => {
       created = true;
@@ -664,9 +667,27 @@ describe("welcome report (US-009)", () => {
     const [to, body] = briefJobs(sendDm)[0]!;
     expect(to).toBe(SETUP_BOT_UID);
     expect(body.startsWith("/daily-brief indigo --run-id")).toBe(true);
-    expect(q('[data-testid="welcome-report-loading"]')).not.toBeNull();
+    // Talk opens the assistant's DM directly (owner, 2026-10-15).
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit"));
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
     await settle(30);
     expect(briefJobs(sendDm)).toHaveLength(1);
+  });
+
+  it("Continue in the coding tool with an assistant already here lands on the welcome report, not its DM", async () => {
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).not.toBe("Biscuit");
+    // The report's job still reaches the assistant once.
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    expect(briefJobs(sendDm)[0]![0]).toBe(SETUP_BOT_UID);
+    await settle(10);
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
   });
 
   /** A host whose scan finds Linear, with one company to connect it to. */
