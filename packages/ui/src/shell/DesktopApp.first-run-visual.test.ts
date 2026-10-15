@@ -677,7 +677,47 @@ describe("welcome report (US-009)", () => {
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
     await settle(20);
     expect(briefJobs(sendDm)).toHaveLength(0);
-  });
+    // No run left to wait on: the brief page's own Create brief shows, never
+    // a loading card with nothing coming.
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-create"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+  }, 15_000);
+
+  it("Dismiss after the job failed shows the brief page's Create brief, never a loading card that cannot end", async () => {
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    const runId = /--run-id (\S+)/.exec(briefJobs(sendDm)[0]![1])![1]!;
+    // The assistant takes the job, then it fails.
+    let state = "running";
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent =
+      async (path: string) =>
+        path.endsWith(`${runId}/status.json`)
+          ? ok(JSON.stringify({ run_id: runId, state, message: "The assistant could not finish the brief." }))
+          : { ok: false as const, reason: "not found" };
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
+    await vi.waitFor(() => expect(localStorage.getItem("hq.welcome-report.sent")).toBe(SETUP_BOT_UID), {
+      timeout: 10_000,
+    });
+    state = "failed";
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-retry"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    const dismiss = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="welcome-report"] button')].find(
+      (b) => b.textContent?.trim() === "Dismiss",
+    );
+    dismiss!.click();
+    await settle(10);
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-create"]')).toBeTruthy();
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+    // Dismissing never sends the job again.
+    expect(briefJobs(sendDm)).toHaveLength(1);
+  }, 25_000);
 
   it("sends the brief job to the assistant once, only after it appears, even when Talk opens its DM", async () => {
     let created = false;

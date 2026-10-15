@@ -3856,12 +3856,16 @@
         // its row from sendBotNotice.
         const rowId = `dm:${bot.agentUid}`;
         if (!thinkingByRow[rowId]?.length) {
+          // No timeline cached for the DM: pin to the newest message from the
+          // assistant this session saw (a wake), when there is one.
+          const seen = botDmMessageSeenAt.get(bot.agentUid);
+          const seenMs = seen ? Date.parse(seen) : NaN;
           thinkingByRow = startThinkingIn(
             thinkingByRow,
             rowId,
             { agentUid: bot.agentUid, agentName: agentLabel(bot.agentUid, name) },
             Date.now(),
-            { afterMs: botPinFor(rowId, bot.agentUid) },
+            { afterMs: botPinFor(rowId, bot.agentUid) ?? (Number.isFinite(seenMs) ? seenMs : undefined) },
           );
         }
         // Adopted another assistant while this one went out: that one's turn.
@@ -3944,8 +3948,6 @@
   let welcomeReportOwed = $state(false);
   /** The assistant the welcome report's brief job reached (one job per assistant). */
   const WELCOME_REPORT_SENT_KEY = "hq.welcome-report.sent";
-  /** How long a job held back (assistant not running or signed in yet) waits before it tries again. */
-  const WELCOME_REPORT_RETRY_MS = 15_000;
   function welcomeReportSentTo(uid: string): boolean {
     try {
       return window.localStorage.getItem(WELCOME_REPORT_SENT_KEY) === uid;
@@ -3963,20 +3965,22 @@
       console.warn("[hq-desktop] welcome report: could not keep the sent marker", err);
     }
   }
-  let welcomeReportSent: string | null = null;
-  let welcomeReportRetry: ReturnType<typeof setTimeout> | null = null;
-  onDestroy(() => {
-    if (welcomeReportRetry) clearTimeout(welcomeReportRetry);
-  });
+  let welcomeReportSent = $state<string | null>(null);
+  /** The assistant's state the last held-back job was checked against. */
+  let welcomeReportBlockedOn: string | null = null;
   // The brief job builds the report once the assistant is known. Without one
-  // yet the report offers #welcome to set one up; a job held back (assistant not running, model not signed in) tries again
-  // on a timer. Once a job reaches the assistant it is never sent again for
-  // it, across reloads too.
+  // yet the report offers #welcome to set one up. A job held back (assistant
+  // not running, model not signed in) shows the brief page's fix, and tries
+  // again by itself only when the assistant's state changes (it came up, a
+  // sign-in landed), never on a timer. Once a job reaches the assistant it is
+  // never sent again for it, across reloads too.
   $effect(() => {
     const uid = assistantUid;
     const run = briefRun;
     if (!welcomeReportOwed || !uid || !run || firstRunDev.dry) return;
     const kind = run.phase.kind;
+    const bot = localBots.find((b) => b.agentUid === uid);
+    const botState = `${bot?.state}|${bot?.processAlive}|${bot ? localBotRuntimeReady?.[bot.runtime] : undefined}`;
     untrack(() => {
       if (welcomeReportSent === uid || welcomeReportSentTo(uid)) return;
       if (kind === "waiting" || kind === "running" || kind === "ready") {
@@ -3986,27 +3990,27 @@
       // In flight, or failed with the brief page's Try again showing.
       if (kind === "dispatching" || kind === "failed") return;
       if (kind === "blocked") {
-        welcomeReportRetry ??= setTimeout(() => {
-          welcomeReportRetry = null;
-          if (run.phase.kind === "blocked") void run.start();
-        }, WELCOME_REPORT_RETRY_MS);
+        if (welcomeReportBlockedOn === null) welcomeReportBlockedOn = botState;
+        else if (welcomeReportBlockedOn !== botState) {
+          welcomeReportBlockedOn = botState;
+          void run.start();
+        }
         return;
       }
+      welcomeReportBlockedOn = null;
       void run.start();
     });
   });
   /**
    * The company the welcome report's connect card connects apps to: the
-   * tenant company, else the team the takeover settled, else the takeover's
-   * own default (the person's only company, `defaultTeamChoice`). With none
-   * of these there is no card; apps never land in a company the person did
-   * not pick.
+   * tenant company, else the takeover's own default (the person's only
+   * company, `defaultTeamChoice`). With neither there is no card; apps never
+   * land in a company the person did not pick. (The visual takeover settles no
+   * team here, so `firstRunSettled.team` is never read.)
    */
   const welcomeAppsCompany = $derived.by(() => {
-    const team = firstRunSettled.team;
     const company =
       railCompanyRoster.find((c) => c.uid === tenantCompanyId) ??
-      (team?.kind === "company" && team.slug ? railCompanyRoster.find((c) => c.slug === team.slug) : undefined) ??
       (railCompanyRoster.length === 1 ? railCompanyRoster[0] : undefined) ??
       null;
     return company ? { uid: company.uid, name: company.label } : null;
@@ -6035,7 +6039,12 @@
   const welcomeReportReady = $derived.by(() => {
     if (!briefRun) return true;
     const kind = briefRun.phase.kind;
-    return kind === "ready" || kind === "failed" || kind === "blocked";
+    if (kind === "ready" || kind === "failed" || kind === "blocked") return true;
+    // Idle once the job already reached this assistant (a failed run
+    // dismissed, a reload with no run left): nothing is coming, so the brief
+    // page's Create brief shows.
+    const uid = assistantUid;
+    return kind === "idle" && !!uid && (welcomeReportSent === uid || welcomeReportSentTo(uid));
   });
   const welcomeReportProgress = $derived(briefRun?.phase.kind === "running" ? briefRun.phase.progress : null);
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {

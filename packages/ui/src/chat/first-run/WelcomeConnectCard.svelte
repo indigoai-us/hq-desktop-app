@@ -217,9 +217,9 @@
 
 <style>
   .card {
-    border-radius: 22px;
-    background: #121216;
+    border-radius: var(--b-r, 22px);
+    background: var(--b-card, #121216);
     padding: 22px 24px;
-    color: rgba(255, 255, 255, 0.92);
+    color: var(--b-t1, rgba(255, 255, 255, 0.92));
   }
 </style>
