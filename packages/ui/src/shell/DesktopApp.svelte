@@ -218,6 +218,11 @@
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
   import SetupToolOffer from "../chat/SetupToolOffer.svelte";
+  import TeamCard from "../chat/first-run/TeamCard.svelte";
+  import { teamCardDue, teamCardPickKey, teamOptionsFrom, type TeamCardPick } from "../chat/first-run/team-step.js";
+  import { runTeamCardPick } from "../chat/first-run/team-card-pick.js";
+  import { createFirstRunTeamHost } from "../chat/first-run/first-run-hosts.js";
+  import { teamBlockInMessage } from "../chat/messaging/richMessageContent.js";
   import {
     connectItemCarriesState,
     continueInToolForMessage,
@@ -4299,6 +4304,54 @@
       setupToolOfferBusy = false;
       dispatchSetupToolOffer("continued", tool, { launched });
     }
+  }
+  /**
+   * "Who do you work with?" under the setup bot's first message: drawn for the
+   * bot's `team` block, or by the host when the handoff left the team
+   * unsettled and no block came (an older hq-cli).
+   */
+  let teamCardPending = $state<string | null>(null);
+  let teamCardError = $state<string | null>(null);
+  let teamCardSettled = $state<string | null>(null);
+  let teamCardLastPick: TeamCardPick | null = null;
+  const teamCardRepliesSent = new Set<string>();
+  const teamCardShown = $derived.by((): "block" | "fallback" | null => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return null;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    const due = teamCardDue(timeline, bot.agentUid, firstRunSettled.team === null, teamBlockInMessage, messageHasVisibleContent);
+    return due === "fallback" && firstRunHandoffName === null ? null : due;
+  });
+  const teamCardHost = createFirstRunTeamHost({
+    dry: firstRunDev.dry,
+    claimInvite: (slug) => adapter.company?.claimPendingInvite?.(slug) ?? Promise.reject(new Error("unavailable")),
+    createCompany: (name, slug) => createCompanyFromSheet({ name, slug, plan: "free", invites: [] }),
+    joined: pinTeamCardCompany,
+    created: pinTeamCardCompany,
+  });
+  function pinTeamCardCompany(companyUid: string | null): void {
+    if (!companyUid) return;
+    const pinned = pinCompany(pinnedCompanyIds ?? [], companyUid);
+    if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
+  }
+  async function pickTeamCard(pick: TeamCardPick): Promise<void> {
+    if (teamCardPending) return;
+    teamCardLastPick = pick;
+    teamCardError = null;
+    teamCardPending = teamCardPickKey(pick);
+    const result = await runTeamCardPick(pick, {
+      host: teamCardHost,
+      pin: pinTeamCardCompany,
+      reply: async (text, key) => {
+        if (teamCardRepliesSent.has(key)) return;
+        teamCardRepliesSent.add(key);
+        await persistSend(text, []).catch((err) => console.warn("[hq-desktop] could not reply to the setup bot:", err));
+      },
+    });
+    teamCardPending = null;
+    if (result.ok) teamCardSettled = result.settled;
+    else teamCardError = result.reason;
   }
   /** "Keep going here": the reply the bot waits for before it starts setup. */
   function keepSetupHere(tool: SetupOfferTool): void {
@@ -15482,6 +15535,16 @@
                       launchError={setupToolOfferError}
                       oncontinue={() => void continueSetupInTool(offerTool)}
                       onkeep={() => keepSetupHere(offerTool)}
+                    />
+                  {/if}
+                  {#if teamCardShown || (teamCardSettled && selectedLocalBot?.name.trim().toLowerCase() === SETUP_BOT_NAME)}
+                    <TeamCard
+                      options={teamOptionsFrom(companies)}
+                      onpick={(pick) => void pickTeamCard(pick)}
+                      pendingKey={teamCardPending}
+                      error={teamCardError}
+                      onretry={() => teamCardLastPick && void pickTeamCard(teamCardLastPick)}
+                      settled={teamCardSettled}
                     />
                   {/if}
                   {#if agentChannelFallbackVisible}

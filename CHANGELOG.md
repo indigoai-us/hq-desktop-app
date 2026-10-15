@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run: your setup assistant's first message now asks "Who do you work with?" as a card. It shows only what applies to you: join a company that invited you, open a company you are in, create a company (type its name right on the card), or "Just me for now". After you pick, the card shrinks to one line such as "Joined Acme" and your assistant is told what you chose. If joining or creating fails, the card says so in a plain sentence with Retry. The card also shows when your assistant came from an older HQ command line tool that does not ask for it, as long as your company is not set yet.
 - First run: the optional GitHub CLI item in background setup is skipped on a Mac without Homebrew instead of counting as a failure, so nothing is reported for it. The item is not retried later; installing the GitHub CLI yourself (through Homebrew) still works as before.
 - Internal: the launch scan tests now pass on Windows (project folders encoded the way Claude Code encodes them there, repo paths compared with one separator, the uninstall-registry apps left out of the empty-machine check). No change for people using the app.
 - First run: the "Finishing setup" pill on the title bar no longer turns into "1 item needs attention". While background setup runs it shows what it is on; when an item does not finish, the pill goes away and your assistant tells you in its chat which item did not finish and that quitting and reopening HQ finishes it.
