@@ -2821,26 +2821,24 @@ fn warn_recorded_root_overridden_once(warning: &str) {
     }
 }
 
-/// menubar.json key the app writes once onboarding (first run) is finished.
-const FIRST_RUN_COMPLETED_KEY: &str = "firstRunCompleted";
 /// Resumable onboarding install manifest under `~/.hq/`, written by the
 /// desktop app's install stages.
 const INSTALL_MANIFEST_FILE: &str = "install-manifest.json";
 
-/// True while onboarding may still be filling the recorded HQ folder: first
-/// run has not completed (`firstRunCompleted` is not `true` in menubar.json),
-/// or the install manifest records a running or failed step without a
-/// completion marker (a re-run of the installer). The manifest rule mirrors
-/// the app's `manifest_indicates_install_in_progress`.
+/// True while onboarding may still be filling the recorded HQ folder: the
+/// launch classifies as [`LaunchKind::FirstRun`] (no `firstRunCompleted` and
+/// no `machineId`), or the install manifest records a running or failed step
+/// without a completion marker (a re-run of the installer). An install that
+/// predates `firstRunCompleted` classifies as `ExistingUpdate` and is not
+/// onboarding. The manifest rule mirrors the app's
+/// `manifest_indicates_install_in_progress`.
+///
+/// [`LaunchKind::FirstRun`]: crate::first_run::LaunchKind::FirstRun
 pub fn onboarding_in_progress_from(
     menubar: &serde_json::Map<String, serde_json::Value>,
     install_manifest: Option<&serde_json::Value>,
 ) -> bool {
-    let first_run_completed = menubar
-        .get(FIRST_RUN_COMPLETED_KEY)
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    if !first_run_completed {
+    if crate::first_run::classify_from_map(menubar) == crate::first_run::LaunchKind::FirstRun {
         return true;
     }
     let Some(manifest) = install_manifest else {
@@ -2865,7 +2863,8 @@ pub fn onboarding_in_progress_from(
 
 /// [`onboarding_in_progress_from`] against `~/.hq/menubar.json` and
 /// `~/.hq/install-manifest.json`. Unreadable files read as empty, so a
-/// machine with no first-run marker counts as onboarding.
+/// machine with neither a first-run marker nor a `machineId` counts as
+/// onboarding.
 pub fn onboarding_in_progress() -> bool {
     let menubar = menubar_json_path()
         .map(|p| crate::first_run::read_menubar_obj(&p))
@@ -3560,6 +3559,40 @@ mod tests {
         scaffold_launchable_root(&root);
         std::fs::remove_dir_all(root.join("companies")).unwrap();
         assert!(!is_launchable_hq_root(&root), "missing companies/");
+    }
+
+    #[test]
+    fn existing_update_with_invalid_recorded_path_resolves_to_discovered_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("Users").join("someone").join("hq");
+        std::fs::create_dir_all(&recorded).unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+
+        // An install that predates `firstRunCompleted` (ExistingUpdate).
+        let menubar = serde_json::json!({
+            "machineId": "machine-1",
+            "hqPath": recorded_str,
+        });
+        let menubar = menubar.as_object().unwrap();
+        assert!(!onboarding_in_progress_from(menubar, None));
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            onboarding_in_progress_from(menubar, None),
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        let warning = resolution.warning.expect("override must carry a warning");
+        assert!(warning.contains(&recorded_str), "{warning}");
+        assert!(
+            warning.contains(&discovered.to_string_lossy().to_string()),
+            "{warning}"
+        );
     }
 
     #[test]
