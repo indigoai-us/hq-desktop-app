@@ -318,6 +318,11 @@ describe("the prompt is remembered per machine", () => {
 describe("what a restore says afterwards", () => {
   it("gives every outcome a sentence a person can read", () => {
     expect(botRestoreRowLine(row({ action: "restored" }))).toBe("scout is back on this computer.");
+    // The display name wins over the handle; the assistant's slug never shows (item 9, 2026-10-15).
+    expect(botRestoreRowLine(row({ action: "restored", displayName: "Doodle" }))).toBe("Doodle is back on this computer.");
+    expect(botRestoreRowLine(row({ action: "restored", name: "setup", role: "assistant" }))).toBe("Your assistant is back on this computer.");
+    expect(botRestoreRowLine(row({ action: "restored", name: "setup", displayName: "setup-rg13gzm4" }))).toBe("Your assistant is back on this computer.");
+    expect(botRestoreRowLine(row({ action: "failed", name: "setup", role: "assistant", detail: "" }))).toBe("Your assistant could not be brought back.");
     expect(botRestoreRowLine(row({ action: "repaired" }))).toContain("sign-in was refreshed");
     expect(botRestoreRowLine(row({ action: "skipped" }))).toContain("already set up here");
     expect(botRestoreRowLine(row({ action: "would-restore" }))).toContain("would come back");

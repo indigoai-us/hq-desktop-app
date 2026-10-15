@@ -6,6 +6,8 @@ import {
   INSTALL_QUEUE_PROGRESS_EVENT,
   createInstallQueueHost,
   finishingSetupLabel,
+  finishingSetupVisible,
+  installQueueAttentionNotice,
   parseInstallQueueStatus,
   type InstallQueueHost,
   type InstallQueueStatus,
@@ -53,10 +55,10 @@ async function settle(): Promise<void> {
 let mounted: Record<string, unknown> | null = null;
 let target: HTMLElement | null = null;
 
-function render(host: InstallQueueHost | null) {
+function render(host: InstallQueueHost | null, onattention?: (failed: readonly string[]) => void) {
   target = document.createElement("div");
   document.body.appendChild(target);
-  mounted = mount(FinishingSetupChip, { target, props: { host } });
+  mounted = mount(FinishingSetupChip, { target, props: { host, onattention: onattention ?? null } });
   return target;
 }
 
@@ -123,58 +125,32 @@ describe("FinishingSetupChip", () => {
     expect(el.textContent).toContain("Finishing setup: Search index (10 of 11)");
   });
 
-  it("offers Retry with a pending state when an item needs attention, without raw errors", async () => {
-    let finishRetry: () => void = () => {};
-    const { host, emit } = fakeHost(
-      { ...RUNNING, state: "attention", current: null, currentId: null, failed: ["gh"] },
-      () => new Promise<unknown>((resolve) => {
-        finishRetry = () => resolve(null);
-      }),
-    );
-    const el = render(host);
+  it("shows nothing when an item needs attention and tells the host once which items failed (item 14, 2026-10-15)", async () => {
+    const onattention = vi.fn();
+    const { host, emit } = fakeHost({ ...RUNNING, state: "attention", current: null, currentId: null, failed: ["gh"] });
+    const el = render(host, onattention);
     await settle();
-    expect(el.textContent).toContain("Finishing setup: 1 item needs attention");
-
-    const button = el.querySelector<HTMLButtonElement>('[data-testid="finishing-setup-retry"]');
-    expect(button).not.toBeNull();
-    button!.click();
-    flushSync();
-    expect(host.retry).toHaveBeenCalledTimes(1);
-    expect(button!.disabled).toBe(true);
-    expect(button!.textContent).toContain("Retrying");
-
-    // A second click while pending does not start a second retry.
-    button!.click();
-    expect(host.retry).toHaveBeenCalledTimes(1);
-
-    finishRetry();
-    await settle();
+    expect(el.textContent ?? "").not.toContain("attention");
+    expect(el.querySelector('[data-testid="finishing-setup-chip"]')).toBeNull();
+    expect(onattention).toHaveBeenCalledTimes(1);
+    expect(onattention).toHaveBeenCalledWith(["gh"]);
+    emit({ ...RUNNING, state: "attention", current: null, currentId: null, failed: ["gh"] });
+    expect(onattention).toHaveBeenCalledTimes(1);
+    emit({ ...RUNNING, state: "attention", current: null, currentId: null, failed: ["gh", "qmd"] });
+    expect(onattention).toHaveBeenCalledTimes(2);
     emit({ ...RUNNING, current: "GitHub CLI" });
     expect(el.textContent).toContain("Finishing setup: GitHub CLI (5 of 11)");
   });
 
-  it("logs a failed retry and shows plain copy instead of the error", async () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { host } = fakeHost(
-      { ...RUNNING, state: "attention", current: null, currentId: null, failed: ["gh", "qmd"] },
-      async () => {
-        throw new Error("npm ERR! code EACCES /usr/local/lib");
-      },
-    );
-    const el = render(host);
-    await settle();
-    expect(el.textContent).toContain("Finishing setup: 2 items need attention");
-
-    el.querySelector<HTMLButtonElement>('[data-testid="finishing-setup-retry"]')!.click();
-    await settle();
-    expect(error).toHaveBeenCalledWith("finishing setup chip: retry failed:", expect.any(Error));
-    expect(el.querySelector('[data-testid="finishing-setup-retry-failed"]')?.textContent).toBe(
-      "Could not retry. Try again.",
-    );
-    expect(el.textContent).not.toContain("EACCES");
-    const button = el.querySelector<HTMLButtonElement>('[data-testid="finishing-setup-retry"]');
-    expect(button!.disabled).toBe(false);
+  it("the assistant's note names what failed and the one fix, with no error text", () => {
+    const note = installQueueAttentionNotice(["gh", "search-index"], { noun: "Mac" });
+    expect(note).toContain("did not finish: the GitHub CLI and the search index.");
+    expect(note).toContain("quitting and reopening HQ");
+    expect(installQueueAttentionNotice([])).toContain("a setup item");
+    expect(finishingSetupVisible({ ...RUNNING, state: "attention", current: null, currentId: null, failed: ["gh"] })).toBe(false);
+    expect(finishingSetupVisible(RUNNING)).toBe(true);
   });
+
 
   it("logs a failed status read instead of swallowing it", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
