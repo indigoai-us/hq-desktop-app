@@ -50,6 +50,59 @@ function folderName(path: string): string {
   return parts[parts.length - 1] ?? "";
 }
 
+/** A parent folder reads as a company once it holds this many repos. */
+export const MIN_REPOS_PER_FOLDER = 2;
+
+/**
+ * The folder a repo sits in, when that folder can stand for a company: not a
+ * home folder (`/Users/<name>/repo`, `/home/<name>/repo`) and not the root.
+ * The hq-cli scan grouped repos the same way (its "folder" company basis);
+ * the native scan has no git remotes, so the folder is the one grouping it
+ * can offer. Without it every project landed on the tree's one "other" limb
+ * and the tree lost its company limbs (owner run 2026-10-15).
+ */
+export function companyFolderOf(path: string): string {
+  const parts = path.split(/[/\\]/).filter(Boolean);
+  if (parts.length < 3) return "";
+  const parent = parts[parts.length - 2] ?? "";
+  const grand = (parts[parts.length - 3] ?? "").toLowerCase();
+  if (grand === "users" || grand === "home") return "";
+  if (GENERIC_CODE_FOLDERS.has(parent.toLowerCase())) return "";
+  return parent;
+}
+
+/** Folders people keep all their code in: a limb named "dev" would say nothing. */
+const GENERIC_CODE_FOLDERS = new Set([
+  "dev", "code", "repos", "repo", "src", "source", "sources", "projects", "project", "work", "workspace", "workspaces",
+  "git", "github", "gitlab", "documents", "desktop", "developer", "development", "sites", "www", "tmp", "scratch",
+]);
+
+/** Folder-basis company events and the company id each repo path belongs to. */
+export function folderCompanies(repos: readonly { path: string }[]): {
+  companies: { id: string; name: string }[];
+  byPath: Map<string, string>;
+} {
+  const folders = new Map<string, { name: string; paths: string[] }>();
+  for (const r of repos) {
+    if (!r || typeof r.path !== "string") continue;
+    const name = companyFolderOf(r.path);
+    if (!name) continue;
+    const key = name.toLowerCase();
+    const entry = folders.get(key) ?? { name, paths: [] };
+    entry.paths.push(r.path);
+    folders.set(key, entry);
+  }
+  const companies: { id: string; name: string }[] = [];
+  const byPath = new Map<string, string>();
+  for (const { name, paths } of folders.values()) {
+    if (paths.length < MIN_REPOS_PER_FOLDER) continue;
+    const id = `folder:${idPart(name)}`;
+    companies.push({ id, name });
+    for (const path of paths) byPath.set(path, id);
+  }
+  return { companies, byPath };
+}
+
 /**
  * The stream events for one finished native scan. Pure, so the tree's input
  * can be tested without a host.
@@ -82,6 +135,17 @@ export function nativeScanEvents(scan: LocalScanView): Record<string, unknown>[]
     });
   }
 
+  // Companies first (a limb each on the tree), then the projects on them. A
+  // session project whose name matches a repo folder sits on that repo's limb.
+  const { companies, byPath } = folderCompanies(repos);
+  for (const c of companies) events.push({ v, type: "company", id: c.id, name: c.name, basis: "folder" });
+  const companyByFolder = new Map<string, string>();
+  for (const r of repos) {
+    const name = r && typeof r.path === "string" ? folderName(r.path) : "";
+    const company = name ? byPath.get(r.path) : undefined;
+    if (name && company && !companyByFolder.has(name.toLowerCase())) companyByFolder.set(name.toLowerCase(), company);
+  }
+
   const seen = new Set<string>();
   const projectEvents: Record<string, unknown>[] = [];
   for (const p of projects) {
@@ -90,7 +154,8 @@ export function nativeScanEvents(scan: LocalScanView): Record<string, unknown>[]
     const key = p.name.trim().toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    projectEvents.push({ v, type: "project", id: `${p.tool === "codex" ? "codex" : "claude-code"}:${idPart(p.name)}`, name: p.name, company: null, basis });
+    const company = companyByFolder.get(key) ?? null;
+    projectEvents.push({ v, type: "project", id: `${p.tool === "codex" ? "codex" : "claude-code"}:${idPart(p.name)}`, name: p.name, company, basis });
   }
   for (const r of repos) {
     const name = r && typeof r.path === "string" ? folderName(r.path) : "";
@@ -98,7 +163,7 @@ export function nativeScanEvents(scan: LocalScanView): Record<string, unknown>[]
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    projectEvents.push({ v, type: "project", id: `repo:${idPart(name)}`, name, company: null, basis: "repo" });
+    projectEvents.push({ v, type: "project", id: `repo:${idPart(name)}`, name, company: byPath.get(r.path) ?? null, basis: "repo" });
   }
   events.push(...projectEvents);
 
@@ -122,6 +187,7 @@ export function nativeScanEvents(scan: LocalScanView): Record<string, unknown>[]
     type: "done",
     report: null,
     summary: {
+      companies: companies.length,
       projects: projectEvents.length,
       sessions,
       repos: repos.length,

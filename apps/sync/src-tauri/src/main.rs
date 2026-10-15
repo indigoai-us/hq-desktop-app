@@ -215,14 +215,20 @@ fn prepare_first_run_welcome_window(app: &tauri::AppHandle, first_run: bool) {
         welcome_window::apply_window_controls(&window, true);
         let _ = window.set_shadow(false);
         hq_platform::window_effects::clear_popover_vibrancy(&window);
-        // Open at heads-up card size, centered, before showing the initially
+        // Open at heads-up card size, centred, before showing the initially
         // hidden window, so nothing paints full-screen before the card. The
+        // frame is computed from the monitor's work area and applied as one
+        // size and one position, never a `center()` that reads the size the
+        // window has not taken yet: that race showed the card at the screen's
+        // top-left and sliding into place (owner run 2026-10-15, item 8). The
         // takeover fills the work area when it mounts (set_welcome_window).
-        let (width, height) = welcome_window::FIRST_RUN_WINDOW_SIZE;
-        let _ = window.set_size(tauri::LogicalSize::new(width, height));
-        let _ = window.center();
+        if !welcome_window::place_heads_up_card(&window) {
+            let (width, height) = welcome_window::FIRST_RUN_WINDOW_SIZE;
+            let _ = window.set_size(tauri::LogicalSize::new(width, height));
+            let _ = window.center();
+        }
     }
-    tray::show_window_centered(app);
+    tray::show_window_placed(app);
     util::logfile::log("app", "first-run launch: early welcome window shown");
 }
 

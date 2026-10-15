@@ -313,6 +313,12 @@ export function mostUsedTool(tools: readonly FirstRunToolUsage[] | null | undefi
  * first installed tool in setup order (installed, read from the tools
  * without a model turn), else null and the person sees only the bot path.
  */
+/** How many sessions the scan counted for a tool, or null when it did not count it. */
+export function toolSessionCount(tools: readonly FirstRunToolUsage[] | null | undefined, runtime: FirstRunRuntime): number | null {
+  const usage = (tools ?? []).find((row) => SCAN_TOOL_RUNTIME[row.tool] === runtime);
+  return usage && usage.sessions_total > 0 ? usage.sessions_total : null;
+}
+
 export function decisionToolFor(
   tools: readonly FirstRunToolUsage[] | null | undefined,
   installed: Record<string, boolean> | null | undefined,
@@ -324,11 +330,18 @@ export function decisionToolFor(
 export const FIRST_RUN_DECISION_COPY = {
   kicker: "Your context",
   toolQuestion: "Where do you want to keep working?",
-  toolLead: (tool: string, noun = "Mac") => `You use ${tool} most on this ${noun}. HQ can open there with everything it just found.`,
+  // The reason for the recommendation (Jacob, HQ Dev Standup 2026-10-15; owner
+  // agreed): the person sees why this tool is offered, with the scan's count
+  // when it has one, and the assistant stays the equal other path.
+  toolLead: (tool: string, noun = "Mac", sessions: number | null = null) =>
+    sessions !== null && sessions > 0
+      ? `We noticed you use ${tool} the most on this ${noun}, ${sessions === 1 ? "1 session" : `${sessions} sessions`} so far. Want to keep working there?`
+      : `We noticed ${tool} on this ${noun}. Want to keep working there?`,
   toolPrimary: (tool: string) => `Continue in ${tool}`,
-  toolOther: "Name your HQ bot instead",
-  botQuestion: "Name your HQ bot.",
-  botLead: "Your bot works alongside you in HQ and starts out knowing what it found here.",
+  // Two equal paths (owner, 2026-10-15): the tool and naming the assistant.
+  toolOther: "Name Your Assistant",
+  botQuestion: "Name your assistant.",
+  botLead: "Your assistant works alongside you in HQ and starts out knowing what it found here.",
   botPrimary: "Continue",
   backToTool: (tool: string) => `Continue in ${tool} instead`,
   scanning: "Looking through this Mac first.",

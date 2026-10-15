@@ -109,11 +109,22 @@ describe("FirstRunDecisionTakeover", () => {
     await waitForDecision();
     expect(byId("first-run-decision")?.getAttribute("data-path")).toBe("tool");
     expect(text("first-run-decision-question")).toBe(FIRST_RUN_DECISION_COPY.toolQuestion);
-    expect(text("first-run-decision-lead")).toMatch(/^You use Codex most on this /);
+    expect(text("first-run-decision-lead")).toMatch(/^We noticed you use Codex the most on this \w+, \d+ sessions so far\. Want to keep working there\?$/);
     expect(text("first-run-decision-primary")).toBe("Continue in Codex");
-    expect(text("first-run-decision-other")).toBe("Name your HQ bot instead");
+    expect(text("first-run-decision-other")).toBe("Name Your Assistant");
     expect(byId("first-run-bot-name")).toBeNull();
     expect(document.querySelectorAll('[data-testid="first-run-decision-primary"]')).toHaveLength(1);
+  });
+
+  it("presents the tool and naming the assistant as two equal buttons (owner, 2026-10-15)", async () => {
+    render();
+    await waitForDecision();
+    const primary = byId<HTMLButtonElement>("first-run-decision-primary")!;
+    const other = byId<HTMLButtonElement>("first-run-decision-other")!;
+    expect(other.className).toBe(primary.className);
+    expect(other.parentElement).toBe(primary.parentElement);
+    expect(primary.parentElement?.classList.contains("single")).toBe(false);
+    expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("instead");
   });
 
   it("shows no company, Bring it in, Coding tools or Finish with defaults screen", async () => {

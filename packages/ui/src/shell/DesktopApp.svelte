@@ -299,6 +299,7 @@
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
   import { createLaunchActions } from "../settings/launch-actions";
   import FirstRunDecisionTakeover from "../chat/first-run/FirstRunDecisionTakeover.svelte";
+  import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
   import {
     assistantNameIssue,
     firstRunHandoffNotice,
@@ -3112,7 +3113,19 @@
       }
       const ready = currentBotRuntimeReadiness();
       const picked = firstRunRuntime;
-      return picked && ready?.[picked] === true ? picked : firstSignedInRuntime(ready);
+      const signedIn = picked && ready?.[picked] === true ? picked : firstSignedInRuntime(ready);
+      if (signedIn) return signedIn;
+      // The first run makes the assistant here even with no coding tool
+      // signed in (owner, 2026-10-15: "just have the assistant chat ask you
+      // to sign in"). It runs on the tool that is installed, else the one
+      // the scan saw most, else Claude Code; its own signed-out card in the
+      // chat then asks for the sign-in, and it starts once that lands.
+      if (!firstRunHandoffOwed()) return null;
+      return (
+        SETUP_BOT_RUNTIME_ORDER.find((id) => localCodingToolsInstalled[id] === true) ??
+        mostUsedTool(firstRunScanTools) ??
+        SETUP_BOT_RUNTIME_ORDER[0]
+      );
     },
     cliOwnsCreate: readAssistantCliOwns,
     create: (name, runtime) => createAssistantEntry(name, runtime),
@@ -3174,7 +3187,12 @@
     const uid = assistantUid ?? "";
     const local = uid ? localBotRecords.find((row) => row.agentUid.trim() === uid) : undefined;
     return assistantName({
-      confirmed: firstRunDev.dry ? null : firstRunConfirmedName,
+      // The typed name labels the assistant only once it is actually on this
+      // computer. Before that the account's remote assistant kept its own
+      // name: the owner's fresh install (2026-10-15) showed "Nibbles" over
+      // Hazel's remote record, with her history, while nothing had been
+      // created or adopted here.
+      confirmed: firstRunDev.dry || !existingSetupBot ? null : firstRunConfirmedName,
       listed: local?.displayName ?? null,
       cloud: remoteAssistantRow?.displayName ?? null,
       cached: uid ? (botDisplayNames[uid] ?? null) : null,
@@ -3660,7 +3678,9 @@
     firstRunRuntime = runtime;
     firstRunPendingName = name;
     firstRunConfirmedName = name;
-    if (firstSignedInRuntime(botRuntimeReadiness)) startFirstRunAssistant(name);
+    // Started whether or not a coding tool is signed in: the assistant is
+    // made on this computer and its chat asks for the sign-in it needs.
+    startFirstRunAssistant(name);
   }
   // A tool signed in after the name was confirmed: start then.
   $effect(() => {

@@ -2,8 +2,9 @@
   /**
    * The first run after the blocking install (US-007). The knowledge tree
    * fills in from this computer at once, with no question up front, then one
-   * question: continue in the coding tool used most here, or name the HQ bot.
-   * A person with no coding tool is offered only the bot.
+   * question with two equal answers: continue in the coding tool used most
+   * here, or name the assistant. A person with no coding tool is offered only
+   * the assistant.
    *
    * It replaces the step-through takeover's company, Bring it in, Coding tools
    * and separate name screens. Each screen has one primary action. Sign-in
@@ -35,6 +36,7 @@
     firstRunTalkLabel,
     normalizeAssistantName,
     runtimeLabel,
+    toolSessionCount,
     type FirstRunCreation,
     type FirstRunFlowScreen,
     type FirstRunImportHandoff,
@@ -167,6 +169,7 @@
   );
   const tool = $derived(decisionToolFor(scanTools, installed));
   const toolName = $derived(tool ? runtimeLabel(tool) : "");
+  const toolSessions = $derived(tool ? toolSessionCount(scanTools, tool) : null);
   let choseBot = $state(untrack(() => initialChoseBot));
   const showBot = $derived(choseBot || tool === null);
 
@@ -312,9 +315,10 @@
     {:else if tool}
       <div class="fr-decision-head">
         <p class="fr-decision-q" data-testid="first-run-decision-question">{COPY.toolQuestion}</p>
-        <p class="fr-decision-lead" data-testid="first-run-decision-lead">{COPY.toolLead(toolName, hostNoun)}</p>
+        <p class="fr-decision-lead" data-testid="first-run-decision-lead">{COPY.toolLead(toolName, hostNoun, toolSessions)}</p>
       </div>
-      <div class="new-bot-foot-actions single">
+      <!-- Two equal paths (owner, 2026-10-15): the tool, or naming the assistant. -->
+      <div class="new-bot-foot-actions">
         <button
           type="button"
           class="new-bot-create-submit"
@@ -323,16 +327,14 @@
           aria-busy={pressed === "tool" ? "true" : undefined}
           onclick={() => void press("tool", () => oncontinueintool(tool))}
         >{pressed === "tool" ? FIRST_RUN_COPY.opening : COPY.toolPrimary(toolName)}</button>
-      </div>
-      <p class="fr-skip-row">
         <button
           type="button"
-          class="fr-link fr-skip"
+          class="new-bot-create-submit"
           data-testid="first-run-decision-other"
           disabled={pressed !== null}
           onclick={() => (choseBot = true)}
         >{COPY.toolOther}</button>
-      </p>
+      </div>
     {/if}
   </div>
 {/snippet}
