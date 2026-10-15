@@ -7,10 +7,12 @@
  * hunk to the render and the deps.
  */
 import type { FirstRunTeamHost } from "./first-run-hosts";
-import { teamCardPickKey, teamCardSettledLine, type FirstRunTeamChoice, type TeamCardPick } from "./team-step";
+import { teamCardPickIdentity, teamCardSettledLine, type FirstRunTeamChoice, type TeamCardPick } from "./team-step";
 
 export interface TeamCardPickDeps {
   host: FirstRunTeamHost;
+  /** The setup bot the card was drawn for: scopes the reply's idempotency key. */
+  agentUid: string;
   /** Pin a company the person already belongs to. */
   pin: (companyUid: string | null) => void | Promise<void>;
   /** Reply to the setup bot. Sent at most once per idempotency key; throws when the send fails. */
@@ -34,8 +36,9 @@ export function teamCardReplyText(choice: FirstRunTeamChoice): string {
   return `I opened ${choice.company.name}.`;
 }
 
-export function teamCardIdempotencyKey(pick: TeamCardPick): string {
-  return `first-run-team:${teamCardPickKey(pick)}`;
+/** One key per bot and pick; a create with another name is another pick. */
+export function teamCardIdempotencyKey(pick: TeamCardPick, agentUid: string): string {
+  return `first-run-team:${agentUid.trim()}:${teamCardPickIdentity(pick)}`;
 }
 
 export async function runTeamCardPick(pick: TeamCardPick, deps: TeamCardPickDeps): Promise<TeamCardPickResult> {
@@ -53,12 +56,14 @@ export async function runTeamCardPick(pick: TeamCardPick, deps: TeamCardPickDeps
       if (!result.ok) return { ok: false, reason: result.reason || TEAM_CARD_FAILURE };
       choice = result.choice;
     }
-  } catch {
+  } catch (err) {
+    console.warn("[hq-desktop] team card pick failed:", err);
     return { ok: false, reason: TEAM_CARD_FAILURE };
   }
   try {
-    await deps.reply(teamCardReplyText(choice), teamCardIdempotencyKey(pick));
-  } catch {
+    await deps.reply(teamCardReplyText(choice), teamCardIdempotencyKey(pick, deps.agentUid));
+  } catch (err) {
+    console.warn("[hq-desktop] could not send the team card reply to the setup bot:", err);
     return { ok: false, reason: TEAM_CARD_FAILURE, completed: choice };
   }
   return { ok: true, settled: teamCardSettledLine(choice), choice };
@@ -67,15 +72,17 @@ export async function runTeamCardPick(pick: TeamCardPick, deps: TeamCardPickDeps
 /**
  * The reply side of the card: each key is sent at most once, and a key is
  * kept only when its send succeeds, so Retry after a failed send sends again.
+ * `target` is where the pick was made, passed through to `send` so the reply
+ * goes there whatever is open when it is sent.
  */
-export function createTeamCardReplies(send: (text: string) => Promise<unknown>) {
+export function createTeamCardReplies<T>(send: (text: string, key: string, target: T) => Promise<unknown>) {
   const sent = new Set<string>();
   const inFlight = new Set<string>();
-  return async (text: string, key: string): Promise<void> => {
+  return async (text: string, key: string, target: T): Promise<void> => {
     if (sent.has(key) || inFlight.has(key)) return;
     inFlight.add(key);
     try {
-      await send(text);
+      await send(text, key, target);
       sent.add(key);
     } finally {
       inFlight.delete(key);

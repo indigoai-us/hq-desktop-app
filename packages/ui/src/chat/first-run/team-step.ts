@@ -332,6 +332,15 @@ export function teamCardPickKey(pick: TeamCardPick): string {
   return pick.kind;
 }
 
+/**
+ * What a pick is, for deciding whether a retry is the same pick: a create
+ * names its company, so a different name is a different pick.
+ */
+export function teamCardPickIdentity(pick: TeamCardPick): string {
+  if (pick.kind !== "create") return teamCardPickKey(pick);
+  return `create:${companySlugFromName(pick.name) ?? pick.name.trim().toLowerCase()}`;
+}
+
 /** The one line the card settles into after a pick. */
 export function teamCardSettledLine(choice: FirstRunTeamChoice): string {
   if (choice.kind === "personal") return "Working solo";
@@ -365,4 +374,23 @@ export function teamCardDue(
   }
   if (!first) return null;
   return hasTeamBlock(first) ? "block" : "fallback";
+}
+
+/**
+ * The message the team card is drawn under: the last of the bot's opening
+ * messages, before the person first wrote. The settled line stays on it when
+ * later messages arrive. Null when no such message has an event id.
+ */
+export function teamCardAnchorEventId(
+  messages: ReadonlyArray<TeamCardMessage & { eventId?: string | null }>,
+  botUid: string,
+): string | null {
+  const uid = botUid.trim();
+  let anchor: string | null = null;
+  for (const message of messages) {
+    if (!uid || (message.fromPersonUid ?? "").trim() !== uid) break;
+    const id = message.eventId?.trim();
+    if (id) anchor = id;
+  }
+  return anchor;
 }

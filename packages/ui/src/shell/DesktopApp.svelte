@@ -219,7 +219,16 @@
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
   import SetupToolOffer from "../chat/SetupToolOffer.svelte";
   import TeamCard from "../chat/first-run/TeamCard.svelte";
-  import { teamCardDue, teamCardPickKey, teamOptionsFrom, type FirstRunTeamChoice, type TeamCardPick } from "../chat/first-run/team-step.js";
+  import {
+    activeCloudCompanyBySlug,
+    teamCardAnchorEventId,
+    teamCardDue,
+    teamCardPickIdentity,
+    teamCardPickKey,
+    teamOptionsFrom,
+    type FirstRunTeamChoice,
+    type TeamCardPick,
+  } from "../chat/first-run/team-step.js";
   import { createTeamCardReplies, runTeamCardPick } from "../chat/first-run/team-card-pick.js";
   import { createFirstRunTeamHost } from "../chat/first-run/first-run-hosts.js";
   import { teamBlockInMessage } from "../chat/messaging/richMessageContent.js";
@@ -4313,9 +4322,45 @@
   let teamCardPending = $state<string | null>(null);
   let teamCardError = $state<string | null>(null);
   let teamCardSettled = $state<string | null>(null);
+  /** Where the settled line goes: the setup conversation and the message the card was drawn under. */
+  let teamCardAnchor = $state<{ rowId: string; eventId: string | null } | null>(null);
   let teamCardLastPick: TeamCardPick | null = null;
   let teamCardCompleted: FirstRunTeamChoice | undefined;
-  const teamCardReply = createTeamCardReplies((text) => persistSend(text, []));
+  /** The setup bot and its conversation, as they were when the pick was made. */
+  type TeamCardTarget = { agentUid: string; row: ConversationRow };
+  const teamCardReply = createTeamCardReplies<TeamCardTarget>(sendTeamCardReply);
+  /**
+   * The pick's reply, in the person's voice, to the bot the card was drawn
+   * for. The join or create before it waits on the network, so the person may
+   * have opened another conversation by now: it never follows `selectedRow`.
+   */
+  async function sendTeamCardReply(text: string, idempotencyKey: string, target: TeamCardTarget): Promise<void> {
+    if (firstRunDev.dry) {
+      console.info("[hq-desktop] dry run: team card reply not sent:", text);
+      return;
+    }
+    const res = await adapter.messaging.sendDm(target.agentUid, text, { idempotencyKey });
+    if (!res.ok) throw new Error(res.message || "Could not send the message");
+    const wire = sentMessageFromResult(res.value, {
+      body: text,
+      fromPersonUid: self?.uid?.trim() || null,
+      fromDisplayName: self?.displayName?.trim() || "You",
+    });
+    const { row } = target;
+    const open = selectedRow?.id === row.id && liveTimelineId === row.id;
+    const before = open ? liveTimeline : (timelineCache.get(row.id) ?? []);
+    if (wire) {
+      if (open) commitTimeline(row, mergeTimelineMessages(before, [wire]));
+      else timelineCache.set(row.id, mergeTimelineMessages(before, [wire]));
+    }
+    thinkingByRow = startThinkingIn(
+      thinkingByRow,
+      row.id,
+      { agentUid: target.agentUid, agentName: agentLabel(target.agentUid, thinkingAgentName(row.title, target.agentUid, localBots, "Bot")) },
+      Date.now(),
+      { afterMs: newestMessageAtFrom(before, target.agentUid), asked: { eventId: wire?.eventId ?? null } },
+    );
+  }
   const teamCardShown = $derived.by((): "block" | "fallback" | null => {
     const bot = selectedLocalBot;
     const row = selectedRow;
@@ -4330,31 +4375,59 @@
     createCompany: (name, slug) => createCompanyFromSheet({ name, slug, plan: "free", invites: [] }),
     joined: pinTeamCardCompany,
     created: pinTeamCardCompany,
+    findCompany: async (slug) => activeCloudCompanyBySlug(companies, slug),
   });
   function pinTeamCardCompany(companyUid: string | null): void {
     if (!companyUid) return;
-    const pinned = pinCompany(pinnedCompanyIds ?? [], companyUid);
-    if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
+    try {
+      const pinned = pinCompany(pinnedCompanyIds ?? [], companyUid);
+      if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
+      else if (pinned.status === "replace") console.warn("[hq-desktop] team card did not pin the company: the rail is full");
+    } catch (err) {
+      console.warn("[hq-desktop] team card could not pin the company:", err);
+    }
   }
   async function pickTeamCard(pick: TeamCardPick): Promise<void> {
     if (teamCardPending) return;
-    if (teamCardLastPick && teamCardPickKey(teamCardLastPick) !== teamCardPickKey(pick)) teamCardCompleted = undefined;
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return;
+    const target: TeamCardTarget = { agentUid: bot.agentUid, row };
+    if (teamCardLastPick && teamCardPickIdentity(teamCardLastPick) !== teamCardPickIdentity(pick)) teamCardCompleted = undefined;
     teamCardLastPick = pick;
     teamCardError = null;
     teamCardPending = teamCardPickKey(pick);
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    const anchor = { rowId: row.id, eventId: teamCardAnchorEventId(timeline, bot.agentUid) };
     const result = await runTeamCardPick(pick, {
       host: teamCardHost,
+      agentUid: target.agentUid,
       pin: pinTeamCardCompany,
-      reply: teamCardReply,
+      reply: (text, key) => teamCardReply(text, key, target),
       completed: teamCardCompleted,
     });
     teamCardPending = null;
-    if (result.ok) teamCardSettled = result.settled;
+    if (result.ok) {
+      teamCardAnchor = anchor;
+      teamCardSettled = result.settled;
+    }
     else {
       teamCardCompleted = result.completed;
       teamCardError = result.reason;
     }
   }
+  /**
+   * The settled line stays on the message the card was drawn under, as a
+   * badge on it, so it does not move down under each new message.
+   */
+  const conversationExtraBlocks = $derived.by((): Record<string, RichBlock[]> | null => {
+    const anchor = teamCardAnchor;
+    const label = teamCardSettled;
+    if (!anchor?.eventId || !label || selectedRow?.id !== anchor.rowId) return cloudBotExtraCards;
+    const out: Record<string, RichBlock[]> = { ...(cloudBotExtraCards ?? {}) };
+    out[anchor.eventId] = [...(out[anchor.eventId] ?? []), { kind: "badge", label, tone: "success", icon: "check" }];
+    return out;
+  });
   /** "Keep going here": the reply the bot waits for before it starts setup. */
   function keepSetupHere(tool: SetupOfferTool): void {
     setupToolOfferError = null;
@@ -15539,7 +15612,7 @@
                       onkeep={() => keepSetupHere(offerTool)}
                     />
                   {/if}
-                  {#if teamCardShown || (teamCardSettled && selectedLocalBot?.name.trim().toLowerCase() === SETUP_BOT_NAME)}
+                  {#if (teamCardShown && !teamCardSettled) || (teamCardSettled && teamCardAnchor && teamCardAnchor.rowId === selectedRow?.id && !teamCardAnchor.eventId)}
                     <TeamCard
                       options={teamOptionsFrom(companies)}
                       onpick={(pick) => void pickTeamCard(pick)}
@@ -15971,7 +16044,7 @@
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
                   runtimeRepair={selectedRuntimeRepair}
-                  extraBlocksByEventId={cloudBotExtraCards}
+                  extraBlocksByEventId={conversationExtraBlocks}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />

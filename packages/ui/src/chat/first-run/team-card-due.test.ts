@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import { messageHasVisibleContent, teamBlockInMessage } from "../messaging/richMessageContent";
-import { teamCardDue } from "./team-step";
+import { teamCardAnchorEventId, teamCardDue } from "./team-step";
 
 const BOT = "agt_setup";
 const ME = "prs_me";
@@ -33,5 +33,30 @@ describe("teamCardDue", () => {
 
   it("waits for the bot's first message", () => {
     expect(due([], true)).toBeNull();
+  });
+});
+
+describe("teamCardAnchorEventId", () => {
+  it("is the last of the bot's opening messages", () => {
+    const messages = [
+      { eventId: "evt_1", fromPersonUid: BOT, body: "Hi." },
+      { eventId: "evt_2", fromPersonUid: BOT, body: withBlock },
+    ];
+    expect(teamCardAnchorEventId(messages, BOT)).toBe("evt_2");
+  });
+
+  it("stops at the person's first message, so later bot messages never move it", () => {
+    const messages = [
+      { eventId: "evt_team", fromPersonUid: BOT, body: withBlock },
+      { eventId: "evt_me", fromPersonUid: ME, body: "Just me for now." },
+      { eventId: "evt_later", fromPersonUid: BOT, body: "Great." },
+    ];
+    expect(teamCardAnchorEventId(messages, BOT)).toBe("evt_team");
+  });
+
+  it("is null when the person wrote first or nothing has an id", () => {
+    expect(teamCardAnchorEventId([{ eventId: "evt_me", fromPersonUid: ME, body: "hi" }], BOT)).toBeNull();
+    expect(teamCardAnchorEventId([{ fromPersonUid: BOT, body: "Hi." }], BOT)).toBeNull();
+    expect(teamCardAnchorEventId([], BOT)).toBeNull();
   });
 });

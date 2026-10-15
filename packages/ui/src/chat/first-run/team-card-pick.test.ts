@@ -3,7 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createTeamCardReplies, runTeamCardPick, TEAM_CARD_FAILURE } from "./team-card-pick";
+import { createTeamCardReplies, runTeamCardPick, teamCardIdempotencyKey, TEAM_CARD_FAILURE } from "./team-card-pick";
 
 const acme = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
 
@@ -16,7 +16,7 @@ function deps(overrides: Partial<{ join: unknown; create: unknown }> = {}) {
   const host = { join: (overrides.join ?? join) as typeof join, create: (overrides.create ?? create) as typeof create };
   const pin = vi.fn();
   const reply = vi.fn();
-  return { host, pin, reply, join, create };
+  return { host, agentUid: "agt_setup", pin, reply, join, create };
 }
 
 describe("runTeamCardPick", () => {
@@ -25,7 +25,7 @@ describe("runTeamCardPick", () => {
     const result = await runTeamCardPick({ kind: "invite", company: acme }, d);
     expect(d.join).toHaveBeenCalledWith(acme);
     expect(d.reply).toHaveBeenCalledOnce();
-    expect(d.reply).toHaveBeenCalledWith("I joined Acme.", "first-run-team:invite:acme");
+    expect(d.reply).toHaveBeenCalledWith("I joined Acme.", "first-run-team:agt_setup:invite:acme");
     expect(result).toMatchObject({ ok: true, settled: "Joined Acme" });
   });
 
@@ -33,7 +33,7 @@ describe("runTeamCardPick", () => {
     const d = deps();
     const result = await runTeamCardPick({ kind: "create", name: "Pickle" }, d);
     expect(d.create).toHaveBeenCalledWith("Pickle");
-    expect(d.reply).toHaveBeenCalledWith("I created Pickle.", "first-run-team:create");
+    expect(d.reply).toHaveBeenCalledWith("I created Pickle.", "first-run-team:agt_setup:create:pickle");
     expect(result).toMatchObject({ ok: true, settled: "Created Pickle" });
   });
 
@@ -50,7 +50,7 @@ describe("runTeamCardPick", () => {
     const result = await runTeamCardPick({ kind: "personal" }, d);
     expect(d.join).not.toHaveBeenCalled();
     expect(d.create).not.toHaveBeenCalled();
-    expect(d.reply).toHaveBeenCalledWith("Just me for now.", "first-run-team:personal");
+    expect(d.reply).toHaveBeenCalledWith("Just me for now.", "first-run-team:agt_setup:personal");
     expect(result).toMatchObject({ ok: true, settled: "Working solo" });
   });
 
@@ -59,6 +59,13 @@ describe("runTeamCardPick", () => {
     const result = await runTeamCardPick({ kind: "invite", company: acme }, d);
     expect(result).toEqual({ ok: false, reason: "Couldn't join the company. Try again." });
     expect(d.reply).not.toHaveBeenCalled();
+  });
+
+  it("a create's key names its company, so another name is another reply", () => {
+    const key = (name: string) => teamCardIdempotencyKey({ kind: "create", name }, "agt_setup");
+    expect(key("Pickle Works")).toBe("first-run-team:agt_setup:create:pickle-works");
+    expect(key("Pickle Works")).not.toBe(key("Brine Labs"));
+    expect(teamCardIdempotencyKey({ kind: "personal" }, "agt_other")).toBe("first-run-team:agt_other:personal");
   });
 
   it("a runner that throws never shows the raw error", async () => {
@@ -84,7 +91,7 @@ describe("runTeamCardPick", () => {
     const completed = { kind: "company" as const, how: "joined" as const, company: acme };
     const result = await runTeamCardPick({ kind: "invite", company: acme }, { ...d, completed });
     expect(d.join).not.toHaveBeenCalled();
-    expect(d.reply).toHaveBeenCalledWith("I joined Acme.", "first-run-team:invite:acme");
+    expect(d.reply).toHaveBeenCalledWith("I joined Acme.", "first-run-team:agt_setup:invite:acme");
     expect(result).toMatchObject({ ok: true, settled: "Joined Acme" });
   });
 });
@@ -93,17 +100,18 @@ describe("createTeamCardReplies", () => {
   it("sends each key once", async () => {
     const send = vi.fn(async () => undefined);
     const reply = createTeamCardReplies(send);
-    await reply("Just me for now.", "first-run-team:personal");
-    await reply("Just me for now.", "first-run-team:personal");
+    await reply("Just me for now.", "first-run-team:personal", "agt_setup");
+    await reply("Just me for now.", "first-run-team:personal", "agt_setup");
     expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith("Just me for now.", "first-run-team:personal", "agt_setup");
   });
 
   it("a failed send frees the key so the next try sends again", async () => {
     const send = vi.fn(async () => undefined);
     send.mockRejectedValueOnce(new Error("send failed"));
     const reply = createTeamCardReplies(send);
-    await expect(reply("Just me for now.", "first-run-team:personal")).rejects.toThrow("send failed");
-    await reply("Just me for now.", "first-run-team:personal");
+    await expect(reply("Just me for now.", "first-run-team:personal", "agt_setup")).rejects.toThrow("send failed");
+    await reply("Just me for now.", "first-run-team:personal", "agt_setup");
     expect(send).toHaveBeenCalledTimes(2);
   });
 });
