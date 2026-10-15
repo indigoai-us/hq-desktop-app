@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- HQ sync snapshots of your HQ folder now carry an `HQ-Fingerprint` line that records which person and machine saved them, when the HQ command line is installed. If it is missing, slow to answer, or turned off with `enabled: false` in `personal/settings/fingerprint.yaml`, snapshots are saved exactly as before.
 - Badges: the accomplishments announcement now fits the window at every Interface size. At Large, its buttons were cut off at the bottom. Its background is also fully solid, so the app no longer shows through with window transparency turned up.
 - Badges: the badges card that opens from your picture in the side rail, and the small card that explains a badge on hover, now have a solid background at every window transparency setting. Before, with transparency turned up, the sidebar showed through them.
 - Badges: a full-screen announcement introduces accomplishments the first time you open HQ after badges are turned on for you. It deals the badges you have already earned into a hand of cards. If you have none yet, it shows three face-down cards and the badges you are closest to. "See your badges" opens the Badges page; "Not now", the close button or Escape closes it. It shows once per account on each computer, and it waits until first-run setup and the guided tour are done. With reduced motion turned on, it appears without animation. Nobody sees it while badges are off for them.

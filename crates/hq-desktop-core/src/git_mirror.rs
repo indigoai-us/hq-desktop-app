@@ -3248,12 +3248,14 @@ fn run_mirror(
     // dies with "gpg: signing failed: No pinentry" → "fatal: failed to write
     // commit object". Observed in the wild: dozens of silently lost mirror
     // commits a day. An automated snapshot gains nothing from a signature.
-    match run_git_in_git_dir(
-        hq_folder,
-        git_dir,
-        &["commit", "--no-gpg-sign", "--no-verify", "-m", &msg],
-        GIT_INDEX_TIMEOUT,
-    ) {
+    //
+    // The HQ-Fingerprint trailer is best effort: with no usable `hq` or an old
+    // Git, the commit argv is exactly what it was before.
+    let fingerprint =
+        mirror_fingerprint(hq_folder).filter(|_| git_supports_commit_trailer(hq_folder));
+    let commit_args = mirror_commit_args(&msg, fingerprint.as_deref());
+    let commit_args: Vec<&str> = commit_args.iter().map(String::as_str).collect();
+    match run_git_in_git_dir(hq_folder, git_dir, &commit_args, GIT_INDEX_TIMEOUT) {
         Ok(()) => {
             log(LOG_TAG, &format!("{hq_folder}: committed \"{msg}\""));
             if let Some(drain) = drain {
@@ -5650,6 +5652,233 @@ fn wait_with_timeout(
         }
     }
 }
+
+// ── HQ-Fingerprint commit trailer ────────────────────────────────────────
+
+/// Hard ceiling on `hq fingerprint self`. The trailer is decoration; a slow
+/// `hq` must never hold the staged index for longer than this.
+const FINGERPRINT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a fingerprint lookup is reused. A stale identity for up to 10
+/// minutes is acceptable: the fingerprint names the person and machine behind
+/// the mirror, which rarely change, and caching keeps a missing or slow `hq`
+/// from adding up to two seconds to every mirror pass.
+const FINGERPRINT_CACHE_TTL: Duration = Duration::from_secs(600);
+const FINGERPRINT_TRAILER_KEY: &str = "HQ-Fingerprint";
+/// Session ids the app may have inherited from whatever launched it. A mirror
+/// commit is not made by any agent session, so `hq` must not stamp one in.
+const FINGERPRINT_SESSION_ENV: [&str; 6] = [
+    "HQ_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_SESSION_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "GROK_SESSION_ID",
+];
+
+type FingerprintCache = HashMap<(String, PathBuf), (Instant, Option<String>)>;
+
+static FINGERPRINT_CACHE: LazyLock<Mutex<FingerprintCache>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The fingerprint to stamp on this mirror commit, or `None` to commit exactly
+/// as before. Never fails: a missing, failing, slow or malformed `hq` all
+/// read as "no trailer".
+fn mirror_fingerprint(hq_folder: &str) -> Option<String> {
+    let root = Path::new(hq_folder);
+    // Checked on every pass, ahead of the cache, so turning the kill switch
+    // off takes effect on the next mirror.
+    if !fingerprint_enabled(root) {
+        return None;
+    }
+    let program = fingerprint_hq_program()?;
+    let key = (program.clone(), root.to_path_buf());
+    if let Ok(cache) = FINGERPRINT_CACHE.lock() {
+        if let Some((at, value)) = cache.get(&key) {
+            if at.elapsed() < FINGERPRINT_CACHE_TTL {
+                return value.clone();
+            }
+        }
+    }
+    let value = run_hq_fingerprint(&program, root, FINGERPRINT_TIMEOUT);
+    if let Ok(mut cache) = FINGERPRINT_CACHE.lock() {
+        cache.insert(key, (Instant::now(), value.clone()));
+    }
+    value
+}
+
+/// Same semantics as `_hq_fp_enabled` in core/scripts/lib/fingerprint.sh:
+/// personal settings win over core, and a missing file or key means enabled.
+fn fingerprint_enabled(hq_root: &Path) -> bool {
+    let value = ["personal", "core"]
+        .iter()
+        .find_map(|layer| {
+            fingerprint_yaml_scalar(
+                &hq_root
+                    .join(layer)
+                    .join("settings")
+                    .join("fingerprint.yaml"),
+                "enabled",
+            )
+        })
+        .unwrap_or_default()
+        .replace(['"', '\''], "")
+        .to_ascii_lowercase();
+    !matches!(value.as_str(), "false" | "no" | "off" | "0")
+}
+
+/// First top-level `key:` line's value, with any `#` comment and surrounding
+/// whitespace stripped. `None` when the file or key is absent.
+fn fingerprint_yaml_scalar(path: &Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let prefix = format!("{key}:");
+    let line = text.lines().find(|line| line.starts_with(&prefix))?;
+    let value = &line[prefix.len()..];
+    let value = value.split('#').next().unwrap_or_default();
+    Some(value.trim().to_string())
+}
+
+// Test-only override of the `hq` program for the current thread, following
+// `TEST_GIT_PROGRAM`. The default is "no hq", so no test ever reaches the
+// developer's real `hq` or HQ root.
+#[cfg(test)]
+thread_local! {
+    static TEST_HQ_PROGRAM: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn fingerprint_hq_program() -> Option<String> {
+    TEST_HQ_PROGRAM.with(|program| {
+        program
+            .borrow()
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+}
+
+/// Only a local `hq` is used. The npx fallback would download a package on a
+/// two second budget, which can only time out, so it reads as "no hq".
+#[cfg(not(test))]
+fn fingerprint_hq_program() -> Option<String> {
+    match crate::hq_resolver::resolve_hq() {
+        crate::hq_resolver::HqInvocation::Local(path) => Some(path),
+        _ => None,
+    }
+}
+
+fn fingerprint_command(program: &str, hq_root: &Path) -> Command {
+    let mut cmd = paths::spawn_command(
+        program,
+        &[
+            "fingerprint",
+            "self",
+            "--json",
+            "--offline",
+            "--no-register",
+        ],
+    );
+    for var in FINGERPRINT_SESSION_ENV {
+        cmd.env_remove(var);
+    }
+    // The mirror runs on every autosave. The child must never start an hq
+    // self-update check (network, re-exec) or touch the owner's keychain
+    // token item; the offline fingerprint needs neither.
+    cmd.env("PATH", paths::child_path())
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .env("HQ_TOKEN_KEYCHAIN", "0")
+        .current_dir(hq_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    put_git_in_own_process_group(&mut cmd);
+    cmd
+}
+
+/// Run `hq fingerprint self` with a hard timeout. Any failure is `None`.
+fn run_hq_fingerprint(program: &str, hq_root: &Path, timeout: Duration) -> Option<String> {
+    let mut child = fingerprint_command(program, hq_root).spawn().ok()?;
+    // Drained on its own thread for the same reason as in `git_output_inner`:
+    // a helper holding the pipe open must not strand the mirror thread.
+    let stdout_rx = drain_pipe(child.stdout.take());
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) => return None,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(GIT_POLL_INTERVAL),
+            Ok(None) | Err(_) => {
+                kill_git_process_group(&mut child);
+                let _ = child.wait();
+                log(
+                    LOG_TAG,
+                    "hq fingerprint self timed out; committing without trailer",
+                );
+                return None;
+            }
+        }
+    }
+    let grace = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(200));
+    let stdout = stdout_rx.recv_timeout(grace).ok()?;
+    parse_fingerprint_output(&stdout)
+}
+
+/// The `fingerprint` string from `hq fingerprint self --json`, if valid.
+fn parse_fingerprint_output(stdout: &[u8]) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    let value = json.get("fingerprint")?.as_str()?;
+    is_valid_fingerprint(value).then(|| value.to_string())
+}
+
+/// `^hqfp1:[^:]*:[^:]*:[^:]*:[^:]*$`, and additionally no control characters,
+/// so a value can never break out of its trailer line.
+fn is_valid_fingerprint(value: &str) -> bool {
+    let mut parts = value.split(':');
+    parts.next() == Some("hqfp1") && parts.count() == 4 && !value.chars().any(char::is_control)
+}
+
+/// `git commit --trailer` needs Git 2.32+. Probe once so an older Git commits
+/// without the trailer instead of failing the mirror on an unknown option.
+#[cfg(not(test))]
+fn git_supports_commit_trailer(cwd: &str) -> bool {
+    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTED.get_or_init(|| probe_git_commit_trailer(cwd))
+}
+
+// Tests swap the git program per thread, so a cached answer could leak a fake
+// git's result into another test.
+#[cfg(test)]
+fn git_supports_commit_trailer(cwd: &str) -> bool {
+    probe_git_commit_trailer(cwd)
+}
+
+fn probe_git_commit_trailer(cwd: &str) -> bool {
+    git_output(cwd, &["commit", "-h"], FINGERPRINT_TIMEOUT)
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout).contains("--trailer")
+                || String::from_utf8_lossy(&out.stderr).contains("--trailer")
+        })
+        .unwrap_or(false)
+}
+
+/// Argv for the mirror commit. A valid fingerprint adds one `HQ-Fingerprint`
+/// trailer; anything else leaves the argv exactly as it was before.
+fn mirror_commit_args(msg: &str, fingerprint: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = ["commit", "--no-gpg-sign", "--no-verify", "-m", msg]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+    if let Some(value) = fingerprint.filter(|value| is_valid_fingerprint(value)) {
+        args.push("--trailer".to_string());
+        args.push(format!("{FINGERPRINT_TRAILER_KEY}: {value}"));
+    }
+    args
+}
+
+#[cfg(test)]
+#[path = "git_mirror_fingerprint_test.rs"]
+mod fingerprint_tests;
 
 #[cfg(test)]
 mod tests {
