@@ -3023,6 +3023,20 @@ mod tests {
         std::fs::write(claude.join(file), body).unwrap();
     }
 
+    /// Settings JSON with `env.PATH` set to `path`. Built with serde_json so a
+    /// Windows path's backslashes are escaped; hand-formatted JSON would carry
+    /// `C:\Users\...` raw, which is invalid JSON and parses as no PATH at all.
+    fn settings_with_path(path: &str) -> String {
+        serde_json::json!({ "env": { "PATH": path } }).to_string()
+    }
+
+    #[test]
+    fn settings_with_path_round_trips_a_windows_path() {
+        let body = settings_with_path(r"C:\Users\person\hq\bin;D:\tools");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["env"]["PATH"], r"C:\Users\person\hq\bin;D:\tools");
+    }
+
     #[test]
     fn settings_path_dirs_reads_local_env_path_in_order() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -3035,11 +3049,7 @@ mod tests {
         write_settings(
             root,
             "settings.local.json",
-            &format!(
-                "{{\"env\":{{\"PATH\":\"{}{sep}{}\"}}}}",
-                a.display(),
-                b.display()
-            ),
+            &settings_with_path(&format!("{}{sep}{}", a.display(), b.display())),
         );
         let dirs = settings_path_dirs_in(root);
         assert_eq!(dirs, vec![a, b]);
@@ -3136,12 +3146,12 @@ mod tests {
         write_settings(
             root,
             "settings.local.json",
-            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", local.display()),
+            &settings_with_path(&local.display().to_string()),
         );
         write_settings(
             root,
             "settings.json",
-            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", base.display()),
+            &settings_with_path(&base.display().to_string()),
         );
         // env.PATH is a scalar: local OVERRIDES base — base is NOT appended.
         assert_eq!(settings_path_dirs_in(root), vec![local]);
@@ -3158,7 +3168,7 @@ mod tests {
         write_settings(
             root,
             "settings.json",
-            &format!("{{\"env\":{{\"PATH\":\"{}\"}}}}", base.display()),
+            &settings_with_path(&base.display().to_string()),
         );
         assert_eq!(settings_path_dirs_in(root), vec![base]);
     }
@@ -3231,11 +3241,11 @@ mod tests {
         write_settings(
             root,
             "settings.local.json",
-            &format!(
-                "{{\"env\":{{\"PATH\":\"{}{sep}some/relative/dir{sep}{}\"}}}}",
+            &settings_with_path(&format!(
+                "{}{sep}some/relative/dir{sep}{}",
                 real.display(),
                 missing.display()
-            ),
+            )),
         );
         // Only the absolute, existing directory survives.
         assert_eq!(settings_path_dirs_in(root), vec![real]);
