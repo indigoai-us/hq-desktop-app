@@ -520,7 +520,9 @@ mod tests {
             .find(|(key, _)| key == "folder")
             .map(|(_, value)| value.into_owned())
             .unwrap();
-        assert_eq!(folder, child.to_string_lossy());
+        // On Windows `canonicalize` adds `\\?\`; the link must carry the
+        // plain path instead. No-op on macOS and Linux.
+        assert_eq!(folder, child.to_string_lossy().trim_start_matches(r"\\?\"));
         assert!(parsed.query_pairs().any(|(key, _)| key == "q"));
     }
 
@@ -559,7 +561,9 @@ mod tests {
             .find(|(key, _)| key == "folder")
             .map(|(_, value)| value.into_owned())
             .unwrap();
-        assert_eq!(folder, root.to_string_lossy());
+        // On Windows `canonicalize` adds `\\?\`; the link must carry the
+        // plain path instead. No-op on macOS and Linux.
+        assert_eq!(folder, root.to_string_lossy().trim_start_matches(r"\\?\"));
         assert!(parsed
             .query_pairs()
             .any(|(key, value)| key == "q" && value.contains("/setup")));
