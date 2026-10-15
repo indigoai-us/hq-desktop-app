@@ -10,6 +10,7 @@
   import type { NotificationItem } from "./notifications-model.js";
   import {
     hideNotification,
+    markAllCachedNotificationsRead,
     notificationsCacheSnapshot,
     restoreNotification,
   } from "./notifications-cache.svelte.js";
@@ -26,6 +27,7 @@
     isRequestRow,
     itemsForTab,
     metadata,
+    newestFirst,
     type NotificationPanelTab,
   } from "./notifications-panel.js";
   import "../chat/chat-tokens.css";
@@ -41,11 +43,24 @@
     onclose?: () => void;
     onopen?: (item: NotificationItem) => void;
     onopensettings?: () => void;
+    /**
+     * Fires after "Mark all read" succeeds so the host can refetch the feed
+     * (the titlebar dot and the Inbox view follow the server's read state).
+     */
+    onmarkedallread?: () => void;
     /** Claim the invite, pin when the rail has room, and open Atlas. */
     onacceptcompany?: (item: NotificationItem) => Promise<CompanyInviteDecision>;
   }
 
-  let { api, pendingWorkspaces = [], onclose, onopen, onopensettings, onacceptcompany }: Props = $props();
+  let {
+    api,
+    pendingWorkspaces = [],
+    onclose,
+    onopen,
+    onopensettings,
+    onmarkedallread,
+    onacceptcompany,
+  }: Props = $props();
 
   let tab = $state<NotificationPanelTab>("all");
   let root = $state<HTMLElement | null>(null);
@@ -58,7 +73,8 @@
       (item) => !dismissedInviteIds.includes(item.id),
     ),
   );
-  const rows = $derived(itemsForTab(merged, tab));
+  const rows = $derived(itemsForTab(newestFirst(merged), tab));
+  let markAllPending = $state(false);
   const requestCount = $derived(merged.filter(isRequestRow).length);
 
   function onWindowPointer(event: PointerEvent): void {
@@ -100,6 +116,32 @@
         detail: "Try again.",
         tone: "err",
       });
+    }
+  }
+
+  /**
+   * Mark every notification read. Kept enabled whenever the feed has loaded,
+   * not only when a row reads unread: the server call is idempotent and also
+   * clears the Dock / menu-bar count, which can be non-zero while every row in
+   * the panel is already read (feedback_f36dfa85).
+   */
+  async function markAllRead(): Promise<void> {
+    if (markAllPending) return;
+    markAllPending = true;
+    const restore = markAllCachedNotificationsRead();
+    try {
+      await api.readAllNotifications();
+      onmarkedallread?.();
+    } catch (err) {
+      console.error("notifications-popover: mark all read failed", err);
+      restore();
+      pushToast({
+        title: "Couldn't mark notifications read",
+        detail: "Try again.",
+        tone: "err",
+      });
+    } finally {
+      markAllPending = false;
     }
   }
 
@@ -248,6 +290,14 @@
   </div>
 
   <div class="nfoot">
+    <button
+      type="button"
+      class="link"
+      data-testid="notifications-popover-mark-all-read"
+      disabled={!snap.ready || markAllPending}
+      aria-busy={markAllPending}
+      onclick={() => void markAllRead()}
+    ><RailIcon name="check" />{markAllPending ? "Marking…" : "Mark all read"}</button>
     <span class="grow"></span>
     {#if onopensettings}
       <button type="button" class="link" onclick={() => onopensettings?.()}><RailIcon name="settings" />Notification settings</button>
@@ -383,6 +433,10 @@
     background: transparent;
     color: var(--v4-text-3);
     padding: 0;
+  }
+
+  .link:disabled {
+    opacity: 0.5;
   }
 
   .upgrade {

@@ -193,4 +193,94 @@ describe("NotificationsPopover", () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     expect(closed).toBe(1);
   });
+  it("lists rows newest first (feedback_f36dfa85)", async () => {
+    const older = { ...request, id: "older", serverType: "dm", verbText: "older", createdAt: "2026-10-01T09:00:00.000Z", createdAtMs: Date.parse("2026-10-01T09:00:00.000Z") };
+    const newer = { ...request, id: "newer", serverType: "dm", verbText: "newer", createdAt: "2026-10-14T09:00:00.000Z", createdAtMs: Date.parse("2026-10-14T09:00:00.000Z") };
+    publishNotificationsCache({ items: [older, newer], ready: true, loading: false });
+    const api: NotificationsApi = {
+      fetchNotifications: async () => ({ notifications: [], unreadCount: 0, nextCursor: null }),
+      ackNotification: async () => {},
+      readAllNotifications: async () => {},
+      runNotificationAction: async () => ({}),
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(NotificationsPopover, { target: host, props: { api } });
+    await tick();
+    const verbs = [...host.querySelectorAll("[data-testid='notification-row'] .verb")].map((el) => el.textContent);
+    expect(verbs).toEqual(["newer", "older"]);
+  });
+
+  it("marks every row read from the popover and tells the host to refetch (feedback_f36dfa85)", async () => {
+    publishNotificationsCache({ items: [request], ready: true, loading: false });
+    let readAll = 0;
+    let refreshed = 0;
+    const api: NotificationsApi = {
+      fetchNotifications: async () => ({ notifications: [], unreadCount: 0, nextCursor: null }),
+      ackNotification: async () => {},
+      readAllNotifications: async () => {
+        readAll += 1;
+      },
+      runNotificationAction: async () => ({}),
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(NotificationsPopover, {
+      target: host,
+      props: { api, onmarkedallread: () => { refreshed += 1; } },
+    });
+    await tick();
+    expect(host.querySelector(".ni.unread")).toBeTruthy();
+    const button = host.querySelector<HTMLButtonElement>("[data-testid='notifications-popover-mark-all-read']");
+    expect(button?.disabled).toBe(false);
+    button?.click();
+    await tick();
+    await tick();
+    expect(readAll).toBe(1);
+    expect(refreshed).toBe(1);
+    expect(host.querySelector(".ni.unread")).toBeNull();
+  });
+
+  it("keeps Mark all read available when no row is unread, since it also clears the Dock count", async () => {
+    publishNotificationsCache({ items: [{ ...request, status: "read" }], ready: true, loading: false });
+    const api: NotificationsApi = {
+      fetchNotifications: async () => ({ notifications: [], unreadCount: 0, nextCursor: null }),
+      ackNotification: async () => {},
+      readAllNotifications: async () => {},
+      runNotificationAction: async () => ({}),
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(NotificationsPopover, { target: host, props: { api } });
+    await tick();
+    expect(
+      host.querySelector<HTMLButtonElement>("[data-testid='notifications-popover-mark-all-read']")?.disabled,
+    ).toBe(false);
+  });
+
+  it("restores unread rows and shows an error when Mark all read fails", async () => {
+    publishNotificationsCache({ items: [request], ready: true, loading: false });
+    let refreshed = 0;
+    const api: NotificationsApi = {
+      fetchNotifications: async () => ({ notifications: [], unreadCount: 0, nextCursor: null }),
+      ackNotification: async () => {},
+      readAllNotifications: async () => {
+        throw new Error("offline");
+      },
+      runNotificationAction: async () => ({}),
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(NotificationsPopover, {
+      target: host,
+      props: { api, onmarkedallread: () => { refreshed += 1; } },
+    });
+    await tick();
+    host.querySelector<HTMLButtonElement>("[data-testid='notifications-popover-mark-all-read']")?.click();
+    await tick();
+    await tick();
+    expect(refreshed).toBe(0);
+    expect(host.querySelector(".ni.unread")).toBeTruthy();
+    expect(toastItems().some((toast) => toast.title === "Couldn't mark notifications read" && toast.tone === "err")).toBe(true);
+  });
 });

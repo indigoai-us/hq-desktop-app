@@ -295,17 +295,32 @@ pub async fn ack_notification(id: String) -> Result<NotificationsMutateResponse,
 
 /// Tauri command: mark all notifications read. Idempotent.
 /// `POST /v1/notify/notifications/read-all`.
+///
+/// On success this also clears the local unread-DM count that drives the
+/// Dock badge and the menu-bar count. That count is bumped by the DM poller
+/// and its only other reset was the Messages window, which no longer exists,
+/// so before this a reader had no way to clear it short of quitting HQ
+/// (feedback_f36dfa85).
 #[tauri::command]
-pub async fn read_all_notifications() -> Result<NotificationsMutateResponse, String> {
+pub async fn read_all_notifications(
+    app: AppHandle,
+) -> Result<NotificationsMutateResponse, String> {
     let (base, token) = auth_and_base("NOTIF_FEED_READ_ALL").await?;
     let url = format!("{base}/v1/notify/notifications/read-all");
     let payload = serde_json::json!({});
     let out = post_json(&url, &token, &payload, "NOTIF_FEED_READ_ALL").await?;
+    clear_local_unread_after_read_all(&app);
     log(
         LOG_TAG,
         &format!("NOTIF_FEED_READ_ALL_OK marked={}", out.marked),
     );
     Ok(out)
+}
+
+/// Local side effect of a successful read-all: the unread-DM count (Dock badge
+/// and menu-bar count) goes to zero with the server's read state.
+fn clear_local_unread_after_read_all<R: tauri::Runtime>(app: &AppHandle<R>) {
+    crate::commands::dm_notify::reset_unread_dms(app);
 }
 
 /// Tauri command: inline action for a notification (M2).
@@ -350,6 +365,23 @@ pub async fn run_notification_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_all_clears_the_local_unread_dm_badge() {
+        use tauri::Manager;
+        // feedback_f36dfa85: the Dock / menu-bar count only went up because the
+        // Messages window that used to reset it was deleted. Mark all read must
+        // bring it back to zero.
+        let app = tauri::test::mock_app();
+        assert!(app.manage(crate::commands::dm_notify::UnreadDmState(
+            std::sync::Mutex::new(25)
+        )));
+        let handle = app.handle().clone();
+
+        clear_local_unread_after_read_all(&handle);
+
+        assert_eq!(crate::commands::dm_notify::current_unread_dms(&handle), 0);
+    }
 
     #[test]
     fn clamp_limit_defaults_and_caps() {
