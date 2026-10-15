@@ -146,13 +146,13 @@ describe("FinishingSetupChip", () => {
     const note = installQueueAttentionNotice(["gh", "search-index"], { noun: "Mac" });
     expect(note).toContain("did not finish: the GitHub CLI and the search index.");
     expect(note).toContain("quitting and reopening HQ");
-    expect(note).toContain("needs Homebrew first");
     expect(installQueueAttentionNotice([])).toContain("a setup item");
-    // gh alone: Homebrew is the fix, never quit and reopen (boss go, 2026-10-15).
+    // gh alone: the queue only reports gh when Homebrew is present and the
+    // install failed, so the relaunch retry is the fix; never a Homebrew hint.
     const gh = installQueueAttentionNotice(["gh"], { noun: "Mac" });
     expect(gh).toContain("did not finish: the GitHub CLI.");
-    expect(gh).toContain("needs Homebrew first");
-    expect(gh).not.toContain("quitting and reopening");
+    expect(gh).toContain("quitting and reopening HQ");
+    expect(gh).not.toContain("Homebrew");
     expect(finishingSetupVisible({ ...RUNNING, state: "attention", current: null, currentId: null, failed: ["gh"] })).toBe(false);
     expect(finishingSetupVisible(RUNNING)).toBe(true);
   });

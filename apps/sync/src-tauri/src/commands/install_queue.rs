@@ -23,8 +23,9 @@ use futures_util::FutureExt;
 use hq_desktop_core::install_queue::{
     self as core_queue, is_settled, plan_next, ItemOutcome, ItemState, LoadOutcome, Presence,
     QueueChoices, QueueItemId, QueueManifest, QueueStatus, INSTALL_ITEMS, SKIP_ALREADY_PRESENT,
-    SKIP_NO_HOMEBREW,
 };
+#[cfg(any(not(windows), test))]
+use hq_desktop_core::install_queue::SKIP_NO_HOMEBREW;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;

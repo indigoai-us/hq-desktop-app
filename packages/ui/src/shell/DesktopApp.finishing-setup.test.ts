@@ -215,8 +215,7 @@ describe("DesktopApp Finishing setup chip mount", () => {
     const [to, body, opts] = (sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string }]>)[0]!;
     expect(to).toBe(ASSISTANT_UID);
     expect(body).toContain("did not finish: the GitHub CLI");
-    // gh installs only through Homebrew, so the fix is Homebrew, not a relaunch.
-    expect(body).toContain("needs Homebrew first");
+    expect(body).toContain("quitting and reopening HQ");
     expect(opts.idempotencyKey).toBe("install-queue-attention:gh");
     // The vague pill is gone: nothing on the titlebar says "needs attention".
     expect(host.querySelector('[data-testid="finishing-setup-chip"]')).toBeNull();
