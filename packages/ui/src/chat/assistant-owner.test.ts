@@ -205,7 +205,7 @@ describe("the owner", () => {
       reason: "Could not create setup.",
       raw: 'HQ API /v1/agents → 409: Entity with type="agent" already exists',
     }));
-    h.findCloud = vi.fn(async () => ({ agentUid: UID, handle: "setup" }));
+    h.findCloud.mockResolvedValue({ agentUid: UID, handle: "setup" } as never);
     const owner = createAssistantOwner(h);
     const result = await owner.start({ name: "Nibbles" });
     expect(result).toEqual({ ok: true, bot: { agentUid: UID, handle: "setup" }, outcome: "existing" });
@@ -217,7 +217,7 @@ describe("the owner", () => {
     const { h } = host();
     h.create.mockImplementation(async () => ({ ok: false, reason: "Could not create setup.", raw: "→ 409 conflict" }));
     h.adopt.mockImplementation(async () => ({ ok: false as const, raw: "boom" }));
-    h.findCloud = vi.fn(async () => ({ agentUid: UID, handle: "setup" }));
+    h.findCloud.mockResolvedValue({ agentUid: UID, handle: "setup" } as never);
     const owner = createAssistantOwner(h);
     const result = await owner.start({ name: "Nibbles" });
     expect(result).toEqual({ ok: true, bot: { agentUid: UID, handle: "setup" }, outcome: "existing" });
