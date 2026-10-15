@@ -13,11 +13,15 @@ export interface TeamCardPickDeps {
   host: FirstRunTeamHost;
   /** Pin a company the person already belongs to. */
   pin: (companyUid: string | null) => void | Promise<void>;
-  /** Reply to the setup bot. Sent at most once per idempotency key. */
+  /** Reply to the setup bot. Sent at most once per idempotency key; throws when the send fails. */
   reply: (text: string, idempotencyKey: string) => void | Promise<void>;
+  /** The runner already succeeded for this pick and only the reply failed: resend without running it again. */
+  completed?: FirstRunTeamChoice;
 }
 
-export type TeamCardPickResult = { ok: true; settled: string; choice: FirstRunTeamChoice } | { ok: false; reason: string };
+export type TeamCardPickResult =
+  | { ok: true; settled: string; choice: FirstRunTeamChoice }
+  | { ok: false; reason: string; completed?: FirstRunTeamChoice };
 
 /** Shown when a runner throws instead of answering: never the raw error. */
 export const TEAM_CARD_FAILURE = "Something went wrong. Try again.";
@@ -37,7 +41,9 @@ export function teamCardIdempotencyKey(pick: TeamCardPick): string {
 export async function runTeamCardPick(pick: TeamCardPick, deps: TeamCardPickDeps): Promise<TeamCardPickResult> {
   let choice: FirstRunTeamChoice;
   try {
-    if (pick.kind === "personal") {
+    if (deps.completed) {
+      choice = deps.completed;
+    } else if (pick.kind === "personal") {
       choice = { kind: "personal" };
     } else if (pick.kind === "existing") {
       await deps.pin(pick.company.companyUid);
@@ -50,6 +56,29 @@ export async function runTeamCardPick(pick: TeamCardPick, deps: TeamCardPickDeps
   } catch {
     return { ok: false, reason: TEAM_CARD_FAILURE };
   }
-  await deps.reply(teamCardReplyText(choice), teamCardIdempotencyKey(pick));
+  try {
+    await deps.reply(teamCardReplyText(choice), teamCardIdempotencyKey(pick));
+  } catch {
+    return { ok: false, reason: TEAM_CARD_FAILURE, completed: choice };
+  }
   return { ok: true, settled: teamCardSettledLine(choice), choice };
+}
+
+/**
+ * The reply side of the card: each key is sent at most once, and a key is
+ * kept only when its send succeeds, so Retry after a failed send sends again.
+ */
+export function createTeamCardReplies(send: (text: string) => Promise<unknown>) {
+  const sent = new Set<string>();
+  const inFlight = new Set<string>();
+  return async (text: string, key: string): Promise<void> => {
+    if (sent.has(key) || inFlight.has(key)) return;
+    inFlight.add(key);
+    try {
+      await send(text);
+      sent.add(key);
+    } finally {
+      inFlight.delete(key);
+    }
+  };
 }

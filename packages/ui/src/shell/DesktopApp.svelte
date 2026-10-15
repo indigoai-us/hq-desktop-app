@@ -219,8 +219,8 @@
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
   import SetupToolOffer from "../chat/SetupToolOffer.svelte";
   import TeamCard from "../chat/first-run/TeamCard.svelte";
-  import { teamCardDue, teamCardPickKey, teamOptionsFrom, type TeamCardPick } from "../chat/first-run/team-step.js";
-  import { runTeamCardPick } from "../chat/first-run/team-card-pick.js";
+  import { teamCardDue, teamCardPickKey, teamOptionsFrom, type FirstRunTeamChoice, type TeamCardPick } from "../chat/first-run/team-step.js";
+  import { createTeamCardReplies, runTeamCardPick } from "../chat/first-run/team-card-pick.js";
   import { createFirstRunTeamHost } from "../chat/first-run/first-run-hosts.js";
   import { teamBlockInMessage } from "../chat/messaging/richMessageContent.js";
   import {
@@ -4314,7 +4314,8 @@
   let teamCardError = $state<string | null>(null);
   let teamCardSettled = $state<string | null>(null);
   let teamCardLastPick: TeamCardPick | null = null;
-  const teamCardRepliesSent = new Set<string>();
+  let teamCardCompleted: FirstRunTeamChoice | undefined;
+  const teamCardReply = createTeamCardReplies((text) => persistSend(text, []));
   const teamCardShown = $derived.by((): "block" | "fallback" | null => {
     const bot = selectedLocalBot;
     const row = selectedRow;
@@ -4337,21 +4338,22 @@
   }
   async function pickTeamCard(pick: TeamCardPick): Promise<void> {
     if (teamCardPending) return;
+    if (teamCardLastPick && teamCardPickKey(teamCardLastPick) !== teamCardPickKey(pick)) teamCardCompleted = undefined;
     teamCardLastPick = pick;
     teamCardError = null;
     teamCardPending = teamCardPickKey(pick);
     const result = await runTeamCardPick(pick, {
       host: teamCardHost,
       pin: pinTeamCardCompany,
-      reply: async (text, key) => {
-        if (teamCardRepliesSent.has(key)) return;
-        teamCardRepliesSent.add(key);
-        await persistSend(text, []).catch((err) => console.warn("[hq-desktop] could not reply to the setup bot:", err));
-      },
+      reply: teamCardReply,
+      completed: teamCardCompleted,
     });
     teamCardPending = null;
     if (result.ok) teamCardSettled = result.settled;
-    else teamCardError = result.reason;
+    else {
+      teamCardCompleted = result.completed;
+      teamCardError = result.reason;
+    }
   }
   /** "Keep going here": the reply the bot waits for before it starts setup. */
   function keepSetupHere(tool: SetupOfferTool): void {

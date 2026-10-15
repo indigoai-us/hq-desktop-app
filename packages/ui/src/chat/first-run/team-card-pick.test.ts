@@ -3,7 +3,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { runTeamCardPick, TEAM_CARD_FAILURE } from "./team-card-pick";
+import { createTeamCardReplies, runTeamCardPick, TEAM_CARD_FAILURE } from "./team-card-pick";
 
 const acme = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
 
@@ -66,5 +66,44 @@ describe("runTeamCardPick", () => {
     const result = await runTeamCardPick({ kind: "create", name: "Pickle" }, d);
     expect(result).toEqual({ ok: false, reason: TEAM_CARD_FAILURE });
     expect(d.reply).not.toHaveBeenCalled();
+  });
+
+  it("a failed reply is a plain sentence and hands back the finished choice", async () => {
+    const d = deps();
+    d.reply.mockRejectedValueOnce(new Error("send failed"));
+    const result = await runTeamCardPick({ kind: "invite", company: acme }, d);
+    expect(result).toEqual({
+      ok: false,
+      reason: TEAM_CARD_FAILURE,
+      completed: { kind: "company", how: "joined", company: acme },
+    });
+  });
+
+  it("a retry with the finished choice resends the reply without joining again", async () => {
+    const d = deps();
+    const completed = { kind: "company" as const, how: "joined" as const, company: acme };
+    const result = await runTeamCardPick({ kind: "invite", company: acme }, { ...d, completed });
+    expect(d.join).not.toHaveBeenCalled();
+    expect(d.reply).toHaveBeenCalledWith("I joined Acme.", "first-run-team:invite:acme");
+    expect(result).toMatchObject({ ok: true, settled: "Joined Acme" });
+  });
+});
+
+describe("createTeamCardReplies", () => {
+  it("sends each key once", async () => {
+    const send = vi.fn(async () => undefined);
+    const reply = createTeamCardReplies(send);
+    await reply("Just me for now.", "first-run-team:personal");
+    await reply("Just me for now.", "first-run-team:personal");
+    expect(send).toHaveBeenCalledOnce();
+  });
+
+  it("a failed send frees the key so the next try sends again", async () => {
+    const send = vi.fn(async () => undefined);
+    send.mockRejectedValueOnce(new Error("send failed"));
+    const reply = createTeamCardReplies(send);
+    await expect(reply("Just me for now.", "first-run-team:personal")).rejects.toThrow("send failed");
+    await reply("Just me for now.", "first-run-team:personal");
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });

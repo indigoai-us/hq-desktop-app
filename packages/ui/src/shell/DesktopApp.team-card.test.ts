@@ -174,6 +174,27 @@ describe("the setup bot's team card", () => {
     await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Working solo"));
   });
 
+  it("a failed reply to the bot shows Retry, and Retry sends the reply again", async () => {
+    sendDm.mockResolvedValueOnce({ ok: false, message: "network down" });
+    await openSetupDm([teamMessage]);
+    const button = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="team-card-personal"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    button.click();
+    const retry = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="team-card-retry"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(q('[data-testid="team-card-settled"]')).toBeNull();
+    retry.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(2));
+    expect(JSON.stringify(sendDm.mock.calls[1])).toContain("Just me for now.");
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Working solo"));
+  });
+
   it("draws no card for a first message without the block when no handoff was sent here", async () => {
     await openSetupDm([offerMessage]);
     await settle();
