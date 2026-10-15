@@ -145,7 +145,12 @@ describe('US-004: Single-window activation and navigation', () => {
       expect(body).toMatch(/reveal_desktop_alt_window\(&window\)/);
       expect(body).toMatch(/set_focus\(\)/);
       expect(body).toContain('desktop:navigate');
-      expect(body).toContain('set_pending_route');
+      // US-010: the fresh build moved into `build_desktop_alt_window`, which the
+      // held first-run reveal shares. It still queues the route for the mount.
+      expect(body).toContain('build_desktop_alt_window(&app, route)');
+      const buildIdx = src.indexOf('fn build_desktop_alt_window(');
+      expect(buildIdx).toBeGreaterThan(-1);
+      expect(src.slice(buildIdx, buildIdx + 400)).toContain('set_pending_route(route)');
       // The helper is what actually shows the existing window.
       expect(src).toMatch(/fn reveal_desktop_alt_window[\s\S]*window\.show\(\)/);
       // Single builder path uses the fixed desktop-alt label.

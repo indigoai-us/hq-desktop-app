@@ -132,11 +132,20 @@ function chooseShare() {
   box.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-/** Finish from the ready screen: Open HQ Desktop. */
-function openDesktop(): HTMLButtonElement {
-  const btn = readyScreen().querySelector<HTMLButtonElement>('[data-testid="onboarding-open-desktop"]');
-  if (!btn) throw new Error('Open HQ Desktop not found');
-  return btn;
+/**
+ * Finish from the ready screen. US-010: the screen hands off to HQ Desktop by
+ * itself once its options are revealed (Escape finishes the motion), so this
+ * reveals them and waits until the options are on screen.
+ */
+async function finishFromReady(): Promise<void> {
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await flush();
+    const launchers = host.querySelector('[data-testid="onboarding-launchers"]');
+    if (launchers?.classList.contains('on')) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error('the ready options never showed');
 }
 
 function finished(): boolean {
@@ -187,7 +196,7 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
     chooseShare();
     await flush();
 
-    openDesktop().click();
+    await finishFromReady();
     await settle();
     // Give the cross-fade timer a chance too, so a false "advance" would show.
     await new Promise((r) => setTimeout(r, 400));
@@ -213,7 +222,7 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
     chooseShare();
     await flush();
 
-    openDesktop().click();
+    await finishFromReady();
     await settle();
     expect(finished()).toBe(false);
     const firstAttempts = postCalls().length;
@@ -239,7 +248,7 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await finishFromReady();
     await settle();
     // Positive assertion — wait for the finish rather than sleeping past it.
     await vi.waitFor(() => expect(finished()).toBe(true), { timeout: 2000, interval: 10 });
@@ -255,7 +264,7 @@ describe('US-002 deliberate cache-before-upload ordering (regression)', () => {
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await finishFromReady();
     await settle();
 
     const order = calls
@@ -274,7 +283,7 @@ describe('US-002 AC1 — person entity exists before the POST', () => {
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await finishFromReady();
     await settle();
 
     const ensureIdx = calls.findIndex((c) => c.command === 'ensure_person_entity');
@@ -296,7 +305,7 @@ describe('US-002 AC4 — offline does not trap the user', () => {
     chooseShare();
     await flush();
 
-    openDesktop().click();
+    await finishFromReady();
     await settle();
 
     // Not finished yet, and NOT reported as a successful upload.
@@ -340,7 +349,7 @@ describe('US-002 finding #5 — no "finish offline" when the cache write also fa
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await finishFromReady();
     await settle();
 
     expect(
@@ -360,7 +369,7 @@ describe('US-002 finding #5 — no "finish offline" when the cache write also fa
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await finishFromReady();
     await settle();
     await new Promise((r) => setTimeout(r, 400));
     await flush();
@@ -381,7 +390,7 @@ describe('US-002 provenance travels with the write', () => {
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await finishFromReady();
     await settle();
 
     const post = postCalls().at(-1);

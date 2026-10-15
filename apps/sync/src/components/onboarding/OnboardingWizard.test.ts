@@ -441,6 +441,40 @@ async function revealSignIn(): Promise<void> {
   expect(providerButtons()).toHaveLength(2);
 }
 
+/**
+ * US-010: let the ready screen's entrance settle, as Escape does for a person.
+ * The screen hands off to HQ Desktop by itself once its launchers are on show
+ * and the blocking install is done.
+ */
+async function revealReadyLaunchers(): Promise<void> {
+  const launchers = () => host.querySelector('[data-testid="onboarding-launchers"]');
+  await flushUntil(() => Boolean(launchers()));
+  // A successful handoff can unmount the wizard in the same tick the launchers
+  // show, so record the reveal as it happens rather than reading it afterwards.
+  let shown = false;
+  const observer = new MutationObserver(() => {
+    if (launchers()?.classList.contains('on')) shown = true;
+  });
+  observer.observe(host, { subtree: true, attributes: true, attributeFilter: ['class'] });
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  for (let attempt = 0; attempt < 40 && !shown; attempt += 1) {
+    await vi.advanceTimersByTimeAsync(16);
+    await flush();
+  }
+  observer.disconnect();
+  expect(shown).toBe(true);
+}
+
+/**
+ * US-010: the Open HQ Desktop card shows only after the automatic handoff
+ * fails. Reveal the launchers with a failing `onfinish` and wait for the card.
+ */
+async function desktopCardAfterFailedHandoff(): Promise<HTMLButtonElement> {
+  await revealReadyLaunchers();
+  await flushUntil(() => Boolean(host.querySelector('[data-scene="ready"] .tool-card-desktop')));
+  return primaryButton();
+}
+
 /** Every native command that starts, drives, or tears down a browser continuation. */
 const CONTINUATION_ATTEMPT_COMMANDS = [
   'desktop_continuation_config',
@@ -1225,7 +1259,8 @@ describe('first-run sign-in screen', () => {
     );
     expect(host.querySelector('[data-testid="ready-consent"]')).toBeNull();
 
-    primaryButton().click();
+    // US-010: the ready screen hands off by itself, with no button press.
+    await revealReadyLaunchers();
     await flushUntil(() => onfinish.mock.calls.length === 1);
     const commands = tauri.invoke.mock.calls.map(([command]) => command);
     expect(commands).not.toContain('post_telemetry_opt_in');
@@ -1558,7 +1593,8 @@ describe('first-run sign-in screen', () => {
     mountWizard(onfinish, CONNECTOR_IMPORT_STEP_INDEX);
     await flush();
 
-    primaryButton().click();
+    // US-010: the ready screen hands off by itself once its launchers show.
+    await revealReadyLaunchers();
     // Finishing records the usage-data answer first (its own `consent`
     // completion), then the finish itself.
     await flushUntil(() =>
@@ -1630,8 +1666,10 @@ describe('first-run sign-in screen', () => {
     mountWizard(onfinish, CONNECTOR_IMPORT_STEP_INDEX);
     await flush();
 
-    primaryButton().click();
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="launcher-finish-error"]')));
+    // US-010: the automatic handoff fails, so the Open HQ Desktop card comes
+    // back for a retry and the wizard stays on screen.
+    await revealReadyLaunchers();
+    await flushUntil(() => Boolean(host.querySelector('[data-scene="ready"] .tool-card-desktop')));
     await vi.advanceTimersByTimeAsync(5000);
     if (component === null) throw new Error('Expected the wizard to remain mounted after a failed finish.');
     await unmount(component);
@@ -1869,7 +1907,15 @@ describe('first-run sign-in screen', () => {
 
 describe('onboarding launch handoff', () => {
   it('turns a failed Claude launch into a folder escape path, never a red dump', async () => {
-    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, { ...NO_AI_TOOLS, claude_desktop: true, any: true });
+    // US-010: the automatic handoff fails too, so the HQ Desktop card is the
+    // way to finish.
+    mountWizard(
+      vi.fn(async () => {
+        throw new Error('desktop window failed to open');
+      }),
+      CONNECTOR_IMPORT_STEP_INDEX,
+      { ...NO_AI_TOOLS, claude_desktop: true, any: true },
+    );
     await flushUntil(() =>
       Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
     );
@@ -1905,7 +1951,7 @@ describe('onboarding launch handoff', () => {
     expect(summary?.textContent).not.toContain('Reveal folder');
     expect(summary?.textContent).not.toContain('Copy /setup');
     // HQ Desktop is still there to finish with.
-    expect(readyButton('onboarding-open-desktop').disabled).toBe(false);
+    expect((await desktopCardAfterFailedHandoff()).disabled).toBe(false);
     expect(summary?.textContent).not.toContain('core/core.yaml');
     expect(summary?.textContent).not.toContain('Could not open Claude Code');
     expect(summary?.querySelector('.inline-note.error')).toBeNull();
@@ -1955,16 +2001,24 @@ describe('onboarding launch handoff', () => {
     // Claude Code and Codex are smaller secondary pill buttons under it, and
     // only for tools detection says are installed. Same test ids, same
     // handoff. There is no Advanced section.
-    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, {
-      ...NO_AI_TOOLS,
-      claude_desktop: true,
-      codex_cli: true,
-      grok_cli: true,
-      any: true,
-    });
+    // US-010: the card shows once the automatic handoff has failed.
+    mountWizard(
+      vi.fn(async () => {
+        throw new Error('desktop window failed to open');
+      }),
+      CONNECTOR_IMPORT_STEP_INDEX,
+      {
+        ...NO_AI_TOOLS,
+        claude_desktop: true,
+        codex_cli: true,
+        grok_cli: true,
+        any: true,
+      },
+    );
     await flushUntil(() =>
       Boolean(host.querySelector('[data-testid="onboarding-launch-codex"]')),
     );
+    await desktopCardAfterFailedHandoff();
     expect(host.querySelector('[data-testid="onboarding-summary"]')?.textContent).not.toContain(
       'Complete setup in your AI tool',
     );
@@ -1999,7 +2053,12 @@ describe('onboarding launch handoff', () => {
   });
 
   it('shows no tool button and no install link when neither tool is installed', async () => {
-    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX);
+    mountWizard(
+      vi.fn(async () => {
+        throw new Error('desktop window failed to open');
+      }),
+      CONNECTOR_IMPORT_STEP_INDEX,
+    );
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'detect_ai_tools'),
     );
@@ -2014,8 +2073,9 @@ describe('onboarding launch handoff', () => {
     expect(host.querySelector('[data-testid^="onboarding-install-"]')).toBeNull();
     expect(host.querySelector('[data-testid="onboarding-launch-download"]')).toBeNull();
     expect(host.querySelector('[data-testid="onboarding-advanced"]')).toBeNull();
-    // HQ Desktop and the usage-data line are still offered.
-    expect(primaryButton().getAttribute('aria-label')).toBe('Open HQ Desktop');
+    // HQ Desktop and the usage-data line are still offered. US-010: the card
+    // shows once the automatic handoff has failed.
+    expect((await desktopCardAfterFailedHandoff()).getAttribute('aria-label')).toBe('Open HQ Desktop');
     expect(host.querySelector('[data-testid="ready-consent"]')).not.toBeNull();
   });
 
@@ -2132,14 +2192,17 @@ describe('onboarding launch handoff', () => {
   it('starts the usage data checkbox on Share, so finishing works without a click', async () => {
     // Product decision (2026-09-27): the question is a checkbox on the ready
     // screen, checked (Share) by default.
-    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    const onfinish = mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
     await flushUntil(() =>
       Boolean(host.querySelector('[data-testid="ready-consent-share"]')),
     );
     const share = host.querySelector<HTMLInputElement>('[data-testid="ready-consent-share"]');
     expect(share?.checked).toBe(true);
     expect(host.querySelector('[data-testid="onboarding-consent"]')).toBeNull();
-    expect(primaryButton().disabled).toBe(false);
+    // US-010: the ready screen finishes by itself, with no click on the box.
+    await revealReadyLaunchers();
+    await flushUntil(() => onfinish.mock.calls.length > 0);
+    expect(onfinish).toHaveBeenCalledOnce();
   });
 
   it('keeps HQ Anywhere off by default on the existing ready step', async () => {
@@ -3032,7 +3095,8 @@ describe('ready screen: Open HQ Desktop', () => {
     const onfinish = mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, { ...NO_AI_TOOLS, claude_desktop: true, any: true });
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-open-desktop"]')));
 
-    readyButton('onboarding-open-desktop').click();
+    // US-010: the ready screen opens HQ Desktop by itself once it is ready.
+    await revealReadyLaunchers();
     // Finishing records the usage-data answer first.
     await flushUntil(() => onfinish.mock.calls.length > 0);
 

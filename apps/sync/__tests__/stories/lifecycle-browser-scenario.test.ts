@@ -432,25 +432,58 @@ describe('lifecycle scenario wire shapes', () => {
 });
 
 describe('desktop shell boots the lifecycle scenario', () => {
-  it('paints #setup as just the welcome banner (the setup bot creates the company) and fires shell_ready', async () => {
+  it('holds the first-run backdrop while the route is pending, then paints #setup as just the welcome banner and fires shell_ready', async () => {
     const { invokeFn, calls } = createLifecycleInvoke({ delayScale: 0 });
     host = document.createElement('div');
     document.body.appendChild(host);
-    component = mount(HqWorkWorkShell, {
-      target: host,
-      props: { invokeFn, bootTimeoutMs: 40 },
+    // US-010: while the first-run route is still pending the shell paints the
+    // takeover's held backdrop instead of its pages, so the #setup intro must
+    // never show underneath it. Record every DOM state the boot passes through.
+    let heldSeen = false;
+    let introUnderHeld = false;
+    const observer = new MutationObserver(() => {
+      const held = document.querySelector('[data-testid="first-run-held"]');
+      if (!held) return;
+      heldSeen = true;
+      if (host.querySelector('[data-testid="setup-channel-intro"]')) introUnderHeld = true;
     });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      component = mount(HqWorkWorkShell, {
+        target: host,
+        props: { invokeFn, bootTimeoutMs: 40 },
+      });
+      await flush();
+      expect(host.querySelector('[data-testid="hq-work-identity-error"]')).toBeNull();
+      // The flag answers false, so the route settles on legacy, the held
+      // backdrop lifts and the setup bot auto-starts as before.
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-testid="first-run-held"]')).toBeNull();
+          expect(calls).toContain('local_bots_create');
+          expect(calls).toContain('shell_ready');
+        },
+        { timeout: 5_000 },
+      );
+    } finally {
+      observer.disconnect();
+    }
+    expect(heldSeen).toBe(true);
+    expect(introUnderHeld).toBe(false);
+
+    // #setup itself is still only the banner in setup-bot mode.
+    const setupRow = host.querySelector<HTMLButtonElement>('[data-conversation-id="ch:setup"]');
+    expect(setupRow).toBeTruthy();
+    setupRow!.click();
     await flush();
-    expect(host.querySelector('[data-testid="hq-work-identity-error"]')).toBeNull();
     await vi.waitFor(
       () => {
         expect(host.querySelector('[data-testid="channel-skeleton"]')).toBeNull();
         expect(host.querySelector('[data-testid="setup-channel-intro"]')).toBeTruthy();
         expect(host.querySelector('[data-testid="setup-run"]')).toBeTruthy();
-        // #welcome is only the banner in setup-bot mode: no seeded cards, no composer.
+        // No seeded cards, no composer.
         expect(host.querySelector('[data-testid="lifecycle-card"]')).toBeNull();
         expect(host.querySelector('[data-testid="conversation-composer"]')).toBeNull();
-        expect(calls).toContain('shell_ready');
       },
       { timeout: 5_000 },
     );

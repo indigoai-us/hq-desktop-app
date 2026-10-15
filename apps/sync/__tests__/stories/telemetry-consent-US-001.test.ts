@@ -132,6 +132,18 @@ function optInPosts() {
   return invoke.mock.calls.filter((c) => c[0] === 'post_telemetry_opt_in');
 }
 
+/**
+ * US-010: the ready screen hands off by itself once its options are revealed,
+ * so finishing is driven by revealing them (Escape finishes the motion).
+ */
+async function revealReady(): Promise<void> {
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  await flushUntil(
+    () => Boolean(byId<HTMLElement>('onboarding-launchers')?.classList.contains('on')),
+    'the ready options',
+  );
+}
+
 async function decline() {
   const box = shareBox();
   box.checked = false;
@@ -226,9 +238,21 @@ describe('US-001 the question on the ready screen', () => {
   it('keeps every finish action enabled whichever way the box is set (AC 2)', async () => {
     await mountAt(READY_STEP);
     await flushUntil(() => Boolean(byId('onboarding-launch-claude')), 'the tool options');
-    expect(byId('onboarding-open-desktop')!.disabled).toBe(false);
+    expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
+    expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
     await decline();
     expect(shareBox().checked).toBe(false);
+    expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
+    expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
+    // US-010: a decline does not hold the automatic handoff back. When the
+    // handoff fails, the Open HQ Desktop card and the tools are all enabled.
+    onfinish.mockRejectedValueOnce(new Error('desktop window failed'));
+    await revealReady();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the automatic handoff');
+    await flushUntil(
+      () => byId('onboarding-open-desktop')?.classList.contains('tool-card-desktop') === true,
+      'the Open HQ Desktop card',
+    );
     expect(byId('onboarding-open-desktop')!.disabled).toBe(false);
     expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
     expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
@@ -291,7 +315,7 @@ describe('US-001 recording the answer when the person finishes', () => {
 
   it('records share with surface=onboarding and the consent version, then finishes (AC 6)', async () => {
     await mountAt(READY_STEP);
-    byId('onboarding-open-desktop')!.click();
+    await revealReady();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
 
     expect(optInPosts()).toHaveLength(1);
@@ -312,7 +336,7 @@ describe('US-001 recording the answer when the person finishes', () => {
   it('records a decline as enabled:false and finishes with nothing withheld (AC 5)', async () => {
     await mountAt(READY_STEP);
     await decline();
-    byId('onboarding-open-desktop')!.click();
+    await revealReady();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
 
     expect(optInPosts()).toHaveLength(1);
@@ -341,7 +365,7 @@ describe('US-001 recording the answer when the person finishes', () => {
     // not reach the consent-gated skill telemetry command.
     await mountAt(READY_STEP);
     await decline();
-    byId('onboarding-open-desktop')!.click();
+    await revealReady();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
 
     const operationalEmits = invoke.mock.calls.filter(
