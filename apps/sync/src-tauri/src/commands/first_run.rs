@@ -268,7 +268,8 @@ pub fn set_main_window_vibrancy(app: AppHandle, enabled: bool) {
 }
 
 /// Pending-route prefix that marks a first-run handoff hint. The desktop shell
-/// parses it in `parseFirstRunHandoffHint` (`desktop-alt/route.ts`).
+/// parses it in `parseFirstRunHandoffHint`
+/// (`packages/ui/src/chat/first-run/first-run-handoff.ts`).
 #[cfg_attr(target_os = "windows", allow(dead_code))]
 pub const FIRST_RUN_HANDOFF_PREFIX: &str = "first-run-handoff:";
 

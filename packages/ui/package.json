@@ -10,6 +10,7 @@
       "default": "./src/index.ts"
     },
     "./board/thread-model": "./src/board/thread-model.ts",
+    "./first-run-handoff": "./src/chat/first-run/first-run-handoff.ts",
     "./first-run-timing": "./src/chat/first-run/first-run-timing.ts",
     "./link-preview": "./src/common/linkPreview.ts",
     "./visible-interval": "./src/common/visible-interval.ts",

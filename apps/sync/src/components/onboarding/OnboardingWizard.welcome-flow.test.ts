@@ -304,10 +304,10 @@ describe('welcome flow: the install runs in the background', () => {
     vi.useRealTimers();
   });
 
-  it('keeps Open HQ Desktop disabled, and says so, until the install is done', async () => {
+  it('waits, and says so, until the install is done, then opens HQ Desktop with no press', async () => {
     const template = deferred();
     stubInvoke({ fetch_and_extract_template: () => template.promise });
-    mountAt(2);
+    const onfinish = mountAt(2);
     await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
     byId('welcome-skip')!.click();
     await flushUntil(() => scene() === 'ready', 'the ready screen');
@@ -326,15 +326,46 @@ describe('welcome flow: the install runs in the background', () => {
     expect(byId('onboarding-launch-claude')!.disabled).toBe(true);
     expect(byId('onboarding-launch-codex')!.disabled).toBe(true);
 
+    expect(onfinish).not.toHaveBeenCalled();
+
+    // US-010: once the blocking install is done the screen hands off to HQ
+    // Desktop by itself. There is no Open HQ Desktop press, and the line
+    // keeps saying "Getting ready…" until the desktop window takes over.
     template.resolve();
-    await flushUntil(() => !open().disabled, 'Open HQ Desktop');
-    expect(open().querySelector('.tc-name')?.textContent?.trim()).toBe('Open HQ Desktop');
-    expect(open().querySelector('.tc-spin')).toBeNull();
-    expect(open().querySelector('.tc-line')).toBeNull();
-    expect(open().textContent).not.toContain('Use HQ’s own app');
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the handoff');
     expect(title()).toBe('HQ is ready.');
-    expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
-    expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
+    expect(byId('onboarding-ready-wait')?.textContent).toContain('Getting ready…');
+    expect(byId('onboarding-ready-wait')?.textContent).not.toContain('Opening…');
+    expect(host.querySelector('[data-scene="ready"] .tool-card-desktop')).toBeNull();
+    expect(byId('launcher-finish-error')).toBeNull();
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
+  });
+
+  it('brings back Open HQ Desktop only when the handoff fails, and retries on a press', async () => {
+    stubInvoke();
+    let fail = true;
+    const onfinish = vi.fn(async () => {
+      if (fail) throw new Error('desktop window failed to open');
+    });
+    mountAt(READY_STEP_INDEX, { onfinish });
+    await flushUntil(() => Boolean(host.querySelector('[data-scene="ready"] .tool-card-desktop')), 'the retry card');
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    const open = byId('onboarding-open-desktop')!;
+    expect(open.classList.contains('tool-card-desktop')).toBe(true);
+    expect(open.disabled).toBe(false);
+    expect(open.querySelector('.tc-name')?.textContent?.trim()).toBe('Open HQ Desktop');
+    // The handoff failed on its own, so the note about a tool having opened
+    // does not apply.
+    expect(byId('launcher-finish-error')).toBeNull();
+    expect(byId('onboarding-ready-wait')).toBeNull();
+    // One automatic try only.
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
+
+    fail = false;
+    open.click();
+    await flushUntil(() => onfinish.mock.calls.length === 2, 'the retry');
   });
 });
 
@@ -353,7 +384,7 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     expect(box.checked).toBe(false);
   }
 
-  it('records nothing while the install runs, then records the answer when the person finishes', async () => {
+  it('records nothing while the install runs, then records the answer at the handoff', async () => {
     const template = deferred();
     stubInvoke({ fetch_and_extract_template: () => template.promise });
     const onfinish = vi.fn();
@@ -365,16 +396,16 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     expect(commands()).not.toContain('post_telemetry_opt_in');
 
     template.resolve();
-    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
-    // Still nothing: the answer is recorded on finish, not on install.
-    expect(commands()).not.toContain('post_telemetry_opt_in');
-
-    byId('onboarding-open-desktop')!.click();
-    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the handoff');
     const order = commands();
-    expect(order.indexOf('record_install_complete')).toBeLessThan(
-      order.indexOf('post_telemetry_opt_in'),
+    // The handoff waits for the blocking install phase only. The background
+    // phase (and its install-complete record) keeps running after HQ Desktop
+    // opens, so the answer follows the blocking phase and the person entity.
+    const blockingDone = calls.findIndex(
+      (c) => c.command === 'log_first_run_phase' && (c.args as { phase?: string })?.phase === 'blocking',
     );
+    expect(blockingDone).toBeGreaterThan(-1);
+    expect(blockingDone).toBeLessThan(order.indexOf('post_telemetry_opt_in'));
     expect(order.indexOf('ensure_person_entity')).toBeLessThan(
       order.indexOf('post_telemetry_opt_in'),
     );
@@ -402,9 +433,6 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     mountAt(2, { onfinish });
     await skipToReady();
     template.resolve();
-    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
-
-    byId('onboarding-open-desktop')!.click();
     await flushUntil(() => Boolean(byId('consent-error')), 'the failure');
     expect(onfinish).not.toHaveBeenCalled();
     expect(byId('consent-finish-offline')).toBeNull();
@@ -427,8 +455,6 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     mountAt(2, { onfinish });
     await skipToReady();
     template.resolve();
-    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
-    byId('onboarding-open-desktop')!.click();
     await flushUntil(() => Boolean(byId('consent-error')), 'the offline note');
     expect(byId('consent-error')!.textContent).toContain('saved on this machine');
     expect(onfinish).not.toHaveBeenCalled();
@@ -440,9 +466,17 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
 
 describe('welcome flow: Claude Code and Codex on the ready screen', () => {
   it('offers HQ Desktop as the large card and the installed tools as smaller buttons under it', async () => {
+    // The card shows when the automatic handoff did not go through.
     stubInvoke();
-    mountAt(READY_STEP_INDEX);
-    await flushUntil(() => Boolean(byId('onboarding-launch-codex')), 'the tool options');
+    mountAt(READY_STEP_INDEX, {
+      onfinish: vi.fn(async () => {
+        throw new Error('desktop window failed to open');
+      }),
+    });
+    await flushUntil(
+      () => Boolean(byId('onboarding-launch-codex')) && Boolean(host.querySelector('.tool-card-desktop')),
+      'the tool options',
+    );
 
     const launchers = byId<HTMLElement>('onboarding-launchers')!;
     const desktop = launchers.querySelector<HTMLButtonElement>('.tool-card-desktop')!;
@@ -484,11 +518,21 @@ describe('welcome flow: Claude Code and Codex on the ready screen', () => {
   });
 
   it('opens Claude Code the way the ready screen always did, then finishes', async () => {
+    // Claude Code is the way out when the automatic handoff to HQ Desktop
+    // did not go through.
     stubInvoke();
-    const onfinish = mountAt(READY_STEP_INDEX);
-    await flushUntil(() => Boolean(byId('onboarding-launch-claude')), 'the Claude Code option');
+    let fail = true;
+    const onfinish = vi.fn(async () => {
+      if (fail) throw new Error('desktop window failed to open');
+    });
+    mountAt(READY_STEP_INDEX, { onfinish });
+    await flushUntil(
+      () => Boolean(host.querySelector('.tool-card-desktop')) && !byId('onboarding-launch-claude')?.disabled,
+      'the Claude Code option',
+    );
+    fail = false;
     byId('onboarding-launch-claude')!.click();
-    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    await flushUntil(() => onfinish.mock.calls.length === 2, 'the finish');
     expect(commands()).toContain('open_claude_code_link');
   });
 });

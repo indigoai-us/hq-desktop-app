@@ -300,6 +300,8 @@
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
   import { createLaunchActions } from "../settings/launch-actions";
   import FirstRunDecisionTakeover from "../chat/first-run/FirstRunDecisionTakeover.svelte";
+  import FirstRunHeldBackdrop from "../chat/first-run/FirstRunHeldBackdrop.svelte";
+  import type { FirstRunHandoffHint } from "../chat/first-run/first-run-handoff.js";
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
   import {
     assistantNameIssue,
@@ -1225,6 +1227,17 @@
     /** First successful conversation/empty paint — host reports `shell_ready`. */
     onShellReady?: () => void;
     /**
+     * US-010: the welcome window's handoff hint (flags and setup status), so
+     * the first-run route is known on the first frame. Null reads them here.
+     */
+    firstRunHandoff?: FirstRunHandoffHint | null;
+    /**
+     * US-010: called once when the first screen a first run should see is on
+     * screen (the takeover, or the shell when the takeover is off). The host
+     * reveals the window then.
+     */
+    onFirstRunPainted?: () => void;
+    /**
      * US-018 native calling seams. Supplied by a desktop host; absent on the
      * web. The Office tab is gated on `adapter.capabilities.nativeCalls`, and
      * the panel refuses in its own voice when this is missing.
@@ -1390,6 +1403,8 @@
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
     onShellReady,
+    firstRunHandoff = null,
+    onFirstRunPainted,
     extraPages,
     rowExtrasLoading = false,
     rowExtrasError = false,
@@ -3464,6 +3479,8 @@
    * nothing.
    */
   const firstRunDev = FIRST_RUN_DEV_SWITCHES;
+  /** US-010: a hidden window may run no frames; report the paint after this. */
+  const FIRST_RUN_PAINTED_FALLBACK_MS = 50;
   let visualFirstRunFlag = $state<boolean | null>(firstRunDev.force ? true : null);
   let visualFirstRunFinished = $state(firstRunDev.force ? false : hasFinishedVisualFirstRun());
   function settleVisualFirstRunFlag(value: boolean): void {
@@ -3476,6 +3493,12 @@
     // Only a first run needs the answer: no read at all otherwise.
     if (!adapter.bots || welcomeSetupRun || visualFirstRunFinished || !identity || typeof identity.hasFeature !== "function") {
       visualFirstRunFlag = false;
+      return;
+    }
+    // The welcome window already read the flag: no second read, no wait.
+    const hinted = firstRunHandoff?.flags.visualFirstRun;
+    if (typeof hinted === "boolean") {
+      visualFirstRunFlag = hinted;
       return;
     }
     let active = true;
@@ -3515,6 +3538,11 @@
   $effect(() => {
     if (visualFirstRunFlag !== true || foundAppsFlagRead) return;
     foundAppsFlagRead = true;
+    const hintedApps = untrack(() => firstRunHandoff?.flags.foundApps);
+    if (typeof hintedApps === "boolean") {
+      untrack(() => settleFoundAppsFlag(hintedApps));
+      return;
+    }
     const identity = adapter.identity;
     if (!identity || typeof identity.hasFeature !== "function") {
       untrack(() => settleFoundAppsFlag(false));
@@ -3579,6 +3607,35 @@
     untrack(() => {
       firstRunSuggestedName = firstRunInitialName();
       visualFirstRunOpen = true;
+    });
+  });
+  /**
+   * US-010: the first-run route is not settled yet, or it is visual and the
+   * takeover has not opened. The takeover's backdrop paints instead of the
+   * shell's pages, so a first run never sees the shell before the takeover.
+   */
+  const firstRunHeld = $derived(
+    !visualFirstRunOpen && (firstRunRouteNow === "pending" || firstRunRouteNow === "visual"),
+  );
+  /** Latched: the host hears about the first painted screen once. */
+  let firstRunPaintedSent = false;
+  $effect(() => {
+    if (firstRunPaintedSent) return;
+    if (!visualFirstRunOpen && !(firstRunRouteNow === "legacy" && tourShellReady)) return;
+    firstRunPaintedSent = true;
+    let done = false;
+    const report = (): void => {
+      if (done) return;
+      done = true;
+      onFirstRunPainted?.();
+    };
+    void svelteTick().then(() => {
+      // Two frames put the screen on the glass. A window that is still hidden
+      // may not run frames at all, so a short timer reports it too.
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => requestAnimationFrame(report));
+      }
+      window.setTimeout(report, FIRST_RUN_PAINTED_FALLBACK_MS);
     });
   });
   /**
@@ -9927,6 +9984,15 @@
       welcomeSetupRun = true;
       setupAgent.markAlreadySetUp();
     };
+    // The welcome window handed its setup status over: no 2 s wait.
+    if (firstRunHandoff) {
+      tourHostStatus = {
+        owed: firstRunHandoff.welcomeSetupOwed,
+        shown: firstRunHandoff.welcomeTourShown,
+      };
+      resolve(firstRunHandoff.welcomeSetupOwed);
+      return;
+    }
     const timer = window.setTimeout(() => resolve(true), WELCOME_OWED_TIMEOUT_MS);
     void (async () => {
       try {
@@ -14672,7 +14738,9 @@
             onopensettings={() => openSettings("notifications")}
           />
         </div>
-        {#if view === "projects"}
+        {#if firstRunHeld}
+          <div class="first-run-held-page" data-testid="first-run-held-page" aria-hidden="true"></div>
+        {:else if view === "projects"}
           <div class="projects-host" data-testid="projects-host">
             <ProjectsHome
               {adapter}
@@ -16222,6 +16290,8 @@
       onimport={recordFirstRunImport}
       timingLog={firstRunTimingLog}
     />
+  {:else if firstRunHeld}
+    <FirstRunHeldBackdrop />
   {/if}
 
   <!-- The modal a connection card opened. Mounted here, not in the message,

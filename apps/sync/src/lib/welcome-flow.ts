@@ -366,12 +366,15 @@ export interface ReadyGateInput {
   launching: boolean;
 }
 
+/** What the ready screen says while it waits to hand off to HQ Desktop. */
+export const READY_WAIT_LABEL = 'Getting ready…';
+
 /** Whether Open HQ Desktop can be pressed, and what it says. */
 export function readyGate({ installPending, consent, finishing, launching }: ReadyGateInput): {
   enabled: boolean;
   label: string;
 } {
   if (finishing) return { enabled: false, label: 'Opening…' };
-  if (installPending || consent === 'pending') return { enabled: false, label: 'Getting ready…' };
+  if (installPending || consent === 'pending') return { enabled: false, label: READY_WAIT_LABEL };
   return { enabled: consent === 'clear' && !launching, label: 'Open HQ Desktop' };
 }

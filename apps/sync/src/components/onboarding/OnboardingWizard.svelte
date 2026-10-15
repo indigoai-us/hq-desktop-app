@@ -38,6 +38,7 @@
     isStoryScene,
     previousScene,
     readyGate,
+    READY_WAIT_LABEL,
     sceneForStep,
     stepForScene,
     storyScenes,
@@ -642,6 +643,11 @@
   // handoff marker outside that state for onDestroy's abandonment check.
   let finishInProgress = false;
   let finishError = $state(false);
+  // US-010: the ready screen hands off to HQ Desktop by itself once the
+  // blocking install is done. One try; a failure brings back the Open HQ
+  // Desktop card so the person can retry.
+  let autoHandoffTried = $state(false);
+  let autoHandoffFailed = $state(false);
 
   type StepTelemetryDetails = Omit<
     RecordOnboardingStep['properties'],
@@ -3685,6 +3691,15 @@
     await finishWithRecovery();
   }
 
+  $effect(() => {
+    if (consentOnly || replay || scene !== 'ready') return;
+    if (!navRevealed || autoHandoffTried || !openDesktop.enabled) return;
+    autoHandoffTried = true;
+    void finishWithRecovery().then((finished) => {
+      if (!finished) autoHandoffFailed = true;
+    });
+  });
+
   async function handleLaunchClaudeCode() {
     launchEscape = null;
     launching = 'claude';
@@ -4970,14 +4985,15 @@
            the tools detection says are installed. Nothing shows for them
            while detection is in flight. -->
       <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers">
-        {#if installPending}
+        {#if !autoHandoffFailed}
           <!-- Item 7 (owner and Corey, standup 2026-10-15): while the blocking
                install runs this is not the primary action, so no white card.
-               A quiet line with a greyed Continue that reads as waiting; the
-               white Open HQ Desktop card takes its place once the blocking
-               phase is done. -->
+               A quiet line with a greyed Continue that reads as waiting.
+               US-010: once the blocking phase is done the screen hands off to
+               HQ Desktop by itself, so the line stays until the window opens.
+               The white Open HQ Desktop card shows only if that handoff fails. -->
           <p class="ready-wait" data-testid="onboarding-ready-wait" aria-live="polite">
-            <span class="ready-wait-line">{openDesktop.label}</span>
+            <span class="ready-wait-line">{READY_WAIT_LABEL}</span>
             <button
               class="btn btn-secondary ready-wait-continue"
               type="button"
@@ -5104,7 +5120,7 @@
           {#if detectionFailed && !launchEscape}
             <p role="status">Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.</p>
           {/if}
-          {#if finishError}
+          {#if finishError && !autoHandoffFailed}
             <div class="note finish-action" role="status" data-testid="launcher-finish-error">
               <p>The tool opened. Finish HQ setup here when you’re ready.</p>
               <div class="note-actions">
