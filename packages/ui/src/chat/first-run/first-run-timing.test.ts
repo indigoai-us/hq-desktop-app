@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   FIRST_RUN_TIMING_TAG,
+  createRouteLogger,
   createScreenTimer,
+  formatFlagLookup,
+  formatRoute,
+  formatSetupRunSet,
   formatInstallEnd,
   formatInstallStart,
   formatProbe,
@@ -163,5 +167,58 @@ describe("install timer", () => {
       "kind=install event=start id=indexing",
       "kind=install event=end id=indexing outcome=cancelled elapsed_ms=0",
     ]);
+  });
+});
+
+describe("route, flag and setup-run lines", () => {
+  const base = {
+    route: "pending" as const,
+    flag: null,
+    owed: null,
+    setupRun: false,
+    finished: false,
+    finishedUnconfirmed: false,
+    hasBots: true,
+  };
+
+  it("formats the route line with every input", () => {
+    expect(formatRoute({ ...base, route: "visual", flag: true, owed: true })).toBe(
+      "kind=route route=visual flag=true owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+    );
+    expect(formatRoute(base)).toBe(
+      "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+    );
+  });
+
+  it("formats flag and setup-run lines", () => {
+    expect(formatFlagLookup("visual-first-run", "timeout", false, true, 1000.4)).toBe(
+      "kind=flag flag=visual-first-run path=timeout value=false applied=true elapsed_ms=1000",
+    );
+    expect(formatFlagLookup("found-apps", "unscoped", true, false, 12)).toBe(
+      "kind=flag flag=found-apps path=unscoped value=true applied=false elapsed_ms=12",
+    );
+    expect(formatSetupRunSet("mark-already-set-up")).toBe("kind=setup-run event=set caller=mark-already-set-up");
+  });
+
+  it("logs the route only when its value changes", () => {
+    const lines: string[] = [];
+    const logger = createRouteLogger((line) => lines.push(line));
+    logger.update(base);
+    logger.update({ ...base, owed: true });
+    logger.update({ ...base, route: "legacy", flag: false, owed: true });
+    logger.update({ ...base, route: "legacy", flag: false, owed: true, setupRun: true });
+    expect(lines).toEqual([
+      "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+      "kind=route route=legacy flag=false owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+    ]);
+  });
+
+  it("a sink that throws does not break the caller", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const logger = createRouteLogger(() => {
+      throw new Error("disk full");
+    });
+    expect(() => logger.update(base)).not.toThrow();
+    vi.restoreAllMocks();
   });
 });

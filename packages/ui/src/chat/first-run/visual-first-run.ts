@@ -652,6 +652,16 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
 }
 
 /**
+ * True when the hello and the note may say `runtime` is signed in: Claude Code
+ * and Codex only after the real check passed (a missing check is not a pass, it
+ * was signed out on a cold computer); other runtimes are not checked here.
+ */
+export function signInPassedOrUnchecked(runtime: string, checks: Readonly<Record<string, unknown>>): boolean {
+  if (runtime !== "claude" && runtime !== "codex") return true;
+  return checks[runtime] === "passed";
+}
+
+/**
  * The bot's hello (`hq bot create --intro`, under 500 characters, one line)
  * when it was named in the takeover: it already knows its name and tool. It
  * promises nothing before the takeover closes: the assistant runs no turn
@@ -665,9 +675,13 @@ export function firstRunIntro(
   const name = normalizeAssistantName(handoff.name) || "your HQ assistant";
   const tool = runtimeLabel(handoff.runtime);
   // Only a passing real check may say "signed in": a stored login can be dead.
-  const settled = handoff.signInChecked === false ? `picked ${tool}` : `signed in ${tool}`;
+  // Signed out says nothing about the tool: the repair card asks for the sign-in.
+  const settled =
+    handoff.signInChecked === false
+      ? "You've named me, so I won't ask about that again. "
+      : `You've named me and signed in ${tool}, so I won't ask about those again. `;
   return (
-    `Hi, I'm ${name}, your HQ assistant. You've named me and ${settled}, so I won't ask about those again. ` +
+    `Hi, I'm ${name}, your HQ assistant. ${settled}` +
     "As soon as you finish setting up in the app, I'll pick up from there and post my next question here."
   );
 }
@@ -706,6 +720,36 @@ export function markVisualFirstRunFinished(storage?: StorageLike | null): void {
   } catch {
     // Storage unavailable: the in-session close still holds.
   }
+}
+
+/** Drop a finished marker an earlier install left (see finishedMarkerLeftOver). */
+export function forgetVisualFirstRunFinished(storage?: StorageLike | null): void {
+  try {
+    (firstRunStorage(storage) as Partial<Pick<Storage, "removeItem">> | null)?.removeItem?.(VISUAL_FIRST_RUN_DONE_KEY);
+  } catch {
+    // Storage unavailable: the in-session reset still holds.
+  }
+}
+
+/**
+ * Was the finished marker left by an earlier install? The window's storage
+ * outlives a reinstall that wipes ~/.hq and the HQ folder, so the marker can
+ * be there on a computer that is starting over. Finishing the takeover leaves
+ * the assistant on this computer, so a marker on a computer that still owes
+ * setup (the host's answer) and lists no bots of its own is a leftover.
+ * null until both answers are in. A listing that failed (localBots null once
+ * read) keeps the marker.
+ */
+export function finishedMarkerLeftOver(input: {
+  welcomeSetupOwed: boolean | null;
+  localBotsRead: boolean;
+  localBots: number | null;
+}): boolean | null {
+  if (input.welcomeSetupOwed === false) return false;
+  if (!input.localBotsRead) return null;
+  if (input.localBots === null || input.localBots > 0) return false;
+  if (input.welcomeSetupOwed === null) return null;
+  return true;
 }
 
 // ── routing ─────────────────────────────────────────────────────────────────
@@ -748,9 +792,12 @@ export interface FirstRunRouteInput {
   flag: boolean | null;
   /** The takeover was finished or left for chat on this computer. */
   finished: boolean;
+  /** A finished marker from before this launch is still being checked (finishedMarkerLeftOver). */
+  finishedUnconfirmed?: boolean;
 }
 
 export function firstRunRoute(input: FirstRunRouteInput): FirstRunRoute {
+  if (input.hasBots && input.finishedUnconfirmed) return "pending";
   if (!input.hasBots || input.welcomeSetupRun || input.finished) return "legacy";
   if (input.flag === null) return "pending";
   if (!input.flag) return "legacy";

@@ -29,6 +29,11 @@ import {
   firstRunIntro,
 } from "../chat/first-run/visual-first-run.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
+import {
+  CONVERSATION_START_GRACE_MS,
+  fromConversationStart,
+  readConversationStarts,
+} from "../chat/first-run/conversation-start.js";
 
 const SETUP_BOT_UID = "agt_setup";
 
@@ -55,6 +60,8 @@ interface AdapterOptions {
   loginStatus?: (runtime: string) => Promise<unknown>;
   /** `hq bot list --remote` (the account's own listing); absent leaves the host without it. */
   listRemote?: () => Promise<unknown>;
+  /** The host's hq-sync.log writer; absent leaves the host without one. */
+  logToFile?: (tag: string, message: string) => Promise<unknown>;
 }
 
 function adapter({
@@ -70,6 +77,7 @@ function adapter({
   loginStatus,
   listRemote,
   listImpl,
+  logToFile,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
     hasFeatureImpl ?? (async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false)),
@@ -81,6 +89,7 @@ function adapter({
     isAvailable: () => false,
     capabilities: {},
     identity: { hasFeature, updateAgentProfile },
+    ...(logToFile ? { appShell: { logToFile } } : {}),
     messaging: {
       listContacts: async () => ok({ contacts: [] }),
       listChannelMembers: async () => ok({ members: [] }),
@@ -529,11 +538,23 @@ describe("visual first run, a flag that cannot be read", () => {
 });
 
 describe("visual first run never reappears", () => {
+  // Leaving the takeover leaves its assistant on this computer: the listing
+  // that tells this install's marker from a reinstall's leftover.
+  const assistantHere = {
+    name: "setup",
+    agentUid: SETUP_BOT_UID,
+    ownerUid: "prs_test",
+    runtime: "claude",
+    state: "running",
+    online: true,
+    dir: "/tmp/HQ/personal/workers/setup",
+  };
+
   it("after Done (setup marked run too): no takeover, no flag read, nothing created", async () => {
     window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
     window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform, hasFeature } = adapter({ create, flag: true });
+    const { platform, hasFeature } = adapter({ create, flag: true, bots: [assistantHere] });
     await boot(platform);
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
@@ -541,14 +562,26 @@ describe("visual first run never reappears", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("after Continue in chat: no takeover; the next launch is today's setup chat start", async () => {
+  it("after Continue in chat, with the assistant here: no takeover; the next launch is today's start, which opens the assistant", async () => {
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform, hasFeature } = adapter({ create, flag: true, bots: [assistantHere] });
+    await boot(platform);
+    await vi.waitFor(() => expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1"));
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    expect(hasFeature).not.toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
+    expect(create).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+  });
+
+  it("after Continue in chat where the assistant was never made here: the takeover opens again (this computer cannot tell it from a reinstall)", async () => {
     window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const { platform } = adapter({ create, flag: true });
     await boot(platform);
-    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
-    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({ kickoff: SETUP_BOT_KICKOFF }));
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(create).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBeNull();
   });
 });
 
@@ -640,6 +673,67 @@ describe("visual first run: the name step on an account that already has an assi
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "setup", displayName: "Fluffy" }));
   });
 
+  // Cold VM run of a01028e3e, path B: a cold reset and reinstall on the same
+  // computer (no ~/.hq, no ~/hq, same machine id). The account's assistant was
+  // bound to this machine id, so the account's listing said here=true, and the
+  // desktop landed in #welcome with no takeover.
+  it("a cold re-install on the same computer: the last install's finished marker, no bots here, setup owed: the takeover opens again", async () => {
+    // The window's storage outlives a reinstall that wipes ~/.hq and the HQ
+    // folder, so the earlier install's markers are still there.
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    const create = vi.fn(async () => ok({ ok: true, outcome: "adopted", name: "setup", agentUid: SETUP_BOT_UID }));
+    const listRemote = vi.fn(async () => ok({ bots: [cloudAssistant({ displayName: "Pebble", here: true, online: true })] }));
+    const { platform, hasFeature } = adapter({ create, flag: true, listRemote });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(hasFeature).toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
+    expect(step()).toBe("decision");
+    expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBeNull();
+    expect(await nameField()).toBe("Pebble");
+    confirmName();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "setup", displayName: "Pebble" }));
+  });
+
+  it("a cold re-install where the coding tool is signed out: the takeover still opens, and nothing starts the setup chat behind it", async () => {
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    const create = vi.fn(async () => ok({ ok: true, outcome: "adopted", name: "setup", agentUid: SETUP_BOT_UID }));
+    const listRemote = vi.fn(async () => ok({ bots: [cloudAssistant({ displayName: "Pebble", here: true, online: true })] }));
+    const { platform } = adapter({ create, flag: true, listRemote, claudeLoggedIn: false });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(create).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
+  });
+
+  it("the same install, finished and with its assistant here: the marker holds and the takeover stays closed", async () => {
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const bots = [{ name: "setup", agentUid: SETUP_BOT_UID, displayName: "Pebble", online: true, runtime: "claude" }];
+    const { platform, hasFeature } = adapter({ create, flag: true, bots });
+    await boot(platform);
+    await settle();
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    expect(hasFeature).not.toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+  });
+
+  it("a finished marker where the host says setup is done: the marker holds", async () => {
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    const { platform } = adapter({
+      flag: true,
+      setupStatusImpl: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: false }),
+    });
+    await boot(platform);
+    await settle();
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+  });
+
   it("a cloud row that carries only the handle is never offered as the name", async () => {
     const listRemote = vi.fn(async () =>
       ok({ bots: [cloudAssistant({ name: "setup-ab12cd34", displayName: "setup-ab12cd34" })] }),
@@ -699,6 +793,36 @@ describe("visual first run: the name step on an account that already has an assi
       await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS + 100);
       await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
       expect(SETUP_BOT_NAMES).toContain(await nameField());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("a finished marker while this computer's bot list never answers", () => {
+  it("keeps the marker after the first run's wait, so the route leaves pending for the normal app", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+      window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+      const lines: string[] = [];
+      const logToFile = vi.fn(async (tag: string, message: string) => {
+        if (tag === "first-run") lines.push(message);
+        return ok(undefined);
+      });
+      const { platform, hasFeature } = adapter({ flag: true, logToFile, listImpl: () => new Promise(() => undefined) });
+      await boot(platform);
+      await settle(20);
+      const routes = () => lines.filter((line) => line.startsWith("kind=route "));
+      expect(routes().at(-1)).toContain("route=pending");
+      expect(routes().at(-1)).toContain("finishedUnconfirmed=true");
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS + 100);
+      await vi.waitFor(() => expect(routes().at(-1)).toContain("route=legacy"));
+      expect(routes().at(-1)).toContain("finished=true finishedUnconfirmed=false");
+      expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+      expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
+      expect(hasFeature).not.toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -1090,5 +1214,127 @@ describe("the flag read overlaps the setup-owed check (fake timers)", () => {
     expect(answeredLater).toBeLessThan(OWED_AT_MS + 1200);
     expect(neverAnswers).toBeGreaterThan(baseline);
     expect(neverAnswers).toBeLessThanOrEqual(baseline + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 50);
+  });
+});
+
+describe("first-run route log (hq-sync.log)", () => {
+  /** A log writer that keeps the `[first-run]` lines in order. */
+  function logSink() {
+    const lines: string[] = [];
+    const logToFile = vi.fn(async (tag: string, message: string) => {
+      if (tag === "first-run") lines.push(message);
+      return ok(undefined);
+    });
+    return { lines, logToFile, of: (kind: string) => lines.filter((line) => line.startsWith(`kind=${kind} `)) };
+  }
+
+  it("logs one line per route change, with what the route came from, and the flag read that answered", async () => {
+    const log = logSink();
+    const { platform } = adapter({ flag: true, logToFile: log.logToFile });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await settle();
+
+    expect(log.of("route")).toEqual([
+      "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+      "kind=route route=visual flag=true owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+    ]);
+    const flagLines = log.of("flag").map((line) => line.replace(/ elapsed_ms=\d+$/, ""));
+    expect(flagLines).toEqual([
+      "kind=flag flag=visual-first-run path=unscoped value=true applied=true",
+      "kind=flag flag=found-apps path=unscoped value=false applied=true",
+    ]);
+    expect(log.of("setup-run")).toEqual([]);
+  });
+
+  it("says which caller set the setup-run record when the host reports setup as done", async () => {
+    const log = logSink();
+    const { platform } = adapter({
+      flag: true,
+      logToFile: log.logToFile,
+      setupStatusImpl: async () =>
+        ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: false }),
+    });
+    await boot(platform);
+    await vi.waitFor(() => expect(log.of("setup-run")).toEqual(["kind=setup-run event=set caller=mark-already-set-up"]));
+    await settle();
+    // The route went legacy the moment setup counted as run, before the flag answered.
+    expect(log.of("route")).toEqual([
+      "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+      "kind=route route=legacy flag=null owed=false setupRun=true finished=false finishedUnconfirmed=false hasBots=true",
+    ]);
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+  });
+
+  describe("with a flag answer slower than the grace (fake timers)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("logs the grace running out, the legacy route it chose, and the late answer that was not applied", async () => {
+      const log = logSink();
+      const delayed = <T,>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+      const { platform } = adapter({
+        logToFile: log.logToFile,
+        setupStatusImpl: () =>
+          delayed(200, ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true })),
+        // On, but answered past the grace that starts once owed is in.
+        hasFeatureImpl: (name) =>
+          name === VISUAL_FIRST_RUN_FLAG ? delayed(200 + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 300, ok(true)) : Promise.resolve(ok(false)),
+      });
+      await boot(platform);
+      for (let elapsed = 0; elapsed < 200 + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 600; elapsed += 50) {
+        await vi.advanceTimersByTimeAsync(50);
+        await settle(4);
+      }
+
+      const flagLines = log.of("flag").map((line) => line.replace(/ elapsed_ms=\d+$/, ""));
+      expect(flagLines).toEqual([
+        "kind=flag flag=visual-first-run path=timeout value=false applied=true",
+        "kind=flag flag=visual-first-run path=unscoped value=true applied=false",
+      ]);
+      expect(log.of("route")).toEqual([
+        "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+        "kind=route route=legacy flag=false owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+      ]);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    });
+  });
+});
+
+describe("first-run conversation start with a slow create", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("starts the conversation when the name is confirmed, so an intro written more than the grace before the adopt still shows", async () => {
+    const confirmedAt = Date.parse("2026-10-15T16:00:00.000Z");
+    let now = confirmedAt;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let finishCreate: (() => void) | null = null;
+    const create = vi.fn(
+      () =>
+        new Promise<unknown>((resolve) => {
+          finishCreate = () => resolve(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+        }),
+    ) as unknown as NonNullable<PlatformAdapter["bots"]>["create"];
+    const { platform } = adapter({ create, flag: true });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await chooseBot();
+    typeName("Biscuit");
+    confirmName();
+    await vi.waitFor(() => expect(create).toHaveBeenCalled());
+
+    // `hq bot create --intro` writes the intro a second in, then takes 45 s more.
+    const intro = { eventId: "intro", createdAt: new Date(confirmedAt + 1_000).toISOString() };
+    now = confirmedAt + 1_000 + CONVERSATION_START_GRACE_MS + 15_000;
+    finishCreate!();
+    await settle();
+
+    const starts = readConversationStarts(window.localStorage);
+    expect(starts[SETUP_BOT_UID]).toBe(confirmedAt);
+    expect(fromConversationStart([intro], starts, SETUP_BOT_UID)).toEqual([intro]);
   });
 });

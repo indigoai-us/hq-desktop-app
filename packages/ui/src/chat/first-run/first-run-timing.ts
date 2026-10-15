@@ -11,7 +11,16 @@
  * [first-run] kind=install event=end id=<item> outcome=<ok|failed|skipped|cancelled> elapsed_ms=<n>
  * [first-run] kind=probe tool=<claude|codex|...> result=<passed|signed-out|failed|timeout> elapsed_ms=<n>
  * [first-run] kind=phase phase=<blocking> result=<ok|failed> elapsed_ms=<n since launch> (logged from Rust)
+ * [first-run] kind=route route=<pending|visual|legacy> flag=<true|false|null> owed=<true|false|null> setupRun=<bool> finished=<bool> finishedUnconfirmed=<bool> hasBots=<bool>
+ * [first-run] kind=flag flag=<visual-first-run|found-apps> path=<scoped|unscoped|timeout|error|skipped> value=<bool> applied=<bool> elapsed_ms=<n>
+ * [first-run] kind=setup-run event=set caller=<call site>
  * ```
+ *
+ * Route lines come once per change of route value. Flag lines come once per
+ * lookup answer: `path` says what answered (the flag service read with or
+ * without a company, the wait running out, an error, or no read at all), and
+ * `applied=false` means an earlier answer had already settled the value.
+ * Setup-run lines say which call site set the "setup run" record to true.
  *
  * Install ids: node, git, hq-cli, qmd, claude-code, codex, gh, yq, jq (logged
  * from Rust, `apps/sync/src-tauri/src/first_run_timing.rs`), and content,
@@ -124,6 +133,65 @@ export function startInstallTimer(
       if (finished) return;
       finished = true;
       emit(sink, formatInstallEnd(id, outcome, now() - since));
+    },
+  };
+}
+
+export type FirstRunRouteValue = "pending" | "visual" | "legacy";
+
+/** What the route was derived from, as logged on each route change. */
+export interface FirstRunRouteState {
+  route: FirstRunRouteValue;
+  flag: boolean | null;
+  owed: boolean | null;
+  setupRun: boolean;
+  finished: boolean;
+  finishedUnconfirmed: boolean;
+  hasBots: boolean;
+}
+
+export function formatRoute(state: FirstRunRouteState): string {
+  return (
+    `kind=route route=${state.route} flag=${String(state.flag)} owed=${String(state.owed)}` +
+    ` setupRun=${state.setupRun} finished=${state.finished}` +
+    ` finishedUnconfirmed=${state.finishedUnconfirmed} hasBots=${state.hasBots}`
+  );
+}
+
+export type FirstRunFlagName = "visual-first-run" | "found-apps";
+export type FlagLookupPath = "scoped" | "unscoped" | "timeout" | "error" | "skipped";
+
+export function formatFlagLookup(
+  flag: FirstRunFlagName,
+  path: FlagLookupPath,
+  value: boolean,
+  applied: boolean,
+  elapsedMs: number,
+): string {
+  return `kind=flag flag=${flag} path=${path} value=${value} applied=${applied} elapsed_ms=${ms(elapsedMs)}`;
+}
+
+export function formatSetupRunSet(caller: string): string {
+  return `kind=setup-run event=set caller=${sanitizeValue(caller)}`;
+}
+
+/** Writes one line through the sink. A sink that throws does not break the caller. */
+export function writeFirstRunLine(sink: FirstRunTimingSink | null | undefined, message: string): void {
+  emit(sink, message);
+}
+
+export interface RouteLogger {
+  /** Logs the route line when the route differs from the last one logged. */
+  update(state: FirstRunRouteState): void;
+}
+
+export function createRouteLogger(sink: FirstRunTimingSink | null | undefined): RouteLogger {
+  let last: FirstRunRouteValue | null = null;
+  return {
+    update(state) {
+      if (state.route === last) return;
+      last = state.route;
+      emit(sink, formatRoute(state));
     },
   };
 }

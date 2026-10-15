@@ -10,11 +10,14 @@ import {
   firstRunHandoffNote,
   firstRunHandoffNotice,
   firstRunIntro,
+  signInPassedOrUnchecked,
   firstRunNextLabel,
   firstRunBeforeImport,
   firstRunOffersChat,
   firstRunOffersFinish,
+  finishedMarkerLeftOver,
   firstRunRoute,
+  forgetVisualFirstRunFinished,
   firstRunStepNumber,
   firstRunStepsFor,
   firstRunImportJson,
@@ -315,7 +318,8 @@ describe("the handoff note (one note, sent when the takeover closes)", () => {
   it("the hello and the note do not claim signed in when the real check did not pass", () => {
     const intro = firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: false }, { noun: "Mac" });
     expect(intro).not.toContain("signed in");
-    expect(intro).toContain("You've named me and picked Claude Code");
+    expect(intro).not.toContain("Claude Code");
+    expect(intro).toContain("You've named me, so I won't ask about that again.");
     expect(intro.length).toBeLessThan(500);
     const notice = firstRunHandoffNotice({ ...handoff, signInChecked: false }, { noun: "Mac" });
     expect(notice).not.toContain("Claude Code is signed in");
@@ -418,6 +422,44 @@ describe("first-run routing", () => {
     expect(firstRunRoute({ ...base, welcomeSetupRun: true })).toBe("legacy");
     expect(firstRunRoute({ ...base, welcomeSetupOwed: false })).toBe("legacy");
     expect(firstRunRoute({ ...base, hasBots: false })).toBe("legacy");
+  });
+
+  it("waits while a finished marker from before this launch is being checked", () => {
+    expect(firstRunRoute({ ...base, finished: true, finishedUnconfirmed: true })).toBe("pending");
+    expect(firstRunRoute({ ...base, finished: true, finishedUnconfirmed: false })).toBe("legacy");
+    expect(firstRunRoute({ ...base, hasBots: false, finishedUnconfirmed: true })).toBe("legacy");
+  });
+});
+
+describe("a finished marker left by an earlier install", () => {
+  const owedEmpty = { welcomeSetupOwed: true, localBotsRead: true, localBots: 0 } as const;
+
+  it("is a leftover where setup is owed and this computer lists no bots", () => {
+    expect(finishedMarkerLeftOver(owedEmpty)).toBe(true);
+  });
+
+  it("is this install's own where setup is done, a bot is here, or the listing failed", () => {
+    expect(finishedMarkerLeftOver({ ...owedEmpty, welcomeSetupOwed: false })).toBe(false);
+    expect(finishedMarkerLeftOver({ ...owedEmpty, welcomeSetupOwed: false, localBotsRead: false })).toBe(false);
+    expect(finishedMarkerLeftOver({ ...owedEmpty, localBots: 1 })).toBe(false);
+    expect(finishedMarkerLeftOver({ ...owedEmpty, localBots: null })).toBe(false);
+  });
+
+  it("is not known until the host and this computer's listing have answered", () => {
+    expect(finishedMarkerLeftOver({ ...owedEmpty, localBotsRead: false, localBots: null })).toBeNull();
+    expect(finishedMarkerLeftOver({ ...owedEmpty, welcomeSetupOwed: null })).toBeNull();
+  });
+
+  it("is dropped from storage", () => {
+    const storage = new Map<string, string>();
+    const store = {
+      getItem: (k: string) => storage.get(k) ?? null,
+      setItem: (k: string, v: string) => void storage.set(k, v),
+      removeItem: (k: string) => void storage.delete(k),
+    };
+    markVisualFirstRunFinished(store);
+    forgetVisualFirstRunFinished(store);
+    expect(hasFinishedVisualFirstRun(store)).toBe(false);
   });
 });
 
@@ -535,5 +577,14 @@ describe("names an inviter chose stay data (review fix 2)", () => {
     expect(notice).toContain('I named you ("name" in the handoff), so use that name.');
     expect(notice.replace(jsonOf(notice), "")).not.toContain("$(id)");
     expect(firstRunHandoffNotice({ name: "Pickles", runtime: "claude", toolsReady: ["claude"] })).toContain("I named you Pickles, so use that name.");
+  });
+
+  // Cold VM run of a01028e3e: Claude Code signed out, no check result yet, and
+  // the hello still said "signed in Claude Code".
+  it("a missing sign-in check is not a pass for Claude Code or Codex", () => {
+    expect(signInPassedOrUnchecked("claude", {})).toBe(false);
+    expect(signInPassedOrUnchecked("codex", { codex: "failed" })).toBe(false);
+    expect(signInPassedOrUnchecked("claude", { claude: "passed" })).toBe(true);
+    expect(signInPassedOrUnchecked("gemini", {})).toBe(true);
   });
 });
