@@ -325,30 +325,37 @@ describe("first-run create racing automatic restore", () => {
     expectNoSlug("the assistant's conversation");
   });
 
-  it("no coding tool signed in: the typed name never labels the account's remote assistant (owner run 2026-10-15)", async () => {
-    // Fresh machine, Hazel on the account only (with her DM history), Claude
-    // Code not signed in: the start cannot run, so nothing is created or
-    // adopted here, and the rail keeps calling her Hazel.
+  it("fresh install, no coding tool signed in: the assistant is still made here and its chat opens (owner, 2026-10-15)", async () => {
+    // Hazel on the account only (with her DM history), Claude Code installed
+    // but signed out. The typed name must not relabel Hazel's remote record;
+    // the assistant is created on this computer on the installed tool, and
+    // Talk to Nibbles opens the local bot's own chat, where its signed-out
+    // card asks for the sign-in. Never the "another computer" banner.
+    let here: LocalBotRow[] = [];
     const a = adapter({
       flag: true,
       claudeLoggedIn: false,
+      list: () => here,
       remote: () => [{ ...remoteRow(), displayName: "Hazel" }],
       contacts: [{ personUid: ASSISTANT_UID, displayName: "Hazel", companyUid: null }],
+      create: async (input) => {
+        here = [localRow({ displayName: String(input.displayName ?? ""), runtime: String(input.runtime ?? "") as LocalBotRow["runtime"] })];
+        return ok({ ok: true, name: "setup", agentUid: ASSISTANT_UID });
+      },
     });
     boot(a.platform, dmRow(ASSISTANT_UID, "Hazel"));
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));
     await nameAssistant("Nibbles");
-    await settle(20);
-    expect(a.create).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(a.create).toHaveBeenCalledTimes(1));
+    expect(a.create.mock.calls[0]![0]).toMatchObject({ displayName: "Nibbles", runtime: "claude" });
     expect(a.adopt).not.toHaveBeenCalled();
-    // Her conversation, under the takeover, still carries her name.
-    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel");
-    // The done screen offers Continue; the person lands in the shell.
-    q<HTMLButtonElement>('[data-testid="first-run-done-continue"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false), { timeout: 5000 });
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle(20);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
-    expect(screenText()).not.toContain("Nibbles");
-    expectNoSlug("after a name with no signed-in tool");
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Nibbles"));
+    expect(screenText()).not.toContain("another computer");
+    expectNoSlug("the assistant made with no signed-in tool");
   });
 
   it("a create refused because the assistant arrived first ends ready, named, with no error", async () => {
