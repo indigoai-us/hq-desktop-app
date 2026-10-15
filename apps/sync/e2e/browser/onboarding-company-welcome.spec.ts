@@ -38,6 +38,20 @@ async function next(page: Page): Promise<void> {
   await page.locator('.scene.on button.btn-primary', { hasText: 'Next' }).first().click();
 }
 
+/**
+ * Resize the window the way a person does: the new size, then the frame that
+ * shows it. Layout reads see the new size at once, but the panel's vertical
+ * position is set by the window "resize" handler, which the browser only runs
+ * in its next rendering frame. Measuring in between read the old window's
+ * position about 40% of the time (the later steps were usually slow enough to
+ * hide it), so wait for two frames: by the second one the resize handler has
+ * run.
+ */
+async function resizeWindow(page: Page, size: { width: number; height: number }): Promise<void> {
+  await page.setViewportSize(size);
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+}
+
 async function rootScroll(page: Page): Promise<{ top: number; left: number }> {
   return page.evaluate(() => {
     const root = document.querySelector('.hq-welcome')!;
@@ -198,10 +212,7 @@ test('stays centred when the welcome window is resized on the company step', asy
   await next(page);
   await page.getByTestId('onboarding-company-field-name').waitFor();
   for (const size of [SIZES[1]!, SIZES[2]!, SIZES[0]!]) {
-    await page.setViewportSize(size);
-    await expect
-      .poll(async () => Math.abs(centre(await box(page, 'form.cs-form')) - size.width / 2))
-      .toBeLessThanOrEqual(1);
+    await resizeWindow(page, size);
     await expectCentred(
       page,
       ['.scene.on [data-scene-heading]', '.scene.on .follow-on .cs-pane > .body', 'form.cs-form'],
