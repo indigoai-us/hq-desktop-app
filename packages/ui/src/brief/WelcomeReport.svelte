@@ -18,6 +18,8 @@
   import type { Snippet } from "svelte";
   import WelcomeConnectCard, { type WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
   import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
+  import type { FoundWorkApps } from "@hq/platform";
+  import ConnectAiAppsCard from "./ConnectAiAppsCard.svelte";
 
   interface Props {
     /** The report is ready: the brief page replaces the loading card. */
@@ -35,9 +37,16 @@
     } | null;
     /** No assistant to write the report yet: the card offers setting one up. */
     onsetup?: (() => void) | null;
+    /**
+     * Who made the report: the assistant and a way to open its DM, or null
+     * when no assistant exists yet. Left out, the line is not shown.
+     */
+    madeBy?: { name: string; onmeet: () => void } | null;
+    /** The "Connect your AI apps" card inputs; null leaves it out. */
+    aiApps?: { detect: () => Promise<FoundWorkApps | null>; cli: { claudeCode: boolean; codex: boolean } } | null;
     children: Snippet;
   }
-  let { ready, progress = null, connect = null, onsetup = null, children }: Props = $props();
+  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, children }: Props = $props();
 
   const pct = $derived(progress == null ? null : Math.round(Math.min(1, Math.max(0, progress)) * 100));
 </script>
@@ -54,8 +63,21 @@
       />
     {/key}
   {/if}
+  {#if aiApps}
+    <ConnectAiAppsCard detect={aiApps.detect} cli={aiApps.cli} />
+  {/if}
   {#if ready}
     <div class="report" data-testid="welcome-report-ready">
+      {#if madeBy !== undefined}
+        <p class="made-by" data-testid="welcome-report-made-by">
+          {#if madeBy}
+            <span>{madeBy.name} made this report.</span>
+            <button type="button" data-testid="welcome-report-meet" onclick={() => madeBy.onmeet()}>Meet {madeBy.name}</button>
+          {:else}
+            <span>Your assistant will make the next one.</span>
+          {/if}
+        </p>
+      {/if}
       {@render children()}
     </div>
   {:else if onsetup}
@@ -95,6 +117,29 @@
   .report {
     flex: 1;
     min-height: 0;
+  }
+  .made-by {
+    margin: 0 0 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.72);
+  }
+  .made-by button {
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    color: inherit;
+    cursor: pointer;
+    transition: opacity 120ms cubic-bezier(0.25, 1, 0.5, 1);
+  }
+  .made-by button:active {
+    opacity: 0.7;
   }
   .card {
     border-radius: var(--b-r, 22px);
@@ -159,5 +204,6 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .fill.indeterminate { animation: none; transform: none; width: 100%; opacity: 0.4; }
+    .made-by button { transition: none; }
   }
 </style>

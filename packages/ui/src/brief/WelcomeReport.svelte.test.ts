@@ -125,4 +125,23 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="welcome-report"]')).not.toBeNull();
     expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
   });
+
+  it("says the assistant made the report and Meet <Name> opens its DM", async () => {
+    const onmeet = vi.fn();
+    mountReport({ ready: true, madeBy: { name: "Atlas", onmeet }, children: briefPage });
+    await settle();
+    const line = q('[data-testid="welcome-report-made-by"]');
+    expect(line?.textContent).toContain("Atlas made this report.");
+    const meet = q('[data-testid="welcome-report-meet"]');
+    expect(meet?.textContent).toBe("Meet Atlas");
+    meet!.click();
+    expect(onmeet).toHaveBeenCalledTimes(1);
+  });
+
+  it("with no assistant yet, says the assistant will make the next one and has no button", async () => {
+    mountReport({ ready: true, madeBy: null, children: briefPage });
+    await settle();
+    expect(q('[data-testid="welcome-report-made-by"]')?.textContent?.trim()).toBe("Your assistant will make the next one.");
+    expect(q('[data-testid="welcome-report-meet"]')).toBeNull();
+  });
 });

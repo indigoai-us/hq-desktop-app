@@ -113,3 +113,52 @@ export const CONNECTOR_APPS: readonly ConnectorApp[] = [
     copyText: GROK_CLI_CONNECT_PROMPT,
   },
 ];
+
+/**
+ * Puts an app's setup text on the clipboard. Settings → AI tools and the
+ * welcome report's "Connect your AI apps" card both copy through this, so the
+ * two never drift. Resolves false when the clipboard is unavailable or
+ * denied; the caller then shows the text for copying by hand.
+ */
+export async function copyConnectorSetup(copyText: string): Promise<boolean> {
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard API is unavailable");
+    await navigator.clipboard.writeText(copyText);
+    return true;
+  } catch (err) {
+    console.warn("[hq-connector] copy connector setup failed", err);
+    return false;
+  }
+}
+
+/**
+ * The desktop apps the launch scan reports, by macOS bundle id, matched to a
+ * connector. ChatGPT ships Codex inside it under `com.openai.codex`, so that
+ * bundle counts as both. Grok's id is matched by its `ai.x.` prefix or the
+ * app name, because the Grok app's exact id has changed between builds.
+ */
+const CONNECTOR_BUNDLE_IDS: Readonly<Record<string, readonly ConnectorApp["id"][]>> = {
+  "com.anthropic.claudefordesktop": ["claude"],
+  "com.openai.chat": ["chatgpt"],
+  "com.openai.codex": ["chatgpt", "codex"],
+};
+
+/**
+ * The connector apps found on this computer: desktop apps from the launch
+ * scan's `apps`, plus Claude Code and the Codex CLI when the launch detection
+ * found them. In CONNECTOR_APPS order; empty when nothing matches.
+ */
+export function foundConnectorApps(
+  scanApps: readonly { bundleId: string | null; name: string }[],
+  cli: { claudeCode: boolean; codex: boolean },
+): ConnectorApp[] {
+  const found = new Set<ConnectorApp["id"]>();
+  for (const app of scanApps) {
+    const id = app.bundleId?.toLowerCase() ?? "";
+    for (const hit of CONNECTOR_BUNDLE_IDS[id] ?? []) found.add(hit);
+    if (id.startsWith("ai.x.") || app.name.trim().toLowerCase() === "grok") found.add("grok-bot");
+  }
+  if (cli.claudeCode) found.add("claude-code");
+  if (cli.codex) found.add("codex");
+  return CONNECTOR_APPS.filter((app) => found.has(app.id));
+}
