@@ -40,6 +40,8 @@
   import type { ChatArtifact } from "./artifact-model.js";
   import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
+  import ShareStack from "./ShareStack.svelte";
+  import { isStackableShare, shareStackAttachments } from "./share-stack";
   import AttachmentTray from "./AttachmentTray.svelte";
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import {
@@ -1519,6 +1521,8 @@
     systemModel: ReturnType<typeof systemModelForMessage>;
     workActivity: ReturnType<typeof parseWorkSessionEvent>;
     shareCard: ReturnType<typeof parseShareRequestEvent>;
+    /** Back-to-back share-only messages folded into this row, oldest first. */
+    shareStack: ConversationMessageWire[] | null;
     groupStart: boolean;
     startsNewDay: boolean;
     timeLabel: string;
@@ -1529,6 +1533,7 @@
     let prev: ConversationMessageWire | undefined;
     let prevSpecial = false;
     let prevDay = "";
+    let prevStackable = false;
     for (const msg of timeline) {
       const day = dayKey(msg.createdAt);
       const startsNewDay = prev === undefined || day !== prevDay;
@@ -1540,11 +1545,25 @@
       // work-mesh activity event is a mesh row and MUST NOT render, even if
       // the classifier missed it on the wire fields.
       if (humanOnly && hiddenInHumanOnly(msg)) continue;
+      const stackable = !special && !workActivity && isStackableShare(msg);
+      const leader = out.at(-1);
+      if (
+        stackable &&
+        prevStackable &&
+        leader &&
+        prev &&
+        messagesShareGroup(prev, msg, prevSpecial, special)
+      ) {
+        leader.shareStack = [...(leader.shareStack ?? [leader.msg]), msg];
+        prev = msg;
+        continue;
+      }
       out.push({
         msg,
         systemModel,
         workActivity,
         shareCard,
+        shareStack: null,
         groupStart:
           prev === undefined ||
           !messagesShareGroup(prev, msg, prevSpecial, special),
@@ -1555,6 +1574,7 @@
       prev = msg;
       prevSpecial = special;
       prevDay = day;
+      prevStackable = stackable;
     }
     return out;
   });
@@ -2355,6 +2375,15 @@
                     >
                       {@render bubbleContent(msg, rich)}
                     </ForwardedBlock>
+                  {:else if row.shareStack}
+                    <ShareStack
+                      {previewCache}
+                      {vaultCompanyUid}
+                      attachments={shareStackAttachments(row.shareStack)}
+                      onopen={openAttachment}
+                      resolveUrl={resolveAttachmentUrl}
+                      {onreleaseurl}
+                    />
                   {:else}
                     {@render bubbleContent(msg, rich)}
                   {/if}

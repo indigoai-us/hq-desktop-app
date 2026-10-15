@@ -23,6 +23,7 @@
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
+  import ShareStackPreview from './ShareStackPreview.svelte';
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
   import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
   import Conversation, {
@@ -372,6 +373,8 @@
 {:else if view === 'signin'}
   <!-- Auth-expiry recovery at the native 320x440 `main` window size. -->
   <SignInPrompt reauth={true} />
+{:else if view === 'share-stack'}
+  <ShareStackPreview />
 {:else if view === 'conversation'}
   <!-- The shared messaging Conversation (desktop Messages styling via
        data-window='messages'). Hover a bubble to reveal the copy-message
