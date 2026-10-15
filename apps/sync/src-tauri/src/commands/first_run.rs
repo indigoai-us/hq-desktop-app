@@ -267,8 +267,73 @@ pub fn set_main_window_vibrancy(app: AppHandle, enabled: bool) {
     }
 }
 
+/// Pending-route prefix that marks a first-run handoff hint. The desktop shell
+/// parses it in `parseFirstRunHandoffHint` (`desktop-alt/route.ts`).
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub const FIRST_RUN_HANDOFF_PREFIX: &str = "first-run-handoff:";
+
+/// The flags the desktop shell's first-run route needs before it can choose
+/// between the takeover and the ordinary shell.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub const FIRST_RUN_HINT_FLAGS: [&str; 2] =
+    ["desktop.visual-first-run", "desktop.first-run-found-apps-v1"];
+
+/// Upper bound on the flag reads the handoff makes before it opens the
+/// desktop window. A flag still unanswered goes out as `null` and the shell
+/// reads it itself, as it did before the hint existed.
+#[cfg(not(target_os = "windows"))]
+const FIRST_RUN_HINT_FLAG_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// The handoff hint queued as the desktop window's pending route, so the shell
+/// knows on its first frame whether it owes the first-run takeover instead of
+/// waiting up to 2 s for its own setup-status and flag reads. `None` flags are
+/// unknown (sent as `null`).
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub fn first_run_handoff_hint(
+    visual_first_run: Option<bool>,
+    found_apps: Option<bool>,
+    welcome_setup_owed: bool,
+    welcome_tour_shown: bool,
+) -> String {
+    let payload = serde_json::json!({
+        "route": Value::Null,
+        "flags": {
+            FIRST_RUN_HINT_FLAGS[0]: visual_first_run,
+            FIRST_RUN_HINT_FLAGS[1]: found_apps,
+        },
+        "welcomeSetupOwed": welcome_setup_owed,
+        "welcomeTourShown": welcome_tour_shown,
+    });
+    format!("{FIRST_RUN_HANDOFF_PREFIX}{payload}")
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn first_run_handoff_hint_now() -> String {
+    async fn bounded(flag: &str) -> Option<bool> {
+        tokio::time::timeout(
+            FIRST_RUN_HINT_FLAG_TIMEOUT,
+            crate::commands::hq_pro::feature_flag_enabled(flag),
+        )
+        .await
+        .ok()
+    }
+    let (visual, found_apps) = tokio::join!(
+        bounded(FIRST_RUN_HINT_FLAGS[0]),
+        bounded(FIRST_RUN_HINT_FLAGS[1])
+    );
+    let status = crate::commands::lifecycle::get_setup_status();
+    first_run_handoff_hint(
+        visual,
+        found_apps,
+        status.welcome_setup_owed,
+        status.welcome_tour_shown,
+    )
+}
+
 /// Hand first-run off to the desktop workspace: open the desktop window, then
-/// hide the installer card in `main`.
+/// hide the installer card in `main` (on macOS and Linux, only once the
+/// desktop window has painted its first-run view; see
+/// `desktop_alt::open_desktop_alt_for_first_run`).
 ///
 /// The command keeps its historical name (the onboarding renderer invokes
 /// `show_main_window_at_tray` when the wizard finishes). Onboarding is done at
@@ -283,8 +348,20 @@ pub async fn show_main_window_at_tray(
     app: AppHandle,
     state: State<'_, LaunchKindState>,
 ) -> Result<(), String> {
-    crate::commands::desktop_alt::open_desktop_alt_window_inner(app.clone(), None).await?;
-    crate::tray::hide_onboarding_window(&app);
+    // macOS and Linux (US-010): the desktop window is built hidden with the
+    // handoff hint queued, shown once its first-run takeover has painted, and
+    // only then is the welcome window hidden. Windows keeps the original
+    // open-then-hide order.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let hint = first_run_handoff_hint_now().await;
+        crate::commands::desktop_alt::open_desktop_alt_for_first_run(app.clone(), hint).await?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        crate::commands::desktop_alt::open_desktop_alt_window_inner(app.clone(), None).await?;
+        crate::tray::hide_onboarding_window(&app);
+    }
     let launch_kind = state.0;
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -379,5 +456,51 @@ mod first_launch_sync_start_capture_tests {
             first_launch_sync_start_error_category("untrusted detail"),
             "other"
         );
+    }
+}
+
+#[cfg(test)]
+mod first_run_handoff_hint_tests {
+    use super::*;
+
+    fn payload(hint: &str) -> Value {
+        let json = hint
+            .strip_prefix(FIRST_RUN_HANDOFF_PREFIX)
+            .expect("hint carries the handoff prefix");
+        serde_json::from_str(json).expect("hint payload is JSON")
+    }
+
+    #[test]
+    fn hint_carries_route_flags_and_setup_status() {
+        let hint = first_run_handoff_hint(Some(true), Some(false), true, false);
+        assert_eq!(
+            payload(&hint),
+            serde_json::json!({
+                "route": null,
+                "flags": {
+                    "desktop.visual-first-run": true,
+                    "desktop.first-run-found-apps-v1": false,
+                },
+                "welcomeSetupOwed": true,
+                "welcomeTourShown": false,
+            })
+        );
+    }
+
+    #[test]
+    fn unanswered_flags_go_out_as_null() {
+        let hint = first_run_handoff_hint(None, None, false, true);
+        let value = payload(&hint);
+        assert_eq!(value["flags"]["desktop.visual-first-run"], Value::Null);
+        assert_eq!(value["flags"]["desktop.first-run-found-apps-v1"], Value::Null);
+        assert_eq!(value["welcomeSetupOwed"], Value::Bool(false));
+        assert_eq!(value["welcomeTourShown"], Value::Bool(true));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn hint_flag_reads_are_bounded_below_the_shells_status_wait() {
+        // The shell's own status wait is WELCOME_OWED_TIMEOUT_MS (2000).
+        assert!(FIRST_RUN_HINT_FLAG_TIMEOUT < std::time::Duration::from_millis(2000));
     }
 }

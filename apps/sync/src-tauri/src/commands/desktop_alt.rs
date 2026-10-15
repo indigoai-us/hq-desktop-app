@@ -26,7 +26,7 @@ use std::sync::{Mutex, OnceLock};
 
 use hq_desktop_core::scope_gate::enforce_read_scope;
 
-#[cfg(target_os = "macos")]
+#[cfg(not(target_os = "windows"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine as _;
@@ -790,6 +790,182 @@ pub fn desktop_alt_consume_pending_route() -> Option<String> {
         .and_then(|mut cell| cell.take())
 }
 
+/// First-run handoff (US-010): set while the welcome flow's handoff holds a
+/// freshly built desktop window hidden until the shell reports that the
+/// first-run takeover has painted. The first-page-load reveal and the 5 s
+/// reveal watchdog both stand down while it is set. Windows keeps the
+/// pre-US-010 handoff, so the hold never exists there.
+#[cfg(not(target_os = "windows"))]
+static FIRST_RUN_REVEAL_HOLD: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(target_os = "windows"))]
+fn first_run_reveal_held() -> bool {
+    FIRST_RUN_REVEAL_HOLD.load(Ordering::Acquire)
+}
+
+#[cfg(target_os = "windows")]
+fn first_run_reveal_held() -> bool {
+    false
+}
+
+/// How long the first-run handoff waits for the painted signal before it shows
+/// the desktop window anyway. Above the shell's own first-run waits (the 5 s
+/// bot-listing wait in `visual-first-run.ts`) so a slow but healthy start is
+/// not cut short; bounded so a shell that never reports cannot leave the
+/// person with no HQ window at all.
+#[cfg(not(target_os = "windows"))]
+pub const FIRST_RUN_PAINTED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+static FIRST_RUN_PAINTED: OnceLock<Mutex<Option<tokio::sync::oneshot::Sender<()>>>> =
+    OnceLock::new();
+
+fn first_run_painted_cell() -> &'static Mutex<Option<tokio::sync::oneshot::Sender<()>>> {
+    FIRST_RUN_PAINTED.get_or_init(|| Mutex::new(None))
+}
+
+/// Arm the painted signal for one handoff. A previous, unanswered arm is
+/// replaced (its receiver sees the sender dropped).
+#[cfg(not(target_os = "windows"))]
+fn arm_first_run_painted() -> tokio::sync::oneshot::Receiver<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if let Ok(mut cell) = first_run_painted_cell().lock() {
+        *cell = Some(tx);
+    }
+    rx
+}
+
+/// Fire the painted signal. Returns whether a handoff was waiting for it.
+fn fire_first_run_painted() -> bool {
+    first_run_painted_cell()
+        .lock()
+        .ok()
+        .and_then(|mut cell| cell.take())
+        .map(|tx| tx.send(()).is_ok())
+        .unwrap_or(false)
+}
+
+/// The desktop shell calls this once the first-run takeover (or, when the
+/// visual first run is off, the shell itself) has painted in the still-hidden
+/// desktop window. The first-run handoff then shows the desktop window and
+/// only after that hides the welcome window. A call with no handoff waiting
+/// (any later launch, or Windows) does nothing.
+#[tauri::command]
+pub fn desktop_first_run_takeover_painted() -> bool {
+    fire_first_run_painted()
+}
+
+/// What woke the first-run handoff.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevealSignal {
+    /// The shell reported the takeover painted.
+    Painted,
+    /// No report within [`FIRST_RUN_PAINTED_TIMEOUT`] (or the signal was
+    /// dropped): show anyway, and log it.
+    TimedOut,
+}
+
+/// One step of the first-run reveal, in the order it runs.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevealStep {
+    LogWatchdog,
+    ShowDesktop,
+    HideWelcome,
+}
+
+/// The reveal order: the desktop window is shown before the welcome window is
+/// hidden, whichever way the wait ended, so there is never a moment with
+/// neither window on screen (the flash of bare desktop this story removes).
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub fn first_run_reveal_plan(signal: RevealSignal) -> Vec<RevealStep> {
+    match signal {
+        RevealSignal::Painted => vec![RevealStep::ShowDesktop, RevealStep::HideWelcome],
+        RevealSignal::TimedOut => vec![
+            RevealStep::LogWatchdog,
+            RevealStep::ShowDesktop,
+            RevealStep::HideWelcome,
+        ],
+    }
+}
+
+/// Wait for the painted signal, at most `timeout`.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub async fn await_takeover_painted(
+    rx: tokio::sync::oneshot::Receiver<()>,
+    timeout: std::time::Duration,
+) -> RevealSignal {
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(())) => RevealSignal::Painted,
+        _ => RevealSignal::TimedOut,
+    }
+}
+
+/// The welcome flow's handoff to the desktop window (US-010, macOS and Linux).
+///
+/// Builds the desktop window hidden with `hint` queued as its pending route,
+/// waits for [`desktop_first_run_takeover_painted`] (watchdog:
+/// [`FIRST_RUN_PAINTED_TIMEOUT`]), then shows it through the same placed
+/// reveal every other open uses ([`reveal_desktop_alt_window`]: no
+/// re-centring) and only then hides the welcome window. Unlike
+/// [`open_desktop_alt_window_inner`] it does not hide `main` up front.
+#[cfg(not(target_os = "windows"))]
+pub async fn open_desktop_alt_for_first_run(app: AppHandle, hint: String) -> Result<(), String> {
+    if crate::tray::redirect_to_setup_if_unfinished(&app) {
+        return Ok(());
+    }
+
+    // A second handoff while one is waiting (a double click that got through)
+    // must not reveal the held window early.
+    if FIRST_RUN_REVEAL_HOLD
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    let signal = if app.get_webview_window(WINDOW_LABEL).is_some() {
+        // Already open (and painted): nothing to wait for.
+        RevealSignal::Painted
+    } else {
+        let rx = arm_first_run_painted();
+        if let Err(e) = build_desktop_alt_window(&app, Some(&hint)) {
+            FIRST_RUN_REVEAL_HOLD.store(false, Ordering::Release);
+            let _ = first_run_painted_cell().lock().map(|mut cell| cell.take());
+            return Err(e);
+        }
+        await_takeover_painted(rx, FIRST_RUN_PAINTED_TIMEOUT).await
+    };
+    FIRST_RUN_REVEAL_HOLD.store(false, Ordering::Release);
+
+    for step in first_run_reveal_plan(signal) {
+        match step {
+            RevealStep::LogWatchdog => {
+                eprintln!(
+                    "[desktop-alt] first-run reveal watchdog: no takeover-painted signal within {:?}; showing the desktop window anyway",
+                    FIRST_RUN_PAINTED_TIMEOUT
+                );
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "DESKTOP_FIRST_RUN_REVEAL_WATCHDOG timeout_ms={}",
+                        FIRST_RUN_PAINTED_TIMEOUT.as_millis()
+                    ),
+                );
+            }
+            RevealStep::ShowDesktop => {
+                if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+                    enforce_desktop_alt_frame(&window);
+                    reveal_desktop_alt_window(&window);
+                    let _ = window.set_focus();
+                }
+            }
+            RevealStep::HideWelcome => crate::tray::hide_onboarding_window(&app),
+        }
+    }
+    Ok(())
+}
+
 /// Dev-only render audit for local desktop verification. No-ops unless
 /// `HQ_DEV_AUDIT_DESKTOP_RENDER=1` is set before launch.
 #[tauri::command]
@@ -1028,6 +1204,17 @@ pub async fn open_desktop_alt_window_inner(
         return Ok(());
     }
 
+    build_desktop_alt_window(&app, route)
+}
+
+/// Build the desktop window from scratch (it is declared `create: false`).
+///
+/// Shared by [`open_desktop_alt_window_inner`] and the first-run handoff
+/// ([`open_desktop_alt_for_first_run`]). While [`FIRST_RUN_REVEAL_HOLD`] is set
+/// the window is built hidden on every non-Windows platform and neither the
+/// first-page-load reveal nor the reveal watchdog shows it: the first-run
+/// handoff reveals it itself once the shell has painted the takeover.
+fn build_desktop_alt_window(app: &AppHandle, route: Option<&str>) -> Result<(), String> {
     // Fresh build: queue the route so the window picks it up on mount via
     // `desktop_alt_consume_pending_route`.
     set_pending_route(route);
@@ -1037,7 +1224,7 @@ pub async fn open_desktop_alt_window_inner(
         allow(unused_mut)
     )]
     let mut builder = tauri::WebviewWindowBuilder::new(
-        &app,
+        app,
         WINDOW_LABEL,
         crate::ui_protocol::ui_url("desktop-alt.html"),
     )
@@ -1061,7 +1248,7 @@ pub async fn open_desktop_alt_window_inner(
 
     #[cfg(not(target_os = "macos"))]
     {
-        builder = builder.visible(true);
+        builder = builder.visible(!first_run_reveal_held());
     }
 
     #[cfg(target_os = "macos")]
@@ -1081,6 +1268,12 @@ pub async fn open_desktop_alt_window_inner(
                 if payload.event() != tauri::webview::PageLoadEvent::Finished
                     || first_page_finished.swap(true, Ordering::AcqRel)
                 {
+                    return;
+                }
+
+                // The first-run handoff owns the reveal: it shows the window
+                // once the takeover has painted (or its watchdog fires).
+                if first_run_reveal_held() {
                     return;
                 }
 
@@ -1105,10 +1298,10 @@ pub async fn open_desktop_alt_window_inner(
 
     // target=_blank / window.open from message HTML must not spawn a webview.
     // Allowed http(s)/mailto URLs open in the default browser instead.
-    builder = crate::util::external_links::deny_webview_new_windows(builder, &app);
+    builder = crate::util::external_links::deny_webview_new_windows(builder, app);
 
     let _window = builder.build().map_err(|e| e.to_string())?;
-    crate::recovery::note_desktop_window_created(&app);
+    crate::recovery::note_desktop_window_created(app);
 
     // A display change while the window is open moves it and changes the scale
     // factor; re-clamp so the next reveal is not the first thing to notice.
@@ -1136,6 +1329,10 @@ pub async fn open_desktop_alt_window_inner(
         let watchdog = _window.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            // The first-run handoff runs its own watchdog for a held window.
+            if first_run_reveal_held() {
+                return;
+            }
             if !watchdog.is_visible().unwrap_or(false) {
                 eprintln!(
                     "[desktop-alt] reveal watchdog: first-page-load reveal never fired; forcing reveal"
@@ -2274,5 +2471,139 @@ mod window_router_tests {
         );
         assert_eq!(DesktopDestination::from_route_name(""), None);
         assert_eq!(DesktopDestination::from_route_name("   "), None);
+    }
+}
+
+#[cfg(test)]
+mod first_run_reveal_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn painted_reveal_shows_desktop_before_hiding_welcome() {
+        assert_eq!(
+            first_run_reveal_plan(RevealSignal::Painted),
+            vec![RevealStep::ShowDesktop, RevealStep::HideWelcome]
+        );
+    }
+
+    #[test]
+    fn watchdog_reveal_logs_then_shows_desktop_before_hiding_welcome() {
+        assert_eq!(
+            first_run_reveal_plan(RevealSignal::TimedOut),
+            vec![
+                RevealStep::LogWatchdog,
+                RevealStep::ShowDesktop,
+                RevealStep::HideWelcome
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn painted_signal_ends_the_wait_without_the_watchdog() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let started = tokio::time::Instant::now();
+        let waiting = tokio::spawn(await_takeover_painted(rx, Duration::from_secs(8)));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tx.send(()).unwrap();
+        assert_eq!(waiting.await.unwrap(), RevealSignal::Painted);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn missing_signal_times_out_at_the_bound() {
+        let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            await_takeover_painted(rx, Duration::from_secs(8)).await,
+            RevealSignal::TimedOut
+        );
+        assert_eq!(started.elapsed(), Duration::from_secs(8));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropped_signal_counts_as_timed_out() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        drop(tx);
+        assert_eq!(
+            await_takeover_painted(rx, Duration::from_secs(8)).await,
+            RevealSignal::TimedOut
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn painted_command_answers_the_armed_handoff_once() {
+        let mut rx = arm_first_run_painted();
+        assert!(desktop_first_run_takeover_painted());
+        assert!(rx.try_recv().is_ok());
+        // A second report (or any later launch) has nothing waiting.
+        assert!(!desktop_first_run_takeover_painted());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn watchdog_bound_outlasts_the_shells_own_first_run_waits() {
+        // FIRST_RUN_LISTINGS_WAIT_MS (5000) in visual-first-run.ts.
+        assert!(FIRST_RUN_PAINTED_TIMEOUT > Duration::from_millis(5000));
+        assert!(FIRST_RUN_PAINTED_TIMEOUT <= Duration::from_secs(10));
+    }
+
+    fn fn_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).expect("function present");
+        let rest = &src[start..];
+        let end = rest.find("\n}\n").expect("function end");
+        &rest[..end]
+    }
+
+    /// Source contract: the first-run handoff shows the desktop window through
+    /// the placed reveal (no re-centring) before it hides the welcome window,
+    /// and nothing in it hides the welcome window up front.
+    #[test]
+    fn first_run_handoff_source_reveals_before_hiding_welcome() {
+        let src = include_str!("desktop_alt.rs");
+        let body = fn_body(src, "pub async fn open_desktop_alt_for_first_run(");
+        let reveal = body
+            .find("reveal_desktop_alt_window(&window)")
+            .expect("placed reveal");
+        let hide = body.find("hide_onboarding_window").expect("welcome hide");
+        assert!(reveal < hide, "desktop window must show before the welcome window hides");
+        assert_eq!(body.matches("hide_onboarding_window").count(), 1);
+        assert!(!body.contains(".center()"), "no second centring");
+        let wait = body.find("await_takeover_painted(").expect("painted wait");
+        assert!(wait < reveal, "the reveal waits for the painted signal");
+
+        let plan = fn_body(src, "pub fn first_run_reveal_plan(");
+        assert!(plan.contains("ShowDesktop, RevealStep::HideWelcome"));
+    }
+
+    /// Source contract: while the first-run hold is set, neither the
+    /// first-page-load reveal nor the 5 s reveal watchdog shows the window.
+    #[test]
+    fn held_window_is_not_revealed_by_page_load_or_reveal_watchdog() {
+        let src = include_str!("desktop_alt.rs");
+        let body = fn_body(src, "fn build_desktop_alt_window(");
+        assert!(body.contains("visible(!first_run_reveal_held())"));
+        assert!(body.matches("if first_run_reveal_held() {").count() >= 2);
+    }
+
+    /// Source contract: the welcome flow's handoff uses the held reveal on
+    /// macOS and Linux and keeps the original order on Windows.
+    #[test]
+    fn first_run_handoff_is_cfg_split_for_windows() {
+        let src = include_str!("first_run.rs");
+        let body = fn_body(src, "pub async fn show_main_window_at_tray(");
+        let held = body
+            .find("#[cfg(not(target_os = \"windows\"))]")
+            .expect("non-windows branch");
+        let windows = body
+            .find("#[cfg(target_os = \"windows\")]")
+            .expect("windows branch");
+        let held_branch = &body[held..windows];
+        assert!(held_branch.contains("open_desktop_alt_for_first_run("));
+        assert!(!held_branch.contains("hide_onboarding_window"));
+        let windows_branch = &body[windows..];
+        assert!(windows_branch.contains("open_desktop_alt_window_inner("));
+        assert!(windows_branch.contains("hide_onboarding_window"));
     }
 }

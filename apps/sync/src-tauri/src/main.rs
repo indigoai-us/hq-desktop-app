@@ -1113,6 +1113,7 @@ fn main() {
             tray::meetings_set_prompt_badge,
             commands::desktop_alt::open_desktop_alt_window,
             commands::desktop_alt::desktop_alt_consume_pending_route,
+            commands::desktop_alt::desktop_first_run_takeover_painted,
             commands::desktop_alt::desktop_alt_dev_audit_render,
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
