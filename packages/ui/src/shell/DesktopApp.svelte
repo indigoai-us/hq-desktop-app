@@ -73,6 +73,7 @@
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
   import WelcomeReport from "../brief/WelcomeReport.svelte";
+  import { welcomeMadeBy } from "../brief/welcome-made-by.js";
   import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
   import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
@@ -4073,15 +4074,6 @@
     if (welcome) handleSelect(welcome);
     else requestChannelOpen(SETUP_CHANNEL_ID);
   }
-  /** The welcome report's "made this report" line; null when no assistant exists yet. */
-  const welcomeMadeBy = $derived(
-    assistantUid
-      ? {
-          name: assistantLabel,
-          onmeet: () => openSetupBotDm({ agentUid: assistantUid, handle: existingSetupBot?.handle ?? "" }),
-        }
-      : null,
-  );
   /** The "Connect your AI apps" card: the launch scan plus the CLIs launch detection found. */
   const welcomeAiApps = $derived(
     welcomeAppsHost
@@ -6081,6 +6073,18 @@
     return kind === "idle" && !!uid && (welcomeReportSent === uid || welcomeReportSentTo(uid));
   });
   const welcomeReportProgress = $derived(briefRun?.phase.kind === "running" ? briefRun.phase.progress : null);
+  /** The welcome report's "made this report" line: shown once the report landed, null when no assistant exists yet. */
+  const welcomeMadeByLine = $derived(
+    welcomeMadeBy(
+      assistantUid
+        ? {
+            name: assistantLabel,
+            onmeet: () => openSetupBotDm({ agentUid: assistantUid, handle: existingSetupBot?.handle ?? "" }),
+          }
+        : null,
+      briefRun?.phase.kind === "ready",
+    ),
+  );
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
     setupLaunchError = null;
     const res = await adapter.settings.getSetupStatus();
@@ -15129,7 +15133,7 @@
               progress={welcomeReportProgress}
               connect={welcomeConnect}
               onsetup={welcomeReportNeedsAssistant ? openWelcomeSetup : null}
-              madeBy={welcomeMadeBy}
+              madeBy={welcomeMadeByLine}
               aiApps={welcomeAiApps}
             >
               {@render briefPage()}
