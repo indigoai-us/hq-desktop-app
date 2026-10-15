@@ -3880,8 +3880,17 @@
    * assistant is.
    */
   let installQueueAttentionOwed = $state<readonly string[] | null>(null);
+  let installQueueAttentionRetry: ReturnType<typeof setTimeout> | null = null;
   function tellAssistantInstallQueueFailed(failed: readonly string[]): void {
-    if (failed.length === 0) return;
+    if (installQueueAttentionRetry !== null) {
+      clearTimeout(installQueueAttentionRetry);
+      installQueueAttentionRetry = null;
+    }
+    if (failed.length === 0) {
+      // The failure is over (the queue resumed and the item went through).
+      installQueueAttentionOwed = null;
+      return;
+    }
     const uid = assistantUid;
     if (!uid) {
       installQueueAttentionOwed = failed;
@@ -3891,9 +3900,18 @@
     const key = `install-queue-attention:${[...failed].sort().join(",")}`;
     const body = installQueueAttentionNotice(failed, { noun: hostComputerNoun() });
     void sendBotNotice(uid, body, key, key, false).then((sent) => {
-      if (!sent) console.warn("[hq-desktop] the assistant was not told about the failed setup items");
+      if (sent) return;
+      console.warn("[hq-desktop] the assistant was not told about the failed setup items; trying again in a minute");
+      // The notice ledger paces the resend; this only asks again later.
+      installQueueAttentionRetry = setTimeout(() => {
+        installQueueAttentionRetry = null;
+        installQueueAttentionOwed = [...failed];
+      }, INSTALL_QUEUE_ATTENTION_RETRY_MS);
     });
   }
+  onDestroy(() => {
+    if (installQueueAttentionRetry !== null) clearTimeout(installQueueAttentionRetry);
+  });
   $effect(() => {
     const owed = installQueueAttentionOwed;
     if (!owed || !assistantUid) return;
@@ -4650,6 +4668,8 @@
   let autoRestoreStatus = $state<string | null>(null);
   /** How long a "back online" line stays on screen before it clears itself. */
   const AUTO_RESTORE_DONE_LINE_MS = 8000;
+  /** How long before a failed "setup item failed" notice is asked again. */
+  const INSTALL_QUEUE_ATTENTION_RETRY_MS = 60_000;
   let autoRestoreStatusClearTimer: ReturnType<typeof setTimeout> | null = null;
   function scheduleAutoRestoreStatusClear(): void {
     if (autoRestoreStatusClearTimer !== null) clearTimeout(autoRestoreStatusClearTimer);
@@ -5665,12 +5685,6 @@
   const welcomeIsBannerOnly = $derived(
     Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupBotLauncher && !setupAgent.active),
   );
-  /**
-   * Where the "bringing your bots back" line lives: at the bottom of the
-   * conversation when there is one, and in the shell's banner slot only when
-   * there is not (the welcome hero, mid-wizard). Never in both.
-   */
-  const autoRestoreStatusInline = $derived(Boolean(selectedRow) && !welcomeIsBannerOnly);
   const inSetupChannelWithAgent = $derived(
     Boolean(selectedRow && isSetupChannel(selectedRow.channelId) && setupAgent.active),
   );

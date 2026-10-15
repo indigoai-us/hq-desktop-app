@@ -5,7 +5,7 @@
  * `QueueStatus` (camelCase over the wire) both from
  * `get_install_queue_status` and on the `install-queue:progress` event. The
  * chip never blocks anything: it only names the item running now and offers a
- * Retry when an item needs attention.
+ * A failed item is reported through the assistant, never as a count on the chip.
  */
 
 import type { SyncUnlistenFn } from "./sync-events.js";
@@ -111,10 +111,6 @@ export function installQueueAttentionNotice(failed: readonly string[], opts: { n
 
 /** Plain-language chip text. Never includes raw error output. */
 export function finishingSetupLabel(status: InstallQueueStatus): string {
-  if (status.state === "attention") {
-    const n = Math.max(status.failed.length, 1);
-    return `Finishing setup: ${n} ${n === 1 ? "item needs" : "items need"} attention`;
-  }
   const progress = status.total > 0 ? ` (${Math.min(status.done + 1, status.total)} of ${status.total})` : "";
   return status.current
     ? `Finishing setup: ${status.current}${progress}`

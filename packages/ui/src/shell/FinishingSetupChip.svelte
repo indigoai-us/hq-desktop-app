@@ -1,7 +1,8 @@
 <script lang="ts">
   // Titlebar "Finishing setup" chip (install-flow-rethink US-005). Reads the
   // native background install queue and never blocks anything: it names the
-  // item running now and offers Retry when an item needs attention.
+  // item running now. A failed item is the host's to report (the assistant
+  // says what and the fix); the chip shows no count and no Retry.
   import { untrack } from "svelte";
   import {
     INSTALL_QUEUE_PROGRESS_EVENT,
@@ -21,7 +22,16 @@
   let { host = null, onattention = null }: Props = $props();
   let toldAbout = "";
   function noteAttention(parsed: InstallQueueStatus | null): void {
-    if (!parsed || parsed.state !== "attention") return;
+    if (!parsed) return;
+    if (parsed.state !== "attention") {
+      // The failure the host was told about is over (the queue resumed and
+      // the item went through): say so, so a held notice is dropped.
+      if (toldAbout) {
+        toldAbout = "";
+        onattention?.([]);
+      }
+      return;
+    }
     const key = [...parsed.failed].sort().join(",");
     if (!key || key === toldAbout) return;
     toldAbout = key;
@@ -29,8 +39,6 @@
   }
 
   let status = $state<InstallQueueStatus | null>(null);
-  let retrying = $state(false);
-  let retryFailed = $state(false);
 
   $effect(() => {
     const current = host;
@@ -48,7 +56,6 @@
           if (disposed || !parsed) return;
           sawEvent = true;
           status = parsed;
-          if (parsed.state !== "attention") retryFailed = false;
           noteAttention(parsed);
         })
         .then((fn) => {
@@ -78,22 +85,6 @@
     };
   });
 
-  function retry(): void {
-    const current = host;
-    if (!current || retrying) return;
-    retrying = true;
-    retryFailed = false;
-    void current
-      .retry()
-      .catch((err) => {
-        console.error("finishing setup chip: retry failed:", err);
-        retryFailed = true;
-      })
-      .finally(() => {
-        retrying = false;
-      });
-  }
-
   const visible = $derived(finishingSetupVisible(status));
   const label = $derived(status ? finishingSetupLabel(status) : "");
 </script>
@@ -110,21 +101,6 @@
       <span class="dot" aria-hidden="true"></span>
     {/if}
     <span class="label">{label}</span>
-    {#if status.state === "attention"}
-      <button
-        type="button"
-        class="retry"
-        data-testid="finishing-setup-retry"
-        disabled={retrying}
-        aria-busy={retrying}
-        onclick={retry}
-      >
-        {retrying ? "Retrying" : "Retry"}
-      </button>
-      {#if retryFailed}
-        <span class="note" data-testid="finishing-setup-retry-failed">Could not retry. Try again.</span>
-      {/if}
-    {/if}
   </div>
 {/if}
 
@@ -159,25 +135,7 @@
     max-width: 280px;
   }
 
-  .retry {
-    height: 18px;
-    padding: 0 8px;
-    border: 1px solid var(--line);
-    border-radius: 9px;
-    background: transparent;
-    color: var(--t2);
-    font: inherit;
-    cursor: pointer;
-  }
 
-  .retry:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-
-  .note {
-    opacity: 0.8;
-  }
 
   @keyframes finishing-setup-pulse {
     0%,

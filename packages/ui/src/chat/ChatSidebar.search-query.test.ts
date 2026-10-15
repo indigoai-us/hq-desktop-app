@@ -195,4 +195,22 @@ describe("ChatSidebar message search and the app's requests to a bot (review B-3
 
     expect(host.querySelector('[data-testid="chat-search-hit"]')).toBeNull();
   });
+
+  it("with nothing hidden, no 'Show all history' control and no empty date group is drawn (owner feedback 11, 2026-10-15)", async () => {
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stubApi(), seedDirectory: [seedRow] },
+    });
+    await vi.waitFor(() => expect(host.querySelector(".chat-list")).toBeTruthy());
+    await tick();
+    expect(host.querySelector('[data-testid="chat-show-history"]')).toBeNull();
+    // Every date group heading is followed by a list with at least one row.
+    const heads = host.querySelectorAll(".chat-day-head");
+    expect(heads.length).toBeGreaterThan(0);
+    for (const head of heads) {
+      const list = head.nextElementSibling;
+      expect(list?.classList.contains("chat-list")).toBe(true);
+      expect(list?.children.length).toBeGreaterThan(0);
+    }
+  });
 });
