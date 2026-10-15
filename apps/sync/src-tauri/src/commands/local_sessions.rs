@@ -655,6 +655,25 @@ mod tests {
         m.roots.home.clone().unwrap()
     }
 
+    /// Claude Code's project-folder name for a working folder, the same
+    /// encoding `project_label` decodes: `/`, `.`, `\` and `:` become `-`
+    /// (on Windows a `:` or `\` left in a folder name is invalid or nests).
+    fn encode_cwd(path: &Path) -> String {
+        path.to_string_lossy().replace(['/', '.', '\\', ':'], "-")
+    }
+
+    /// A path relative to the fake home with `/` separators on every platform,
+    /// so the expected strings read the same on Windows.
+    fn rel(home: &Path, path: &str) -> String {
+        Path::new(path)
+            .strip_prefix(home)
+            .unwrap()
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
     fn claude_sessions(m: &Machine, folder: &str, ages_days: &[u64]) {
         let dir = m.roots.claude_dir.as_ref().unwrap().join("projects").join(folder);
         for (i, age) in ages_days.iter().enumerate() {
@@ -705,7 +724,12 @@ mod tests {
             assert_eq!(t.share_last_30d, 0.0);
         }
         assert!(scan.repos.is_empty() && scan.projects.is_empty());
-        assert!(scan.apps.is_empty() && scan.mcp_servers.is_empty());
+        assert!(scan.mcp_servers.is_empty());
+        // Windows also reads the uninstall registry, which is machine state
+        // the fake home cannot empty; the app list is checked off Windows.
+        if !cfg!(windows) {
+            assert!(scan.apps.is_empty());
+        }
         assert_eq!(outcome(&scan, "claude-code"), "missing");
         assert_eq!(outcome(&scan, "codex"), "missing");
         assert_eq!(outcome(&scan, "repos"), "missing");
@@ -716,9 +740,9 @@ mod tests {
     fn local_sessions_claude_only_machine_counts_sessions_and_labels_projects() {
         let m = machine();
         let repo_path = repo(&m, "code/hq-desktop.app", 2);
-        let encoded = repo_path.to_string_lossy().replace(['/', '.'], "-");
+        let encoded = encode_cwd(&repo_path);
         claude_sessions(&m, &encoded, &[1, 3, 40]);
-        let home_encoded = home(&m).to_string_lossy().replace(['/', '.'], "-");
+        let home_encoded = encode_cwd(&home(&m));
         claude_sessions(&m, &format!("{home_encoded}-notes"), &[10]);
         claude_sessions(&m, &home_encoded, &[100]);
 
@@ -805,11 +829,7 @@ mod tests {
         assert_eq!(tool(&scan, "codex").sessions_last_30d, 1);
         assert_eq!(tool(&scan, "claude-code").share_last_30d, 0.75);
         assert_eq!(tool(&scan, "codex").share_last_30d, 0.25);
-        let repos: Vec<_> = scan
-            .repos
-            .iter()
-            .map(|r| Path::new(&r.path).strip_prefix(&h).unwrap().to_string_lossy().into_owned())
-            .collect();
+        let repos: Vec<_> = scan.repos.iter().map(|r| rel(&h, &r.path)).collect();
         assert_eq!(repos[0], "code/org/new");
         assert_eq!(repos[1], "Documents/GitHub/site");
         assert_eq!(repos[2], "code/old");

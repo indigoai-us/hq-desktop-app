@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Internal: the launch scan tests now pass on Windows (project folders encoded the way Claude Code encodes them there, repo paths compared with one separator, the uninstall-registry apps left out of the empty-machine check). No change for people using the app.
 - First run: the "Finishing setup" pill on the title bar no longer turns into "1 item needs attention". While background setup runs it shows what it is on; when an item does not finish, the pill goes away and your assistant tells you in its chat which item did not finish and that quitting and reopening HQ finishes it.
 - Your assistant's conversation now stays clean: the "back online" and "brought back" notices after a reinstall show as a short status line over the conversation, not as messages in it, and the line clears by itself once things are back.
 - Messages: the "Your bots are waiting" rows and bot restore lines now use each bot's name (for example "Hazel"), not its internal handle.
