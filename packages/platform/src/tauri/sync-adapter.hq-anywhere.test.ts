@@ -20,4 +20,13 @@ describe("sync adapter HQ Anywhere person setting", () => {
       ["set_hq_anywhere_global_install", { enabled: true }],
     ]);
   });
+
+  it("installs the runtime setup for one coding tool", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const adapter = createSyncPlatformAdapter({ invoke });
+
+    await expect(adapter.settings.installRuntimeForTool?.("codex")).resolves.toEqual(ok(undefined));
+
+    expect(invoke.mock.calls).toEqual([["install_hq_runtime_for_tool", { runtime: "codex" }]]);
+  });
 });

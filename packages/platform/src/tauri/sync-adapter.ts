@@ -1845,6 +1845,8 @@ export function createSyncPlatformAdapter(
         call('put_hq_anywhere_person_setting', { value }),
       syncHqAnywhereGlobal: (enabled) =>
         call('set_hq_anywhere_global_install', { enabled }),
+      installRuntimeForTool: (runtime) =>
+        call('install_hq_runtime_for_tool', { runtime }),
       updateSettings: async (patch) => {
         const settingsInvoker: SettingsInvoker = <T>(
           command: string,

@@ -2919,6 +2919,11 @@ export interface SettingsApi {
   putHqAnywherePersonSetting?(value: boolean): AdapterPromise<void>;
   /** Apply or remove the native global Claude Code/Codex setup. */
   syncHqAnywhereGlobal?(enabled: boolean): AdapterPromise<void>;
+  /**
+   * Install the HQ global runtime setup (hooks, memory, skills) for one
+   * coding tool, used by first-run "Continue in <tool>".
+   */
+  installRuntimeForTool?(runtime: "claude" | "codex"): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
   /**
    * The welcome channel's guided setup finished on this machine. Optional:
