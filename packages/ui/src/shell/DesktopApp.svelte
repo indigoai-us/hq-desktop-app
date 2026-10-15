@@ -302,6 +302,12 @@
   import FirstRunDecisionTakeover from "../chat/first-run/FirstRunDecisionTakeover.svelte";
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
   import {
+    fromConversationStart,
+    readConversationStarts,
+    recordConversationStart,
+    type ConversationStarts,
+  } from "../chat/first-run/conversation-start.js";
+  import {
     assistantNameIssue,
     firstRunHandoffNotice,
     firstRunIntro,
@@ -3647,6 +3653,12 @@
   let firstRunConfirmedName = $state<string | null>(null);
   /** The setup bot the first run made (or adopted) this session. */
   let firstRunCreatedBot: SetupBotRef | null = null;
+  /**
+   * Where each first-run assistant's conversation starts on this computer
+   * (conversation-start.ts). An adopted assistant keeps the account's earlier
+   * messages on the server; the person sees only what comes after adopt time.
+   */
+  let conversationStarts = $state.raw<ConversationStarts>(readConversationStarts(connectionStorage()));
   /** A dry walk's pretend assistant (dev-switches.ts): nothing is created or sent. */
   let firstRunDryBot = $state<SetupBotRef | null>(null);
   /** Where creating the assistant stands, as the takeover shows it. Derived, never stored. */
@@ -3691,6 +3703,13 @@
     if (firstRunCreatedBot?.agentUid === bot.agentUid) return;
     firstRunCreatedBot = bot;
     firstRunHandoffName = name;
+    // The conversation starts now: earlier messages, their unread count and
+    // their time stay out of this assistant's DM and its sidebar row.
+    conversationStarts = recordConversationStart(connectionStorage(), bot.agentUid, Date.now());
+    void sidebarApi.markDmThreadRead(bot.agentUid).then(
+      () => wakes?.emit?.("conversation:read", { id: `dm:${bot.agentUid}` }),
+      (err: unknown) => console.warn("[hq-desktop] first-run assistant DM not marked read:", err),
+    );
     if (outcome === "created") firstRunCreatedUids.add(bot.agentUid);
     // The takeover closed while the create ran: the note goes now.
     deliverFirstRunHandoff();
@@ -6795,7 +6814,7 @@
     timelineCache.set(row.id, next);
     onlivemessages?.(row, next);
     if (row.kind === "dm" && row.personUid) {
-      const entry = dmActivityFromTimeline(row.personUid, next);
+      const entry = dmActivityFromTimeline(row.personUid, fromConversationStart(next, conversationStarts, row.personUid));
       if (entry) {
         const prev = lastDmTimelineStampByUid.get(entry.personUid);
         if (!prev || entry.lastMessageAt > prev) {
@@ -7153,7 +7172,9 @@
     // fetched page, the host's stored thread, a live update), rows written
     // for the bot only are left out and an answer whose root is not shown
     // stays visible.
-    const rows = isBotDmRow(selectedRow) ? botDmRows(source, timelineDisplayFor(selectedRow)) : source;
+    const rows = isBotDmRow(selectedRow)
+      ? botDmRows(fromConversationStart(source, conversationStarts, selectedRow.personUid), timelineDisplayFor(selectedRow))
+      : source;
     if (Object.keys(replyCountOverride).length === 0) return rows;
     return rows.map((msg) =>
       replyCountOverride[msg.eventId] != null
@@ -14603,6 +14624,7 @@
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
+          {conversationStarts}
           {rosterWakeSeq}
           requestsWakeSeq={notificationWakeSeq}
           onavatarmap={(map) => (contactAvatarByUid = map)}
