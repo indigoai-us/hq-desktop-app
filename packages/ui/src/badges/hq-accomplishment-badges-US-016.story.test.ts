@@ -192,6 +192,17 @@ describe("the announcement", () => {
     expect(names).toHaveLength(EARNED.length);
   });
 
+  it("draws straight under <body>, outside the zoomed app shell, on an opaque stage", () => {
+    // Owner, 2026-10-15: "cut off at bottom" at the Large interface size. The
+    // shell carries the Interface size zoom, so a layer inside it was taller
+    // than the window.
+    const { root } = open(EARNED);
+    expect(root.parentElement).toBe(document.body);
+    expect(root.closest(".desktop-shell")).toBeNull();
+    const css = read("BadgeLaunchAnnouncement.svelte").match(/\.la-layer \{[^}]+\}/)?.[0] ?? "";
+    expect(css).toMatch(/background: oklch\(0\.15 0\.006 285\);/);
+  });
+
   it("starts on See your badges, which opens the Badges page", async () => {
     const { root, onopenbadges, onclose } = open(EARNED);
     await tick();
