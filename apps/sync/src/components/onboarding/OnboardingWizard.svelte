@@ -648,6 +648,12 @@
   // Desktop card so the person can retry.
   let autoHandoffTried = $state(false);
   let autoHandoffFailed = $state(false);
+  /**
+   * US-010: the automatic handoff is running or has opened HQ Desktop, so the
+   * ready scene's content fades out over the same wallpaper. It comes back
+   * only when the handoff fails and the recovery card shows.
+   */
+  const handingOff = $derived(autoHandoffTried && !autoHandoffFailed);
 
   type StepTelemetryDetails = Omit<
     RecordOnboardingStep['properties'],
@@ -4958,6 +4964,7 @@
       class="scene s-ready"
       class:on={scene === 'ready'}
       data-scene="ready"
+      data-handoff={handingOff ? '' : undefined}
       data-testid="onboarding-summary"
       aria-labelledby="onboarding-title-ready"
     >

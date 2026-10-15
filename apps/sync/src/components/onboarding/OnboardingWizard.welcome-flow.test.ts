@@ -327,6 +327,8 @@ describe('welcome flow: the install runs in the background', () => {
     expect(byId('onboarding-launch-codex')!.disabled).toBe(true);
 
     expect(onfinish).not.toHaveBeenCalled();
+    const readyScene = () => host.querySelector<HTMLElement>('[data-scene="ready"]')!;
+    expect(readyScene().hasAttribute('data-handoff')).toBe(false);
 
     // US-010: once the blocking install is done the screen hands off to HQ
     // Desktop by itself. There is no Open HQ Desktop press, and the line
@@ -338,8 +340,12 @@ describe('welcome flow: the install runs in the background', () => {
     expect(byId('onboarding-ready-wait')?.textContent).not.toContain('Opening…');
     expect(host.querySelector('[data-scene="ready"] .tool-card-desktop')).toBeNull();
     expect(byId('launcher-finish-error')).toBeNull();
+    // The ready scene's content fades out while the desktop window takes over
+    // on the same wallpaper.
+    expect(readyScene().hasAttribute('data-handoff')).toBe(true);
     await flush();
     expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(readyScene().hasAttribute('data-handoff')).toBe(true);
   });
 
   it('brings back Open HQ Desktop only when the handoff fails, and retries on a press', async () => {
@@ -359,6 +365,8 @@ describe('welcome flow: the install runs in the background', () => {
     // does not apply.
     expect(byId('launcher-finish-error')).toBeNull();
     expect(byId('onboarding-ready-wait')).toBeNull();
+    // The content that faded out for the handoff comes back with the card.
+    expect(host.querySelector('[data-scene="ready"]')!.hasAttribute('data-handoff')).toBe(false);
     // One automatic try only.
     await flush();
     expect(onfinish).toHaveBeenCalledTimes(1);

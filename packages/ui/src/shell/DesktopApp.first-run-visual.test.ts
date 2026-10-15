@@ -743,11 +743,13 @@ describe("visual first run: the found-apps flag is settled before the takeover o
 });
 
 describe("visual first run: #welcome's start while the takeover waits for the bot listings", () => {
-  // #1570 holds the takeover until the bot listings answer, and #welcome's
-  // start button is live in that wait. A create made there with #welcome's
-  // kickoff, then adopted by the takeover, would write twice: once on create
-  // and once on the note at close. The start reads the listings itself before
-  // it creates, which ends the wait first; these pin that order.
+  // #1570 holds the takeover until the bot listings answer. A create made in
+  // that wait with #welcome's kickoff, then adopted by the takeover, would
+  // write twice: once on create and once on the note at close. Since US-010
+  // the shell is not painted in that wait (the takeover's backdrop holds the
+  // window), so #welcome's start cannot be clicked there at all. These pin
+  // that, and that the takeover alone then creates the bot once, while it is
+  // open, with no kickoff and one note at close.
   const listedSetupBot = {
     name: "setup",
     agentUid: SETUP_BOT_UID,
@@ -784,11 +786,11 @@ describe("visual first run: #welcome's start while the takeover waits for the bo
 
   const takeoverOpen = () => Boolean(q('[data-testid="first-run-takeover"]'));
 
-  async function clickWelcomeStartInTheWait(): Promise<void> {
+  async function expectNoWelcomeStartInTheWait(): Promise<void> {
     await settle(12);
     expect(takeoverOpen()).toBe(false);
-    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
-    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    expect(q('[data-testid="first-run-held-page"]')).toBeTruthy();
+    expect(q('[data-testid="setup-run"]')).toBeNull();
   }
 
   async function walkTheTakeoverToDone(): Promise<void> {
@@ -806,37 +808,30 @@ describe("visual first run: #welcome's start while the takeover waits for the bo
     expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
   }
 
-  it("with this computer's bot list slow, the click creates nothing until the takeover is open; no kickoff, one note at close", async () => {
+  it("with this computer's bot list slow, #welcome's start is not on screen in the wait; the takeover creates once, while open, no kickoff, one note at close", async () => {
     const listing = slowListing({ holdAll: true });
     const openAtCreate: boolean[] = [];
-    let landCreate!: (value: unknown) => void;
-    const create = vi.fn((_input: unknown) => {
+    const create = vi.fn(async (_input: unknown) => {
       openAtCreate.push(takeoverOpen());
-      return new Promise((r) => (landCreate = r));
+      listing.rows.push(listedSetupBot);
+      return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
     });
     const { platform, sendDm } = adapter({ create: create as never, flag: true, listImpl: listing.listImpl });
     await boot(platform);
-    await clickWelcomeStartInTheWait();
-    await settle(12);
+    await expectNoWelcomeStartInTheWait();
     expect(create).not.toHaveBeenCalled();
 
     listing.release();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(openAtCreate).toEqual([true]);
-    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
-    listing.rows.push(listedSetupBot);
-    landCreate(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    await settle(12);
-    expect(sendDm).not.toHaveBeenCalled();
-
     await walkTheTakeoverToDone();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     await settle(12);
     expect(create).toHaveBeenCalledTimes(1);
+    expect(openAtCreate).toEqual([true]);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
     expectOneHandoffNote(sendDm);
   });
 
-  it("with only the boot read slow, the click's own read opens the takeover before it creates; no kickoff, one note at close", async () => {
+  it("with only the boot read slow, #welcome's start is not on screen in the wait; the takeover creates once, while open, no kickoff, one note at close", async () => {
     const listing = slowListing({ holdAll: false });
     const openAtCreate: boolean[] = [];
     const create = vi.fn(async (_input: unknown) => {
@@ -846,11 +841,8 @@ describe("visual first run: #welcome's start while the takeover waits for the bo
     });
     const { platform, sendDm } = adapter({ create: create as never, flag: true, listImpl: listing.listImpl });
     await boot(platform);
-    await clickWelcomeStartInTheWait();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(openAtCreate).toEqual([true]);
-    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
-    await settle(12);
+    await expectNoWelcomeStartInTheWait();
+    expect(create).not.toHaveBeenCalled();
     expect(sendDm).not.toHaveBeenCalled();
 
     listing.release();
@@ -858,6 +850,8 @@ describe("visual first run: #welcome's start while the takeover waits for the bo
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     await settle(12);
     expect(create).toHaveBeenCalledTimes(1);
+    expect(openAtCreate).toEqual([true]);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
     expectOneHandoffNote(sendDm);
   });
 });

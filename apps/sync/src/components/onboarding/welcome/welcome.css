@@ -1404,6 +1404,14 @@
 .hq-welcome .s-ready .copy {
   top: 64px;
 }
+/* US-010: the automatic handoff to HQ Desktop. The wallpaper and veil stay;
+   the scene's content fades out while the desktop window takes over on the
+   same backdrop. Under 400ms; the reduced-motion block below makes it
+   instant. */
+.hq-welcome .s-ready.on[data-handoff] :is(.copy, .prog, .nav) {
+  opacity: 0;
+  transition: opacity 320ms var(--w-ease-out);
+}
 .hq-welcome .prog {
   position: absolute;
   left: 50%;
