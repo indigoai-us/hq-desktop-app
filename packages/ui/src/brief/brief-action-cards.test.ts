@@ -27,7 +27,7 @@ describe("briefActionsFor", () => {
     const send = vi.fn(sent);
     const actions = briefActionsFor({ uid: "agt_ada", name: "Ada", runsHere: true }, CLI, send);
     expect(actions.destinations.assistantName).toBe("Ada");
-    expect(await actions.onassistant("Review PR 42", "brief-action:run-1:d1")).toBe("Sent to Ada.");
+    expect(await actions.onassistant("Review PR 42", "brief-action:run-1:d1")).toBe("Sent to Ada. Watch your messages.");
     expect(send).toHaveBeenCalledWith("agt_ada", "Review PR 42", "brief-action:run-1:d1");
   });
 
@@ -45,6 +45,6 @@ describe("briefActionsFor", () => {
     expect(assistantNameInSentence("Ada")).toBe("Ada");
     const actions = briefActionsFor({ uid: "agt_x", name: "Your assistant", runsHere: true }, CLI, sent);
     expect(actions.destinations.assistantName).toBe("your assistant");
-    expect(await actions.onassistant("p", "k")).toBe("Sent to your assistant.");
+    expect(await actions.onassistant("p", "k")).toBe("Sent to your assistant. Watch your messages.");
   });
 });

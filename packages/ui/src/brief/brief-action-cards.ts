@@ -66,7 +66,7 @@ export function briefActionsFor(
         console.warn("[daily-brief] action send threw", err);
         return failed;
       }
-      if (res.ok) return `Sent to ${name}.`;
+      if (res.ok) return `Sent to ${name}. Watch your messages.`;
       console.warn("[daily-brief] action send failed", res.reason, res.code ?? "", res.message ?? "");
       return failed;
     },

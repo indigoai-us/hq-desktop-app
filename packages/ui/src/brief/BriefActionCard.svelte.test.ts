@@ -78,10 +78,10 @@ describe("BriefActionCard", () => {
   });
 
   it("shows the note the send resolves to, so a sent item is distinguishable from nothing", async () => {
-    render(ALL, { onassistant: async () => "Sent to Ada." });
+    render(ALL, { onassistant: async () => "Sent to Ada. Watch your messages." });
     q('[data-testid="brief-action-assistant"]')!.click();
     await settle();
-    expect(q('[role="status"]')?.textContent).toBe("Sent to Ada.");
+    expect(q('[role="status"]')?.textContent).toBe("Sent to Ada. Watch your messages.");
   });
 
   it("shows the failure note when the send rejects", async () => {
