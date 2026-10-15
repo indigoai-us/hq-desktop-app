@@ -72,6 +72,7 @@
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
+  import WelcomeReport from "../brief/WelcomeReport.svelte";
   import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
@@ -136,6 +137,7 @@
     railDestination,
     railItems,
     railPlaceholderForPage,
+    railPlaceholderPage,
     type RailItem,
   } from "./app-rail.js";
   import {
@@ -326,6 +328,7 @@
   import { FIRST_RUN_TIMING_TAG } from "../chat/first-run/first-run-timing.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
+  import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import type { FirstRunSettled } from "../chat/first-run/first-run-hosts.js";
   import {
@@ -3846,6 +3849,20 @@
       firstRunHandoffSending = false;
       if (sent) {
         firstRunHandoffDeliveredTo = bot.agentUid;
+        // The handoff lands on the welcome report (US-009), so the DM is
+        // usually not open when the note goes: its row still shows the
+        // assistant working on it when the person opens it. An open DM got
+        // its row from sendBotNotice.
+        const rowId = `dm:${bot.agentUid}`;
+        if (!thinkingByRow[rowId]?.length) {
+          thinkingByRow = startThinkingIn(
+            thinkingByRow,
+            rowId,
+            { agentUid: bot.agentUid, agentName: agentLabel(bot.agentUid, name) },
+            Date.now(),
+            { afterMs: botPinFor(rowId, bot.agentUid) },
+          );
+        }
         // Adopted another assistant while this one went out: that one's turn.
         if (firstRunCreatedBot && firstRunCreatedBot.agentUid !== bot.agentUid) deliverFirstRunHandoff();
         return;
@@ -3917,8 +3934,108 @@
     if (!owed || !assistantUid) return;
     untrack(() => tellAssistantInstallQueueFailed(owed));
   });
+  /**
+   * US-009: every way out of the visual first run lands on the welcome
+   * report (the Daily Brief view), never the bare shell or #welcome. Set for
+   * the rest of the session, so the view stays open to this person even where
+   * the rail keeps the Daily Brief hidden (`briefVisible`).
+   */
+  let welcomeReportOwed = $state(false);
+  /** The assistant the welcome report's brief job reached (one job per assistant). */
+  const WELCOME_REPORT_SENT_KEY = "hq.welcome-report.sent";
+  /** How long a job held back (assistant not running or signed in yet) waits before it tries again. */
+  const WELCOME_REPORT_RETRY_MS = 15_000;
+  function welcomeReportSentTo(uid: string): boolean {
+    try {
+      return window.localStorage.getItem(WELCOME_REPORT_SENT_KEY) === uid;
+    } catch (err) {
+      console.warn("[hq-desktop] welcome report: could not read the sent marker", err);
+      return false;
+    }
+  }
+  function markWelcomeReportSent(uid: string): void {
+    welcomeReportSent = uid;
+    try {
+      window.localStorage.setItem(WELCOME_REPORT_SENT_KEY, uid);
+    } catch (err) {
+      // The in-memory latch still holds for this session.
+      console.warn("[hq-desktop] welcome report: could not keep the sent marker", err);
+    }
+  }
+  let welcomeReportSent: string | null = null;
+  let welcomeReportRetry: ReturnType<typeof setTimeout> | null = null;
+  onDestroy(() => {
+    if (welcomeReportRetry) clearTimeout(welcomeReportRetry);
+  });
+  // The brief job builds the report once the assistant is known. Without one
+  // yet the loading card stays and the assistant's chat asks for the sign-in;
+  // a job held back (assistant not running, model not signed in) tries again
+  // on a timer. Once a job reaches the assistant it is never sent again for
+  // it, across reloads too.
+  $effect(() => {
+    const uid = assistantUid;
+    const run = briefRun;
+    if (!welcomeReportOwed || !uid || !run || firstRunDev.dry) return;
+    const kind = run.phase.kind;
+    untrack(() => {
+      if (welcomeReportSent === uid || welcomeReportSentTo(uid)) return;
+      if (kind === "waiting" || kind === "running" || kind === "ready") {
+        markWelcomeReportSent(uid);
+        return;
+      }
+      // In flight, or failed with the brief page's Try again showing.
+      if (kind === "dispatching" || kind === "failed") return;
+      if (kind === "blocked") {
+        welcomeReportRetry ??= setTimeout(() => {
+          welcomeReportRetry = null;
+          if (run.phase.kind === "blocked") void run.start();
+        }, WELCOME_REPORT_RETRY_MS);
+        return;
+      }
+      void run.start();
+    });
+  });
+  /** The company the welcome report's connect card connects apps to. */
+  const welcomeAppsCompany = $derived.by(() => {
+    const company = railCompanyRoster.find((c) => c.uid === tenantCompanyId) ?? railCompanyRoster[0] ?? null;
+    return company ? { uid: company.uid, name: company.label } : null;
+  });
+  /** Detection and connects for the connect card: the shared "Your apps" host. */
+  // svelte-ignore state_referenced_locally
+  const welcomeAppsHost = adapter.integrations
+    ? createYourAppsHost({
+        detectWorkApps: adapter.shell?.detectWorkApps?.bind(adapter.shell) ?? null,
+        catalogLookup: adapter.integrations.catalogLookup?.bind(adapter.integrations) ?? null,
+        listConnections: adapter.integrations.listConnections?.bind(adapter.integrations) ?? null,
+        startOAuth: adapter.integrations.startOAuth?.bind(adapter.integrations) ?? null,
+        oauthRedirectUri: adapter.integrations.oauthCallbackUrl
+          ? async () => {
+              const res = await adapter.integrations.oauthCallbackUrl!();
+              return res.ok ? res.value : null;
+            }
+          : null,
+        install: adapter.integrations.install?.bind(adapter.integrations) ?? null,
+        discoverDocs: adapter.integrations.discoverDocs?.bind(adapter.integrations) ?? null,
+        uninstall: adapter.integrations.uninstall?.bind(adapter.integrations) ?? null,
+        openUrl: openConnectionUrl,
+        dry: firstRunDev.dry,
+      })
+    : null;
+  /** The connect card's inputs; `desktop.first-run-found-apps-v1` is its kill switch. */
+  const welcomeConnect = $derived(
+    foundAppsFlag && welcomeAppsHost && welcomeAppsCompany
+      ? { host: welcomeAppsHost, company: welcomeAppsCompany, assistantName: assistantLabel, onopenintegrations: openCompanyIntegrations }
+      : null,
+  );
+  function openWelcomeReport(): void {
+    welcomeReportOwed = true;
+    void navigate({ kind: "extra", page: railPlaceholderPage("brief") });
+  }
   /** The takeover is done on this computer: it never opens again. */
   function closeVisualFirstRun(): void {
+    // The report view is selected before the takeover goes, so the empty
+    // desktop never shows between them.
+    openWelcomeReport();
     // Leaving must not set off the automatic start above in this session.
     setupBotAutoStarted = true;
     // A dry walk leaves no marker, so it can be walked again.
@@ -3933,9 +4050,10 @@
   /** Bots this takeover created in this session (their DM and progress card are already set up). */
   const firstRunCreatedUids = new Set<string>();
   /**
-   * Done: "Talk to <Name>" opens the assistant's DM. One created here opens
-   * like any new bot (the progress card covers its start); one that already
-   * existed opens through the setup bot's own path, with its runnability check.
+   * Done: "Talk to <Name>" lands on the welcome report (US-009); the
+   * assistant's DM opens from its profile, or from the rail once it has
+   * messages there. One that already existed keeps the
+   * setup bot's runnability check, so a bot that cannot run here says so.
    */
   function talkToFirstRunAssistant(): void {
     const creation = firstRunCreation;
@@ -3943,28 +4061,17 @@
     closeVisualFirstRun();
     if (firstRunDev.dry) return;
     const bot = creation.bot;
-    if (!firstRunCreatedUids.has(bot.agentUid)) {
-      openSetupBotDm(bot);
-      return;
+    // One that already existed keeps its runnability check; its DM says so.
+    if (!firstRunCreatedUids.has(bot.agentUid) && !botRunsHere(localBotRecords, bot.agentUid)) {
+      noteBotCannotRunHere(bot.agentUid);
+      void refreshRemoteBots(true);
     }
-    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
-    handleSelect(
-      existing ?? {
-        id: `dm:${bot.agentUid}`,
-        kind: "dm",
-        title: assistantLabel,
-        companyUid: null,
-        unreadDot: false,
-        lastActivityAt: Date.now(),
-        pinned: false,
-        personUid: bot.agentUid,
-      },
-    );
     recordWelcomeSetupRun();
   }
   /**
-   * "Continue in chat": the assistant's DM when it is ready, else #welcome,
-   * whose setup chat start (and its sign-in step) takes over from here.
+   * "Continue in chat": the welcome report, with the assistant's setup
+   * recorded when it is ready. Without one yet the assistant's chat asks for
+   * the sign-in it needs.
    */
   function continueFirstRunInChat(): void {
     if (firstRunDev.dry) {
@@ -3976,10 +4083,6 @@
       return;
     }
     closeVisualFirstRun();
-    if (selectedRow && isSetupChannel(selectedRow.channelId)) return;
-    const welcome = railRows.find((row) => row.kind === "channel" && isSetupChannel(row.channelId));
-    if (welcome) handleSelect(welcome);
-    else requestChannelOpen(SETUP_CHANNEL_ID);
   }
   /** Retry from the progress card: start the bot if it exists, else re-run the same create. */
   async function retryBotProgress(uid: string): Promise<void> {
@@ -5868,6 +5971,15 @@
     }
     return null;
   });
+  /**
+   * The welcome report's brief has landed (or failed, where the brief page offers
+   * Try again): the page replaces the loading card. A held-back job keeps it.
+   */
+  const welcomeReportReady = $derived.by(() => {
+    const kind = briefRun?.phase.kind;
+    return kind === "ready" || kind === "failed";
+  });
+  const welcomeReportProgress = $derived(briefRun?.phase.kind === "running" ? briefRun.phase.progress : null);
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
     setupLaunchError = null;
     const res = await adapter.settings.getSetupStatus();
@@ -13059,7 +13171,7 @@
     return railItems(pinned, resolvedAccountLabel ?? "You").filter(
       (item) =>
         (item.id !== "telemetry" || telemetryVisible) &&
-        (item.id !== "brief" || briefVisible),
+        (item.id !== "brief" || briefVisible || welcomeReportOwed),
     );
   });
   const activeRailId = $derived(
@@ -13161,7 +13273,7 @@
       railCompanyRoster.some((company) => isIndigoCompany({ slug: company.slug ?? null })),
   );
   $effect(() => {
-    if (railPlaceholder?.id !== "brief" || briefVisible) return;
+    if (railPlaceholder?.id !== "brief" || briefVisible || welcomeReportOwed) return;
     const company = tenantCompanyId;
     untrack(() => {
       void navigate(company ? companyRowDestination("atlas", company) : { kind: "messages" });
@@ -14898,7 +15010,7 @@
             {/snippet}
           </LazyDoor>
         {:else if railPlaceholder?.id === "brief"}
-          {#if briefVisible}
+          {#snippet briefPage()}
             <BriefRailHost
               {adapter}
               companies={railCompanyRoster.map((company) => ({ uid: company.uid, slug: company.slug, label: company.label, iconUrl: company.iconUrl }))}
@@ -14908,6 +15020,13 @@
               onopenthread={openBriefDm}
               onopenmeetings={() => void navigate({ kind: "meetings" })}
             />
+          {/snippet}
+          {#if welcomeReportOwed}
+            <WelcomeReport ready={welcomeReportReady} progress={welcomeReportProgress} connect={welcomeConnect}>
+              {@render briefPage()}
+            </WelcomeReport>
+          {:else if briefVisible}
+            {@render briefPage()}
           {/if}
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}

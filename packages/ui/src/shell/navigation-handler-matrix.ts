@@ -129,6 +129,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   openCompanyFromMore: "push",
   // Personal Connections → a company's Integrations page.
   openCompanyIntegrations: "push",
+  // The visual first run's handoff: the welcome report on the Daily Brief
+  // page, through navigate().
+  openWelcomeReport: "push",
   toggleAccountMenu: "none",
   toggleMoreCompanies: "none",
   // A connection card in a cloud bot's DM: opens a console page in the system
@@ -376,6 +379,16 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     host: "shared-shell",
     inScope: true,
     notes: "Personal Connections link into the company's Integrations page.",
+  },
+  {
+    id: "open-welcome-report",
+    file: SHARED_SHELL_FILE,
+    needle: "function openWelcomeReport(): void",
+    destinationKind: "extra",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Visual first run handoff: the welcome report on the Daily Brief page (US-009).",
   },
   {
     id: "open-dm-requests",

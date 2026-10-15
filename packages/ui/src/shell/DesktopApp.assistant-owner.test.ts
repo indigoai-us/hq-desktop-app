@@ -22,6 +22,7 @@ import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { takePendingChannelOpen, takePendingDmRequests } from "../chat/open-target.js";
+import { MESSAGE_PERSON_EVENT } from "../chat/pending-conversation.js";
 import { AUTO_RESTORE_RETRY_MS } from "../chat/bot-auto-restore.js";
 import { BOT_LIVE_ELSEWHERE_NOTICE } from "../chat/bot-restore.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
@@ -33,6 +34,15 @@ function dmRow(uid: string, title: string): ConversationRow {
 }
 
 const ASSISTANT_UID = "agt_assistant";
+
+/**
+ * Opens the assistant's DM the way its profile's Message action does: the
+ * handoff lands on the welcome report (US-009), not in the DM.
+ */
+async function openAssistantDm(): Promise<void> {
+  window.dispatchEvent(new CustomEvent(MESSAGE_PERSON_EVENT, { detail: { personUid: ASSISTANT_UID } }));
+  await settle(10);
+}
 const OLD_HEARTBEAT = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
 /** What hq-cli's adopt guard says when another writer brought the bot here first. */
 const ALREADY_HERE =
@@ -320,6 +330,11 @@ describe("first-run create racing automatic restore", () => {
     expect(q('[data-testid="bot-restore-banner"]')).toBeNull();
 
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    // Talk lands on the welcome report (US-009); the assistant's DM is in the rail.
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).not.toBeNull());
+    expect(screenText()).not.toMatch(/couldn't start/i);
+    expectNoSlug("the welcome report");
+    await openAssistantDm();
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));
     expect(screenText()).not.toMatch(/couldn't start/i);
     expectNoSlug("the assistant's conversation");
@@ -353,6 +368,9 @@ describe("first-run create racing automatic restore", () => {
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle(20);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    // Talk lands on the welcome report (US-009); the local bot's own chat is one click away in the rail.
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).not.toBeNull());
+    await openAssistantDm();
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Nibbles"));
     expect(screenText()).not.toContain("another computer");
     expectNoSlug("the assistant made with no signed-in tool");
@@ -618,6 +636,9 @@ describe("round 2 review items", () => {
     const [to, , opts] = (sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string }]>)[0]!;
     expect(to).toBe(ASSISTANT_UID);
     expect(opts.idempotencyKey).toBe(`first-run-handoff:${ASSISTANT_UID}`);
+    // Talk lands on the welcome report (US-009); the note is waiting in the assistant's DM.
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).not.toBeNull());
+    await openAssistantDm();
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));
     // The note starts its first turn: the open conversation shows it working,
     // under its name, never the handle.

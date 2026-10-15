@@ -55,6 +55,8 @@ interface AdapterOptions {
   loginStatus?: (runtime: string) => Promise<unknown>;
   /** `hq bot list --remote` (the account's own listing); absent leaves the host without it. */
   listRemote?: () => Promise<unknown>;
+  /** The app's active company slug (the brief job names it); absent leaves the host without `appShell`. */
+  activeCompany?: string;
 }
 
 function adapter({
@@ -70,6 +72,7 @@ function adapter({
   loginStatus,
   listRemote,
   listImpl,
+  activeCompany,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
     hasFeatureImpl ?? (async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false)),
@@ -119,6 +122,15 @@ function adapter({
       ...(probe ? { probe } : {}),
       ...(listRemote ? { listRemote } : {}),
     },
+    ...(activeCompany
+      ? {
+          appShell: {
+            getActiveCompany: async () => ok(activeCompany),
+            showOsNotification: async () => ok(undefined),
+          },
+          files: { getFileContent: async () => ({ ok: false as const, reason: "not found" }) },
+        }
+      : {}),
   } as unknown as PlatformAdapter;
   return { platform, hasFeature, updateAgentProfile, sendDm };
 }
@@ -179,6 +191,7 @@ async function boot(
   platform: PlatformAdapter,
   App: typeof DesktopApp = DesktopApp,
   mountWith: typeof mount = mount,
+  extraProps: Record<string, unknown> = {},
 ): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -190,6 +203,7 @@ async function boot(
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
       coreFixtures: false,
+      ...extraProps,
       extraPages: {
         sessions: {
           label: "Sessions",
@@ -314,11 +328,10 @@ describe("visual first run, flag on", () => {
         { noun: "computer" },
       ),
     );
-    // The assistant's chat is open, the takeover is gone for good.
+    // The welcome report is open, the takeover is gone for good.
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    // (The rail labels the setup bot's DM the same way today's flow does.)
-    await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
-    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit");
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="setup-hero"]')).toBeNull();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     // The legacy automatic start never ran alongside it.
@@ -415,7 +428,7 @@ describe("visual first run, flag on", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it("Continue in the coding tool leaves for #welcome, starts nothing by itself, and the takeover never opens again", async () => {
+  it("Continue in the coding tool lands on the welcome report, starts nothing by itself, and the takeover never opens again", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const { platform } = adapter({ create, flag: true });
     await boot(platform);
@@ -429,7 +442,8 @@ describe("visual first run, flag on", () => {
     primary.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="setup-hero"]')).toBeNull();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     await settle();
     expect(create).not.toHaveBeenCalled();
@@ -594,6 +608,116 @@ describe("visual first run with a setup bot that already exists", () => {
         { noun: "computer" },
       ),
     );
+  });
+});
+
+describe("welcome report (US-009)", () => {
+  const runningSetupBot = {
+    name: "setup",
+    agentUid: SETUP_BOT_UID,
+    ownerUid: "prs_test",
+    runtime: "claude",
+    state: "running",
+    pid: 11,
+    processAlive: true,
+    online: true,
+    lastHeartbeatAt: null,
+    daemonInstalled: true,
+    daemonLoaded: true,
+    dir: "/tmp/HQ/personal/workers/setup",
+    workerId: "setup",
+  };
+  const briefJobs = (sendDm: ReturnType<typeof vi.fn>) =>
+    (sendDm.mock.calls as unknown as [string, string][]).filter(([, body]) => body.startsWith("/daily-brief "));
+
+  it("the coding tool path shows the loading card in the brief view, never the bare shell or #welcome", async () => {
+    const { platform } = adapter({ flag: true });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
+    expect(q('[data-testid="welcome-report-loading"]')?.textContent).toContain("Your welcome report is loading");
+    expect(q('[data-testid="welcome-report-loading"] [role="progressbar"]')).not.toBeNull();
+    expect(q('[data-testid="setup-hero"]')).toBeNull();
+  });
+
+  it("sends the brief job to the assistant once, only after it appears", async () => {
+    let created = false;
+    const create = vi.fn(async () => {
+      created = true;
+      return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
+    });
+    const listImpl = async () => ok({ bots: created ? [runningSetupBot] : [] });
+    const { platform, sendDm } = adapter({ create, flag: true, listImpl, activeCompany: "indigo" });
+    await boot(platform);
+    await chooseBot();
+    typeName("Biscuit");
+    confirmName();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    await settle(12);
+    // Nothing for the report before the person leaves the takeover.
+    expect(briefJobs(sendDm)).toHaveLength(0);
+
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    const [to, body] = briefJobs(sendDm)[0]!;
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(body.startsWith("/daily-brief indigo --run-id")).toBe(true);
+    expect(q('[data-testid="welcome-report-loading"]')).not.toBeNull();
+    await settle(30);
+    expect(briefJobs(sendDm)).toHaveLength(1);
+  });
+
+  /** A host whose scan finds Linear, with one company to connect it to. */
+  async function bootWithApps(foundApps: boolean): Promise<void> {
+    const hasFeatureImpl = async (name: string) =>
+      ok(name === VISUAL_FIRST_RUN_FLAG ? true : name === FIRST_RUN_FOUND_APPS_FLAG ? foundApps : false);
+    const { platform } = adapter({ flag: true, hasFeatureImpl });
+    const raw = platform as unknown as Record<string, Record<string, unknown>>;
+    raw.shell = {
+      ...raw.shell,
+      detectWorkApps: async () =>
+        ok({ platform: "macos", scannedAtMs: 1, apps: [{ bundleId: "com.linear", name: "Linear" }], mcpServers: [], sources: [], truncated: false }),
+    };
+    raw.integrations = {
+      catalogLookup: async () => ok({ entries: [] }),
+      listConnections: async () => ok({ connections: [] }),
+    };
+    const workspace = {
+      slug: "northwind",
+      displayName: "Northwind",
+      kind: "company",
+      state: "synced",
+      cloudUid: "cmp_northwind",
+      bucketName: "hq-northwind",
+      hasLocalFolder: true,
+      localPath: "/tmp/hq-folder/northwind",
+      membershipStatus: "active",
+      role: "owner",
+      lastSyncedAt: null,
+      brokenReason: null,
+      invitedBy: null,
+      invitedAt: null,
+    };
+    await boot(platform, DesktopApp, mount, { companies: [workspace], rosterStatus: "ready" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+  }
+
+  it("found-apps flag on: the connect card offers the apps the scan found", async () => {
+    await bootWithApps(true);
+    await vi.waitFor(() =>
+      expect(q('[data-testid="welcome-connect-card"] [data-testid="first-run-app-linear.app"]')).toBeTruthy(),
+    );
+  });
+
+  it("found-apps flag off: the welcome report has no connect card", async () => {
+    await bootWithApps(false);
+    await settle(20);
+    expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
   });
 });
 
