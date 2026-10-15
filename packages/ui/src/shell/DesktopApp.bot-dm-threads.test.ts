@@ -75,14 +75,19 @@ async function settle(times = 10): Promise<void> {
   }
 }
 
-async function mountDm(peerUid: string, seeded: Array<Record<string, unknown>> = []): Promise<string> {
+async function mountDm(
+  peerUid: string,
+  seeded: Array<Record<string, unknown>> = [],
+  value: PlatformAdapter = adapter(peerUid),
+  expected = "Hello there",
+): Promise<string> {
   host = document.createElement("div");
   document.body.appendChild(host);
   const row = { id: `dm:${peerUid}`, kind: "dm", title: "Nova", personUid: peerUid, companyUid: null } as ConversationRow;
   component = mount(DesktopApp, {
     target: host,
     props: {
-      adapter: adapter(peerUid),
+      adapter: value,
       sidebarApi: createFixtureChatSidebarApi(),
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_me", displayName: "Corey", email: "me@example.com" },
@@ -93,7 +98,7 @@ async function mountDm(peerUid: string, seeded: Array<Record<string, unknown>> =
     },
   });
   const thread = (): string => host.querySelector('[data-testid="conversation-thread"]')?.textContent ?? "";
-  await vi.waitFor(() => expect(thread()).toContain("Hello there"));
+  await vi.waitFor(() => expect(thread()).toContain(expected));
   await settle();
   return thread();
 }
@@ -154,6 +159,59 @@ describe("DesktopApp direct message with a bot", () => {
     replies[0]!.click();
     await settle();
     await vi.waitFor(() => expect(host.querySelector('[data-testid="reply-panel"]')).not.toBeNull());
+  });
+
+  it("hydrates roots for a newest-50 page of replies instead of flattening the conversation", async () => {
+    const roots = {
+      "root-long": {
+        eventId: "root-long",
+        fromPersonUid: "prs_me",
+        fromDisplayName: "Corey",
+        body: "Long thread prompt",
+        createdAt: "2026-10-14T11:47:00.000Z",
+        replyCount: 46,
+      },
+      "root-short": {
+        eventId: "root-short",
+        fromPersonUid: "prs_me",
+        fromDisplayName: "Corey",
+        body: "Short thread prompt",
+        createdAt: "2026-10-14T12:02:00.000Z",
+        replyCount: 4,
+      },
+    };
+    const messages = Array.from({ length: 50 }, (_, index) => ({
+      eventId: `reply-${index + 1}`,
+      fromPersonUid: "agt_nova",
+      fromDisplayName: "Nova",
+      body: `Reply ${index + 1}`,
+      createdAt: new Date(Date.UTC(2026, 9, 14, 12, 3, index)).toISOString(),
+      rootEventId: index < 46 ? "root-long" : "root-short",
+    })).reverse();
+    const fetchReplyThread = vi.fn(async ({ rootEventId }: { rootEventId: string }) =>
+      ok({ scope: "dm" as const, root: roots[rootEventId as keyof typeof roots] ?? null, replies: [] }),
+    );
+    const value = {
+      ...adapter("agt_nova"),
+      messaging: {
+        ...adapter("agt_nova").messaging,
+        fetchDmThread: async () => ok({ messages, nextCursor: "older" }),
+        fetchReplyThread,
+      },
+    } as PlatformAdapter;
+
+    const text = await mountDm("agt_nova", [], value, "Long thread prompt");
+
+    expect(text).toContain("Short thread prompt");
+    expect(text).not.toContain("Reply 1");
+    expect(text).not.toContain("Reply 50");
+    expect(text).toMatch(/46 replies/);
+    expect(text).toMatch(/4 replies/);
+    expect(fetchReplyThread).toHaveBeenCalledTimes(2);
+    expect(fetchReplyThread.mock.calls.map(([args]) => args.rootEventId).sort()).toEqual([
+      "root-long",
+      "root-short",
+    ]);
   });
 });
 
