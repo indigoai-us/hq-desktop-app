@@ -3618,6 +3618,9 @@
    * US-010: the first-run route is not settled yet, or it is visual and the
    * takeover has not opened. The takeover's backdrop paints instead of the
    * shell's pages, so a first run never sees the shell before the takeover.
+   * An ordinary launch whose setup is not owed settles on "legacy" as soon as
+   * the setup status answers (not owed marks the welcome setup as run), so it
+   * is never held for the flag service.
    */
   const firstRunHeld = $derived(
     !visualFirstRunOpen && (firstRunRouteNow === "pending" || firstRunRouteNow === "visual"),

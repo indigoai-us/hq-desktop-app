@@ -162,6 +162,22 @@ describe("first run holds the shell", () => {
     expect(q("first-run-held-page")).toBeNull();
   });
 
+  it("shows the shell on an ordinary launch once setup is not owed, while the flag is still unanswered", async () => {
+    // No handoff hint (not a first run from the welcome window) and the flag
+    // service never answers. Setup is not owed, so the held backdrop lifts as
+    // soon as the setup status answers, well before the flag's 1 s grace.
+    const { adapter } = makeAdapter({
+      hasFeature: () => never(),
+      getSetupStatus: async () => ok({ hqRootValid: true, configured: true, welcomeSetupOwed: false }),
+    });
+    const started = Date.now();
+    mountShell(adapter);
+    await vi.waitFor(() => expect(q("first-run-held")).toBeNull(), { timeout: 600, interval: 10 });
+    expect(Date.now() - started).toBeLessThan(600);
+    expect(q("first-run-held-page")).toBeNull();
+    expect(q("first-run-takeover")).toBeNull();
+  });
+
   it("opens the takeover from the handoff hint with no flag read and no 2 s status wait", async () => {
     // Neither the flag service nor the setup status ever answers: without the
     // hint the route would wait 2 s for the status and then fall back.
