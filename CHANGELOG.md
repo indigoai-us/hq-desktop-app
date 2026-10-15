@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Long conversations with a cloud bot now keep replies under the message they answer, even when that message is older than the first page HQ loads. Before, a long thread could appear as dozens of separate messages in the main conversation. If HQ cannot load the original message, the replies still appear in the main conversation so they are not lost.
 - Badges: the accomplishments announcement now fits the window at every Interface size. At Large, its buttons were cut off at the bottom. Its background is also fully solid, so the app no longer shows through with window transparency turned up.
 - Badges: the badges card that opens from your picture in the side rail, and the small card that explains a badge on hover, now have a solid background at every window transparency setting. Before, with transparency turned up, the sidebar showed through them.
 - Badges: a full-screen announcement introduces accomplishments the first time you open HQ after badges are turned on for you. It deals the badges you have already earned into a hand of cards. If you have none yet, it shows three face-down cards and the badges you are closest to. "See your badges" opens the Badges page; "Not now", the close button or Escape closes it. It shows once per account on each computer, and it waits until first-run setup and the guided tour are done. With reduced motion turned on, it appears without animation. Nobody sees it while badges are off for them.
