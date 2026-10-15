@@ -278,6 +278,9 @@ pub fn new_manifest(choices: QueueChoices) -> QueueManifest {
 pub const SKIP_NOT_CHOSEN: &str = "not-chosen";
 pub const SKIP_ALREADY_PRESENT: &str = "already-present";
 pub const SKIP_BUNDLED: &str = "bundled";
+/// An optional item whose only installer (Homebrew for gh) is not on this
+/// computer: nothing to run, nothing to report.
+pub const SKIP_NO_HOMEBREW: &str = "no-homebrew";
 
 /// The hq-cli item's outcome when the app-bundled hq-cli was verified and
 /// installed on launch: skip with `bundled`. `None` means run the registry

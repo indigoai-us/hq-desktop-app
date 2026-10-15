@@ -102,6 +102,9 @@ export function installQueueAttentionNotice(failed: readonly string[], opts: { n
   const noun = opts.noun?.trim() || "computer";
   const names = failed.map(installItemName);
   const list = names.length <= 1 ? (names[0] ?? "a setup item") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  // A gh item without Homebrew never reaches this list: the queue ends it as
+  // skipped (no-homebrew). A gh failure here means Homebrew is present and the
+  // install itself failed, so the relaunch retry applies to it like any item.
   return [
     `[HQ desktop] Background setup on this ${noun} did not finish: ${list}.`,
     "HQ resumes the unfinished items the next time it launches.",

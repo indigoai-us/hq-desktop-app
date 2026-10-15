@@ -3324,16 +3324,24 @@ async fn install_git_macos(app: AppHandle) -> Result<String, String> {
 // install_gh
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Install the GitHub CLI via `brew install gh`.
+/// Homebrew on this computer, if any. The GitHub CLI has no other installer
+/// here, so the background queue skips the gh item when this is `None`.
 #[cfg(not(windows))]
-async fn install_gh_macos(app: AppHandle) -> Result<String, String> {
-    let brew = match which::which_in(
+pub(crate) fn homebrew_present() -> Option<std::path::PathBuf> {
+    which::which_in(
         "brew",
         Some(extended_search_path()),
         std::env::current_dir().unwrap_or_default(),
-    ) {
-        Ok(p) => p,
-        Err(_) => {
+    )
+    .ok()
+}
+
+/// Install the GitHub CLI via `brew install gh`.
+#[cfg(not(windows))]
+async fn install_gh_macos(app: AppHandle) -> Result<String, String> {
+    let brew = match homebrew_present() {
+        Some(p) => p,
+        None => {
             let msg = "GitHub CLI is optional. Install Homebrew later if you want hq-installer to add gh automatically.";
             emit_preflight_line(&app, msg);
             return Err(msg.to_string());
@@ -8313,7 +8321,7 @@ pub async fn install_deps(
 ///
 /// `required` failures are recorded as the deps-stage onboarding failure and
 /// reported to Sentry. Optional failures (gh, Claude Code, Codex) are logged and
-/// returned to the queue, which shows them in the chip's attention state.
+/// returned to the queue, which has the assistant tell the person.
 pub(crate) async fn run_queue_dependency(
     app: &AppHandle,
     id: &str,
