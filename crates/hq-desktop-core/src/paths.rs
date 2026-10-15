@@ -2825,20 +2825,35 @@ fn warn_recorded_root_overridden_once(warning: &str) {
 /// desktop app's install stages.
 const INSTALL_MANIFEST_FILE: &str = "install-manifest.json";
 
-/// True while onboarding may still be filling the recorded HQ folder: the
-/// launch classifies as [`LaunchKind::FirstRun`] (no `firstRunCompleted` and
-/// no `machineId`), or the install manifest records a running or failed step
-/// without a completion marker (a re-run of the installer). An install that
-/// predates `firstRunCompleted` classifies as `ExistingUpdate` and is not
-/// onboarding. The manifest rule mirrors the app's
-/// `manifest_indicates_install_in_progress`.
+/// True while onboarding may still be filling the recorded HQ folder.
+///
+/// `setup_kind` is the launch kind the app classified at `.setup()`, before
+/// `ensure_machine_id` wrote `machineId`. When it is
+/// [`LaunchKind::FirstRun`], onboarding is in progress until `menubar.json`
+/// has `firstRunCompleted: true`; a `machineId` written later this launch
+/// does not end it. Any other setup kind means first-run onboarding is not
+/// running. When `setup_kind` is `None` (CLI, tests), the live `menubar.json`
+/// is classified instead: only `FirstRun` (no `firstRunCompleted` and no
+/// `machineId`) counts, so an install that predates `firstRunCompleted`
+/// (`ExistingUpdate`) is not onboarding.
+///
+/// In every case, an install manifest that records a running or failed step
+/// without a completion marker (a re-run of the installer) also counts. The
+/// manifest rule mirrors the app's `manifest_indicates_install_in_progress`.
 ///
 /// [`LaunchKind::FirstRun`]: crate::first_run::LaunchKind::FirstRun
 pub fn onboarding_in_progress_from(
+    setup_kind: Option<crate::first_run::LaunchKind>,
     menubar: &serde_json::Map<String, serde_json::Value>,
     install_manifest: Option<&serde_json::Value>,
 ) -> bool {
-    if crate::first_run::classify_from_map(menubar) == crate::first_run::LaunchKind::FirstRun {
+    use crate::first_run::{classify_from_map, LaunchKind};
+    let first_run_onboarding = match setup_kind {
+        Some(LaunchKind::FirstRun) => classify_from_map(menubar) != LaunchKind::Normal,
+        Some(LaunchKind::ExistingUpdate | LaunchKind::Normal) => false,
+        None => classify_from_map(menubar) == LaunchKind::FirstRun,
+    };
+    if first_run_onboarding {
         return true;
     }
     let Some(manifest) = install_manifest else {
@@ -2861,10 +2876,9 @@ pub fn onboarding_in_progress_from(
         })
 }
 
-/// [`onboarding_in_progress_from`] against `~/.hq/menubar.json` and
-/// `~/.hq/install-manifest.json`. Unreadable files read as empty, so a
-/// machine with neither a first-run marker nor a `machineId` counts as
-/// onboarding.
+/// [`onboarding_in_progress_from`] with the app's setup-time launch kind
+/// (unset outside the app) against `~/.hq/menubar.json` and
+/// `~/.hq/install-manifest.json`. Unreadable files read as empty.
 pub fn onboarding_in_progress() -> bool {
     let menubar = menubar_json_path()
         .map(|p| crate::first_run::read_menubar_obj(&p))
@@ -2873,7 +2887,11 @@ pub fn onboarding_in_progress() -> bool {
         .ok()
         .and_then(|dir| std::fs::read_to_string(dir.join(INSTALL_MANIFEST_FILE)).ok())
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-    onboarding_in_progress_from(&menubar, manifest.as_ref())
+    onboarding_in_progress_from(
+        crate::first_run::setup_launch_kind(),
+        &menubar,
+        manifest.as_ref(),
+    )
 }
 
 /// True iff `path` is an HQ root Claude Code can be launched into: an
@@ -3576,12 +3594,12 @@ mod tests {
             "hqPath": recorded_str,
         });
         let menubar = menubar.as_object().unwrap();
-        assert!(!onboarding_in_progress_from(menubar, None));
+        assert!(!onboarding_in_progress_from(None, menubar, None));
 
         let resolution = resolve_hq_folder_from(
             None,
             Some(&recorded_str),
-            onboarding_in_progress_from(menubar, None),
+            onboarding_in_progress_from(None, menubar, None),
             std::slice::from_ref(&discovered),
             Some(tmp.path()),
         );
@@ -3595,18 +3613,138 @@ mod tests {
         );
     }
 
+    /// A fresh install: recorded path not yet filled, another launchable root
+    /// on disk. Returns `(tmp, recorded_str, discovered)`.
+    fn fresh_install_roots() -> (tempfile::TempDir, String, PathBuf) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("Users").join("someone").join("hq");
+        std::fs::create_dir_all(&recorded).unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+        (tmp, recorded_str, discovered)
+    }
+
+    #[test]
+    fn setup_first_run_keeps_recorded_path_after_machine_id_is_written() {
+        use crate::first_run::LaunchKind;
+        let (tmp, recorded_str, discovered) = fresh_install_roots();
+
+        // Setup classified FirstRun; `ensure_machine_id` has since written
+        // `machineId`, so a live re-read alone would say ExistingUpdate.
+        let menubar = serde_json::json!({
+            "machineId": "machine-1",
+            "hqPath": recorded_str,
+        });
+        let menubar = menubar.as_object().unwrap();
+        let onboarding = onboarding_in_progress_from(Some(LaunchKind::FirstRun), menubar, None);
+        assert!(onboarding);
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            onboarding,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, PathBuf::from(&recorded_str));
+        assert!(resolution.warning.is_none(), "{:?}", resolution.warning);
+    }
+
+    #[test]
+    fn setup_first_run_ends_onboarding_once_first_run_completes() {
+        use crate::first_run::LaunchKind;
+        let (tmp, recorded_str, discovered) = fresh_install_roots();
+
+        let menubar = serde_json::json!({
+            "machineId": "machine-1",
+            "firstRunCompleted": true,
+            "hqPath": recorded_str,
+        });
+        let menubar = menubar.as_object().unwrap();
+        let onboarding = onboarding_in_progress_from(Some(LaunchKind::FirstRun), menubar, None);
+        assert!(!onboarding);
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            onboarding,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        let warning = resolution.warning.expect("override must carry a warning");
+        assert!(warning.contains(&recorded_str), "{warning}");
+    }
+
+    #[test]
+    fn unset_setup_kind_keeps_existing_update_fallback() {
+        let (tmp, recorded_str, discovered) = fresh_install_roots();
+
+        let menubar = serde_json::json!({
+            "machineId": "machine-1",
+            "hqPath": recorded_str,
+        });
+        let menubar = menubar.as_object().unwrap();
+        let onboarding = onboarding_in_progress_from(None, menubar, None);
+        assert!(!onboarding);
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            onboarding,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        assert!(resolution.warning.is_some());
+
+        // An empty menubar with no setup kind is still a first run.
+        assert!(onboarding_in_progress_from(
+            None,
+            &serde_json::Map::new(),
+            None
+        ));
+    }
+
+    #[test]
+    fn setup_kind_other_than_first_run_is_not_onboarding_but_manifest_still_counts() {
+        use crate::first_run::LaunchKind;
+        let empty = serde_json::Map::new();
+        for kind in [LaunchKind::ExistingUpdate, LaunchKind::Normal] {
+            assert!(!onboarding_in_progress_from(Some(kind), &empty, None));
+            let running = serde_json::json!({ "steps": { "template": { "status": "running" } } });
+            assert!(onboarding_in_progress_from(
+                Some(kind),
+                &empty,
+                Some(&running)
+            ));
+        }
+        let mut done = serde_json::Map::new();
+        done.insert("firstRunCompleted".into(), serde_json::Value::Bool(true));
+        let failed = serde_json::json!({ "steps": { "template": { "status": "failed" } } });
+        assert!(onboarding_in_progress_from(
+            Some(LaunchKind::FirstRun),
+            &done,
+            Some(&failed)
+        ));
+    }
+
     #[test]
     fn onboarding_is_in_progress_until_first_run_completes() {
         let empty = serde_json::Map::new();
-        assert!(onboarding_in_progress_from(&empty, None));
+        assert!(onboarding_in_progress_from(None, &empty, None));
 
         let mut not_done = serde_json::Map::new();
         not_done.insert("firstRunCompleted".into(), serde_json::Value::Bool(false));
-        assert!(onboarding_in_progress_from(&not_done, None));
+        assert!(onboarding_in_progress_from(None, &not_done, None));
 
         let mut done = serde_json::Map::new();
         done.insert("firstRunCompleted".into(), serde_json::Value::Bool(true));
-        assert!(!onboarding_in_progress_from(&done, None));
+        assert!(!onboarding_in_progress_from(None, &done, None));
     }
 
     #[test]
@@ -3618,19 +3756,19 @@ mod tests {
             "completedAt": null,
             "steps": { "template": { "status": "running" } }
         });
-        assert!(onboarding_in_progress_from(&done, Some(&running)));
+        assert!(onboarding_in_progress_from(None, &done, Some(&running)));
 
         let failed = serde_json::json!({ "steps": { "template": { "status": "failed" } } });
-        assert!(onboarding_in_progress_from(&done, Some(&failed)));
+        assert!(onboarding_in_progress_from(None, &done, Some(&failed)));
 
         let finished = serde_json::json!({
             "completedAt": "2026-10-15T00:00:00Z",
             "steps": { "template": { "status": "running" } }
         });
-        assert!(!onboarding_in_progress_from(&done, Some(&finished)));
+        assert!(!onboarding_in_progress_from(None, &done, Some(&finished)));
 
         let all_ok = serde_json::json!({ "steps": { "template": { "status": "ok" } } });
-        assert!(!onboarding_in_progress_from(&done, Some(&all_ok)));
+        assert!(!onboarding_in_progress_from(None, &done, Some(&all_ok)));
     }
 
     #[test]
