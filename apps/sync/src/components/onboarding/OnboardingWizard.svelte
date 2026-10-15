@@ -3662,15 +3662,32 @@
     await finishWithRecovery();
   }
 
+  /**
+   * The HQ root the backend resolves when no install path is chosen (the
+   * recorded one, else a discovered root). Empty means no folder is known,
+   * and the caller must not launch.
+   */
+  async function resolveLaunchFolder(): Promise<string> {
+    const resolved = await invokeCommand<string>('resolve_hq_path', { create: false });
+    return (resolved ?? '').trim();
+  }
+
   async function handleLaunchClaudeCode() {
     launchEscape = null;
     launching = 'claude';
     let launched = false;
     try {
       const tools = await ensureAiTools();
-      if (tools.claude_desktop) {
+      const folder =
+        installPath?.trim() ||
+        (tools.claude_desktop || tools.claude_cli ? await resolveLaunchFolder() : '');
+      if ((tools.claude_desktop || tools.claude_cli) && !folder) {
+        // A folderless deep link opens Claude in whatever folder it used
+        // last, so never send one.
+        launchEscape = escapeForLaunch('claude', 'HQ folder could not be resolved');
+      } else if (tools.claude_desktop) {
         const url = buildClaudeCodeUrl({
-          folder: installPath ?? '',
+          folder,
           // NOT '/setup': Claude Desktop scans skills before a link-opened
           // folder is trusted, so HQ's project `/setup` skill is not
           // registered in the session this deep link creates.
@@ -3678,8 +3695,8 @@
         });
         await invoke('open_claude_code_link', { url });
         launched = true;
-      } else if (tools.claude_cli && installPath) {
-        await invoke('launch_claude_code', { path: installPath });
+      } else if (tools.claude_cli) {
+        await invoke('launch_claude_code', { path: folder });
         dispatchPostReadyAction('open_cli');
         launched = true;
       } else {

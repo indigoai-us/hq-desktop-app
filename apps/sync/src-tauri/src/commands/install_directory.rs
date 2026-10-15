@@ -137,11 +137,12 @@ fn persisted_install_path() -> Option<PathBuf> {
         .map(|s| expand_tilde(s))
 }
 
-/// The HQ folder when it already exists (the configured one, else `~/hq`),
+/// The HQ folder when it already exists (the configured one, else a
+/// discovered HQ root, else `~/hq`),
 /// canonicalised like `resolve_hq_path`. Never creates it: callers that only
 /// read HQ (the first-run context scan) report "no HQ folder" instead.
 pub fn existing_hq_path() -> Option<String> {
-    let hq_path = persisted_install_path().unwrap_or_else(|| expand_tilde("~/hq"));
+    let hq_path = default_install_path();
     if !hq_path.is_dir() {
         return None;
     }
@@ -153,8 +154,8 @@ pub fn existing_hq_path() -> Option<String> {
 /// absolute path.
 ///
 /// Honors the folder the user chose on the Directory screen (persisted to
-/// `menubar.json` `hqPath` via [`set_hq_install_path`]); falls back to `~/hq`
-/// when nothing has been chosen yet. Every onboarding setup stage (template
+/// `menubar.json` `hqPath` via [`set_hq_install_path`]); when nothing has been
+/// chosen yet, adopts an existing HQ root found by discovery, else `~/hq`. Every onboarding setup stage (template
 /// extraction, git init, personalize, sync) resolves through here, so the
 /// chosen location is honored everywhere rather than silently defaulting to
 /// `~/hq`.
@@ -174,8 +175,26 @@ pub mod command {
 }
 
 fn resolve_hq_path_with(create: bool) -> Result<String, String> {
-    let hq_path = persisted_install_path().unwrap_or_else(|| expand_tilde("~/hq"));
-    resolve_hq_path_at(hq_path, create)
+    resolve_hq_path_at(default_install_path(), create)
+}
+
+/// The HQ folder onboarding targets: the recorded `hqPath`, else an existing
+/// launchable HQ root found at a discovery candidate, else `~/hq`. Adopting
+/// the existing root keeps a fresh install from creating a second one.
+fn default_install_path() -> PathBuf {
+    install_path_from(
+        persisted_install_path(),
+        hq_desktop_core::paths::discover_launchable_hq_root(),
+        expand_tilde("~/hq"),
+    )
+}
+
+fn install_path_from(
+    persisted: Option<PathBuf>,
+    discovered: Option<PathBuf>,
+    default: PathBuf,
+) -> PathBuf {
+    persisted.or(discovered).unwrap_or(default)
 }
 
 /// Resolve a known HQ folder path; create it only when `create` is true.
@@ -391,6 +410,80 @@ mod tests {
         assert_eq!(
             fs::canonicalize(PathBuf::from(created)).unwrap(),
             fs::canonicalize(&default_root).unwrap()
+        );
+    }
+
+    /// Create a folder that passes `is_launchable_hq_root`.
+    fn scaffold_launchable_root(root: &std::path::Path) {
+        fs::create_dir_all(root.join("companies")).unwrap();
+        fs::write(root.join("companies/manifest.yaml"), "companies: {}\n").unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/core.yaml"),
+            "version: 1\nhqVersion: 15.0.0\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join(".claude")).unwrap();
+        fs::write(root.join(".claude/settings.json"), "{}").unwrap();
+    }
+
+    /// With nothing recorded, an existing HQ root found by discovery is the
+    /// install target, so onboarding does not create a second `~/hq`.
+    #[test]
+    fn existing_valid_root_at_candidate_is_adopted_not_duplicated() {
+        let home = tempdir().unwrap();
+        let existing = home.path().join("Documents").join("HQ");
+        scaffold_launchable_root(&existing);
+        let default_root = home.path().join("hq");
+
+        let target = install_path_from(None, Some(existing.clone()), default_root.clone());
+        assert_eq!(target, existing);
+
+        let resolved = resolve_hq_path_at(target, true).unwrap();
+        assert_eq!(
+            fs::canonicalize(PathBuf::from(resolved)).unwrap(),
+            fs::canonicalize(&existing).unwrap()
+        );
+        assert!(!default_root.exists(), "a second HQ root was created");
+    }
+
+    /// The folder the person chose still wins over a discovered root.
+    #[test]
+    fn recorded_path_still_wins_over_discovered_root() {
+        let home = tempdir().unwrap();
+        let existing = home.path().join("Documents").join("HQ");
+        let chosen = home.path().join("chosen");
+        let target =
+            install_path_from(Some(chosen.clone()), Some(existing), home.path().join("hq"));
+        assert_eq!(target, chosen);
+    }
+
+    /// End to end through the Tauri command: a fresh machine (no `hqPath`)
+    /// with an HQ root under `~/Documents/HQ` resolves to that root and
+    /// leaves `~/hq` absent. Unix only for the same reason as the test above.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_hq_path_command_adopts_a_discovered_root() {
+        let _g = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = tempdir().unwrap();
+        let _home = crate::util::test_support::scoped_home(home.path());
+        let existing = home.path().join("Documents").join("HQ");
+        scaffold_launchable_root(&existing);
+        let default_root = home.path().join("hq");
+
+        let resolved = command::resolve_hq_path(None).unwrap();
+        assert_eq!(
+            fs::canonicalize(PathBuf::from(&resolved)).unwrap(),
+            fs::canonicalize(&existing).unwrap()
+        );
+        assert!(!default_root.exists(), "a second HQ root was created");
+        assert_eq!(
+            existing_hq_path()
+                .map(PathBuf::from)
+                .map(|p| fs::canonicalize(p).unwrap()),
+            Some(fs::canonicalize(&existing).unwrap())
         );
     }
 

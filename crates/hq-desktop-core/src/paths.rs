@@ -2707,46 +2707,254 @@ pub fn deploy_prefs_json_path() -> Result<PathBuf, String> {
 ///    safety net for installs that didn't write the path back to menubar.json
 ///    (older installer flows).
 /// 4. ~/HQ default
+///
+/// Outside onboarding, a recorded path that is not a valid HQ root yields to a
+/// launchable discovered root (see [`resolve_hq_folder_from`]). While
+/// onboarding is in progress the recorded path always wins, because the wizard
+/// records the folder before it fills it.
 pub fn resolve_hq_folder(config_path: Option<&str>, menubar_override: Option<&str>) -> PathBuf {
-    // Priority 1: menubar.json override
-    if let Some(path) = menubar_override {
-        if !path.is_empty() {
-            return PathBuf::from(path);
+    let candidates = hq_discovery_candidates();
+    let home = home_dir();
+    let resolution = resolve_hq_folder_from(
+        config_path,
+        menubar_override,
+        onboarding_in_progress(),
+        &candidates,
+        home.as_deref(),
+    );
+    if let Some(warning) = &resolution.warning {
+        warn_recorded_root_overridden_once(warning);
+    }
+    resolution.folder
+}
+
+/// Result of [`resolve_hq_folder_from`]: the folder, plus the warning to log
+/// when a recorded path was overridden by a discovered root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HqFolderResolution {
+    pub folder: PathBuf,
+    pub warning: Option<String>,
+}
+
+/// Pure core of [`resolve_hq_folder`]: every input is passed in so the
+/// precedence is unit-testable on any OS.
+///
+/// * While `onboarding_in_progress`, the first non-empty recorded path wins
+///   unconditionally. The wizard records the folder before it is a valid HQ
+///   root and is about to fill it.
+/// * Otherwise the first recorded path that is a valid HQ root wins. When no
+///   recorded path is valid, the first launchable discovery candidate wins and
+///   the resolution carries a warning naming both paths. With no launchable
+///   candidate, the first recorded path is kept.
+/// * With nothing recorded: the first valid candidate, then `<home>/HQ`.
+pub fn resolve_hq_folder_from(
+    config_path: Option<&str>,
+    menubar_override: Option<&str>,
+    onboarding_in_progress: bool,
+    candidates: &[PathBuf],
+    home: Option<&Path>,
+) -> HqFolderResolution {
+    let recorded: Vec<PathBuf> = [menubar_override, config_path]
+        .into_iter()
+        .flatten()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    if let Some(first) = recorded.first() {
+        if onboarding_in_progress {
+            return HqFolderResolution {
+                folder: first.clone(),
+                warning: None,
+            };
         }
-    }
-
-    // Priority 2: config.json hqFolderPath
-    if let Some(path) = config_path {
-        if !path.is_empty() {
-            return PathBuf::from(path);
+        if let Some(valid) = recorded.iter().find(|p| is_valid_hq_root(p)) {
+            return HqFolderResolution {
+                folder: valid.clone(),
+                warning: None,
+            };
         }
+        if let Some(found) = candidates.iter().find(|p| is_launchable_hq_root(p)) {
+            let warning = format!(
+                "recorded HQ folder {} is not a valid HQ root; using discovered HQ root {}",
+                first.display(),
+                found.display()
+            );
+            return HqFolderResolution {
+                folder: found.clone(),
+                warning: Some(warning),
+            };
+        }
+        return HqFolderResolution {
+            folder: first.clone(),
+            warning: None,
+        };
     }
 
-    // Priority 3: discover via core.yaml signature.
-    if let Some(found) = discover_hq_folder_via_core_yaml() {
-        return found;
+    if let Some(found) = candidates.iter().find(|p| is_valid_hq_root(p)) {
+        return HqFolderResolution {
+            folder: found.clone(),
+            warning: None,
+        };
     }
 
-    // Priority 4: ~/HQ default
-    home_dir().unwrap_or_else(|| PathBuf::from("/")).join("HQ")
+    HqFolderResolution {
+        folder: home.unwrap_or_else(|| Path::new("/")).join("HQ"),
+        warning: None,
+    }
+}
+
+/// Log the recorded-root override once per distinct message per process.
+/// `resolve_hq_folder` runs on many code paths; one line per pair of paths is
+/// enough to diagnose a stale `hqPath`.
+fn warn_recorded_root_overridden_once(warning: &str) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static LOGGED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let logged = LOGGED.get_or_init(|| Mutex::new(HashSet::new()));
+    let first_time = logged
+        .lock()
+        .map(|mut set| set.insert(warning.to_string()))
+        .unwrap_or(true);
+    if first_time {
+        eprintln!("[hq-root] warning: {warning}");
+    }
+}
+
+/// menubar.json key the app writes once onboarding (first run) is finished.
+const FIRST_RUN_COMPLETED_KEY: &str = "firstRunCompleted";
+/// Resumable onboarding install manifest under `~/.hq/`, written by the
+/// desktop app's install stages.
+const INSTALL_MANIFEST_FILE: &str = "install-manifest.json";
+
+/// True while onboarding may still be filling the recorded HQ folder: first
+/// run has not completed (`firstRunCompleted` is not `true` in menubar.json),
+/// or the install manifest records a running or failed step without a
+/// completion marker (a re-run of the installer). The manifest rule mirrors
+/// the app's `manifest_indicates_install_in_progress`.
+pub fn onboarding_in_progress_from(
+    menubar: &serde_json::Map<String, serde_json::Value>,
+    install_manifest: Option<&serde_json::Value>,
+) -> bool {
+    let first_run_completed = menubar
+        .get(FIRST_RUN_COMPLETED_KEY)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !first_run_completed {
+        return true;
+    }
+    let Some(manifest) = install_manifest else {
+        return false;
+    };
+    let completed = manifest.get("completedAt").is_some_and(|v| !v.is_null());
+    if completed {
+        return false;
+    }
+    manifest
+        .get("steps")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|steps| {
+            steps.values().any(|step| {
+                matches!(
+                    step.get("status").and_then(serde_json::Value::as_str),
+                    Some("running") | Some("failed")
+                )
+            })
+        })
+}
+
+/// [`onboarding_in_progress_from`] against `~/.hq/menubar.json` and
+/// `~/.hq/install-manifest.json`. Unreadable files read as empty, so a
+/// machine with no first-run marker counts as onboarding.
+pub fn onboarding_in_progress() -> bool {
+    let menubar = menubar_json_path()
+        .map(|p| crate::first_run::read_menubar_obj(&p))
+        .unwrap_or_default();
+    let manifest = hq_config_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join(INSTALL_MANIFEST_FILE)).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    onboarding_in_progress_from(&menubar, manifest.as_ref())
+}
+
+/// True iff `path` is an HQ root Claude Code can be launched into: an
+/// absolute folder with `companies/` and an HQ marker dir
+/// ([`crate::staging::looks_like_hq_root`]), a valid `core.yaml`
+/// ([`is_valid_hq_root`]), and `.claude/settings.json`.
+pub fn is_launchable_hq_root(path: &Path) -> bool {
+    crate::staging::looks_like_hq_root(path)
+        && is_valid_hq_root(path)
+        && path.join(".claude").join("settings.json").is_file()
+}
+
+/// First launchable HQ root among the discovery candidates, if any. Used by
+/// onboarding to adopt an existing root instead of creating a second one.
+pub fn discover_launchable_hq_root() -> Option<PathBuf> {
+    hq_discovery_candidates()
+        .into_iter()
+        .find(|p| is_launchable_hq_root(p))
 }
 
 /// Candidate parent paths the installer wizard typically uses (or that users
 /// commonly choose). First entry that contains a valid `core.yaml` wins.
 /// Order matters — most-likely first to avoid scanning the entire home dir.
 fn hq_discovery_candidates() -> Vec<PathBuf> {
-    let home = match home_dir() {
-        Some(h) => h,
-        None => return Vec::new(),
-    };
-    vec![
-        home.join("HQ"),
-        home.join("hq"),
-        home.join("Documents").join("HQ"),
-        home.join("Documents").join("hq"),
-        home.join("Desktop").join("HQ"),
-        home.join("Desktop").join("hq"),
-    ]
+    #[cfg(target_os = "windows")]
+    let (system_drive_root, local_app_data) = windows_discovery_roots();
+    #[cfg(not(target_os = "windows"))]
+    let (system_drive_root, local_app_data): (Option<PathBuf>, Option<PathBuf>) = (None, None);
+    hq_discovery_candidates_from(
+        home_dir().as_deref(),
+        system_drive_root.as_deref(),
+        local_app_data.as_deref(),
+    )
+}
+
+/// The system drive root (`SystemDrive`, e.g. `C:` -> `C:\`) and
+/// `%LOCALAPPDATA%`. Either is `None` when its variable is unset or empty;
+/// the drive letter is never assumed.
+#[cfg(target_os = "windows")]
+fn windows_discovery_roots() -> (Option<PathBuf>, Option<PathBuf>) {
+    let system_drive_root = std::env::var("SystemDrive")
+        .ok()
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .map(|d| PathBuf::from(format!("{d}\\")));
+    let local_app_data = std::env::var_os("LOCALAPPDATA")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from);
+    (system_drive_root, local_app_data)
+}
+
+/// Pure candidate list. The home candidates come first. On Windows the
+/// wrapper also passes the system drive root (`<SystemDrive>\hq`, where
+/// installs outside the user profile land) and `%LOCALAPPDATA%`
+/// (`%LOCALAPPDATA%\hq`). `%LOCALAPPDATA%\hq` matches the desktop app's own
+/// install directory case-insensitively; it has no `companies/` or
+/// `core.yaml`, so the root predicates never adopt it.
+fn hq_discovery_candidates_from(
+    home: Option<&Path>,
+    system_drive_root: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(home) = home {
+        candidates.extend([
+            home.join("HQ"),
+            home.join("hq"),
+            home.join("Documents").join("HQ"),
+            home.join("Documents").join("hq"),
+            home.join("Desktop").join("HQ"),
+            home.join("Desktop").join("hq"),
+        ]);
+    }
+    if let Some(root) = system_drive_root {
+        candidates.push(root.join("hq"));
+    }
+    if let Some(dir) = local_app_data {
+        candidates.push(dir.join("hq"));
+    }
+    candidates
 }
 
 /// True iff the candidate folder contains a `core.yaml` (canonical or
@@ -3097,34 +3305,289 @@ mod tests {
         assert_ne!(prefix, managed_node_dir_in(&root));
     }
 
+    // The precedence tests run against the pure resolver with no discovery
+    // candidates, so the developer's own ~/.hq/menubar.json and ~/HQ cannot
+    // change their outcome. Each is checked both during and after onboarding.
+    fn resolve_pure(config: Option<&str>, menubar: Option<&str>) -> Vec<PathBuf> {
+        let home = PathBuf::from("/home/someone");
+        [true, false]
+            .into_iter()
+            .map(|onboarding| {
+                resolve_hq_folder_from(config, menubar, onboarding, &[], Some(&home)).folder
+            })
+            .collect()
+    }
+
     #[test]
     fn test_resolve_menubar_override_wins() {
-        let result = resolve_hq_folder(Some("/from/config"), Some("/from/menubar"));
-        assert_eq!(result, PathBuf::from("/from/menubar"));
+        for result in resolve_pure(Some("/from/config"), Some("/from/menubar")) {
+            assert_eq!(result, PathBuf::from("/from/menubar"));
+        }
     }
 
     #[test]
     fn test_resolve_config_path() {
-        let result = resolve_hq_folder(Some("/from/config"), None);
-        assert_eq!(result, PathBuf::from("/from/config"));
+        for result in resolve_pure(Some("/from/config"), None) {
+            assert_eq!(result, PathBuf::from("/from/config"));
+        }
     }
 
     #[test]
     fn test_resolve_default() {
+        for result in resolve_pure(None, None) {
+            assert!(result.ends_with("HQ"));
+        }
         let result = resolve_hq_folder(None, None);
-        assert!(result.ends_with("HQ"));
+        assert!(result.ends_with("HQ") || is_valid_hq_root(&result));
     }
 
     #[test]
     fn test_resolve_empty_menubar_falls_through() {
-        let result = resolve_hq_folder(Some("/from/config"), Some(""));
-        assert_eq!(result, PathBuf::from("/from/config"));
+        for result in resolve_pure(Some("/from/config"), Some("")) {
+            assert_eq!(result, PathBuf::from("/from/config"));
+        }
     }
 
     #[test]
     fn test_resolve_empty_both_falls_to_default() {
-        let result = resolve_hq_folder(Some(""), Some(""));
-        assert!(result.ends_with("HQ"));
+        for result in resolve_pure(Some(""), Some("")) {
+            assert!(result.ends_with("HQ"));
+        }
+    }
+
+    /// A complete, launchable HQ root: companies/manifest.yaml, a schema-valid
+    /// core/core.yaml, and .claude/settings.json.
+    fn scaffold_launchable_root(root: &Path) {
+        std::fs::create_dir_all(root.join("companies")).unwrap();
+        std::fs::write(
+            root.join("companies").join("manifest.yaml"),
+            "companies: {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("core")).unwrap();
+        std::fs::write(
+            root.join("core").join("core.yaml"),
+            "version: 1\nhqVersion: 15.0.0\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude").join("settings.json"), "{}\n").unwrap();
+    }
+
+    #[test]
+    fn discovery_candidates_include_system_drive_hq_and_local_app_data_hq() {
+        let home = PathBuf::from("/home/someone");
+        let system_drive = PathBuf::from("/sysdrive");
+        let local_app_data = PathBuf::from("/home/someone/AppData/Local");
+        let candidates =
+            hq_discovery_candidates_from(Some(&home), Some(&system_drive), Some(&local_app_data));
+        // Home candidates keep their order and come first.
+        assert_eq!(candidates[0], home.join("HQ"));
+        assert_eq!(candidates[1], home.join("hq"));
+        assert_eq!(
+            &candidates[candidates.len() - 2..],
+            &[system_drive.join("hq"), local_app_data.join("hq")]
+        );
+        // Without the Windows roots, only the six home candidates remain.
+        assert_eq!(
+            hq_discovery_candidates_from(Some(&home), None, None).len(),
+            6
+        );
+    }
+
+    #[test]
+    fn discovery_finds_system_drive_hq_when_home_hq_is_absent() {
+        let home = tempfile::TempDir::new().unwrap();
+        let drive = tempfile::TempDir::new().unwrap();
+        let root = drive.path().join("hq");
+        scaffold_launchable_root(&root);
+        let candidates = hq_discovery_candidates_from(Some(home.path()), Some(drive.path()), None);
+        let resolution = resolve_hq_folder_from(None, None, false, &candidates, Some(home.path()));
+        assert_eq!(resolution.folder, root);
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn recorded_hq_path_that_is_not_an_hq_root_is_overridden_by_discovered_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("Users").join("someone").join("hq");
+        std::fs::create_dir_all(&recorded).unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            false,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        let warning = resolution.warning.expect("override must carry a warning");
+        assert!(warning.contains(&recorded_str), "{warning}");
+        assert!(
+            warning.contains(&discovered.to_string_lossy().to_string()),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn recorded_config_hq_folder_path_that_is_not_an_hq_root_is_overridden() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let missing = tmp.path().join("gone").to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            Some(&missing),
+            None,
+            false,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, discovered);
+        assert!(resolution.warning.is_some());
+    }
+
+    #[test]
+    fn valid_recorded_config_path_wins_over_an_invalid_menubar_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let configured = tmp.path().join("configured");
+        scaffold_launchable_root(&configured);
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let configured_str = configured.to_string_lossy().to_string();
+        let missing = tmp.path().join("gone").to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            Some(&configured_str),
+            Some(&missing),
+            false,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, configured);
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn recorded_hq_path_wins_during_onboarding_even_when_not_yet_an_hq_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("chosen");
+        std::fs::create_dir_all(&recorded).unwrap();
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            true,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, recorded);
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn valid_recorded_hq_path_still_wins_over_discovered_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let recorded = tmp.path().join("chosen");
+        scaffold_launchable_root(&recorded);
+        let discovered = tmp.path().join("hq");
+        scaffold_launchable_root(&discovered);
+        let recorded_str = recorded.to_string_lossy().to_string();
+
+        let resolution = resolve_hq_folder_from(
+            None,
+            Some(&recorded_str),
+            false,
+            std::slice::from_ref(&discovered),
+            Some(tmp.path()),
+        );
+
+        assert_eq!(resolution.folder, recorded);
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn app_install_dir_named_hq_is_never_adopted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let local_app_data = tmp.path().join("AppData").join("Local");
+        // The desktop app's own install directory: binaries, no HQ markers.
+        let app_dir = local_app_data.join("hq");
+        std::fs::create_dir_all(app_dir.join("resources")).unwrap();
+        std::fs::write(app_dir.join("HQ.exe"), b"MZ").unwrap();
+        let recorded = tmp.path().join("chosen").to_string_lossy().to_string();
+        let candidates = hq_discovery_candidates_from(None, None, Some(&local_app_data));
+
+        assert!(!is_launchable_hq_root(&app_dir));
+        let resolution =
+            resolve_hq_folder_from(None, Some(&recorded), false, &candidates, Some(tmp.path()));
+        assert_eq!(resolution.folder, PathBuf::from(&recorded));
+        assert_eq!(resolution.warning, None);
+    }
+
+    #[test]
+    fn launchable_hq_root_needs_companies_core_yaml_and_claude_settings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("hq");
+        scaffold_launchable_root(&root);
+        assert!(is_launchable_hq_root(&root));
+
+        std::fs::remove_file(root.join(".claude").join("settings.json")).unwrap();
+        assert!(
+            !is_launchable_hq_root(&root),
+            "missing .claude/settings.json"
+        );
+
+        scaffold_launchable_root(&root);
+        std::fs::remove_dir_all(root.join("companies")).unwrap();
+        assert!(!is_launchable_hq_root(&root), "missing companies/");
+    }
+
+    #[test]
+    fn onboarding_is_in_progress_until_first_run_completes() {
+        let empty = serde_json::Map::new();
+        assert!(onboarding_in_progress_from(&empty, None));
+
+        let mut not_done = serde_json::Map::new();
+        not_done.insert("firstRunCompleted".into(), serde_json::Value::Bool(false));
+        assert!(onboarding_in_progress_from(&not_done, None));
+
+        let mut done = serde_json::Map::new();
+        done.insert("firstRunCompleted".into(), serde_json::Value::Bool(true));
+        assert!(!onboarding_in_progress_from(&done, None));
+    }
+
+    #[test]
+    fn onboarding_is_in_progress_while_the_install_manifest_has_a_running_step() {
+        let mut done = serde_json::Map::new();
+        done.insert("firstRunCompleted".into(), serde_json::Value::Bool(true));
+
+        let running = serde_json::json!({
+            "completedAt": null,
+            "steps": { "template": { "status": "running" } }
+        });
+        assert!(onboarding_in_progress_from(&done, Some(&running)));
+
+        let failed = serde_json::json!({ "steps": { "template": { "status": "failed" } } });
+        assert!(onboarding_in_progress_from(&done, Some(&failed)));
+
+        let finished = serde_json::json!({
+            "completedAt": "2026-10-15T00:00:00Z",
+            "steps": { "template": { "status": "running" } }
+        });
+        assert!(!onboarding_in_progress_from(&done, Some(&finished)));
+
+        let all_ok = serde_json::json!({ "steps": { "template": { "status": "ok" } } });
+        assert!(!onboarding_in_progress_from(&done, Some(&all_ok)));
     }
 
     #[test]

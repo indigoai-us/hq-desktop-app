@@ -65,10 +65,21 @@ export function appendChildFolderPath(parent: string, childName: string): string
   return `${normalizedParent}${joiner}${childName}`;
 }
 
+/** A drive (`C:\`) or UNC (`\\server\share`) path. */
+function isWindowsPath(path: string): boolean {
+  return WINDOWS_DRIVE_PATH.test(path) || /^[A-Za-z]:$/.test(path) || path.startsWith('\\\\');
+}
+
+/**
+ * The path as the ready screen shows it. POSIX paths under home collapse to
+ * `~/...`. Windows paths stay native and absolute, because Explorer, cmd and
+ * PowerShell cannot open a `~\...` path.
+ */
 export function friendlyPath(path: string, homeDir?: string | null): string {
-  const trimmedPath = trimTrailingSeparators(path.trim());
+  const trimmedPath = trimTrailingSeparators(toUserFacingPath(path.trim()));
   const trimmedHome = homeDir ? trimTrailingSeparators(homeDir.trim()) : '';
 
+  if (isWindowsPath(trimmedPath)) return trimmedPath;
   if (!trimmedPath || !trimmedHome) return trimmedPath;
   if (trimmedPath === trimmedHome) return '~';
 

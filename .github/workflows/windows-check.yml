@@ -220,6 +220,18 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests::test_windows
 
+      # The HQ root resolver and its launchable-root gate, including the
+      # SystemDrive and LOCALAPPDATA discovery candidates.
+      - name: HQ root resolution tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml paths::tests
+
+      # Claude deep-link preflight. The cfg(windows) test only runs here: it
+      # proves a verbatim (\\?\) folder is rewritten to a plain drive path.
+      - name: Claude launch deep-link tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml claude_launch::tests
+
       - name: HQ CLI update tests
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml hq_cli_update::tests
