@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 /**
- * The drawn badge mark (owner pick 2026-10-15, option B): the badge's
- * Phosphor Duotone icon in a solid ring as thick as the icon's line, ring
- * and icon in one colour per tier, the HQ gradient for Legendary and grey
- * when locked. It replaces the ASCII marks at 54px and 108px and the full
- * ASCII badge on the detail page; the holographic card stays ASCII.
+ * The drawn badge mark (owner pick 2026-10-15, option C "colour icon"): the
+ * badge's Phosphor Duotone icon in the badge's own colours, in a solid ring
+ * as thick as the icon's line in the tier's colour, the HQ gradient for a
+ * Legendary ring and grey when locked. It replaces the ASCII marks at 54px
+ * and 108px and the full ASCII badge on the detail page; the holographic
+ * card stays ASCII.
  */
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +27,8 @@ import BadgeCard from "./BadgeCard.svelte";
 import BadgeDetailPane from "./BadgeDetailPane.svelte";
 import { BADGES, BADGE_BY_ID, HQ_GRADIENT, TIER_RING, type BadgeDef, type BadgeTier } from "./badge-catalog.js";
 import { BADGE_DUOTONE, DUOTONE_STROKE, MARK_ICON, MARK_RING_STROKE, badgeTune, markIconTransform } from "./badge-glyph.js";
-import { LOCKED_MARK, TIER_RING_LIGHT, hqStops } from "./badge-mark.js";
+import { BADGE_ICON_COLOR, LOCKED_MARK, MARK_TINT_OPACITY, TIER_RING_LIGHT, hqStops, markIconColors } from "./badge-mark.js";
+import { inkForLight } from "./badge-theme.js";
 
 const mounted: Array<ReturnType<typeof mount>> = [];
 let host: HTMLElement;
@@ -88,14 +90,15 @@ describe("the drawn mark", () => {
     expect(Number(ring.getAttribute("stroke-width"))).toBe(1.625);
   });
 
-  it("draws the Duotone icon: the tint at 0.22 on dark and 0.16 on light, the line at full colour", () => {
+  it("draws the Duotone icon: the tint at 0.4 on dark and 0.3 on light, the line at full colour", () => {
     const dark = render({ badge: BADGE_BY_ID.og });
     expect(dark.tint.getAttribute("d")).toBe(BADGE_DUOTONE.crown.tint);
     expect(dark.line.getAttribute("d")).toBe(BADGE_DUOTONE.crown.line);
-    expect(dark.tint.getAttribute("opacity")).toBe("0.22");
+    expect(MARK_TINT_OPACITY).toEqual({ dark: 0.4, light: 0.3 });
+    expect(dark.tint.getAttribute("opacity")).toBe("0.4");
     expect(dark.line.hasAttribute("opacity")).toBe(false);
     const light = render({ badge: BADGE_BY_ID.og }, "light");
-    expect(light.tint.getAttribute("opacity")).toBe("0.16");
+    expect(light.tint.getAttribute("opacity")).toBe("0.3");
     expect(light.line.hasAttribute("opacity")).toBe(false);
   });
 
@@ -112,53 +115,96 @@ describe("the drawn mark", () => {
     expect(render({ badge: BADGE_BY_ID.bughunter }).group.getAttribute("transform")).toBe(`translate(27 27) scale(${26 / 256}) translate(-128 -128)`);
   });
 
-  it("colours ring and icon alike in the tier's metal, deeper on light", () => {
+  // Owner pick 2026-10-15, option C: the icon is in the badge's own colours
+  // (as in the ASCII Color art), only the ring is in the tier's.
+  it("rings the icon in the tier's metal, deeper on light, and draws the icon in the badge's own colours", () => {
     for (const tier of [1, 2, 3] as const) {
       for (const [theme, metal] of [["dark", TIER_RING[tier]], ["light", TIER_RING_LIGHT[tier]]] as const) {
         const { ring, tint, line, svg } = render({ badge: BADGE_BY_ID.liftoff, tier }, theme);
-        expect([ring.getAttribute("stroke"), tint.getAttribute("fill"), line.getAttribute("fill")], `${tier} ${theme}`).toEqual([metal, metal, metal]);
+        expect(ring.getAttribute("stroke"), `${tier} ${theme}`).toBe(metal);
+        expect(tint.getAttribute("fill"), `${tier} ${theme}`).not.toBe(metal);
+        expect(line.getAttribute("fill"), `${tier} ${theme}`).not.toBe(metal);
         expect(svg.querySelector("linearGradient")).toBeNull();
       }
     }
     expect(TIER_RING_LIGHT).toEqual({ 1: "#8a4522", 2: "#4f566b", 3: "#8f6400" });
   });
 
-  it("is grey when locked, Legendary too", () => {
+  it("draws the icon's line and tint in the badge's colours on dark, and through inkForLight on light", () => {
+    // Liftoff is the rocket: a near-white line over a sky-blue tint.
+    expect(BADGE_ICON_COLOR.rocket).toEqual({ line: "#ebe7f6", tint: "#8fd6ff" });
+    const dark = render({ badge: BADGE_BY_ID.liftoff, tier: 2 });
+    expect(dark.line.getAttribute("fill")).toBe("#ebe7f6");
+    expect(dark.tint.getAttribute("fill")).toBe("#8fd6ff");
+    expect(dark.ring.getAttribute("stroke")).toBe(TIER_RING[2]);
+    const light = render({ badge: BADGE_BY_ID.liftoff, tier: 2 }, "light");
+    expect(light.line.getAttribute("fill")).toBe(inkForLight("#ebe7f6"));
+    expect(light.tint.getAttribute("fill")).toBe(inkForLight("#8fd6ff"));
+    expect(light.ring.getAttribute("stroke")).toBe(TIER_RING_LIGHT[2]);
+    // inkForLight keeps the hue and caps lightness at 40%, so the light line is no longer near-white.
+    expect(inkForLight("#ebe7f6")).not.toBe("#ebe7f6");
+    for (const def of BADGES) {
+      for (const theme of ["dark", "light"] as const) {
+        const { line, tint } = render({ badge: def }, theme);
+        const want = markIconColors(def.icon, theme);
+        expect([line.getAttribute("fill"), tint.getAttribute("fill")], `${def.id} ${theme}`).toEqual([want.line, want.tint]);
+      }
+    }
+  });
+
+  it("has a colour pair for every badge icon, with the ten retuned from the full-size art", () => {
+    const hex = /^#[0-9a-f]{6}$/;
+    for (const def of BADGES) {
+      const pair = BADGE_ICON_COLOR[def.icon];
+      expect(pair, def.id).toBeDefined();
+      expect(pair.line, def.id).toMatch(hex);
+      expect(pair.tint, def.id).toMatch(hex);
+    }
+    // Retuned from the full-size ASCII Color art (owner review 2026-10-15).
+    expect(BADGE_ICON_COLOR.people).toEqual({ line: "#5fd3c0", tint: "#5fd3c0" });
+    expect(BADGE_ICON_COLOR.crown).toEqual({ line: "#f0a830", tint: "#ffd23f" });
+    // Connector's plug: the blue plug body, not the old grey tint.
+    expect(BADGE_ICON_COLOR.plug).toEqual({ line: "#7cc8ff", tint: "#7cc8ff" });
+  });
+
+  it("is grey when locked, ring, line and tint, Legendary too, the tint at the same opacity", () => {
     expect(LOCKED_MARK).toEqual({ dark: "#6f6878", light: "#958e9f" });
     for (const theme of ["dark", "light"] as const) {
       for (const badge of [BADGE_BY_ID.liftoff, BADGE_BY_ID.og]) {
         const { ring, tint, line, svg } = render({ badge, locked: true }, theme);
         expect([ring.getAttribute("stroke"), tint.getAttribute("fill"), line.getAttribute("fill")]).toEqual(Array(3).fill(LOCKED_MARK[theme]));
+        expect(tint.getAttribute("opacity")).toBe(String(MARK_TINT_OPACITY[theme]));
         expect(svg.querySelector("linearGradient")).toBeNull();
       }
     }
   });
 
-  it("fills a Legendary ring and icon with the HQ gradient, tuned per theme, with ids of its own", () => {
+  it("fills a Legendary ring with the HQ gradient, tuned per theme, with ids of its own, and keeps the icon's own colours", () => {
     const a = render({ badge: BADGE_BY_ID.og });
     const b = render({ badge: BADGE_BY_ID.captain });
     const ids = [a, b].flatMap(({ svg }) => [...svg.querySelectorAll("linearGradient")].map((g) => g.id));
-    expect(ids).toHaveLength(4);
-    expect(new Set(ids).size).toBe(4);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
 
-    const [ringGrad, iconGrad] = [...a.svg.querySelectorAll("linearGradient")];
+    const [ringGrad] = [...a.svg.querySelectorAll("linearGradient")];
     expect(a.ring.getAttribute("stroke")).toBe(`url(#${ringGrad.id})`);
-    expect(a.tint.getAttribute("fill")).toBe(`url(#${iconGrad.id})`);
-    expect(a.line.getAttribute("fill")).toBe(`url(#${iconGrad.id})`);
-    // The ring's sweep runs across the ring; the icon's across its live area on the 256 grid.
+    // OG is the crown: its own amber line over a yellow tint, not the gradient.
+    expect(a.line.getAttribute("fill")).toBe(BADGE_ICON_COLOR.crown.line);
+    expect(a.tint.getAttribute("fill")).toBe(BADGE_ICON_COLOR.crown.tint);
+    // The ring's sweep runs across the ring.
     const coords = (g: Element) => ["gradientUnits", "x1", "y1", "x2", "y2"].map((k) => g.getAttribute(k));
     expect(coords(ringGrad)).toEqual(["userSpaceOnUse", "6.5", "6.5", "47.5", "47.5"]);
-    expect(coords(iconGrad)).toEqual(["userSpaceOnUse", "40", "40", "216", "216"]);
 
     const stops = (g: Element) => [...g.querySelectorAll("stop")].map((s) => s.getAttribute("stop-color"));
     // Warmed toward #fff4dc by 0.15 on dark: indigo #3b22d0 becomes #5842d2.
     expect(stops(ringGrad)).toEqual(hqStops("dark"));
-    expect(stops(iconGrad)).toEqual(hqStops("dark"));
     expect(hqStops("dark")[0]).toBe("#5842d2");
     expect(hqStops("dark")).toHaveLength(HQ_GRADIENT.length);
     // Darkened toward #1c1036 by 0.1 on light.
     const light = render({ badge: BADGE_BY_ID.og }, "light");
     expect(stops(light.svg.querySelector("linearGradient")!)).toEqual(hqStops("light"));
+    expect(light.line.getAttribute("fill")).toBe(inkForLight(BADGE_ICON_COLOR.crown.line));
+    expect(light.tint.getAttribute("fill")).toBe(inkForLight(BADGE_ICON_COLOR.crown.tint));
     expect(hqStops("light")[0]).toBe("#3820c1");
   });
 

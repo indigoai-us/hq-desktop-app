@@ -2,10 +2,11 @@
  * The badge icons, from Phosphor Icons v2.1.1 (MIT licence), on Phosphor's
  * 256-unit grid.
  *
- * Every badge mark is the badge's icon in a ring of the tier colour. The
- * drawn mark at 54px and up (BadgeMark.svelte) uses the Duotone weight: the
- * line drawing over a soft tint of the same colour (owner pick 2026-10-15,
- * option B). The smallest marks, on a profile picture, its hover card and a
+ * Every badge mark is the badge's icon, in the badge's own two colours
+ * (BADGE_ICON_COLOR in badge-mark.ts), inside a ring of the tier colour
+ * (owner pick 2026-10-15, option C "colour icon"). The drawn mark at 54px
+ * and up (BadgeMark.svelte) uses the Duotone weight: the line over a soft
+ * tint. The smallest marks, on a profile picture, its hover card and a
  * notice (TierMark.svelte, BadgeNoticeMarks.svelte), keep the Bold line so
  * it reads at 12px, with the same Duotone tint under it (owner picks
  * 2026-10-12 and 2026-10-15).
@@ -175,12 +176,10 @@ export const DUOTONE_STROKE = 16 / 256;
 /** The ring's stroke: the icon's line at the icon's size, 1.625 units. */
 export const MARK_RING_STROKE = DUOTONE_STROKE * MARK_ICON;
 /**
- * Legendary's two gradients, corner to corner: the ring's across the ring
- * (mark units), the icon's across the icon's live area (icon units), so the
- * icon's paths share one sweep instead of each restarting it.
+ * Legendary's ring gradient, corner to corner across the ring (mark units).
+ * The icon keeps the badge's own colours, so only the ring carries it.
  */
 export const MARK_RING_GRADIENT = [MARK_CENTRE - MARK_RING_R, MARK_CENTRE + MARK_RING_R] as const;
-export const MARK_ICON_GRADIENT = [40, 216] as const;
 
 /** Places an icon's 256 grid in the mark: centred at 27,27 in a 26-unit box, with its tuning. */
 export function markIconTransform(icon: BadgeIcon): string {
@@ -212,12 +211,21 @@ export const BADGE_RING_URL = `url("data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><circle cx="128" cy="128" r="${128 - BADGE_RING_STROKE / 2}" fill="none" stroke="#000" stroke-width="${BADGE_RING_STROKE}"/></svg>`,
 )}")`;
 
-/**
- * A glyph as an SVG data URL, for use as a CSS mask (so a gradient can fill
- * it): the Bold line over the Duotone tint at 0.2, with the icon's tuning,
- * so the smallest marks match the drawn ones (owner pick 2026-10-15).
- */
-export function badgeGlyphUrl(icon: BadgeIcon): string {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><g transform="${glyphTuneTransform(icon)}"><path d="${BADGE_DUOTONE[icon].tint}" fill-opacity="0.2"/><path d="${BADGE_GLYPH[icon]}"/></g></svg>`;
+function glyphUrl(icon: BadgeIcon, d: string): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><g transform="${glyphTuneTransform(icon)}"><path d="${d}"/></g></svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+/**
+ * The smallest marks' icon as two SVG data URLs for CSS masks, each with the
+ * icon's tuning: the Bold line, filled with the badge's line colour, and the
+ * Duotone tint under it, filled with its tint colour at the drawn marks'
+ * tint opacity (owner pick 2026-10-15, option C).
+ */
+export function badgeLineUrl(icon: BadgeIcon): string {
+  return glyphUrl(icon, BADGE_GLYPH[icon]);
+}
+
+export function badgeTintUrl(icon: BadgeIcon): string {
+  return glyphUrl(icon, BADGE_DUOTONE[icon].tint);
 }
