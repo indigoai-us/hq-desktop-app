@@ -125,4 +125,11 @@ describe('first-run reveal order (US-010)', () => {
     expect(ms).toBeGreaterThan(0);
     expect(ms).toBeLessThan(400);
   });
+
+  it('the shell waits for the held route longer than the host holds it, so a slow flag read still lands its hint', () => {
+    const hostWait = Number(/const PENDING_ROUTE_WAIT[^=]*=\s*std::time::Duration::from_millis\((\d+)\)/.exec(desktopAltRs)?.[1]);
+    const shellWait = Number(/const HANDOFF_READ_TIMEOUT_MS = (\d+(?:_\d+)*);/.exec(workShell)?.[1].replace(/_/g, ''));
+    expect(hostWait).toBeGreaterThan(0);
+    expect(shellWait).toBeGreaterThan(hostWait);
+  });
 });

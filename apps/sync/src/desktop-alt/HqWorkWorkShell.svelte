@@ -1044,8 +1044,10 @@
 
   const IDENTITY_SETTLE_TIMEOUT_MS = 4000;
   // US-010: the first-run handoff hint rides the pending route. The shell
-  // mounts once it is read (normally a few ms), or after this bound.
-  const HANDOFF_READ_TIMEOUT_MS = 500;
+  // mounts once it is read (normally a few ms), or after this bound. The host
+  // holds the route while its flag reads finish (PENDING_ROUTE_WAIT, 2500 ms),
+  // so this bound sits above that hold; a launch with no handoff answers at once.
+  const HANDOFF_READ_TIMEOUT_MS = 3000;
   let firstRunHandoff = $state<FirstRunHandoffHint | null>(null);
   let handoffRead = $state(false);
   // US-010: a hidden window may not run animation frames, so the painted
