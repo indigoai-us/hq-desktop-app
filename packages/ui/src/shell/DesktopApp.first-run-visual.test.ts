@@ -13,7 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { failure, FIRST_RUN_FOUND_APPS_FLAG, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
+import { failure, FIRST_RUN_FOUND_APPS_FLAG, HQ_ANYWHERE_RUNTIME_FLAG, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
@@ -59,6 +59,8 @@ interface AdapterOptions {
   installRuntimeForTool?: (runtime: string) => Promise<unknown>;
   /** The HQ Anywhere person-setting write ("Continue in <tool>" is the opt-in). */
   putHqAnywherePersonSetting?: (value: boolean) => Promise<unknown>;
+  /** The hq-anywhere-runtime admin kill switch; off (fail closed) by default. */
+  hqAnywhereRuntime?: boolean;
   /** Shell launch methods for "Continue in <tool>"; detection reports nothing by default. */
   shell?: Record<string, unknown>;
 }
@@ -78,6 +80,7 @@ function adapter({
   listImpl,
   installRuntimeForTool,
   putHqAnywherePersonSetting,
+  hqAnywhereRuntime = false,
   shell,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
@@ -89,7 +92,12 @@ function adapter({
     kind: "web",
     isAvailable: () => false,
     capabilities: {},
-    identity: { hasFeature, updateAgentProfile },
+    identity: {
+      hasFeature,
+      updateAgentProfile,
+      resolveFeatureFlagStatus: async (name: string) =>
+        ok({ configured: true, enabled: name === HQ_ANYWHERE_RUNTIME_FLAG && hqAnywhereRuntime }),
+    },
     messaging: {
       listContacts: async () => ok({ contacts: [] }),
       listChannelMembers: async () => ok({ members: [] }),
@@ -453,6 +461,7 @@ describe("visual first run, flag on", () => {
       probe,
       installRuntimeForTool,
       putHqAnywherePersonSetting,
+      hqAnywhereRuntime: true,
       shell: {
         detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
         launchClaudeCode,
@@ -522,6 +531,7 @@ describe("visual first run, flag on", () => {
       flag: true,
       installRuntimeForTool,
       putHqAnywherePersonSetting: async () => ok(undefined),
+      hqAnywhereRuntime: true,
       shell: {
         detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
         launchClaudeCode,
@@ -535,6 +545,59 @@ describe("visual first run, flag on", () => {
     expect(installRuntimeForTool).toHaveBeenCalledWith("claude");
     expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ");
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+  });
+
+  it("when the opt-in is not saved, opens the tool and keeps the takeover up with a plain sentence", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const installRuntimeForTool = vi.fn(async () => ok(undefined));
+    const launchClaudeCode = vi.fn(async () => ok(undefined));
+    const { platform } = adapter({
+      flag: true,
+      installRuntimeForTool,
+      putHqAnywherePersonSetting: async () => failure("network", "offline"),
+      hqAnywhereRuntime: true,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+        launchClaudeCode,
+      },
+    });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    // The opt-in write retries with its real 250 ms and 750 ms pauses first.
+    await vi.waitFor(() => expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ"), { timeout: 3000 });
+    await vi.waitFor(() => expect(q('[data-testid="first-run-decision-error"]')).toBeTruthy());
+    expect(q('[data-testid="first-run-decision-error"]')?.textContent).toBe(
+      "Couldn't save your HQ Anywhere choice. Claude Code opened without it; try again from Settings.",
+    );
+    expect(q('[data-testid="first-run-decision-error"]')?.getAttribute("role")).toBe("alert");
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+  });
+
+  it("with the hq-anywhere-runtime kill switch off, Continue opens the tool without the opt-in or the install", async () => {
+    const installRuntimeForTool = vi.fn(async () => ok(undefined));
+    const putHqAnywherePersonSetting = vi.fn(async () => ok(undefined));
+    const launchClaudeCode = vi.fn(async () => ok(undefined));
+    const { platform } = adapter({
+      flag: true,
+      installRuntimeForTool,
+      putHqAnywherePersonSetting,
+      hqAnywhereRuntime: false,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+        launchClaudeCode,
+      },
+    });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ");
+    expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
   });
 
   it("with no HQ folder to open, takes the chat path instead of leaving the button silent", async () => {

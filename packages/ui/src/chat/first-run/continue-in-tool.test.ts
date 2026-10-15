@@ -15,6 +15,7 @@ function setup(overrides: {
   install?: (runtime: string) => Promise<unknown>;
   launchClaudeCode?: (folder: string) => Promise<unknown>;
   tools?: Record<string, boolean> | null;
+  runtimeFlag?: boolean;
 } = {}) {
   const order: string[] = [];
   let personSetting = false;
@@ -65,8 +66,14 @@ function setup(overrides: {
     launchCodexWorkspace: vi.fn(async () => ok(undefined)),
     launchCliInTerminal,
   };
+  const identity = {
+    resolveFeatureFlagStatus: vi.fn(async (flag: string) =>
+      ok({ configured: true, enabled: flag === HQ_ANYWHERE_RUNTIME_FLAG && (overrides.runtimeFlag ?? true) }),
+    ),
+  };
   const input = (runtime: ContinueInToolInput["runtime"], extra: Partial<ContinueInToolInput> = {}): ContinueInToolInput => ({
     runtime,
+    identity: identity as unknown as ContinueInToolInput["identity"],
     settings: settings as unknown as ContinueInToolInput["settings"],
     shell: shell as unknown as ContinueInToolInput["shell"],
     pause: noPause,
@@ -103,12 +110,30 @@ describe("continueInTool", () => {
     expect(order).not.toContain("reconcile:false");
   });
 
-  it("skips the install when the opt-in is not saved, so the next launch has nothing to uninstall, and still opens", async () => {
+  it("skips the install when the opt-in is not saved, still opens, and returns a sentence for the takeover", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { order, input, installRuntimeForTool } = setup({
       putSetting: async () => failure("network", "offline"),
     });
+    await expect(continueInTool(input("claude"))).resolves.toEqual({
+      kind: "opened-without-opt-in",
+      message: "Couldn't save your HQ Anywhere choice. Claude Code opened without it; try again from Settings.",
+    });
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(order).toEqual(["open:/tmp/HQ"]);
+  });
+
+  it("with the hq-anywhere-runtime kill switch off, only opens the tool: no opt-in write, no install", async () => {
+    const { order, input, putHqAnywherePersonSetting, installRuntimeForTool } = setup({ runtimeFlag: false });
     await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "opened" });
+    expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(order).toEqual(["open:/tmp/HQ"]);
+  });
+
+  it("with no identity to read the kill switch, fails closed and only opens the tool", async () => {
+    const { order, input, installRuntimeForTool } = setup();
+    await expect(continueInTool(input("claude", { identity: undefined }))).resolves.toEqual({ kind: "opened" });
     expect(installRuntimeForTool).not.toHaveBeenCalled();
     expect(order).toEqual(["open:/tmp/HQ"]);
   });

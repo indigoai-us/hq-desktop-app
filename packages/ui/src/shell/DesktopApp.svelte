@@ -3769,8 +3769,14 @@
    */
   async function continueFirstRunInTool(runtime: FirstRunRuntime): Promise<string | null> {
     firstRunRuntime = runtime;
-    const outcome = await continueInTool({ runtime, settings: adapter.settings, shell: adapter.shell, log: firstRunTimingLog });
-    if (outcome.kind === "open-failed") return outcome.message;
+    const outcome = await continueInTool({
+      runtime,
+      settings: adapter.settings,
+      shell: adapter.shell,
+      identity: adapter.identity,
+      log: firstRunTimingLog,
+    });
+    if (outcome.kind === "open-failed" || outcome.kind === "opened-without-opt-in") return outcome.message;
     if (outcome.kind === "no-folder") await continueFirstRunInChat();
     else closeVisualFirstRun();
     return null;
