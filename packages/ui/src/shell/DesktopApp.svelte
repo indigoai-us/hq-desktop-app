@@ -3632,9 +3632,11 @@
   );
   /** Latched: the host hears about the first painted screen once. */
   let firstRunPaintedSent = false;
+  /** The conversation rail has rendered once, even if only its loading or error state. */
+  let sidebarRendered = $state(false);
   $effect(() => {
     if (firstRunPaintedSent) return;
-    if (!visualFirstRunOpen && !(firstRunRouteNow === "legacy" && tourShellReady)) return;
+    if (!visualFirstRunOpen && !(firstRunRouteNow === "legacy" && (tourShellReady || sidebarRendered))) return;
     firstRunPaintedSent = true;
     let done = false;
     const report = (): void => {
@@ -14718,6 +14720,7 @@
           onactions={(actions) => (sidebarActions = actions)}
           {bootTimeoutMs}
           welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
+          onFirstRender={() => (sidebarRendered = true)}
           onShellReady={() => {
             tourShellReady = true;
             premountPaletteWhenIdle();

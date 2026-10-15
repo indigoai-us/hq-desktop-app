@@ -530,6 +530,12 @@
      */
     onShellReady?: () => void;
     /**
+     * The rail's first render, whatever it shows: rows, the loading state or
+     * the load error. The first-run reveal uses it so a failed or slow
+     * conversation load never leaves the desktop window hidden.
+     */
+    onFirstRender?: () => void;
+    /**
      * Host-owned presence for project channels (US-015). True when someone
      * in that project is online via the presence store — never from timestamps.
      */
@@ -633,6 +639,7 @@
     welcomeFirst = false,
     offscreen = false,
     onShellReady,
+    onFirstRender,
     projectHasPresence = () => false,
     dmPresence = () => null,
     rowExtrasLoading = false,
@@ -3427,6 +3434,8 @@
       void directory.finally(() => maybeReportShellReady());
     }
   }
+
+  onMount(() => onFirstRender?.());
 
   function maybeReportShellReady(): void {
     if (reportedShellReady) return;

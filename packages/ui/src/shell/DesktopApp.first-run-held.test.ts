@@ -14,6 +14,7 @@ import { ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
+import type { ChatSidebarApi } from "../chat/chat-api.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 import type { FirstRunHandoffHint } from "../chat/first-run/first-run-handoff.js";
@@ -104,7 +105,11 @@ function makeAdapter({ hasFeature, getSetupStatus }: Options) {
 
 function mountShell(
   adapter: PlatformAdapter,
-  extra: { firstRunHandoff?: FirstRunHandoffHint | null; onFirstRunPainted?: () => void } = {},
+  extra: {
+    firstRunHandoff?: FirstRunHandoffHint | null;
+    onFirstRunPainted?: () => void;
+    sidebarApi?: ChatSidebarApi;
+  } = {},
 ): void {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -250,5 +255,36 @@ describe("first run holds the shell", () => {
     await vi.waitFor(() => expect(onFirstRunPainted).toHaveBeenCalledTimes(1), { timeout: 2000, interval: 10 });
     expect(q("first-run-takeover")).toBeNull();
     expect(q("first-run-held")).toBeNull();
+  });
+
+  it("tells the host the ordinary shell is painted when the conversations fail to load", async () => {
+    const { adapter } = makeAdapter({ hasFeature: () => never(), getSetupStatus: () => never() });
+    const onFirstRunPainted = vi.fn();
+    const failing = new Error("offline");
+    mountShell(adapter, {
+      firstRunHandoff: { ...HINT_VISUAL, flags: { visualFirstRun: false, foundApps: null } },
+      onFirstRunPainted,
+      sidebarApi: {
+        ...createFixtureChatSidebarApi(),
+        fetchChannelDirectory: async () => Promise.reject(failing),
+        listContacts: async () => Promise.reject(failing),
+      },
+    });
+    await vi.waitFor(() => expect(onFirstRunPainted).toHaveBeenCalledTimes(1), { timeout: 2000, interval: 10 });
+  });
+
+  it("tells the host the ordinary shell is painted while the conversations are still loading", async () => {
+    const { adapter } = makeAdapter({ hasFeature: () => never(), getSetupStatus: () => never() });
+    const onFirstRunPainted = vi.fn();
+    mountShell(adapter, {
+      firstRunHandoff: { ...HINT_VISUAL, flags: { visualFirstRun: false, foundApps: null } },
+      onFirstRunPainted,
+      sidebarApi: {
+        ...createFixtureChatSidebarApi(),
+        fetchChannelDirectory: () => never(),
+        listContacts: () => never(),
+      },
+    });
+    await vi.waitFor(() => expect(onFirstRunPainted).toHaveBeenCalledTimes(1), { timeout: 2000, interval: 10 });
   });
 });
