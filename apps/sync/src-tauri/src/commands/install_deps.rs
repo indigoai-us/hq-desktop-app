@@ -67,6 +67,18 @@ fn current_setup_run_id() -> Option<String> {
         .ok()
 }
 
+/// Runs `fut` with the onboarding failure scope set, so install lines it
+/// emits carry the wizard's setup run id. `None` runs `fut` unscoped.
+pub(crate) async fn with_onboarding_failure_scope<F: Future>(
+    scope: Option<OnboardingFailureScope>,
+    fut: F,
+) -> F::Output {
+    match scope {
+        Some(scope) => ACTIVE_ONBOARDING_FAILURE_SCOPE.scope(scope, fut).await,
+        None => fut.await,
+    }
+}
+
 tokio::task_local! {
     static ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR: SetupDiagnosticCollector;
 }
@@ -4373,9 +4385,38 @@ pub async fn install_yq(app: AppHandle) -> Result<String, String> {
     .await
 }
 
+/// Directories the app searches for user tools, as a list.
+pub(crate) fn queue_search_dirs() -> Vec<PathBuf> {
+    std::env::split_paths(&extended_search_path()).collect()
+}
+
+/// An existing Claude Code install anywhere the app looks, including the
+/// native installer's local copy under the home folder.
+pub(crate) fn claude_code_already_present() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    hq_desktop_core::install_queue::claude_code_present_in(&home, &queue_search_dirs())
+}
+
+/// An existing `codex` binary anywhere the app looks.
+pub(crate) fn codex_already_present() -> Option<PathBuf> {
+    hq_desktop_core::install_queue::binary_present_in("codex", &queue_search_dirs())
+}
+
+/// Message returned when a CLI install is skipped because one already exists.
+pub(crate) fn already_present_message(tag: &str, path: &Path) -> String {
+    format!("[{tag}] already present at {}", path.display())
+}
+
 #[tauri::command]
 pub async fn install_claude_code(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_claude_code")?;
+    // A second npm copy over an existing install left two Claude Code
+    // versions on PATH. Keep whichever copy the person already has.
+    if let Some(path) = claude_code_already_present() {
+        let message = already_present_message("claude-code", &path);
+        emit_install_line(&app, &message);
+        return Ok(message);
+    }
     time_command_install("claude-code", async move {
         #[cfg(not(windows))]
         {
@@ -4508,6 +4549,11 @@ async fn install_npm_cli_windows(
 #[tauri::command]
 pub async fn install_codex(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_codex")?;
+    if let Some(path) = codex_already_present() {
+        let message = already_present_message("codex", &path);
+        emit_install_line(&app, &message);
+        return Ok(message);
+    }
     let (spec, bin) = session_provider_npm_spec("codex")?;
     time_command_install("codex", async move {
         #[cfg(not(windows))]
@@ -7819,7 +7865,7 @@ fn report_active_setup_cancellation_cleanup_failure(cleanup: CancellationCleanup
     true
 }
 
-fn emit_install_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
+pub(crate) fn emit_install_line<R: tauri::Runtime>(app: &AppHandle<R>, msg: &str) {
     let _ = app.emit(
         "install:progress",
         InstallProgress {
@@ -8079,7 +8125,7 @@ fn finish_orchestrated_dep_install(
 /// Whether `install_orchestrated_dep` ran an installer, for the first-run
 /// timing line (`outcome=ok` versus `outcome=skipped`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OrchestratedDepRun {
+pub(crate) enum OrchestratedDepRun {
     Installed,
     AlreadySatisfied,
 }
@@ -8330,9 +8376,356 @@ pub async fn install_deps(
     }
 }
 
+/// One queue-owned dependency install. Mirrors the per-dependency scoping in
+/// `install_deps`, so streamed diagnostics, cancellation and failure telemetry
+/// behave the same when the background install queue runs a registered
+/// dependency. The queue records its own first-run timing per item, so this
+/// wrapper does not start a timer.
+///
+/// `required` failures are recorded as the deps-stage onboarding failure and
+/// reported to Sentry. Optional failures (gh, Claude Code, Codex) are logged and
+/// returned to the queue, which shows them in the chip's attention state.
+pub(crate) async fn run_queue_dependency(
+    app: &AppHandle,
+    id: &str,
+    failure_scope: Option<OnboardingFailureScope>,
+    required: bool,
+) -> Result<OrchestratedDepRun, String> {
+    let dep = dependency_defs()
+        .iter()
+        .find(|dep| dep.id == id)
+        .ok_or_else(|| format!("no dependency registered for {id}"))?;
+    let collector = SetupDiagnosticCollector::new();
+    let cancellation_collector = InstallCancellationCollector::new();
+    let install_result = ACTIVE_SETUP_DEPENDENCY
+        .scope(dep.id, async {
+            match failure_scope.clone() {
+                Some(scope) => {
+                    ACTIVE_ONBOARDING_FAILURE_SCOPE
+                        .scope(
+                            scope,
+                            ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.scope(
+                                collector.clone(),
+                                ACTIVE_INSTALL_CANCELLATION_COLLECTOR.scope(
+                                    cancellation_collector.clone(),
+                                    install_orchestrated_dep(app, dep),
+                                ),
+                            ),
+                        )
+                        .await
+                }
+                None => {
+                    ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR
+                        .scope(
+                            collector.clone(),
+                            ACTIVE_INSTALL_CANCELLATION_COLLECTOR.scope(
+                                cancellation_collector.clone(),
+                                install_orchestrated_dep(app, dep),
+                            ),
+                        )
+                        .await
+                }
+            }
+        })
+        .await;
+    let error = match install_result {
+        Ok(run) => return Ok(run),
+        Err(error) => error,
+    };
+    emit_install_line(app, &format!("[{}] {}", dep.id, error));
+    let cancellation = cancellation_collector.take();
+    if let Some(scope) = failure_scope {
+        let result = result_from_install(dep, Err(error.clone()), cancellation.as_ref());
+        let diagnostic = collector
+            .take()
+            .unwrap_or_else(|| fallback_setup_command_diagnostic(&result));
+        if let Some(InstallCancellation::CleanupFailed(cleanup)) = cancellation.as_ref() {
+            if !cancellation_collector.cleanup_failure_reported() {
+                queue_setup_cancellation_cleanup_failure(
+                    scope.clone(),
+                    dep.id,
+                    cleanup.clone(),
+                    diagnostic.clone(),
+                );
+            }
+        }
+        if required && !is_cancelled_dependency_result(&result) {
+            let category = setup_error_category(&result, Some(&diagnostic));
+            record_onboarding_failure_detail_with_kind(
+                "deps",
+                Some(&scope),
+                Some(dep.id),
+                category,
+                setup_error_kind(Some(&diagnostic)),
+            );
+            queue_setup_dependency_failure(scope, dep.id, category, diagnostic, Vec::new());
+        }
+    }
+    Err(error)
+}
+
+/// The dependency qmd loads lazily for embeddings. The lean install resolves it
+/// to an empty local stub so keyword search installs without the native
+/// runtime; the embeddings queue item installs the real package later.
+pub(crate) const LEAN_DEFERRED_PACKAGE: &str = "node-llama-cpp";
+
+/// package.json for the empty stub that stands in for node-llama-cpp.
+pub(crate) const LEAN_DEFERRED_STUB_MANIFEST: &str =
+    "{\"name\":\"node-llama-cpp\",\"version\":\"0.0.0-hq-deferred\"}\n";
+
+/// Managed npm project that holds qmd. `npm install -g` ignores `overrides`,
+/// so the lean install needs a project folder of its own.
+#[cfg(not(windows))]
+pub(crate) fn lean_npm_dir_in(home: &Path) -> PathBuf {
+    managed_toolchain_dir_in(home).join("lean-npm")
+}
+
+/// Managed toolchain dir for `home`, where the install queue keeps its
+/// manifest beside `npm-global`.
+#[cfg(not(windows))]
+pub(crate) fn queue_managed_toolchain_dir_in(home: &Path) -> PathBuf {
+    managed_toolchain_dir_in(home)
+}
+
+/// package.json for the lean qmd project. With `stub`, npm resolves
+/// node-llama-cpp to the empty local stub. Without it, the real embeddings
+/// runtime installs. qmd is pinned exactly so a later `npm install` never
+/// drifts to a newer qmd. npm resolves a relative `file:` override against
+/// the dependent package and leaves a broken link, so the stub path must be
+/// absolute.
+pub(crate) fn lean_project_manifest(stub: Option<&Path>) -> Result<String, String> {
+    let mut manifest = serde_json::json!({
+        "name": "hq-managed-lean",
+        "private": true,
+        "dependencies": { "@tobilu/qmd": MANAGED_QMD_VERSION },
+    });
+    if let Some(stub) = stub {
+        if !stub.is_absolute() {
+            return Err(format!(
+                "lean install stub path must be absolute: {}",
+                stub.display()
+            ));
+        }
+        let stub = stub
+            .to_str()
+            .ok_or_else(|| format!("lean install stub path is not UTF-8: {}", stub.display()))?;
+        manifest["overrides"] = serde_json::json!({ "node-llama-cpp": format!("file:{stub}") });
+    }
+    serde_json::to_string_pretty(&manifest)
+        .map(|text| format!("{text}\n"))
+        .map_err(|e| format!("serialize lean package.json: {e}"))
+}
+
+#[cfg(not(windows))]
+fn write_lean_file(path: &Path, contents: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, contents).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Run `npm install --prefix <lean>` with the same disk check, app-owned
+/// cache, ENOTEMPTY cleanup, lookup retries, registry fallback and
+/// cancellation handle as a managed global install.
+#[cfg(not(windows))]
+async fn run_lean_npm_install(app: &AppHandle, lean: &Path, tag: &str) -> Result<String, String> {
+    let npm = npm_bin_or_install_node(app, tag).await?;
+    let npm = npm.to_str().unwrap_or("npm").to_string();
+    let prefix = lean
+        .to_str()
+        .ok_or_else(|| format!("[{tag}] lean npm path is not UTF-8: {}", lean.display()))?
+        .to_string();
+    let cancellation = InstallCancellationRegistration::new(app);
+    let result = async {
+        let app_cache_dir = app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| format!("resolve app cache directory: {e}"))?;
+        hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at(lean)?;
+        hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at(&app_cache_dir)?;
+        let npm_cache =
+            crate::commands::hq_cli_update::app_npm_cache(app).map_err(|(_, error)| {
+                emit_install_line(
+                    app,
+                    &format!("[{tag}] failed to prepare the app-owned npm cache: {error}"),
+                );
+                error
+            })?;
+        let base_args: Vec<String> = ["install", "--prefix", prefix.as_str(), "--no-audit", "--no-fund"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let public_registry_args = Some(npm_args_with_public_registry(&base_args));
+        let npm_cache = npm_cache.as_path();
+        let npm = npm.as_str();
+        let mut run = |args: Vec<String>| async move {
+            let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+            run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await
+        };
+        let mut cleanup = |scope: &Path, package_name: &str| {
+            crate::commands::hq_cli_update::clean_partial_install_scope(scope, package_name);
+        };
+        let mut preflight = |line: String| emit_install_line(app, &line);
+        let mut clear_failure = || clear_recovered_setup_command_failure();
+        let mut check_cancelled = || cancellation.reject_if_cancelled();
+        // A project install lays packages out as `<lean>/node_modules/<pkg>`,
+        // which is the Windows global layout, so the ENOTEMPTY cleanup scope
+        // resolves inside the lean folder.
+        run_setup_npm_install_with_retries(
+            &mut run,
+            &mut cleanup,
+            &mut preflight,
+            &mut clear_failure,
+            &mut check_cancelled,
+            &prefix,
+            true,
+            "@tobilu/qmd",
+            "@tobilu/qmd",
+            tag,
+            base_args,
+            public_registry_args,
+        )
+        .await
+    }
+    .await;
+    cancellation.finish(app, result.as_ref().err().map(String::as_str));
+    result
+}
+
+/// Point the managed npm bin's `qmd` at the lean project, so every resolver
+/// that already looks in the managed bin dir finds it unchanged.
+#[cfg(not(windows))]
+fn link_lean_qmd_bin(home: &Path, lean: &Path) -> Result<PathBuf, String> {
+    let target = lean.join("node_modules").join(".bin").join("qmd");
+    if !target.exists() {
+        return Err(format!("[qmd] lean install did not produce {}", target.display()));
+    }
+    let bin_dir = managed_npm_bin_in(home);
+    std::fs::create_dir_all(&bin_dir)
+        .map_err(|e| format!("[qmd] create {}: {e}", bin_dir.display()))?;
+    let link = bin_dir.join("qmd");
+    match std::fs::symlink_metadata(&link) {
+        Ok(_) => std::fs::remove_file(&link)
+            .map_err(|e| format!("[qmd] remove old {}: {e}", link.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("[qmd] inspect {}: {e}", link.display())),
+    }
+    std::os::unix::fs::symlink(&target, &link)
+        .map_err(|e| format!("[qmd] link {} -> {}: {e}", link.display(), target.display()))?;
+    Ok(link)
+}
+
+/// Install qmd without node-llama-cpp into the lean project and run the same
+/// post-install check as the full install. Keyword search works after this;
+/// semantic search waits for `install_embeddings_runtime`.
+#[cfg(not(windows))]
+pub(crate) async fn install_lean_qmd(app: &AppHandle, home: &Path) -> Result<(), String> {
+    let lean = lean_npm_dir_in(home);
+    let stub_dir = lean.join("deferred").join(LEAN_DEFERRED_PACKAGE);
+    write_lean_file(&stub_dir.join("package.json"), LEAN_DEFERRED_STUB_MANIFEST)?;
+    write_lean_file(&lean.join("package.json"), &lean_project_manifest(Some(&stub_dir))?)?;
+    run_lean_npm_install(app, &lean, "qmd").await?;
+    let link = link_lean_qmd_bin(home, &lean)?;
+    emit_install_line(
+        app,
+        &format!("[qmd] keyword search ready at {} (embeddings deferred)", link.display()),
+    );
+    let status = check_dep_impl("qmd", None);
+    if let Some(failure) = qmd_post_install_failure(&status) {
+        let diagnostic = qmd_post_install_diagnostic(failure, &status);
+        let _ = ACTIVE_SETUP_DIAGNOSTIC_COLLECTOR.try_with(|collector| {
+            collector.record(diagnostic);
+        });
+        return Err("qmd did not pass the post-install check".to_string());
+    }
+    Ok(())
+}
+
+/// Whether the lean project already carries the real embeddings runtime.
+#[cfg(not(windows))]
+pub(crate) fn embeddings_runtime_present_in(home: &Path) -> bool {
+    let manifest = lean_npm_dir_in(home)
+        .join("node_modules")
+        .join(LEAN_DEFERRED_PACKAGE)
+        .join("package.json");
+    std::fs::read_to_string(manifest)
+        .map(|text| !text.contains("0.0.0-hq-deferred"))
+        .unwrap_or(false)
+}
+
+/// Last queue item: drop the stub override, install the real node-llama-cpp
+/// into the lean project, then run `qmd embed`, which downloads the models.
+#[cfg(not(windows))]
+pub(crate) async fn install_embeddings_runtime(app: &AppHandle, home: &Path) -> Result<(), String> {
+    let lean = lean_npm_dir_in(home);
+    if !embeddings_runtime_present_in(home) {
+        write_lean_file(&lean.join("package.json"), &lean_project_manifest(None)?)?;
+        run_lean_npm_install(app, &lean, "embeddings").await?;
+    }
+    let qmd = managed_npm_bin_in(home).join("qmd");
+    let qmd = qmd
+        .to_str()
+        .ok_or_else(|| format!("[embeddings] qmd path is not UTF-8: {}", qmd.display()))?
+        .to_string();
+    run_streaming(app, &qmd, &["embed"]).await.map(|_| ())
+}
+
 #[cfg(test)]
 mod install_deps_planner_tests {
     use super::*;
+
+    #[test]
+    fn lean_project_manifest_overrides_node_llama_cpp_with_absolute_stub() {
+        let stub = std::env::temp_dir().join("lean").join("deferred").join("node-llama-cpp");
+        let text = lean_project_manifest(Some(&stub)).expect("absolute stub is accepted");
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(
+            parsed["overrides"]["node-llama-cpp"],
+            serde_json::Value::String(format!("file:{}", stub.display()))
+        );
+        assert_eq!(
+            parsed["dependencies"]["@tobilu/qmd"],
+            serde_json::Value::String(MANAGED_QMD_VERSION.to_string())
+        );
+    }
+
+    #[test]
+    fn lean_project_manifest_rejects_relative_stub() {
+        let err = lean_project_manifest(Some(Path::new("deferred/node-llama-cpp")))
+            .expect_err("relative stub must be refused");
+        assert!(err.contains("must be absolute"), "{err}");
+    }
+
+    #[test]
+    fn lean_project_manifest_without_stub_installs_embeddings_runtime() {
+        let text = lean_project_manifest(None).expect("manifest");
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert!(parsed.get("overrides").is_none());
+        assert_eq!(
+            parsed["dependencies"]["@tobilu/qmd"],
+            serde_json::Value::String(MANAGED_QMD_VERSION.to_string())
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn embeddings_runtime_present_only_when_real_package_installed() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert!(!embeddings_runtime_present_in(home.path()));
+        let pkg = lean_npm_dir_in(home.path())
+            .join("node_modules")
+            .join(LEAN_DEFERRED_PACKAGE);
+        std::fs::create_dir_all(&pkg).expect("mkdir");
+        std::fs::write(pkg.join("package.json"), LEAN_DEFERRED_STUB_MANIFEST).expect("write stub");
+        assert!(!embeddings_runtime_present_in(home.path()));
+        std::fs::write(
+            pkg.join("package.json"),
+            "{\"name\":\"node-llama-cpp\",\"version\":\"3.10.0\"}\n",
+        )
+        .expect("write real");
+        assert!(embeddings_runtime_present_in(home.path()));
+    }
 
     #[test]
     fn orchestrated_dep_timing_outcome_covers_every_result() {

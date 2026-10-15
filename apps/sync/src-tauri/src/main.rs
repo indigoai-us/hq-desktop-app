@@ -880,6 +880,9 @@ fn main() {
             commands::install_deps::install_yq,
             commands::install_deps::install_deps,
             commands::install_deps::configure_claude_settings_path,
+            commands::install_queue::start_install_queue,
+            commands::install_queue::get_install_queue_status,
+            commands::install_queue::retry_install_queue,
             #[cfg(windows)]
             commands::install_deps::install_pnpm,
             #[cfg(windows)]
@@ -1277,6 +1280,9 @@ fn main() {
             prepare_first_run_welcome_window(app.handle(), early_first_run);
 
             commands::lifecycle::setup_lifecycle(app.handle());
+            // US-005: an unfinished background install queue resumes here,
+            // without the setup card.
+            commands::install_queue::resume_on_launch(app.handle());
             let launch_kind = commands::first_run::classify_launch(app.handle());
             commands::cdp_mirror::init(
                 app.handle(),

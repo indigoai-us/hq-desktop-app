@@ -344,7 +344,7 @@ export function setStageStatus(
 // implementations. Missing commands fail non-fatally in the dispatcher.
 export const STAGE_COMMAND: Partial<Record<StageId, string>> = {
   content: "fetch_and_extract_template",
-  deps: "install_deps",
+  deps: "start_install_queue",
   "initial-sync": "start_initial_cloud_sync",
   packages: "install_default_packages",
   mesh: "install_work_mesh",
@@ -375,6 +375,9 @@ export function stageCommandInvocations(
   const invocations: StageCommandInvocation[] = [{ command, required: true }];
 
   if (id === "deps" && context.installPath) {
+    // US-005: the background install queue needs the install folder for its
+    // search-index and vault-upload items.
+    invocations[0].args = { hqPath: context.installPath };
     invocations.push({
       command: "configure_claude_settings_path",
       args: { hqPath: context.installPath },

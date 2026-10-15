@@ -1027,6 +1027,8 @@ const ONBOARDING_STAGE_IDS: &[&str] = &[
 
 const MAX_FAILED_STAGES: usize = ONBOARDING_STAGE_IDS.len();
 
+const INSTALL_QUEUE_STEP_PREFIX: &str = "install-queue:";
+
 fn allowed_desktop_property_key(key: &str) -> bool {
     ALLOWED_DESKTOP_PROPERTY_KEYS.contains(&key)
 }
@@ -1059,7 +1061,7 @@ fn normalize_failed_stages(values: &[Value]) -> Vec<Value> {
     stages
 }
 
-fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
+pub(crate) fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     let Some(Value::Object(input)) = properties else {
         return Value::Object(Map::new());
     };
@@ -1122,6 +1124,15 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 ("outcome", Value::String(value)) if connector_import => Some(Value::String(
                     normalize_closed_label(&value, CONNECTOR_IMPORT_OUTCOME_VALUES),
                 )),
+                // Background install queue rows: `install-queue:<item>`. The
+                // colon fails the generic label check, so only known item ids
+                // pass.
+                ("step", Value::String(value)) if value.starts_with(INSTALL_QUEUE_STEP_PREFIX) => {
+                    hq_desktop_core::install_queue::QueueItemId::parse(
+                        &value[INSTALL_QUEUE_STEP_PREFIX.len()..],
+                    )
+                    .map(|_| Value::String(value.clone()))
+                }
                 ("failedStages", Value::Array(values)) => {
                     Some(Value::Array(normalize_failed_stages(&values)))
                 }
@@ -3600,6 +3611,29 @@ mod codex_telemetry_tests {
         );
         assert!(missing.company_uid.is_none());
         assert_eq!(missing.properties["companyUidMissing"], true);
+    }
+
+    #[test]
+    fn install_queue_step_keeps_known_items_only() {
+        let known = sanitize_desktop_properties(Some(json!({
+            "step": "install-queue:claude-code",
+            "outcome": "skipped",
+            "skipReason": "already-present",
+            "durationMs": 12,
+        })));
+        assert_eq!(known["step"], "install-queue:claude-code");
+        assert_eq!(known["outcome"], "skipped");
+        assert_eq!(known["skipReason"], "already-present");
+        assert_eq!(known["durationMs"], 12);
+
+        let unknown = sanitize_desktop_properties(Some(json!({
+            "step": "install-queue:/Users/someone/secret",
+            "outcome": "ok",
+        })));
+        assert!(unknown.get("step").is_none());
+
+        let other_colon = sanitize_desktop_properties(Some(json!({ "step": "other:qmd" })));
+        assert!(other_colon.get("step").is_none());
     }
 
     #[test]

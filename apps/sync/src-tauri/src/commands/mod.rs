@@ -57,6 +57,7 @@ pub mod headless_install;
 pub mod import_scan;
 pub mod install_deps;
 pub mod install_directory;
+pub mod install_queue;
 pub mod install_manifest;
 pub mod install_stages;
 pub mod command_line_tools;

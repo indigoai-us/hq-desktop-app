@@ -1698,7 +1698,7 @@ describe('first-run sign-in screen', () => {
           return '/Users/placeholder/HQ';
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
-        case 'install_deps':
+        case 'start_install_queue':
           throw new Error('dependency installation failed');
         case 'take_onboarding_failure_detail':
           return undefined;
@@ -2326,7 +2326,7 @@ describe('onboarding launch handoff', () => {
           return '/placeholder/hq';
         case 'detect_ai_tools':
           return claudeDesktopOnly;
-        case 'install_deps':
+        case 'start_install_queue':
           throw new Error('dependency installation failed');
         case 'detect_claude_desktop_connectors':
           return { present: false, count: 0, path: '/placeholder/connectors' };
@@ -2411,7 +2411,7 @@ describe('onboarding launch handoff', () => {
           return '/placeholder/hq';
         case 'detect_ai_tools':
           return claudeDesktopOnly;
-        case 'install_deps':
+        case 'start_install_queue':
           throw new Error('dependency installation failed');
         case 'detect_claude_desktop_connectors':
           return { present: false, count: 0, path: '/placeholder/connectors' };
@@ -3171,7 +3171,7 @@ describe('setup restart', () => {
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
           throw new Error('template archive is corrupt');
-        case 'install_deps':
+        case 'start_install_queue':
           return new Promise<never>(() => {});
         case 'record_install_complete':
           return new Promise<never>(() => {});
@@ -4136,7 +4136,7 @@ describe('setup progress direction', () => {
           return '/Users/test/hq';
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
-        case 'install_deps':
+        case 'start_install_queue':
           return new Promise<void>((resolve) => {
             resolveInstall = resolve;
           });
@@ -4147,7 +4147,7 @@ describe('setup progress direction', () => {
 
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
     await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      tauri.invoke.mock.calls.some(([command]) => command === 'start_install_queue') &&
       eventHarness.handlers.has('install:progress') &&
       eventHarness.handlers.has('setup:cli-install-lock-wait'),
     );
@@ -4189,7 +4189,7 @@ describe('setup progress direction', () => {
           return '/Users/test/hq';
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
-        case 'install_deps':
+        case 'start_install_queue':
           return new Promise<void>(() => {});
         default:
           return undefined;
@@ -4198,7 +4198,7 @@ describe('setup progress direction', () => {
 
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
     await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      tauri.invoke.mock.calls.some(([command]) => command === 'start_install_queue') &&
       eventHarness.handlers.has('install:progress') &&
       eventHarness.handlers.has('setup:cli-install-lock-wait'),
     );
@@ -4237,7 +4237,7 @@ describe('setup progress direction', () => {
           return '/Users/test/hq';
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
-        case 'install_deps':
+        case 'start_install_queue':
           return new Promise<void>((resolve) => {
             resolveInstall = resolve;
           });
@@ -4248,11 +4248,11 @@ describe('setup progress direction', () => {
 
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
     await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      tauri.invoke.mock.calls.some(([command]) => command === 'start_install_queue') &&
       eventHarness.handlers.has('install:progress'),
     );
     const installArgs = tauri.invoke.mock.calls.find(
-      ([command]) => command === 'install_deps',
+      ([command]) => command === 'start_install_queue',
     )?.[1] as { failureScope: { setupRunId: string } };
     const timeoutFailures = () =>
       tauri.invoke.mock.calls.filter(
@@ -4295,7 +4295,7 @@ describe('setup progress direction', () => {
           return '/Users/test/hq';
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
-        case 'install_deps':
+        case 'start_install_queue':
           return new Promise<void>((resolve) => {
             resolveInstall = resolve;
           });
@@ -4306,11 +4306,11 @@ describe('setup progress direction', () => {
 
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
     await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      tauri.invoke.mock.calls.some(([command]) => command === 'start_install_queue') &&
       eventHarness.handlers.has('install:progress'),
     );
     const installArgs = tauri.invoke.mock.calls.find(
-      ([command]) => command === 'install_deps',
+      ([command]) => command === 'start_install_queue',
     )?.[1] as { failureScope: { setupRunId: string } };
     const timeoutFailures = () =>
       tauri.invoke.mock.calls.filter(
@@ -4394,7 +4394,7 @@ describe('setup progress direction', () => {
     expect(timeoutFailures()).toHaveLength(0);
     resolveContent?.();
     await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps'),
+      tauri.invoke.mock.calls.some(([command]) => command === 'start_install_queue'),
     );
   });
 
@@ -4472,7 +4472,7 @@ describe('setup progress direction', () => {
           return '/Users/test/hq';
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
-        case 'install_deps':
+        case 'start_install_queue':
           return new Promise<void>(() => {});
         default:
           return undefined;
@@ -4481,11 +4481,11 @@ describe('setup progress direction', () => {
 
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
     await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
+      tauri.invoke.mock.calls.some(([command]) => command === 'start_install_queue') &&
       eventHarness.handlers.has('install:progress'),
     );
     const installArgs = tauri.invoke.mock.calls.find(
-      ([command]) => command === 'install_deps',
+      ([command]) => command === 'start_install_queue',
     )?.[1] as { failureScope: { setupRunId: string } };
     const timeoutFailures = () =>
       tauri.invoke.mock.calls.filter(
@@ -4556,7 +4556,7 @@ describe('setup progress direction', () => {
           return '/Users/test/hq';
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
-        case 'install_deps':
+        case 'start_install_queue':
           depsAttempts += 1;
           // The first attempt runs long enough to earn an elapsed clock, then
           // fails transiently so the wizard auto-retries it.

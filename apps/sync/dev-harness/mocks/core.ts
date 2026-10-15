@@ -1432,7 +1432,7 @@ This final paragraph verifies spacing after a thematic break.
           steps: {},
         }
       : null,
-  install_deps: () => {
+  start_install_queue: () => {
     if (
       harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
     ) {
@@ -1440,6 +1440,17 @@ This final paragraph verifies spacing after a thematic break.
     }
     return null;
   },
+  // US-005: the titlebar "Finishing setup" chip reads these. A preview host has
+  // no background queue, so it reports idle and the chip stays hidden.
+  get_install_queue_status: () => ({
+    state: 'idle',
+    current: null,
+    currentId: null,
+    done: 0,
+    total: 0,
+    failed: [],
+  }),
+  retry_install_queue: () => null,
   // Hold the final journal write only for capture so a settled real checklist
   // remains visible long enough for a browser screenshot.
   record_install_complete: () =>

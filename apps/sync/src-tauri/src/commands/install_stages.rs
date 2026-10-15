@@ -735,6 +735,21 @@ pub async fn register_search_index(
     failure_scope: Option<OnboardingFailureScope>,
     activity_timeout_enabled: Option<bool>,
 ) -> Result<(), String> {
+    // The background install queue owns this as its `search-index` item.
+    crate::commands::install_queue::track_external_item(
+        &app,
+        hq_desktop_core::install_queue::QueueItemId::SearchIndex,
+        run_register_search_index(app.clone(), failure_scope, activity_timeout_enabled),
+    )
+    .await
+}
+
+/// Body of [`register_search_index`], also run by the install queue.
+pub(crate) async fn run_register_search_index(
+    app: AppHandle,
+    failure_scope: Option<OnboardingFailureScope>,
+    activity_timeout_enabled: Option<bool>,
+) -> Result<(), String> {
     clear_onboarding_failure_detail("indexing", failure_scope.as_ref());
     let hq_root = PathBuf::from(resolve_hq_path()?);
     let result = match (activity_timeout_enabled.unwrap_or(false), failure_scope.as_ref()) {
@@ -1205,6 +1220,18 @@ fn initial_sync_handoff_enabled(configured: Option<bool>) -> bool {
 /// previous sequential first-push unchanged.
 #[tauri::command]
 pub async fn start_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), String> {
+    // The background install queue owns this as its `vault-upload` item.
+    // Running it through the queue keeps the two from uploading twice.
+    crate::commands::install_queue::track_external_item(
+        &app,
+        hq_desktop_core::install_queue::QueueItemId::VaultUpload,
+        run_initial_cloud_sync(app.clone()),
+    )
+    .await
+}
+
+/// Body of [`start_initial_cloud_sync`], also run by the install queue.
+pub(crate) async fn run_initial_cloud_sync(app: tauri::AppHandle) -> Result<(), String> {
     let jwt = resolve_jwt()
         .await
         .map_err(|_| initial_cloud_sync_failure_message(None))?;

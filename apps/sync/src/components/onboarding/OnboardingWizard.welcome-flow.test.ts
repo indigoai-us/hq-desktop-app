@@ -254,7 +254,7 @@ describe('welcome flow: the install runs in the background', () => {
     const deps = deferred();
     stubInvoke({
       fetch_and_extract_template: () => template.promise,
-      install_deps: () => deps.promise,
+      start_install_queue: () => deps.promise,
     });
     mountAt(2);
     await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the first stage');
@@ -265,7 +265,7 @@ describe('welcome flow: the install runs in the background', () => {
     const before = percent();
 
     template.resolve();
-    await flushUntil(() => commands().includes('install_deps'), 'the second stage');
+    await flushUntil(() => commands().includes('start_install_queue'), 'the second stage');
     expect(percent()).toBeGreaterThan(before);
     expect(card().textContent).toMatch(/Step \d of 5 · /);
 
@@ -600,7 +600,7 @@ describe("welcome flow: Apple's developer tools", () => {
     expect(card.textContent).toContain('continues on its own');
     expect(byId('onboarding-clt-progress')).not.toBeNull();
     expect(commands()).toContain('command_line_tools_show_installer');
-    expect(commands()).not.toContain('install_deps');
+    expect(commands()).not.toContain('start_install_queue');
     expect(commands()).not.toContain('git_init');
 
     byId('onboarding-clt-show')!.click();
@@ -610,7 +610,7 @@ describe("welcome flow: Apple's developer tools", () => {
     status = toolsReady;
     for (let i = 0; i < 20 && !commands().includes('git_init'); i += 1) await advance(1_000);
     expect(byId('onboarding-clt-card')).toBeNull();
-    expect(commands()).toContain('install_deps');
+    expect(commands()).toContain('start_install_queue');
     expect(commands()).toContain('git_init');
     expect(commands().filter((c) => c === 'fetch_and_extract_template')).toHaveLength(1);
     expect(commands().filter((c) => c === 'command_line_tools_start_install')).toHaveLength(1);
@@ -640,13 +640,13 @@ describe("welcome flow: Apple's developer tools", () => {
     expect(card.dataset.phase).toBe('cancelled');
     expect(card.textContent).toContain("Apple's developer tools are not installed yet");
     expect(card.textContent).not.toMatch(/error|failed|exit|status \d/i);
-    expect(commands()).not.toContain('install_deps');
+    expect(commands()).not.toContain('start_install_queue');
 
     byId('onboarding-clt-retry')!.click();
-    for (let i = 0; i < 20 && !commands().includes('install_deps'); i += 1) await advance(1_000);
+    for (let i = 0; i < 20 && !commands().includes('start_install_queue'); i += 1) await advance(1_000);
     expect(starts).toBe(2);
     expect(byId('onboarding-clt-card')).toBeNull();
-    expect(commands()).toContain('install_deps');
+    expect(commands()).toContain('start_install_queue');
   });
 
   it('shows nothing and never starts an install when the tools are present', async () => {

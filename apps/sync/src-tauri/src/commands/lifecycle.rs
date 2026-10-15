@@ -425,7 +425,24 @@ pub fn setup_lifecycle(app: &AppHandle) {
         let node_resolved = node_program.kind != ResolvedProgramKind::NotResolved;
         let (bundled_cli_ready, bundled_cli_mode) =
             crate::commands::install_deps::bundled_hq_cli_diagnostics(app);
-        let verdict = if evidence_unreadable {
+        // A missing hq or node that the background install queue still owes
+        // is not a reason to show the setup card again: the queue resumes on
+        // launch and installs it.
+        let queue_defers = !evidence_unreadable
+            && crate::commands::install_queue::startup_gate_defers_to_queue(
+                classified.state,
+                crate::commands::install_queue::queue_owes_missing_tools(
+                    hq_resolved,
+                    node_resolved,
+                ),
+            );
+        if queue_defers {
+            log(
+                "lifecycle",
+                "startup toolchain gate deferred to the background install queue",
+            );
+        }
+        let verdict = if evidence_unreadable || queue_defers {
             classified
         } else {
             hq_desktop_core::lifecycle::require_local_toolchain_for_startup(

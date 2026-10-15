@@ -498,7 +498,11 @@ describe("stage command invocations", () => {
   it("adds Claude settings PATH configuration after dependency install", () => {
     expect(stageCommandInvocations("deps", { installPath: "/tmp/hq" })).toEqual(
       [
-        { command: "install_deps", required: true },
+        {
+          command: "start_install_queue",
+          args: { hqPath: "/tmp/hq" },
+          required: true,
+        },
         {
           command: "configure_claude_settings_path",
           args: { hqPath: "/tmp/hq" },
@@ -510,7 +514,7 @@ describe("stage command invocations", () => {
 
   it("skips the Claude settings follow-up until an install path is resolved", () => {
     expect(stageCommandInvocations("deps", { installPath: null })).toEqual([
-      { command: "install_deps", required: true },
+      { command: "start_install_queue", required: true },
     ]);
   });
 });

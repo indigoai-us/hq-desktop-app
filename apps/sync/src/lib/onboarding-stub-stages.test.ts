@@ -23,7 +23,7 @@ describe('honest onboarding stage reporting', () => {
     ]);
     expect(STAGE_COMMAND).toEqual({
       content: 'fetch_and_extract_template',
-      deps: 'install_deps',
+      deps: 'start_install_queue',
       'initial-sync': 'start_initial_cloud_sync',
       'git-init': 'git_init',
       personalize: 'personalize_hq',
