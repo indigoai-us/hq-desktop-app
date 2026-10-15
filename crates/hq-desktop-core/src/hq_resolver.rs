@@ -44,12 +44,27 @@
 //!
 //! ## Lifecycle
 //!
-//! Cached in a `OnceLock` for the AppBar process lifetime. If the user
-//! later upgrades hq-cli (`npm install -g @indigoai-us/hq-cli@latest`),
-//! the next AppBar restart re-probes and picks up the local binary again.
+//! Cached in a process-wide slot. If the user later upgrades hq-cli
+//! (`npm install -g @indigoai-us/hq-cli@latest`), the next AppBar restart
+//! re-probes and picks up the local binary again.
+//!
+//! During first-run setup (see [`set_first_run_setup_active`]) an npx
+//! fallback is never cached. On a fresh machine `hq` is missing only because
+//! the managed install has not finished yet; caching npx at that point would
+//! pin every later call in the process to a slow npm download.
+//! [`invalidate_hq_resolution`] drops the cached choice after the managed
+//! install lands, and [`resolve_hq_for_setup`] lets setup-time callers wait
+//! for that install instead of shelling out to npx.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{OnceLock, RwLock};
+use std::time::Duration;
 
+use crate::cli_update_lock::{
+    acquire_cli_update_lock_waiting_cancellable,
+    acquire_cli_update_lock_waiting_cancellable_in, CliUpdateLockGuard, CliUpdateLockWaitAttempt,
+    CLI_INSTALL_LOCK_WAIT_BACKOFF, CLI_INSTALL_LOCK_WAIT_BUDGET,
+};
 use crate::logfile::log;
 use crate::paths;
 
@@ -60,8 +75,64 @@ pub const HQ_CLI_NPM_RANGE: &str = "^5.10.0";
 /// their own fallback floor when HQ Anywhere needs them.
 pub const HQ_CLI_GLOBAL_RUNTIME_NPM_RANGE: &str = "^5.345.46";
 
-/// Cached invocation decision for the current process.
-static HQ_INVOCATION: OnceLock<HqInvocation> = OnceLock::new();
+/// Tool name written into the shared cli-update lock while an npx self-heal
+/// run holds it, so whoever finds the lock can name the holder.
+pub const NPX_RUN_LOCK_TOOL: &str = "hq-desktop-app-npx-run";
+
+/// Cached invocation decision for the current process. `None` until the
+/// first cacheable probe, and again after [`invalidate_hq_resolution`].
+static HQ_INVOCATION: RwLock<Option<HqInvocation>> = RwLock::new(None);
+
+/// True while first-run setup is in progress. The app's lifecycle state
+/// machine sets it; [`resolve_hq`] reads it to decide whether an npx fallback
+/// may be cached.
+static FIRST_RUN_SETUP_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Mark whether first-run setup is in progress. The app calls this whenever
+/// its lifecycle state changes: true for the install states, false once the
+/// lifecycle reaches SteadyState.
+pub fn set_first_run_setup_active(active: bool) {
+    FIRST_RUN_SETUP_ACTIVE.store(active, Ordering::SeqCst);
+}
+
+/// Whether first-run setup is currently in progress.
+pub fn first_run_setup_active() -> bool {
+    FIRST_RUN_SETUP_ACTIVE.load(Ordering::SeqCst)
+}
+
+/// Drop the cached invocation so the next [`resolve_hq`] re-probes. Called
+/// after the managed hq-cli install succeeds.
+pub fn invalidate_hq_resolution() {
+    match HQ_INVOCATION.write() {
+        Ok(mut slot) => *slot = None,
+        Err(poisoned) => *poisoned.into_inner() = None,
+    }
+    log("hq-resolver", "cached invocation cleared; next call re-probes");
+}
+
+/// Whether a probe result may be cached for the rest of the process. The npx
+/// fallbacks are not cached while first-run setup is active, because the
+/// managed install is expected to provide a local `hq` shortly.
+fn should_cache(invocation: &HqInvocation, first_run_active: bool) -> bool {
+    match invocation {
+        HqInvocation::Local(_) => true,
+        HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => !first_run_active,
+    }
+}
+
+fn cached_invocation() -> Option<HqInvocation> {
+    match HQ_INVOCATION.read() {
+        Ok(slot) => slot.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+fn store_invocation(invocation: &HqInvocation) {
+    match HQ_INVOCATION.write() {
+        Ok(mut slot) => *slot = Some(invocation.clone()),
+        Err(poisoned) => *poisoned.into_inner() = Some(invocation.clone()),
+    }
+}
 
 /// Serializes concurrent `npx --package=…` self-heal runs. Two npx installs
 /// racing the shared `~/.npm/_npx/<hash>/` install dir stomp each other's
@@ -147,48 +218,160 @@ impl HqInvocation {
         }
     }
 
-    /// Acquire the process-wide npx serial lock for the duration of an npx
-    /// self-heal run, so concurrent `npx --package=…` installs can't race the
-    /// shared `~/.npm/_npx/` cache (HQ-SYNC-6). Returns `Some(guard)` for the
-    /// Npx path and `None` for a resolved local binary (which needs no
-    /// serialization — many can run in parallel). Hold the returned guard in
-    /// scope until the spawned subprocess has completed.
-    pub async fn npx_serial_guard(&self) -> Option<tokio::sync::MutexGuard<'static, ()>> {
-        match self {
-            HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => {
-                Some(npx_serial_lock().lock().await)
+    /// Acquire the locks an npx self-heal run must hold until its subprocess
+    /// has completed. Returns `Ok(None)` for a resolved local binary (which
+    /// needs no serialization; many can run in parallel).
+    ///
+    /// For the npx variants it takes the process-wide serial lock, so
+    /// concurrent `npx --package=…` installs can't race the shared
+    /// `~/.npm/_npx/` cache (HQ-SYNC-6), and then the cross-process
+    /// cli-update lock, so the run cannot overlap a managed CLI install or
+    /// either auto-updater. A lock still held after the wait budget is
+    /// logged and returned as `Err`.
+    pub async fn npx_serial_guard(&self) -> Result<Option<NpxRunGuard>, String> {
+        self.npx_serial_guard_with(None, CLI_INSTALL_LOCK_WAIT_BUDGET, CLI_INSTALL_LOCK_WAIT_BACKOFF)
+            .await
+    }
+
+    /// `lock_dir` overrides the lock directory (tests); `None` uses the
+    /// production resolution (`HQ_LOCK_DIR`, else `~/.hq/locks`).
+    async fn npx_serial_guard_with(
+        &self,
+        lock_dir: Option<std::path::PathBuf>,
+        budget: Duration,
+        backoff: Duration,
+    ) -> Result<Option<NpxRunGuard>, String> {
+        if matches!(self, HqInvocation::Local(_)) {
+            return Ok(None);
+        }
+        let serial = npx_serial_lock().lock().await;
+        let version = env!("CARGO_PKG_VERSION");
+        let attempt = tokio::task::spawn_blocking(move || {
+            let on_wait = |holder: &str| {
+                log(
+                    "hq-resolver",
+                    &format!("npx run waiting for the cli-update lock held by {holder}"),
+                )
+            };
+            match lock_dir {
+                Some(dir) => acquire_cli_update_lock_waiting_cancellable_in(
+                    &dir,
+                    NPX_RUN_LOCK_TOOL,
+                    version,
+                    budget,
+                    backoff,
+                    || false,
+                    on_wait,
+                ),
+                None => acquire_cli_update_lock_waiting_cancellable(
+                    NPX_RUN_LOCK_TOOL,
+                    version,
+                    budget,
+                    backoff,
+                    || false,
+                    on_wait,
+                ),
             }
-            HqInvocation::Local(_) => None,
+        })
+        .await
+        .map_err(|e| {
+            let msg = format!("npx run could not wait for the cli-update lock: {e}");
+            log("hq-resolver", &msg);
+            msg
+        })??;
+        match attempt {
+            CliUpdateLockWaitAttempt::Acquired(guard) => Ok(Some(NpxRunGuard {
+                _cli_update_lock: guard,
+                _serial: serial,
+            })),
+            CliUpdateLockWaitAttempt::Held { holder } => {
+                let msg = format!(
+                    "another hq-cli install is still running ({holder}); \
+                     skipped the npx run so the two installs do not collide"
+                );
+                log("hq-resolver", &msg);
+                Err(msg)
+            }
+            CliUpdateLockWaitAttempt::Cancelled => {
+                let msg = "npx run lock wait was cancelled".to_string();
+                log("hq-resolver", &msg);
+                Err(msg)
+            }
         }
     }
 }
 
+/// Held for the whole duration of an npx self-heal run: the in-process serial
+/// lock plus the cross-process cli-update lock
+/// (indigo-serialize-concurrent-npx-self-heal-shellouts). Fields drop in
+/// declaration order, so the file lock is released before the serial lock.
+#[derive(Debug)]
+pub struct NpxRunGuard {
+    _cli_update_lock: CliUpdateLockGuard,
+    _serial: tokio::sync::MutexGuard<'static, ()>,
+}
+
+/// Outcome of [`resolve_hq_for_setup`].
+#[derive(Debug, Clone)]
+pub enum HqResolution {
+    /// A usable invocation. During setup this is always a local binary.
+    Ready(HqInvocation),
+    /// First-run setup is active and no capable local `hq` exists yet. The
+    /// caller should wait for the managed install instead of using npx.
+    AwaitingManagedInstall,
+}
+
 /// Resolve the right way to invoke `hq`, caching the decision per-process.
 /// Probes local CLI capabilities synchronously the first time; subsequent
-/// calls return the cached value with no overhead.
+/// calls return the cached value with no overhead. An npx fallback is
+/// returned but not cached while first-run setup is active.
 ///
 /// Logs the chosen invocation under the `hq-resolver` tag so a stuck
 /// subprocess leaves a breadcrumb of which binary path it tried.
 pub fn resolve_hq() -> HqInvocation {
-    HQ_INVOCATION
-        .get_or_init(|| {
-            let chosen = probe();
-            let label = chosen.label();
-            log("hq-resolver", &format!("chose invocation: {label}"));
-            // Breadcrumb for any subsequent Sentry event in the same scope —
-            // tells us at-a-glance whether the user was on the locally-installed
-            // CLI or the npx self-heal path. Critical when triaging
-            // provision-cli failures: a stale local `hq` and a missing `npx`
-            // produce different stderr signatures.
-            sentry::add_breadcrumb(sentry::Breadcrumb {
-                category: Some("hq-resolver".to_string()),
-                message: Some(format!("chose invocation: {label}")),
-                level: sentry::Level::Info,
-                ..Default::default()
-            });
-            chosen
-        })
-        .clone()
+    if let Some(cached) = cached_invocation() {
+        return cached;
+    }
+    let chosen = probe();
+    let label = chosen.label();
+    let cacheable = should_cache(&chosen, first_run_setup_active());
+    if cacheable {
+        store_invocation(&chosen);
+        log("hq-resolver", &format!("chose invocation: {label}"));
+    } else {
+        log(
+            "hq-resolver",
+            &format!("chose invocation: {label} (not cached during first-run setup)"),
+        );
+    }
+    // Breadcrumb for any subsequent Sentry event in the same scope —
+    // tells us at-a-glance whether the user was on the locally-installed
+    // CLI or the npx self-heal path. Critical when triaging
+    // provision-cli failures: a stale local `hq` and a missing `npx`
+    // produce different stderr signatures.
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        category: Some("hq-resolver".to_string()),
+        message: Some(format!("chose invocation: {label}")),
+        level: sentry::Level::Info,
+        ..Default::default()
+    });
+    chosen
+}
+
+/// Setup-aware resolve. While first-run setup is active, an npx result means
+/// the managed install has not landed yet, so this returns
+/// [`HqResolution::AwaitingManagedInstall`] instead of the npx fallback.
+pub fn resolve_hq_for_setup() -> HqResolution {
+    setup_resolution(resolve_hq(), first_run_setup_active())
+}
+
+fn setup_resolution(invocation: HqInvocation, first_run_active: bool) -> HqResolution {
+    match invocation {
+        HqInvocation::Npx | HqInvocation::NpxGlobalRuntime if first_run_active => {
+            HqResolution::AwaitingManagedInstall
+        }
+        other => HqResolution::Ready(other),
+    }
 }
 
 fn probe() -> HqInvocation {
@@ -253,6 +436,24 @@ pub fn resolve_hq_for_global_runtime() -> HqInvocation {
         HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => false,
     };
     select_global_runtime_invocation(shared, global_runtime_supported)
+}
+
+/// Error-message prefix a caller returns when it declines to run `hq` because
+/// first-run setup has not finished installing it. The renderer matches on it
+/// to show a still-setting-up state instead of a raw error.
+pub const SETUP_PENDING_CODE: &str = "setup_pending";
+
+/// Setup-aware [`resolve_hq_for_global_runtime`]. While first-run setup is
+/// active, an npx result means the managed install has not landed yet, so this
+/// returns [`HqResolution::AwaitingManagedInstall`] and the caller skips the
+/// npx download.
+pub fn resolve_hq_for_global_runtime_during_setup() -> HqResolution {
+    setup_resolution(resolve_hq_for_global_runtime(), first_run_setup_active())
+}
+
+/// The error string for a run declined by [`SETUP_PENDING_CODE`].
+pub fn setup_pending_error(what: &str) -> String {
+    format!("{SETUP_PENDING_CODE}: {what} waits for HQ setup to finish installing hq")
 }
 
 fn select_global_runtime_invocation(
@@ -458,28 +659,142 @@ mod tests {
 
     // HQ-SYNC-6: npx self-heal runs must serialize (they share the ~/.npm/_npx
     // cache); resolved-local runs must NOT (they can run in parallel).
+    //
+    // US-004: the npx run also holds the cross-process cli-update lock. Both
+    // lock assertions live in this one test because the serial lock is a
+    // process-wide static. The lock dir is a temp dir passed explicitly, so
+    // the test never touches process env or the real ~/.hq/locks.
     #[tokio::test]
-    async fn npx_serializes_but_local_does_not() {
-        // Local never takes the lock.
-        let local = HqInvocation::Local("/usr/local/bin/hq".to_string());
-        assert!(local.npx_serial_guard().await.is_none());
+    async fn npx_serializes_and_holds_cli_update_lock_but_local_does_not() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let lock_file = tmp
+            .path()
+            .join(crate::cli_update_lock::CLI_UPDATE_LOCK_FILE);
 
-        // Npx takes the lock, and while it's held the lock is contended.
-        let guard = HqInvocation::Npx.npx_serial_guard().await;
+        // Local never takes either lock.
+        let local = HqInvocation::Local("/usr/local/bin/hq".to_string());
+        assert!(local.npx_serial_guard().await.expect("local").is_none());
+        assert!(!lock_file.exists(), "local must not write the cli-update lock");
+
+        // Npx takes both locks, and while held both are contended.
+        let guard = HqInvocation::Npx
+            .npx_serial_guard_with(Some(tmp.path().to_path_buf()), Duration::from_secs(1), Duration::ZERO)
+            .await
+            .expect("npx guard");
         assert!(guard.is_some(), "Npx must take the serial lock");
         assert!(
             npx_serial_lock().try_lock().is_err(),
             "the npx lock must be held while a guard is alive"
         );
+        let contents = std::fs::read_to_string(&lock_file).expect("cli-update lock written");
+        assert!(
+            contents.contains(NPX_RUN_LOCK_TOOL),
+            "lock must name the npx run as holder; got {contents}"
+        );
 
         // A concurrent Local acquire is unaffected by the held npx lock.
-        assert!(local.npx_serial_guard().await.is_none());
+        assert!(local.npx_serial_guard().await.expect("local").is_none());
 
-        // Once the guard drops, the next npx run can acquire it.
+        // Once the guard drops, both locks are free.
         drop(guard);
         assert!(
             npx_serial_lock().try_lock().is_ok(),
             "the npx lock must be free after the guard drops"
         );
+        assert!(!lock_file.exists(), "the cli-update lock must be released");
+
+        // A fresh lock held by another live process (this test's own pid
+        // stands in for a running installer) makes the npx run fail with a
+        // logged error instead of running alongside it.
+        let held = crate::cli_update_lock::acquire_cli_update_lock_in(
+            tmp.path(),
+            "hq-desktop-app-cli-update",
+            "1.2.3",
+        )
+        .expect("acquire");
+        let blocked = HqInvocation::NpxGlobalRuntime
+            .npx_serial_guard_with(Some(tmp.path().to_path_buf()), Duration::from_secs(1), Duration::ZERO)
+            .await;
+        let err = blocked.expect_err("held lock must block the npx run");
+        assert!(err.contains("another hq-cli install is still running"), "{err}");
+        assert!(
+            npx_serial_lock().try_lock().is_ok(),
+            "a failed acquire must not leave the serial lock held"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn npx_fallback_is_not_cached_during_first_run_setup() {
+        let local = HqInvocation::Local("/managed/toolchain/hq".to_string());
+        assert!(should_cache(&local, true));
+        assert!(should_cache(&local, false));
+        assert!(!should_cache(&HqInvocation::Npx, true));
+        assert!(!should_cache(&HqInvocation::NpxGlobalRuntime, true));
+        assert!(should_cache(&HqInvocation::Npx, false));
+        assert!(should_cache(&HqInvocation::NpxGlobalRuntime, false));
+    }
+
+    #[test]
+    fn setup_resolution_waits_for_managed_install_instead_of_npx() {
+        assert!(matches!(
+            setup_resolution(HqInvocation::Npx, true),
+            HqResolution::AwaitingManagedInstall
+        ));
+        assert!(matches!(
+            setup_resolution(HqInvocation::NpxGlobalRuntime, true),
+            HqResolution::AwaitingManagedInstall
+        ));
+        assert!(matches!(
+            setup_resolution(HqInvocation::Npx, false),
+            HqResolution::Ready(HqInvocation::Npx)
+        ));
+        assert!(matches!(
+            setup_resolution(HqInvocation::Local("/x/hq".to_string()), true),
+            HqResolution::Ready(HqInvocation::Local(_))
+        ));
+    }
+
+    #[test]
+    fn global_runtime_during_setup_never_falls_back_to_npx() {
+        // An old local hq without global-runtime support selects the npx
+        // runtime; during setup that must become a wait, not a download.
+        let selected = select_global_runtime_invocation(HqInvocation::Local("/x/hq".into()), false);
+        assert!(matches!(
+            setup_resolution(selected.clone(), true),
+            HqResolution::AwaitingManagedInstall
+        ));
+        assert!(matches!(
+            setup_resolution(selected, false),
+            HqResolution::Ready(HqInvocation::NpxGlobalRuntime)
+        ));
+        let capable = select_global_runtime_invocation(HqInvocation::Local("/x/hq".into()), true);
+        assert!(matches!(
+            setup_resolution(capable, true),
+            HqResolution::Ready(HqInvocation::Local(_))
+        ));
+    }
+
+    #[test]
+    fn setup_pending_error_starts_with_code() {
+        assert!(setup_pending_error("HQ Anywhere").starts_with("setup_pending: "));
+    }
+
+    #[test]
+    fn invalidate_clears_cached_invocation() {
+        store_invocation(&HqInvocation::Local("/cached/hq".to_string()));
+        assert!(matches!(cached_invocation(), Some(HqInvocation::Local(p)) if p == "/cached/hq"));
+        invalidate_hq_resolution();
+        assert!(cached_invocation().is_none());
+    }
+
+    #[test]
+    fn first_run_flag_round_trips() {
+        let before = first_run_setup_active();
+        set_first_run_setup_active(true);
+        assert!(first_run_setup_active());
+        set_first_run_setup_active(false);
+        assert!(!first_run_setup_active());
+        set_first_run_setup_active(before);
     }
 }

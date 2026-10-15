@@ -9,13 +9,16 @@
 //! [first-run] kind=install event=start id=<item>
 //! [first-run] kind=install event=end id=<item> outcome=<ok|failed|skipped|cancelled> elapsed_ms=<n>
 //! [first-run] kind=probe tool=<claude|codex|...> result=<passed|signed-out|failed|timeout> elapsed_ms=<n>
+//! [first-run] kind=phase phase=<blocking> result=<ok|failed> elapsed_ms=<n since launch>
 //! ```
 //!
 //! Install ids: node, git, hq-cli, qmd, claude-code, codex, gh, yq, jq (logged
 //! here, from Rust), and content, initial-sync, indexing (logged from the
 //! renderer through `frontend_log`). Screen and probe lines also come from the
 //! renderer; `packages/ui/src/chat/first-run/first-run-timing.ts` formats them
-//! with the same rules. Values never contain whitespace or `=`: both are
+//! with the same rules. The phase line marks the end of the blocking install
+//! phase (sign-in through the HQ folder); its `elapsed_ms` counts from app
+//! launch, not from the phase start. Values never contain whitespace or `=`: both are
 //! replaced with `_`, and an empty value becomes `unknown`, so a reader can
 //! split a line on spaces and then on the first `=`.
 //! `companies/indigo/projects/install-flow-rethink/scripts/first-run-timeline.sh`
@@ -77,6 +80,15 @@ pub fn format_probe(tool: &str, result: &str, elapsed_ms: u128) -> String {
     format!(
         "kind=probe tool={} result={} elapsed_ms={}",
         sanitize_value(tool),
+        sanitize_value(result),
+        elapsed_ms
+    )
+}
+
+pub fn format_phase(phase: &str, result: &str, elapsed_ms: u128) -> String {
+    format!(
+        "kind=phase phase={} result={} elapsed_ms={}",
+        sanitize_value(phase),
         sanitize_value(result),
         elapsed_ms
     )
@@ -183,6 +195,18 @@ mod tests {
         assert_eq!(
             format_install_end("hq-cli", InstallOutcome::Cancelled, 9),
             "kind=install event=end id=hq-cli outcome=cancelled elapsed_ms=9"
+        );
+    }
+
+    #[test]
+    fn phase_line_matches_the_documented_format() {
+        assert_eq!(
+            format_phase("blocking", "ok", 41250),
+            "kind=phase phase=blocking result=ok elapsed_ms=41250"
+        );
+        assert_eq!(
+            format_phase("blocking", "bad value", 0),
+            "kind=phase phase=blocking result=bad_value elapsed_ms=0"
         );
     }
 

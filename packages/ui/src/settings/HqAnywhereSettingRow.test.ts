@@ -184,6 +184,34 @@ describe("Settings > HQ Anywhere", () => {
     warn.mockRestore();
   });
 
+  it("shows a still-setting-up state with Retry while first-run setup installs hq", async () => {
+    const syncRuntime = vi.fn<() => Promise<AdapterResult<void>>>(async () =>
+      failure("invoke", "setup_pending: HQ Anywhere waits for HQ setup to finish installing hq"),
+    );
+    const { adapter } = createAdapter({ initialValue: false, syncRuntime });
+    render(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+
+    toggle()!.click();
+
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="hq-anywhere-setting-pending"]')).not.toBeNull(),
+    );
+    expect(syncRuntime).toHaveBeenCalledTimes(1);
+    expect(toggle()?.getAttribute("aria-checked")).toBe("true");
+    expect(host.textContent).toContain("HQ is still finishing setup. This continues on its own.");
+    expect(host.textContent).not.toContain("Tap to retry");
+    expect(host.textContent).not.toContain("setup_pending");
+
+    syncRuntime.mockResolvedValue(ok(undefined));
+    host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
+    await vi.waitFor(() => expect(syncRuntime).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="hq-anywhere-setting-pending"]')).toBeNull(),
+    );
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-retry"]')).toBeNull();
+  });
+
   it("shows a startup reconciliation failure in the row retry hint", async () => {
     const syncRuntime = vi.fn<() => Promise<AdapterResult<void>>>(async () =>
       failure("network", "raw startup setup detail"),

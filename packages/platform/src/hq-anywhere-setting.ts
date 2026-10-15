@@ -16,10 +16,23 @@ export interface HqAnywhereRetryOptions {
   pause?: (milliseconds: number) => Promise<void>;
 }
 
+/** Error prefix the desktop backend uses while first-run setup still owns the hq install. */
+export const HQ_ANYWHERE_SETUP_PENDING_CODE = "setup_pending";
+
 export type HqAnywhereGlobalRuntimeStatus =
   | { state: "idle" }
   | { state: "running"; enabled: boolean | null }
+  | { state: "pending"; enabled: boolean | null }
   | { state: "failed"; enabled: boolean | null };
+
+/** True when a request failed only because first-run setup has not finished installing hq. */
+export function isHqAnywhereSetupPending(result: AdapterResult<unknown>): boolean {
+  if (result.ok) return false;
+  return (
+    result.code === HQ_ANYWHERE_SETUP_PENDING_CODE ||
+    (result.message ?? "").startsWith(HQ_ANYWHERE_SETUP_PENDING_CODE)
+  );
+}
 
 const IDLE_RUNTIME_STATUS: HqAnywhereGlobalRuntimeStatus = { state: "idle" };
 let globalRuntimeStatus: HqAnywhereGlobalRuntimeStatus = IDLE_RUNTIME_STATUS;
@@ -77,6 +90,8 @@ export async function retryHqAnywhereRequest<T>(
       );
     }
     if (lastResult.ok) return lastResult;
+    // Setup still installing hq: retrying within a second cannot help.
+    if (isHqAnywhereSetupPending(lastResult)) return lastResult;
     const delay = HQ_ANYWHERE_RETRY_DELAYS_MS[attempt];
     if (delay !== undefined) await pause(delay);
   }
@@ -138,7 +153,11 @@ export async function setHqAnywhereGlobalRuntime(
     );
   }
   publishGlobalRuntimeStatus(
-    result.ok ? IDLE_RUNTIME_STATUS : { state: "failed", enabled },
+    result.ok
+      ? IDLE_RUNTIME_STATUS
+      : isHqAnywhereSetupPending(result)
+        ? { state: "pending", enabled }
+        : { state: "failed", enabled },
   );
   return result;
 }

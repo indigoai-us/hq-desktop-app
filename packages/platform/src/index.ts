@@ -47,12 +47,14 @@ export {
   ensureHqAnywhereGlobalRuntime,
   getHqAnywherePersonSetting,
   hqAnywhereRuntimeEnabled,
+  isHqAnywhereSetupPending,
   putHqAnywherePersonSetting,
   retryHqAnywhereRequest,
   setHqAnywhereGlobalRuntime,
   subscribeHqAnywhereGlobalRuntimeStatus,
   HQ_ANYWHERE_RETRY_DELAYS_MS,
   HQ_ANYWHERE_RETRY_ATTEMPTS,
+  HQ_ANYWHERE_SETUP_PENDING_CODE,
 } from "./hq-anywhere-setting.js";
 export type { HqAnywhereGlobalRuntimeStatus } from "./hq-anywhere-setting.js";
 export {

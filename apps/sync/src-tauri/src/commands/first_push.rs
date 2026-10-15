@@ -263,7 +263,10 @@ pub async fn first_push_company(
     // Serialize concurrent npx self-heal installs so they can't race the shared
     // ~/.npm/_npx cache (HQ-SYNC-6). No-op on the resolved-local fast path; held
     // until this push's subprocess completes.
-    let _npx_guard = invocation.npx_serial_guard().await;
+    let _npx_guard = invocation
+        .npx_serial_guard()
+        .await
+        .map_err(FirstPushFailure::push_failed)?;
 
     let mut cmd = invocation.command();
     cmd.arg("sync")

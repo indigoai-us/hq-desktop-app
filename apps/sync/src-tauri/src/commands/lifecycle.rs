@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 use std::time::Instant;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::util::{logfile::log, paths};
 
@@ -175,6 +175,15 @@ static SETUP_LIFECYCLE_TIME: OnceLock<Instant> = OnceLock::new();
 /// Rate-limit: at most one unexpected-surface Sentry event per process.
 static UNEXPECTED_SURFACE_REPORTED: OnceLock<()> = OnceLock::new();
 
+/// Tell the hq resolver whether first-run setup still owns this process.
+/// While it does, an npx fallback is never cached, so a later call can pick
+/// up the managed hq-cli once the background install lands it.
+fn publish_first_run_setup_flag(state: LifecycleState) {
+    hq_desktop_core::hq_resolver::set_first_run_setup_active(
+        state != LifecycleState::SteadyState,
+    );
+}
+
 /// Advance the in-process lifecycle verdict. Called when the setup wizard
 /// finishes so the same launch routes Dock / tray / second-launch activations
 /// to the desktop workspace instead of back to the (now finished) setup card.
@@ -189,6 +198,7 @@ pub fn set_lifecycle_state(app: &AppHandle, state: LifecycleState) {
             &format!("lifecycle state advanced to {}", lifecycle_state_str(state)),
         );
     }
+    publish_first_run_setup_flag(state);
     if publish_sync_setup_gate(state) {
         log(
             "lifecycle",
@@ -235,6 +245,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
             "settings state unavailable; preserving the existing launch surface",
         );
         publish_sync_setup_gate(LifecycleState::SteadyState);
+        publish_first_run_setup_flag(LifecycleState::SteadyState);
         app.manage(LifecycleStateHandle(RwLock::new(
             LifecycleState::SteadyState,
         )));
@@ -588,6 +599,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     );
 
     publish_sync_setup_gate(verdict.state);
+    publish_first_run_setup_flag(verdict.state);
     if lifecycle_holds_sync(verdict.state) {
         log(
             "lifecycle",
@@ -718,6 +730,52 @@ pub fn mark_welcome_tour_shown() -> Result<(), String> {
             Value::Bool(true),
         )],
     )
+}
+
+/// Milliseconds since `setup_lifecycle` ran, which is the first thing the app
+/// does at launch. `None` before it has run.
+pub fn ms_since_setup_lifecycle() -> Option<u128> {
+    SETUP_LIFECYCLE_TIME
+        .get()
+        .map(|started| started.elapsed().as_millis())
+}
+
+/// The wizard's background install batch (tools, initial sync, indexing)
+/// started or finished. While it runs the hq CLI auto-updater holds off; the
+/// hold expires on its own after `BACKGROUND_SETUP_HOLD_TTL` if the renderer
+/// never reports the end. Each change is broadcast as
+/// `first-run:background-setup` so a feature that deferred itself while the
+/// batch was installing (HQ Anywhere) can retry once it finishes.
+#[tauri::command]
+pub async fn set_first_run_background_setup(app: AppHandle, running: bool) {
+    hq_desktop_core::hq_cli_update::mark_background_setup_running(running);
+    log(
+        crate::first_run_timing::TAG,
+        &format!("background setup running={running}"),
+    );
+    if let Err(e) = app.emit(
+        FIRST_RUN_BACKGROUND_SETUP_EVENT,
+        serde_json::json!({ "running": running }),
+    ) {
+        log(
+            crate::first_run_timing::TAG,
+            &format!("background setup event emit failed: {e}"),
+        );
+    }
+}
+
+/// Event emitted when the wizard's background install batch starts or ends.
+pub const FIRST_RUN_BACKGROUND_SETUP_EVENT: &str = "first-run:background-setup";
+
+/// Log the end of a first-run phase with the time since launch. The wizard
+/// calls this once the blocking phase (sign-in through the HQ folder) is done.
+#[tauri::command]
+pub async fn log_first_run_phase(phase: String, result: String) {
+    let elapsed_ms = ms_since_setup_lifecycle().unwrap_or(0);
+    log(
+        crate::first_run_timing::TAG,
+        &crate::first_run_timing::format_phase(&phase, &result, elapsed_ms),
+    );
 }
 
 pub fn lifecycle_keeps_main_window_visible(state: LifecycleState) -> bool {

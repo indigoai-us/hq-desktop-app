@@ -73,7 +73,7 @@ pub async fn setup_store_secret(
     }
     let args = secrets_set_args(&name, &scope, company.as_deref())?;
     let invocation: HqInvocation = hq_resolver::resolve_hq();
-    let _npx_guard = invocation.npx_serial_guard().await;
+    let _npx_guard = invocation.npx_serial_guard().await?;
     log(LOG_TAG, &format!("store ({}): hq {}", invocation.label(), args.join(" ")));
 
     let mut cmd = invocation.command();

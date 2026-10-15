@@ -30,6 +30,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Manager};
 
+/// Logical size `main` opens at on a first run (install-flow-rethink US-004).
+/// Matches `HEADS_UP_WINDOW_SIZE` in `src/lib/heads-up.ts`, so a fresh install
+/// opens on the heads-up card with no full-screen frame first. The takeover
+/// fills the work area later, through `set_welcome_window(true)`.
+pub const FIRST_RUN_WINDOW_SIZE: (f64, f64) = (440.0, 380.0);
+
 /// The fade the renderer asks for when it does not say.
 pub const DEFAULT_WELCOME_FADE_MS: f64 = 1800.0;
 
@@ -779,6 +785,17 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_run_window_matches_the_heads_up_card() {
+        let ts = include_str!("../../src/lib/heads-up.ts");
+        let (w, h) = FIRST_RUN_WINDOW_SIZE;
+        let expected = format!(
+            "HEADS_UP_WINDOW_SIZE = {{ width: {}, height: {} }}",
+            w as u32, h as u32
+        );
+        assert!(ts.contains(&expected), "heads-up.ts must declare {expected}");
+    }
 
     #[test]
     fn fades_default_and_clamp() {

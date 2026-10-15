@@ -40,13 +40,24 @@ describe('HQ-DESKTOP-38: main-window resize ACL', () => {
   });
 
   it('caps first-run onboarding to the active monitor work area on every platform', () => {
-    // One native helper sizes the welcome window for first run, the consent
+    // One native helper sizes the welcome takeover for first run, the consent
     // re-prompt and the replay: the current monitor's work area, not the
-    // full display.
+    // full display. It runs when the takeover mounts (`set_welcome_window`).
     expect(nativeWelcome).toContain('pub fn fit_to_work_area(');
     expect(nativeWelcome).toContain('current_monitor()');
     expect(nativeWelcome).toContain('monitor.work_area()');
-    expect(nativeMain).toContain('welcome_window::fit_to_work_area(&window)');
+    expect(nativeWelcome).toMatch(
+      /pub fn set_welcome_window\([\s\S]*?fit_to_work_area\(&handle\)/,
+    );
+  });
+
+  it('opens a fresh install at heads-up card size, not full screen (US-004)', () => {
+    // First run shows the heads-up card before the takeover, so `main` opens
+    // at the card's size, centered. Filling the work area here would flash a
+    // full-screen frame before the card.
+    expect(nativeWelcome).toContain('pub const FIRST_RUN_WINDOW_SIZE: (f64, f64) = (440.0, 380.0);');
+    expect(nativeMain).toContain('welcome_window::FIRST_RUN_WINDOW_SIZE');
+    expect(nativeMain).not.toContain('welcome_window::fit_to_work_area(&window)');
   });
 });
 

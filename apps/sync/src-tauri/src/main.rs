@@ -210,16 +210,17 @@ fn prepare_first_run_welcome_window(app: &tauri::AppHandle, first_run: bool) {
 
     welcome_window::set_welcome_window_active(true);
     if let Some(window) = app.get_webview_window("main") {
-        // Set the full-screen welcome geometry before showing the initially
-        // hidden window. Lifecycle probes and the bundled-asset cache gate can
-        // continue after the user has a visible startup surface.
+        // Lifecycle probes and the bundled-asset cache gate can continue after
+        // the user has a visible startup surface.
         welcome_window::apply_window_controls(&window, true);
         let _ = window.set_shadow(false);
         hq_platform::window_effects::clear_popover_vibrancy(&window);
-        if !welcome_window::fit_to_work_area(&window) {
-            let _ = window.set_size(tauri::LogicalSize::new(1024.0, 700.0));
-            let _ = window.center();
-        }
+        // Open at heads-up card size, centered, before showing the initially
+        // hidden window, so nothing paints full-screen before the card. The
+        // takeover fills the work area when it mounts (set_welcome_window).
+        let (width, height) = welcome_window::FIRST_RUN_WINDOW_SIZE;
+        let _ = window.set_size(tauri::LogicalSize::new(width, height));
+        let _ = window.center();
     }
     tray::show_window_centered(app);
     util::logfile::log("app", "first-run launch: early welcome window shown");
@@ -798,6 +799,8 @@ fn main() {
             commands::lifecycle::get_setup_status,
             commands::lifecycle::mark_welcome_setup_complete,
             commands::lifecycle::mark_welcome_tour_shown,
+            commands::lifecycle::set_first_run_background_setup,
+            commands::lifecycle::log_first_run_phase,
             commands::lifecycle::report_unexpected_startup_surface,
             commands::session_end_observer::session_end_observer_status,
             commands::windows_teardown_probe::session_end_teardown_probe_status,

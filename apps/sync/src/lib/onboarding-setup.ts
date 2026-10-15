@@ -238,6 +238,39 @@ export const STAGE_ORDER: StageId[] = [
   'indexing',
 ];
 
+/**
+ * Stages the person waits on before the decision screen (US-004). Each is
+ * local filesystem work with no npm or model call, so together they finish
+ * well inside the 60 second budget.
+ */
+export const BLOCKING_STAGES: readonly StageId[] = ['content', 'git-init', 'personalize'];
+
+/**
+ * Stages that keep running after the decision screen opens: tool installs
+ * (node, hq-cli, qmd, Claude Code, Codex, gh, yq, jq), the vault upload beyond
+ * the template, and search indexing.
+ */
+export const BACKGROUND_STAGES: readonly StageId[] = ['deps', 'initial-sync', 'indexing'];
+
+export interface StagePartition {
+  blocking: StageId[];
+  background: StageId[];
+}
+
+/**
+ * Split the stages still to run from `startStage` into the blocking and
+ * background phases. Both lists keep STAGE_ORDER's relative order, and a stage
+ * before `startStage` (already finished on a resumed run) is in neither.
+ */
+export function partitionStages(startStage: StageId): StagePartition {
+  const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
+  const remaining = STAGE_ORDER.slice(startIndex);
+  return {
+    blocking: remaining.filter((id) => BLOCKING_STAGES.includes(id)),
+    background: remaining.filter((id) => BACKGROUND_STAGES.includes(id)),
+  };
+}
+
 export function normalizeDepsOperation(value: unknown): DepsOperation | undefined {
   return typeof value === 'string' && DEPS_OPERATIONS.includes(value as DepsOperation)
     ? (value as DepsOperation)

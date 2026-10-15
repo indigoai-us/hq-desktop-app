@@ -125,6 +125,7 @@
     StageTimeoutError,
     SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS,
     withProgressTimeout,
+    partitionStages,
     STAGE_ORDER,
     withTimeout,
     type InstallManifest,
@@ -611,6 +612,15 @@
   let inFlightRunId = 0;
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
+  // Set once the blocking install phase (folder, git, personalize, person
+  // entity) is done. The ready screen stops waiting on the install here;
+  // tools, sync and indexing keep running in the background.
+  let blockingPhaseDone = $state(false);
+  // True while the background phase of backgroundRunId is still running, so
+  // unmounting the wizard does not cancel it.
+  let backgroundPhaseRunning = false;
+  let backgroundRunId = 0;
+  const loggedFirstRunPhases = new Set<string>();
   let currentSetupRunId = '';
   let currentDepsAttemptId = '';
   let setupCancelled = false;
@@ -871,7 +881,7 @@
 
   // ─── Welcome flow: chrome, install card, ready gate ─────────────────────
   /** An install this flow started is still running. */
-  const installPending = $derived(setupStarted && !setupCompleted);
+  const installPending = $derived(setupStarted && !blockingPhaseDone && !setupCompleted);
   /** The company step's current screen offers Back (within the step, or out to the shortcut screen). */
   let companyBack = $state(false);
   let companyStepRef = $state<{ back: () => boolean } | null>(null);
@@ -1105,7 +1115,9 @@
     recordOnboardingAbandonment();
     mounted = false;
     currentSignInCall += 1;
-    cancelSetupRun();
+    // The background install phase outlives the wizard; it cancels itself when
+    // it finishes after unmount.
+    if (!backgroundPhaseRunning) cancelSetupRun();
   });
 
   function errorMessage(err: unknown): string {
@@ -2371,32 +2383,33 @@
   async function journalStageStart(id: StageId): Promise<void> {
     try {
       await invoke('record_step_start', { stepId: id });
-    } catch {
+    } catch (err) {
       // Resume journaling is best-effort; setup itself remains authoritative.
+      console.warn('[onboarding-setup] record_step_start failed:', err);
     }
   }
 
   async function journalStageOk(id: StageId): Promise<void> {
     try {
       await invoke('record_step_ok', { stepId: id });
-    } catch {
-      // non-fatal
+    } catch (err) {
+      console.warn('[onboarding-setup] record_step_ok failed:', err);
     }
   }
 
   async function journalStageFailure(id: StageId, message: string): Promise<void> {
     try {
       await invoke('record_step_failure', { stepId: id, error: message });
-    } catch {
-      // non-fatal
+    } catch (err) {
+      console.warn('[onboarding-setup] record_step_failure failed:', err);
     }
   }
 
   async function journalInstallComplete(): Promise<void> {
     try {
       await invoke('record_install_complete');
-    } catch {
-      // non-fatal
+    } catch (err) {
+      console.warn('[onboarding-setup] record_install_complete failed:', err);
     }
   }
 
@@ -2975,13 +2988,16 @@
       if (failure.flagStatus === 'disabled') return 'skipped-flag-off';
       return 'not-eligible';
     };
-    for (const id of STAGE_ORDER.slice(startIndex)) {
-      if (!isCurrentRun(runId)) return;
+    // Runs `ids` in order. False means the run stopped (superseded, cancelled
+    // or Command Line Tools missing) and nothing after it may run.
+    const runStageList = async (ids: readonly StageId[]): Promise<boolean> => {
+    for (const id of ids) {
+      if (!isCurrentRun(runId)) return false;
       if (
         (CLT_GATED_STAGES as readonly StageId[]).includes(id) &&
         !(await ensureCommandLineTools(runId))
       ) {
-        return;
+        return false;
       }
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
@@ -2998,7 +3014,7 @@
               result.retryResult ?? 'not-eligible',
             );
           }
-          return;
+          return false;
         }
         if (result.outcome === 'ok') {
           if (pendingDepsFailures.length > 0) {
@@ -3039,7 +3055,7 @@
           if (pendingDepsFailures.length > 0) {
             flushPendingDepsFailures(false, 'not-eligible');
           }
-          return;
+          return false;
         }
         const retryingFailure = pendingDepsFailures.at(-1);
         if (retryingFailure) {
@@ -3050,7 +3066,89 @@
         }
       }
     }
+    return isCurrentRun(runId);
+    };
 
+    // US-004: the person waits only on the blocking phase (local files, git,
+    // personalize, person entity). Tool installs, the vault upload and
+    // indexing run after the decision screen opens.
+    const { blocking, background } = partitionStages(STAGE_ORDER[startIndex]);
+    const blockingOk = await runStageList(blocking);
+    if (!isCurrentRun(runId)) return;
+    if (!blockingOk) {
+      // Command Line Tools are missing; their prompt owns the screen and the
+      // install stays pending until they are installed and the run resumes,
+      // so the phase line is written by the resumed run.
+      return;
+    }
+    // The consent answer and the first upload both need the person entity,
+    // so it is created before the decision screen. A failure here is retried
+    // by the consent path and by the initial-sync stage.
+    try {
+      await invokeCommand<boolean>('ensure_person_entity');
+    } catch (err) {
+      console.warn('[onboarding-setup] ensure_person_entity failed:', err);
+    }
+    if (!isCurrentRun(runId)) return;
+    logFirstRunPhaseOnce('blocking', 'ok');
+    blockingPhaseDone = true;
+    void runBackgroundPhase(runId, background, runStageList);
+  }
+
+  /**
+   * Record the blocking phase's elapsed time once per install. A retry or a
+   * resumed run does not log it again: the first measurement is the one the
+   * 60 second budget is checked against.
+   */
+  function logFirstRunPhaseOnce(phase: 'blocking' | 'background', result: 'ok' | 'failed'): void {
+    if (loggedFirstRunPhases.has(phase)) return;
+    loggedFirstRunPhases.add(phase);
+    invokeCommand('log_first_run_phase', { phase, result }).catch((err: unknown) => {
+      console.warn('[onboarding-setup] log_first_run_phase failed:', err);
+    });
+  }
+
+  function setBackgroundSetupFlag(running: boolean): void {
+    invokeCommand('set_first_run_background_setup', { running }).catch((err: unknown) => {
+      console.warn('[onboarding-setup] set_first_run_background_setup failed:', err);
+    });
+  }
+
+  /**
+   * The background phase. It is not awaited by runSetup, so the decision
+   * screen opens while it runs. It survives the wizard closing (the person
+   * opened HQ Desktop): onDestroy leaves it running, and it releases the
+   * listeners itself when it ends on an unmounted wizard.
+   */
+  async function runBackgroundPhase(
+    runId: number,
+    ids: readonly StageId[],
+    runStageList: (ids: readonly StageId[]) => Promise<boolean>,
+  ): Promise<void> {
+    backgroundRunId = runId;
+    backgroundPhaseRunning = true;
+    setBackgroundSetupFlag(true);
+    let backgroundOk = false;
+    try {
+      backgroundOk = await runStageList(ids);
+    } catch (err) {
+      console.warn('[onboarding-setup] background phase failed:', err);
+    } finally {
+      // A retry or resume starts a new run; only the run that set the flag
+      // clears it, so a superseded run cannot release the newer run's hold.
+      if (backgroundRunId === runId) {
+        backgroundPhaseRunning = false;
+        setBackgroundSetupFlag(false);
+      }
+    }
+    if (isCurrentRun(runId)) {
+      logFirstRunPhaseOnce('background', backgroundOk ? 'ok' : 'failed');
+      if (backgroundOk) await completeSetup(runId);
+    }
+    if (!mounted && backgroundRunId === runId) cancelSetupRun();
+  }
+
+  async function completeSetup(runId: number): Promise<void> {
     if (isCurrentRun(runId) && !setupCompleted && allSettled(stages)) {
       setupCompleted = true;
       const result = setupCompletionResult(stages);
@@ -3859,6 +3957,7 @@
     if (next < SETUP_STEP_INDEX && setupStarted && !setupCompleted) {
       cancelSetupRun();
       setupStarted = false;
+      blockingPhaseDone = false;
       stages = buildInitialStages();
       // The only genuine start-over: the next run earns its percent again.
       resetSetupProgressTracker(setupProgressTracker);
@@ -4240,10 +4339,13 @@
     return () => window.clearTimeout(timer);
   });
 
-  // A usage-data answer held during the install is sent once the install is
-  // done: setup is what provisions the person entity the write lands on.
+  // A usage-data answer held during the install is sent once the blocking
+  // phase is done: that phase provisions the person entity the write lands on,
+  // and finishing must not wait for the background tools install.
   $effect(() => {
-    if (setupCompleted && deferredConsent?.phase === 'held') void flushDeferredConsent();
+    if ((blockingPhaseDone || setupCompleted) && deferredConsent?.phase === 'held') {
+      void flushDeferredConsent();
+    }
   });
 
   async function flushDeferredConsent(): Promise<void> {

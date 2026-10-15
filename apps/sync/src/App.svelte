@@ -4,6 +4,7 @@
   import {
     createSyncPlatformAdapter,
     ensureHqAnywhereGlobalRuntime,
+    isHqAnywhereSetupPending,
     POST_READY_ACTION_TELEMETRY_FLAG,
     POST_READY_DROP_REASON_FLAG,
     type Json,
@@ -1573,6 +1574,16 @@
       ),
     );
 
+    // HQ Anywhere setup that hit setup_pending during first run is retried
+    // once the background install batch finishes.
+    unlisteners.push(
+      await listen<{ running: boolean }>('first-run:background-setup', (event) => {
+        if (event.payload.running || !hqAnywhereRuntimeSetupPending) return;
+        hqAnywhereRuntimeSetupPending = false;
+        reconcileHqAnywhereGlobalRuntime();
+      }),
+    );
+
     // --- Cross-window bridge to MeetingsWindow ---
     // The Detected/Record row used to live inside the tray popover. As of
     // 2026-05-30 it moved to MeetingsWindow's top strip; the event names below
@@ -2041,6 +2052,7 @@
   }
 
   let hqAnywhereRuntimeSetupInFlight: Promise<void> | null = null;
+  let hqAnywhereRuntimeSetupPending = false;
   function reconcileHqAnywhereGlobalRuntime(): void {
     if (hqAnywhereRuntimeSetupInFlight) return;
     hqAnywhereRuntimeSetupInFlight = ensureHqAnywhereGlobalRuntime(
@@ -2048,6 +2060,7 @@
       traySyncAdapter.settings,
     )
       .then((result) => {
+        hqAnywhereRuntimeSetupPending = isHqAnywhereSetupPending(result);
         if (!result.ok) console.warn('[hq-anywhere] startup runtime setup failed:', result);
       })
       .catch((error) => {
@@ -2329,9 +2342,16 @@
     text-align: center;
   }
 
+  /* Card-sized (the heads-up card, US-004): a first run opens at that size,
+     and a takeover that fills the screen still shows a card, never a
+     full-screen dark frame. */
   .welcome-splash {
     position: fixed;
     inset: 0;
+    margin: auto;
+    width: min(100%, 440px);
+    height: min(100%, 380px);
+    border-radius: 12px;
     display: flex;
     flex-direction: column;
     align-items: center;

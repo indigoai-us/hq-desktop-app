@@ -300,6 +300,15 @@ impl StageCommandFailure {
         }
     }
 
+    /// The npx run lock was held by another hq-cli install (or the wait was cut
+    /// short), so the npx command was skipped instead of racing that install.
+    fn from_npx_lock(message: String) -> Self {
+        Self {
+            message,
+            error_category: OnboardingErrorCategory::ConcurrentInstall,
+        }
+    }
+
     fn from_output(command: &str, args: &[&str], output: &Output) -> Self {
         Self {
             message: format_hq_failure(args, output).replace("hq ", &format!("{command} ")),
@@ -398,7 +407,10 @@ async fn run_hq_output_with_invocation(
     let path_env = paths::child_path();
     // Serialize concurrent npx self-heal installs against the shared
     // ~/.npm/_npx cache (HQ-SYNC-6); no-op on the resolved-local fast path.
-    let _npx_guard = invocation.npx_serial_guard().await;
+    let _npx_guard = invocation
+        .npx_serial_guard()
+        .await
+        .map_err(StageCommandFailure::from_npx_lock)?;
     let mut cmd = invocation.command();
     let output = cmd
         .args(args)
@@ -452,7 +464,10 @@ async fn run_hq_output_with_reindex_progress<R: Runtime>(
 ) -> Result<Output, StageCommandFailure> {
     let invocation = hq_resolver::resolve_hq();
     let path_env = paths::child_path();
-    let _npx_guard = invocation.npx_serial_guard().await;
+    let _npx_guard = invocation
+        .npx_serial_guard()
+        .await
+        .map_err(StageCommandFailure::from_npx_lock)?;
     let mut cmd = invocation.command();
     let mut child = cmd
         .args(args)
@@ -510,11 +525,23 @@ async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), StageCommandFailure
 
 /// Run HQ Anywhere's global runtime command through its dedicated resolver so
 /// a newer CLI requirement cannot change the resolver used by shared flows.
+/// During first-run setup it never downloads hq through npx: with no capable
+/// local hq yet it returns a `setup_pending` error and the renderer retries
+/// once the background install finishes.
 pub(crate) async fn run_hq_global_runtime_plain(
     args: &[&str],
     hq_root: &Path,
 ) -> Result<(), String> {
-    let invocation = hq_resolver::resolve_hq_for_global_runtime();
+    let invocation = match hq_resolver::resolve_hq_for_global_runtime_during_setup() {
+        hq_resolver::HqResolution::Ready(invocation) => invocation,
+        hq_resolver::HqResolution::AwaitingManagedInstall => {
+            crate::util::logfile::log(
+                "hq-anywhere",
+                "global runtime deferred: first-run setup has not installed hq yet",
+            );
+            return Err(hq_resolver::setup_pending_error("HQ Anywhere"));
+        }
+    };
     run_hq_output_with_invocation(args, hq_root, invocation)
         .await
         .map(|_| ())

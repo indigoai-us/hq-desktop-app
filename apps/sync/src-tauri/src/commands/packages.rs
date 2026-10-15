@@ -78,7 +78,7 @@ fn resolve_hq_folder() -> PathBuf {
 /// auto-update mid-call (which would race the command we asked for).
 async fn run_hq_json(args: &[&str]) -> Result<Value, String> {
     let invocation = resolve_packages_hq();
-    let _npx_guard = invocation.npx_serial_guard().await;
+    let _npx_guard = invocation.npx_serial_guard().await?;
     let folder = resolve_hq_folder();
     let mut cmd = invocation.command();
     let output = cmd
@@ -427,7 +427,7 @@ async fn stream_hq(
     args: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let invocation = resolve_packages_hq();
-    let _npx_guard = invocation.npx_serial_guard().await;
+    let _npx_guard = invocation.npx_serial_guard().await?;
     let folder = resolve_hq_folder();
     log(
         "packages",

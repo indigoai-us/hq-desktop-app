@@ -159,6 +159,25 @@ function readyButton(testId: string): HTMLButtonElement {
   return button;
 }
 
+// The background install phase keeps running after the wizard unmounts, as it
+// does in the app. Left alone, a run started by one test would finish during
+// the next and land its calls in that test's mocks, so teardown runs it to
+// completion while its own test's mocks are still installed.
+async function settleBackgroundSetup(): Promise<void> {
+  const running = () => {
+    let open = 0;
+    for (const [command, args] of tauri.invoke.mock.calls) {
+      if (command !== 'set_first_run_background_setup') continue;
+      open += (args as { running: boolean }).running ? 1 : -1;
+    }
+    return open > 0;
+  };
+  for (let i = 0; i < 200 && running(); i += 1) {
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(60_000);
+    else await flush();
+  }
+}
+
 async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -445,6 +464,10 @@ function expectNothingOpenedInBrowser(): void {
 }
 
 beforeEach(() => {
+  // The router's "setup is done" gate is module-level. Since the install runs
+  // in the background, a run can finish after its test unmounts the wizard and
+  // set the gate, which would then block navigation in the next test.
+  __resetWizardRouterCompletionForTests();
   // Timers and the clock are faked; animation frames are not. The welcome
   // flow's motion runs on requestAnimationFrame, and faking it made every
   // advanceTimersByTime(300_000) also simulate ~18,000 frames of orbiting
@@ -482,8 +505,11 @@ beforeEach(() => {
   eventHarness.listen.mockImplementation(
     async (name: string, handler: (event: { payload: unknown }) => void) => {
       eventHarness.handlers.set(name, handler);
+      // Like Tauri, an unlisten removes only its own listener. The install's
+      // background phase outlives an unmounted wizard, so an earlier test's
+      // run can release its listeners after the next test registered its own.
       return () => {
-        eventHarness.handlers.delete(name);
+        if (eventHarness.handlers.get(name) === handler) eventHarness.handlers.delete(name);
       };
     },
   );
@@ -531,6 +557,7 @@ afterEach(async () => {
     await unmount(component);
     component = null;
   }
+  await settleBackgroundSetup();
   host.remove();
   vi.unstubAllGlobals();
   vi.useRealTimers();

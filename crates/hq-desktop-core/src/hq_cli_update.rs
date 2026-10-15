@@ -1537,6 +1537,55 @@ pub fn launch_cli_check_with_floor(local: Option<&str>, floor: &str) -> LaunchCl
     }
 }
 
+/// How long a background-setup marker holds the updater off. A webview that
+/// crashed mid-setup never clears its marker, so the hold expires on its own
+/// rather than blocking CLI updates for the life of the process.
+pub const BACKGROUND_SETUP_HOLD_TTL: Duration = Duration::from_secs(30 * 60);
+
+static BACKGROUND_SETUP_SINCE: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+/// Record whether first-run background setup (deps, initial sync, indexing)
+/// is still running. That batch can outlive the lifecycle's move to
+/// `SteadyState`, so the updater consults this marker as well as the state.
+pub fn mark_background_setup_running(running: bool) {
+    let mut since = BACKGROUND_SETUP_SINCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *since = running.then(Instant::now);
+}
+
+/// True while a background-setup marker is set and younger than
+/// [`BACKGROUND_SETUP_HOLD_TTL`].
+pub fn background_setup_running() -> bool {
+    let since = *BACKGROUND_SETUP_SINCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    background_setup_running_at(since, Instant::now())
+}
+
+/// Pure TTL check behind [`background_setup_running`].
+pub fn background_setup_running_at(since: Option<Instant>, now: Instant) -> bool {
+    since.is_some_and(|started| now.saturating_duration_since(started) < BACKGROUND_SETUP_HOLD_TTL)
+}
+
+/// Whether the background CLI updater may act this cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdaterGate {
+    Run,
+    Defer,
+}
+
+/// The CLI auto-updater runs only once first-run setup is over: the lifecycle
+/// is `SteadyState` and no background setup batch is still installing. An
+/// update during setup would race the setup installs on one npm prefix.
+pub fn updater_gate(state: crate::lifecycle::LifecycleState, setup_running: bool) -> UpdaterGate {
+    if state == crate::lifecycle::LifecycleState::SteadyState && !setup_running {
+        UpdaterGate::Run
+    } else {
+        UpdaterGate::Defer
+    }
+}
+
 /// May the background loop install right now?
 ///
 /// The user's `autoUpdate` opt-out is honoured for an ordinary "a newer version
@@ -20013,5 +20062,55 @@ mod tests {
                 "kind {kind:?} must never be the unattributed subclass"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod updater_gate_tests {
+    use super::*;
+    use crate::lifecycle::LifecycleState;
+
+    #[test]
+    fn updater_runs_only_in_steady_state_with_no_setup_running() {
+        let cases = [
+            (LifecycleState::NeedsInstall, false, UpdaterGate::Defer),
+            (LifecycleState::InstallResume, false, UpdaterGate::Defer),
+            (LifecycleState::NeedsAuthForInstall, false, UpdaterGate::Defer),
+            (LifecycleState::InstalledFirstRun, false, UpdaterGate::Defer),
+            (LifecycleState::InstalledLegacyUpdate, false, UpdaterGate::Defer),
+            (LifecycleState::SteadyState, true, UpdaterGate::Defer),
+            (LifecycleState::NeedsInstall, true, UpdaterGate::Defer),
+            (LifecycleState::SteadyState, false, UpdaterGate::Run),
+        ];
+        for (state, setup_running, expected) in cases {
+            assert_eq!(
+                updater_gate(state, setup_running),
+                expected,
+                "state {state:?}, setup_running {setup_running}"
+            );
+        }
+    }
+
+    #[test]
+    fn background_setup_marker_holds_until_ttl_then_releases() {
+        let started = Instant::now();
+        assert!(!background_setup_running_at(None, started));
+        assert!(background_setup_running_at(Some(started), started));
+        assert!(background_setup_running_at(
+            Some(started),
+            started + BACKGROUND_SETUP_HOLD_TTL - Duration::from_secs(1)
+        ));
+        assert!(!background_setup_running_at(
+            Some(started),
+            started + BACKGROUND_SETUP_HOLD_TTL
+        ));
+    }
+
+    #[test]
+    fn marking_background_setup_sets_and_clears_the_hold() {
+        mark_background_setup_running(true);
+        assert!(background_setup_running());
+        mark_background_setup_running(false);
+        assert!(!background_setup_running());
     }
 }

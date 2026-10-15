@@ -1145,7 +1145,10 @@ pub async fn run_cli_provision(
     // Serialize concurrent npx self-heal installs so they can't race the shared
     // ~/.npm/_npx cache (HQ-SYNC-6). No-op on the resolved-local fast path; held
     // until this provision subprocess completes.
-    let _npx_guard = invocation.npx_serial_guard().await;
+    let _npx_guard = invocation
+        .npx_serial_guard()
+        .await
+        .map_err(CliProvisionError::Spawn)?;
 
     let mut cmd = invocation.command();
     cmd.arg("cloud")

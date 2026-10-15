@@ -10,6 +10,7 @@
  * [first-run] kind=install event=start id=<item>
  * [first-run] kind=install event=end id=<item> outcome=<ok|failed|skipped|cancelled> elapsed_ms=<n>
  * [first-run] kind=probe tool=<claude|codex|...> result=<passed|signed-out|failed|timeout> elapsed_ms=<n>
+ * [first-run] kind=phase phase=<blocking> result=<ok|failed> elapsed_ms=<n since launch> (logged from Rust)
  * ```
  *
  * Install ids: node, git, hq-cli, qmd, claude-code, codex, gh, yq, jq (logged

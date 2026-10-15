@@ -158,6 +158,10 @@ const INITIAL_DELAY: Duration = Duration::from_secs(4 * 60);
 /// Re-check cadence. Matches `updater::setup_update_checker` (6h).
 const CHECK_INTERVAL: Duration = Duration::from_secs(21600);
 
+/// How often a deferred updater re-reads the setup gate while first-run setup
+/// still owns the machine.
+const SETUP_GATE_RECHECK: Duration = Duration::from_secs(60);
+
 /// One-shot backoff before retrying an install that failed because the Windows
 /// `hq` binary was locked/in use (EPERM, HQ-DESKTOP-3N). The lock is usually
 /// momentary — an antivirus scan finishing or another `hq` process exiting — so
@@ -5249,6 +5253,7 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
                     INITIAL_DELAY.as_secs()
                 ),
             );
+            wait_for_updater_gate(&handle).await;
             if run_check_cycle(&handle, /* floor_repair */ true, 0).await {
                 if let Some(delay) = hq_desktop_core::hq_cli_update::auto_update_retry_delay(
                     hq_desktop_core::hq_cli_update::AutoUpdateFailureKind::PackageUseLeaseTimeout,
@@ -5263,6 +5268,7 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
         // US-010: Claude Code rides the hq-cli cadence. At launch only an
         // absent install is filled in (no network when it is present); each
         // scheduled cycle below also moves it to the registry's latest.
+        wait_for_updater_gate(&handle).await;
         crate::toolchain::ensure_claude_toolchain(&handle, crate::toolchain::EnsureMode::InstallIfAbsent)
             .await;
         tokio::time::sleep(first_scheduled_delay).await;
@@ -5271,6 +5277,7 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             // background services; two installers would race on one prefix.
             // The floor repair above still runs.
             if !crate::commands::hq_daemon_host::daemon_mode_active() {
+                wait_for_updater_gate(&handle).await;
                 let lease_timed_out =
                     run_check_cycle(&handle, retry_floor_repair, lease_retries_scheduled).await;
                 crate::toolchain::ensure_claude_toolchain(&handle, crate::toolchain::EnsureMode::Update)
@@ -5291,6 +5298,41 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
+}
+
+/// Hold the background updater while first-run setup owns the machine: the
+/// lifecycle is not yet `SteadyState`, or the wizard's background install
+/// batch is still running. Logs once per hold and re-reads every
+/// [`SETUP_GATE_RECHECK`]. A process with no resolved lifecycle is treated as
+/// steady so a launch path that skips lifecycle setup still gets updates.
+async fn wait_for_updater_gate(handle: &AppHandle) {
+    let mut logged = false;
+    loop {
+        let state = crate::commands::lifecycle::current_lifecycle_state(handle)
+            .unwrap_or(hq_desktop_core::lifecycle::LifecycleState::SteadyState);
+        let setup_running = hq_desktop_core::hq_cli_update::background_setup_running();
+        match hq_desktop_core::hq_cli_update::updater_gate(state, setup_running) {
+            hq_desktop_core::hq_cli_update::UpdaterGate::Run => {
+                if logged {
+                    log("hq-cli-update", "first-run setup finished; updater resuming");
+                }
+                return;
+            }
+            hq_desktop_core::hq_cli_update::UpdaterGate::Defer => {
+                if !logged {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "deferring hq CLI update while first-run setup runs \
+                             (lifecycle {state:?}, background setup {setup_running})"
+                        ),
+                    );
+                    logged = true;
+                }
+                tokio::time::sleep(SETUP_GATE_RECHECK).await;
+            }
+        }
+    }
 }
 
 /// One background check, plus the install it calls for. `floor_repair` marks

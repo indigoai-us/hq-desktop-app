@@ -5,6 +5,7 @@
     HQ_ANYWHERE_RUNTIME_FLAG,
     getHqAnywherePersonSetting,
     hqAnywhereRuntimeEnabled,
+    isHqAnywhereSetupPending,
     putHqAnywherePersonSetting,
     setHqAnywhereGlobalRuntime,
     subscribeHqAnywhereGlobalRuntimeStatus,
@@ -23,6 +24,8 @@
   let loading = $state(false);
   let saving = $state(false);
   let setupRunning = $state(false);
+  // First-run setup is still installing hq in the background; the backend heals on its own.
+  let setupPending = $state(false);
   let retryKind = $state<"read" | "write" | "setup" | "reconcile" | null>(null);
   let retryValue = $state<boolean | null>(null);
   let runtimeStatus: HqAnywhereGlobalRuntimeStatus = { state: "idle" };
@@ -71,11 +74,12 @@
   });
 
   function applyGlobalRuntimeStatus(status: HqAnywhereGlobalRuntimeStatus): void {
+    setupPending = status.state === "pending";
     if (status.state === "running") {
       setupRunning = true;
       retryKind = null;
       retryValue = null;
-    } else if (status.state === "failed") {
+    } else if (status.state === "failed" || status.state === "pending") {
       setupRunning = false;
       retryKind = status.enabled === null ? "reconcile" : "setup";
       retryValue = status.enabled;
@@ -144,6 +148,7 @@
 
   async function configureGlobalRuntime(value: boolean): Promise<void> {
     if (!adapter || setupRunning) return;
+    setupPending = false;
     setupRunning = true;
     retryKind = null;
     retryValue = null;
@@ -155,6 +160,7 @@
       );
       if (!result.ok) {
         console.warn("[hq-anywhere] global runtime setup failed:", result);
+        setupPending = isHqAnywhereSetupPending(result);
         retryKind = "setup";
         retryValue = value;
       }
@@ -222,6 +228,16 @@
       <span class="status" role="status" aria-live="polite">Saving…</span>
     {:else if setupRunning}
       <span class="status" role="status" aria-live="polite">Setting up…</span>
+    {:else if setupPending}
+      <span class="status" role="status" aria-live="polite" data-testid="hq-anywhere-setting-pending"
+        >HQ is still finishing setup. This continues on its own.</span
+      >
+      <button
+        type="button"
+        class="retry"
+        data-testid="hq-anywhere-setting-retry"
+        onclick={retry}
+      >Retry</button>
     {:else if retryKind}
       <button
         type="button"

@@ -4,6 +4,7 @@ import {
   ensureHqAnywhereGlobalRuntime,
   hqAnywhereRuntimeEnabled,
   retryHqAnywhereRequest,
+  isHqAnywhereSetupPending,
   setHqAnywhereGlobalRuntime,
   subscribeHqAnywhereGlobalRuntimeStatus,
 } from "./hq-anywhere-setting.js";
@@ -157,5 +158,54 @@ describe("HQ Anywhere setting support", () => {
       .resolves.toEqual(ok(undefined));
     expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(3);
     expect(pause.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([250, 750]);
+  });
+
+  it("recognizes setup_pending by code or by an invoke message prefix", () => {
+    expect(isHqAnywhereSetupPending(failure("setup_pending", "waiting"))).toBe(true);
+    expect(
+      isHqAnywhereSetupPending(
+        failure("invoke", "setup_pending: HQ Anywhere waits for HQ setup to finish installing hq"),
+      ),
+    ).toBe(true);
+    expect(isHqAnywhereSetupPending(failure("invoke", "hq not found"))).toBe(false);
+    expect(isHqAnywhereSetupPending(ok(undefined))).toBe(false);
+  });
+
+  it("does not retry a request that is waiting for first-run setup", async () => {
+    const pause = vi.fn(async (_milliseconds: number) => {});
+    const pending = failure(
+      "invoke",
+      "setup_pending: HQ Anywhere waits for HQ setup to finish installing hq",
+    );
+    const request = vi.fn(async () => pending);
+
+    await expect(retryHqAnywhereRequest(request, { pause })).resolves.toEqual(pending);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(pause).not.toHaveBeenCalled();
+  });
+
+  it("publishes a pending status when the runtime change waits for setup", async () => {
+    const syncHqAnywhereGlobal = vi.fn(async () =>
+      failure("invoke", "setup_pending: HQ Anywhere waits for HQ setup to finish installing hq"),
+    );
+    const settings = { syncHqAnywhereGlobal } as unknown as PlatformAdapter["settings"];
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: true })),
+    } as unknown as PlatformAdapter["identity"];
+    const statuses: Array<{ state: string }> = [];
+    const unsubscribe = subscribeHqAnywhereGlobalRuntimeStatus((status) => {
+      statuses.push(status);
+    });
+
+    try {
+      const result = await setHqAnywhereGlobalRuntime(identity, settings, true, {
+        pause: async () => {},
+      });
+      expect(isHqAnywhereSetupPending(result)).toBe(true);
+      expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(1);
+      expect(statuses.at(-1)).toEqual({ state: "pending", enabled: true });
+    } finally {
+      unsubscribe();
+    }
   });
 });

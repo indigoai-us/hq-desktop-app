@@ -4585,7 +4585,7 @@ pub async fn install_qmd(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub async fn install_hq_cli(app: AppHandle) -> Result<String, String> {
     crate::scratch_build::refuse_install("install_hq_cli")?;
-    time_command_install("hq-cli", async move {
+    let result = time_command_install("hq-cli", async move {
         #[cfg(not(windows))]
         {
             install_hq_cli_macos(app).await
@@ -4595,7 +4595,13 @@ pub async fn install_hq_cli(app: AppHandle) -> Result<String, String> {
             install_hq_cli_windows(app).await
         }
     })
-    .await
+    .await;
+    if result.is_ok() {
+        // A resolution cached before the managed hq-cli landed may point at
+        // npx or a stale binary. Drop it so the next caller finds the new one.
+        hq_desktop_core::hq_resolver::invalidate_hq_resolution();
+    }
+    result
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
