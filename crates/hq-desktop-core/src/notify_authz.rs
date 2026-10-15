@@ -18,9 +18,12 @@
 //!     file next to `menubar.json`, so a restart does not re-ask. This is the
 //!     no-nagging contract: HQ gets one dialog, and after that remediation lives
 //!     in Settings > Notifications (permission row + System Settings deep link).
-//!   * A `denied` or still-not-granted outcome does not drop the notification —
-//!     the caller falls back to `osascript display notification`, which is not
-//!     subject to the UN authorization gate.
+//!   * A `denied` or still-not-granted outcome means no OS banner for DM,
+//!     share and mention notifications. There is no `osascript display
+//!     notification` fallback for them: macOS credits those banners to Script
+//!     Editor, shows its icon, and a click launches Script Editor instead of
+//!     opening the DM (feedback_97e1771c). The in-app bell still lists the
+//!     message, and Settings > Notifications carries the remediation.
 //!
 //! The decision is a pure function so the whole truth table is unit-tested; the
 //! marker file is the only side effect and it is deliberately separate from
@@ -41,6 +44,35 @@ const MARKER_FILE: &str = "notification-authz-requested";
 /// we would be guessing, and a spurious dialog is worse than a missing one.
 pub fn should_request_authorization(status: &str, already_requested: bool) -> bool {
     !already_requested && status == "prompt"
+}
+
+/// How a DM / share / mention notification reaches the OS.
+///
+/// There is deliberately no fallback variant: every OS banner HQ shows for
+/// these goes through `UNUserNotificationCenter`, so it carries the HQ icon and
+/// a click handler that opens the DM or thread it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeDelivery {
+    /// Authorized: deliver through `UNUserNotificationCenter` now.
+    Deliver,
+    /// Not yet determined and never asked: ask once, then deliver this
+    /// notification only if the answer is "granted".
+    RequestThenDeliver,
+    /// Denied, already asked, or unknown: no OS banner. The notification stays
+    /// in the in-app list.
+    Suppress,
+}
+
+/// Pick the delivery for one notification from the authorization status and
+/// whether HQ has already used its one dialog.
+pub fn native_delivery(status: &str, already_requested: bool) -> NativeDelivery {
+    if status == "granted" {
+        NativeDelivery::Deliver
+    } else if should_request_authorization(status, already_requested) {
+        NativeDelivery::RequestThenDeliver
+    } else {
+        NativeDelivery::Suppress
+    }
 }
 
 /// Path of the one-time marker, or `None` when `~/.hq` can't be resolved.
@@ -104,6 +136,40 @@ mod tests {
         // can't justify.
         assert!(!should_request_authorization("unknown", false));
         assert!(!should_request_authorization("", false));
+    }
+
+    #[test]
+    fn granted_delivers_through_the_notification_center() {
+        assert_eq!(native_delivery("granted", false), NativeDelivery::Deliver);
+        assert_eq!(native_delivery("granted", true), NativeDelivery::Deliver);
+    }
+
+    #[test]
+    fn first_undetermined_event_asks_then_delivers() {
+        assert_eq!(
+            native_delivery("prompt", false),
+            NativeDelivery::RequestThenDeliver
+        );
+    }
+
+    #[test]
+    fn every_unauthorized_state_suppresses_the_os_banner() {
+        // feedback_97e1771c: no state may fall back to another sender. Denied,
+        // already-asked and unknown all mean "no OS banner", never osascript.
+        for (status, asked) in [
+            ("denied", false),
+            ("denied", true),
+            ("prompt", true),
+            ("unknown", false),
+            ("unknown", true),
+            ("", false),
+        ] {
+            assert_eq!(
+                native_delivery(status, asked),
+                NativeDelivery::Suppress,
+                "status={status} asked={asked}"
+            );
+        }
     }
 
     #[test]

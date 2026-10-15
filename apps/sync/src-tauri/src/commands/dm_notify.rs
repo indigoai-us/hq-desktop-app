@@ -1601,6 +1601,12 @@ pub async fn mark_dm_thread_read(app: AppHandle, with_person_uid: String) -> Res
 
     let committed = with_current_notification_auth_snapshot(&app, &auth, || {
         clear_pair_unread_local(&app, uid);
+        // The reader is looking at their messages, which is when the old
+        // Messages window cleared the aggregate unread-DM count (Dock badge and
+        // menu-bar count). That window is gone, so reading a thread in the
+        // desktop shell has to do it, or the count only ever grows
+        // (feedback_f36dfa85).
+        reset_unread_dms(&app);
     })
     .await;
     if committed.is_none() {

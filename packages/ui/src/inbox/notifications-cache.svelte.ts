@@ -34,6 +34,22 @@ export function notificationsCacheSnapshot(): {
   };
 }
 
+/**
+ * Optimistic "Mark all read" for the titlebar popover. Returns a restore
+ * function that puts the previous rows back if the server call fails. The
+ * Inbox view republishes the cache on its next fetch, which then carries the
+ * server's read state.
+ */
+export function markAllCachedNotificationsRead(): () => void {
+  const previous = items;
+  items = items.map((item) =>
+    item.status === "unread" ? { ...item, status: "read" as const } : item,
+  );
+  return () => {
+    items = previous;
+  };
+}
+
 /** Drop a row immediately. A failed grant puts it back. */
 export function hideNotification(id: string): void {
   hidden.add(id);

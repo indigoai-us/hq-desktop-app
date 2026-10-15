@@ -1,5 +1,6 @@
 import { compactNumber } from "../common/compact-number.js";
 import { describe, expect, it } from "vitest";
+import { EMPTY_PEOPLE_INDEX, buildPeopleIndex } from "../common/people/people.js";
 
 import {
   createdAtFromJobId,
@@ -15,7 +16,9 @@ import {
   headerFromStatusPayload,
   jobTitleFromPrompt,
   jobsFromPayload,
+  ownerDisplay,
   ownerLabelFromPayload,
+  ownerRefFromPayload,
   ownersIncludePerson,
   profileFromPayload,
   routineActionRequest,
@@ -464,5 +467,64 @@ describe("routine bodies", () => {
       params: {},
       body: { name: "x" },
     });
+  });
+});
+
+describe("agent owner display (feedback_cf6347c3)", () => {
+  const roster = buildPeopleIndex([
+    { id: "prs_drake", displayName: "Jason Drake", email: "jrdrake22@example.com" },
+  ]);
+
+  it("keeps the owner's uid and email next to the label", () => {
+    expect(
+      ownerRefFromPayload({
+        owners: [
+          { personUid: "prs_drake", email: "jrdrake22@example.com", kind: "creator", status: "active" },
+        ],
+      }),
+    ).toEqual({ label: "jrdrake22@example.com", personUid: "prs_drake", email: "jrdrake22@example.com" });
+  });
+
+  it("resolves an email-only owner to the roster name with the email as detail", () => {
+    const owner = ownerDisplay(
+      { ownerLabel: "jrdrake22@example.com", ownerPersonUid: "prs_drake", ownerEmail: "jrdrake22@example.com" },
+      roster,
+    );
+    expect(owner?.name).toBe("Jason Drake");
+    expect(owner?.detail).toBe("jrdrake22@example.com");
+    expect(owner?.resolved).toBe(true);
+  });
+
+  it("resolves by email when the uid is missing", () => {
+    expect(
+      ownerDisplay({ ownerLabel: "jrdrake22@example.com", ownerEmail: "jrdrake22@example.com" }, roster)?.name,
+    ).toBe("Jason Drake");
+  });
+
+  it("keeps a server name and adds the email when the roster has no match", () => {
+    const owner = ownerDisplay(
+      { ownerLabel: "Corey", ownerPersonUid: "prs_corey1", ownerEmail: "corey@example.com" },
+      roster,
+    );
+    expect(owner?.name).toBe("Corey");
+    expect(owner?.detail).toBe("corey@example.com");
+  });
+
+  it("shows the email only when there is no name anywhere", () => {
+    const owner = ownerDisplay(
+      { ownerLabel: "x@example.com", ownerPersonUid: "prs_nobody1", ownerEmail: "x@example.com" },
+      EMPTY_PEOPLE_INDEX,
+    );
+    expect(owner?.name).toBe("x@example.com");
+    expect(owner?.detail).toBeNull();
+  });
+
+  it("never shows a raw person id", () => {
+    const owner = ownerDisplay({ ownerLabel: "prs_abcdef123", ownerPersonUid: "prs_abcdef123" }, roster);
+    expect(owner?.name).not.toContain("prs_");
+  });
+
+  it("returns null when there is no owner", () => {
+    expect(ownerDisplay({ ownerLabel: null }, roster)).toBeNull();
   });
 });

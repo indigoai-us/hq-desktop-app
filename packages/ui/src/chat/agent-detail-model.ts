@@ -5,6 +5,13 @@
  * and owner rows into the labels the pane renders. No DOM, no adapter.
  */
 
+import {
+  isRawPersonId,
+  resolvePerson,
+  type PeopleIndex,
+  type PersonIdentity,
+} from "../common/people/people.js";
+
 export type AgentWorkStatus = "WORKING" | "IDLE" | "PROVISIONING";
 
 export interface AgentDetailHeader {
@@ -14,6 +21,13 @@ export interface AgentDetailHeader {
   description: string;
   status: AgentWorkStatus;
   ownerLabel: string | null;
+  /**
+   * Owner's person uid and email when the owners read or the profile carried
+   * them. The pane resolves these against the company roster so the owner
+   * shows as photo + name, with the email muted (feedback_cf6347c3).
+   */
+  ownerPersonUid?: string | null;
+  ownerEmail?: string | null;
   companies: string[];
   avatarUrl: string | null;
   modelLabel: string | null;
@@ -477,10 +491,28 @@ export function usageFromCompanyTelemetry(
   };
 }
 
+export interface AgentOwnerRef {
+  label: string | null;
+  personUid: string | null;
+  email: string | null;
+}
+
 export function ownerLabelFromPayload(
   payload: unknown,
   fallback?: string | null,
 ): string | null {
+  return ownerRefFromPayload(payload, fallback).label;
+}
+
+/**
+ * The owner row the pane shows: the creator when present, else the first
+ * active owner. Keeps the person uid and email next to the label so the pane
+ * can resolve a name and photo when the owners read sends only an email.
+ */
+export function ownerRefFromPayload(
+  payload: unknown,
+  fallback?: string | null,
+): AgentOwnerRef {
   const rec = isRecord(payload) ? payload : {};
   const list = Array.isArray(payload)
     ? payload
@@ -492,14 +524,55 @@ export function ownerLabelFromPayload(
     .filter((row) => str(row.status).toLowerCase() !== "revoked");
   const creator = active.find((row) => str(row.kind).toLowerCase() === "creator");
   const pick = creator ?? active[0];
-  if (!pick) return fallback?.trim() || null;
-  return (
-    str(pick.displayName) ||
-    str(pick.email) ||
-    str(pick.personUid) ||
-    fallback?.trim() ||
-    null
-  );
+  if (!pick) {
+    return { label: fallback?.trim() || null, personUid: null, email: null };
+  }
+  return {
+    label:
+      str(pick.displayName) ||
+      str(pick.email) ||
+      str(pick.personUid) ||
+      fallback?.trim() ||
+      null,
+    personUid: str(pick.personUid) || null,
+    email: str(pick.email) || null,
+  };
+}
+
+/**
+ * Owner as a person for display: roster name first (uid, then email, then the
+ * label as keys), so a teammate reads as "Jane Drake" with the email muted
+ * instead of a bare email (feedback_cf6347c3). With no roster match a name
+ * label keeps the email as its detail, and an email label shows as itself.
+ * A raw id never reaches the screen (resolvePerson guarantees it).
+ */
+export function ownerDisplay(
+  header: Pick<AgentDetailHeader, "ownerLabel" | "ownerPersonUid" | "ownerEmail">,
+  index: PeopleIndex,
+): PersonIdentity | null {
+  const label = (header.ownerLabel ?? "").trim();
+  const uid = (header.ownerPersonUid ?? "").trim();
+  const email = (header.ownerEmail ?? "").trim();
+  if (!label && !uid && !email) return null;
+  for (const key of [uid, email, label]) {
+    if (!key) continue;
+    const hit = resolvePerson(index, key);
+    if (hit.resolved) return hit;
+  }
+  if (label && !label.includes("@") && !isRawPersonId(label)) {
+    // A name the server sent but the roster does not know: still a name.
+    return {
+      key: (uid || email || label).toLowerCase(),
+      kind: "human",
+      name: label,
+      detail: email || null,
+      resolved: false,
+    };
+  }
+  if (email) {
+    return { key: email.toLowerCase(), kind: "human", name: email, detail: null, resolved: false };
+  }
+  return resolvePerson(index, label || uid);
 }
 
 export function ownersIncludePerson(
@@ -779,7 +852,23 @@ export interface AgentProfileView {
 
 function ownerNameFrom(owner: unknown): string | null {
   if (!isRecord(owner)) return null;
-  return str(owner.name) || str(owner.displayName) || str(owner.uid) || null;
+  return (
+    str(owner.name) ||
+    str(owner.displayName) ||
+    str(owner.email) ||
+    str(owner.uid) ||
+    null
+  );
+}
+
+function ownerUidFrom(owner: unknown): string | null {
+  if (!isRecord(owner)) return null;
+  return str(owner.uid) || str(owner.personUid) || null;
+}
+
+function ownerEmailFrom(owner: unknown): string | null {
+  if (!isRecord(owner)) return null;
+  return str(owner.email) || null;
 }
 
 function listOf(value: unknown): Record<string, unknown>[] {
@@ -960,6 +1049,8 @@ export function profileFromPayload(
     description: str(agent.description) || str(seed.description),
     status: agent.connected === true ? "WORKING" : "IDLE",
     ownerLabel: ownerNameFrom(agent.owner),
+    ownerPersonUid: ownerUidFrom(agent.owner),
+    ownerEmail: ownerEmailFrom(agent.owner),
     companies: companyLabel ? [companyLabel] : [],
     avatarUrl: str(agent.avatarUrl) || seed.avatarUrl || null,
     modelLabel: model,
