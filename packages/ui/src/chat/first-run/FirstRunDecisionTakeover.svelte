@@ -30,6 +30,7 @@
   import { SETUP_BOT_RUNTIME_ORDER } from "../setup-bot.js";
   import {
     FIRST_RUN_COPY,
+    firstRunOpeningLabel,
     FIRST_RUN_DECISION_COPY as COPY,
     assistantNameIssue,
     decisionToolFor,
@@ -326,7 +327,7 @@
           disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
           onclick={() => void press("tool", () => oncontinueintool(tool))}
-        >{pressed === "tool" ? FIRST_RUN_COPY.opening : COPY.toolPrimary(toolName)}</button>
+        >{pressed === "tool" ? firstRunOpeningLabel(toolName) : COPY.toolPrimary(toolName)}</button>
         <button
           type="button"
           class="new-bot-create-submit"

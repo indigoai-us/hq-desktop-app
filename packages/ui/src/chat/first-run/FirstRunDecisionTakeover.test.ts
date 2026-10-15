@@ -183,7 +183,7 @@ describe("FirstRunDecisionTakeover", () => {
     expect(text("first-run-decision-primary")).toBe("Continue in Codex");
   });
 
-  it("continue in the tool passes its runtime, shows a pending state at once and ignores a second press", async () => {
+  it("continue in the tool passes its runtime, shows Opening <tool> at once and ignores a second press", async () => {
     let release: () => void = () => undefined;
     const { handlers } = render({
       oncontinueintool: () => new Promise<void>((resolve) => (release = resolve)),
@@ -194,7 +194,7 @@ describe("FirstRunDecisionTakeover", () => {
     await settle();
     expect(primary.disabled).toBe(true);
     expect(primary.getAttribute("aria-busy")).toBe("true");
-    expect(primary.textContent?.trim()).toBe(FIRST_RUN_COPY.opening);
+    expect(primary.textContent?.trim()).toBe("Opening Codex…");
     expect(byId<HTMLButtonElement>("first-run-decision-other")!.disabled).toBe(true);
     primary.click();
     await settle();

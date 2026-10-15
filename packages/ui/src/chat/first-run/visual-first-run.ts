@@ -254,6 +254,11 @@ export const FIRST_RUN_COPY = {
   retrying: "Retrying…",
 } as const;
 
+/** The tool button while the tool opens (US-008). */
+export function firstRunOpeningLabel(toolName: string): string {
+  return toolName.trim() ? `Opening ${toolName.trim()}…` : FIRST_RUN_COPY.opening;
+}
+
 export function firstRunTalkLabel(name: string): string {
   return `Talk to ${name.trim() || "your assistant"}`;
 }

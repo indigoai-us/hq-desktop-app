@@ -55,6 +55,10 @@ interface AdapterOptions {
   loginStatus?: (runtime: string) => Promise<unknown>;
   /** `hq bot list --remote` (the account's own listing); absent leaves the host without it. */
   listRemote?: () => Promise<unknown>;
+  /** The global runtime install for one coding tool (US-008). */
+  installRuntimeForTool?: (runtime: string) => Promise<unknown>;
+  /** Shell launch methods for "Continue in <tool>"; detection reports nothing by default. */
+  shell?: Record<string, unknown>;
 }
 
 function adapter({
@@ -70,6 +74,8 @@ function adapter({
   loginStatus,
   listRemote,
   listImpl,
+  installRuntimeForTool,
+  shell,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
     hasFeatureImpl ?? (async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false)),
@@ -92,9 +98,11 @@ function adapter({
       getSetupStatus:
         setupStatusImpl ??
         (async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true })),
+      ...(installRuntimeForTool ? { installRuntimeForTool } : {}),
     },
     shell: {
       detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
+      ...shell,
     },
     sessions: {
       preflight: preflightImpl ?? (async () =>
@@ -415,9 +423,32 @@ describe("visual first run, flag on", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it("Continue in the coding tool leaves for #welcome, starts nothing by itself, and the takeover never opens again", async () => {
+  it("Continue in the coding tool installs that one tool's runtime, opens it in the HQ folder, and closes with no setup bot, #welcome or probe", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform } = adapter({ create, flag: true });
+    const probe = vi.fn(async () => ok({ ok: true, class: null }));
+    const order: string[] = [];
+    let finishInstall: () => void = () => undefined;
+    const installRuntimeForTool = vi.fn(
+      (runtime: string) =>
+        new Promise((resolve) => {
+          order.push(`install:${runtime}`);
+          finishInstall = () => resolve(ok(undefined));
+        }),
+    );
+    const launchClaudeCode = vi.fn(async (folder: string) => {
+      order.push(`open:${folder}`);
+      return ok(undefined);
+    });
+    const { platform, sendDm } = adapter({
+      create,
+      flag: true,
+      probe,
+      installRuntimeForTool,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+        launchClaudeCode,
+      },
+    });
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     await decisionShown();
@@ -426,15 +457,51 @@ describe("visual first run, flag on", () => {
     expect(q('[data-testid="first-run-decision-question"]')?.textContent).toBe("Where do you want to keep working?");
     const primary = q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!;
     expect(primary.textContent).toContain("Continue in Claude Code");
+    // What sits behind the takeover; closing it selects nothing (Lane A owns the landing).
+    const behind = Boolean(q('[data-testid="setup-hero"]'));
     primary.click();
+
+    // The takeover holds "Opening Claude Code…" while the install runs.
+    await vi.waitFor(() => expect(installRuntimeForTool).toHaveBeenCalledWith("claude"));
     await settle();
-    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
+    expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+    expect(q('[data-testid="first-run-decision-primary"]')?.textContent).toContain("Opening Claude Code…");
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+
+    finishInstall();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    expect(order).toEqual(["install:claude", "open:/tmp/HQ"]);
+    expect(installRuntimeForTool).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     await settle();
+    expect(Boolean(q('[data-testid="setup-hero"]'))).toBe(behind);
     expect(create).not.toHaveBeenCalled();
+    expect(sendDm).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("keeps the takeover up when the coding tool does not open", async () => {
+    const installRuntimeForTool = vi.fn(async () => ok(undefined));
+    const launchClaudeCode = vi.fn(async () => failure("unavailable", "no terminal"));
+    const { platform } = adapter({
+      flag: true,
+      installRuntimeForTool,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+        launchClaudeCode,
+      },
+    });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(launchClaudeCode).toHaveBeenCalledOnce());
+    await settle();
+    expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBeNull();
   });
 });
+
 
 describe("visual first run, a name confirmed with no signed-in tool", () => {
   /** Signed out at the first readiness read, signed in on every later one. */
