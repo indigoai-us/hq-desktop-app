@@ -5,6 +5,9 @@ import { mount, tick, unmount } from "svelte";
 import { failure, ok, type AgentsApi } from "@hq/platform";
 
 import AgentDetailPanel from "./AgentDetailPanel.svelte";
+import { MARKETPLACE_COVER_HOST } from "../avatars/csp-image-src.js";
+
+const DRAKE_PHOTO = `https://${MARKETPLACE_COVER_HOST}/members/prs_drake/p.png?X-Amz-Signature=mock`;
 import type { AvatarPack } from "../avatars/types.js";
 
 const PACKS: AvatarPack[] = [
@@ -145,6 +148,92 @@ async function mountPanel(over: Record<string, unknown> = {}) {
   return host;
 }
 
+describe("AgentDetailPanel owner (feedback_cf6347c3)", () => {
+  it("shows the owner by photo and roster name, not the bare email the owners read sent", async () => {
+    const { resetPeopleRosters } = await import("../common/people/people-roster.svelte.js");
+    resetPeopleRosters();
+    const listContacts = vi.fn(async () =>
+      ok([
+        {
+          personUid: "prs_drake",
+          displayName: "Jason Drake",
+          email: "jrdrake22@example.com",
+        },
+      ]),
+    );
+    await mountPanel({
+      companyUid: "cmp_drake",
+      companySlug: "drake",
+      companyNames: { cmp_drake: "Drake" },
+      avatarByUid: { prs_drake: DRAKE_PHOTO },
+      adapter: {
+        agents: agentsApi({
+          listOwners: async () =>
+            ok({
+              owners: [
+                {
+                  personUid: "prs_drake",
+                  email: "jrdrake22@example.com",
+                  kind: "creator",
+                  status: "active",
+                },
+              ],
+            }),
+        }),
+        messaging: { listContacts },
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector(
+          '[data-testid="agent-detail-owner"] [data-testid="person-name"] .pn-name',
+        )?.textContent,
+      ).toBe("Jason Drake");
+    });
+    const owner = host.querySelector('[data-testid="agent-detail-owner"]');
+    expect(owner?.querySelector(".pn-detail")?.textContent).toBe("jrdrake22@example.com");
+    expect(owner?.getAttribute("title")).toBe("jrdrake22@example.com");
+    expect(
+      owner?.querySelector<HTMLImageElement>('[data-testid="agent-detail-owner-avatar"] img')?.getAttribute("src"),
+    ).toBe(DRAKE_PHOTO);
+    expect(listContacts).toHaveBeenCalledWith({ companyUid: "cmp_drake" });
+    resetPeopleRosters();
+  });
+
+  it("falls back to initials and the email when the roster does not know the owner", async () => {
+    const { resetPeopleRosters } = await import("../common/people/people-roster.svelte.js");
+    resetPeopleRosters();
+    await mountPanel({
+      adapter: {
+        agents: agentsApi({
+          listOwners: async () =>
+            ok({
+              owners: [
+                {
+                  personUid: "prs_unknown1",
+                  email: "someone@example.com",
+                  kind: "creator",
+                  status: "active",
+                },
+              ],
+            }),
+        }),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        host.querySelector(
+          '[data-testid="agent-detail-owner"] [data-testid="person-name"] .pn-name',
+        )?.textContent,
+      ).toBe("someone@example.com");
+    });
+    const owner = host.querySelector('[data-testid="agent-detail-owner"]');
+    expect(owner?.querySelector('[data-testid="agent-detail-owner-avatar"] .av-text')?.textContent).toBeTruthy();
+    expect(owner?.textContent).not.toContain("prs_unknown1");
+    resetPeopleRosters();
+  });
+});
+
 describe("AgentDetailPanel", () => {
   it("renders header, jobs, and usage from fixture adapter data", async () => {
     await mountPanel();
@@ -158,7 +247,9 @@ describe("AgentDetailPanel", () => {
         ?.textContent,
     ).toContain("Fleet agent");
     expect(
-      host.querySelector('[data-testid="agent-detail-owner"]')?.textContent,
+      host.querySelector(
+        '[data-testid="agent-detail-owner"] [data-testid="person-name"] .pn-name',
+      )?.textContent,
     ).toBe("Corey");
     expect(
       host.querySelector('[data-testid="agent-detail-companies"]')?.textContent,

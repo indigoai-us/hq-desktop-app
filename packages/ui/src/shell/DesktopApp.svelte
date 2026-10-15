@@ -13432,6 +13432,13 @@
     notificationsPopoverOpen = !notificationsPopoverOpen;
   }
 
+  /**
+   * Local refetch trigger for the notifications feed, added to the mesh
+   * `notificationWakeSeq` so "Mark all read" in the titlebar popover reloads
+   * the Inbox view (and the titlebar dot) from the server.
+   */
+  let notificationRefreshSeq = $state(0);
+
   async function acceptCompanyInviteFromBell(
     item: NotificationItem,
   ): Promise<
@@ -14209,6 +14216,9 @@
         onacceptcompany: acceptCompanyInviteFromBell,
         onclose: () => (notificationsPopoverOpen = false),
         onopen: openNotification,
+        onmarkedallread: () => {
+          notificationRefreshSeq += 1;
+        },
         onopensettings: () => {
           notificationsPopoverOpen = false;
           openSettings("notifications");
@@ -14686,7 +14696,7 @@
         >
           <NotificationsView
             api={notificationsApi}
-            wakeSeq={notificationWakeSeq}
+            wakeSeq={notificationWakeSeq + notificationRefreshSeq}
             signedIn={Boolean(self)}
             onback={() => {
               void leaveCurrentDestination();
@@ -15462,6 +15472,10 @@
               displayName={headerTitle}
               avatarUrl={avatarByUid[agentChannelUid] ?? null}
               companyUid={promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid}
+              companySlug={companySlugForUid(
+                promotedBotCompany(localBotRecords, agentChannelUid) ?? selectedRow?.companyUid,
+              )}
+              {avatarByUid}
               {companyNames}
               {self}
               {isAdmin}
@@ -16034,6 +16048,10 @@
                       null}
                     description={openAgentMember.description}
                     companyUid={promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid}
+                    companySlug={companySlugForUid(
+                      promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid,
+                    )}
+                    {avatarByUid}
                     {companyNames}
                     {self}
                     {isAdmin}
