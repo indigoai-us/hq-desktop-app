@@ -1100,6 +1100,19 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(WEB_PATHS.agentReauth(agentUid), { brain }),
     submitClaudeLoginCode: (agentUid, code) =>
       this.post(WEB_PATHS.agentLoginCode(agentUid), { code }),
+    // Account writes keep their HTTP status: the Accounts section tells a
+    // refusal (403 not the owner, 409 last account or a stale save) from a
+    // write whose fate is not known.
+    addAccount: (agentUid, input) =>
+      this.postWithStatus(AGENT_PATHS.accounts(agentUid), input),
+    removeAccount: (agentUid, accountId) =>
+      this.requestWithStatus("DELETE", AGENT_PATHS.account(agentUid, accountId)),
+    startAccountSignIn: (agentUid, accountId) =>
+      this.postWithStatus(AGENT_PATHS.accountSignIn(agentUid, accountId)),
+    getAccountSignIn: (agentUid, accountId) =>
+      this.requestWithStatus("GET", AGENT_PATHS.accountSignIn(agentUid, accountId)),
+    submitAccountLoginCode: (agentUid, accountId, code) =>
+      this.postWithStatus(AGENT_PATHS.accountLoginCode(agentUid, accountId), { code }),
     attachSlack: (agentUid) =>
       this.postWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
     // The token goes in the body only. The path names the bot, nothing else.

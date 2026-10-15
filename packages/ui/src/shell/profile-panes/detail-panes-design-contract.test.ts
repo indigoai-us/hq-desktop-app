@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 const here = dirname(fileURLToPath(import.meta.url));
 const FILES = [
   "BotProfilePane.svelte",
+  "BotAccountsSection.svelte",
   "UserProfilePane.svelte",
   "../../badges/ProfileBadges.svelte",
   "../../badges/BadgeDetailPane.svelte",

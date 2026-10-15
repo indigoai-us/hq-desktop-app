@@ -105,6 +105,41 @@ describe("WebPlatformAdapter agents", () => {
     ]);
   });
 
+  it("sends account add, remove, sign-in and login-code to the account routes", async () => {
+    const { adapter, calls } = makeAdapter();
+    await adapter.agents.addAccount!("agt_1", { provider: "codex", label: "Work", authKind: "subscription" });
+    await adapter.agents.removeAccount!("agt_1", "acct_2");
+    await adapter.agents.startAccountSignIn!("agt_1", "acct_2");
+    await adapter.agents.getAccountSignIn!("agt_1", "acct_2");
+    await adapter.agents.submitAccountLoginCode!("agt_1", "acct_2", "returned-code");
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        path: "/v1/agents/agt_1/accounts",
+        body: { provider: "codex", label: "Work", authKind: "subscription" },
+      },
+      { method: "DELETE", path: "/v1/agents/agt_1/accounts/acct_2", body: undefined },
+      { method: "POST", path: "/v1/agents/agt_1/accounts/acct_2/sign-in", body: undefined },
+      { method: "GET", path: "/v1/agents/agt_1/accounts/acct_2/sign-in", body: undefined },
+      {
+        method: "POST",
+        path: "/v1/agents/agt_1/accounts/acct_2/login-code",
+        body: { code: "returned-code" },
+      },
+    ]);
+  });
+
+  it("keeps the HTTP status when the server refuses an account removal", async () => {
+    const adapter = new WebPlatformAdapter({
+      baseUrl: "https://api.test",
+      fetch: async () =>
+        new Response(JSON.stringify({ error: "cannot remove the last account" }), { status: 409 }),
+    });
+    const res = await adapter.agents.removeAccount!("agt_1", "acct_1");
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.status).toBe(409);
+  });
+
   it("names the running machine when a bot removal is confirmed", async () => {
     const { adapter, calls } = makeAdapter();
     await adapter.agents.deprovision("agt_1", {

@@ -1527,6 +1527,14 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/reauth`,
   loginCode: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/login-code`,
+  accounts: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/accounts`,
+  account: (agentUid: string, accountId: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/accounts/${encodeURIComponent(accountId)}`,
+  accountSignIn: (agentUid: string, accountId: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/accounts/${encodeURIComponent(accountId)}/sign-in`,
+  accountLoginCode: (agentUid: string, accountId: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/accounts/${encodeURIComponent(accountId)}/login-code`,
   slackChannel: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/channels/slack`,
   slackAppToken: (agentUid: string) =>
@@ -1632,6 +1640,13 @@ export interface AgentDeprovisionOptions {
   confirmDestroyInstanceId?: string | null;
 }
 
+/** Body of `POST /v1/agents/{uid}/accounts`. */
+export interface AgentAccountInput {
+  provider: "claude" | "codex" | "grok";
+  label: string;
+  authKind?: "subscription" | "apiKey";
+}
+
 export interface AgentsApi {
   /**
    * The REST transport `@hq/agents` runs on. Absent on adapters that cannot
@@ -1648,6 +1663,20 @@ export interface AgentsApi {
   restartBrainApproval?(agentUid: string, brain: "grok" | "codex" | "claude"): AdapterPromise<Json>;
   /** Submit Claude's browser-issued code to the waiting cloud bot. */
   submitClaudeLoginCode?(agentUid: string, code: string): AdapterPromise<Json>;
+  /**
+   * POST /v1/agents/{uid}/accounts — owner only. Adds a subscription account
+   * to the bot's pool and answers `{ account, accounts }`. A new subscription
+   * account starts as `needs_auth` until it is signed in.
+   */
+  addAccount?(agentUid: string, input: AgentAccountInput): AdapterPromise<Json>;
+  /** DELETE /v1/agents/{uid}/accounts/{id} — owner only. Answers `{ accounts }`; 409 on the last account. */
+  removeAccount?(agentUid: string, accountId: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/accounts/{id}/sign-in — start a provider sign-in for one account. */
+  startAccountSignIn?(agentUid: string, accountId: string): AdapterPromise<Json>;
+  /** GET /v1/agents/{uid}/accounts/{id}/sign-in — that account's sign-in state. */
+  getAccountSignIn?(agentUid: string, accountId: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/accounts/{id}/login-code — Claude only: deliver the browser-issued code. */
+  submitAccountLoginCode?(agentUid: string, accountId: string, code: string): AdapterPromise<Json>;
   /**
    * POST /v1/agents/{uid}/channels/slack with `{ returnTo: "desktop" }`:
    * start connecting the bot to Slack. Owner or admin only. NOT a probe: on
