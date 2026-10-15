@@ -341,6 +341,8 @@ describe('welcome flow: the install runs in the background', () => {
     expect(title()).toBe('HQ is ready.');
     expect(byId('onboarding-ready-wait')?.textContent).toContain('Getting ready…');
     expect(byId('onboarding-ready-wait')?.textContent).not.toContain('Opening…');
+    // The greyed Continue no longer says it waits for the install.
+    expect(open().getAttribute('aria-label')).toBe('Continue, HQ Desktop opens when it is ready');
     expect(host.querySelector('[data-scene="ready"] .tool-card-desktop')).toBeNull();
     expect(byId('launcher-finish-error')).toBeNull();
     // The ready scene's content fades out while the desktop window takes over

@@ -5063,7 +5063,7 @@
               class="btn btn-secondary ready-wait-continue"
               type="button"
               data-testid="onboarding-open-desktop"
-              aria-label="Continue, once the install finishes"
+              aria-label="Continue, HQ Desktop opens when it is ready"
               disabled
               aria-busy="true"
             >Continue</button>

@@ -1106,9 +1106,20 @@
     const pendingRoutePromise = Promise.resolve().then(() =>
       invokeFn('desktop_alt_consume_pending_route'),
     );
-    const handoffReadTimeoutId = setTimeout(() => (handoffRead = true), HANDOFF_READ_TIMEOUT_MS);
+    const handoffReadTimeoutId = setTimeout(() => {
+      if (!handoffRead) {
+        console.warn(`[desktop] first-run handoff hint not read within ${HANDOFF_READ_TIMEOUT_MS} ms; mounting without it`);
+      }
+      handoffRead = true;
+    }, HANDOFF_READ_TIMEOUT_MS);
     void pendingRoutePromise
-      .then((pending) => parseFirstRunHandoffHint(pending).hint, () => null)
+      .then(
+        (pending) => parseFirstRunHandoffHint(pending).hint,
+        (err) => {
+          console.warn('[desktop] first-run handoff hint read failed', err);
+          return null;
+        },
+      )
       .then((hint) => {
         if (cancelled) return;
         clearTimeout(handoffReadTimeoutId);
