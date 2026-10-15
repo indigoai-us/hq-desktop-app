@@ -18,7 +18,8 @@ import TierMark from "./TierMark.svelte";
 import BadgeNoticeMarks from "./BadgeNoticeMarks.svelte";
 import IdentityMark from "../chat/messaging/IdentityMark.svelte";
 import { highestTier, tierMarkPx, topBadge } from "./badge-tier.js";
-import { BADGES, resolveEarned } from "./badge-catalog.js";
+import { BADGES, TIER_RING, resolveEarned } from "./badge-catalog.js";
+import { TIER_RING_LIGHT } from "./badge-mark.js";
 import { BADGE_DUOTONE, BADGE_GLYPH, BADGE_GLYPH_SCALE, BADGE_GLYPH_STROKE, BADGE_RING_STROKE, badgeGlyphUrl, badgeTune } from "./badge-glyph.js";
 import { setBadgeSource } from "./badge-source.js";
 import type { EarnedBadge } from "./badge-catalog.js";
@@ -74,6 +75,19 @@ describe("which tier shows", () => {
 });
 
 describe("TierMark", () => {
+  // The small marks wore paler light-mode metals than the drawn marks, so the
+  // same badge read pale blue-grey on a picture and slate in the badges card
+  // (owner pick 2026-10-15: the smallest marks match the drawn ones).
+  it("uses the drawn marks' metals, in light and dark", () => {
+    for (const file of ["TierMark.svelte", "BadgeNoticeMarks.svelte"]) {
+      const src = readFileSync(join(here, file), "utf8");
+      const sets = [...src.matchAll(/--bronze: (#[0-9a-f]{6}); --silver: (#[0-9a-f]{6}); --gold: (#[0-9a-f]{6});/g)].map((m) => m.slice(1, 4));
+      expect(sets[0], file).toEqual([TIER_RING_LIGHT[1], TIER_RING_LIGHT[2], TIER_RING_LIGHT[3]]);
+      expect(sets.length, file).toBeGreaterThan(1);
+      for (const dark of sets.slice(1)) expect(dark, file).toEqual([TIER_RING[1], TIER_RING[2], TIER_RING[3]]);
+    }
+  });
+
   it("shows on pictures from 32px, and not on smaller ones; a spark when there's no badge", () => {
     component = mount(TierMark, { target: host, props: { tier: 2, avatar: 26 } });
     flushSync();

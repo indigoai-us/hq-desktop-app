@@ -145,10 +145,11 @@
 
 <style>
   /* Flat tier colours: the badge rings in dark, deepened in light to hold
-     contrast on white. The app is light unless the system or a forced
-     theme says dark (home/tokens.css). */
+     contrast on white, the same metals as the drawn badge marks
+     (TIER_RING_LIGHT, owner pick 2026-10-15). The app is light unless the
+     system or a forced theme says dark (home/tokens.css). */
   .tm, .tmc {
-    --bronze: #b0683a; --silver: #8a91a6; --gold: #c99312;
+    --bronze: #8a4522; --silver: #4f566b; --gold: #8f6400;
     --legendary: linear-gradient(135deg, #3b22d0 0%, #9a4ad6 40%, #ec6f86 75%, #fca58a 100%);
   }
   @media (prefers-color-scheme: dark) {
