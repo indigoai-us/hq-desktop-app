@@ -42,6 +42,8 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
+  import FinishingSetupChip from "./FinishingSetupChip.svelte";
+  import type { InstallQueueHost } from "./finishing-setup.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -1318,6 +1320,11 @@
      * New bot wizard on mount so the probe is not paid on every app open.
      */
     onrequestaitools?: () => void;
+    /**
+     * Background install queue (install-flow-rethink US-005). Drives the
+     * non-blocking "Finishing setup" chip over the titlebar. Null hides it.
+     */
+    installQueue?: InstallQueueHost | null;
   }
 
   let {
@@ -1390,6 +1397,7 @@
     onopenassistant,
     onassistedinstall,
     onrequestaitools,
+    installQueue = null,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -14081,6 +14089,9 @@
     onforward={() => void goForward()}
     launchMenuForcedOpen={tourLaunchOpen}
   />
+  <div class="finishing-setup-slot">
+    <FinishingSetupChip host={installQueue} />
+  </div>
 
   {#if notificationsPopoverOpen}
     <LazyDoor
@@ -16116,7 +16127,6 @@
 
   <!-- Visual first-run setup (desktop.visual-first-run). Over the whole window. -->
   {#if visualFirstRunOpen}
-    <!-- TODO(US-005): progress chip for the background setup goes here. -->
     <FirstRunDecisionTakeover
       initialName={firstRunSuggestedName}
       importHost={firstRunImportHost}
@@ -16177,6 +16187,23 @@
     position: absolute;
     inset: min(0px, calc(50% - 14px));
   }
+  /* Finishing setup chip: floats over the titlebar centre so it never adds a
+     row to the shell column, and stays above the first-run takeover. */
+  .finishing-setup-slot {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    height: var(--titlebar-height, 48px);
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
+  .finishing-setup-slot > :global(*) {
+    pointer-events: auto;
+  }
+
   .desktop-shell {
     position: relative;
     display: flex;

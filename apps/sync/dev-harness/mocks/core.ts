@@ -1442,14 +1442,26 @@ This final paragraph verifies spacing after a thematic break.
   },
   // US-005: the titlebar "Finishing setup" chip reads these. A preview host has
   // no background queue, so it reports idle and the chip stays hidden.
-  get_install_queue_status: () => ({
-    state: 'idle',
-    current: null,
-    currentId: null,
-    done: 0,
-    total: 0,
-    failed: [],
-  }),
+  // `?scenario=finishing-setup-running` holds a mid-queue status so the chip
+  // can be inspected.
+  get_install_queue_status: () =>
+    harnessScenario() === 'finishing-setup-running'
+      ? {
+          state: 'running',
+          current: 'GitHub CLI',
+          currentId: 'gh',
+          done: 4,
+          total: 11,
+          failed: [],
+        }
+      : {
+          state: 'idle',
+          current: null,
+          currentId: null,
+          done: 0,
+          total: 0,
+          failed: [],
+        },
   retry_install_queue: () => null,
   // Hold the final journal write only for capture so a settled real checklist
   // remains visible long enough for a browser screenshot.

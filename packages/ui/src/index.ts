@@ -188,6 +188,10 @@ export { setPageTitleFetcher } from "./common/linkTitles.js";
 export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
+export {
+  createInstallQueueHost,
+  type InstallQueueHost,
+} from "./shell/finishing-setup.js";
 export { default as ToastStack } from "./shell/ToastStack.svelte";
 export {
   dismissToast,

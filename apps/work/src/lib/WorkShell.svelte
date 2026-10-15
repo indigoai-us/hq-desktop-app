@@ -243,6 +243,8 @@
      * New bot wizard on mount so the probe never runs at app boot (#1152).
      */
     onrequestaitools?: () => void;
+    /** Background install queue host; drives the Finishing setup chip. */
+    installQueue?: import("@hq/ui").InstallQueueHost | null;
     /**
      * Backoff between failed company-roster fetches (tests shorten it). The
      * default is bounded; a roster that keeps failing stops retrying.
@@ -294,6 +296,7 @@
     onopenassistant,
     onassistedinstall,
     onrequestaitools,
+    installQueue = null,
     rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
@@ -1070,6 +1073,7 @@
       {onopenassistant}
       {onassistedinstall}
       {onrequestaitools}
+      {installQueue}
     />
   {/key}
   {#if externalLinkError}

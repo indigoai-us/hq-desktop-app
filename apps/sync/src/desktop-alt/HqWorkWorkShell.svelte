@@ -39,6 +39,7 @@
     workspacesFromMembershipRows,
     common,
     ToastStack,
+    createInstallQueueHost,
     type ConversationRow,
     type EmbeddedNavigationTarget,
     type SelfIdentity,
@@ -120,6 +121,10 @@
     rosterRetryDelaysMs,
     planLimitBannerDelayMs = 2_000,
   }: Props = $props();
+
+  // Background install queue (install-flow-rethink US-005) behind the
+  // Finishing setup chip. Uses the injectable invoke so tests stay off Tauri.
+  const installQueue = $derived(createInstallQueueHost(invokeFn, listen));
 
   /**
    * Send invites the "Name your company" setup step queued while the new
@@ -1540,6 +1545,7 @@
         hostTenantGeneration={authGeneration}
         invoke={invokeFn}
         {listen}
+        {installQueue}
         {wakes}
         {version}
         {updateWakeSeq}
