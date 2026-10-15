@@ -17,6 +17,7 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 import type { FirstRunHandoffHint } from "../chat/first-run/first-run-handoff.js";
+import { hasRunWelcomeSetup, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 
 const memoryStorage = installMemoryLocalStorage();
 
@@ -27,6 +28,11 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  // An ordinary launch starts the setup bot by itself, and that start records
+  // the welcome setup as run once it lands. Let it land before the store is
+  // cleared, so the next test starts with no marker.
+  await new Promise((r) => setTimeout(r, 0));
+  await settle();
   memoryStorage.clear();
   document
     .querySelectorAll('[data-testid="first-run-takeover"], [data-testid="first-run-held"]')
@@ -124,7 +130,11 @@ const HINT_VISUAL: FirstRunHandoffHint = {
 
 describe("first run holds the shell", () => {
   it("renders the takeover backdrop and not the shell's default page while the route is pending", async () => {
-    const { adapter } = makeAdapter({ hasFeature: () => never(), getSetupStatus: () => never() });
+    // Setup is owed and the flag has not answered: a first run, held.
+    const { adapter } = makeAdapter({
+      hasFeature: () => never(),
+      getSetupStatus: async () => ok({ hqRootValid: true, configured: true, welcomeSetupOwed: true }),
+    });
     mountShell(adapter);
     await settle();
 
@@ -150,6 +160,36 @@ describe("first run holds the shell", () => {
     await settle();
     seen.disconnect();
     expect(heldSeen).toBe(false);
+  });
+
+  it("never holds an ordinary launch with no handoff hint while the setup status is unanswered", async () => {
+    // No local marker, no handoff hint, and neither the flag service nor the
+    // setup status has answered. Only the welcome window's handoff starts a
+    // first run, so the shell paints from the first frame: no held backdrop
+    // flashes before the status answers.
+    const { adapter } = makeAdapter({ hasFeature: () => never(), getSetupStatus: () => never() });
+    let heldSeen = false;
+    const seen = new MutationObserver(() => {
+      if (q("first-run-held") || q("first-run-held-page")) heldSeen = true;
+    });
+    seen.observe(document.body, { childList: true, subtree: true });
+    mountShell(adapter);
+    if (q("first-run-held") || q("first-run-held-page")) heldSeen = true;
+    flushSync();
+    await settle();
+    seen.disconnect();
+    expect(heldSeen).toBe(false);
+    expect(localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
+  });
+
+  it("remembers on this computer when the host says setup is not owed", async () => {
+    const { adapter } = makeAdapter({
+      hasFeature: () => never(),
+      getSetupStatus: async () => ok({ hqRootValid: true, configured: true, welcomeSetupOwed: false }),
+    });
+    expect(hasRunWelcomeSetup()).toBe(false);
+    mountShell(adapter);
+    await vi.waitFor(() => expect(hasRunWelcomeSetup()).toBe(true), { timeout: 1000, interval: 10 });
   });
 
   it("shows the shell's page once the route settles on the ordinary shell", async () => {

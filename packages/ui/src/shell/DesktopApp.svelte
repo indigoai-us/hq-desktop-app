@@ -3620,10 +3620,15 @@
    * shell's pages, so a first run never sees the shell before the takeover.
    * An ordinary launch whose setup is not owed settles on "legacy" as soon as
    * the setup status answers (not owed marks the welcome setup as run), so it
-   * is never held for the flag service.
+   * is never held for the flag service. Until the setup status answers, a
+   * launch the welcome window did not hand over paints the shell: a first run
+   * always comes with the handoff hint, so an unknown status with no hint is
+   * an ordinary launch.
    */
   const firstRunHeld = $derived(
-    !visualFirstRunOpen && (firstRunRouteNow === "pending" || firstRunRouteNow === "visual"),
+    !visualFirstRunOpen &&
+      (firstRunRouteNow === "visual" ||
+        (firstRunRouteNow === "pending" && (welcomeSetupOwed !== null || firstRunHandoff != null))),
   );
   /** Latched: the host hears about the first painted screen once. */
   let firstRunPaintedSent = false;
@@ -9989,6 +9994,8 @@
       settled = true;
       welcomeSetupOwed = owed;
       if (owed) return;
+      // Remembered, so the next launch knows before the host answers.
+      markWelcomeSetupRun();
       welcomeSetupRun = true;
       setupAgent.markAlreadySetUp();
     };
