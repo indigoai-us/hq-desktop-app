@@ -1407,8 +1407,10 @@
 /* US-010: the automatic handoff to HQ Desktop. The wallpaper and veil stay;
    the scene's content fades out while the desktop window takes over on the
    same backdrop. Under 400ms; the reduced-motion block below makes it
-   instant. */
-.hq-welcome .s-ready.on[data-handoff] :is(.copy, .prog, .nav) {
+   instant. The "Getting ready" line stays, so the screen never goes blank
+   while the desktop window opens; only its greyed Continue fades. */
+.hq-welcome .s-ready.on[data-handoff] :is(.copy, .prog, .ready-wait-continue),
+.hq-welcome .s-ready.on[data-handoff] .nav > :not(.ready-wait) {
   opacity: 0;
   transition: opacity 320ms var(--w-ease-out);
 }

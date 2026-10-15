@@ -355,7 +355,8 @@ pub async fn show_main_window_at_tray(
     // open-then-hide order.
     #[cfg(not(target_os = "windows"))]
     {
-        let hint = first_run_handoff_hint_now().await;
+        // The flag reads start now and run while the desktop window builds.
+        let hint = tauri::async_runtime::spawn(first_run_handoff_hint_now());
         crate::commands::desktop_alt::open_desktop_alt_for_first_run(app.clone(), hint).await?;
     }
     #[cfg(target_os = "windows")]

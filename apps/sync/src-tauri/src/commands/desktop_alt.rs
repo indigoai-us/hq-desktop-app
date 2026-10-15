@@ -779,15 +779,48 @@ fn set_pending_route(route: Option<&str>) {
     }
 }
 
-/// Take (and clear) the route the desktop-alt window should open on. Returns
-/// `None` when nothing was queued — the frontend then keeps its default initial
-/// route. Called once by `DesktopApp` on mount.
-#[tauri::command]
-pub fn desktop_alt_consume_pending_route() -> Option<String> {
+/// `false` while the first-run handoff is still working out the route it will
+/// queue (its flag reads run while the window builds). The window's route
+/// read waits for it, so the hint is never missed.
+static PENDING_ROUTE_READY: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+
+/// The longest the route read waits for a held route. Above the handoff's own
+/// flag-read bound, so a slow flag service still lands its hint.
+const PENDING_ROUTE_WAIT: std::time::Duration = std::time::Duration::from_millis(2500);
+
+fn pending_route_ready() -> &'static tokio::sync::watch::Sender<bool> {
+    PENDING_ROUTE_READY.get_or_init(|| tokio::sync::watch::channel(true).0)
+}
+
+/// The route is about to be queued: the window's route read waits for it.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn hold_pending_route() {
+    pending_route_ready().send_replace(false);
+}
+
+/// Queue the route and let a waiting route read take it.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn release_pending_route(route: Option<&str>) {
+    set_pending_route(route);
+    pending_route_ready().send_replace(true);
+}
+
+async fn take_pending_route(wait: std::time::Duration) -> Option<String> {
+    let mut ready = pending_route_ready().subscribe();
+    let _ = tokio::time::timeout(wait, ready.wait_for(|ready| *ready)).await;
     pending_route_cell()
         .lock()
         .ok()
         .and_then(|mut cell| cell.take())
+}
+
+/// Take (and clear) the route the desktop-alt window should open on. Returns
+/// `None` when nothing was queued — the frontend then keeps its default initial
+/// route. Called once by `DesktopApp` on mount. While the first-run handoff is
+/// still reading its flags, this waits (bounded) for the hint it queues.
+#[tauri::command]
+pub async fn desktop_alt_consume_pending_route() -> Option<String> {
+    take_pending_route(PENDING_ROUTE_WAIT).await
 }
 
 /// First-run handoff (US-010): set while the welcome flow's handoff holds a
@@ -910,7 +943,10 @@ pub async fn await_takeover_painted(
 /// re-centring) and only then hides the welcome window. Unlike
 /// [`open_desktop_alt_window_inner`] it does not hide `main` up front.
 #[cfg(not(target_os = "windows"))]
-pub async fn open_desktop_alt_for_first_run(app: AppHandle, hint: String) -> Result<(), String> {
+pub async fn open_desktop_alt_for_first_run(
+    app: AppHandle,
+    hint: tauri::async_runtime::JoinHandle<String>,
+) -> Result<(), String> {
     if crate::tray::redirect_to_setup_if_unfinished(&app) {
         return Ok(());
     }
@@ -929,11 +965,17 @@ pub async fn open_desktop_alt_for_first_run(app: AppHandle, hint: String) -> Res
         RevealSignal::Painted
     } else {
         let rx = arm_first_run_painted();
-        if let Err(e) = build_desktop_alt_window(&app, Some(&hint)) {
+        // The hint's flag reads are already running: build the window while
+        // they finish, and hold its route read until the hint is queued.
+        hold_pending_route();
+        if let Err(e) = build_desktop_alt_window(&app, None) {
+            release_pending_route(None);
             FIRST_RUN_REVEAL_HOLD.store(false, Ordering::Release);
             let _ = first_run_painted_cell().lock().map(|mut cell| cell.take());
             return Err(e);
         }
+        let hint = hint.await.ok();
+        release_pending_route(hint.as_deref());
         await_takeover_painted(rx, FIRST_RUN_PAINTED_TIMEOUT).await
     };
     FIRST_RUN_REVEAL_HOLD.store(false, Ordering::Release);
@@ -2586,6 +2628,47 @@ mod first_run_reveal_tests {
         assert!(body.contains("visible(!first_run_reveal_held())"));
         assert!(body.matches("if first_run_reveal_held() {").count() >= 2);
     }
+
+    /// The window's route read waits for a held route and returns the hint
+    /// queued once the flag reads finish, so building the window before the
+    /// hint is known never drops it.
+    #[tokio::test]
+    async fn consume_waits_for_a_held_route_and_returns_its_hint() {
+        let _guard = PENDING_ROUTE_TEST_LOCK.lock().await;
+        hold_pending_route();
+        let reader = tokio::spawn(take_pending_route(std::time::Duration::from_secs(5)));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!reader.is_finished(), "route read must wait while held");
+        release_pending_route(Some("first-run:visual"));
+        assert_eq!(reader.await.unwrap().as_deref(), Some("first-run:visual"));
+    }
+
+    /// With nothing held, the route read answers at once.
+    #[tokio::test]
+    async fn consume_answers_at_once_when_nothing_is_held() {
+        let _guard = PENDING_ROUTE_TEST_LOCK.lock().await;
+        release_pending_route(Some("chat"));
+        let route = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            take_pending_route(std::time::Duration::from_secs(5)),
+        )
+        .await
+        .expect("no wait when nothing is held");
+        assert_eq!(route.as_deref(), Some("chat"));
+    }
+
+    /// A route that is never released still lets the window open, after the bound.
+    #[tokio::test]
+    async fn consume_gives_up_after_the_bound_when_never_released() {
+        let _guard = PENDING_ROUTE_TEST_LOCK.lock().await;
+        set_pending_route(None);
+        hold_pending_route();
+        let route = take_pending_route(std::time::Duration::from_millis(30)).await;
+        assert_eq!(route, None);
+        release_pending_route(None);
+    }
+
+    static PENDING_ROUTE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// Source contract: the welcome flow's handoff uses the held reveal on
     /// macOS and Linux and keeps the original order on Windows.

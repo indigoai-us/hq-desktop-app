@@ -60,7 +60,12 @@ describe('first-run reveal order (US-010)', () => {
 
   it('macOS and Linux hand off through the held reveal and do not hide the welcome card themselves', () => {
     const held = cfgBlock(handoff, '#[cfg(not(target_os = "windows"))]');
-    inOrder(held, ['first_run_handoff_hint_now().await', 'open_desktop_alt_for_first_run(app.clone(), hint).await?']);
+    // The flag reads are spawned, not awaited, so they run while the window builds.
+    inOrder(held, [
+      'tauri::async_runtime::spawn(first_run_handoff_hint_now())',
+      'open_desktop_alt_for_first_run(app.clone(), hint).await?',
+    ]);
+    expect(held).not.toContain('first_run_handoff_hint_now().await');
     expect(held).not.toContain('hide_onboarding_window');
   });
 
@@ -75,7 +80,10 @@ describe('first-run reveal order (US-010)', () => {
   it('the welcome card is not hidden before the ready signal: build hidden, wait, show, then hide', () => {
     inOrder(reveal, [
       'arm_first_run_painted()',
-      'build_desktop_alt_window(&app, Some(&hint))',
+      'hold_pending_route()',
+      'build_desktop_alt_window(&app, None)',
+      'let hint = hint.await.ok()',
+      'release_pending_route(hint.as_deref())',
       'await_takeover_painted(rx, FIRST_RUN_PAINTED_TIMEOUT).await',
       'first_run_reveal_plan(signal)',
       'RevealStep::ShowDesktop',
