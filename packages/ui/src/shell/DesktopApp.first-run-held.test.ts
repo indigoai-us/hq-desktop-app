@@ -187,6 +187,32 @@ describe("first run holds the shell", () => {
     expect(localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
   });
 
+  it("does not put the held backdrop over a shell that has already painted", async () => {
+    // No marker and no handoff hint, so the shell paints at once. After a
+    // frame on screen, the setup status answers owed (a launch after an unfinished first run, or the
+    // 2 s status bound). The painted shell stays: it is not swapped for the
+    // held backdrop.
+    let answer: (value: unknown) => void = () => undefined;
+    const { adapter } = makeAdapter({
+      hasFeature: () => never(),
+      getSetupStatus: () => new Promise((r) => (answer = r)),
+    });
+    mountShell(adapter);
+    await settle();
+    await vi.waitFor(() => expect(q("chat-sidebar")).toBeTruthy(), { timeout: 2000, interval: 10 });
+    expect(q("first-run-held-page")).toBeNull();
+    // The shell is on screen for a frame before the status answers.
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    await settle();
+
+    answer(ok({ hqRootValid: true, configured: true, welcomeSetupOwed: true }));
+    await settle();
+    await new Promise((r) => setTimeout(r, 20));
+    await settle();
+    expect(q("first-run-held-page")).toBeNull();
+    expect(q("first-run-held")).toBeNull();
+  });
+
   it("remembers on this computer when the host says setup is not owed", async () => {
     const { adapter } = makeAdapter({
       hasFeature: () => never(),

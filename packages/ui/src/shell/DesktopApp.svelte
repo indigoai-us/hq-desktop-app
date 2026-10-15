@@ -3623,13 +3623,22 @@
    * is never held for the flag service. Until the setup status answers, a
    * launch the welcome window did not hand over paints the shell: a first run
    * always comes with the handoff hint, so an unknown status with no hint is
-   * an ordinary launch.
+   * an ordinary launch. Once the shell has been on screen for a frame it
+   * stays: a later answer never swaps it for the backdrop.
    */
-  const firstRunHeld = $derived(
-    !visualFirstRunOpen &&
+  let firstRunHoldReleased = $state(false);
+  const firstRunHeld = $derived.by(
+    () =>
+      !firstRunHoldReleased &&
+      !visualFirstRunOpen &&
       (firstRunRouteNow === "visual" ||
         (firstRunRouteNow === "pending" && (welcomeSetupOwed !== null || firstRunHandoff != null))),
   );
+  $effect(() => {
+    if (firstRunHoldReleased || firstRunHeld || visualFirstRunOpen || !(tourShellReady || sidebarRendered)) return;
+    const frame = requestAnimationFrame(() => (firstRunHoldReleased = true));
+    return () => cancelAnimationFrame(frame);
+  });
   /** Latched: the host hears about the first painted screen once. */
   let firstRunPaintedSent = false;
   /** The conversation rail has rendered once, even if only its loading or error state. */
