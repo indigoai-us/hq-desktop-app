@@ -82,8 +82,10 @@
   } from "./shell-settings-model.js";
   import {
     readSettingsPrefs,
+    readSoundEffectsEnabled,
     readStoredUiSize,
     writeSettingsPrefs,
+    writeSoundEffectsEnabled,
     writeStoredUiSize,
     type SettingsUiSize,
     type ShellSettingsPrefs,
@@ -408,6 +410,13 @@
 
   function setOpacity(next: number): void {
     patch({ windowOpacity: applyWindowOpacity(next) });
+  }
+
+  // Device-wide, like Interface size: the same answer in every company.
+  let soundEffects = $state(readSoundEffectsEnabled(deviceStorage));
+
+  function toggleSoundEffects(): void {
+    soundEffects = writeSoundEffectsEnabled(!soundEffects, deviceStorage);
   }
 
   function toggleSidebarScopeLabels(): void {
@@ -1411,6 +1420,10 @@
           <button type="button" class="chip" class:on={prefs.uiSize === option.id} role="radio" aria-checked={prefs.uiSize === option.id} onclick={() => setUiSize(option.id)}>{option.label}</button>
         {/each}
       </div>
+    </div>
+    <div class="set-row">
+      <div><div class="sn">Sound effects</div><div class="sd">Soft card sounds in Accomplishments. Always off when Reduce motion is on.</div></div>
+      <button type="button" class="toggle" class:on={soundEffects} role="switch" aria-checked={soundEffects} aria-label="Sound effects" data-testid="settings-sound-effects" onclick={() => toggleSoundEffects()}></button>
     </div>
     <div class="set-row">
       <div>

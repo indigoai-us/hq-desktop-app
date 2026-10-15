@@ -15,7 +15,13 @@
    * both app themes, drawn at the app shell, the rest of the app inert and
    * its shortcuts held, Tab kept inside, Escape or the close button closes
    * it, and focus goes back afterwards.
+   *
+   * Sound (card-sounds.ts) follows the same beats: a swell as it opens, a
+   * deal and a turn per card, one landing as the hand settles, a tick under
+   * the pointer and a settle on the way out. It is silent under reduced
+   * motion and when sound effects are off in Settings.
    */
+  import { untrack } from "svelte";
   import RailIcon from "../common/button/RailIcon.svelte";
   import { suspendShortcuts } from "../common/keyboard-shortcuts.js";
   import { inertOutside, restoreFocus, trapTab } from "../chat/messaging/card-modal.js";
@@ -24,6 +30,7 @@
   import CardBackLogo from "./CardBackLogo.svelte";
   import { BADGE_BY_ID, TIER_NAME, type ResolvedBadge } from "./badge-catalog.js";
   import { prefersReducedMotion } from "./badge-card.js";
+  import { createCardSounds } from "./card-sounds.js";
   import type { BadgeProgress } from "./badge-source.js";
   import { fanSlots, handTier, launchHand, launchLead, nextUp, progressLine } from "./badge-launch.js";
 
@@ -45,6 +52,10 @@
   const DEAL_STEP_MS = 120;
   const DEAL_MS = 760;
   const EXIT_MS = 220;
+  /** The turn passes edge-on at about 37% of its 640 ms (see la-show). */
+  const FLIP_SOUND_MS = 200 + 235;
+  /** The deal eases out, so the last card reads as down before it stops. */
+  const LAND_SOUND_LEAD_MS = 260;
 
   const hand = $derived(launchHand(badges));
   const empty = $derived(hand.shown.length === 0);
@@ -75,8 +86,31 @@
     return () => clearTimeout(t);
   });
 
+  const sounds = createCardSounds();
+  $effect(() => () => sounds.dispose());
+
+  // Scheduled once, as the hand is dealt; the timings mirror the CSS delays.
+  // untrack: a later change to the badges must not deal the sounds again.
+  $effect(() => {
+    if (reduced) return;
+    untrack(() => {
+      sounds.play("intro");
+      for (let i = 0; i < count; i++) {
+        const dealAt = DEAL_START_MS + dealOrder(i) * DEAL_STEP_MS;
+        sounds.play("deal", dealAt);
+        if (!empty) sounds.play("flip", dealAt + FLIP_SOUND_MS);
+      }
+      sounds.play("land", lastLandMs - LAND_SOUND_LEAD_MS);
+    });
+  });
+
+  function hoverCard(): void {
+    if (settled && !leaving) sounds.play("hover");
+  }
+
   function leave(then: () => void): void {
     if (leaving) return;
+    sounds.play("dismiss");
     if (reduced) {
       then();
       return;
@@ -151,8 +185,10 @@
     <div class="la-hand" class:empty aria-hidden="true">
       <span class="la-light"></span>
       {#each slots as slot, i (i)}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="la-slot"
+          onpointerenter={hoverCard}
           style="--x: {slot.x}; --y: {slot.y}; --r: {slot.rotate}deg; --z: {slot.z}; --d: {DEAL_START_MS + dealOrder(i) * DEAL_STEP_MS}ms"
         >
           <div class="la-flip" class:face-down={empty}>
