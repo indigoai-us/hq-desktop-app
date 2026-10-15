@@ -74,7 +74,7 @@
         aria-valuemax={100}
         aria-valuenow={pct ?? undefined}
       >
-        <span class="fill" class:indeterminate={pct === null} style:width={pct === null ? null : `${pct}%`}></span>
+        <span class="fill" class:indeterminate={pct === null} style:--fill={pct === null ? null : pct / 100}></span>
       </div>
     </section>
   {/if}
@@ -134,22 +134,30 @@
     overflow: hidden;
     background: var(--b-line, rgba(255, 255, 255, 0.07));
   }
+  /* Fill ratio via --fill (0..1) + scaleX, as ProjectRow.svelte does, so
+     the bar moves on the compositor; the track clips + rounds it. */
   .fill {
     position: absolute;
     inset: 0 auto 0 0;
+    width: 100%;
     border-radius: 2px;
     background: var(--b-sun, #ffb580);
-    transition: width 0.4s ease;
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left center;
+    transition: transform 0.4s ease;
   }
+  /* A 30%-wide bar sliding across: translateX is relative to its own width,
+     so -100% starts it just off the left edge and 333% just off the right. */
   .fill.indeterminate {
     width: 30%;
+    transform: translateX(-100%);
     animation: slide 1.4s ease-in-out infinite;
   }
   @keyframes slide {
-    from { left: -30%; }
-    to { left: 100%; }
+    from { transform: translateX(-100%); }
+    to { transform: translateX(333%); }
   }
   @media (prefers-reduced-motion: reduce) {
-    .fill.indeterminate { animation: none; left: 0; width: 100%; opacity: 0.4; }
+    .fill.indeterminate { animation: none; transform: none; width: 100%; opacity: 0.4; }
   }
 </style>
