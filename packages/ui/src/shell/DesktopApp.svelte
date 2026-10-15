@@ -305,6 +305,7 @@
     assistantNameIssue,
     firstRunHandoffNotice,
     firstRunIntro,
+    signInPassedOrUnchecked,
     firstRunRoute,
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
@@ -3370,7 +3371,7 @@
       const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
       // The hello and the handoff say "signed in" only when a real turn worked.
       // A runtime the first run does not check (not Claude Code or Codex) keeps today's words.
-      const signInChecked = !(runtime in checks) || checks[runtime as SignInTool] === "passed";
+      const signInChecked = signInPassedOrUnchecked(runtime, checks);
       firstRunCreateFactsPending = { runtime, toolsReady, signInChecked };
       input = {
         name: SETUP_BOT_NAME,
@@ -3797,7 +3798,7 @@
     const toolsReady = facts?.toolsReady ?? SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
     const runtime =
       facts?.runtime ?? localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
-    const signInChecked = facts?.signInChecked ?? (!(runtime in checks) || checks[runtime as SignInTool] === "passed");
+    const signInChecked = facts?.signInChecked ?? signInPassedOrUnchecked(runtime, checks);
     const { team, apps } = firstRunSettled;
     return { name, runtime, toolsReady, signInChecked, imported: firstRunImport, team, apps };
   }

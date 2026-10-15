@@ -652,6 +652,16 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
 }
 
 /**
+ * True when the hello and the note may say `runtime` is signed in: Claude Code
+ * and Codex only after the real check passed (a missing check is not a pass, it
+ * was signed out on a cold computer); other runtimes are not checked here.
+ */
+export function signInPassedOrUnchecked(runtime: string, checks: Readonly<Record<string, unknown>>): boolean {
+  if (runtime !== "claude" && runtime !== "codex") return true;
+  return checks[runtime] === "passed";
+}
+
+/**
  * The bot's hello (`hq bot create --intro`, under 500 characters, one line)
  * when it was named in the takeover: it already knows its name and tool. It
  * promises nothing before the takeover closes: the assistant runs no turn
@@ -665,9 +675,13 @@ export function firstRunIntro(
   const name = normalizeAssistantName(handoff.name) || "your HQ assistant";
   const tool = runtimeLabel(handoff.runtime);
   // Only a passing real check may say "signed in": a stored login can be dead.
-  const settled = handoff.signInChecked === false ? `picked ${tool}` : `signed in ${tool}`;
+  // Signed out says nothing about the tool: the repair card asks for the sign-in.
+  const settled =
+    handoff.signInChecked === false
+      ? "You've named me, so I won't ask about that again. "
+      : `You've named me and signed in ${tool}, so I won't ask about those again. `;
   return (
-    `Hi, I'm ${name}, your HQ assistant. You've named me and ${settled}, so I won't ask about those again. ` +
+    `Hi, I'm ${name}, your HQ assistant. ${settled}` +
     "As soon as you finish setting up in the app, I'll pick up from there and post my next question here."
   );
 }

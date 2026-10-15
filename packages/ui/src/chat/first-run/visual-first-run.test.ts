@@ -10,6 +10,7 @@ import {
   firstRunHandoffNote,
   firstRunHandoffNotice,
   firstRunIntro,
+  signInPassedOrUnchecked,
   firstRunNextLabel,
   firstRunBeforeImport,
   firstRunOffersChat,
@@ -315,7 +316,8 @@ describe("the handoff note (one note, sent when the takeover closes)", () => {
   it("the hello and the note do not claim signed in when the real check did not pass", () => {
     const intro = firstRunIntro({ name: "Popcorn", runtime: "claude", signInChecked: false }, { noun: "Mac" });
     expect(intro).not.toContain("signed in");
-    expect(intro).toContain("You've named me and picked Claude Code");
+    expect(intro).not.toContain("Claude Code");
+    expect(intro).toContain("You've named me, so I won't ask about that again.");
     expect(intro.length).toBeLessThan(500);
     const notice = firstRunHandoffNotice({ ...handoff, signInChecked: false }, { noun: "Mac" });
     expect(notice).not.toContain("Claude Code is signed in");
@@ -535,5 +537,14 @@ describe("names an inviter chose stay data (review fix 2)", () => {
     expect(notice).toContain('I named you ("name" in the handoff), so use that name.');
     expect(notice.replace(jsonOf(notice), "")).not.toContain("$(id)");
     expect(firstRunHandoffNotice({ name: "Pickles", runtime: "claude", toolsReady: ["claude"] })).toContain("I named you Pickles, so use that name.");
+  });
+
+  // Cold VM run of a01028e3e: Claude Code signed out, no check result yet, and
+  // the hello still said "signed in Claude Code".
+  it("a missing sign-in check is not a pass for Claude Code or Codex", () => {
+    expect(signInPassedOrUnchecked("claude", {})).toBe(false);
+    expect(signInPassedOrUnchecked("codex", { codex: "failed" })).toBe(false);
+    expect(signInPassedOrUnchecked("claude", { claude: "passed" })).toBe(true);
+    expect(signInPassedOrUnchecked("gemini", {})).toBe(true);
   });
 });
