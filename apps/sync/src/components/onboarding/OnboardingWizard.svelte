@@ -3764,6 +3764,17 @@
     });
   });
 
+  /**
+   * A tool launch failed before the automatic handoff ran: the person stays on
+   * the ready screen with the failure note, and this visit no longer hands off
+   * by itself. The Open HQ Desktop card takes the waiting line's place.
+   */
+  function cancelAutoHandoffAfterFailedLaunch(): void {
+    if (autoHandoffTried) return;
+    autoHandoffTried = true;
+    autoHandoffFailed = true;
+  }
+
   async function handleLaunchClaudeCode() {
     launchEscape = null;
     launching = 'claude';
@@ -3797,6 +3808,7 @@
       launching = null;
     }
     if (launched) await finishWithRecovery();
+    else if (launchEscape) cancelAutoHandoffAfterFailedLaunch();
   }
 
   async function handleLaunchCodex() {
@@ -3835,6 +3847,7 @@
       launching = null;
     }
     if (launched) await finishWithRecovery();
+    else if (launchEscape) cancelAutoHandoffAfterFailedLaunch();
   }
 
   async function handleLaunchGrok() {
@@ -3860,6 +3873,7 @@
       launching = null;
     }
     if (launched) await finishWithRecovery();
+    else if (launchEscape) cancelAutoHandoffAfterFailedLaunch();
   }
 
   function handleLaunch(kind: LaunchKind) {

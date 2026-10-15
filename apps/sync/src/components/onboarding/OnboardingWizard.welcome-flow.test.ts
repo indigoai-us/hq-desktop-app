@@ -548,6 +548,44 @@ describe('welcome flow: Claude Code and Codex on the ready screen', () => {
     await flushUntil(() => onfinish.mock.calls.length === 2, 'the finish');
     expect(commands()).toContain('open_claude_code_link');
   });
+
+  it('keeps the person on the ready screen when Claude Code fails to open during the usage-data wait', async () => {
+    // The tool fails to open after the usage-data wait has run out. The
+    // failure note must stay up, and the automatic handoff must not take the
+    // screen away from it.
+    const link = deferred();
+    stubInvoke({ open_claude_code_link: () => link.promise });
+    const onfinish = vi.fn();
+    mountAt(READY_STEP_INDEX, { onfinish, consentDwellMs: 150 });
+    await flushUntil(
+      () => Boolean(byId('onboarding-launch-claude')) && !byId('onboarding-launch-claude')!.disabled,
+      'the Claude Code option',
+    );
+    expect(onfinish).not.toHaveBeenCalled();
+    byId('onboarding-launch-claude')!.click();
+    await flushUntil(() => commands().includes('open_claude_code_link'), 'the launch');
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await flush();
+    expect(onfinish).not.toHaveBeenCalled();
+
+    link.reject(new Error('Claude could not open the link'));
+    await flushUntil(() => Boolean(byId('onboarding-escape')), 'the failure note');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(scene()).toBe('ready');
+    expect(byId('onboarding-escape')).not.toBeNull();
+    expect(host.querySelector('[data-scene="ready"]')!.hasAttribute('data-handoff')).toBe(false);
+    expect(byId('onboarding-ready-wait')).toBeNull();
+    // Open HQ Desktop stays as the way forward, and pressing it finishes.
+    const open = byId('onboarding-open-desktop')!;
+    expect(open.classList.contains('tool-card-desktop')).toBe(true);
+    expect(open.disabled).toBe(false);
+    open.click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+  });
 });
 
 describe('welcome flow: replay', () => {
