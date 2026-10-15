@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run: your assistant's first message now shows even when making the assistant takes longer than 30 seconds. The conversation starts when you confirm the name, not when the assistant is ready. A finished first run on this Mac no longer waits on this computer's bot list for the rest of the session when that list never answers; after 5 seconds the app keeps the finished first run and opens as usual. The first-run lines in hq-sync.log now also record which first run was picked and why, each feature flag answer, and what marked setup as already run, so a first run that skips the welcome screens can be traced.
+
 - First run: your assistant's first message no longer says you signed in to Claude Code or Codex when that sign-in has not happened yet; it says only that you named it. Reinstalling HQ on the same Mac now shows the first-run screens again. Before, the app remembered the earlier install's finished first run and went straight to the old welcome screen, even though the assistant was not on this computer.
 - First run: naming your assistant on a new install now opens a fresh conversation with it. Messages from an earlier install no longer show in its chat, and they no longer add to its unread count or set its time in the sidebar.
 - First run: the optional GitHub CLI item in background setup is skipped on a Mac without Homebrew instead of counting as a failure, so nothing is reported for it. The item is not retried later; installing the GitHub CLI yourself (through Homebrew) still works as before.

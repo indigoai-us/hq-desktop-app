@@ -29,6 +29,11 @@ import {
   firstRunIntro,
 } from "../chat/first-run/visual-first-run.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
+import {
+  CONVERSATION_START_GRACE_MS,
+  fromConversationStart,
+  readConversationStarts,
+} from "../chat/first-run/conversation-start.js";
 
 const SETUP_BOT_UID = "agt_setup";
 
@@ -55,6 +60,8 @@ interface AdapterOptions {
   loginStatus?: (runtime: string) => Promise<unknown>;
   /** `hq bot list --remote` (the account's own listing); absent leaves the host without it. */
   listRemote?: () => Promise<unknown>;
+  /** The host's hq-sync.log writer; absent leaves the host without one. */
+  logToFile?: (tag: string, message: string) => Promise<unknown>;
 }
 
 function adapter({
@@ -70,6 +77,7 @@ function adapter({
   loginStatus,
   listRemote,
   listImpl,
+  logToFile,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
     hasFeatureImpl ?? (async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false)),
@@ -81,6 +89,7 @@ function adapter({
     isAvailable: () => false,
     capabilities: {},
     identity: { hasFeature, updateAgentProfile },
+    ...(logToFile ? { appShell: { logToFile } } : {}),
     messaging: {
       listContacts: async () => ok({ contacts: [] }),
       listChannelMembers: async () => ok({ members: [] }),
@@ -790,6 +799,36 @@ describe("visual first run: the name step on an account that already has an assi
   });
 });
 
+describe("a finished marker while this computer's bot list never answers", () => {
+  it("keeps the marker after the first run's wait, so the route leaves pending for the normal app", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+      window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+      const lines: string[] = [];
+      const logToFile = vi.fn(async (tag: string, message: string) => {
+        if (tag === "first-run") lines.push(message);
+        return ok(undefined);
+      });
+      const { platform, hasFeature } = adapter({ flag: true, logToFile, listImpl: () => new Promise(() => undefined) });
+      await boot(platform);
+      await settle(20);
+      const routes = () => lines.filter((line) => line.startsWith("kind=route "));
+      expect(routes().at(-1)).toContain("route=pending");
+      expect(routes().at(-1)).toContain("finishedUnconfirmed=true");
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_LISTINGS_WAIT_MS + 100);
+      await vi.waitFor(() => expect(routes().at(-1)).toContain("route=legacy"));
+      expect(routes().at(-1)).toContain("finished=true finishedUnconfirmed=false");
+      expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+      expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
+      expect(hasFeature).not.toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("visual first run: the found-apps flag is settled before the takeover opens", () => {
   it("holds the takeover until the found-apps answer, so the steps never swap mid-flow", async () => {
     let answerFoundApps: (value: unknown) => void = () => undefined;
@@ -1175,5 +1214,127 @@ describe("the flag read overlaps the setup-owed check (fake timers)", () => {
     expect(answeredLater).toBeLessThan(OWED_AT_MS + 1200);
     expect(neverAnswers).toBeGreaterThan(baseline);
     expect(neverAnswers).toBeLessThanOrEqual(baseline + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 50);
+  });
+});
+
+describe("first-run route log (hq-sync.log)", () => {
+  /** A log writer that keeps the `[first-run]` lines in order. */
+  function logSink() {
+    const lines: string[] = [];
+    const logToFile = vi.fn(async (tag: string, message: string) => {
+      if (tag === "first-run") lines.push(message);
+      return ok(undefined);
+    });
+    return { lines, logToFile, of: (kind: string) => lines.filter((line) => line.startsWith(`kind=${kind} `)) };
+  }
+
+  it("logs one line per route change, with what the route came from, and the flag read that answered", async () => {
+    const log = logSink();
+    const { platform } = adapter({ flag: true, logToFile: log.logToFile });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await settle();
+
+    expect(log.of("route")).toEqual([
+      "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+      "kind=route route=visual flag=true owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+    ]);
+    const flagLines = log.of("flag").map((line) => line.replace(/ elapsed_ms=\d+$/, ""));
+    expect(flagLines).toEqual([
+      "kind=flag flag=visual-first-run path=unscoped value=true applied=true",
+      "kind=flag flag=found-apps path=unscoped value=false applied=true",
+    ]);
+    expect(log.of("setup-run")).toEqual([]);
+  });
+
+  it("says which caller set the setup-run record when the host reports setup as done", async () => {
+    const log = logSink();
+    const { platform } = adapter({
+      flag: true,
+      logToFile: log.logToFile,
+      setupStatusImpl: async () =>
+        ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: false }),
+    });
+    await boot(platform);
+    await vi.waitFor(() => expect(log.of("setup-run")).toEqual(["kind=setup-run event=set caller=mark-already-set-up"]));
+    await settle();
+    // The route went legacy the moment setup counted as run, before the flag answered.
+    expect(log.of("route")).toEqual([
+      "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+      "kind=route route=legacy flag=null owed=false setupRun=true finished=false finishedUnconfirmed=false hasBots=true",
+    ]);
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+  });
+
+  describe("with a flag answer slower than the grace (fake timers)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("logs the grace running out, the legacy route it chose, and the late answer that was not applied", async () => {
+      const log = logSink();
+      const delayed = <T,>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+      const { platform } = adapter({
+        logToFile: log.logToFile,
+        setupStatusImpl: () =>
+          delayed(200, ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true })),
+        // On, but answered past the grace that starts once owed is in.
+        hasFeatureImpl: (name) =>
+          name === VISUAL_FIRST_RUN_FLAG ? delayed(200 + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 300, ok(true)) : Promise.resolve(ok(false)),
+      });
+      await boot(platform);
+      for (let elapsed = 0; elapsed < 200 + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 600; elapsed += 50) {
+        await vi.advanceTimersByTimeAsync(50);
+        await settle(4);
+      }
+
+      const flagLines = log.of("flag").map((line) => line.replace(/ elapsed_ms=\d+$/, ""));
+      expect(flagLines).toEqual([
+        "kind=flag flag=visual-first-run path=timeout value=false applied=true",
+        "kind=flag flag=visual-first-run path=unscoped value=true applied=false",
+      ]);
+      expect(log.of("route")).toEqual([
+        "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+        "kind=route route=legacy flag=false owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+      ]);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    });
+  });
+});
+
+describe("first-run conversation start with a slow create", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("starts the conversation when the name is confirmed, so an intro written more than the grace before the adopt still shows", async () => {
+    const confirmedAt = Date.parse("2026-10-15T16:00:00.000Z");
+    let now = confirmedAt;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let finishCreate: (() => void) | null = null;
+    const create = vi.fn(
+      () =>
+        new Promise<unknown>((resolve) => {
+          finishCreate = () => resolve(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+        }),
+    ) as unknown as NonNullable<PlatformAdapter["bots"]>["create"];
+    const { platform } = adapter({ create, flag: true });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    await chooseBot();
+    typeName("Biscuit");
+    confirmName();
+    await vi.waitFor(() => expect(create).toHaveBeenCalled());
+
+    // `hq bot create --intro` writes the intro a second in, then takes 45 s more.
+    const intro = { eventId: "intro", createdAt: new Date(confirmedAt + 1_000).toISOString() };
+    now = confirmedAt + 1_000 + CONVERSATION_START_GRACE_MS + 15_000;
+    finishCreate!();
+    await settle();
+
+    const starts = readConversationStarts(window.localStorage);
+    expect(starts[SETUP_BOT_UID]).toBe(confirmedAt);
+    expect(fromConversationStart([intro], starts, SETUP_BOT_UID)).toEqual([intro]);
   });
 });
