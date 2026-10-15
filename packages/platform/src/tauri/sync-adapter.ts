@@ -1296,7 +1296,17 @@ export function createSyncPlatformAdapter(
         if (!attempted.result.ok && attempted.result.code === 'network') return attempted.result;
         return withHttpStatus(attempted.result, attempted.status);
       },
-      attachSlack: (agentUid) =>
+      disconnectSlack: (uid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.slackChannel(uid)),
+    connectEmail: (uid) => hqProRequestWithStatus("POST", AGENT_PATHS.emailChannel(uid), {}),
+    disconnectEmail: (uid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.emailChannel(uid)),
+    updateEmailAddress: (uid, localPart) => hqProRequestWithStatus("PATCH", AGENT_PATHS.emailAddress(uid), { localPart }),
+    channelStatus: (uid, channel) => hqProRequestWithStatus("GET", AGENT_PATHS.channelStatus(uid, channel)),
+    channelContacts: (uid, channel) => hqProRequestWithStatus("GET", AGENT_PATHS.channelContacts(uid, channel)),
+    addChannelContact: (uid, channel, personUid) => hqProRequestWithStatus("POST", AGENT_PATHS.channelContacts(uid, channel), { personUid }),
+    removeChannelContact: (uid, channel, personUid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.channelContacts(uid, channel, personUid)),
+    connectTelegram: async (uid, input) => withoutSecret(await hqProRequestWithStatus<Json>("POST", AGENT_PATHS.telegramChannel(uid), input), "token" in input ? input.token : ""),
+    disconnectTelegram: (uid) => hqProRequestWithStatus("DELETE", AGENT_PATHS.telegramChannel(uid)),
+    attachSlack: (agentUid) =>
         hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
       // The token goes in the body only. The path names the bot, nothing else.
       submitSlackAppToken: async (agentUid, appToken) =>

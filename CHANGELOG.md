@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Bots: manage channels, routines, connected apps and AI providers from four tabs beside your conversation. Edit bot details, configure supported connections, browse apps in list or grid views, update MCP credentials, and choose the active provider’s model. Compact dialogs and loading skeletons keep controls readable without showing stale data. Availability follows your permissions and the bot’s supported features.
+
 - Messages: when someone shares several files or folders with you in a row, the conversation now shows one row, such as "Shared 6 folders with you.", with the items stacked as cards. Click the stack to see every item, and "Show less" to fold it again. A share with a reply or reaction, or a message with anything else in it, keeps its own row. Shared folders now show a FOLDER label instead of FILE.
 - Notifications: the count on the Dock icon and next to HQ in the menu bar can be cleared again. "Mark all read" clears it, and so does opening a direct message. Before, it only went up until you quit HQ. The bell's notifications list now shows the newest first and has its own "Mark all read" button.
 - Notifications: message, share and mention banners now always come from HQ. Clicking one opens the conversation it came from. Before, when macOS had not allowed HQ to send notifications, they appeared with the Script Editor icon and a click opened Script Editor. If notifications are off for HQ in System Settings, there is no banner; the message is still in the bell list, and Settings > Notifications shows how to turn them on.

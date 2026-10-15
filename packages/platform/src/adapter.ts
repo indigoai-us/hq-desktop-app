@@ -1487,6 +1487,11 @@ export const OUTPOST_PATHS = {
  * `cron.pause|resume|trigger|delete|create|update` actions; `params.jobId`
  * names the routine and `body` carries the create/update fields.
  */
+export type ManagedBotChannel = "telegram" | "teams";
+export type TelegramConnectInput =
+  | { managed: true; suggestedUsername: string; suggestedName?: string; allowedCallerGroupId?: string }
+  | { token: string; allowedCallerGroupId?: string };
+
 export interface AgentRuntimeActionInput {
   actionId: string;
   idempotencyKey: string;
@@ -1503,6 +1508,11 @@ export interface AgentRuntimeActionInput {
 export const SLACK_ATTACH_BODY = { returnTo: "desktop" } as const;
 
 export const AGENT_PATHS = {
+  channelStatus: (uid: string, channel: ManagedBotChannel) => `/v1/agents/${encodeURIComponent(uid)}/${channel}/status`,
+  channelContacts: (uid: string, channel: ManagedBotChannel, personUid?: string) => `/v1/agents/${encodeURIComponent(uid)}/${channel}/contacts${personUid ? `/${encodeURIComponent(personUid)}` : ''}`,
+  telegramChannel: (uid: string) => `/v1/agents/${encodeURIComponent(uid)}/channels/telegram`,
+  emailChannel: (uid: string) => `/v1/agents/${encodeURIComponent(uid)}/channels/email`,
+  emailAddress: (uid: string) => `/v1/agents/${encodeURIComponent(uid)}/email`,
   provisionOptions: (companyUid: string) =>
     `/v1/agents/provision-options?companyUid=${encodeURIComponent(companyUid)}`,
   status: (agentUid: string, brain?: "grok" | "codex" | "claude") => {
@@ -1661,6 +1671,16 @@ export interface AgentsApi {
    * none) and `upstreamCode` when the server sent one.
    */
   attachSlack(agentUid: string): AdapterPromise<Json>;
+  channelStatus?(agentUid: string, channel: ManagedBotChannel): AdapterPromise<Json>;
+  channelContacts?(agentUid: string, channel: ManagedBotChannel): AdapterPromise<Json>;
+  addChannelContact?(agentUid: string, channel: ManagedBotChannel, personUid: string): AdapterPromise<Json>;
+  removeChannelContact?(agentUid: string, channel: ManagedBotChannel, personUid: string): AdapterPromise<Json>;
+  connectTelegram?(agentUid: string, input: TelegramConnectInput): AdapterPromise<Json>;
+  disconnectTelegram?(agentUid: string): AdapterPromise<Json>;
+  disconnectSlack?(agentUid: string): AdapterPromise<Json>;
+  connectEmail?(agentUid: string): AdapterPromise<Json>;
+  disconnectEmail?(agentUid: string): AdapterPromise<Json>;
+  updateEmailAddress?(agentUid: string, localPart: string): AdapterPromise<Json>;
   /**
    * POST /v1/agents/{uid}/channels/slack/app-token with `{ appToken }`: hand
    * the server the app-level token a person made on Slack's site.
@@ -1827,7 +1847,9 @@ export function integrationAppRefBody(input: IntegrationAppRef): {
  * API base) so the provider's redirect lands on a page that finishes the
  * sign-in without a session. Absent, the server's default redirect applies.
  */
-export type IntegrationOAuthStartInput = IntegrationAppRef & { redirectUri?: string };
+export type IntegrationOAuthStartInput = IntegrationAppRef & {
+  redirectUri?: string; mcpUrl?: string; provider?: string; displayName?: string; pullAllHistory?: boolean;
+};
 
 /** The OAuth start body: {@link integrationAppRefBody} plus `redirectUri` when one is given. */
 export function integrationOAuthStartBody(input: IntegrationOAuthStartInput): {
@@ -1835,11 +1857,19 @@ export function integrationOAuthStartBody(input: IntegrationOAuthStartInput): {
   domain?: string;
   catalogEntryId?: string;
   redirectUri?: string;
+  mcpUrl?: string;
+  provider?: string;
+  displayName?: string;
+  pullAllHistory?: boolean;
 } {
   const redirectUri = typeof input.redirectUri === "string" ? input.redirectUri.trim() : "";
   return {
     ...integrationAppRefBody(input),
     ...(redirectUri ? { redirectUri } : {}),
+    ...(input.mcpUrl ? { mcpUrl: input.mcpUrl } : {}),
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(typeof input.pullAllHistory === 'boolean' ? { pullAllHistory: input.pullAllHistory } : {}),
   };
 }
 
@@ -1870,6 +1900,8 @@ export interface IntegrationOAuthStart {
  */
 export interface IntegrationInstallInput {
   companyUid: string;
+  /** Preserve the existing history preference when replacing credentials. */
+  pullAllHistory?: boolean;
   domain?: string;
   catalogEntryId?: string;
   mcpUrl?: string;

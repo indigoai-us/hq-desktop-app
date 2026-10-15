@@ -1100,6 +1100,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(WEB_PATHS.agentReauth(agentUid), { brain }),
     submitClaudeLoginCode: (agentUid, code) =>
       this.post(WEB_PATHS.agentLoginCode(agentUid), { code }),
+    disconnectSlack: (uid) => this.requestWithStatus("DELETE", AGENT_PATHS.slackChannel(uid)),
+    connectEmail: (uid) => this.requestWithStatus("POST", AGENT_PATHS.emailChannel(uid), {}),
+    disconnectEmail: (uid) => this.requestWithStatus("DELETE", AGENT_PATHS.emailChannel(uid)),
+    updateEmailAddress: (uid, localPart) => this.requestWithStatus("PATCH", AGENT_PATHS.emailAddress(uid), { localPart }),
+    channelStatus: (uid, channel) => this.requestWithStatus("GET", AGENT_PATHS.channelStatus(uid, channel)),
+    channelContacts: (uid, channel) => this.requestWithStatus("GET", AGENT_PATHS.channelContacts(uid, channel)),
+    addChannelContact: (uid, channel, personUid) => this.requestWithStatus("POST", AGENT_PATHS.channelContacts(uid, channel), { personUid }),
+    removeChannelContact: (uid, channel, personUid) => this.requestWithStatus("DELETE", AGENT_PATHS.channelContacts(uid, channel, personUid)),
+    connectTelegram: async (uid, input) => withoutSecret(await this.requestWithStatus<Json>("POST", AGENT_PATHS.telegramChannel(uid), input), "token" in input ? input.token : ""),
+    disconnectTelegram: (uid) => this.requestWithStatus("DELETE", AGENT_PATHS.telegramChannel(uid)),
     attachSlack: (agentUid) =>
       this.postWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
     // The token goes in the body only. The path names the bot, nothing else.
