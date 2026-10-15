@@ -307,6 +307,8 @@
     firstRunIntro,
     signInPassedOrUnchecked,
     firstRunRoute,
+    finishedMarkerLeftOver,
+    forgetVisualFirstRunFinished,
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
@@ -330,6 +332,7 @@
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import type { FirstRunSettled } from "../chat/first-run/first-run-hosts.js";
   import {
+    forgetWelcomeSetupRun,
     hasRunWelcomeSetup,
     isSetupChannel,
     markWelcomeSetupRun,
@@ -2558,6 +2561,8 @@
    */
   let localBotsRead = $state(false);
   let remoteBotsRead = $state(false);
+  /** How many bots this computer's first good listing had; null until then. */
+  let firstRunLocalBotCount = $state<number | null>(null);
   async function refreshLocalBots(): Promise<void> {
     const api = adapter.bots;
     if (!api) return;
@@ -2569,6 +2574,7 @@
     }
     if (!result.ok) return;
     const bots = result.value?.bots ?? [];
+    firstRunLocalBotCount ??= bots.length;
     // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
     // The account's own listing is what turns that into the honest notice,
     // and on the VM it was on a 120 s timer that had stopped — so the DM
@@ -3470,7 +3476,8 @@
   function settleVisualFirstRunFlag(value: boolean): void {
     if (visualFirstRunFlag === null) visualFirstRunFlag = value;
   }
-  onMount(() => {
+  onMount(() => readVisualFirstRunFlag());
+  function readVisualFirstRunFlag(): (() => void) | undefined {
     // FORCE: the flag service is not read.
     if (firstRunDev.force) return;
     const identity = adapter.identity;
@@ -3494,6 +3501,32 @@
     return () => {
       active = false;
     };
+  }
+  /**
+   * A finished marker from before this launch decides nothing until it is
+   * known to be this install's own. One a reinstall left behind
+   * (finishedMarkerLeftOver) is dropped with the "setup run" record, and the
+   * first run starts over: the flag is read and the takeover can open.
+   */
+  let finishedMarkerChecked = $state(!visualFirstRunFinished);
+  $effect(() => {
+    if (finishedMarkerChecked) return;
+    const leftOver = finishedMarkerLeftOver({
+      welcomeSetupOwed,
+      localBotsRead,
+      localBots: firstRunLocalBotCount,
+    });
+    if (leftOver === null) return;
+    untrack(() => {
+      finishedMarkerChecked = true;
+      if (!leftOver) return;
+      forgetVisualFirstRunFinished();
+      forgetWelcomeSetupRun();
+      visualFirstRunFinished = false;
+      welcomeSetupRun = false;
+      visualFirstRunFlag = null;
+      readVisualFirstRunFlag();
+    });
   });
   /**
    * `desktop.first-run-found-apps-v1`, read only once the visual first run is
@@ -3555,6 +3588,7 @@
       welcomeSetupOwed,
       flag: visualFirstRunFlag,
       finished: visualFirstRunFinished,
+      finishedUnconfirmed: !finishedMarkerChecked,
     }),
   );
   /** Latched: once open it stays until Done or Continue in chat. */

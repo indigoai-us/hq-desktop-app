@@ -529,11 +529,23 @@ describe("visual first run, a flag that cannot be read", () => {
 });
 
 describe("visual first run never reappears", () => {
+  // Leaving the takeover leaves its assistant on this computer: the listing
+  // that tells this install's marker from a reinstall's leftover.
+  const assistantHere = {
+    name: "setup",
+    agentUid: SETUP_BOT_UID,
+    ownerUid: "prs_test",
+    runtime: "claude",
+    state: "running",
+    online: true,
+    dir: "/tmp/HQ/personal/workers/setup",
+  };
+
   it("after Done (setup marked run too): no takeover, no flag read, nothing created", async () => {
     window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
     window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    const { platform, hasFeature } = adapter({ create, flag: true });
+    const { platform, hasFeature } = adapter({ create, flag: true, bots: [assistantHere] });
     await boot(platform);
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
@@ -541,14 +553,26 @@ describe("visual first run never reappears", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("after Continue in chat: no takeover; the next launch is today's setup chat start", async () => {
+  it("after Continue in chat, with the assistant here: no takeover; the next launch is today's start, which opens the assistant", async () => {
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform, hasFeature } = adapter({ create, flag: true, bots: [assistantHere] });
+    await boot(platform);
+    await vi.waitFor(() => expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1"));
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    expect(hasFeature).not.toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
+    expect(create).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+  });
+
+  it("after Continue in chat where the assistant was never made here: the takeover opens again (this computer cannot tell it from a reinstall)", async () => {
     window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const { platform } = adapter({ create, flag: true });
     await boot(platform);
-    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
-    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    expect(create).toHaveBeenCalledWith(expect.objectContaining({ kickoff: SETUP_BOT_KICKOFF }));
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(create).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBeNull();
   });
 });
 
@@ -638,6 +662,67 @@ describe("visual first run: the name step on an account that already has an assi
     confirmName();
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "setup", displayName: "Fluffy" }));
+  });
+
+  // Cold VM run of a01028e3e, path B: a cold reset and reinstall on the same
+  // computer (no ~/.hq, no ~/hq, same machine id). The account's assistant was
+  // bound to this machine id, so the account's listing said here=true, and the
+  // desktop landed in #welcome with no takeover.
+  it("a cold re-install on the same computer: the last install's finished marker, no bots here, setup owed: the takeover opens again", async () => {
+    // The window's storage outlives a reinstall that wipes ~/.hq and the HQ
+    // folder, so the earlier install's markers are still there.
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    const create = vi.fn(async () => ok({ ok: true, outcome: "adopted", name: "setup", agentUid: SETUP_BOT_UID }));
+    const listRemote = vi.fn(async () => ok({ bots: [cloudAssistant({ displayName: "Pebble", here: true, online: true })] }));
+    const { platform, hasFeature } = adapter({ create, flag: true, listRemote });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(hasFeature).toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
+    expect(step()).toBe("decision");
+    expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBeNull();
+    expect(await nameField()).toBe("Pebble");
+    confirmName();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "setup", displayName: "Pebble" }));
+  });
+
+  it("a cold re-install where the coding tool is signed out: the takeover still opens, and nothing starts the setup chat behind it", async () => {
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    const create = vi.fn(async () => ok({ ok: true, outcome: "adopted", name: "setup", agentUid: SETUP_BOT_UID }));
+    const listRemote = vi.fn(async () => ok({ bots: [cloudAssistant({ displayName: "Pebble", here: true, online: true })] }));
+    const { platform } = adapter({ create, flag: true, listRemote, claudeLoggedIn: false });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    expect(create).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBeNull();
+  });
+
+  it("the same install, finished and with its assistant here: the marker holds and the takeover stays closed", async () => {
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const bots = [{ name: "setup", agentUid: SETUP_BOT_UID, displayName: "Pebble", online: true, runtime: "claude" }];
+    const { platform, hasFeature } = adapter({ create, flag: true, bots });
+    await boot(platform);
+    await settle();
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    expect(hasFeature).not.toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
+  });
+
+  it("a finished marker where the host says setup is done: the marker holds", async () => {
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    const { platform } = adapter({
+      flag: true,
+      setupStatusImpl: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: false }),
+    });
+    await boot(platform);
+    await settle();
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
   });
 
   it("a cloud row that carries only the handle is never offered as the name", async () => {

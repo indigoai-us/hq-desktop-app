@@ -722,6 +722,36 @@ export function markVisualFirstRunFinished(storage?: StorageLike | null): void {
   }
 }
 
+/** Drop a finished marker an earlier install left (see finishedMarkerLeftOver). */
+export function forgetVisualFirstRunFinished(storage?: StorageLike | null): void {
+  try {
+    (firstRunStorage(storage) as Partial<Pick<Storage, "removeItem">> | null)?.removeItem?.(VISUAL_FIRST_RUN_DONE_KEY);
+  } catch {
+    // Storage unavailable: the in-session reset still holds.
+  }
+}
+
+/**
+ * Was the finished marker left by an earlier install? The window's storage
+ * outlives a reinstall that wipes ~/.hq and the HQ folder, so the marker can
+ * be there on a computer that is starting over. Finishing the takeover leaves
+ * the assistant on this computer, so a marker on a computer that still owes
+ * setup (the host's answer) and lists no bots of its own is a leftover.
+ * null until both answers are in. A listing that failed (localBots null once
+ * read) keeps the marker.
+ */
+export function finishedMarkerLeftOver(input: {
+  welcomeSetupOwed: boolean | null;
+  localBotsRead: boolean;
+  localBots: number | null;
+}): boolean | null {
+  if (input.welcomeSetupOwed === false) return false;
+  if (!input.localBotsRead) return null;
+  if (input.localBots === null || input.localBots > 0) return false;
+  if (input.welcomeSetupOwed === null) return null;
+  return true;
+}
+
 // ── routing ─────────────────────────────────────────────────────────────────
 
 /**
@@ -762,9 +792,12 @@ export interface FirstRunRouteInput {
   flag: boolean | null;
   /** The takeover was finished or left for chat on this computer. */
   finished: boolean;
+  /** A finished marker from before this launch is still being checked (finishedMarkerLeftOver). */
+  finishedUnconfirmed?: boolean;
 }
 
 export function firstRunRoute(input: FirstRunRouteInput): FirstRunRoute {
+  if (input.hasBots && input.finishedUnconfirmed) return "pending";
   if (!input.hasBots || input.welcomeSetupRun || input.finished) return "legacy";
   if (input.flag === null) return "pending";
   if (!input.flag) return "legacy";

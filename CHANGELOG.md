@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run: your assistant's first message no longer says you signed in to Claude Code or Codex when that sign-in has not happened yet; it says only that you named it. Reinstalling HQ on the same Mac now shows the first-run screens again. Before, the app remembered the earlier install's finished first run and went straight to the old welcome screen, even though the assistant was not on this computer.
 - First run: the optional GitHub CLI item in background setup is skipped on a Mac without Homebrew instead of counting as a failure, so nothing is reported for it. The item is not retried later; installing the GitHub CLI yourself (through Homebrew) still works as before.
 - Internal: the launch scan tests now pass on Windows (project folders encoded the way Claude Code encodes them there, repo paths compared with one separator, the uninstall-registry apps left out of the empty-machine check). No change for people using the app.
 - First run: the "Finishing setup" pill on the title bar no longer turns into "1 item needs attention". While background setup runs it shows what it is on; when an item does not finish, the pill goes away and your assistant tells you in its chat which item did not finish and that quitting and reopening HQ finishes it.
