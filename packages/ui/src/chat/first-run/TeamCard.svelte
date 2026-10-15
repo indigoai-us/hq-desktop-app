@@ -13,6 +13,7 @@
    * pin company) and replies to the bot. Failures arrive as plain sentences.
    */
   import SetupButton from "../SetupButton.svelte";
+  import CompanyLabel from "../../company/CompanyLabel.svelte";
   import { COMPANY_NAME_MAX, TEAM_CARD_COPY, type FirstRunTeamOptions, type TeamCardPick } from "./team-step";
 
   interface Props {
@@ -39,12 +40,6 @@
     options.invites.length > 0 ? "invite" : options.companies.length > 0 ? "existing" : "create",
   );
 
-  function initials(label: string): string {
-    const words = label.trim().split(/\s+/).filter(Boolean);
-    const letters = words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "").slice(0, 2);
-    return letters.toUpperCase();
-  }
-
   function submitCreate(event: SubmitEvent): void {
     event.preventDefault();
     const trimmed = name.trim();
@@ -69,7 +64,7 @@
     <div class="rows">
       {#each options.invites as company (company.slug)}
         <div class="row" data-testid="team-card-invite">
-          <span class="avatar" aria-hidden="true">{initials(company.name)}</span>
+          <CompanyLabel name={company.name} companyUid={company.companyUid ?? company.slug} size={28} iconOnly />
           <SetupButton
             variant={primary === "invite" ? "primary" : "secondary"}
             data-testid="team-card-join"
@@ -86,7 +81,7 @@
       {/each}
       {#each options.companies as company (company.slug)}
         <div class="row" data-testid="team-card-existing">
-          <span class="avatar" aria-hidden="true">{initials(company.name)}</span>
+          <CompanyLabel name={company.name} companyUid={company.companyUid ?? company.slug} size={28} iconOnly />
           <SetupButton
             variant={primary === "existing" ? "primary" : "secondary"}
             data-testid="team-card-open"
@@ -185,18 +180,6 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 10px;
-  }
-  .avatar {
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    font-weight: 500;
-    background: var(--hover, rgba(127, 127, 127, 0.12));
-    color: var(--t1, inherit);
   }
   .note {
     color: var(--t2, inherit);
