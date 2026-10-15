@@ -67,8 +67,15 @@ export function companyFolderOf(path: string): string {
   const parent = parts[parts.length - 2] ?? "";
   const grand = (parts[parts.length - 3] ?? "").toLowerCase();
   if (grand === "users" || grand === "home") return "";
+  if (GENERIC_CODE_FOLDERS.has(parent.toLowerCase())) return "";
   return parent;
 }
+
+/** Folders people keep all their code in: a limb named "dev" would say nothing. */
+const GENERIC_CODE_FOLDERS = new Set([
+  "dev", "code", "repos", "repo", "src", "source", "sources", "projects", "project", "work", "workspace", "workspaces",
+  "git", "github", "gitlab", "documents", "desktop", "developer", "development", "sites", "www", "tmp", "scratch",
+]);
 
 /** Folder-basis company events and the company id each repo path belongs to. */
 export function folderCompanies(repos: readonly { path: string }[]): {

@@ -160,6 +160,8 @@ describe("nativeScanEvents", () => {
     expect(companyFolderOf("/Users/admin/hq-cli")).toBe("");
     expect(companyFolderOf("/home/admin/hq-cli")).toBe("");
     expect(companyFolderOf("/hq-cli")).toBe("");
+    expect(companyFolderOf("/Users/admin/dev/hq-cli")).toBe("");
+    expect(companyFolderOf("/Users/admin/Projects/hq-cli")).toBe("");
     expect(companyFolderOf("C:\\Users\\admin\\work\\acme\\site")).toBe("acme");
   });
 
