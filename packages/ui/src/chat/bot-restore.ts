@@ -27,6 +27,8 @@ import type { BotRestoreResult, BotRestoreRow, LocalBotRow, RemoteBotRow } from 
 import { hostComputerNoun } from "@hq/platform";
 
 import { plainBotFailure } from "./local-bots.js";
+import { ASSISTANT_FALLBACK_NAME } from "./assistant-owner.js";
+import { isAssistantSlug } from "./setup-bot.js";
 import { botRunsHere, localBotsTracedButGone, type LocalBotTrace } from "./bot-runnability.js";
 
 /**
@@ -369,31 +371,44 @@ export function botStaysInCloudLine(name: string): string {
   return `${name} runs in HQ Cloud, so there is nothing to bring back to this ${hostComputerNoun()}.`;
 }
 
+/**
+ * The name a sentence calls this bot: its display name, never its handle or
+ * slug. The assistant with no known name is "Your assistant" (owner,
+ * 2026-10-15: a banner read "setup is back on this computer" for Doodle).
+ */
+export function botRestoreRowLabel(row: Pick<BotRestoreRow, "name" | "displayName" | "role">): string {
+  const shown = row.displayName?.trim() ?? "";
+  if (shown && !isAssistantSlug(shown)) return shown;
+  if (row.role === "assistant" || isAssistantSlug(row.name)) return ASSISTANT_FALLBACK_NAME;
+  return row.name;
+}
+
 /** What happened to one bot, in a person's words. */
 export function botRestoreRowLine(row: BotRestoreRow): string {
+  const name = botRestoreRowLabel(row);
   // `reason` is the CLI's own marker; `detail` carries its failure document on
   // an older build. Either one means the same thing, and it outranks the
   // action: "skipped" for a company bot must not read "already set up here".
   if (isNotRunnableHereReason(row.reason ?? botFailureReason(row.detail))) {
-    return botStaysInCloudLine(row.name);
+    return botStaysInCloudLine(name);
   }
   switch (row.action) {
     case "restored":
-      return `${row.name} is back on this computer.`;
+      return `${name} is back on this computer.`;
     case "repaired":
-      return `${row.name} was already here — its sign-in was refreshed.`;
+      return `${name} was already here — its sign-in was refreshed.`;
     case "skipped":
     case "would-skip":
-      return `${row.name} was already set up here.`;
+      return `${name} was already set up here.`;
     case "would-restore":
-      return `${row.name} would come back to this computer.`;
+      return `${name} would come back to this computer.`;
     case "would-repair":
-      return `${row.name} would have its sign-in refreshed.`;
+      return `${name} would have its sign-in refreshed.`;
     case "failed":
     default:
       // `detail` is the CLI's own words on this path: a sentence when it wrote
       // one for a person, the written fallback when it did not.
-      return plainBotFailure(row.detail, `${row.name} could not be brought back.`);
+      return plainBotFailure(row.detail, `${name} could not be brought back.`);
   }
 }
 

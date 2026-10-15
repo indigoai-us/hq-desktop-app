@@ -16,7 +16,9 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import type { InstallQueueHost } from "./finishing-setup.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 
-function webAdapter(): PlatformAdapter {
+const ASSISTANT_UID = "agt_assistant";
+
+function webAdapter(extras: { sendDm?: ReturnType<typeof vi.fn>; assistantHere?: boolean } = {}): PlatformAdapter {
   return {
     kind: "web",
     isAvailable: () => false,
@@ -25,6 +27,35 @@ function webAdapter(): PlatformAdapter {
       listContacts: async () => ok({ contacts: [] }),
       fetchChannel: async () => ok(null),
       fetchDm: async () => ok(null),
+      fetchDmThread: async () => ok({ messages: [], nextCursor: null }),
+      sendDm: extras.sendDm ?? (async () => ok({ eventId: "evt", createdAt: new Date().toISOString() })),
+    },
+    bots: {
+      list: async () =>
+        ok({
+          bots: extras.assistantHere
+            ? [
+                {
+                  name: "setup",
+                  agentUid: ASSISTANT_UID,
+                  ownerUid: "prs_test",
+                  runtime: "claude",
+                  state: "running",
+                  pid: 11,
+                  processAlive: true,
+                  online: true,
+                  lastHeartbeatAt: new Date().toISOString(),
+                  daemonInstalled: true,
+                  daemonLoaded: true,
+                  dir: "/tmp/.hq/bots/setup",
+                  workerId: "setup",
+                },
+              ]
+            : [],
+        }),
+      listRemote: async () => ok({ bots: [] }),
+      workers: async () => ok({ workers: [] }),
+      probe: async () => ok({ ok: true, class: null }),
     },
     marketplace: {
       listListings: async () => ok({ listings: [] }),
@@ -81,13 +112,16 @@ async function settle(): Promise<void> {
   await tick();
 }
 
-async function mountShell(installQueue: InstallQueueHost | null): Promise<void> {
+async function mountShell(
+  installQueue: InstallQueueHost | null,
+  extras: Parameters<typeof webAdapter>[0] = {},
+): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
     target: host,
     props: {
-      adapter: webAdapter(),
+      adapter: webAdapter(extras),
       sidebarApi: createFixtureChatSidebarApi(),
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_test", displayName: "Test User", email: "test@example.com" },
@@ -139,5 +173,30 @@ describe("DesktopApp Finishing setup chip mount", () => {
     await mountShell(null);
 
     expect(host.querySelector('[data-testid="finishing-setup-chip"]')).toBeNull();
+  });
+
+  it("a failed item never shows a count on the chip: the assistant is told once, with the item named (owner feedback 14)", async () => {
+    const sendDm = vi.fn(async () => ok({ eventId: "evt", createdAt: new Date().toISOString() }));
+    const queue = queueHost({
+      state: "attention",
+      current: null,
+      currentId: null,
+      done: 10,
+      total: 11,
+      failed: ["gh"],
+    });
+    await mountShell(queue, { sendDm, assistantHere: true });
+
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const [to, body, opts] = (sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string }]>)[0]!;
+    expect(to).toBe(ASSISTANT_UID);
+    expect(body).toContain("did not finish: the GitHub CLI");
+    expect(body).toContain("quitting and reopening HQ");
+    expect(opts.idempotencyKey).toBe("install-queue-attention:gh");
+    // The vague pill is gone: nothing on the titlebar says "needs attention".
+    expect(host.querySelector('[data-testid="finishing-setup-chip"]')).toBeNull();
+    expect(host.textContent).not.toContain("needs attention");
+    await settle();
+    expect(sendDm).toHaveBeenCalledTimes(1);
   });
 });

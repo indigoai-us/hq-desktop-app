@@ -14,9 +14,19 @@
 
   interface Props {
     host?: InstallQueueHost | null;
+    /** Items failed: the host tells the assistant (the chip shows no count). */
+    onattention?: ((failed: readonly string[]) => void) | null;
   }
 
-  let { host = null }: Props = $props();
+  let { host = null, onattention = null }: Props = $props();
+  let toldAbout = "";
+  function noteAttention(parsed: InstallQueueStatus | null): void {
+    if (!parsed || parsed.state !== "attention") return;
+    const key = [...parsed.failed].sort().join(",");
+    if (!key || key === toldAbout) return;
+    toldAbout = key;
+    onattention?.(parsed.failed);
+  }
 
   let status = $state<InstallQueueStatus | null>(null);
   let retrying = $state(false);
@@ -39,6 +49,7 @@
           sawEvent = true;
           status = parsed;
           if (parsed.state !== "attention") retryFailed = false;
+          noteAttention(parsed);
         })
         .then((fn) => {
           if (disposed) fn();
@@ -53,6 +64,7 @@
         .then((value) => {
           if (disposed || sawEvent) return;
           status = parseInstallQueueStatus(value);
+          noteAttention(status);
         })
         .catch((err) => {
           console.error("finishing setup chip: status read failed:", err);

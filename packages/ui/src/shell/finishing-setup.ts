@@ -66,9 +66,47 @@ export function parseInstallQueueStatus(value: unknown): InstallQueueStatus | nu
   };
 }
 
-/** The chip shows only while the queue is working or needs attention. */
+/**
+ * The chip shows only while the queue is working: progress, never a count
+ * of things that need attention (owner, 2026-10-15: "that should be
+ * removed"). A failed item is told to the assistant, which says in chat what
+ * failed and the one fix (`installQueueAttentionNotice`).
+ */
 export function finishingSetupVisible(status: InstallQueueStatus | null): boolean {
-  return status?.state === "running" || status?.state === "attention";
+  return status?.state === "running";
+}
+
+/** Plain names for the queue's item ids, for the assistant's note. */
+const INSTALL_ITEM_NAMES: Readonly<Record<string, string>> = {
+  gh: "the GitHub CLI",
+  qmd: "search (qmd)",
+  "search-index": "the search index",
+  embeddings: "search embeddings",
+  "vault-upload": "the first upload to HQ Cloud",
+  "hq-cli": "the HQ command line",
+  claude: "Claude Code",
+  codex: "Codex",
+};
+
+export function installItemName(id: string): string {
+  return INSTALL_ITEM_NAMES[id] ?? id.replace(/[-_]+/g, " ");
+}
+
+/**
+ * The bot-only note the assistant gets when background setup items failed:
+ * what failed and the one fix. The queue keeps its manifest and resumes the
+ * pending items when HQ next launches (install_queue.rs resume_on_launch),
+ * so the fix is to quit and reopen HQ. Never raw error output.
+ */
+export function installQueueAttentionNotice(failed: readonly string[], opts: { noun?: string } = {}): string {
+  const noun = opts.noun?.trim() || "computer";
+  const names = failed.map(installItemName);
+  const list = names.length <= 1 ? (names[0] ?? "a setup item") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return [
+    `[HQ desktop] Background setup on this ${noun} did not finish: ${list}.`,
+    "HQ resumes the unfinished items the next time it launches.",
+    "Tell the person in one plain line what did not finish and that quitting and reopening HQ finishes it. Do not show error text, and do not ask them to run commands.",
+  ].join(" ");
 }
 
 /** Plain-language chip text. Never includes raw error output. */

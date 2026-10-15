@@ -43,6 +43,7 @@
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import FinishingSetupChip from "./FinishingSetupChip.svelte";
+  import { installQueueAttentionNotice } from "./finishing-setup.js";
   import type { InstallQueueHost } from "./finishing-setup.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -3866,6 +3867,38 @@
   }
 
 
+  /**
+   * Background setup items failed (item 14, owner 2026-10-15): no pill with a
+   * count. The assistant gets one bot-only note naming what failed and the
+   * one fix, and says it in chat. Without an assistant yet, the note waits
+   * for the next failure report; the queue resumes on the next launch anyway.
+   */
+  /**
+   * Failed setup items the assistant has not been told about yet. The chip
+   * reads the queue before the local bot listing lands, so the first report
+   * can arrive while the assistant is still unknown; it goes the moment the
+   * assistant is.
+   */
+  let installQueueAttentionOwed = $state<readonly string[] | null>(null);
+  function tellAssistantInstallQueueFailed(failed: readonly string[]): void {
+    if (failed.length === 0) return;
+    const uid = assistantUid;
+    if (!uid) {
+      installQueueAttentionOwed = failed;
+      return;
+    }
+    installQueueAttentionOwed = null;
+    const key = `install-queue-attention:${[...failed].sort().join(",")}`;
+    const body = installQueueAttentionNotice(failed, { noun: hostComputerNoun() });
+    void sendBotNotice(uid, body, key, key, false).then((sent) => {
+      if (!sent) console.warn("[hq-desktop] the assistant was not told about the failed setup items");
+    });
+  }
+  $effect(() => {
+    const owed = installQueueAttentionOwed;
+    if (!owed || !assistantUid) return;
+    untrack(() => tellAssistantInstallQueueFailed(owed));
+  });
   /** The takeover is done on this computer: it never opens again. */
   function closeVisualFirstRun(): void {
     // Leaving must not set off the automatic start above in this session.
@@ -4615,6 +4648,20 @@
    * `transient-indicators-clear-on-newer-event-not-time-window`).
    */
   let autoRestoreStatus = $state<string | null>(null);
+  /** How long a "back online" line stays on screen before it clears itself. */
+  const AUTO_RESTORE_DONE_LINE_MS = 8000;
+  let autoRestoreStatusClearTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleAutoRestoreStatusClear(): void {
+    if (autoRestoreStatusClearTimer !== null) clearTimeout(autoRestoreStatusClearTimer);
+    const shown = autoRestoreStatus;
+    autoRestoreStatusClearTimer = setTimeout(() => {
+      autoRestoreStatusClearTimer = null;
+      if (autoRestoreStatus === shown) autoRestoreStatus = null;
+    }, AUTO_RESTORE_DONE_LINE_MS);
+  }
+  onDestroy(() => {
+    if (autoRestoreStatusClearTimer !== null) clearTimeout(autoRestoreStatusClearTimer);
+  });
   /** Bots the app could bring back by itself right now. */
   const autoRestorableBots = $derived(autoRestoreCandidates(remoteBotListing, localBotRecords));
   /**
@@ -4822,6 +4869,9 @@
           : stuck.length > 0
             ? autoRestoreFailedLine(stuck, remoteListingNotice)
             : null;
+      // A line that only says bots are back is done saying it after a moment;
+      // one that names a failure stays until the next restore (item 10).
+      if (back.length > 0 && stuck.length === 0) scheduleAutoRestoreStatusClear();
       await Promise.all([refreshLocalBots(), refreshRemoteBots(true)]);
     } catch (err) {
       // A host that throws must not leave the app claiming it is still working.
@@ -14110,7 +14160,7 @@
     launchMenuForcedOpen={tourLaunchOpen}
   />
   <div class="finishing-setup-slot">
-    <FinishingSetupChip host={installQueue} />
+    <FinishingSetupChip host={installQueue} onattention={tellAssistantInstallQueueFailed} />
   </div>
 
   {#if notificationsPopoverOpen}
@@ -14227,10 +14277,9 @@
     />
   {/if}
 
-  {#if autoRestoreStatus && !autoRestoreStatusInline}
-    <!-- Bots are coming back and there is no conversation pane to say so in
-         (the welcome hero, mid-wizard): one calm line in the shell's banner
-         slot instead, so the work is never silent. -->
+  {#if autoRestoreStatus}
+    <!-- Bots are coming back: one calm line in the shell's status slot, never
+         inside a conversation (item 10, owner 2026-10-15). -->
     <div class="bot-auto-restore-banner" data-testid="bot-auto-restore-status" role="status">
       {autoRestoreStatus}
     </div>
@@ -15624,12 +15673,10 @@
                     {/if}
                   {/if}
                   <AgentTaskStrip tasks={mainPaneTasks} />
-                  {#if autoRestoreStatus && !selectedBotAutoRestoring}
-                    <!-- The one visible, calm line while bots come back. -->
-                    <div class="bot-auto-restore" data-testid="bot-auto-restore-status" role="status">
-                      {autoRestoreStatus}
-                    </div>
-                  {/if}
+                  <!-- Item 10 (owner, 2026-10-15): bot lifecycle lines ("Doodle is
+                       back online.") are not conversation content. They show only
+                       in the shell's status slot (below), and a finished line
+                       clears itself. -->
                   {#if botNoticeBelow}{@render localBotNotice()}{/if}
                 {/snippet}
                 {#snippet setupHeader()}

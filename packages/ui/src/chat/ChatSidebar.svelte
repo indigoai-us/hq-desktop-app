@@ -4681,6 +4681,7 @@
     {/if}
 
     {#each grouped.sections as section (section.key)}
+      {#if section.rows.length > 0}
       <DayGroupHeader label={section.label} id={`chat-sec-${section.key}`} />
       <div
         class="chat-list"
@@ -4692,6 +4693,7 @@
           {@render conversationRow(row)}
         {/each}
       </div>
+      {/if}
     {/each}
 
     {#if grouped.lastWeek.length > 0}
@@ -4745,16 +4747,18 @@
       </div>
     {/if}
 
+    <!-- Item 11 (owner, 2026-10-15): no history, no control. The affordance
+         shows only when older conversations are hidden behind it. -->
+    {#if historyHiddenCount > 0}
     <button
       type="button"
       class="chat-history-affordance"
       data-testid="chat-show-history"
       onclick={openHistory}
     ><RailIcon name="chevron-down" />
-      Show all history{historyHiddenCount > 0
-        ? ` (${historyHiddenCount})`
-        : ""}…
+      Show all history ({historyHiddenCount})…
     </button>
+    {/if}
 
     {#if loadError && !hasNonSetupRows}
       <div class="chat-empty" role="alert" data-testid="chat-load-error">
