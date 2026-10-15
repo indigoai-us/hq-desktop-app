@@ -73,6 +73,7 @@
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
   import WelcomeReport from "../brief/WelcomeReport.svelte";
+  import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
   import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
@@ -3968,8 +3969,7 @@
     if (welcomeReportRetry) clearTimeout(welcomeReportRetry);
   });
   // The brief job builds the report once the assistant is known. Without one
-  // yet the loading card stays and the assistant's chat asks for the sign-in;
-  // a job held back (assistant not running, model not signed in) tries again
+  // yet the report offers #welcome to set one up; a job held back (assistant not running, model not signed in) tries again
   // on a timer. Once a job reaches the assistant it is never sent again for
   // it, across reloads too.
   $effect(() => {
@@ -3995,11 +3995,36 @@
       void run.start();
     });
   });
-  /** The company the welcome report's connect card connects apps to. */
+  /**
+   * The company the welcome report's connect card connects apps to: the
+   * tenant company, else the team the takeover settled, else the takeover's
+   * own default (the person's only company, `defaultTeamChoice`). With none
+   * of these there is no card; apps never land in a company the person did
+   * not pick.
+   */
   const welcomeAppsCompany = $derived.by(() => {
-    const company = railCompanyRoster.find((c) => c.uid === tenantCompanyId) ?? railCompanyRoster[0] ?? null;
+    const team = firstRunSettled.team;
+    const company =
+      railCompanyRoster.find((c) => c.uid === tenantCompanyId) ??
+      (team?.kind === "company" && team.slug ? railCompanyRoster.find((c) => c.slug === team.slug) : undefined) ??
+      (railCompanyRoster.length === 1 ? railCompanyRoster[0] : undefined) ??
+      null;
     return company ? { uid: company.uid, name: company.label } : null;
   });
+  /**
+   * What the connect card already did per company (the auto-connect ran, the
+   * apps the person undid). Held by the shell so a later Daily Brief visit
+   * never re-installs an app the person took back out.
+   */
+  const welcomeConnectMemory = new Map<string, WelcomeConnectMemory>();
+  function welcomeConnectMemoryFor(companyUid: string): WelcomeConnectMemory {
+    let memory = welcomeConnectMemory.get(companyUid);
+    if (!memory) {
+      memory = { autoRan: false, undone: new Set<string>() };
+      welcomeConnectMemory.set(companyUid, memory);
+    }
+    return memory;
+  }
   /** Detection and connects for the connect card: the shared "Your apps" host. */
   // svelte-ignore state_referenced_locally
   const welcomeAppsHost = adapter.integrations
@@ -4024,9 +4049,26 @@
   /** The connect card's inputs; `desktop.first-run-found-apps-v1` is its kill switch. */
   const welcomeConnect = $derived(
     foundAppsFlag && welcomeAppsHost && welcomeAppsCompany
-      ? { host: welcomeAppsHost, company: welcomeAppsCompany, assistantName: assistantLabel, onopenintegrations: openCompanyIntegrations }
+      ? {
+          host: welcomeAppsHost,
+          company: welcomeAppsCompany,
+          assistantName: assistantLabel,
+          onopenintegrations: openCompanyIntegrations,
+          memory: welcomeConnectMemoryFor(welcomeAppsCompany.uid),
+        }
       : null,
   );
+  /**
+   * No assistant to write the welcome report (none here yet, the create
+   * failed, or a dry walk's pretend one): the report offers #welcome, where
+   * Start sets one up and the assistant's chat asks for the sign-in.
+   */
+  const welcomeReportNeedsAssistant = $derived(!assistantUid && firstRunCreation.state !== "creating");
+  function openWelcomeSetup(): void {
+    const welcome = railRows.find((row) => row.kind === "channel" && isSetupChannel(row.channelId));
+    if (welcome) handleSelect(welcome);
+    else requestChannelOpen(SETUP_CHANNEL_ID);
+  }
   function openWelcomeReport(): void {
     welcomeReportOwed = true;
     void navigate({ kind: "extra", page: railPlaceholderPage("brief") });
@@ -5985,12 +6027,15 @@
     return null;
   });
   /**
-   * The welcome report's brief has landed (or failed, where the brief page offers
-   * Try again): the page replaces the loading card. A held-back job keeps it.
+   * The brief page replaces the welcome report's loading card once the brief
+   * has landed, or whenever the page has the way forward: Try again on a
+   * failed job, the fix on a held-back one (start the assistant, sign in),
+   * and the page itself when this host runs no brief jobs.
    */
   const welcomeReportReady = $derived.by(() => {
-    const kind = briefRun?.phase.kind;
-    return kind === "ready" || kind === "failed";
+    if (!briefRun) return true;
+    const kind = briefRun.phase.kind;
+    return kind === "ready" || kind === "failed" || kind === "blocked";
   });
   const welcomeReportProgress = $derived(briefRun?.phase.kind === "running" ? briefRun.phase.progress : null);
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
@@ -15035,7 +15080,12 @@
             />
           {/snippet}
           {#if welcomeReportOwed}
-            <WelcomeReport ready={welcomeReportReady} progress={welcomeReportProgress} connect={welcomeConnect}>
+            <WelcomeReport
+              ready={welcomeReportReady}
+              progress={welcomeReportProgress}
+              connect={welcomeConnect}
+              onsetup={welcomeReportNeedsAssistant ? openWelcomeSetup : null}
+            >
               {@render briefPage()}
             </WelcomeReport>
           {:else if briefVisible}

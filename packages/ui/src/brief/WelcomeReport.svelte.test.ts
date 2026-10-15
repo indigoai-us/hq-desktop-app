@@ -11,7 +11,11 @@ import { createRawSnippet, mount, tick, unmount } from "svelte";
 
 import type { FoundWorkApps } from "@hq/platform";
 
-import WelcomeReport, { WELCOME_REPORT_LOADING } from "./WelcomeReport.svelte";
+import WelcomeReport, {
+  WELCOME_REPORT_LOADING,
+  WELCOME_REPORT_NEEDS_ASSISTANT,
+  WELCOME_REPORT_SETUP_LABEL,
+} from "./WelcomeReport.svelte";
 import type { YourAppsHost, YourAppsLoad, YourAppsResult } from "../chat/first-run/your-apps-host.js";
 
 let target: HTMLDivElement;
@@ -89,6 +93,19 @@ describe("WelcomeReport", () => {
     await settle();
     expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
     expect(q('[data-testid="welcome-report-ready"] [data-testid="brief-page"]')).not.toBeNull();
+  });
+
+  it("with no assistant, offers the way to set one up instead of a loading card", async () => {
+    const onsetup = vi.fn();
+    mountReport({ ready: false, progress: null, onsetup, children: briefPage });
+    await settle();
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+    expect(q('[role="progressbar"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-setup"]')?.textContent).toContain(WELCOME_REPORT_NEEDS_ASSISTANT);
+    const button = q<HTMLButtonElement>('[data-testid="welcome-report-setup-button"]');
+    expect(button?.textContent?.trim()).toBe(WELCOME_REPORT_SETUP_LABEL);
+    button!.click();
+    expect(onsetup).toHaveBeenCalledTimes(1);
   });
 
   it("renders the connect card from the scan when the shell passes it, and leaves it out when connect is null", async () => {

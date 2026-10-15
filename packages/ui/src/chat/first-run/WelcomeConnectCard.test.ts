@@ -10,7 +10,7 @@ import { mount, tick, unmount } from "svelte";
 
 import type { FoundWorkApps } from "@hq/platform";
 
-import WelcomeConnectCard from "./WelcomeConnectCard.svelte";
+import WelcomeConnectCard, { type WelcomeConnectMemory } from "./WelcomeConnectCard.svelte";
 import type { YourAppsHost, YourAppsLoad, YourAppsResult } from "./your-apps-host.js";
 
 let target: HTMLDivElement;
@@ -59,12 +59,12 @@ function fakeHost(scan: FoundWorkApps | null): YourAppsHost {
   };
 }
 
-function mountCard(host: YourAppsHost): void {
+function mountCard(host: YourAppsHost, memory?: WelcomeConnectMemory): void {
   target = document.createElement("div");
   document.body.appendChild(target);
   component = mount(WelcomeConnectCard, {
     target,
-    props: { host, company: { uid: "cmp_acme", name: "Acme" }, assistantName: "Atlas" },
+    props: { host, company: { uid: "cmp_acme", name: "Acme" }, assistantName: "Atlas", memory },
   });
 }
 
@@ -109,5 +109,35 @@ describe("WelcomeConnectCard", () => {
     mountCard(fakeHost(null));
     await settle();
     expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
+  });
+
+  it("never auto-connects an app the person undid, after the card remounts (a later Daily Brief visit)", async () => {
+    const host = fakeHost(SCAN);
+    // Linear needs no sign-in, so the card connects it by itself.
+    host.load = vi.fn(async () => ({
+      ...LOAD,
+      catalog: { ...LOAD.catalog, "linear.app": { entryId: "e-linear", name: "Linear", authClass: "none" as const } },
+    }));
+    host.autoConnect = vi.fn(async (): Promise<YourAppsResult> => ({ ok: true, connectionId: "conn-linear", installationId: "inst-linear" }));
+    const memory: WelcomeConnectMemory = { autoRan: false, undone: new Set() };
+    mountCard(host, memory);
+    await settle();
+    expect(host.autoConnect).toHaveBeenCalledTimes(1);
+    expect(host.autoConnect).toHaveBeenCalledWith("cmp_acme", "e-linear", "Linear");
+
+    q<HTMLButtonElement>('[data-testid="first-run-undo-linear.app"]')?.click();
+    await settle();
+    expect(host.undo).toHaveBeenCalledWith("cmp_acme", "inst-linear");
+    expect(memory.undone.has("linear.app")).toBe(true);
+
+    await unmount(component!);
+    component = null;
+    target.remove();
+
+    mountCard(host, memory);
+    await settle();
+    expect(q('[data-testid="welcome-connect-card"]')).not.toBeNull();
+    expect(host.autoConnect).toHaveBeenCalledTimes(1);
+    expect(q('[data-testid="first-run-app-linear.app"]')).not.toBeNull();
   });
 });

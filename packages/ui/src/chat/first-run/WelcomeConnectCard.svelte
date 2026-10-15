@@ -1,3 +1,15 @@
+<script module lang="ts">
+  /**
+   * What the card did for one company, kept by its owner across remounts:
+   * whether the auto-connect ran, and the apps the person undid (never
+   * auto-connected again).
+   */
+  export interface WelcomeConnectMemory {
+    autoRan: boolean;
+    undone: Set<string>;
+  }
+</script>
+
 <script lang="ts">
   /**
    * The welcome report's first card (US-009): the apps the launch scan found
@@ -34,8 +46,10 @@
     assistantName: string;
     /** "Connect from Integrations" tiles open the company's Integrations page. */
     onopenintegrations?: (companyUid: string) => void;
+    /** Kept by the owner per company; without it the card remembers only while mounted. */
+    memory?: WelcomeConnectMemory;
   }
-  let { host, company, assistantName, onopenintegrations }: Props = $props();
+  let { host, company, assistantName, onopenintegrations, memory }: Props = $props();
 
   let hostNoun = $state(hostComputerNoun());
   onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
@@ -45,9 +59,8 @@
   let load = $state.raw<YourAppsLoad | null>(null);
   let loading = false;
   let appRuns = $state<Record<string, AppRun>>({});
-  /** Domains the person undid here: never auto-connected again. */
-  const undone = new Set<string>();
-  let autoRan = false;
+  // svelte-ignore state_referenced_locally
+  const remembered: WelcomeConnectMemory = memory ?? { autoRan: false, undone: new Set<string>() };
   let undoProblem = $state<string | null>(null);
   /** Bumped by Retry: an older answer is dropped. */
   let gen = 0;
@@ -116,11 +129,11 @@
   /** Connect the found no-sign-in catalog apps once (owner or admin only). */
   function runAutoConnect(): void {
     const current = load;
-    if (autoRan || !current || !found.length) return;
-    autoRan = true;
+    if (remembered.autoRan || !current || !found.length) return;
+    remembered.autoRan = true;
     const plan = autoConnectPlan(
       { found, catalog: current.catalog, connections: current.connections, canManage: current.canManage, runs: appRuns },
-      undone,
+      remembered.undone,
     );
     for (const item of plan) {
       const name = found.find((a) => a.domain === item.domain)?.name ?? item.domain;
@@ -172,7 +185,7 @@
     void host.undo(companyUid, installationId).then((res) => {
       if (!alive) return;
       if (res.ok) {
-        undone.add(chip.domain);
+        remembered.undone.add(chip.domain);
         if (load && chip.connectionId) load = { ...load, connections: load.connections.filter((c) => c.id !== chip.connectionId) };
         setRun(chip.domain, { state: "idle" });
       } else {
@@ -195,7 +208,7 @@
       onreload={() => {
         undoProblem = null;
         load = null;
-        autoRan = false;
+        remembered.autoRan = false;
         loadApps();
       }}
     />

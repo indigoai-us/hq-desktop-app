@@ -633,16 +633,50 @@ describe("welcome report (US-009)", () => {
   const briefJobs = (sendDm: ReturnType<typeof vi.fn>) =>
     (sendDm.mock.calls as unknown as [string, string][]).filter(([, body]) => body.startsWith("/daily-brief "));
 
-  it("the coding tool path shows the loading card in the brief view, never the bare shell or #welcome", async () => {
-    const { platform } = adapter({ flag: true });
+  it("the coding tool path with no assistant offers the way to set one up, never a loading card that cannot end", async () => {
+    const { platform, sendDm } = adapter({ flag: true });
     await boot(platform);
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await settle();
-    await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
-    expect(q('[data-testid="welcome-report-loading"]')?.textContent).toContain("Your welcome report is loading");
-    expect(q('[data-testid="welcome-report-loading"] [role="progressbar"]')).not.toBeNull();
-    expect(q('[data-testid="setup-hero"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-setup"]')).toBeTruthy());
+    expect(q('[data-testid="welcome-report-setup"]')?.textContent).toContain("Your assistant writes your welcome report");
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+    expect(q('[data-testid="welcome-report"] [role="progressbar"]')).toBeNull();
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    // The way out: #welcome, where Start sets the assistant up.
+    q<HTMLButtonElement>('[data-testid="welcome-report-setup-button"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
+  });
+
+  it("an assistant that cannot take the job shows the brief page's fix on the welcome report, never the loading card", async () => {
+    const stoppedSetupBot = { ...runningSetupBot, state: "stopped", pid: null, processAlive: false, online: false };
+    const { platform, sendDm } = adapter({ flag: true, bots: [stoppedSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    // The brief page loads lazily; its fix shows once it is in.
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-fix"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-fix"]')?.textContent).toContain("Start it");
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-setup"]')).toBeNull();
+    expect(briefJobs(sendDm)).toHaveLength(0);
+  }, 15_000);
+
+  it("a reload after the job was sent never sends it again, and lands on the report the run wrote", async () => {
+    localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    await settle(20);
+    expect(briefJobs(sendDm)).toHaveLength(0);
   });
 
   it("sends the brief job to the assistant once, only after it appears, even when Talk opens its DM", async () => {
@@ -690,8 +724,11 @@ describe("welcome report (US-009)", () => {
     expect(q('[data-testid="welcome-report"]')).toBeTruthy();
   });
 
-  /** A host whose scan finds Linear, with one company to connect it to. */
-  async function bootWithApps(foundApps: boolean): Promise<void> {
+  /**
+   * A host whose scan finds Linear. By default the person has one company,
+   * the one the takeover would have picked; `companies` lists their slugs.
+   */
+  async function bootWithApps(foundApps: boolean, companies: readonly string[] = ["northwind"]): Promise<void> {
     const hasFeatureImpl = async (name: string) =>
       ok(name === VISUAL_FIRST_RUN_FLAG ? true : name === FIRST_RUN_FOUND_APPS_FLAG ? foundApps : false);
     const { platform } = adapter({ flag: true, hasFeatureImpl });
@@ -705,23 +742,23 @@ describe("welcome report (US-009)", () => {
       catalogLookup: async () => ok({ entries: [] }),
       listConnections: async () => ok({ connections: [] }),
     };
-    const workspace = {
-      slug: "northwind",
-      displayName: "Northwind",
+    const workspace = (slug: string) => ({
+      slug,
+      displayName: slug[0]!.toUpperCase() + slug.slice(1),
       kind: "company",
       state: "synced",
-      cloudUid: "cmp_northwind",
-      bucketName: "hq-northwind",
+      cloudUid: `cmp_${slug}`,
+      bucketName: `hq-${slug}`,
       hasLocalFolder: true,
-      localPath: "/tmp/hq-folder/northwind",
+      localPath: `/tmp/hq-folder/${slug}`,
       membershipStatus: "active",
       role: "owner",
       lastSyncedAt: null,
       brokenReason: null,
       invitedBy: null,
       invitedAt: null,
-    };
-    await boot(platform, DesktopApp, mount, { companies: [workspace], rosterStatus: "ready" });
+    });
+    await boot(platform, DesktopApp, mount, { companies: companies.map(workspace), rosterStatus: "ready" });
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await settle();
@@ -733,6 +770,13 @@ describe("welcome report (US-009)", () => {
     await vi.waitFor(() =>
       expect(q('[data-testid="welcome-connect-card"] [data-testid="first-run-app-linear.app"]')).toBeTruthy(),
     );
+  });
+
+  it("found-apps flag on, but no company the person picked: no connect card, so no app lands in an arbitrary company", async () => {
+    await bootWithApps(true, ["northwind", "acme"]);
+    await settle(20);
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+    expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
   });
 
   it("found-apps flag off: the welcome report has no connect card", async () => {

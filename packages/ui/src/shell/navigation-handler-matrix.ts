@@ -132,6 +132,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // The visual first run's handoff: the welcome report on the Daily Brief
   // page, through navigate().
   openWelcomeReport: "push",
+  // The welcome report with no assistant: #welcome (handleSelect).
+  openWelcomeSetup: "push",
   toggleAccountMenu: "none",
   toggleMoreCompanies: "none",
   // A connection card in a cloud bot's DM: opens a console page in the system
@@ -389,6 +391,16 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     host: "shared-shell",
     inScope: true,
     notes: "Visual first run handoff: the welcome report on the Daily Brief page (US-009).",
+  },
+  {
+    id: "open-welcome-setup",
+    file: SHARED_SHELL_FILE,
+    needle: "function openWelcomeSetup(): void",
+    destinationKind: "channel",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "The welcome report with no assistant: #welcome, where Start sets one up (US-009).",
   },
   {
     id: "open-dm-requests",
