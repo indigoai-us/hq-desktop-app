@@ -307,6 +307,10 @@ describe("card reveal staging", () => {
 });
 
 describe("card design contract", () => {
+  it("leaves room between the owner line and the card's actions (owner review 2026-10-16)", () => {
+    expect(read("BadgeCardModal.svelte")).toMatch(/\.bc-foot \{[^}]*gap: 12px;/);
+  });
+
   it("is dark in both themes: no theme variables on the card or its stage", () => {
     for (const file of ["BadgeCard.svelte", "BadgeCardModal.svelte"]) {
       expect(styleOf(file)).not.toMatch(/var\(--v4-|var\(--t\d|prefers-color-scheme|data-force-theme/);

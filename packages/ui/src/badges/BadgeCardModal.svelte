@@ -266,7 +266,8 @@
   [data-phase="done"] .bc-flip.flipped .bc-face { visibility: hidden; }
   [data-phase="done"] .bc-back { visibility: hidden; transition: visibility 0s linear 236ms; }
   [data-phase="done"] .bc-flip.flipped .bc-back { visibility: visible; }
-  .bc-foot { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  /* Room between the owner line and the actions (owner review 2026-10-16). */
+  .bc-foot { display: flex; flex-direction: column; align-items: center; gap: 12px; }
   .bc-actions { display: flex; align-items: center; gap: 12px; }
   .bc-owner { margin: 0; color: rgba(250, 250, 250, 0.56); }
   /* A quiet text button under the card; it dims on hover, no underline. */
