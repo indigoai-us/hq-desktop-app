@@ -39,7 +39,12 @@ import {
   READY_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
 } from '../../lib/onboarding-wizard';
-import { READY_PROGRESS_DONE_TEXT } from '../../lib/welcome-flow';
+import {
+  READY_CONSENT_DWELL_MS,
+  READY_PROGRESS_DONE_TEXT,
+  READY_WATCHDOG_MS,
+  __setReadyTimingsForTests,
+} from '../../lib/welcome-flow';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 
 const TOOLS = {
@@ -148,6 +153,9 @@ beforeEach(() => {
   events.handlers.clear();
   __resetWizardRouterCompletionForTests();
   __resetInstallerStepTelemetryForTests();
+  // Tests that are not about the ready screen's consent dwell skip it; the
+  // "ready screen's waits" tests below run on the real values.
+  __setReadyTimingsForTests({ consentDwellMs: 0 });
   localStorage.clear();
 });
 
@@ -157,6 +165,7 @@ afterEach(async () => {
     component = null;
   }
   host.remove();
+  __setReadyTimingsForTests(null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -600,6 +609,9 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     byId('consent-retry')!.click();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     expect(byId('consent-error')).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
   });
 
   it('never traps an offline person: the answer waits on this machine and they can finish', async () => {
@@ -620,6 +632,11 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     byId('consent-finish-offline')!.click();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     expect(calls.filter((c) => c.command === 'post_telemetry_opt_in')).toHaveLength(1);
+    // The automatic finish that failed on the write does not run again after
+    // the person finished from the button.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -663,6 +680,135 @@ describe('welcome flow: the ready screen has no launch buttons', () => {
 function queueStatusComplete() {
   return { state: 'complete', current: null, currentId: null, done: 12, total: 12, failed: [] };
 }
+
+// PR 1656 review. The usage-data checkbox is ticked by default, so the ready
+// screen must not finish (and record "share") before the person could untick
+// it, and a ready screen that never finishes by itself must not leave the
+// person with no button.
+describe("welcome flow: the ready screen's waits", () => {
+  beforeEach(() => {
+    __setReadyTimingsForTests(null);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const advance = async (ms: number) => {
+    await vi.advanceTimersByTimeAsync(ms);
+    await flush();
+  };
+  const optIns = () => calls.filter((c) => c.command === 'post_telemetry_opt_in');
+  const finishNote = () => byId<HTMLElement>('launcher-finish-error');
+  const queueRunning = () => ({
+    state: 'running',
+    current: 'Claude Code',
+    currentId: 'claude-code',
+    done: 9,
+    total: 12,
+    failed: [],
+  });
+
+  async function mountSettledReady(overrides: Record<string, Handler> = {}) {
+    stubInvoke({ get_install_queue_status: () => queueStatusComplete(), ...overrides });
+    const onfinish = vi.fn();
+    mountAt(READY_STEP_INDEX, { onfinish });
+    for (let i = 0; i < 40 && !byId('ready-consent-share'); i += 1) await advance(5);
+    await advance(5);
+    return onfinish;
+  }
+
+  it('stays up for the consent dwell after the checkbox appears, then records the answer and finishes', async () => {
+    const onfinish = await mountSettledReady();
+    expect(byId<HTMLInputElement>('ready-consent-share')!.checked).toBe(true);
+
+    await advance(READY_CONSENT_DWELL_MS - 200);
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(optIns()).toHaveLength(0);
+
+    await advance(400);
+    for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(optIns()).toHaveLength(1);
+    expect(optIns()[0].args).toMatchObject({ enabled: true, surface: 'onboarding' });
+  });
+
+  it('starts the wait again when the person touches the checkbox, and records the answer they left', async () => {
+    const onfinish = await mountSettledReady();
+    await advance(READY_CONSENT_DWELL_MS - 200);
+    const box = byId<HTMLInputElement>('ready-consent-share')!;
+    box.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    box.click();
+    await flush();
+    expect(box.checked).toBe(false);
+
+    // The first wait would have run out here: nothing finishes.
+    await advance(400);
+    expect(onfinish).not.toHaveBeenCalled();
+    await advance(READY_CONSENT_DWELL_MS - 800);
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(optIns()).toHaveLength(0);
+
+    await advance(600);
+    for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(optIns()).toHaveLength(1);
+    expect(optIns()[0].args).toMatchObject({ enabled: false, surface: 'onboarding' });
+  });
+
+  it('finishes by itself once more after a failed write, when the person changes their answer', async () => {
+    let fail = true;
+    const onfinish = await mountSettledReady({
+      post_telemetry_opt_in: () => {
+        if (fail) throw 'HTTP 500: internal server error';
+        return undefined;
+      },
+    });
+    await advance(READY_CONSENT_DWELL_MS + 100);
+    for (let i = 0; i < 20 && !byId('consent-error'); i += 1) await advance(5);
+    expect(byId('consent-error')).not.toBeNull();
+    expect(onfinish).not.toHaveBeenCalled();
+
+    // A failed write that stays failed does not finish again by itself.
+    await advance(READY_CONSENT_DWELL_MS * 2);
+    expect(optIns()).toHaveLength(1);
+
+    fail = false;
+    byId<HTMLInputElement>('ready-consent-share')!.click();
+    await flush();
+    expect(byId('consent-error')).toBeNull();
+    await advance(READY_CONSENT_DWELL_MS - 200);
+    expect(onfinish).not.toHaveBeenCalled();
+    await advance(400);
+    for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(optIns()).toHaveLength(2);
+    expect(optIns()[1].args).toMatchObject({ enabled: false });
+  });
+
+  it('shows Finish setup when the ready screen has not finished by itself after the watchdog', async () => {
+    stubInvoke({ get_install_queue_status: () => queueRunning() });
+    const onfinish = vi.fn();
+    mountAt(READY_STEP_INDEX, { onfinish });
+    for (let i = 0; i < 40 && host.querySelector('#onboarding-title-ready')?.textContent?.trim() !== 'Almost ready.'; i += 1) {
+      await advance(5);
+    }
+    await advance(READY_WATCHDOG_MS - 1_000);
+    expect(finishNote()).toBeNull();
+    expect(onfinish).not.toHaveBeenCalled();
+
+    await advance(1_500);
+    const note = finishNote()!;
+    expect(note).not.toBeNull();
+    const button = note.querySelector<HTMLButtonElement>('button')!;
+    expect(button.textContent?.trim()).toBe('Finish setup');
+    expect(button.disabled).toBe(false);
+
+    button.click();
+    for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('welcome flow: replay', () => {
   it('shows only the four story screens and closes on Done', async () => {

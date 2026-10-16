@@ -41,6 +41,7 @@
     installCardStepLines,
     isStoryScene,
     previousScene,
+    readyTimings,
     sceneForStep,
     stepForScene,
     storyScenes,
@@ -602,9 +603,23 @@
   // the ready step does not finish on the stale queue value it opened with.
   let hostQueueChecked = $state(false);
   let hostQueueReadToken = 0;
-  // The ready step finishes by itself at most once per mount. A failed finish
-  // leaves the finish-error note with its own Finish setup button.
-  let autoFinishAttempted = false;
+  // The ready step finishes by itself at most once per mount, plus one more
+  // time after a usage-data write that failed has been cleared (the person
+  // changed their answer). A failed finish leaves the finish-error note with
+  // its own Finish setup button.
+  let autoFinishAttempted = $state(false);
+  let autoFinishRetryOwed = $state(false);
+  let autoFinishRetried = false;
+  // The usage-data checkbox is ticked by default, so the ready step stays up
+  // `readyTimings().consentDwellMs` after the checkbox appears before it
+  // finishes by itself and records the answer. Touching either checkbox
+  // starts the wait again.
+  let readyDwellElapsed = $state(false);
+  let readyDwellTimer: ReturnType<typeof setTimeout> | null = null;
+  // A ready step that has not finished by itself `readyTimings().watchdogMs`
+  // after it opened (a host queue item that never settles, a usage-data write
+  // that never comes back) shows the finish-error note's Finish setup button.
+  let readyWatchdogFired = $state(false);
   let backgroundRunId = 0;
   const loggedFirstRunPhases = new Set<string>();
   let currentSetupRunId = '';
@@ -1098,6 +1113,7 @@
 
   onDestroy(() => {
     screenTimer.close();
+    clearReadyDwell();
     recordOnboardingAbandonment();
     mounted = false;
     currentSignInCall += 1;
@@ -3649,6 +3665,10 @@
       }
       await onfinish?.();
       onboardingCompleted = true;
+      // A finish from a button (Retry, "Finish setup, send later") settles any
+      // owed automatic retry: the flow must not finish a second time.
+      autoFinishRetryOwed = false;
+      autoFinishAttempted = true;
       recordStep(currentStep, 'completed', { outcome: 'finished' });
       return true;
     } catch (err) {
@@ -4049,6 +4069,35 @@
     });
   });
 
+  function clearReadyDwell(): void {
+    if (readyDwellTimer !== null) clearTimeout(readyDwellTimer);
+    readyDwellTimer = null;
+  }
+
+  function restartReadyDwell(): void {
+    clearReadyDwell();
+    readyDwellElapsed = false;
+    readyDwellTimer = setTimeout(() => {
+      readyDwellTimer = null;
+      readyDwellElapsed = true;
+    }, readyTimings().consentDwellMs);
+  }
+
+  // The dwell starts when the usage-data line comes on show.
+  $effect(() => {
+    if (scene !== 'ready' || !navRevealed || !consentOnReady) return;
+    untrack(restartReadyDwell);
+    return clearReadyDwell;
+  });
+
+  $effect(() => {
+    if (consentOnly || replay || currentStep !== READY_STEP_INDEX || scene !== 'ready') return;
+    const timer = setTimeout(() => {
+      readyWatchdogFired = true;
+    }, readyTimings().watchdogMs);
+    return () => clearTimeout(timer);
+  });
+
   // The ready screen carries the usage-data checkbox: once it has been on
   // show, finishing records the answer.
   $effect(() => {
@@ -4150,14 +4199,20 @@
   // A wizard that started no install on this mount (only a direct mount at
   // the ready step) never runs those steps, so it finishes once the host
   // queue has settled.
+  // The usage-data checkbox is ticked by default, so it also waits
+  // the consent dwell after the checkbox appears, or after the person
+  // last touched a checkbox, so the default is never recorded before the
+  // person could untick it.
   // It fires once per mount. A finish that fails leaves the finish-error note
   // with its Finish setup button, and a usage-data write that fails leaves the
-  // consent error with Retry.
+  // consent error with Retry; once the person clears that error by changing
+  // their answer, it fires one more time.
   $effect(() => {
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX || scene !== 'ready') return;
     if (!navRevealed || !hostQueueChecked) return;
     if (installPending || installActivityRunning) return;
-    if (consentGate !== 'clear' || finishing || autoFinishAttempted) return;
+    if (consentOnReady && !readyDwellElapsed) return;
+    if (consentGate !== 'clear' || consentFailure !== null || finishing || autoFinishAttempted) return;
     if (setupStarted) {
       if (!setupCompleted || !postSetupStepsResolved) return;
       if (showFirstFolderSyncStep && !firstFolderSyncVisited) return;
@@ -4165,7 +4220,16 @@
       if (!connectorImportVisited && connectorImportCompany) return;
     }
     autoFinishAttempted = true;
-    void handleFinish();
+    void finishWithRecovery().then((finished) => {
+      if (!finished && consentFailure !== null && !autoFinishRetried) autoFinishRetryOwed = true;
+    });
+  });
+
+  $effect(() => {
+    if (!autoFinishRetryOwed || consentFailure !== null || finishing) return;
+    autoFinishRetryOwed = false;
+    autoFinishRetried = true;
+    autoFinishAttempted = false;
   });
 
   /** One row per run: what the membership lookup found and which way it went. */
@@ -4905,7 +4969,7 @@
           </div>
         {/if}
         <div class="ready-notes">
-          {#if finishError}
+          {#if finishError || readyWatchdogFired}
             <div class="note finish-action" role="status" data-testid="launcher-finish-error">
               <p>Finish HQ setup here when you’re ready.</p>
               <div class="note-actions">
@@ -4930,9 +4994,12 @@
               data-testid="ready-consent-share"
               checked={telemetryChoice === 'share'}
               disabled={readyConsentRecorded || consentSubmitting || finishing}
+              onpointerdown={restartReadyDwell}
+              onfocus={restartReadyDwell}
               onchange={(event) => {
                 telemetryChoice = event.currentTarget.checked ? 'share' : 'decline';
                 consentFailure = null;
+                restartReadyDwell();
               }}
             />
             <span>Share anonymous usage data</span>
@@ -4953,7 +5020,12 @@
                 checked={hqAnywhereEnabled}
                 disabled={!hqAnywhereSettingLoaded || hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp || finishing}
                 aria-busy={hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp}
-                onchange={(event) => void saveHqAnywhereSetting(event.currentTarget.checked)}
+                onpointerdown={restartReadyDwell}
+                onfocus={restartReadyDwell}
+                onchange={(event) => {
+                  restartReadyDwell();
+                  void saveHqAnywhereSetting(event.currentTarget.checked);
+                }}
               />
               <span>Enable HQ Anywhere</span>
             </label>

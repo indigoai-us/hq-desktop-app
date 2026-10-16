@@ -317,6 +317,39 @@ const INSTALL_CARD_DONE_LINE = 'Keep going, you’re all set.';
 export const READY_PROGRESS_DONE_TEXT = 'Installed and synced across your devices.';
 
 /**
+ * The ready screen's two waits. The usage-data checkbox is ticked by default,
+ * so the screen stays up READY_CONSENT_DWELL_MS after the checkbox appears (or
+ * after the person last touched a checkbox) before it finishes by itself and
+ * records the answer. A ready screen that has not finished READY_WATCHDOG_MS
+ * after it opened shows the Finish setup button.
+ */
+export const READY_CONSENT_DWELL_MS = 8_000;
+export const READY_WATCHDOG_MS = 90_000;
+
+interface ReadyTimings {
+  consentDwellMs: number;
+  watchdogMs: number;
+}
+
+const DEFAULT_READY_TIMINGS: ReadyTimings = {
+  consentDwellMs: READY_CONSENT_DWELL_MS,
+  watchdogMs: READY_WATCHDOG_MS,
+};
+let readyTimingsNow: ReadyTimings = DEFAULT_READY_TIMINGS;
+
+export function readyTimings(): Readonly<ReadyTimings> {
+  return readyTimingsNow;
+}
+
+/**
+ * Tests that are not about the waits shorten them; the tests of the waits
+ * themselves run on the real values. `null` restores the real values.
+ */
+export function __setReadyTimingsForTests(next: Partial<ReadyTimings> | null): void {
+  readyTimingsNow = next ? { ...DEFAULT_READY_TIMINGS, ...next } : DEFAULT_READY_TIMINGS;
+}
+
+/**
  * The corner card and the ready screen's capsule, driven by the install's real
  * progress. A stage waiting on its automatic retry says so in place of the
  * step line; failures that remain once every stage has settled are recorded

@@ -121,6 +121,7 @@ import {
 import { __INTERNALS__ } from '../../lib/onboarding-step-telemetry';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 import { stageTimeoutMs } from '../../lib/onboarding-setup';
+import { __setReadyTimingsForTests } from '../../lib/welcome-flow';
 import { appendChildFolderPath } from '../../lib/onboarding-path';
 
 const NO_AI_TOOLS = {
@@ -477,6 +478,9 @@ beforeEach(() => {
   // in the background, a run can finish after its test unmounts the wizard and
   // set the gate, which would then block navigation in the next test.
   __resetWizardRouterCompletionForTests();
+  // The ready screen's consent dwell is covered by the welcome-flow tests;
+  // these tests skip it.
+  __setReadyTimingsForTests({ consentDwellMs: 0 });
   // Timers and the clock are faked; animation frames are not. The welcome
   // flow's motion runs on requestAnimationFrame, and faking it made every
   // advanceTimersByTime(300_000) also simulate ~18,000 frames of orbiting
@@ -568,6 +572,7 @@ afterEach(async () => {
   }
   await settleBackgroundSetup();
   host.remove();
+  __setReadyTimingsForTests(null);
   vi.unstubAllGlobals();
   vi.useRealTimers();
   vi.restoreAllMocks();
