@@ -7,9 +7,12 @@ import {
   createTeamCardReplies,
   runTeamCardPick,
   teamCardIdempotencyKey,
+  teamCardLockName,
   teamCardResume,
+  teamCardStoredLast,
   TEAM_CARD_FAILURE,
 } from "./team-card-pick";
+import { saveTeamCardCreating, saveTeamCardUnsentCreate } from "./team-card-record";
 
 const acme = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
 
@@ -77,7 +80,8 @@ describe("runTeamCardPick", () => {
   it("a runner that throws never shows the raw error", async () => {
     const d = deps({ create: vi.fn(async () => Promise.reject(new Error("ECONNRESET 502 at create_company"))) });
     const result = await runTeamCardPick({ kind: "create", name: "Pickle" }, d);
-    expect(result).toEqual({ ok: false, reason: TEAM_CARD_FAILURE });
+    // A create that throws may still have made the company: its outcome stays unknown.
+    expect(result).toEqual({ ok: false, reason: TEAM_CARD_FAILURE, creating: true });
     expect(d.reply).not.toHaveBeenCalled();
   });
 
@@ -89,6 +93,7 @@ describe("runTeamCardPick", () => {
       ok: false,
       reason: TEAM_CARD_FAILURE,
       completed: { kind: "company", how: "joined", company: acme },
+      replyFailures: 1,
     });
   });
 
@@ -171,7 +176,7 @@ describe("a create whose reply fails", () => {
       throw new Error("send failed");
     });
     const first = await runTeamCardPick({ kind: "create", name: "Pickle" }, d);
-    expect(first).toEqual({ ok: false, reason: TEAM_CARD_FAILURE, completed: created });
+    expect(first).toEqual({ ok: false, reason: TEAM_CARD_FAILURE, completed: created, replyFailures: 1 });
 
     const run = teamCardResume({ kind: "create", name: "Brine" }, { pick: { kind: "create", name: "Pickle" }, completed: created });
     const second = await runTeamCardPick(run.pick, { ...d, completed: run.completed });
@@ -212,5 +217,121 @@ describe("teamCardResume", () => {
     const last = { pick: { kind: "invite" as const, company: acme }, completed: joined };
     expect(teamCardResume({ kind: "invite", company: acme }, last)).toEqual({ pick: last.pick, completed: joined });
     expect(teamCardResume({ kind: "personal" }, last)).toEqual({ pick: { kind: "personal" } });
+  });
+});
+
+describe("a create whose outcome is unknown", () => {
+  const pickle = { companyUid: "cmp_pickle", slug: "pickle", name: "Pickle" };
+  const created = { kind: "company" as const, how: "created" as const, company: pickle };
+
+  it("is kept before it is sent", async () => {
+    const d = deps();
+    const order: string[] = [];
+    const creating = vi.fn(() => void order.push("creating"));
+    d.create.mockImplementation(async (name: string) => {
+      order.push("create");
+      return { ok: true as const, choice: { kind: "company" as const, how: "created" as const, company: { ...pickle, name } } };
+    });
+    await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...d, creating });
+    expect(creating).toHaveBeenCalledWith({ name: "Pickle", slug: "pickle" });
+    expect(order).toEqual(["creating", "create"]);
+  });
+
+  it("a failure that may have made the company stays unknown; a refusal clears it", async () => {
+    const notCreating = vi.fn();
+    const unknown = deps({ create: vi.fn(async () => ({ ok: false, reason: "No answer." })) });
+    expect(await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...unknown, notCreating })).toEqual({
+      ok: false,
+      reason: "No answer.",
+      creating: true,
+    });
+    expect(notCreating).not.toHaveBeenCalled();
+
+    const refused = deps({ create: vi.fn(async () => ({ ok: false, reason: "That handle is taken.", blocked: true })) });
+    expect(await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...refused, notCreating })).toEqual({
+      ok: false,
+      reason: "That handle is taken.",
+    });
+    expect(notCreating).toHaveBeenCalledOnce();
+  });
+
+  it("the next press looks for the company first and keeps it as created, without creating", async () => {
+    const d = deps();
+    const findCreated = vi.fn(async () => pickle);
+    const kept = vi.fn();
+    const run = teamCardResume({ kind: "create", name: "Brine" }, { pick: { kind: "create", name: "Pickle" }, creating: true });
+    expect(run).toEqual({ pick: { kind: "create", name: "Pickle" }, unresolved: true });
+    const result = await runTeamCardPick(run.pick, { ...d, host: { ...d.host, findCreated }, unresolved: true, created: kept });
+    expect(findCreated).toHaveBeenCalledWith("Pickle");
+    expect(d.create).not.toHaveBeenCalled();
+    expect(d.pin).toHaveBeenCalledWith("cmp_pickle");
+    expect(kept).toHaveBeenCalledWith(created);
+    expect(d.reply).toHaveBeenCalledWith("I created Pickle.", "first-run-team:agt_setup:create:pickle");
+    expect(result).toMatchObject({ ok: true, settled: "Created Pickle" });
+  });
+
+  it("not found within the bound: creates the same name again", async () => {
+    const d = deps();
+    const creating = vi.fn();
+    const host = { ...d.host, findCreated: vi.fn(async () => null) };
+    const result = await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...d, host, unresolved: true, creating });
+    expect(d.create).toHaveBeenCalledWith("Pickle");
+    expect(creating).toHaveBeenCalledWith({ name: "Pickle", slug: "pickle" });
+    expect(result).toMatchObject({ ok: true, settled: "Created Pickle" });
+  });
+
+  it("a company the host found on retry is kept as created", async () => {
+    const d = deps({ create: vi.fn(async () => ({ ok: true, choice: { kind: "company", how: "existing", company: pickle } })) });
+    const kept = vi.fn();
+    const result = await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...d, created: kept });
+    expect(kept).toHaveBeenCalledWith(created);
+    expect(result).toMatchObject({ ok: true, settled: "Created Pickle", choice: created });
+  });
+
+  it("the lock name follows a made company, then an unknown create, and nothing else", () => {
+    expect(teamCardLockName({ pick: { kind: "create", name: "Brine" }, completed: created })).toBe("Pickle");
+    expect(teamCardLockName({ pick: { kind: "create", name: "Pickle" }, creating: true })).toBe("Pickle");
+    expect(teamCardLockName({ pick: { kind: "create", name: "Pickle" } })).toBeNull();
+    expect(teamCardLockName({ pick: { kind: "personal" } })).toBeNull();
+    expect(teamCardLockName(null)).toBeNull();
+  });
+
+  it("storage after a restart reads as a made company or an unknown create", () => {
+    const data = new Map<string, string>();
+    const storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v) };
+    expect(teamCardStoredLast(storage, "me:bot")).toBeNull();
+    saveTeamCardCreating(storage, "me:bot", { name: "Pickle", slug: "pickle" });
+    expect(teamCardStoredLast(storage, "me:bot")).toEqual({ pick: { kind: "create", name: "Pickle" }, creating: true });
+    saveTeamCardUnsentCreate(storage, "me:bot", { created: pickle, name: "Pickle" });
+    expect(teamCardStoredLast(storage, "me:bot")).toEqual({ pick: { kind: "create", name: "Pickle" }, completed: created });
+  });
+});
+
+describe("a reply that keeps failing", () => {
+  it("settles after the first try and two Retries, and logs it once", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const d = deps();
+    d.reply.mockImplementation(() => {
+      throw new Error("send failed");
+    });
+    const log = vi.fn();
+    const first = await runTeamCardPick({ kind: "personal" }, { ...d, log });
+    expect(first).toMatchObject({ ok: false, replyFailures: 1 });
+    const second = await runTeamCardPick({ kind: "personal" }, { ...d, log, replyFailures: 1, completed: { kind: "personal" } });
+    expect(second).toMatchObject({ ok: false, replyFailures: 2 });
+    expect(log).not.toHaveBeenCalled();
+    const third = await runTeamCardPick({ kind: "personal" }, { ...d, log, replyFailures: 2, completed: { kind: "personal" } });
+    expect(third).toEqual({ ok: true, settled: "Working solo", choice: { kind: "personal" } });
+    expect(log).toHaveBeenCalledWith("kind=team-card event=reply-abandoned");
+    expect(d.reply).toHaveBeenCalledTimes(3);
+  });
+
+  it("the failure count carries over a resumed press", () => {
+    const created = { kind: "company" as const, how: "created" as const, company: acme };
+    expect(teamCardResume({ kind: "personal" }, { pick: { kind: "create", name: "Acme" }, completed: created, replyFailures: 2 })).toEqual({
+      pick: { kind: "create", name: "Acme" },
+      completed: created,
+      replyFailures: 2,
+    });
   });
 });

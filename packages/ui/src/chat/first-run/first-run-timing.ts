@@ -14,6 +14,7 @@
  * [first-run] kind=route route=<pending|visual|legacy> flag=<true|false|null> owed=<true|false|null> setupRun=<bool> finished=<bool> finishedUnconfirmed=<bool> hasBots=<bool>
  * [first-run] kind=flag flag=<visual-first-run|found-apps> path=<scoped|unscoped|timeout|error|skipped> value=<bool> applied=<bool> [late=<applied|legacy-started|too-late>] elapsed_ms=<n>
  * [first-run] kind=setup-run event=set caller=<call site>
+ * [first-run] kind=team-card event=reply-abandoned
  * ```
  *
  * Route lines come once per change of route value. Flag lines come once per
@@ -23,6 +24,8 @@
  * `late` appears only on an "on" answer that landed after its wait ran out on
  * a new install, and says whether it still opened the takeover.
  * Setup-run lines say which call site set the "setup run" record to true.
+ * A team-card line says the team card settled without its reply to the setup
+ * bot, after the reply failed on the first try and on each Retry allowed.
  *
  * Install ids: node, git, hq-cli, qmd, claude-code, codex, gh, yq, jq (logged
  * from Rust, `apps/sync/src-tauri/src/first_run_timing.rs`), and content,
@@ -184,6 +187,10 @@ export function formatFlagLookup(
 
 export function formatSetupRunSet(caller: string): string {
   return `kind=setup-run event=set caller=${sanitizeValue(caller)}`;
+}
+
+export function formatTeamCardReplyAbandoned(): string {
+  return "kind=team-card event=reply-abandoned";
 }
 
 /** Writes one line through the sink. A sink that throws does not break the caller. */

@@ -194,7 +194,10 @@ export function companyNameIssue(name: string): string | null {
 
 // ── one action at a time ───────────────────────────────────────────────────
 
-export type TeamActionResult = { ok: true; choice: FirstRunTeamChoice } | { ok: false; reason: string };
+/** `blocked`: the server refused a create outright, so it made no company. */
+export type TeamActionResult =
+  | { ok: true; choice: FirstRunTeamChoice }
+  | { ok: false; reason: string; blocked?: boolean };
 
 /** Where Join or Create stands, as the screen shows it. */
 export type TeamActionState =

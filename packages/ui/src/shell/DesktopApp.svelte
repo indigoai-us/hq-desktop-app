@@ -231,12 +231,15 @@
   import {
     createTeamCardReplies,
     runTeamCardPick,
+    teamCardLockName,
     teamCardResume,
+    teamCardStoredLast,
     type TeamCardLastPick,
   } from "../chat/first-run/team-card-pick.js";
   import {
+    clearTeamCardCreating,
     loadTeamCardRecords,
-    loadTeamCardUnsentCreate,
+    saveTeamCardCreating,
     saveTeamCardRecord,
     saveTeamCardUnsentCreate,
     teamCardRecordKey,
@@ -4570,21 +4573,18 @@
       return null;
     }
   }
-  /** The last pick and, when only its reply failed, what it produced (a created company is kept until its reply goes through). */
+  /**
+   * The last pick and, when only its reply failed, what it produced (a created
+   * company is kept until its reply goes through). In memory, it also holds
+   * the card's lock for the session when storage cannot.
+   */
   let teamCardLast = $state<TeamCardLastPick | null>(null);
-  /** A create whose reply had not gone through before a restart, from storage. */
-  function teamCardUnsentLast(recordKey: string): TeamCardLastPick | null {
-    const unsent = loadTeamCardUnsentCreate(teamCardStorage(), recordKey);
-    if (!unsent) return null;
-    return { pick: { kind: "create", name: unsent.name }, completed: { kind: "company", how: "created", company: unsent.created } };
-  }
-  /** The name a create already used, so the card only resends that company's reply. */
+  /** The name a create used or may have used, so the card never creates under another one. */
   const teamCardCreatedName = $derived.by((): string | null => {
     const bot = selectedLocalBot;
     const uid = self?.uid?.trim();
     if (!bot || !uid) return null;
-    const done = (teamCardLast ?? teamCardUnsentLast(teamCardRecordKey(uid, bot.agentUid)))?.completed;
-    return done?.kind === "company" && done.how === "created" ? done.company.name : null;
+    return teamCardLockName(teamCardLast ?? teamCardStoredLast(teamCardStorage(), teamCardRecordKey(uid, bot.agentUid)));
   });
   // Another account: its card starts clean (a refreshed profile for the same account keeps it).
   const teamCardAccountUid = $derived(self?.uid?.trim() ?? "");
@@ -4656,7 +4656,10 @@
     createCompany: (name, slug) => createCompanyFromSheet({ name, slug, plan: "free", invites: [] }),
     joined: pinTeamCardCompany,
     created: pinTeamCardCompany,
-    findCompany: async (slug) => activeCloudCompanyBySlug(companies, slug),
+    findCompany: async (slug) => {
+      await refreshRoster();
+      return activeCloudCompanyBySlug(companies, slug);
+    },
   });
   function pinTeamCardCompany(companyUid: string | null): void {
     if (!companyUid) return;
@@ -4677,8 +4680,8 @@
     if (!bot || !row || !uid || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return;
     const target: TeamCardTarget = { agentUid: bot.agentUid, row };
     const recordKey = teamCardRecordKey(uid, bot.agentUid);
-    const run = teamCardResume(pick, teamCardLast ?? teamCardUnsentLast(recordKey));
-    teamCardLast = { pick: run.pick, completed: run.completed };
+    const run = teamCardResume(pick, teamCardLast ?? teamCardStoredLast(teamCardStorage(), recordKey));
+    teamCardLast = { pick: run.pick, completed: run.completed, creating: run.pick.kind === "create" && !run.completed };
     teamCardError = null;
     teamCardPending = teamCardPickKey(run.pick);
     const result = await runTeamCardPick(run.pick, {
@@ -4687,16 +4690,23 @@
       pin: pinTeamCardCompany,
       reply: (text, key) => teamCardReply(text, key, target),
       completed: run.completed,
+      replyFailures: run.replyFailures,
+      unresolved: run.unresolved,
+      creating: (pending) => saveTeamCardCreating(teamCardStorage(), recordKey, pending),
+      notCreating: () => clearTeamCardCreating(teamCardStorage(), recordKey),
       created: (choice) => {
         if (choice.kind === "company" && run.pick.kind === "create")
           saveTeamCardUnsentCreate(teamCardStorage(), recordKey, { created: choice.company, name: run.pick.name });
       },
+      log: (line) => writeFirstRunLine(firstRunTimingLog, line),
     });
     if (result.ok) teamCardRecords = saveTeamCardRecord(teamCardStorage(), teamCardRecords, recordKey, result.settled);
     // The account changed while the pick ran: its card was cleared.
     if (self?.uid?.trim() !== uid) return;
     teamCardPending = null;
-    teamCardLast = result.ok ? null : { pick: run.pick, completed: result.completed };
+    teamCardLast = result.ok
+      ? null
+      : { pick: run.pick, completed: result.completed, creating: result.creating, replyFailures: result.replyFailures };
     if (!result.ok) teamCardError = result.reason;
   }
   /** "Keep going here": the reply the bot waits for before it starts setup. */
@@ -10524,7 +10534,7 @@
     slug: string;
     plan: NewCompanyPlan;
     invites: string[];
-  }): Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string }> {
+  }): Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string; blocked?: boolean }> {
     const seam = companyCreateSeam;
     if (!seam) return { ok: false, reason: "Creating a company isn't available yet." };
     const draft = await seam.open();
@@ -10535,7 +10545,7 @@
     if (slugId) values[slugId] = input.slug;
     const invites: CompanyInvite[] = input.invites.map((email) => ({ email, role: "member" }));
     const result = await seam.submit(draft.form, values, invites);
-    if (!result.ok) return { ok: false, reason: result.reason };
+    if (!result.ok) return { ok: false, reason: result.reason, blocked: result.blocked };
     createCompanyRequested = true;
     return { ok: true, companyUid: result.company.companyUid };
   }

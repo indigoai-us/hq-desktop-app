@@ -17,6 +17,7 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import { takePendingChannelOpen } from "../chat/open-target.js";
+import { CREATE_COMPANY_NO_RESULT_REASON } from "../chat/create-company/create-company-flow.js";
 
 const flow = vi.hoisted(() => ({
   open: vi.fn(),
@@ -72,6 +73,7 @@ function botRow(): LocalBotRow {
 }
 
 let sendDm: ReturnType<typeof vi.fn>;
+let logToFile: ReturnType<typeof vi.fn>;
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -111,6 +113,7 @@ function adapter(messages: Array<Record<string, unknown>>): PlatformAdapter {
       remove: async () => ok({}),
       workers: async () => ok({ workers: [] }),
     },
+    appShell: { logToFile },
   } as unknown as PlatformAdapter;
 }
 
@@ -120,6 +123,7 @@ beforeEach(() => {
   window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   sendDm = vi.fn(async () => ok({ eventId: "evt_self_1", createdAt: new Date().toISOString() }));
+  logToFile = vi.fn(async () => undefined);
   flow.open.mockReset().mockResolvedValue({ ok: true, form: DRAFT });
   flow.submit.mockReset().mockImplementation(async (_api: unknown, _form: unknown, values: Record<string, string>) => ({
     ok: true,
@@ -214,6 +218,43 @@ async function create(name: string): Promise<void> {
 }
 
 const sentTexts = () => sendDm.mock.calls.map((call) => call[1]);
+
+/** The roster row the server's company shows up as once the host reloads it. */
+function pickleWorkspace() {
+  return {
+    slug: "pickle",
+    displayName: "Pickle",
+    kind: "company",
+    state: "synced",
+    cloudUid: "cmp_pickle",
+    bucketName: null,
+    hasLocalFolder: false,
+    localPath: null,
+    membershipStatus: "active",
+    role: "owner",
+    lastSyncedAt: null,
+    brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
+  };
+}
+
+/** A create that ends with a company switches into it; come back to the setup bot if so. */
+async function toSetupBot(): Promise<void> {
+  await vi.waitFor(() => {
+    if (q('[data-event-id="evt_team"]')) return;
+    const row = q<HTMLElement>(`[data-conversation-id="${SETUP_DM_ROW.id}"]`);
+    row?.click();
+    expect(q('[data-event-id="evt_team"]')).toBeTruthy();
+  });
+}
+
+/** Types a new name into the locked field and presses Create. */
+function renameAndCreate(): void {
+  typeName("Brine");
+  expect(q<HTMLInputElement>('[data-testid="team-card-name"]')!.value).toBe("Pickle");
+  q<HTMLButtonElement>('[data-testid="team-card-create-submit"]')!.click();
+}
 
 describe("the team card never creates a second company", () => {
   it("create succeeds, the reply fails, a new name and Create again resend the first company's reply", async () => {
@@ -313,5 +354,98 @@ describe("the team card never creates a second company", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(sendDm).not.toHaveBeenCalled();
     expect(window.localStorage.getItem("hq.firstRun.teamCard.v1")).toBeNull();
+  });
+
+  it("a create that times out keeps the card on its name, and the company it made is found, not made again", async () => {
+    flow.submit.mockResolvedValueOnce({ ok: false, reason: CREATE_COMPANY_NO_RESULT_REASON, blocked: false });
+    const props = await openSetupDm([teamMessage]);
+    await create("Pickle");
+    await waitFor('[data-testid="team-card-error"]');
+    expect(sendDm).not.toHaveBeenCalled();
+
+    // The server made the company after all; the roster now has it.
+    props.companies = [pickleWorkspace()] as never;
+    renameAndCreate();
+
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledOnce());
+    await toSetupBot();
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Created Pickle"));
+    expect(flow.submit).toHaveBeenCalledOnce();
+    expect(sentTexts()).toEqual(["I created Pickle."]);
+  });
+
+  it("a company found on retry is kept when its reply fails, so a new name and Create resend it", async () => {
+    flow.submit.mockResolvedValueOnce({ ok: false, reason: CREATE_COMPANY_NO_RESULT_REASON, blocked: false });
+    sendDm.mockResolvedValueOnce({ ok: false, message: "network down" });
+    const props = await openSetupDm([teamMessage]);
+    await create("Pickle");
+    await waitFor('[data-testid="team-card-error"]');
+
+    props.companies = [pickleWorkspace()] as never;
+    renameAndCreate();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledOnce());
+    await toSetupBot();
+    await waitFor('[data-testid="team-card-error"]');
+
+    renameAndCreate();
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Created Pickle"));
+    expect(flow.submit).toHaveBeenCalledOnce();
+    expect(sentTexts()).toEqual(["I created Pickle.", "I created Pickle."]);
+  });
+
+  it("a restart while a create is in flight keeps the card on its name and finds the company", async () => {
+    flow.submit.mockImplementationOnce(() => new Promise(() => undefined));
+    const messages = [teamMessage];
+    await openSetupDm(messages);
+    await create("Pickle");
+    await vi.waitFor(() => expect(flow.submit).toHaveBeenCalledOnce());
+
+    const props = await restart(messages);
+    const input = await waitFor<HTMLInputElement>('[data-testid="team-card-name"]');
+    expect(input.value).toBe("Pickle");
+    props.companies = [pickleWorkspace()] as never;
+    renameAndCreate();
+
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledOnce());
+    await toSetupBot();
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Created Pickle"));
+    expect(flow.submit).toHaveBeenCalledOnce();
+    expect(sentTexts()).toEqual(["I created Pickle."]);
+  });
+
+  it("a reply that keeps failing settles after the first try and two Retries", async () => {
+    sendDm.mockResolvedValue({ ok: false, message: "network down" });
+    await openSetupDm([teamMessage]);
+    await create("Pickle");
+    await backToSetupBot();
+
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-retry"]')).click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(2));
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-retry"]')).click();
+
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Created Pickle"));
+    expect(sendDm).toHaveBeenCalledTimes(3);
+    expect(flow.submit).toHaveBeenCalledOnce();
+    expect(logToFile.mock.calls.some((call) => String(call[1]).includes("kind=team-card event=reply-abandoned"))).toBe(true);
+  });
+
+  it("a lock the browser cannot store still holds for the session", async () => {
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === "hq.firstRun.teamCard.v1") throw new Error("quota");
+      setItem.call(this, key, value);
+    });
+    flow.submit.mockResolvedValueOnce({ ok: false, reason: CREATE_COMPANY_NO_RESULT_REASON, blocked: false });
+    const props = await openSetupDm([teamMessage]);
+    await create("Pickle");
+    await waitFor('[data-testid="team-card-error"]');
+
+    props.companies = [pickleWorkspace()] as never;
+    renameAndCreate();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledOnce());
+    await toSetupBot();
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Created Pickle"));
+    expect(flow.submit).toHaveBeenCalledOnce();
+    expect(console.warn).toHaveBeenCalled();
   });
 });

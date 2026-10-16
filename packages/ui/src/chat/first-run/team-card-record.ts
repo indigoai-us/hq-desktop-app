@@ -12,6 +12,11 @@
  * A create that made a company but whose reply has not gone through is kept
  * under the same key as `{ created, name }` until the reply is sent, so a
  * restart in between resends that reply instead of creating another company.
+ *
+ * Before a create is sent, `{ creating: { name, slug } }` is kept under that
+ * key. While it is there, the outcome of that create is unknown (it may time
+ * out, fail, or be cut off by a restart after the server made the company), so
+ * the card stays on that name and the next Create first looks for the company.
  */
 import type { FirstRunTeamCompany } from "./team-step";
 
@@ -24,6 +29,12 @@ export type TeamCardRecords = Readonly<Record<string, string>>;
 export interface TeamCardUnsentCreate {
   created: FirstRunTeamCompany;
   name: string;
+}
+
+/** A create that was sent and has not answered: the name the person typed and its slug. */
+export interface TeamCardCreating {
+  name: string;
+  slug: string;
 }
 
 type ReadStorage = Pick<Storage, "getItem">;
@@ -46,11 +57,15 @@ function readTeamCardEntries(storage: ReadStorage | null | undefined): Record<st
   }
 }
 
-function writeTeamCardEntries(storage: WriteStorage | null | undefined, entries: Record<string, unknown>): void {
+/** False when the write failed (or there is no storage): the caller keeps what it wrote in memory. */
+function writeTeamCardEntries(storage: WriteStorage | null | undefined, entries: Record<string, unknown>): boolean {
+  if (!storage) return false;
   try {
-    storage?.setItem(TEAM_CARD_RECORDS_KEY, JSON.stringify(entries));
+    storage.setItem(TEAM_CARD_RECORDS_KEY, JSON.stringify(entries));
+    return true;
   } catch (err) {
     console.warn("[hq-desktop] could not save the team card pick:", err);
+    return false;
   }
 }
 
@@ -102,16 +117,54 @@ export function loadTeamCardUnsentCreate(
 
 /**
  * Keep the company a create made, before its reply is sent. Never replaces a
- * settled line: the card under that key is already done.
+ * settled line: the card under that key is already done. Replaces a pending
+ * create. False when it could not be saved.
  */
 export function saveTeamCardUnsentCreate(
   storage: WriteStorage | null | undefined,
   key: string,
   unsent: TeamCardUnsentCreate,
-): void {
+): boolean {
   const entries = readTeamCardEntries(storage);
-  if (typeof entries[key] === "string") return;
-  writeTeamCardEntries(storage, { ...entries, [key]: { created: unsent.created, name: unsent.name } });
+  if (typeof entries[key] === "string") return false;
+  return writeTeamCardEntries(storage, { ...entries, [key]: { created: unsent.created, name: unsent.name } });
+}
+
+function pendingCreate(value: unknown): TeamCardCreating | null {
+  if (!value || typeof value !== "object") return null;
+  const { creating } = value as { creating?: unknown };
+  if (!creating || typeof creating !== "object") return null;
+  const { name, slug } = creating as { name?: unknown; slug?: unknown };
+  if (typeof name !== "string" || !name.trim() || typeof slug !== "string" || !slug.trim()) return null;
+  return { name, slug };
+}
+
+/** The create under `key` that was sent and has not answered, if any. */
+export function loadTeamCardCreating(storage: ReadStorage | null | undefined, key: string): TeamCardCreating | null {
+  return pendingCreate(readTeamCardEntries(storage)[key]);
+}
+
+/**
+ * Keep a create before it is sent. Never replaces a settled line or a company
+ * a create already made. False when it could not be saved.
+ */
+export function saveTeamCardCreating(
+  storage: WriteStorage | null | undefined,
+  key: string,
+  creating: TeamCardCreating,
+): boolean {
+  const entries = readTeamCardEntries(storage);
+  if (typeof entries[key] === "string" || unsentCreate(entries[key])) return false;
+  return writeTeamCardEntries(storage, { ...entries, [key]: { creating: { name: creating.name, slug: creating.slug } } });
+}
+
+/** Forget a pending create: it is known to have made no company. Leaves anything else under `key`. */
+export function clearTeamCardCreating(storage: WriteStorage | null | undefined, key: string): void {
+  const entries = readTeamCardEntries(storage);
+  if (!pendingCreate(entries[key])) return;
+  const rest = { ...entries };
+  delete rest[key];
+  writeTeamCardEntries(storage, rest);
 }
 
 const REPLY_LINE = /^I (created|joined|opened) (.+)\.$/;

@@ -7,8 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { teamCardReplyText } from "./team-card-pick";
 import {
   TEAM_CARD_RECORDS_KEY,
+  clearTeamCardCreating,
+  loadTeamCardCreating,
   loadTeamCardRecords,
   loadTeamCardUnsentCreate,
+  saveTeamCardCreating,
   saveTeamCardRecord,
   saveTeamCardUnsentCreate,
   teamCardRecordKey,
@@ -155,6 +158,78 @@ describe("a created company whose reply has not gone through", () => {
     for (const value of [{ created: { slug: "pickle" }, name: "Pickle" }, { created: unsent.created, name: " " }, 7, null]) {
       const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: value }) });
       expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+    }
+  });
+});
+
+describe("a create that was sent and has not answered", () => {
+  const key = teamCardRecordKey(ME, BOT);
+  const pending = { name: "Pickle", slug: "pickle" };
+  const unsent = { created: { companyUid: "cmp_new", slug: "pickle", name: "Pickle" }, name: "Pickle" };
+
+  it("is read back by a fresh load, as after a restart, and is neither a settled line nor a made company", () => {
+    const storage = memoryStorage();
+    expect(saveTeamCardCreating(storage, key, pending)).toBe(true);
+    expect(loadTeamCardCreating(storage, key)).toEqual(pending);
+    expect(loadTeamCardRecords(storage)).toEqual({});
+    expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+  });
+
+  it("is replaced by the company the create made, and by the settled line", () => {
+    const storage = memoryStorage();
+    saveTeamCardCreating(storage, key, pending);
+    expect(saveTeamCardUnsentCreate(storage, key, unsent)).toBe(true);
+    expect(loadTeamCardCreating(storage, key)).toBeNull();
+    expect(loadTeamCardUnsentCreate(storage, key)).toEqual(unsent);
+
+    const other = memoryStorage();
+    saveTeamCardCreating(other, key, pending);
+    saveTeamCardRecord(other, loadTeamCardRecords(other), key, "Created Pickle");
+    expect(loadTeamCardCreating(other, key)).toBeNull();
+  });
+
+  it("never replaces a settled line or a company a create made", () => {
+    const settled = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: "Joined Acme" }) });
+    expect(saveTeamCardCreating(settled, key, pending)).toBe(false);
+    expect(loadTeamCardRecords(settled)).toEqual({ [key]: "Joined Acme" });
+
+    const made = memoryStorage();
+    saveTeamCardUnsentCreate(made, key, unsent);
+    expect(saveTeamCardCreating(made, key, { name: "Brine", slug: "brine" })).toBe(false);
+    expect(loadTeamCardUnsentCreate(made, key)).toEqual(unsent);
+  });
+
+  it("is cleared alone: other accounts' records and a made company stay", () => {
+    const other = teamCardRecordKey("prs_other", BOT);
+    const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [other]: "Working solo" }) });
+    saveTeamCardCreating(storage, key, pending);
+    clearTeamCardCreating(storage, key);
+    expect(loadTeamCardCreating(storage, key)).toBeNull();
+    expect(loadTeamCardRecords(storage)).toEqual({ [other]: "Working solo" });
+
+    const made = memoryStorage();
+    saveTeamCardUnsentCreate(made, key, unsent);
+    clearTeamCardCreating(made, key);
+    expect(loadTeamCardUnsentCreate(made, key)).toEqual(unsent);
+  });
+
+  it("a write that fails reports false and says so", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const storage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("quota");
+      },
+    };
+    expect(saveTeamCardCreating(storage, key, pending)).toBe(false);
+    expect(saveTeamCardCreating(null, key, pending)).toBe(false);
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("anything malformed under the key reads as none", () => {
+    for (const value of [{ creating: { name: "Pickle" } }, { creating: { name: " ", slug: "pickle" } }, { creating: 7 }, "x"]) {
+      const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: value }) });
+      expect(loadTeamCardCreating(storage, key)).toBeNull();
     }
   });
 });
