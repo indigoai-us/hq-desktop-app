@@ -140,7 +140,7 @@ describe("MeetingsPage plan-required action", () => {
     });
     // OWNER-003: the notice renders on the shared toast layer.
     expect(document.querySelector('[data-testid="toast-stack"] .ts-toast')?.textContent).toContain(
-      "Meetings need HQ Workforce ($500/mo)",
+      "Recording meetings is not on this company's plan yet.",
     );
     upgrade.click();
     await vi.waitFor(() => expect(upgrade.disabled).toBe(true));

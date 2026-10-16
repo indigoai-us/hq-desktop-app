@@ -24,6 +24,11 @@ describe("normalizeRoute", () => {
       "DELETE /secrets/{param}/name/{param}",
     );
   });
+
+  it("drops the query string: API Gateway route keys never carry one", () => {
+    expect(normalizeRoute("GET /v1/billing/usage?companyUid={param}&window=month")).toBe("GET /v1/billing/usage");
+    expect(normalizeRoute("GET /v1/billing/summary?companyUid={companyUid}")).toBe("GET /v1/billing/summary");
+  });
 });
 
 describe("the exact v0.10.327 miss", () => {
