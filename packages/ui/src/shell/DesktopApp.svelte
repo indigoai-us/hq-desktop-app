@@ -935,6 +935,7 @@
   } from "../chat/conversation-title.js";
   import {
     botDmRows,
+    missingBotDmRootIds,
     mergeFetchedTimeline,
     mergeTimelineMessages,
     messagesForDisplay,
@@ -945,6 +946,7 @@
     withThreadAnswers,
     type TimelineDisplayOptions,
     timelinePageFromPayload,
+    withFetchedTimelineRoots,
     HUMAN_HISTORY_VIEW,
   } from "../chat/live-messages.js";
   import {
@@ -6731,6 +6733,56 @@
     return isBotDmRow(row) ? normalizeConversationMessages(raw) : shown;
   }
 
+  async function hydrateBotDmRoots(
+    row: ConversationRow,
+    raw: unknown,
+    knownRoots: readonly ConversationMessageWire[],
+  ): Promise<unknown> {
+    const peerUid = (row.personUid ?? "").trim();
+    if (!isBotDmRow(row) || !peerUid) return raw;
+    const rootEventIds = missingBotDmRootIds(raw, knownRoots);
+    if (rootEventIds.length === 0) return raw;
+    const fetchedRoots = await Promise.all(
+      rootEventIds.map(async (rootEventId) => {
+        try {
+          const result = await adapter.messaging.fetchReplyThread({
+            scope: "dm",
+            rootEventId,
+            withPersonUid: peerUid,
+          });
+          if (!result.ok) {
+            console.warn("[hq-desktop]", {
+              event: "bot-dm-root-fetch-failure",
+              id: row.id,
+              rootEventId,
+              reason: result.reason,
+              code: result.code,
+              error: result.message,
+            });
+            return null;
+          }
+          if (!result.value.root) return null;
+          const root = normalizeConversationMessages([result.value.root], {
+            keepAudience: true,
+          })[0];
+          return root?.eventId === rootEventId ? result.value.root : null;
+        } catch (error) {
+          console.warn("[hq-desktop]", {
+            event: "bot-dm-root-fetch-error",
+            id: row.id,
+            rootEventId,
+            error: String(error),
+          });
+          return null;
+        }
+      }),
+    );
+    return withFetchedTimelineRoots(
+      raw,
+      fetchedRoots.filter((root): root is NonNullable<typeof root> => root !== null),
+    );
+  }
+
   /** Same messages (by reference) in the same order — nothing to repaint. */
   function sameTimeline(
     a: ConversationMessageWire[],
@@ -6830,7 +6882,11 @@
           // The timeline leaves the app's notices to the bot out; the page does not.
           noteConnectionNotice(row.personUid, fetched);
         }
-        return res.ok ? res.value : null;
+        if (!res.ok) return null;
+        const knownRoots = liveTimelineId === row.id
+          ? liveTimeline
+          : (timelineCache.get(row.id) ?? []);
+        return hydrateBotDmRoots(row, res.value, knownRoots);
       }
       if (row.channelId) {
         const res = await adapter.messaging.fetchChannel({
@@ -6924,7 +6980,11 @@
     const raw = row.channelId
       ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50, ...view }))
       : row.kind === "dm" && row.personUid
-        ? unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view }))
+        ? await hydrateBotDmRoots(
+            row,
+            unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view })),
+            liveTimeline,
+          )
         : null;
     if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
     recordHistoryPage(row, raw, cursor);
@@ -12238,9 +12298,11 @@
     }
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
-    const incoming = messagesForDisplay(res.value, timelineDisplayFor(row));
-    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value, timelineDisplayFor(row)));
-    clearThinkingFromIncoming(thinkingRowsFrom(row, res.value, incoming), row.id);
+    const raw = await hydrateBotDmRoots(row, res.value, liveTimeline);
+    if (selectedRow?.id !== row.id) return;
+    const incoming = messagesForDisplay(raw, timelineDisplayFor(row));
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw, timelineDisplayFor(row)));
+    clearThinkingFromIncoming(thinkingRowsFrom(row, raw, incoming), row.id);
   }
 
   /**

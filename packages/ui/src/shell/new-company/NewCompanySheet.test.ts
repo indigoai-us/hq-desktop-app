@@ -52,18 +52,17 @@ describe("New company sheet (US-037)", () => {
     });
   });
 
-  it("sends a paid plan to Stripe checkout only", async () => {
-    const oncreate = vi.fn();
+  it("offers no Workforce plan and never opens checkout for a new company", async () => {
+    const oncreate = vi.fn(async () => ({ ok: true as const, companyUid: "co_hm" }));
     const oncheckout = vi.fn();
     render({ oncreate, oncheckout });
     await typeName("Holler Management");
-    host.querySelector<HTMLButtonElement>("[data-testid='new-company-plan-workforce']")!.click();
-    await tick();
+    expect(host.querySelector("[data-testid='new-company-plan-workforce']")).toBeNull();
+    expect(host.textContent).not.toMatch(/Workforce|checkout/i);
+    expect(host.querySelector("[data-testid='new-company-plan-free']")?.textContent).toContain("$10 of usage included every month");
     host.querySelector<HTMLButtonElement>("[data-testid='new-company-continue']")!.click();
     await tick();
-    expect(host.querySelector("[data-testid='new-company-created']")).toBeTruthy();
-    expect(oncreate).not.toHaveBeenCalled();
-    expect(oncheckout).toHaveBeenCalledTimes(1);
-    expect(new URL(oncheckout.mock.calls[0]?.[0]).hostname).toBe("checkout.stripe.com");
+    await vi.waitFor(() => expect(oncreate).toHaveBeenCalledWith(expect.objectContaining({ plan: "free" })));
+    expect(oncheckout).not.toHaveBeenCalled();
   });
 });

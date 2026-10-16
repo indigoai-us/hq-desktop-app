@@ -508,7 +508,11 @@ html[data-platform="windows"] {
 .dark,
 :root[data-force-theme="light"],
 :root[data-force-theme="dark"] {
-  --overlay-bg: var(--v4-popover-strong);
+  /* Solid at every window-transparency setting (owner, 2026-10-16: "fix
+     transparency on popovers if you aren't able to get backdrop blur
+     working"). A blur behind a rounded card draws square in WKWebView, so
+     overlays take the no-transparency popover colour instead. */
+  --overlay-bg: var(--v4-popover-solid, var(--v4-popover-strong));
   /* The same surface with no window transparency: small hover cards that sit
      over busy content (the badges card) read as solid at every setting. */
   --overlay-bg-solid: var(--v4-popover-solid, var(--overlay-bg));

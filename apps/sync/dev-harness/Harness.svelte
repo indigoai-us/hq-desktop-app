@@ -350,7 +350,7 @@
        viewport to ~1200x800 or ~960x600. In-page answers only. -->
   <YourAppsPreview />
 {:else if view === 'onboarding-company'}
-  <!-- The first-run company step on its own: ?scenario=create|join|paused.
+  <!-- The first-run company step on its own: ?scenario=create|join|existing.
        Size the viewport to ~800x900 like the welcome window. -->
   <div class="fake-desktop fake-desktop--image" aria-hidden="true"></div>
   <CompanyStepPreview />

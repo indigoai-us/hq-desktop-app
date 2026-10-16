@@ -1243,6 +1243,21 @@ export interface CompanyApi {
    * click and never cache it.
    */
   createBillingPortalSession(companyUid: string): AdapterPromise<{ url: string }>;
+  /**
+   * Owner-gated billing summary (`GET /v1/billing/summary?companyUid=`).
+   * `pricingPlan: "usage-only"` marks a usage-priced company; `usageTrial`
+   * carries the trial and allowance. A non-owner gets 403. Optional: hosts
+   * without hq-pro leave it out and the billing pane keeps the seats view.
+   */
+  getBillingSummary?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Owner-gated usage statement for this calendar month
+   * (`GET /v1/billing/usage?companyUid=&window=month`): usage so far,
+   * allowance left, bill so far and one line per meter.
+   */
+  getUsageStatement?(companyUid: string): AdapterPromise<Json>;
+  /** Public price list (`GET /v1/pricing`), including the `usage` block. */
+  getPricing?(): AdapterPromise<Json>;
   /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
   getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }

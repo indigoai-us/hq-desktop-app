@@ -43,7 +43,7 @@ describe("ProfilePaneHost", () => {
     await tick();
     const person = host.querySelector('[data-testid="profile-badges"]');
     expect(person?.textContent).toContain("Badges 5");
-    expect([...(person?.querySelectorAll("canvas") ?? [])].map((c) => c.getAttribute("data-badge"))).toEqual([
+    expect([...(person?.querySelectorAll("svg[data-badge]") ?? [])].map((c) => c.getAttribute("data-badge"))).toEqual([
       "liftoff",
       "bughunter",
       "poweruser",

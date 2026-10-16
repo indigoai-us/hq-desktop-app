@@ -70,8 +70,11 @@ export const ALLOWLISTED_DEAD_ROUTES = [
 /** Turns any of hq-pro's placeholder spellings into one canonical form so
  * `{companyUid}`, `{uid}`, `{slug}`, `{}`, and `{proxy+}` all compare equal. */
 export function normalizeRoute(route) {
+  // API Gateway route keys never carry a query string: `GET /v1/x?a={param}`
+  // is the `GET /v1/x` route.
   return route
     .trim()
+    .replace(/\?\S*/, "")
     .replace(/\{[^}]*\}/g, "{param}")
     .replace(/\s+/g, " ");
 }

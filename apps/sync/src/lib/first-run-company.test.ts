@@ -2,13 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   COMPANY_ROUTE_LOOKUP_RETRY_DELAY_MS,
   activeCompanyUids,
-  approvedCheckoutUrl,
-  CHECKOUT_DISABLED_REASON,
-  CHECKOUT_FAILED_REASON,
   createFirstRunCompanyApi,
   deriveCompanyHandle,
   slugifyCompanyName,
-  isCheckoutReturnFor,
   isProvisionedCompanyEntity,
   readCompanyProvisioned,
   parseInviteEmails,
@@ -16,9 +12,7 @@ import {
   requestCompanyProvisioning,
   resolveFirstRunCompanyPath,
   resolveFirstRunCompanyRoute,
-  startWorkforceCheckout,
   waitForProvisioning,
-  workforceCheckoutBody,
   type InvokeFn,
 } from './first-run-company';
 
@@ -433,72 +427,19 @@ describe('parseInviteEmails', () => {
   });
 });
 
-describe('workforce checkout', () => {
-  it('uses the strict hq-desktop return pair hq-pro accepts', () => {
-    expect(workforceCheckoutBody('cmp_new')).toEqual({
-      companyUid: 'cmp_new',
-      successUrl: 'hq-desktop://setup?checkout=done&company=cmp_new',
-      cancelUrl: 'hq-desktop://setup',
-    });
-  });
-
-  it('only opens a Stripe-hosted https page', () => {
-    expect(approvedCheckoutUrl('https://checkout.stripe.com/c/pay/cs_test')).toBe(
-      'https://checkout.stripe.com/c/pay/cs_test',
-    );
-    expect(approvedCheckoutUrl('http://checkout.stripe.com/c/pay')).toBeNull();
-    expect(approvedCheckoutUrl('https://evil.example/checkout.stripe.com')).toBeNull();
-    expect(approvedCheckoutUrl(42)).toBeNull();
-  });
-
-  it('posts to the team checkout route and returns the url', async () => {
-    const invoke = vi.fn(async () => ({
-      status: 200,
-      body: JSON.stringify({ url: 'https://checkout.stripe.com/c/pay/cs_1' }),
-    }));
-    const result = await startWorkforceCheckout(invoke as unknown as InvokeFn, 'cmp_new');
-    expect(result).toEqual({ ok: true, url: 'https://checkout.stripe.com/c/pay/cs_1' });
-    expect(invoke).toHaveBeenCalledWith('hq_pro_fetch', {
-      url: '/v1/billing/checkout/team',
-      method: 'POST',
-      body: JSON.stringify(workforceCheckoutBody('cmp_new')),
-    });
-  });
-
-  it('explains the kill switch in plain words', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const invoke = vi.fn(async () => ({
-      status: 503,
-      body: JSON.stringify({ code: 'team_signup_disabled' }),
-    }));
-    expect(await startWorkforceCheckout(invoke as unknown as InvokeFn, 'cmp_new')).toEqual({
-      ok: false,
-      reason: CHECKOUT_DISABLED_REASON,
-    });
-    warn.mockRestore();
-  });
-
-  it('fails readably on an error status, a missing url, or a thrown call', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    for (const answer of [
-      async () => ({ status: 403, body: '{"code":"FORBIDDEN"}' }),
-      async () => ({ status: 200, body: '{"url":"https://example.com/pay"}' }),
-      async () => {
-        throw new Error('network');
-      },
+describe('no Workforce checkout for new companies', () => {
+  it('exports no checkout path: new companies start on usage pricing', async () => {
+    const mod: Record<string, unknown> = await import('./first-run-company');
+    for (const gone of [
+      'startWorkforceCheckout',
+      'workforceCheckoutBody',
+      'approvedCheckoutUrl',
+      'isCheckoutReturnFor',
+      'CHECKOUT_DISABLED_REASON',
+      'CHECKOUT_FAILED_REASON',
     ]) {
-      const result = await startWorkforceCheckout(answer as unknown as InvokeFn, 'cmp_new');
-      expect(result).toEqual({ ok: false, reason: CHECKOUT_FAILED_REASON });
+      expect(mod[gone], gone).toBeUndefined();
     }
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
-  });
-
-  it('matches the checkout return to this company only', () => {
-    expect(isCheckoutReturnFor({ companyUid: 'cmp_new', checkout: 'done' }, 'cmp_new')).toBe(true);
-    expect(isCheckoutReturnFor({ companyUid: 'cmp_other', checkout: 'done' }, 'cmp_new')).toBe(false);
-    expect(isCheckoutReturnFor({ companyUid: 'cmp_new', checkout: '' }, 'cmp_new')).toBe(false);
-    expect(isCheckoutReturnFor(null, 'cmp_new')).toBe(false);
   });
 });
 
@@ -549,18 +490,26 @@ describe('plan already picked on the website', () => {
         url === '/membership/me' ? { memberships: [], planIntent: 'free' } : { invites: [] },
       invoke: (async () => ({ workspaces: [] })) as unknown as InvokeFn,
     });
-    expect(priorPlanOf(picked)).toBe('starter');
+    expect(priorPlanOf(picked)).toBe('free');
 
     const viaVisitor = await resolveFirstRunCompanyRoute({
       hqProJson: async (_method, url) => {
         if (url === '/membership/me') return { memberships: [] };
-        if (url.startsWith('/membership/me?anonId=')) return { webIdentity: { samePerson: true, plan: 'team' } };
+        if (url.startsWith('/membership/me?anonId=')) return { webIdentity: { samePerson: true, plan: 'starter' } };
         return { invites: [] };
       },
       invoke: (async () => ({ workspaces: [] })) as unknown as InvokeFn,
       anonId: 'anon_1',
     });
-    expect(priorPlanOf(viaVisitor)).toBe('workforce');
+    expect(priorPlanOf(viaVisitor)).toBe('free');
+
+    // A Workforce pick from before 2026-10-16 is not carried into a new company: the step shows the usage card.
+    const workforce = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) =>
+        url === '/membership/me' ? { memberships: [], planIntent: 'workforce' } : { invites: [] },
+      invoke: (async () => ({ workspaces: [] })) as unknown as InvokeFn,
+    });
+    expect(priorPlanOf(workforce)).toBeNull();
 
     const none = await resolveFirstRunCompanyRoute({
       hqProJson: async (_method, url) => (url === '/membership/me' ? { memberships: [] } : { invites: [] }),

@@ -4270,7 +4270,6 @@
     const failed =
       event.action === 'company_create_failed' ||
       event.action === 'invite_join_failed' ||
-      event.action === 'checkout_failed' ||
       event.action === 'provisioning_failed';
     const outcome =
       event.action === 'plan_chosen'
@@ -4348,9 +4347,7 @@
   function leaveCompanyStep(result: CompanyStepResult): void {
     const outcome =
       result.outcome === 'created'
-        ? result.paid
-          ? 'workforce_paid'
-          : `created_${result.plan}`
+        ? `created_${result.plan}`
         : result.outcome === 'joined'
           ? 'joined_invite'
           : result.outcome;

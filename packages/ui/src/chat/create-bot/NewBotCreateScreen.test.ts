@@ -473,8 +473,9 @@ describe("NewBotCreateScreen", () => {
       await settle();
       const step = document.querySelector<HTMLElement>("[data-testid='new-bot-upgrade']")!;
       expect(step.dataset.kind).toBe("plan");
-      expect(step.textContent).toContain("Only company is on the Starter plan");
-      expect(step.querySelector("[data-testid='new-bot-upgrade-open']")?.textContent).toBe("See upgrade options");
+      expect(step.textContent).toContain("Only company's plan does not include cloud bots yet.");
+      expect(step.textContent).not.toMatch(/Starter|Workforce/);
+      expect(step.querySelector("[data-testid='new-bot-upgrade-open']")?.textContent).toBe("See plan options");
     });
 
     it("A-I16: says a neutral line inline when the host offers no way to open the card", async () => {
@@ -605,7 +606,7 @@ describe("NewBotCreateScreen", () => {
       .click();
     await settle();
     const step = document.querySelector("[data-testid='new-bot-upgrade']")!;
-    expect(step.textContent).toContain("Current company is on the Starter plan");
+    expect(step.textContent).toContain("Current company's plan does not include cloud bots yet.");
     expect(document.querySelector("[data-testid='new-bot-create-screen']")).toBeNull();
     expect(oncomplete).not.toHaveBeenCalled();
     step.querySelector<HTMLButtonElement>("[data-testid='new-bot-upgrade-open']")!.click();

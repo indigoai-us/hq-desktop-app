@@ -712,6 +712,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("POST", `/v1/companies/${companyUid}/home-channel`),
     createBillingPortalSession: (companyUid) =>
       this.hqProJson("POST", WEB_PATHS.companyBillingPortal(), { companyUid }),
+    getBillingSummary: (companyUid) =>
+      this.hqProJson("GET", WEB_PATHS.companyBillingSummary(companyUid)),
+    getUsageStatement: (companyUid) =>
+      this.hqProJson("GET", WEB_PATHS.companyUsageStatement(companyUid)),
+    getPricing: () => this.hqProJson("GET", WEB_PATHS.pricing),
     getFirstWeekReturnNudge: (companyUid) =>
       this.hqProJson("GET", WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };

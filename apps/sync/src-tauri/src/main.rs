@@ -256,6 +256,37 @@ fn surface_existing_instance(app: &tauri::AppHandle) {
     );
 }
 
+fn open_desktop_on_cold_launch(app: &tauri::AppHandle) {
+    tray::activate_primary_surface(app);
+    util::logfile::log("app", "cold launch: opened primary surface");
+}
+
+/// True when the login item (or a launchd KeepAlive relaunch) started HQ.
+/// macOS marks those launches with `--from-launch-agent`. The Windows Run
+/// value carries no marker, so every Windows/Linux launch counts as one and
+/// keeps the menu-bar-only start it always had.
+fn launched_by_login_item(argv: &[String]) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        hq_platform::launchagent::argv_is_launch_agent_relaunch(argv)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = argv;
+        true
+    }
+}
+
+/// True when the launch carries a link or file that opens its own surface.
+fn launch_carries_target(argv: &[String]) -> bool {
+    let has_link = commands::hq_work::hqwork_url_from_argv(argv).is_some()
+        || crate::deep_link::hq_desktop_url_from_argv(argv).is_some()
+        || crate::deep_link::hq_url_from_argv(argv).is_some();
+    #[cfg(not(target_os = "macos"))]
+    let has_link = has_link || !commands::cloud_file::placeholders_from_argv(argv).is_empty();
+    has_link
+}
+
 fn handle_window_close_requested_hide<F>(should_hide: bool, hide_action: F)
 where
     F: FnOnce(),
@@ -1412,6 +1443,15 @@ fn main() {
                 prepare_first_run_welcome_window(app.handle(), true);
             }
 
+            // Opening HQ shows the desktop view. A launch that setup owns, one
+            // the login item started, or one carrying a link or file stays as
+            // it was (see `should_open_desktop_on_launch`).
+            let open_desktop_on_launch = commands::first_run::should_open_desktop_on_launch(
+                first_run,
+                launched_by_login_item(&startup_args),
+                launch_carries_target(&startup_args),
+            );
+
             // The very first launch opens the welcome flow, which fills the
             // work area of the current monitor (no rounded card, no native
             // window shadow, no frosted popover material) rather than the
@@ -1452,6 +1492,8 @@ fn main() {
                         setup_notification_producers(&startup_app);
                         if webview_asset_cache::take_deferred_activation() {
                             surface_existing_instance(&startup_app);
+                        } else if open_desktop_on_launch {
+                            open_desktop_on_cold_launch(&startup_app);
                         }
                     },
                 );
@@ -1459,6 +1501,10 @@ fn main() {
 
             #[cfg(not(target_os = "macos"))]
             setup_startup_surfaces(app.handle(), first_run)?;
+            #[cfg(not(target_os = "macos"))]
+            if open_desktop_on_launch {
+                open_desktop_on_cold_launch(app.handle());
+            }
 
             // A staged updater package is owned by the current process. Clear
             // persisted deferral markers before the updater can stage a new
@@ -1588,6 +1634,10 @@ fn main() {
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
             commands::install_deps::setup_qmd_abi_repair(app.handle());
+            // Older managed cwRsync installs have no etc/fstab, so rsync
+            // reads Windows ACLs and every Core update exits 23.
+            #[cfg(windows)]
+            commands::install_deps::setup_cwrsync_fstab_repair();
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 

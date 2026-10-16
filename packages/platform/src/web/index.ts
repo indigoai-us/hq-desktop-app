@@ -239,6 +239,14 @@ export const WEB_PATHS = {
     `/v1/companies/${encodeURIComponent(companyUid)}/home-channel`,
   /** POST, body `{ companyUid }`: hq-pro's owner-gated Stripe portal mint. */
   companyBillingPortal: () => `/v1/billing/portal`,
+  /** GET, owner-gated: plan, pricing plan (`usage-only`) and usage trial. */
+  companyBillingSummary: (companyUid: string) =>
+    `/v1/billing/summary?companyUid=${encodeURIComponent(companyUid)}`,
+  /** GET, owner-gated: this calendar month's usage statement. */
+  companyUsageStatement: (companyUid: string) =>
+    `/v1/billing/usage?companyUid=${encodeURIComponent(companyUid)}&window=month`,
+  /** GET, public price list. */
+  pricing: "/v1/pricing",
   firstWeekReturnNudge: (companyUid: string) =>
     `/membership/first-week-return-nudge?companyUid=${encodeURIComponent(companyUid)}`,
 
@@ -1194,6 +1202,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(WEB_PATHS.companyHomeChannel(companyUid)),
     createBillingPortalSession: (companyUid) =>
       this.post(WEB_PATHS.companyBillingPortal(), { companyUid }),
+    getBillingSummary: (companyUid) =>
+      this.get(WEB_PATHS.companyBillingSummary(companyUid)),
+    getUsageStatement: (companyUid) =>
+      this.get(WEB_PATHS.companyUsageStatement(companyUid)),
+    getPricing: () => this.get(WEB_PATHS.pricing),
     getFirstWeekReturnNudge: (companyUid) =>
       this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
