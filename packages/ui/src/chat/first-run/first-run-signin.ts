@@ -30,16 +30,24 @@ export interface FirstRunSignInHost {
    * connected; false when it failed, timed out or was cancelled.
    */
   run(runtime: FirstRunRuntime, opts: { cancelled: () => boolean }): Promise<boolean>;
+  /**
+   * Stops the running browser sign-in (Skip, or the screen went away). When
+   * it had connected after all, the host refreshes readiness so the held
+   * report starts.
+   */
+  cancel?(runtime: FirstRunRuntime): Promise<void>;
 }
 
 /**
  * The tool's sign-in with the first run's wait bound. Resolves false (never
  * throws) when it did not connect; `deps.timeoutMs` overrides the bound only
- * for tests.
+ * for tests. Never forced: the "already signed in" read can be wrong (a
+ * failed or slow preflight), and a forced sign-in signs the tool out first,
+ * so the vendor's own probe decides and a signed-in person stays signed in.
  */
 export async function runFirstRunSignIn(runtime: FirstRunRuntime, deps: SignInAgainDeps): Promise<boolean> {
   try {
-    const result = await signInAgain(runtime, { timeoutMs: FIRST_RUN_SIGNIN_TIMEOUT_MS, ...deps });
+    const result = await signInAgain(runtime, { timeoutMs: FIRST_RUN_SIGNIN_TIMEOUT_MS, ...deps, force: false });
     if (!result.ok && !result.cancelled) console.warn("[first-run] sign-in did not finish", result.reason);
     return result.ok;
   } catch (error) {

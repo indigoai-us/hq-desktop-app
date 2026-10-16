@@ -4020,6 +4020,16 @@
             if (ok) await onBotRuntimeSignedIn(runtime);
             return ok;
           },
+          // Skip or leaving: stop the browser sign-in. One that connected
+          // anyway refreshes readiness so the held report starts.
+          cancel: async (runtime) => {
+            const cancel = adapter.sessions?.loginCancel;
+            if (!cancel) return;
+            const result = await cancel(runtime);
+            if (result.ok && (result.value as { state?: string } | null)?.state === "connected") {
+              await onBotRuntimeSignedIn(runtime);
+            }
+          },
         }
       : null;
   /** The finished scan's counts and report path, for the setup bot's handoff. */

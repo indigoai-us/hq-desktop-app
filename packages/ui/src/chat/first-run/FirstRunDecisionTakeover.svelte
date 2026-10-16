@@ -207,7 +207,11 @@
   let live = true;
   onDestroy(() => {
     live = false;
+    // Leaving stops the browser sign-in and lets the waiting press() end;
+    // the callers check `live` and do not go on.
+    if (signinView?.state === "waiting") cancelSignIn(signinView.runtime);
     signinAttempt += 1;
+    goOnAfterSignIn();
   });
 
   function logSignIn(event: SignInEvent, runtime: FirstRunRuntime): void {
@@ -264,12 +268,20 @@
     goOn?.();
   }
 
+  /** Stops the running browser sign-in; the host refreshes readiness if it had connected. */
+  function cancelSignIn(runtime: FirstRunRuntime): void {
+    const cancel = signin?.cancel;
+    if (!cancel) return;
+    void cancel(runtime).catch((error: unknown) => console.warn("[first-run] sign-in cancel failed", error));
+  }
+
   /** Skip for now: go on without a sign-in; the welcome report waits on it as before. */
   function skipSignIn(): void {
     const view = signinView;
     if (!view) return;
     signinAttempt += 1;
     logSignIn("skipped", view.runtime);
+    if (view.state === "waiting") cancelSignIn(view.runtime);
     goOnAfterSignIn();
   }
 

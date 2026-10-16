@@ -31,12 +31,30 @@ describe("runFirstRunSignIn", () => {
     };
     const result = await runFirstRunSignIn("codex", { sessions, now: time.now, sleep: time.sleep, pollMs: 1500 });
     expect(result).toBe(false);
-    expect(sessions.loginStart).toHaveBeenCalledWith("codex", { force: true });
+    expect(sessions.loginStart).toHaveBeenCalledWith("codex", { force: false });
     expect(time.now() - start).toBeGreaterThanOrEqual(FIRST_RUN_SIGNIN_TIMEOUT_MS);
     expect(time.now() - start).toBeLessThanOrEqual(FIRST_RUN_SIGNIN_TIMEOUT_MS + 1500);
     expect(sessions.loginStatus.mock.calls.length).toBeLessThanOrEqual(Math.ceil(FIRST_RUN_SIGNIN_TIMEOUT_MS / 1500) + 1);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it("never forces the sign-in, so a person already signed in is never signed out first", async () => {
+    // The "already signed in" read can be wrong (a failed or slow preflight).
+    // Unforced, the tool's own probe answers connected without a sign-out.
+    const time = clock();
+    const sessions = {
+      loginStart: vi.fn(async () => ok({ state: "connected" })),
+      loginStatus: vi.fn(async () => ok({ state: "waiting" })),
+    };
+    await expect(runFirstRunSignIn("claude", { sessions, now: time.now, sleep: time.sleep })).resolves.toBe(true);
+    expect(sessions.loginStart).toHaveBeenCalledTimes(1);
+    expect(sessions.loginStart).toHaveBeenCalledWith("claude", { force: false });
+    expect(sessions.loginStatus).not.toHaveBeenCalled();
+
+    const asked = { loginStart: vi.fn(async () => ok({ state: "connected" })), loginStatus: sessions.loginStatus };
+    await runFirstRunSignIn("codex", { sessions: asked, force: true, now: time.now, sleep: time.sleep });
+    expect(asked.loginStart).toHaveBeenCalledWith("codex", { force: false });
   });
 
   it("is true once the sign-in connects", async () => {

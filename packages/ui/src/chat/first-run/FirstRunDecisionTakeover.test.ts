@@ -334,6 +334,7 @@ describe("FirstRunDecisionTakeover sign-in", () => {
         (runtime: string, opts: { cancelled: () => boolean }) =>
           new Promise<boolean>((resolve) => runs.push({ runtime, cancelled: opts.cancelled, finish: resolve })),
       ),
+      cancel: vi.fn(async () => undefined),
     };
     return { signin, runs };
   }
@@ -453,6 +454,8 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     byId<HTMLButtonElement>("first-run-signin-skip")!.click();
     await settle();
     expect(runs[0]!.cancelled()).toBe(true);
+    expect(signin.cancel).toHaveBeenCalledTimes(1);
+    expect(signin.cancel).toHaveBeenCalledWith("codex");
     expect(byId("first-run-signin-waiting")).toBeNull();
     expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
     expect(timing).toContain("kind=signin event=skipped tool=codex");
@@ -462,6 +465,38 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     await settle();
     expect(handlers.oncontinueintool).toHaveBeenCalledTimes(1);
     expect(timing.some((line) => line.includes("event=done"))).toBe(false);
+  });
+
+  it("Skip after a failed sign-in has nothing running to stop", async () => {
+    const { signin, runs } = fakeSignIn(false);
+    const { handlers } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    runs[0]!.finish(false);
+    await settle();
+    byId<HTMLButtonElement>("first-run-signin-skip")!.click();
+    await settle();
+    expect(signin.cancel).not.toHaveBeenCalled();
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+  });
+
+  it("leaving the screen while it waits stops the sign-in and goes on to nothing", async () => {
+    const { signin, runs } = fakeSignIn(false);
+    const { handlers } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(byId("first-run-signin-waiting")).toBeTruthy();
+    await unmount(component!);
+    component = null;
+    await settle();
+    expect(signin.cancel).toHaveBeenCalledTimes(1);
+    expect(signin.cancel).toHaveBeenCalledWith("codex");
+    expect(runs[0]!.cancelled()).toBe(true);
+    runs[0]!.finish(true);
+    await settle();
+    expect(handlers.oncontinueintool).not.toHaveBeenCalled();
   });
 
   it("the name path signs the detected tool in before it names the assistant", async () => {
