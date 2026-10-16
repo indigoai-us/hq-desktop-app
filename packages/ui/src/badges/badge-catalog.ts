@@ -1,5 +1,5 @@
 /**
- * HQ accomplishment badges: the catalog and the ASCII art for the small marks.
+ * HQ accomplishment badges: the catalog, tiers and tier colours.
  *
  * Design source: the "ASCII Color" direction in the hq-accomplishment-badges
  * project (Indigo). Colour here is an approved exception to the achromatic
@@ -101,63 +101,6 @@ export interface EarnedBadge {
   /** ISO date. Newest first in every list. */
   earnedAt: string;
 }
-
-export interface AsciiIcon {
-  /** Main colour. */
-  c: string;
-  /** Accent colour, for the characters in `acc`. */
-  a: string;
-  acc: string;
-  art: readonly string[];
-  /** Join stacked `|` into one stroke (the glyph is shorter than the row). */
-  join?: boolean;
-}
-
-/** Small version (108px): a solid ring plus a hand-made ASCII icon. */
-export const SMALL_ICONS: Readonly<Record<BadgeIcon, AsciiIcon>> = {
-  flag: { c: "#f07a92", a: "#c7c9d6", acc: "|", join: true, art: ["|####", "|####", "|####", "|", "|"] },
-  house: { c: "#e8a35a", a: "#7fd0ff", acc: "[]#", art: ["   /\\", "  /  \\", " /____\\", " |[]|#|"] },
-  bug: { c: "#e8566f", a: "#2a2238", acc: "|", art: ["  \\_/", "-(#|#)-", "-(#|#)-", " /   \\"] },
-  rocket: { c: "#ebe7f6", a: "#8fd6ff", acc: "()", art: ["  /\\", " |  |", " |()|", "/|  |\\", " /\\/\\"] },
-  bolt: { c: "#ffd23f", a: "#fff3b0", acc: "", art: ["    ____", "   /   /_", "  /__   /", "    / /", "   //"] },
-  toolbox: { c: "#e8566f", a: "#c7c9d6", acc: "o.", art: ["  .---.", ".-+---+-.", "|   o   |", "'-------'"] },
-  bulb: { c: "#ffd23f", a: "#c7c9d6", acc: "=-'", art: [" .-.", "( * )", " \\ /", " |=|", " '-'"] },
-  people: { c: "#8fd6a0", a: "#b9a7ff", acc: "", art: [" o   o", "/|\\ /|\\", "/ \\ / \\"] },
-  robot: { c: "#c7c9d6", a: "#5ee0c0", acc: "o", art: ["  _|_", " [o o]", " [_=_]", " _| |_"] },
-  plug: { c: "#8fc7ff", a: "#c7c9d6", acc: "|", art: [" | |", "[===]", "[   ]", " \\_/", "  |"] },
-  plane: { c: "#e6e8f2", a: "#8fc7ff", acc: "+", art: ["   |", "---+---", "   |", "  -+-"] },
-  calendar: { c: "#f0f0f6", a: "#e8566f", acc: "\"=", art: [" \"   \"", ".=====.", "|# # #|", "|# # #|", "'-----'"] },
-  box: { c: "#e3a36e", a: "#f7d35c", acc: "=", art: [" ____", "/___/|", "|== ||", "|___|/"] },
-  clipboard: { c: "#e3c9a6", a: "#8fd6a0", acc: "v", art: [" _[_]_", "|  v  |", "| --- |", "|_____|"] },
-  flame: { c: "#ff9f45", a: "#ffe27a", acc: "_", art: ["  )", " ) \\", "/ ) (", "\\(_)/"] },
-  crown: { c: "#ffd23f", a: "#e8566f", acc: "o", art: ["*   *   *", "|\\ / \\ /|", "| V   V |", "|__o_o__|"] },
-  wheel: { c: "#e3a96b", a: "#ffd23f", acc: "@", art: [" \\ | /", " .-+-.", "-+ @ +-", " '-+-'", " / | \\"] },
-  pulse: { c: "#ff6f91", a: "#5ee0c0", acc: "_/\\", art: ["  .--.", " |    |", "_|_/\\_|_", " |  \\/|", "  '--'"] },
-  code: { c: "#8fc7ff", a: "#ffd23f", acc: "", art: [" /   / \\", "<   /   >", " \\ /   /"] },
-};
-
-/** Micro version (54px): only a 2–3 character icon stays legible. */
-export const MICRO_ICONS: Readonly<Record<BadgeIcon, AsciiIcon>> = {
-  flag: { c: "#f07a92", a: "#c7c9d6", acc: "|", art: ["|##", "|##", "|  "] },
-  house: { c: "#e8a35a", a: "#7fd0ff", acc: "[]", art: ["/\\", "[]"] },
-  bug: { c: "#e8566f", a: "#e8566f", acc: "", art: ["\\_/", "(#)", "/ \\"] },
-  rocket: { c: "#ebe7f6", a: "#8fd6ff", acc: "o", art: [" ^ ", "|o|", "/ \\"] },
-  bolt: { c: "#ffd23f", a: "#ffd23f", acc: "", art: [" /", "/_", " /"] },
-  toolbox: { c: "#e8566f", a: "#c7c9d6", acc: "n", art: ["_n_", "[o]"] },
-  bulb: { c: "#ffd23f", a: "#c7c9d6", acc: "=", art: ["(*)", " = "] },
-  people: { c: "#8fd6a0", a: "#b9a7ff", acc: "", art: ["o o", "A A"] },
-  robot: { c: "#c7c9d6", a: "#5ee0c0", acc: "o", art: ["[oo]", "_||_"] },
-  plug: { c: "#8fc7ff", a: "#c7c9d6", acc: "|", art: ["| |", "[_]", " | "] },
-  plane: { c: "#e6e8f2", a: "#8fc7ff", acc: "^", art: ["_|_", " | ", "-^-"] },
-  calendar: { c: "#f0f0f6", a: "#e8566f", acc: "=", art: ["===", "|#|"] },
-  box: { c: "#e3a36e", a: "#f7d35c", acc: "_", art: ["___", "|_|"] },
-  clipboard: { c: "#e3c9a6", a: "#8fd6a0", acc: "v", art: ["|v|", "|_|"] },
-  flame: { c: "#ff9f45", a: "#ffe27a", acc: "_", art: [" ( ", ")\\(", "(_)"] },
-  crown: { c: "#ffd23f", a: "#e8566f", acc: "o", art: ["|\\^/|", "|_o_|"] },
-  wheel: { c: "#e3a96b", a: "#ffd23f", acc: "@", art: ["\\|/", "-@-", "/|\\"] },
-  pulse: { c: "#ff6f91", a: "#5ee0c0", acc: "-", art: ["(\\/)", "-\\/-"] },
-  code: { c: "#8fc7ff", a: "#ffd23f", acc: "/", art: ["</>"] },
-};
 
 export interface ResolvedBadge {
   def: BadgeDef;

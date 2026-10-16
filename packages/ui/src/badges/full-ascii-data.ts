@@ -8,7 +8,7 @@
  * using the alphabet below. Palette entries are "#rrggbb@alpha".
  *
  * Generated data. Re-export from the gallery instead of editing by hand.
- * Loaded lazily: only the badge detail view needs it.
+ * Loaded lazily: only the holographic card and the share image need it.
  */
 
 export const PALETTE_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-";

@@ -2,10 +2,10 @@
  * Draws a full-size ASCII Color badge (162px at scale 3): one glyph per cell
  * from the exported grid, then a soft glow of the same layer underneath.
  *
- * Light mode draws heavier glyphs with a tight halo instead of the wide glow:
- * glyphs this small antialias to about half opacity, so on a light surface
- * they need the extra weight and body to read. Pass the light colours
- * (full-ascii-data-light.ts) as `art` in that case.
+ * The holographic card and the share image always draw it dark. Light mode
+ * draws heavier glyphs with a tight halo instead of the wide glow: glyphs
+ * this small antialias to about half opacity, so on a light surface they
+ * need the extra weight and body to read.
  */
 
 import { BADGE_FONT } from "./badge-mark.js";
