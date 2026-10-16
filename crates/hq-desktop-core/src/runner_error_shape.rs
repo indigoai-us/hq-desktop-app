@@ -352,7 +352,12 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `pass-request`, `scope-shrink-refused`, and `secrets-not-synced` events,
 /// which `parse_sync_line` skips as unknown types. The source-version marker
 /// moves with the runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.79";
+///
+/// The `~6.18.79` -> `~6.18.80` bump (`git diff v6.18.79..v6.18.80 -- src`,
+/// excluding tests) only retargets the company job-health path in
+/// src/outposts/company.ts (hq-cloud#955). It adds no `this.name` identity, so
+/// `HQ_CLOUD_IDENTITIES` remains 59 and `ERROR_TYPES` is unchanged.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.80";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new

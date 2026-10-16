@@ -768,7 +768,13 @@
 /// capability, so no `*_MIN_HQ_CLOUD` floor; it stays on the 6.18 minor line,
 /// so `RESCUE_CONTRACT_FLOOR` stays 6.18.0. Raising the lower bound moves
 /// npm's cache key so installed copies refresh their cached runner.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.79";
+///
+/// `~6.18.79` -> `~6.18.80`: adds the `hq outposts status` job-health read fix
+/// (hq-cloud#955): company job health is read from
+/// `/outpost/company/jobs/status`, the route hq-pro-agents serves, instead of
+/// the assumed `/outpost/company/job-status`. CLI-only, so no `*_MIN_HQ_CLOUD`
+/// floor, and `RESCUE_CONTRACT_FLOOR` stays 6.18.0.
+pub const HQ_CLOUD_VERSION: &str = "~6.18.80";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -896,7 +902,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.79");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.80");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

@@ -973,10 +973,10 @@ mod tests {
 
     #[test]
     fn registry_metadata_uses_the_highest_version_inside_the_pinned_range() {
-        // Fixture straddles the `~6.18.79` pin: one version below the floor,
+        // Fixture straddles the `~6.18.80` pin: one version below the floor,
         // one on the next minor, and the in-range maximum.
         let latest =
-            max_satisfying_version_from_metadata(br#"["6.18.78","6.19.0","6.18.81","6.18.79"]"#)
+            max_satisfying_version_from_metadata(br#"["6.18.79","6.19.0","6.18.81","6.18.80"]"#)
                 .unwrap();
 
         assert_eq!(latest, semver::Version::parse("6.18.81").unwrap());
