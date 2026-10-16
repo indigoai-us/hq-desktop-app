@@ -17,6 +17,7 @@ import {
   type FirstRunToolUsage,
 } from "./visual-first-run.js";
 import type { ImportScanEnd, ImportScanHost } from "./knowledge-tree/import-runner.js";
+import { FIRST_RUN_SIGNIN_COPY, type FirstRunSignInHost } from "./first-run-signin.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -59,6 +60,7 @@ interface Opts {
   initialChoseBot?: boolean;
   oncontinueintool?: (runtime: string) => void | Promise<void>;
   onretry?: () => void | Promise<void>;
+  signin?: FirstRunSignInHost | null;
 }
 
 function render(opts: Opts = {}) {
@@ -84,6 +86,7 @@ function render(opts: Opts = {}) {
       initialChoseBot: opts.initialChoseBot ?? false,
       reducedMotion: true,
       timingLog: (line: string) => timing.push(line),
+      signin: opts.signin ?? null,
       ...handlers,
     },
   });
@@ -314,5 +317,186 @@ describe("FirstRunDecisionTakeover", () => {
     expect(escape.defaultPrevented).toBe(true);
     expect(byId("first-run-takeover")).toBeTruthy();
     expect(byId("first-run-decision")?.getAttribute("data-screen")).toBe("decision");
+  });
+});
+
+/**
+ * The detected tool's sign-in (owner, 2026-10-16: "Just have them sign in
+ * after we identify what they use most often"). Continue in <tool> and the
+ * name path wait on it; Skip for now goes on without it.
+ */
+describe("FirstRunDecisionTakeover sign-in", () => {
+  function fakeSignIn(signedIn = false) {
+    const runs: Array<{ runtime: string; cancelled: () => boolean; finish: (ok: boolean) => void }> = [];
+    const signin: FirstRunSignInHost = {
+      signedIn: vi.fn(async () => signedIn),
+      run: vi.fn(
+        (runtime: string, opts: { cancelled: () => boolean }) =>
+          new Promise<boolean>((resolve) => runs.push({ runtime, cancelled: opts.cancelled, finish: resolve })),
+      ),
+    };
+    return { signin, runs };
+  }
+  const SIGNED_OUT = { claude: true, codex: false };
+
+  it("a signed-in tool continues with no sign-in step", async () => {
+    const { signin } = fakeSignIn(true);
+    const { handlers, timing } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(signin.signedIn).toHaveBeenCalledWith("codex");
+    expect(signin.run).not.toHaveBeenCalled();
+    expect(byId("first-run-signin-waiting")).toBeNull();
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    expect(timing.some((line) => line.includes("kind=signin"))).toBe(false);
+  });
+
+  it("a tool the stored logins already show as ready skips even the check", async () => {
+    const { signin } = fakeSignIn(false);
+    const { handlers } = render({ signin, installed: { claude: true, codex: true } });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(signin.signedIn).not.toHaveBeenCalled();
+    expect(signin.run).not.toHaveBeenCalled();
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+  });
+
+  it("signed out, Continue in Codex shows the waiting state, then goes on once the sign-in connects", async () => {
+    const { signin, runs } = fakeSignIn(false);
+    const { handlers, timing } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(runs.map((run) => run.runtime)).toEqual(["codex"]);
+    expect(text("first-run-signin-waiting")).toBe("Signing in to Codex…");
+    expect(byId("first-run-signin-waiting")?.getAttribute("aria-busy")).toBe("true");
+    expect(text("first-run-signin-skip")).toBe("Skip for now");
+    expect(byId("first-run-signin-retry")).toBeNull();
+    expect(handlers.oncontinueintool).not.toHaveBeenCalled();
+    expect(timing).toContain("kind=signin event=start tool=codex");
+
+    runs[0]!.finish(true);
+    await settle();
+    expect(byId("first-run-signin-waiting")).toBeNull();
+    expect(handlers.oncontinueintool).toHaveBeenCalledTimes(1);
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    expect(timing).toContain("kind=signin event=done tool=codex");
+  });
+
+  it("signed out, Continue in Claude Code names Claude Code while it waits", async () => {
+    const { signin, runs } = fakeSignIn(false);
+    const { handlers } = render({
+      signin,
+      installed: { claude: false, codex: true },
+      scanTools: [{ tool: "claude-code", sessions_total: 12, sessions_last_30d: 4, last_active_at: NOW }],
+    });
+    await waitForDecision();
+    expect(text("first-run-decision-primary")).toBe("Continue in Claude Code");
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(text("first-run-signin-waiting")).toBe("Signing in to Claude Code…");
+    runs[0]!.finish(true);
+    await settle();
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("claude");
+  });
+
+  it("a failed sign-in says so and offers Retry and Skip for now; Retry runs it again", async () => {
+    const { signin, runs } = fakeSignIn(false);
+    const { handlers, timing } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    runs[0]!.finish(false);
+    await settle();
+    expect(text("first-run-signin-failed")).toBe("Sign-in didn't finish. Try again or skip for now.");
+    expect(FIRST_RUN_SIGNIN_COPY.failed).toBe("Sign-in didn't finish. Try again or skip for now.");
+    expect(text("first-run-signin-retry")).toBe(FIRST_RUN_COPY.retry);
+    expect(text("first-run-signin-skip")).toBe("Skip for now");
+    expect(byId("first-run-signin-waiting")).toBeNull();
+    expect(handlers.oncontinueintool).not.toHaveBeenCalled();
+    expect(timing).toContain("kind=signin event=failed tool=codex");
+
+    byId<HTMLButtonElement>("first-run-signin-retry")!.click();
+    await settle();
+    expect(runs).toHaveLength(2);
+    expect(text("first-run-signin-waiting")).toBe("Signing in to Codex…");
+    runs[1]!.finish(true);
+    await settle();
+    expect(handlers.oncontinueintool).toHaveBeenCalledTimes(1);
+  });
+
+  it("a sign-in that throws is a failure, never a stuck spinner", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const signin: FirstRunSignInHost = {
+      signedIn: vi.fn(async () => false),
+      run: vi.fn(async () => {
+        throw new Error("host gone");
+      }),
+    };
+    render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(byId("first-run-signin-failed")).toBeTruthy();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("Skip for now goes on without the sign-in and stops the wait", async () => {
+    const { signin, runs } = fakeSignIn(false);
+    const { handlers, timing } = render({ signin, installed: SIGNED_OUT });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(runs[0]!.cancelled()).toBe(false);
+    byId<HTMLButtonElement>("first-run-signin-skip")!.click();
+    await settle();
+    expect(runs[0]!.cancelled()).toBe(true);
+    expect(byId("first-run-signin-waiting")).toBeNull();
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    expect(timing).toContain("kind=signin event=skipped tool=codex");
+
+    // A sign-in that lands after Skip changes nothing.
+    runs[0]!.finish(true);
+    await settle();
+    expect(handlers.oncontinueintool).toHaveBeenCalledTimes(1);
+    expect(timing.some((line) => line.includes("event=done"))).toBe(false);
+  });
+
+  it("the name path signs the detected tool in before it names the assistant", async () => {
+    const { signin, runs } = fakeSignIn(false);
+    const { handlers } = render({ signin, installed: SIGNED_OUT, initialChoseBot: true });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(runs.map((run) => run.runtime)).toEqual(["codex"]);
+    expect(text("first-run-signin-waiting")).toBe("Signing in to Codex…");
+    expect(handlers.onconfirmname).not.toHaveBeenCalled();
+    runs[0]!.finish(true);
+    await settle();
+    expect(handlers.onconfirmname).toHaveBeenCalledWith("Pickles", "codex");
+    expect(byId("first-run-takeover")?.getAttribute("data-step")).toBe("done");
+  });
+
+  it("Skip for now on the name path still names the assistant", async () => {
+    const { signin } = fakeSignIn(false);
+    const { handlers } = render({ signin, installed: SIGNED_OUT, initialChoseBot: true });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    byId<HTMLButtonElement>("first-run-signin-skip")!.click();
+    await settle();
+    expect(handlers.onconfirmname).toHaveBeenCalledWith("Pickles", "codex");
+  });
+
+  it("with no detected tool, the name path has no sign-in step", async () => {
+    const { signin } = fakeSignIn(false);
+    const { handlers } = render({ signin, scanTools: [], installed: {} });
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(signin.signedIn).not.toHaveBeenCalled();
+    expect(handlers.onconfirmname).toHaveBeenCalledWith("Pickles", "claude");
   });
 });

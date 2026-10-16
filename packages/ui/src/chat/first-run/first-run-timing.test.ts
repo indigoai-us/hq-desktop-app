@@ -8,6 +8,7 @@ import {
   formatRoute,
   formatSetupRunSet,
   formatWelcomeReport,
+  formatSignIn,
   formatInstallEnd,
   formatInstallStart,
   formatProbe,
@@ -208,6 +209,13 @@ describe("route, flag and setup-run lines", () => {
     expect(formatWelcomeReport("landed")).toBe("kind=welcome-report event=landed");
     expect(formatWelcomeReport("failed")).toBe("kind=welcome-report event=failed");
     expect(formatWelcomeReport("blocked", "")).toBe("kind=welcome-report event=blocked reason=unknown");
+  });
+
+  it("formats sign-in lines with the tool", () => {
+    expect(formatSignIn("start", "claude")).toBe("kind=signin event=start tool=claude");
+    expect(formatSignIn("done", "codex")).toBe("kind=signin event=done tool=codex");
+    expect(formatSignIn("failed", "claude")).toBe("kind=signin event=failed tool=claude");
+    expect(formatSignIn("skipped", "codex")).toBe("kind=signin event=skipped tool=codex");
   });
 
   it("adds late= only for an answer that landed after its wait", () => {

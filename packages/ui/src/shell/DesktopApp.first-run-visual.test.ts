@@ -2018,3 +2018,243 @@ describe("first-run conversation start with a slow create", () => {
     expect(fromConversationStart([intro], starts, SETUP_BOT_UID)).toEqual([intro]);
   });
 });
+
+// Owner (2026-10-16): "we want the report to run so make sure the user
+// connects their coding tool during install flow", then "Just have them sign
+// in after we identify what they use most often". The detected tool signs in
+// before Continue in <tool> and the name path go on.
+describe("visual first run, the detected tool's sign-in", () => {
+  const runningSetupBot = {
+    name: "setup",
+    agentUid: SETUP_BOT_UID,
+    ownerUid: "prs_test",
+    runtime: "claude",
+    state: "running",
+    pid: 11,
+    processAlive: true,
+    online: true,
+    lastHeartbeatAt: null,
+    daemonInstalled: true,
+    daemonLoaded: true,
+    dir: "/tmp/HQ/personal/workers/setup",
+    workerId: "setup",
+  };
+  const briefJobs = (sendDm: ReturnType<typeof vi.fn>) =>
+    (sendDm.mock.calls as unknown as [string, string][]).filter(([, body]) => body.startsWith("/daily-brief "));
+
+  /** The launch scan finds `tool` used most here. */
+  function scanFinds(platform: PlatformAdapter, tool: "claude-code" | "codex"): void {
+    (platform as unknown as { localScan: unknown }).localScan = {
+      scan: async () =>
+        ok({
+          tools: [{ tool, sessions_total: 9, sessions_last_30d: 3, last_active_at: null }],
+          projects: [],
+          repos: [],
+          apps: [],
+          mcp_servers: [],
+          sources: [],
+          truncated: false,
+          elapsed_ms: 1,
+        }),
+    };
+  }
+
+  /** A tool that is signed out until its browser sign-in connects. */
+  function signsInThroughBrowser(runtime: "claude" | "codex") {
+    const state = { signedIn: false, connect: false };
+    const preflightImpl = vi.fn(async () =>
+      ok({
+        claudeAvailable: true,
+        claudeLoggedIn: runtime === "claude" ? state.signedIn : true,
+        codexAvailable: true,
+        codexLoggedIn: runtime === "codex" ? state.signedIn : false,
+        grokAvailable: false,
+        grokLoggedIn: false,
+      }),
+    );
+    const loginStart = vi.fn(async () => ok({ state: "waiting" }));
+    const loginStatus = vi.fn(async () => {
+      if (!state.connect) return ok({ state: "waiting" });
+      state.signedIn = true;
+      return ok({ state: "connected" });
+    });
+    return { state, preflightImpl, loginStart, loginStatus };
+  }
+
+  it("a signed-in tool continues to the welcome report with no sign-in step", async () => {
+    const loginStart = vi.fn(async () => ok({ state: "waiting" }));
+    const loginStatus = vi.fn(async () => ok({ state: "waiting" }));
+    const log = logSink();
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      loginStart,
+      loginStatus,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(loginStart).not.toHaveBeenCalled();
+    expect(log.of("signin")).toEqual([]);
+  }, 15_000);
+
+  it("signed out, Continue in Claude Code signs in, waits, then lands on the welcome report and sends its job", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const log = logSink();
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    const primary = q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!;
+    expect(primary.textContent).toContain("Continue in Claude Code");
+    primary.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-signin-waiting"]')?.textContent?.trim()).toBe("Signing in to Claude Code…"),
+    );
+    expect(tool.loginStart).toHaveBeenCalledWith("claude", { force: true });
+    expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    expect(briefJobs(sendDm)).toHaveLength(0);
+
+    tool.state.connect = true;
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 10_000 });
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(q('[data-testid="welcome-report-blocked"]')).toBeNull();
+    expect(log.of("signin")).toEqual(["kind=signin event=start tool=claude", "kind=signin event=done tool=claude"]);
+  }, 20_000);
+
+  it("signed out, Continue in Codex signs Codex in the same way before it goes on", async () => {
+    const tool = signsInThroughBrowser("codex");
+    const log = logSink();
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "codex");
+    await boot(platform);
+    await decisionShown();
+    const primary = q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!;
+    expect(primary.textContent).toContain("Continue in Codex");
+    primary.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-signin-waiting"]')?.textContent?.trim()).toBe("Signing in to Codex…"),
+    );
+    expect(tool.loginStart).toHaveBeenCalledWith("codex", { force: true });
+    tool.state.connect = true;
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 10_000 });
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(log.of("signin")).toEqual(["kind=signin event=start tool=codex", "kind=signin event=done tool=codex"]);
+  }, 20_000);
+
+  it("Skip for now lands on the welcome report held on the sign-in, as before", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const log = logSink();
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-skip"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-signin-skip"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    expect(q('[data-testid="welcome-report-blocked-fix"]')?.textContent?.trim()).toBe("Connect a model");
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    expect(log.of("signin")).toEqual(["kind=signin event=start tool=claude", "kind=signin event=skipped tool=claude"]);
+  }, 20_000);
+
+  it("a sign-in that cannot start says so, with Retry and Skip for now", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const loginStart = vi.fn(async () => failure("unavailable", "no browser"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const log = logSink();
+    const { platform } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart,
+      loginStatus: tool.loginStatus,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-signin-failed"]')?.textContent?.trim()).toBe(
+        "Sign-in didn't finish. Try again or skip for now.",
+      ),
+    );
+    expect(q('[data-testid="first-run-signin-retry"]')?.textContent?.trim()).toBe("Retry");
+    expect(q('[data-testid="first-run-signin-skip"]')?.textContent?.trim()).toBe("Skip for now");
+    expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+    q<HTMLButtonElement>('[data-testid="first-run-signin-retry"]')!.click();
+    await vi.waitFor(() => expect(loginStart).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-failed"]')).toBeTruthy());
+    await vi.waitFor(() => expect(log.of("signin")).toHaveLength(4));
+    expect(log.of("signin")).toEqual([
+      "kind=signin event=start tool=claude",
+      "kind=signin event=failed tool=claude",
+      "kind=signin event=start tool=claude",
+      "kind=signin event=failed tool=claude",
+    ]);
+    warn.mockRestore();
+  }, 15_000);
+
+  it("the name path signs the detected tool in before it makes the assistant", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform } = adapter({
+      flag: true,
+      create,
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await chooseBot();
+    typeName("Biscuit");
+    confirmName();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-signin-waiting"]')?.textContent?.trim()).toBe("Signing in to Claude Code…"),
+    );
+    expect(tool.loginStart).toHaveBeenCalledWith("claude", { force: true });
+    await settle();
+    expect(create).not.toHaveBeenCalled();
+    tool.state.connect = true;
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toEqual(
+      expect.objectContaining({ displayName: "Biscuit", runtime: "claude" }),
+    );
+    expect(step()).toBe("done");
+  }, 20_000);
+});

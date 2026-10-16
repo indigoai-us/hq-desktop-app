@@ -348,6 +348,7 @@
     type FlagLateOutcome,
     type WelcomeReportEvent,
   } from "../chat/first-run/first-run-timing.js";
+  import { runFirstRunSignIn, type FirstRunSignInHost } from "../chat/first-run/first-run-signin.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
   import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
@@ -3995,6 +3996,32 @@
     firstRunRuntime = runtime;
     await continueFirstRunInChat();
   }
+  /**
+   * The detected tool's sign-in before "Continue in <tool>" and the name path
+   * go on (owner, 2026-10-16): the repair card's browser sign-in, bounded.
+   */
+  const firstRunSignIn: FirstRunSignInHost | null =
+    adapter.sessions?.loginStart && adapter.sessions.loginStatus
+      ? {
+          signedIn: async (runtime) => {
+            await loadLocalBotRuntimeReady(true);
+            return localBotRuntimeReady?.[runtime] === true;
+          },
+          run: async (runtime, { cancelled }) => {
+            const ok = await runFirstRunSignIn(runtime, {
+              sessions: adapter.sessions!,
+              bots: adapter.bots ?? null,
+              gate: {
+                canStart: (bot) => canStartBot(botStartGate, bot.name),
+                onstarted: (bot) => noteBotStarted(bot.name, bot.agentUid),
+              },
+              cancelled,
+            });
+            if (ok) await onBotRuntimeSignedIn(runtime);
+            return ok;
+          },
+        }
+      : null;
   /** The finished scan's counts and report path, for the setup bot's handoff. */
   let firstRunImport: FirstRunImportHandoff | null = null;
   function recordFirstRunImport(result: FirstRunImportHandoff): void {
@@ -16721,6 +16748,7 @@
       oncontinueinchat={continueFirstRunInChat}
       onimport={recordFirstRunImport}
       timingLog={firstRunTimingLog}
+      signin={firstRunSignIn}
     />
   {/if}
 
