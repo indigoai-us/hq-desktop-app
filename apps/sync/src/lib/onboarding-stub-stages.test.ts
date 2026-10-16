@@ -81,13 +81,16 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).not.toContain('if (!result.needsAttention)');
     expect(wizard).toContain('let finishInProgress = false;');
     expect(wizard).toContain('if (finishing || finishInProgress) return false;');
-    expect(wizard).toContain('disabled={finishing ||');
-    // A recorded setup failure never disables the ready screen's tool
-    // buttons. (Product decision 2026-09-27: the ready screen has no install
-    // links any more, only buttons for installed tools.)
+    // A recorded setup failure never blocks the finish. The ready screen has
+    // no install links and no launch buttons (owner decision: it finishes by
+    // itself once the install has settled); only the finish-error note's
+    // Finish setup button remains, disabled while a finish is in flight.
     expect(wizard).not.toContain('data-testid="onboarding-install-');
+    expect(wizard).not.toContain('data-testid="onboarding-launch-');
+    expect(wizard).not.toContain('data-testid="onboarding-open-desktop"');
+    expect(wizard).not.toContain('finishBlocked');
     expect(wizard).toMatch(
-      /data-testid="onboarding-launch-\{slot\.kind\}"\n\s+disabled=\{finishing \|\| launching !== null \|\| finishBlocked\}/,
+      /data-testid="launcher-finish-error">[\s\S]*?onclick=\{handleFinish\}\n\s+disabled=\{finishing\}/,
     );
   });
 

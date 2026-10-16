@@ -5,11 +5,13 @@
 // Product decision (2026-09-27): in first-run onboarding the question is no
 // longer a screen of its own. It is one quiet checkbox line on the final
 // (ready) screen, "Share anonymous usage data", checked by default, with a
-// "What's collected" link. The answer is recorded when the person finishes
-// from that screen, whichever way they finish (Open HQ Desktop, or opening HQ
-// in Claude Code or Codex), with the same payload as before: surface
-// "onboarding" and the consent version. Nothing is posted before they finish,
-// and a decline is recorded as enabled:false with nothing withheld.
+// "What's collected" link. The ready screen has no buttons (owner decision:
+// no Open HQ Desktop, Claude Code or Codex launch); it finishes by itself once
+// the install has settled, and the answer is recorded then, with the same
+// payload as before: surface "onboarding" and the consent version. Nothing is
+// posted while the install runs, the answer recorded is the box as it stands
+// at the finish, and a decline is recorded as enabled:false with nothing
+// withheld.
 //
 // The consent-only runs (the US-005 re-prompt, an installed machine missing
 // its answer) keep their own blocking consent screen; the full disclosure is
@@ -28,9 +30,13 @@ vi.mock('svelte', async () => {
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
+const eventHandlers = vi.hoisted(
+  () => new Map<string, (event: { payload: unknown }) => void>(),
+);
 const listen = vi.hoisted(() =>
-  vi.fn(async () => () => {
-    /* unlisten */
+  vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    eventHandlers.set(name, handler);
+    return () => eventHandlers.delete(name);
   }),
 );
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
@@ -79,10 +85,52 @@ async function flushUntil(predicate: () => boolean, label = 'condition'): Promis
   throw new Error(`Timed out waiting for ${label}.`);
 }
 
+/**
+ * The host install queue. A test that changes the box before the finish holds
+ * it running (the ready screen waits for it) and settles it afterwards.
+ */
+let queueState: 'running' | 'complete' = 'complete';
+function queueStatus() {
+  const running = queueState === 'running';
+  return {
+    state: queueState,
+    current: running ? 'Claude Code' : null,
+    currentId: running ? 'claude-code' : null,
+    done: running ? 9 : 12,
+    total: 12,
+    failed: [],
+  };
+}
+
+function holdInstall() {
+  queueState = 'running';
+}
+
+/** The queue settles; the ready screen then finishes by itself. */
+async function settleInstall() {
+  queueState = 'complete';
+  eventHandlers.get('install-queue:progress')?.({ payload: queueStatus() });
+  await finishedByItself();
+}
+
+/**
+ * The ready screen finishes by itself once its reveal has run and the install
+ * has settled; the reveal takes longer than flushUntil's short budget.
+ */
+async function finishedByItself() {
+  await vi.waitFor(() => expect(onfinish).toHaveBeenCalledTimes(1), {
+    timeout: 2000,
+    interval: 10,
+  });
+  await flush();
+}
+
 /** Default invoke stub: resolve the handful of onMount commands the wizard fires. */
 function stubInvoke() {
   invoke.mockImplementation(async (command: string) => {
     switch (command) {
+      case 'get_install_queue_status':
+        return queueStatus();
       case 'resolve_hq_path':
         return '/Users/test/hq';
       case 'detect_ai_tools':
@@ -155,7 +203,9 @@ beforeEach(() => {
   __resetWizardRouterCompletionForTests();
   invoke.mockReset();
   listen.mockClear();
+  eventHandlers.clear();
   openExternal.mockClear();
+  queueState = 'complete';
   stubInvoke();
   document.body.innerHTML = '';
   host = document.createElement('div');
@@ -223,15 +273,19 @@ describe('US-001 the question on the ready screen', () => {
     expect(line.contains(active)).toBe(false);
   });
 
-  it('keeps every finish action enabled whichever way the box is set (AC 2)', async () => {
+  it('never holds the finish on the box, whichever way it is set (AC 2)', async () => {
+    holdInstall();
     await mountAt(READY_STEP);
-    await flushUntil(() => Boolean(byId('onboarding-launch-claude')), 'the tool options');
-    expect(byId('onboarding-open-desktop')!.disabled).toBe(false);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
+    // No launch buttons to enable or disable: the screen finishes by itself.
+    expect(byId('onboarding-open-desktop')).toBeNull();
+    expect(byId('onboarding-launch-claude')).toBeNull();
+    expect(byId('onboarding-launch-codex')).toBeNull();
     await decline();
     expect(shareBox().checked).toBe(false);
-    expect(byId('onboarding-open-desktop')!.disabled).toBe(false);
-    expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
-    expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
+    expect(shareBox().disabled).toBe(false);
+    await settleInstall();
+    expect(onfinish).toHaveBeenCalledTimes(1);
   });
 
   it('links to what is collected via the system browser (AC 4)', async () => {
@@ -275,24 +329,31 @@ describe('US-001 the question on the ready screen', () => {
 });
 
 describe('US-001 recording the answer when the person finishes', () => {
-  it('posts nothing before the person finishes, even after changing the box', async () => {
+  it('posts nothing while the install runs, even after changing the box, then records the box as it stands', async () => {
+    holdInstall();
     await mountAt(READY_STEP);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
     await decline();
     const box = shareBox();
     box.checked = true;
     box.dispatchEvent(new Event('change', { bubbles: true }));
     await flush();
-    await new Promise((r) => setTimeout(r, 50));
+    // Longer than the ready reveal, so only the running install holds the finish.
+    await new Promise((r) => setTimeout(r, 800));
     await flush();
     expect(commands()).not.toContain('post_telemetry_opt_in');
     expect(commands()).not.toContain('write_menubar_telemetry_pref');
     expect(onfinish).not.toHaveBeenCalled();
+
+    await settleInstall();
+    expect(optInPosts()).toHaveLength(1);
+    expect(optInPosts()[0][1]).toMatchObject({ enabled: true, surface: 'onboarding' });
   });
 
   it('records share with surface=onboarding and the consent version, then finishes (AC 6)', async () => {
     await mountAt(READY_STEP);
-    byId('onboarding-open-desktop')!.click();
-    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    // Nothing to wait for on this mount: the ready screen finishes by itself.
+    await finishedByItself();
 
     expect(optInPosts()).toHaveLength(1);
     expect(optInPosts()[0][1]).toMatchObject({
@@ -310,10 +371,11 @@ describe('US-001 recording the answer when the person finishes', () => {
   });
 
   it('records a decline as enabled:false and finishes with nothing withheld (AC 5)', async () => {
+    holdInstall();
     await mountAt(READY_STEP);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
     await decline();
-    byId('onboarding-open-desktop')!.click();
-    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    await settleInstall();
 
     expect(optInPosts()).toHaveLength(1);
     expect(optInPosts()[0][1]).toMatchObject({
@@ -324,25 +386,14 @@ describe('US-001 recording the answer when the person finishes', () => {
     expect(readyScreen().textContent).toContain('HQ is ready');
   });
 
-  it('records the answer when the person finishes by opening Codex instead', async () => {
-    await mountAt(READY_STEP);
-    await flushUntil(() => Boolean(byId('onboarding-launch-codex')), 'the Codex option');
-    await decline();
-    byId('onboarding-launch-codex')!.click();
-    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
-
-    expect(commands()).toContain('launch_codex_desktop');
-    expect(optInPosts()).toHaveLength(1);
-    expect(optInPosts()[0][1]).toMatchObject({ enabled: false, surface: 'onboarding' });
-  });
-
   it('emits operational setup telemetry while declining and no skill telemetry (AC 5)', async () => {
     // A decline must not block the operational onboarding trace, but it must
     // not reach the consent-gated skill telemetry command.
+    holdInstall();
     await mountAt(READY_STEP);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
     await decline();
-    byId('onboarding-open-desktop')!.click();
-    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    await settleInstall();
 
     const operationalEmits = invoke.mock.calls.filter(
       (c) => c[0] === 'emit_desktop_operational_telemetry',

@@ -2,7 +2,7 @@
   import RailIcon from '@hq/ui/rail-icon';
   /**
    * First-run company step. Shown after the setup explainers and before the
-   * ready ("Open HQ Desktop") screen, while the install runs, to a person with
+   * ready screen, while the install runs, to a person with
    * no active company: join a pending invite, or name a company (optional
    * website), pick Starter or Workforce, invite the team, and land on a
    * "<company> is ready." moment before the ready screen. Invites are their own

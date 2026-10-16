@@ -1,6 +1,5 @@
 <script lang="ts">
   import RailIcon from '@hq/ui/rail-icon';
-  import { BRAND_ICONS } from '@hq/ui/rail-icons';
   import {
     FIRST_RUN_TIMING_TAG,
     createScreenTimer,
@@ -42,7 +41,6 @@
     installCardStepLines,
     isStoryScene,
     previousScene,
-    readyGate,
     sceneForStep,
     stepForScene,
     storyScenes,
@@ -58,12 +56,6 @@
     shouldDeferConsent,
     type DeferredConsent,
   } from '../../lib/deferred-consent';
-  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
-  import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';
-  import {
-    escapeForLaunch,
-    type OnboardingEscape,
-  } from '../../lib/onboarding-escape';
   import {
     appendChildFolderPath,
     friendlyPath,
@@ -87,15 +79,7 @@
     shouldSendFirstLaunchReceipt,
     type ContinuationOutcome,
   } from '../../lib/desktop-session-continuation';
-  import {
-    NO_AI_TOOLS,
-    availableLaunches,
-    launchEntries,
-    markToolUnavailable,
-    type AiTools,
-    type LaunchEntry,
-    type LaunchKind,
-  } from '../../lib/onboarding-summary';
+  import { NO_AI_TOOLS, type AiTools } from '../../lib/onboarding-summary';
   import {
     activeStageId,
     allSettled,
@@ -192,7 +176,6 @@
     type CommandLineToolsPhase,
   } from '../../lib/command-line-tools-gate';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
-  import hqAppIcon from '../../assets/onboarding/hq-app-icon.png';
   import {
     companyUidFromMissingBucket,
     isMissingBucketMessage,
@@ -206,7 +189,6 @@
   } from '../../lib/first-run-company';
   import {
     createSyncPlatformAdapter,
-    dispatchPostReadyAction,
     getHqAnywherePersonSetting,
     hqAnywhereRuntimeEnabled as resolveHqAnywhereRuntimeEnabled,
     putHqAnywherePersonSetting,
@@ -538,7 +520,7 @@
   /**
    * The company route lookup. It starts on the second setup explainer, so the
    * company step can run between the setup explainers and the ready
-   * ("Open HQ Desktop") screen instead of after it. Reset on an account switch.
+   * screen instead of after it. Reset on an account switch.
    */
   let companyRouteResolution: Promise<void> | null = null;
   let companyRouteGeneration = 0;
@@ -616,14 +598,13 @@
   // Counts progress events, so a status read that an event overtook does not
   // put back an older status (a stale "running" would never clear).
   let hostQueueEvents = 0;
-  // The ready step's stall ceiling. While the install runs, the step reads the
-  // host's queue again every READY_STATUS_REREAD_MS. If neither a progress
-  // event nor a status change arrives for READY_STALL_CEILING_MS, the control
-  // enables and the queue carries on in the background. A queue item that
-  // hangs, or one a build left marked running, cannot lock the step.
-  let readyStallCeilingReached = $state(false);
-  let readyLastActivityAt = 0;
-  let readyLastStatusKey = '';
+  // True once the ready step's first read of the host queue has come back, so
+  // the ready step does not finish on the stale queue value it opened with.
+  let hostQueueChecked = $state(false);
+  let hostQueueReadToken = 0;
+  // The ready step finishes by itself at most once per mount. A failed finish
+  // leaves the finish-error note with its own Finish setup button.
+  let autoFinishAttempted = false;
   let backgroundRunId = 0;
   const loggedFirstRunPhases = new Set<string>();
   let currentSetupRunId = '';
@@ -644,29 +625,13 @@
   const SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER = 3;
 
   let aiTools = $state<AiTools | null>(null);
-  let detectionFailed = $state(false);
-  let probeInFlight = $state(false);
-  let probeTimedOut = $state(false);
+  let probeInFlight = false;
   let detectorMounted = false;
-  // How long a probe may run before we surface the "Check again" fallback in
-  // the ready scene. The probe itself is not cancelled — a late result still
-  // fills in the launch buttons.
-  const AI_TOOLS_PROBE_TIMEOUT_MS = 10_000;
   // The ready step re-reads the host's install queue this often while the
-  // install runs, and lifts its wait after this long with no install progress.
-  // A queue item sends one event when it starts and one when it settles, and
-  // the slowest may run up to 60 minutes, so the ceiling can lift the wait
-  // during a slow item as well as a hung one. Either way the queue keeps
-  // running in the background; only the wait on this step ends.
+  // install runs. A queue item sends one event when it starts and one when it
+  // settles, so a missed settle event would otherwise leave the step showing
+  // a running install that has already finished.
   const READY_STATUS_REREAD_MS = 10_000;
-  const READY_STALL_CEILING_MS = 10 * 60_000;
-  let probeTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  // Resolvers a caller can await on when they clicked an action mid-probe.
-  const probeWaiters: Array<() => void> = [];
-  let launching = $state<
-    'claude' | 'codex' | 'grok' | null
-  >(null);
-  let launchEscape = $state<OnboardingEscape | null>(null);
   let finishing = $state(false);
   // Svelte clears rune-backed state during teardown, so keep the active
   // handoff marker outside that state for onDestroy's abandonment check.
@@ -866,19 +831,6 @@
           : null,
     }),
   );
-  const launchOptions = $derived(availableLaunches(aiTools));
-  const launchSlots = $derived<LaunchEntry[]>(launchEntries(aiTools));
-  // The ready screen's tool buttons: Claude Code and Codex (never Grok).
-  const ownToolSlots = $derived(launchSlots.filter((slot) => slot.kind !== 'grok'));
-  /** Only installed tools get a button on the ready screen. */
-  const installedToolSlots = $derived(ownToolSlots.filter((slot) => slot.installed));
-
-  function toolName(kind: LaunchKind): string {
-    if (kind === 'claude') return 'Claude Code';
-    if (kind === 'codex') return 'Codex';
-    return 'Grok';
-  }
-
   /** Collects the keyboard's key elements for the shortcut screen's chord. */
   function registerKey(node: HTMLElement, id: string) {
     keyEls.set(id, node);
@@ -889,7 +841,7 @@
     };
   }
 
-  // ─── Welcome flow: chrome, install card, ready gate ─────────────────────
+  // ─── Welcome flow: chrome, install card, auto-finish inputs ─────────────
   /** An install this flow started is still running. */
   const installPending = $derived(setupStarted && !blockingPhaseDone && !setupCompleted);
   const hostQueueRunning = $derived(hostQueue?.state === 'running');
@@ -897,15 +849,14 @@
   const installSettled = $derived(setupCompleted && !hostQueueRunning);
   /**
    * Some part of the install is still running, the background phase and the
-   * host's queue included. The ready screen's heading, progress line and
-   * control all follow this, so Open HQ Desktop waits until every install
-   * item has settled. A queue that settled with failures is not running.
+   * host's queue included. The ready screen's heading and progress line follow
+   * this, and the ready step does not finish until every install item has
+   * settled. A queue that settled with failures is not running.
    */
   const installActivityRunning = $derived(
     (setupStarted && !setupCompleted && (!blockingPhaseDone || backgroundPhaseRunning)) ||
       hostQueueRunning,
   );
-  const readyInstallRunning = $derived(installActivityRunning && !readyStallCeilingReached);
   const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
   const installCard = $derived(
     installCardModel({
@@ -923,17 +874,6 @@
   );
   const installCardLines = installCardStepLines();
   const consentGate = $derived(deferredConsentGate(deferredConsent));
-  /** Finishing (Open HQ Desktop, or handing off to a tool) waits for the install and the answer. */
-  const finishBlocked = $derived(installPending || readyInstallRunning || consentGate !== 'clear');
-  const openDesktop = $derived(
-    readyGate({
-      installPending,
-      installRunning: readyInstallRunning,
-      consent: consentGate,
-      finishing,
-      launching: launching !== null,
-    }),
-  );
   const storyOrder = $derived(storyScenes(replay));
 
   $effect(() => {
@@ -991,59 +931,28 @@
   // Entering the ready step reads the host's queue, so a run this wizard did
   // not start (or one still going after this flow's stages settled) keeps the
   // screen from saying the install is done.
-  // It reads again when this flow's stages settle, so the control never
-  // enables on a queue status that predates the queue's start.
+  // It reads again when this flow's stages settle, so the step never finishes
+  // on a queue status that predates the queue's start. `hostQueueChecked`
+  // turns true only once the latest of these reads has come back.
   $effect(() => {
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX) return;
     void setupCompleted;
-    void refreshHostQueueStatus();
+    const token = ++hostQueueReadToken;
+    hostQueueChecked = false;
+    void refreshHostQueueStatus().finally(() => {
+      if (token === hostQueueReadToken) hostQueueChecked = true;
+    });
   });
 
   // While the install runs on the ready step, read the host's queue again
-  // every READY_STATUS_REREAD_MS (a missed progress event cannot leave a stale
-  // "running"), and lift the wait once nothing has moved for
-  // READY_STALL_CEILING_MS.
+  // every READY_STATUS_REREAD_MS, so a missed progress event cannot leave a
+  // stale "running" that would keep the step from finishing.
   $effect(() => {
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX) return;
-    if (!installActivityRunning || readyStallCeilingReached) return;
-    readyLastActivityAt = Date.now();
+    if (!installActivityRunning) return;
     const intervalId = window.setInterval(() => {
       void refreshHostQueueStatus();
-      // The blocking phase (folder, git, personalize) has its own per-stage
-      // time limits and must finish before HQ Desktop opens, so the ceiling
-      // only counts once it is done.
-      if (installPending) {
-        readyLastActivityAt = Date.now();
-        return;
-      }
-      const idleMs = Date.now() - readyLastActivityAt;
-      if (idleMs < READY_STALL_CEILING_MS || readyStallCeilingReached) return;
-      readyStallCeilingReached = true;
-      const message = `ready step stall ceiling reached after ${Math.round(idleMs / 1000)}s with no install progress; control enabled, queue keeps running (queue state=${hostQueue?.state ?? 'unknown'})`;
-      console.warn(`[onboarding] ${message}`);
-      invokeCommand('frontend_log', { tag: 'onboarding', message }).catch((err: unknown) => {
-        console.warn('[onboarding] stall ceiling log line was not written:', err);
-      });
     }, READY_STATUS_REREAD_MS);
-    return () => window.clearInterval(intervalId);
-  });
-
-  // A stage of this flow starting or settling counts as install progress for
-  // the ceiling. The displayed percent does not: it creeps on a timer while a
-  // stage runs, so a hung stage would look busy forever.
-  $effect(() => {
-    void settledCount;
-    void currentStageId;
-    void blockingPhaseDone;
-    void setupCompleted;
-    readyLastActivityAt = Date.now();
-  });
-
-  $effect(() => {
-    if (aiTools?.any !== false || currentStep < READY_STEP_INDEX) return;
-    const intervalId = window.setInterval(() => {
-      void probeAiTools();
-    }, 3000);
     return () => window.clearInterval(intervalId);
   });
 
@@ -1172,8 +1081,6 @@
       if (!status) return;
       hostQueueEvents += 1;
       hostQueue = status;
-      readyLastActivityAt = Date.now();
-      readyLastStatusKey = JSON.stringify(status);
     });
     // A session minted after this screen mounted (the outpost machine identity
     // resolves in the background at launch) must show up without a relaunch.
@@ -1215,11 +1122,6 @@
       const status = parseInstallQueueStatus(await invokeCommand<unknown>('get_install_queue_status'));
       if (status && mounted && hostQueueEvents === eventsBefore) {
         hostQueue = status;
-        const key = JSON.stringify(status);
-        if (key !== readyLastStatusKey) {
-          readyLastStatusKey = key;
-          readyLastActivityAt = Date.now();
-        }
       }
     } catch (err) {
       console.warn('[onboarding] install queue status unavailable:', err);
@@ -3351,7 +3253,7 @@
   }
 
   /**
-   * Leave the setup explainers for the ready ("Open HQ Desktop") screen.
+   * Leave the setup explainers for the ready screen.
    * There is no company screen (US-007): the membership lookup keeps running
    * in the background, a company the person already belongs to connects on
    * its own, and a personal setup needs no company.
@@ -3715,66 +3617,19 @@
     );
   }
 
+  // Detects the installed AI tools once at mount. The result only feeds the
+  // `detectedToolCount` telemetry; the ready screen has no tool buttons.
   async function probeAiTools() {
     if (probeInFlight) return;
     probeInFlight = true;
-    probeTimedOut = false;
-    detectionFailed = false;
-    if (probeTimeoutHandle) clearTimeout(probeTimeoutHandle);
-    probeTimeoutHandle = setTimeout(() => {
-      if (probeInFlight && detectorMounted) probeTimedOut = true;
-    }, AI_TOOLS_PROBE_TIMEOUT_MS);
     try {
       const tools = await invoke<AiTools>('detect_ai_tools');
-      if (detectorMounted) {
-        detectionFailed = false;
-        probeTimedOut = false;
-        aiTools = tools;
-      }
+      if (detectorMounted) aiTools = tools;
     } catch {
-      if (detectorMounted) {
-        detectionFailed = true;
-        aiTools = NO_AI_TOOLS;
-      }
+      if (detectorMounted) aiTools = NO_AI_TOOLS;
     } finally {
-      if (probeTimeoutHandle) {
-        clearTimeout(probeTimeoutHandle);
-        probeTimeoutHandle = null;
-      }
       probeInFlight = false;
-      // Wake anyone who clicked a launch button while we were probing.
-      const waiters = probeWaiters.splice(0, probeWaiters.length);
-      for (const wake of waiters) wake();
     }
-  }
-
-  /**
-   * Await an in-flight probe (up to a cap) so a launch button clicked mid-probe
-   * proceeds when the result arrives instead of hanging or silently falling
-   * back to the not-installed path.
-   */
-  function awaitPendingProbe(capMs = AI_TOOLS_PROBE_TIMEOUT_MS + 2_000): Promise<void> {
-    if (!probeInFlight) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        resolve();
-      };
-      probeWaiters.push(finish);
-      setTimeout(finish, capMs);
-    });
-  }
-
-  async function ensureAiTools(): Promise<AiTools> {
-    if (aiTools) return aiTools;
-    if (probeInFlight) {
-      await awaitPendingProbe();
-    } else {
-      await probeAiTools();
-    }
-    return aiTools ?? NO_AI_TOOLS;
   }
 
   async function finishWithRecovery(): Promise<boolean> {
@@ -3783,11 +3638,11 @@
     finishInProgress = true;
     finishError = false;
     try {
-      // Every way of finishing from the ready screen (Open HQ Desktop, a
-      // Claude Code or Codex launch) records the
-      // usage-data answer first, and nothing finishes on a failed write: the
-      // failure is shown with Retry, or for an offline person whose answer is
-      // cached, "Finish setup, send later".
+      // Every way of finishing from the ready screen (the auto-finish once
+      // the install has settled, the finish-error note's Finish setup, the
+      // consent Retry) records the usage-data answer first, and nothing
+      // finishes on a failed write: the failure is shown with Retry, or for
+      // an offline person whose answer is cached, "Finish setup, send later".
       if (consentOnReady && readyConsentShown && !readyConsentRecorded) {
         if (!(await submitConsent())) return false;
         readyConsentRecorded = true;
@@ -3808,110 +3663,6 @@
 
   async function handleFinish(): Promise<void> {
     await finishWithRecovery();
-  }
-
-  async function handleLaunchClaudeCode() {
-    launchEscape = null;
-    launching = 'claude';
-    let launched = false;
-    try {
-      const tools = await ensureAiTools();
-      if (tools.claude_desktop) {
-        const url = buildClaudeCodeUrl({
-          folder: installPath ?? '',
-          // NOT '/setup': Claude Desktop scans skills before a link-opened
-          // folder is trusted, so HQ's project `/setup` skill is not
-          // registered in the session this deep link creates.
-          prompt: SETUP_DEEP_LINK_PROMPT,
-        });
-        await invoke('open_claude_code_link', { url });
-        launched = true;
-      } else if (tools.claude_cli && installPath) {
-        await invoke('launch_claude_code', { path: installPath });
-        dispatchPostReadyAction('open_cli');
-        launched = true;
-      } else {
-        launchEscape = escapeForLaunch('claude', 'Claude Code was not detected');
-      }
-    } catch (err) {
-      const msg = errorMessage(err);
-      launchEscape = escapeForLaunch('claude', msg);
-      if (/Unable to find application|not installed|not found|missing/i.test(msg)) {
-        aiTools = markToolUnavailable(aiTools, 'claude_desktop');
-      }
-    } finally {
-      launching = null;
-    }
-    if (launched) await finishWithRecovery();
-  }
-
-  async function handleLaunchCodex() {
-    launchEscape = null;
-    launching = 'codex';
-    let launched = false;
-    try {
-      const tools = await ensureAiTools();
-      // `codex app <folder>` opens the desktop app IN the HQ folder, and the
-      // prompt link pre-types /setup in the composer — full parity with the
-      // Claude deep link. The CLI ships inside the ChatGPT app bundle, so
-      // codex_cli covers desktop-only machines. Bare desktop open is the
-      // last-ditch fallback only.
-      if (tools.codex_cli && installPath) {
-        await invoke('launch_codex_workspace', {
-          path: installPath,
-          prompt: '/setup',
-        });
-        dispatchPostReadyAction('open_cli');
-        launched = true;
-      } else if (tools.codex_desktop) {
-        await invoke('launch_codex_desktop');
-        launched = true;
-      } else {
-        launchEscape = escapeForLaunch('codex', 'Codex was not detected');
-      }
-    } catch (err) {
-      const msg = errorMessage(err);
-      launchEscape = escapeForLaunch('codex', msg);
-      if (/Unable to find application|not installed|not found|missing/i.test(msg)) {
-        aiTools = markToolUnavailable(aiTools, 'codex_desktop');
-      } else {
-        aiTools = markToolUnavailable(aiTools, 'codex_cli');
-      }
-    } finally {
-      launching = null;
-    }
-    if (launched) await finishWithRecovery();
-  }
-
-  async function handleLaunchGrok() {
-    launchEscape = null;
-    launching = 'grok';
-    let launched = false;
-    try {
-      const tools = await ensureAiTools();
-      if (tools.grok_cli && installPath) {
-        await invoke('launch_cli_in_terminal', {
-          path: installPath,
-          tool: 'grok',
-        });
-        dispatchPostReadyAction('open_cli');
-        launched = true;
-      } else {
-        launchEscape = escapeForLaunch('grok', 'Grok CLI was not detected');
-      }
-    } catch (err) {
-      launchEscape = escapeForLaunch('grok', errorMessage(err));
-      aiTools = markToolUnavailable(aiTools, 'grok_cli');
-    } finally {
-      launching = null;
-    }
-    if (launched) await finishWithRecovery();
-  }
-
-  function handleLaunch(kind: LaunchKind) {
-    if (kind === 'claude') return handleLaunchClaudeCode();
-    if (kind === 'codex') return handleLaunchCodex();
-    return handleLaunchGrok();
   }
 
   function advanceTo(
@@ -4018,7 +3769,8 @@
         if (!consentFailure) void submitConsent();
         return;
       case 'ready':
-        if (openDesktop.enabled) void handleFinish();
+        // The ready screen finishes by itself (the AUTO-FINISH effect), so a
+        // key press here never finishes early.
         return;
       default:
         return;
@@ -4063,7 +3815,7 @@
       case 'consent':
         return telemetryChoice !== null && !consentSubmitting && !finishing && !consentFailure;
       case 'ready':
-        return openDesktop.enabled;
+        return false;
       default:
         return isStoryScene(scene);
     }
@@ -4320,14 +4072,11 @@
       directoryNotice,
       consentFailure,
       finishError,
-      launchEscape,
-      detectionFailed,
       installPending,
-      readyInstallRunning,
+      installActivityRunning,
       deferredConsent,
       signInActionsReady,
       readyConsentRecorded,
-      aiTools,
     ];
     void tick().then(() => welcomeController?.relayout());
   });
@@ -4388,6 +4137,35 @@
       return;
     }
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX, null);
+  });
+
+  // AUTO-FINISH. The ready screen has no buttons: it finishes by itself, and
+  // the desktop opens, once nothing is left for this flow to do. That is when
+  // the ready screen is on show and its scene has arrived (`navRevealed`, set
+  // by the ready engine when the usage-data line appears), the host queue
+  // has been read on this step, no install item is running, the usage-data
+  // answer is not held back, and the post-ready steps above have all run:
+  // the conditions below mirror the routing effect, so this never fires
+  // while the routing effect still has a step to open.
+  // A wizard that started no install on this mount (only a direct mount at
+  // the ready step) never runs those steps, so it finishes once the host
+  // queue has settled.
+  // It fires once per mount. A finish that fails leaves the finish-error note
+  // with its Finish setup button, and a usage-data write that fails leaves the
+  // consent error with Retry.
+  $effect(() => {
+    if (consentOnly || replay || currentStep !== READY_STEP_INDEX || scene !== 'ready') return;
+    if (!navRevealed || !hostQueueChecked) return;
+    if (installPending || installActivityRunning) return;
+    if (consentGate !== 'clear' || finishing || autoFinishAttempted) return;
+    if (setupStarted) {
+      if (!setupCompleted || !postSetupStepsResolved) return;
+      if (showFirstFolderSyncStep && !firstFolderSyncVisited) return;
+      if (showInviteTeammateStep && inviteTeammateContext && !inviteTeammateVisited) return;
+      if (!connectorImportVisited && connectorImportCompany) return;
+    }
+    autoFinishAttempted = true;
+    void handleFinish();
   });
 
   /** One row per run: what the membership lookup found and which way it went. */
@@ -5075,115 +4853,27 @@
       <canvas bind:this={refs.readyCanvas} aria-hidden="true"></canvas>
       <div class="copy" bind:this={refs.readyCopy}>
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
-          {readyInstallRunning ? 'Almost ready.' : 'HQ is ready.'}
+          {installActivityRunning ? 'Almost ready.' : 'HQ is ready.'}
         </h2>
         <p class="body">
-          HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.<br />Open HQ Desktop and your setup bot will walk you through the rest.
+          HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
         </p>
       </div>
-      <div class="prog" class:done={!readyInstallRunning} bind:this={refs.readyProg}>
+      <div class="prog" class:done={!installActivityRunning} bind:this={refs.readyProg}>
         <div class="pwrap">
           <!-- One indicator for every outcome: a turning ring while the install
                runs, a check once it has settled. A failed stage is recorded for
                the setup skill and never turns this into a warning. -->
           <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
-          <span class="pl">{readyInstallRunning ? installCard.line : READY_PROGRESS_DONE_TEXT}</span>
-          <span class="pbar" aria-hidden="true"><b style:width={`${readyInstallRunning ? installCard.percent : 100}%`}></b></span>
+          <span class="pl">{installActivityRunning ? installCard.line : READY_PROGRESS_DONE_TEXT}</span>
+          <span class="pbar" aria-hidden="true"><b style:width={`${installActivityRunning ? installCard.percent : 100}%`}></b></span>
         </div>
       </div>
-      <!-- HQ Desktop is the primary option: the large white card. Claude Code
-           and Codex are smaller secondary buttons under it, shown only for
-           the tools detection says are installed. Nothing shows for them
-           while detection is in flight. -->
-      <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers">
-        {#if readyInstallRunning}
-          <!-- Item 7 (owner and Corey, standup 2026-10-15; owner 2026-10-16):
-               while any part of the install runs (the blocking phase, the
-               background phase or the host's install queue) this is not the
-               primary action, so no white card. A quiet line with a greyed
-               Continue that reads as waiting; the white Open HQ Desktop card
-               takes its place once every install item has settled. -->
-          <p class="ready-wait" data-testid="onboarding-ready-wait" aria-live="polite">
-            <span class="ready-wait-line">{openDesktop.label}</span>
-            <button
-              class="btn btn-secondary ready-wait-continue"
-              type="button"
-              data-testid="onboarding-open-desktop"
-              aria-label="Continue, once the install finishes"
-              disabled
-              aria-busy="true"
-            >Continue</button>
-          </p>
-        {:else}
-        <button
-          class="tool-card tool-card-desktop"
-          type="button"
-          data-testid="onboarding-open-desktop"
-          aria-label="Open HQ Desktop"
-          disabled={!openDesktop.enabled}
-          aria-busy={finishing}
-          onclick={() => void handleFinish()}
-        >
-          <span class="tc-icon" aria-hidden="true"><img src={hqAppIcon} alt="" width="32" height="32" /></span>
-          <span class="tc-name">{openDesktop.label}</span>
-          {#if !openDesktop.enabled}<span class="tc-spin" aria-hidden="true"></span>{/if}
-        </button>
-        {/if}
-        {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
-          <div
-            class="tool-pills tool-pills-status ai-tools-status-stack"
-            data-testid="onboarding-ai-tools-checking"
-            role="status"
-            aria-live="polite"
-          >
-            <span class="ai-tools-checking">
-              <span class="ai-tools-spinner" aria-hidden="true"></span>
-              <span>Checking for AI tools on {thisComputer}…</span>
-            </span>
-          </div>
-        {:else if (probeTimedOut || detectionFailed) && installedToolSlots.length === 0}
-          <div
-            class="tool-pills tool-pills-status ai-tools-status-stack"
-            data-testid="onboarding-ai-tools-recheck"
-            role="status"
-          >
-            <span class="ai-tools-checking failed">We couldn’t check for AI tools on {thisComputer}.</span>
-            <button
-              class="tool-pill"
-              type="button"
-              data-testid="onboarding-ai-tools-recheck-button"
-              onclick={() => void probeAiTools()}
-            >
-              <RailIcon name="refresh" /><span class="tp-name">Check again</span>
-            </button>
-          </div>
-        {:else if installedToolSlots.length > 0}
-          <div class="tool-pills">
-            {#each installedToolSlots as slot (slot.kind)}
-              <button
-                class="tool-pill"
-                type="button"
-                data-testid="onboarding-launch-{slot.kind}"
-                disabled={finishing || launching !== null || finishBlocked}
-                aria-busy={finishing || launching === slot.kind || (launching === slot.kind && probeInFlight)}
-                aria-label={slot.label}
-                onclick={() => void handleLaunch(slot.kind)}
-              >
-                <span class="tp-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
-                <span class="tp-name">
-                  {#if launching === slot.kind && probeInFlight}
-                    Checking…
-                  {:else if launching === slot.kind}
-                    Opening…
-                  {:else}
-                    {toolName(slot.kind)}
-                  {/if}
-                </span>
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
+      <!-- The ready screen has no buttons: it shows the install's progress and
+           finishes by itself once the install has settled (the AUTO-FINISH
+           effect). This element stays because the ready engine measures it
+           (refs.navReady) when it lays out the scene. -->
+      <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers"></div>
       <div class="alt-block" bind:this={refs.readyAlt}>
         {#if installPending}
           <p class="substatus" data-testid="welcome-ready-substatus">
@@ -5215,25 +4905,9 @@
           </div>
         {/if}
         <div class="ready-notes">
-          {#if launchEscape}
-            <div class="setup-caution" role="note" data-testid="onboarding-escape" aria-label={launchEscape.title}>
-              <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
-                <path d="M10 2.4 18 17H2L10 2.4Z"></path>
-                <path d="M10 7v4.5"></path>
-                <circle cx="10" cy="14.2" r=".7"></circle>
-              </svg>
-              <div class="setup-caution-copy">
-                <strong>{launchEscape.title}</strong>
-                <span>{launchEscape.body}</span>
-              </div>
-            </div>
-          {/if}
-          {#if detectionFailed && !launchEscape}
-            <p role="status">Couldn’t detect installed tools. You can still open {installDisplayPath} yourself.</p>
-          {/if}
           {#if finishError}
             <div class="note finish-action" role="status" data-testid="launcher-finish-error">
-              <p>The tool opened. Finish HQ setup here when you’re ready.</p>
+              <p>Finish HQ setup here when you’re ready.</p>
               <div class="note-actions">
                 <button
                   class="btn btn-secondary"
@@ -5538,14 +5212,6 @@
 {#snippet GoogleMark()}
   <!-- the official Google G geometry, filled monochrome -->
   <svg viewBox="0 0 120 120" aria-hidden="true"><g fill="currentColor"><path d="M117.6,61.36c0-4.25-.38-8.35-1.09-12.27H60v23.21h32.29c-1.39,7.5-5.62,13.85-11.97,18.11v15.06h19.39c11.35-10.45,17.89-25.83,17.89-44.1Z" /><path d="M60,120c16.2,0,29.78-5.37,39.71-14.54l-19.39-15.05c-5.37,3.6-12.25,5.73-20.32,5.73-15.63,0-28.85-10.55-33.57-24.74H6.38v15.55C16.25,106.55,36.55,120,60,120Z" /><path d="M26.43,71.4c-1.2-3.6-1.88-7.45-1.88-11.4s.68-7.8,1.88-11.4V33.05H6.38C2.32,41.15,0,50.32,0,60s2.32,18.85,6.38,26.95l20.05-15.55Z" /><path d="M60,23.86c8.81,0,16.72,3.03,22.94,8.98l17.21-17.21C89.75,5.95,76.17,0,60,0,36.55,0,16.25,13.45,6.38,33.05l20.05,15.55C31.15,34.42,44.37,23.86,60,23.86Z" /></g></svg>
-{/snippet}
-
-{#snippet ToolIcon(kind: LaunchKind)}
-  <!-- The vendors' published marks in single-colour white (Claude Spark,
-       OpenAI Blossom), the same path data as the app's brand icons
-       (packages/ui rail-icons BRAND_ICONS; sources in docs/brand-marks.md). -->
-  {@const brand = BRAND_ICONS[kind === 'codex' ? 'codex' : 'claude-code']}
-  <svg viewBox={brand.viewBox} aria-hidden="true"><path d={brand.d} fill="currentColor" fill-rule="evenodd" /></svg>
 {/snippet}
 
 {#snippet MicrosoftMark()}

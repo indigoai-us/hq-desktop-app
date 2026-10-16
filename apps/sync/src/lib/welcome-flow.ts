@@ -6,12 +6,12 @@
  *   1 folder    "It's a folder" + where HQ lives      (wizard step directory)
  *   2 cloud     company cloud orbit                   (wizard step setup; install runs)
  *   3 shortcut  the Option-Shift-O keyboard           (wizard step setup; install runs)
- *   4 ready     "HQ is ready." + Open HQ Desktop,     (wizard step ready)
- *               the Claude Code / Codex options and
- *               the usage-data checkbox
+ *   4 ready     "HQ is ready." + install progress     (wizard step ready)
+ *               and the usage-data checkbox; no
+ *               buttons, it finishes by itself
  *
  * The usage-data question is not a screen of its own in the first-run flow:
- * it is one checkbox line on the ready screen, recorded when the person
+ * it is one checkbox line on the ready screen, recorded when the flow
  * finishes. The `consent` scene is still the whole of the consent-only runs
  * (the US-005 re-prompt, an installed machine missing its answer).
  *
@@ -261,7 +261,9 @@ export function forwardLabel(scene: StorySceneId, replay: boolean): string | nul
     case 'shortcut':
       return 'Next';
     case 'ready':
-      return 'Open HQ Desktop';
+      // The ready screen has no forward button: it finishes by itself once
+      // the install has settled and the post-ready steps are done.
+      return null;
   }
 }
 
@@ -351,39 +353,4 @@ export function installCardStepLines(): string[] {
     lines.push(`Step ${summary.step} of ${summary.total} · ${summary.compactLabel}`);
   }
   return lines;
-}
-
-export interface ReadyGateInput {
-  /** An install this flow started is still running. */
-  installPending: boolean;
-  /**
-   * Some part of the install is still running: this flow's background phase
-   * or the host's install queue. A queue that settled with failures is not
-   * running, so a failed item never keeps the control disabled.
-   */
-  installRunning: boolean;
-  /**
-   * The held usage-data answer: `pending` while it waits to be sent or is
-   * being sent, `blocked` after a server failure that needs a retry.
-   */
-  consent: 'clear' | 'pending' | 'blocked';
-  finishing: boolean;
-  /** A tool launch is in flight (not the Claude readiness watch). */
-  launching: boolean;
-}
-
-/** Whether Open HQ Desktop can be pressed, and what it says. */
-export function readyGate({
-  installPending,
-  installRunning,
-  consent,
-  finishing,
-  launching,
-}: ReadyGateInput): {
-  enabled: boolean;
-  label: string;
-} {
-  if (finishing) return { enabled: false, label: 'Opening…' };
-  if (installPending || installRunning || consent === 'pending') return { enabled: false, label: 'Getting ready…' };
-  return { enabled: consent === 'clear' && !launching, label: 'Open HQ Desktop' };
 }
