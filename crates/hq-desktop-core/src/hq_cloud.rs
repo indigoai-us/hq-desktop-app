@@ -751,7 +751,24 @@
 /// floor; it stays on the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays
 /// 6.18.0. Raising the lower bound moves npm's cache key so installed copies
 /// refresh their cached runner.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.60";
+///
+/// `~6.18.60` -> `~6.18.79`: floors the runner at the vault `secrets/` guard
+/// (hq-cloud#956): sync never uploads, downloads, or delete-propagates the
+/// vault-root `secrets/` prefix, so a stale local copy of a server-rotated
+/// integration OAuth token can no longer overwrite the fresh one. It also
+/// carries the 6.18.61-6.18.78 runner fixes (offloaded `.hqcloud` placeholders
+/// held on pull and push, same-path upload serialization between the watcher
+/// and the full pass, symlink upload checksums, skip-unchanged personal push,
+/// generated worker registry, `sync-manifests/`, `meetings/_live/` and
+/// per-machine state files no longer synced, `.jsonl` append merge instead of
+/// conflict copies, journal compaction write amplification, two concurrent
+/// transfer slots, scope-shrink tombstone ordering and guards, `board.json`
+/// merge by entry id, server-written paths never delete-propagated, macOS
+/// Keychain sign-in read). Runner bug fixes, not a new desktop-visible
+/// capability, so no `*_MIN_HQ_CLOUD` floor; it stays on the 6.18 minor line,
+/// so `RESCUE_CONTRACT_FLOOR` stays 6.18.0. Raising the lower bound moves
+/// npm's cache key so installed copies refresh their cached runner.
+pub const HQ_CLOUD_VERSION: &str = "~6.18.79";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -879,7 +896,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.60");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.79");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
