@@ -222,9 +222,12 @@
   .ts-stack {
     --ts-font: var(--font-ui, "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
     font-family: var(--ts-font);
+    /* The same 16px from the bottom as from the right (owner, 2026-10-16:
+       "shoul dbe equidistant from bottom as from right"). */
+    --ts-inset: 16px;
     position: fixed;
-    right: 16px;
-    bottom: var(--toast-bottom-inset, 84px);
+    right: var(--ts-inset);
+    bottom: var(--toast-bottom-inset, var(--ts-inset));
     z-index: 50000;
     display: flex;
     flex-direction: column;

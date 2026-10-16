@@ -34,6 +34,22 @@ async function coveredOverlays(page: Page): Promise<string[]> {
 const visibleToasts = (page: Page) =>
   page.locator('[data-testid="toast-stack"] > [data-testid]:not([data-testid="toast-overflow"])').filter({ visible: true });
 
+// Owner, 2026-10-16: the update card "shoul dbe equidistant from bottom as from right".
+for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
+  test(`the toast stack sits as far from the bottom as from the right at ${width}x${height}`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
+    await page.goto('/dev-harness/index.html?view=shell&persona=indigo&theme=dark&toast=update');
+    await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
+    await expect(visibleToasts(page).first()).toBeVisible({ timeout: 10_000 });
+    const gaps = await page.getByTestId('toast-stack').evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { right: Math.round(window.innerWidth - r.right), bottom: Math.round(window.innerHeight - r.bottom) };
+    });
+    expect(gaps.right).toBe(16);
+    expect(gaps.bottom).toBe(gaps.right);
+  });
+}
+
 for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
   test(`toasts stay off the New project sheet at ${width}x${height}`, async ({ page }) => {
     await page.setViewportSize({ width, height });
