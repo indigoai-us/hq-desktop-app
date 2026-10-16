@@ -50,3 +50,66 @@ for (const size of ['large', 'compact'] as const) {
     expect(open && open.y + open.height).toBeLessThanOrEqual(760);
   });
 }
+
+// Owner, 2026-10-16: "the accomplishments announcement should allow me to view
+// each card when i cliock on it, and go into card viewer where i can flip it".
+test('clicking a dealt card opens it in the card viewer, where it flips, and closing returns to the announcement', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/dev-harness/index.html?view=shell&persona=indigo&theme=dark&launch');
+  const layer = page.getByTestId('badge-launch');
+  await expect(layer).toBeVisible({ timeout: 30_000 });
+  const card = page.getByTestId('badge-launch-card').nth(2);
+  await expect(card).toBeEnabled({ timeout: 5_000 });
+  const id = await card.getAttribute('data-badge-id');
+  await card.click();
+
+  const viewer = page.getByTestId('badge-card-modal');
+  await expect(viewer).toBeVisible();
+  // Drawn inside the announcement layer, above it and clickable.
+  expect(await viewer.evaluate((el) => Boolean(el.closest('[data-testid="badge-launch"]')) && !el.closest('[inert]'))).toBe(true);
+  const dialog = viewer.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  expect(id).toBeTruthy();
+
+  await viewer.getByRole('button', { name: /flip card/i }).click();
+  await expect(viewer.getByTestId('badge-card-back')).toBeVisible();
+
+  // Escape closes the viewer only; the announcement stays, live again.
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0);
+  await expect(layer).toBeVisible();
+  await expect(page.locator('.la-stage')).not.toHaveAttribute('inert', '');
+  await expect(card).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(layer).toHaveCount(0);
+});
+
+for (const size of ['large', 'compact'] as const) {
+  test(`the "+N more" pill is whole and on top at the ${size} interface size`, async ({ page }) => {
+    // Owner, 2026-10-16: the pill "is still getting cropped at bottom".
+    await page.setViewportSize({ width: 1180, height: 700 });
+    await page.goto('/dev-harness/index.html?view=shell&persona=indigo&theme=dark&launch');
+    await page.evaluate((s) => document.documentElement.setAttribute('data-ui-size', s), size);
+    const pill = page.getByTestId('badge-launch-more');
+    await expect(pill).toBeVisible({ timeout: 30_000 });
+    await page.waitForTimeout(2500);
+    const geo = await pill.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const points = [
+        [r.left + r.width / 2, r.top + 2],
+        [r.left + r.width / 2, r.bottom - 2],
+        [r.left + 6, r.bottom - 3],
+        [r.right - 6, r.bottom - 3],
+      ];
+      return {
+        bottom: r.bottom,
+        vh: window.innerHeight,
+        onTop: points.every(([x, y]) => document.elementFromPoint(x, y) === el),
+        z: getComputedStyle(el).zIndex,
+      };
+    });
+    expect(geo.bottom).toBeLessThanOrEqual(geo.vh);
+    expect(geo.onTop).toBe(true);
+    expect(Number(geo.z)).toBeGreaterThan(20);
+  });
+}
