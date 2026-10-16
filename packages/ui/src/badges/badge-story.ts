@@ -180,6 +180,10 @@ const STORIES: Readonly<Record<string, StoryDef>> = {
     did: [(v) => `${v.Subject} ${was(v)} the first person ever to run HQ, before it had a name.`],
     why: () => "HQ started as one person's own setup. Everything in HQ today was built on top of that first version.",
   },
+  ecomrat: {
+    did: [(v) => `${v.Subject} ${was(v)} named HQ's honorary Ecom Rat.`],
+    why: () => "For an ecommerce operator who lives in the trenches of DTC and builds on HQ.",
+  },
   corebuilder: {
     did: [
       (v) => `${v.Subject} got ${v.their} first pull request merged into HQ core.`,

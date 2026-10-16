@@ -81,10 +81,11 @@ afterEach(() => {
 
 describe("card words", () => {
   it("numbers the card in the set, names the tier, and says it all to a screen reader", () => {
-    expect(cardNumber("founding")).toBe("No. 001 / 019");
-    expect(cardNumber("liftoff")).toBe("No. 004 / 019");
-    expect(cardNumber("og")).toBe("No. 016 / 019");
-    expect(cardNumber("corebuilder")).toBe("No. 019 / 019");
+    expect(cardNumber("founding")).toBe("No. 001 / 020");
+    expect(cardNumber("liftoff")).toBe("No. 004 / 020");
+    expect(cardNumber("og")).toBe("No. 016 / 020");
+    expect(cardNumber("corebuilder")).toBe("No. 019 / 020");
+    expect(cardNumber("ecomrat")).toBe("No. 020 / 020");
     expect(cardNumber("nope")).toBe("");
     expect(cardTierLabel(BADGE_BY_ID.liftoff, 2)).toBe("Tier II · Silver");
     expect(cardTierLabel(BADGE_BY_ID.og, "L")).toBe("Legendary");
@@ -100,7 +101,7 @@ describe("card words", () => {
       "Tier III · Gold",
       "Tier IV · Legendary",
     ]);
-    for (const id of ["og", "captain", "patientzero"]) expect(cardTierLabel(BADGE_BY_ID[id], "L")).toBe("Legendary");
+    for (const id of ["og", "captain", "patientzero", "ecomrat"]) expect(cardTierLabel(BADGE_BY_ID[id], "L")).toBe("Legendary");
     expect(cardTierLabel(BADGE_BY_ID.founding, 3)).toBe("Tier III · Gold");
     expect(tierNumeral(BADGE_BY_ID.corebuilder, "L")).toBe("IV");
     expect(tierNumeral(BADGE_BY_ID.og, "L")).toBeNull();
@@ -137,7 +138,7 @@ describe("BadgeCard", () => {
     expect(card.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe(cardAccessibleLabel(liftoff));
     const face = card.querySelector(".face")!;
     expect(face.getAttribute("aria-hidden")).toBe("true");
-    expect(face.textContent).toContain("No. 004 / 019");
+    expect(face.textContent).toContain("No. 004 / 020");
     expect(face.textContent).toContain("Liftoff");
     expect(face.textContent).toContain("Deploys that went live.");
     expect(face.textContent).toContain("Tier II · Silver");

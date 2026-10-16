@@ -81,12 +81,12 @@ describe("badge collection", () => {
   it("groups every badge by tier, highest first, earned before locked", () => {
     const groups = badgeCollection(EARNED, PROGRESS);
     expect(groups.map((g) => [g.label, g.earned, g.tiles.length])).toEqual([
-      ["Legendary", 0, 3],
+      ["Legendary", 0, 4],
       ["Gold", 2, 3],
       ["Silver", 1, 1],
       ["Bronze", 1, 12],
     ]);
-    expect(groups.flatMap((g) => g.tiles).length).toBe(19);
+    expect(groups.flatMap((g) => g.tiles).length).toBe(20);
     const bronze = groups[3].tiles;
     expect(bronze[0]).toMatchObject({ def: { id: "connector" }, earned: { tier: 1 } });
     expect(bronze.slice(1).every((t) => t.earned === null)).toBe(true);
@@ -102,9 +102,9 @@ describe("BadgesPane", () => {
   it("shows earned marks and locked outlines with criteria and progress, grouped by tier", async () => {
     mounted.push(mount(BadgesPane, { target: host, props: { badges: EARNED, progress: PROGRESS, owner: "Maya Chen" } }));
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 19 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("4 of 20 earned");
     expect([...host.querySelectorAll('[data-testid="badges-group"] .k')].map((k) => k.textContent?.replace(/\s+/g, " ").trim())).toEqual([
-      "Legendary 0/3",
+      "Legendary 0/4",
       "Gold 2/3",
       "Silver 1/1",
       "Bronze 1/12",
@@ -207,7 +207,7 @@ describe("See all on a profile", () => {
     await settle();
     click('[data-testid="profile-badges-all"]');
     await settle();
-    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 19 earned");
+    expect(host.querySelector('[data-testid="badges-pane-summary"]')?.textContent).toBe("1 of 20 earned");
   });
 
   it("shows nothing in production, where there is no source", async () => {
