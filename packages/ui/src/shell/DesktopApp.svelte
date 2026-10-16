@@ -849,6 +849,16 @@
     type RepairPayload,
   } from "../chat/messaging/runtime-repair-model.js";
   import RuntimeRepairCard from "../chat/messaging/RuntimeRepairCard.svelte";
+  import BrainReconnectScreen from "../chat/create-bot/BrainReconnectScreen.svelte";
+  import NewBotSunriseShell from "../chat/create-bot/NewBotSunriseShell.svelte";
+  import {
+    botOwnerUidFromStatus,
+    reconnectCardView,
+    reconnectLinkAgentUid,
+    reconnectTargetFromStatus,
+    signedOutBrainFromStatus,
+  } from "../chat/create-bot/brain-reconnect-model.js";
+  import type { BrainProvider } from "../chat/create-bot/bot-brain-approval.js";
   import type {
     BotRestoreResult,
     LocalBotCreateInput,
@@ -6120,6 +6130,7 @@
           const now = Date.now();
           const before = untrack(() => botSyncByUid[uid]) ?? null;
           setBotSyncFacts(uid, advanceBotSync(before, observeBotSync(result.value, now, { expectFirstSync: madeHere }), now));
+          setCloudBotSignOut(uid, result.value);
           if (madeHere) {
             next = agentChatReadiness(result.value);
             agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
@@ -6173,6 +6184,55 @@
       document.removeEventListener("visibilitychange", retryNow);
     };
   });
+
+  let cloudBotSignOutByUid = $state<Record<string, { brain: BrainProvider; ownerUid: string | null }>>({});
+  function setCloudBotSignOut(agentUid: string, status: unknown): void {
+    const brain = signedOutBrainFromStatus(status);
+    const known = untrack(() => cloudBotSignOutByUid)[agentUid];
+    if (!brain) {
+      if (known) brainReconnectDone(agentUid);
+      return;
+    }
+    const ownerUid = botOwnerUidFromStatus(status);
+    if (known?.brain === brain && known.ownerUid === ownerUid) return;
+    cloudBotSignOutByUid = { ...untrack(() => cloudBotSignOutByUid), [agentUid]: { brain, ownerUid } };
+  }
+  const dmCloudBotSignOut = $derived(dmCloudBotUid ? (cloudBotSignOutByUid[dmCloudBotUid] ?? null) : null);
+  const dmCloudBotSignOutCard = $derived.by(() => {
+    const signOut = dmCloudBotSignOut;
+    if (!signOut) return null;
+    const ownerUid = signOut.ownerUid;
+    return reconnectCardView({
+      botName: selectedRow?.title?.trim() || "This bot",
+      brain: signOut.brain,
+      canSignIn: !ownerUid || ownerUid === self?.uid,
+      ownerName: ownerUid ? (identities?.[ownerUid] ?? displayNameByUid[ownerUid] ?? null) : null,
+    });
+  });
+  let brainReconnect = $state<{ agentUid: string; name: string; brain: BrainProvider; autostart: boolean } | null>(null);
+  function openBrainReconnect(agentUid: string, name: string, brain: BrainProvider, autostart: boolean): void {
+    brainReconnect = { agentUid, name: name.trim() || "Your bot", brain, autostart };
+  }
+  function brainReconnectDone(agentUid: string): void {
+    const known = untrack(() => cloudBotSignOutByUid);
+    if (!known[agentUid]) return;
+    const { [agentUid]: _signedIn, ...rest } = known;
+    cloudBotSignOutByUid = rest;
+  }
+  async function openConversationUrl(url: string): Promise<void> {
+    const agentUid = reconnectLinkAgentUid(url);
+    if (!agentUid) {
+      onopenurl?.(url);
+      return;
+    }
+    const result = await Promise.resolve(adapter.agents.getStatus(agentUid)).catch(() => null);
+    if (result?.ok) {
+      const target = reconnectTargetFromStatus(result.value);
+      openBrainReconnect(agentUid, target.name, target.brain, false);
+      return;
+    }
+    onopenurl?.(url);
+  }
 
   /**
    * Bots asked for their first message whose answer has not been seen yet
@@ -15710,6 +15770,16 @@
                       />
                     </div>
                   {/if}
+                  {#if dmCloudBotSignOutCard && dmCloudBotUid && dmCloudBotSignOut}
+                    {@const signOutUid = dmCloudBotUid}
+                    {@const signOutBrain = dmCloudBotSignOut.brain}
+                    <div class="bot-sign-in-card" data-testid="cloud-bot-sign-in-card">
+                      <RuntimeRepairCard
+                        view={dmCloudBotSignOutCard}
+                        onaction={() => openBrainReconnect(signOutUid, selectedRow?.title ?? "", signOutBrain, true)}
+                      />
+                    </div>
+                  {/if}
                   {#if selectedLocalBot && selectedLocalBotNeedsCodingTool}
                     <div class="local-bot-notice" data-testid="bot-needs-coding-tool" role="status">
                       <span class="local-bot-notice-text">
@@ -15967,7 +16037,7 @@
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
                   composerLocked={composerLocked}
-                  {onopenurl}
+                  onopenurl={(url) => void openConversationUrl(url)}
                   channelId={selectedRow.channelId}
                   peerPersonUid={selectedRow.kind === "dm" ? selectedRow.personUid ?? null : null}
                   oncardaction={handleCardAction}
@@ -16362,6 +16432,31 @@
     {#key cardModalView.key}
       <cardModalView.Content {...(cardModalView?.props ?? cardModalHeld.props!)} />
     {/key}
+  {/if}
+
+  {#if brainReconnect}
+    {@const reconnect = brainReconnect}
+    <NewBotSunriseShell
+      testId="brain-reconnect-shell"
+      label={`Sign ${reconnect.name} back in`}
+      oncancel={() => (brainReconnect = null)}
+    >
+      {#key reconnect}
+        <BrainReconnectScreen
+          agentUid={reconnect.agentUid}
+          name={reconnect.name}
+          brain={reconnect.brain}
+          autostart={reconnect.autostart}
+          getStatus={(agentUid, brain) => adapter.agents.getStatus(agentUid, brain)}
+          restartBrainApproval={(agentUid, brain) => adapter.agents.restartBrainApproval?.(agentUid, brain) ?? Promise.resolve({ ok: false })}
+          retryAgent={(agentUid) => adapter.agents.retryProvisioning(agentUid)}
+          submitClaudeLoginCode={(agentUid, code) => adapter.agents.submitClaudeLoginCode?.(agentUid, code) ?? Promise.resolve({ ok: false })}
+          openExternal={openConnectionUrl}
+          ondone={() => brainReconnectDone(reconnect.agentUid)}
+          onclose={() => (brainReconnect = null)}
+        />
+      {/key}
+    </NewBotSunriseShell>
   {/if}
 
   {#if attachTray}

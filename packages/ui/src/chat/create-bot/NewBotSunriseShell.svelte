@@ -13,12 +13,13 @@
 
   interface Props {
     testId?: string;
+    label?: string;
     cancelDisabled?: boolean;
     oncancel: () => void;
     children: Snippet;
   }
 
-  let { testId = "new-bot-sunrise-shell", cancelDisabled = false, oncancel, children }: Props = $props();
+  let { testId = "new-bot-sunrise-shell", label = "New bot", cancelDisabled = false, oncancel, children }: Props = $props();
 
   function onKeydown(event: KeyboardEvent): void {
     if (event.key !== "Escape" || cancelDisabled) return;
@@ -54,7 +55,7 @@
       data-testid="new-bot-sunrise-flow"
       role="dialog"
       aria-modal="true"
-      aria-label="New bot"
+      aria-label={label}
       tabindex="-1"
     >
       {@render children()}
