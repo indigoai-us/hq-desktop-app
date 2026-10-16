@@ -519,7 +519,71 @@ fn cancel_registry() -> &'static Arc<Mutex<HashMap<String, CancelState>>> {
 /// Exposed publicly so the test suite can exercise `cancel_install` without
 /// spawning a real Tauri runtime.
 pub fn register_cancel_handle(handle: String) {
-    recover_lock(cancel_registry()).insert(handle, CancelState::default());
+    recover_lock(cancel_registry()).insert(handle.clone(), CancelState::default());
+    // A queue item that already ran out of time must not start new work: a
+    // handle registered after the deadline is cancelled at once.
+    let expired = ACTIVE_QUEUE_ITEM_CANCEL_SCOPE
+        .try_with(|scope| scope.adopt(&handle))
+        .unwrap_or(false);
+    if expired {
+        cancel_install(handle);
+    }
+}
+
+/// The cancel handles one install queue item registered. The queue's
+/// per-item deadline uses it to stop exactly that item's child processes
+/// through the existing cancel path (SIGTERM, then SIGKILL after 2 s in the
+/// streaming loop), without touching items that run beside it.
+#[derive(Clone, Default)]
+pub(crate) struct QueueItemCancelScope {
+    inner: Arc<Mutex<QueueItemCancelState>>,
+}
+
+#[derive(Default)]
+struct QueueItemCancelState {
+    handles: Vec<String>,
+    expired: bool,
+}
+
+impl QueueItemCancelScope {
+    /// Record `handle` and report whether the item already ran out of time.
+    fn adopt(&self, handle: &str) -> bool {
+        let mut state = recover_lock(&self.inner);
+        state.handles.push(handle.to_string());
+        state.expired
+    }
+
+    /// Mark the item as out of time and cancel every handle it registered.
+    /// Returns how many handles were still live and got the cancel request.
+    pub(crate) fn expire(&self) -> usize {
+        let handles = {
+            let mut state = recover_lock(&self.inner);
+            state.expired = true;
+            state.handles.clone()
+        };
+        handles
+            .into_iter()
+            .filter(|handle| cancel_install(handle.clone()))
+            .count()
+    }
+
+    pub(crate) async fn scope<F: Future>(&self, fut: F) -> F::Output {
+        ACTIVE_QUEUE_ITEM_CANCEL_SCOPE.scope(self.clone(), fut).await
+    }
+}
+
+tokio::task_local! {
+    static ACTIVE_QUEUE_ITEM_CANCEL_SCOPE: QueueItemCancelScope;
+}
+
+#[cfg(test)]
+pub(crate) fn is_cancelled_for_test(handle: &str) -> bool {
+    is_cancelled(handle)
+}
+
+#[cfg(test)]
+pub(crate) fn deregister_handle_for_test(handle: &str) {
+    deregister_handle(handle);
 }
 
 fn is_cancelled(handle: &str) -> bool {

@@ -616,6 +616,14 @@
   // Counts progress events, so a status read that an event overtook does not
   // put back an older status (a stale "running" would never clear).
   let hostQueueEvents = 0;
+  // The ready step's stall ceiling. While the install runs, the step reads the
+  // host's queue again every READY_STATUS_REREAD_MS. If neither a progress
+  // event nor a status change arrives for READY_STALL_CEILING_MS, the control
+  // enables and the queue carries on in the background. A queue item that
+  // hangs, or one a build left marked running, cannot lock the step.
+  let readyStallCeilingReached = $state(false);
+  let readyLastActivityAt = 0;
+  let readyLastStatusKey = '';
   let backgroundRunId = 0;
   const loggedFirstRunPhases = new Set<string>();
   let currentSetupRunId = '';
@@ -644,6 +652,14 @@
   // the ready scene. The probe itself is not cancelled — a late result still
   // fills in the launch buttons.
   const AI_TOOLS_PROBE_TIMEOUT_MS = 10_000;
+  // The ready step re-reads the host's install queue this often while the
+  // install runs, and lifts its wait after this long with no install progress.
+  // A queue item sends one event when it starts and one when it settles, and
+  // the slowest may run up to 60 minutes, so the ceiling can lift the wait
+  // during a slow item as well as a hung one. Either way the queue keeps
+  // running in the background; only the wait on this step ends.
+  const READY_STATUS_REREAD_MS = 10_000;
+  const READY_STALL_CEILING_MS = 10 * 60_000;
   let probeTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   // Resolvers a caller can await on when they clicked an action mid-probe.
   const probeWaiters: Array<() => void> = [];
@@ -885,10 +901,11 @@
    * control all follow this, so Open HQ Desktop waits until every install
    * item has settled. A queue that settled with failures is not running.
    */
-  const readyInstallRunning = $derived(
+  const installActivityRunning = $derived(
     (setupStarted && !setupCompleted && (!blockingPhaseDone || backgroundPhaseRunning)) ||
       hostQueueRunning,
   );
+  const readyInstallRunning = $derived(installActivityRunning && !readyStallCeilingReached);
   const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
   const installCard = $derived(
     installCardModel({
@@ -980,6 +997,46 @@
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX) return;
     void setupCompleted;
     void refreshHostQueueStatus();
+  });
+
+  // While the install runs on the ready step, read the host's queue again
+  // every READY_STATUS_REREAD_MS (a missed progress event cannot leave a stale
+  // "running"), and lift the wait once nothing has moved for
+  // READY_STALL_CEILING_MS.
+  $effect(() => {
+    if (consentOnly || replay || currentStep !== READY_STEP_INDEX) return;
+    if (!installActivityRunning || readyStallCeilingReached) return;
+    readyLastActivityAt = Date.now();
+    const intervalId = window.setInterval(() => {
+      void refreshHostQueueStatus();
+      // The blocking phase (folder, git, personalize) has its own per-stage
+      // time limits and must finish before HQ Desktop opens, so the ceiling
+      // only counts once it is done.
+      if (installPending) {
+        readyLastActivityAt = Date.now();
+        return;
+      }
+      const idleMs = Date.now() - readyLastActivityAt;
+      if (idleMs < READY_STALL_CEILING_MS || readyStallCeilingReached) return;
+      readyStallCeilingReached = true;
+      const message = `ready step stall ceiling reached after ${Math.round(idleMs / 1000)}s with no install progress; control enabled, queue keeps running (queue state=${hostQueue?.state ?? 'unknown'})`;
+      console.warn(`[onboarding] ${message}`);
+      invokeCommand('frontend_log', { tag: 'onboarding', message }).catch((err: unknown) => {
+        console.warn('[onboarding] stall ceiling log line was not written:', err);
+      });
+    }, READY_STATUS_REREAD_MS);
+    return () => window.clearInterval(intervalId);
+  });
+
+  // A stage of this flow starting or settling counts as install progress for
+  // the ceiling. The displayed percent does not: it creeps on a timer while a
+  // stage runs, so a hung stage would look busy forever.
+  $effect(() => {
+    void settledCount;
+    void currentStageId;
+    void blockingPhaseDone;
+    void setupCompleted;
+    readyLastActivityAt = Date.now();
   });
 
   $effect(() => {
@@ -1115,6 +1172,8 @@
       if (!status) return;
       hostQueueEvents += 1;
       hostQueue = status;
+      readyLastActivityAt = Date.now();
+      readyLastStatusKey = JSON.stringify(status);
     });
     // A session minted after this screen mounted (the outpost machine identity
     // resolves in the background at launch) must show up without a relaunch.
@@ -1154,7 +1213,14 @@
     const eventsBefore = hostQueueEvents;
     try {
       const status = parseInstallQueueStatus(await invokeCommand<unknown>('get_install_queue_status'));
-      if (status && mounted && hostQueueEvents === eventsBefore) hostQueue = status;
+      if (status && mounted && hostQueueEvents === eventsBefore) {
+        hostQueue = status;
+        const key = JSON.stringify(status);
+        if (key !== readyLastStatusKey) {
+          readyLastStatusKey = key;
+          readyLastActivityAt = Date.now();
+        }
+      }
     } catch (err) {
       console.warn('[onboarding] install queue status unavailable:', err);
     }

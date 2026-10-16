@@ -13,11 +13,12 @@
 //! [`track_external_item`]. Embeddings run last, after the wizard is done.
 //! On relaunch, [`resume_on_launch`] picks up whatever is still pending.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::FutureExt;
 use hq_desktop_core::install_queue::{
@@ -30,7 +31,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
 
-use crate::commands::install_deps::{self, OrchestratedDepRun};
+use crate::commands::install_deps::{self, OrchestratedDepRun, QueueItemCancelScope};
 use crate::commands::install_stages::OnboardingFailureScope;
 use crate::first_run_timing::{InstallOutcome, InstallTimer};
 use crate::util::logfile::log;
@@ -317,6 +318,125 @@ async fn run_queue(app: AppHandle) {
     crate::commands::lifecycle::set_first_run_background_setup(app, false).await;
 }
 
+/// Overall time limit for one queue item, by item class. Without it a hung
+/// npm or brew child never settles, the queue stays "running" and the
+/// wizard's ready scene waits forever (PR 1656 review).
+///
+/// - Node, yq, jq are verified downloads: 3 attempts of at most 180 s each
+///   (`DOWNLOAD_ATTEMPTS`, `DOWNLOAD_ATTEMPT_TIMEOUT`) plus backoff, extract
+///   and verify. 15 minutes covers that worst case with room to spare.
+/// - hq-cli, Claude Code, Codex, qmd are npm installs and gh is a Homebrew
+///   install, which can start with a `brew update`. These normally take one
+///   to three minutes; 20 minutes allows a slow network.
+/// - Runtime hooks write settings files and read the login shell PATH. That
+///   takes seconds, so 5 minutes only catches a hung login shell.
+/// - Embeddings install node-llama-cpp and download the local models, several
+///   hundred MB. 45 minutes allows a slow connection.
+/// - The search index and the first vault upload scale with the size of the
+///   owner's HQ. They normally run as wizard stages; here they run only on a
+///   resume or a retry. 60 minutes.
+fn item_time_limit(id: QueueItemId) -> Duration {
+    const MINUTE: u64 = 60;
+    let minutes = match id {
+        QueueItemId::Node | QueueItemId::Yq | QueueItemId::Jq => 15,
+        QueueItemId::HqCli
+        | QueueItemId::Gh
+        | QueueItemId::ClaudeCode
+        | QueueItemId::Codex
+        | QueueItemId::Qmd => 20,
+        QueueItemId::RuntimeHooks => 5,
+        QueueItemId::Embeddings => 45,
+        QueueItemId::SearchIndex | QueueItemId::VaultUpload => 60,
+    };
+    Duration::from_secs(minutes * MINUTE)
+}
+
+/// After a timeout the item's children get SIGTERM, then SIGKILL 2 s later
+/// from the streaming loop. This is how long the queue waits for the item's
+/// task to end before it records the timeout and moves on without it.
+const TIMEOUT_STOP_GRACE: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy)]
+struct ItemDeadline {
+    limit: Duration,
+    stop_grace: Duration,
+}
+
+fn timeout_reason(limit: Duration) -> String {
+    format!("installer timed out after {} min", limit.as_secs() / 60)
+}
+
+/// Items whose timed-out task has not ended yet. A new attempt of the same
+/// item waits for the old one to end, so an item never runs twice at once.
+fn lingering_items() -> &'static watch::Sender<HashSet<QueueItemId>> {
+    static LINGERING: OnceLock<watch::Sender<HashSet<QueueItemId>>> = OnceLock::new();
+    LINGERING.get_or_init(|| watch::channel(HashSet::new()).0)
+}
+
+/// Run `work` for item `id` on its own task, bounded by `deadline.limit`.
+///
+/// On timeout every child process the item registered is cancelled through
+/// the install cancel path and the task is aborted. The caller records the
+/// returned `Failed` outcome, which is the only queue state write for this
+/// attempt: the task's own result is dropped, so a late finish cannot
+/// overwrite it. If the task outlives `stop_grace`, it is detached and the
+/// item stays in `lingering` until it ends.
+async fn run_with_deadline<F>(
+    id: QueueItemId,
+    deadline: ItemDeadline,
+    lingering: &'static watch::Sender<HashSet<QueueItemId>>,
+    work: F,
+) -> ItemOutcome
+where
+    F: Future<Output = ItemOutcome> + Send + 'static,
+{
+    let cancel_scope = QueueItemCancelScope::default();
+    let task_scope = cancel_scope.clone();
+    let mut previous_attempt = lingering.subscribe();
+    let mut task = tokio::spawn(async move {
+        if previous_attempt.borrow().contains(&id) {
+            log(LOG_TAG, &format!("{} waits for its timed-out attempt to stop", id.as_str()));
+        }
+        let _ = previous_attempt.wait_for(|items| !items.contains(&id)).await;
+        task_scope.scope(work).await
+    });
+
+    match tokio::time::timeout(deadline.limit, &mut task).await {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(err)) if err.is_panic() => ItemOutcome::Failed("installer panicked".to_string()),
+        Ok(Err(err)) => ItemOutcome::Failed(format!("installer task ended: {err}")),
+        Err(_) => {
+            let cancelled = cancel_scope.expire();
+            log(
+                LOG_TAG,
+                &format!(
+                    "{} timed out after {} s; cancelled {cancelled} running process(es)",
+                    id.as_str(),
+                    deadline.limit.as_secs()
+                ),
+            );
+            task.abort();
+            if tokio::time::timeout(deadline.stop_grace, &mut task).await.is_err() {
+                log(
+                    LOG_TAG,
+                    &format!("{} did not stop within {} s; detached", id.as_str(), deadline.stop_grace.as_secs()),
+                );
+                lingering.send_modify(|items| {
+                    items.insert(id);
+                });
+                tokio::spawn(async move {
+                    let _ = task.await;
+                    lingering.send_modify(|items| {
+                        items.remove(&id);
+                    });
+                    log(LOG_TAG, &format!("{} timed-out attempt stopped", id.as_str()));
+                });
+            }
+            ItemOutcome::Failed(timeout_reason(deadline.limit))
+        }
+    }
+}
+
 async fn run_item(
     app: AppHandle,
     id: QueueItemId,
@@ -327,17 +447,22 @@ async fn run_item(
     let started = Instant::now();
     // Refresh the CLI-updater hold for every item.
     crate::commands::lifecycle::set_first_run_background_setup(app.clone(), true).await;
-    let outcome = install_deps::with_onboarding_failure_scope(scope.clone(), async {
-        install_deps::emit_install_line(&app, &format!("[queue] {} started", id.as_str()));
-        match AssertUnwindSafe(execute_item(&app, id, scope.clone(), hq_path))
+    let work_app = app.clone();
+    let work = install_deps::with_onboarding_failure_scope(scope.clone(), async move {
+        install_deps::emit_install_line(&work_app, &format!("[queue] {} started", id.as_str()));
+        match AssertUnwindSafe(execute_item(&work_app, id, scope, hq_path))
             .catch_unwind()
             .await
         {
             Ok(outcome) => outcome,
             Err(_) => ItemOutcome::Failed("installer panicked".to_string()),
         }
-    })
-    .await;
+    });
+    let deadline = ItemDeadline {
+        limit: item_time_limit(id),
+        stop_grace: TIMEOUT_STOP_GRACE,
+    };
+    let outcome = run_with_deadline(id, deadline, lingering_items(), work).await;
     let elapsed_ms = started.elapsed().as_millis() as u64;
     finish_item(&app, id, timer, &outcome, elapsed_ms);
     record_finish(&app, id, &outcome, elapsed_ms);
@@ -910,5 +1035,151 @@ mod tests {
         assert_eq!(probe_presence(QueueItemId::SearchIndex), Presence::Unknown);
         assert_eq!(probe_presence(QueueItemId::VaultUpload), Presence::Unknown);
         assert_eq!(probe_presence(QueueItemId::RuntimeHooks), Presence::Unknown);
+    }
+
+    // ── Per-item deadline (PR 1656 review: a hung install must settle) ──
+
+    fn test_lingering() -> &'static watch::Sender<HashSet<QueueItemId>> {
+        Box::leak(Box::new(watch::channel(HashSet::new()).0))
+    }
+
+    fn short_deadline() -> ItemDeadline {
+        ItemDeadline {
+            limit: Duration::from_millis(50),
+            stop_grace: Duration::from_millis(20),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn item_that_finishes_in_time_keeps_its_outcome() {
+        let outcome =
+            run_with_deadline(QueueItemId::Node, short_deadline(), test_lingering(), async { ItemOutcome::Done }).await;
+        assert_eq!(outcome, ItemOutcome::Done);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hung_item_fails_with_a_timeout_and_cancels_only_its_own_processes() {
+        let own = uuid::Uuid::new_v4().to_string();
+        let unrelated = uuid::Uuid::new_v4().to_string();
+        install_deps::register_cancel_handle(unrelated.clone());
+        let registered = own.clone();
+        let started = Instant::now();
+        let outcome = run_with_deadline(QueueItemId::HqCli, short_deadline(), test_lingering(), async move {
+            install_deps::register_cancel_handle(registered);
+            std::future::pending::<ItemOutcome>().await
+        })
+        .await;
+        assert_eq!(outcome, ItemOutcome::Failed(timeout_reason(Duration::from_millis(50))));
+        assert!(started.elapsed() < Duration::from_secs(5), "the deadline must end the wait");
+        assert!(install_deps::is_cancelled_for_test(&own), "the item's child process gets the cancel request");
+        assert!(!install_deps::is_cancelled_for_test(&unrelated), "items running beside it are untouched");
+        install_deps::deregister_handle_for_test(&own);
+        install_deps::deregister_handle_for_test(&unrelated);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn late_finish_after_a_timeout_cannot_replace_the_failed_outcome() {
+        let lingering = test_lingering();
+        let late_handle = uuid::Uuid::new_v4().to_string();
+        let registered = late_handle.clone();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        // Blocking work ignores the abort, like an installer stuck in a
+        // synchronous wait. It keeps running past the deadline, then tries to
+        // start another process and reports success.
+        let outcome = run_with_deadline(QueueItemId::Qmd, short_deadline(), lingering, async move {
+            std::thread::sleep(Duration::from_millis(200));
+            install_deps::register_cancel_handle(registered);
+            let _ = finished_tx.send(());
+            ItemOutcome::Done
+        })
+        .await;
+        assert_eq!(outcome, ItemOutcome::Failed(timeout_reason(Duration::from_millis(50))));
+        assert!(lingering.borrow().contains(&QueueItemId::Qmd), "the detached attempt is tracked");
+
+        finished_rx.await.expect("the detached work runs to its end");
+        assert!(
+            install_deps::is_cancelled_for_test(&late_handle),
+            "a process started after the deadline is cancelled at once"
+        );
+        let mut changes = lingering.subscribe();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|items| !items.contains(&QueueItemId::Qmd)),
+        )
+        .await
+        .expect("the attempt leaves the lingering set when it ends")
+        .expect("channel open");
+        install_deps::deregister_handle_for_test(&late_handle);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retry_waits_for_a_timed_out_attempt_so_the_item_never_runs_twice() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let lingering = test_lingering();
+        let first_running = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&first_running);
+        let first = run_with_deadline(QueueItemId::Codex, short_deadline(), lingering, async move {
+            flag.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            flag.store(false, Ordering::SeqCst);
+            ItemOutcome::Done
+        })
+        .await;
+        assert!(matches!(first, ItemOutcome::Failed(_)));
+        assert!(first_running.load(Ordering::SeqCst), "the first attempt is still stuck");
+
+        let observed = Arc::clone(&first_running);
+        let retry = ItemDeadline {
+            limit: Duration::from_secs(5),
+            stop_grace: Duration::from_millis(20),
+        };
+        let second = run_with_deadline(QueueItemId::Codex, retry, lingering, async move {
+            if observed.load(Ordering::SeqCst) {
+                ItemOutcome::Failed("ran beside the stuck attempt".to_string())
+            } else {
+                ItemOutcome::Done
+            }
+        })
+        .await;
+        assert_eq!(second, ItemOutcome::Done);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn item_panic_still_settles_as_failed() {
+        let outcome = run_with_deadline(QueueItemId::Jq, short_deadline(), test_lingering(), async {
+            panic!("boom");
+        })
+        .await;
+        assert_eq!(outcome, ItemOutcome::Failed("installer panicked".to_string()));
+    }
+
+    #[test]
+    fn every_item_class_has_its_stated_time_limit() {
+        let minutes = |id| item_time_limit(id).as_secs() / 60;
+        for id in [QueueItemId::Node, QueueItemId::Yq, QueueItemId::Jq] {
+            assert_eq!(minutes(id), 15, "{}", id.as_str());
+        }
+        for id in [
+            QueueItemId::HqCli,
+            QueueItemId::Gh,
+            QueueItemId::ClaudeCode,
+            QueueItemId::Codex,
+            QueueItemId::Qmd,
+        ] {
+            assert_eq!(minutes(id), 20, "{}", id.as_str());
+        }
+        assert_eq!(minutes(QueueItemId::RuntimeHooks), 5);
+        assert_eq!(minutes(QueueItemId::Embeddings), 45);
+        assert_eq!(minutes(QueueItemId::SearchIndex), 60);
+        assert_eq!(minutes(QueueItemId::VaultUpload), 60);
+        // A download item must outlast every retry the downloader itself makes.
+        assert!(item_time_limit(QueueItemId::Node) > Duration::from_secs(3 * 180));
+    }
+
+    #[test]
+    fn timeout_reason_names_the_limit_in_minutes() {
+        assert_eq!(timeout_reason(Duration::from_secs(20 * 60)), "installer timed out after 20 min");
     }
 }

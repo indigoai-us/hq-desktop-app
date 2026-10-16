@@ -472,6 +472,109 @@ describe('welcome flow: the install runs in the background', () => {
     await flush();
     expectReady();
   });
+
+  // PR 1656 review: a queue item that hangs, or one a build left marked
+  // running, must not keep the ready step's control disabled forever.
+  describe('when the queue goes quiet', () => {
+    const TEN_MINUTES = 10 * 60_000;
+    const statusReads = () => commands().filter((c) => c === 'get_install_queue_status').length;
+    const stallLogs = () =>
+      calls.filter(
+        (c) =>
+          c.command === 'frontend_log' &&
+          c.args?.tag === 'onboarding' &&
+          String(c.args?.message).includes('stall ceiling reached'),
+      );
+    async function advance(ms: number) {
+      await vi.advanceTimersByTimeAsync(ms);
+      await flush();
+    }
+    async function mountWithQueue(read: () => unknown) {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      stubInvoke({ get_install_queue_status: read });
+      const onfinish = mountAt(READY_STEP_INDEX);
+      for (let i = 0; i < 20 && readyTitle() !== 'Almost ready.'; i += 1) await advance(5);
+      expectWaiting();
+      return onfinish;
+    }
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('reads the queue again every 10 seconds, so a missed settle event cannot hold the step', async () => {
+      let status = queueStatus('running', 11);
+      await mountWithQueue(() => status);
+      const before = statusReads();
+
+      // The queue settles, but its progress event never reaches the wizard.
+      status = queueStatus('attention', 11, 12, ['gh']);
+      await advance(9_000);
+      expectWaiting();
+      await advance(1_000);
+      expect(statusReads()).toBe(before + 1);
+      expectReady();
+      expect(stallLogs()).toHaveLength(0);
+    });
+
+    it('enables the control after 10 minutes with no progress, logs it, and leaves the queue running', async () => {
+      const onfinish = await mountWithQueue(() => queueStatus('running', 11));
+      const before = statusReads();
+
+      await advance(TEN_MINUTES - 10_000);
+      expectWaiting();
+      expect(statusReads()).toBeGreaterThanOrEqual(before + 59);
+      expect(stallLogs()).toHaveLength(0);
+
+      await advance(10_000);
+      expect(open().disabled).toBe(false);
+      expect(open().querySelector('.tc-name')?.textContent?.trim()).toBe('Open HQ Desktop');
+      expect(stallLogs()).toHaveLength(1);
+      expect(String(stallLogs()[0].args?.message)).toContain('queue state=running');
+      // Nothing stops or restarts the queue: it keeps installing in the background.
+      expect(commands()).not.toContain('cancel_install');
+      expect(commands()).not.toContain('start_install_queue');
+
+      // The ceiling fires once and the reads stop.
+      const readsAfter = statusReads();
+      await advance(60_000);
+      expect(statusReads()).toBe(readsAfter);
+      expect(stallLogs()).toHaveLength(1);
+
+      open().click();
+      for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+      expect(onfinish).toHaveBeenCalledTimes(1);
+    });
+
+    it('starts the 10 minutes over on every progress event', async () => {
+      await mountWithQueue(() => queueStatus('running', 9));
+
+      await advance(9 * 60_000);
+      progress(queueStatus('running', 10));
+      await advance(9 * 60_000);
+      expectWaiting();
+      expect(stallLogs()).toHaveLength(0);
+
+      await advance(60_000 + 10_000);
+      expect(open().disabled).toBe(false);
+      expect(stallLogs()).toHaveLength(1);
+    });
+
+    it('starts the 10 minutes over when a re-read finds the queue moved', async () => {
+      let status = queueStatus('running', 9);
+      await mountWithQueue(() => status);
+
+      await advance(9 * 60_000);
+      status = queueStatus('running', 10);
+      await advance(10_000);
+      await advance(9 * 60_000);
+      expectWaiting();
+
+      await advance(60_000 + 10_000);
+      expect(open().disabled).toBe(false);
+      expect(stallLogs()).toHaveLength(1);
+    });
+  });
 });
 
 describe('welcome flow: the usage-data answer on the ready screen', () => {
