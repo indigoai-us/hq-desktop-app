@@ -7,6 +7,7 @@ import {
   formatFlagLookup,
   formatRoute,
   formatSetupRunSet,
+  formatWelcomeReport,
   formatInstallEnd,
   formatInstallStart,
   formatProbe,
@@ -198,6 +199,15 @@ describe("route, flag and setup-run lines", () => {
       "kind=flag flag=found-apps path=unscoped value=true applied=false elapsed_ms=12",
     );
     expect(formatSetupRunSet("mark-already-set-up")).toBe("kind=setup-run event=set caller=mark-already-set-up");
+  });
+
+  it("formats welcome report lines, with a reason only on blocked", () => {
+    expect(formatWelcomeReport("dispatched")).toBe("kind=welcome-report event=dispatched");
+    expect(formatWelcomeReport("blocked", "connect-model")).toBe("kind=welcome-report event=blocked reason=connect-model");
+    expect(formatWelcomeReport("started")).toBe("kind=welcome-report event=started");
+    expect(formatWelcomeReport("landed")).toBe("kind=welcome-report event=landed");
+    expect(formatWelcomeReport("failed")).toBe("kind=welcome-report event=failed");
+    expect(formatWelcomeReport("blocked", "")).toBe("kind=welcome-report event=blocked reason=unknown");
   });
 
   it("adds late= only for an answer that landed after its wait", () => {

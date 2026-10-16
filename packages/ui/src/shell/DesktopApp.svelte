@@ -74,7 +74,7 @@
   import BriefRailHost from "./BriefRailHost.svelte";
   import WelcomeReport from "../brief/WelcomeReport.svelte";
   import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
-  import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
     RAIL_ATLAS_FLAG,
@@ -343,8 +343,10 @@
     createRouteLogger,
     formatFlagLookup,
     formatSetupRunSet,
+    formatWelcomeReport,
     writeFirstRunLine,
     type FlagLateOutcome,
+    type WelcomeReportEvent,
   } from "../chat/first-run/first-run-timing.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
@@ -4198,9 +4200,10 @@
   let welcomeReportBlockedOn: string | null = null;
   // The brief job builds the report once the assistant is known. Without one
   // yet the report offers #welcome to set one up. A job held back (assistant
-  // not running, model not signed in) shows the brief page's fix, and tries
-  // again by itself only when the assistant's state changes (it came up, a
-  // sign-in landed), never on a timer. Once a job reaches the assistant it is
+  // not running, model not signed in) shows the report's card with the brief
+  // check's fix, and tries again by itself only when the assistant's state
+  // changes (it came up, a sign-in landed) or the window comes back, never
+  // on a timer. Once a job reaches the assistant it is
   // never sent again for it, across reloads too.
   $effect(() => {
     const uid = assistantUid;
@@ -4228,6 +4231,44 @@
       welcomeReportBlockedOn = null;
       void run.start();
     });
+  });
+  // A job held back on the assistant (a terminal or browser sign-in, the
+  // assistant started by hand) checks again when the window comes back.
+  $effect(() => {
+    const run = briefRun;
+    if (!welcomeReportOwed || !run || run.phase.kind !== "blocked" || typeof window === "undefined") return;
+    const onBack = (): void => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (run.phase.kind === "blocked") void run.start();
+    };
+    window.addEventListener("focus", onBack);
+    document.addEventListener("visibilitychange", onBack);
+    return () => {
+      window.removeEventListener("focus", onBack);
+      document.removeEventListener("visibilitychange", onBack);
+    };
+  });
+  /** The last welcome report line written, so each step logs once. */
+  let welcomeReportLogged: string | null = null;
+  // One `[first-run] kind=welcome-report` line per step of the report's job,
+  // until the report lands. No names, ids or messages.
+  $effect(() => {
+    const phase = briefRun?.phase;
+    if (!welcomeReportOwed || !phase || welcomeReportLogged === "landed") return;
+    const events: Partial<Record<string, WelcomeReportEvent>> = {
+      waiting: "dispatched",
+      blocked: "blocked",
+      running: "started",
+      ready: "landed",
+      failed: "failed",
+    };
+    const event = events[phase.kind];
+    if (!event) return;
+    const reason = phase.kind === "blocked" ? phase.fix : undefined;
+    const key = reason ? `${event}:${reason}` : event;
+    if (key === welcomeReportLogged) return;
+    welcomeReportLogged = key;
+    writeFirstRunLine(firstRunTimingLog, formatWelcomeReport(event, reason));
   });
   /**
    * The company the welcome report's connect card connects apps to: the
@@ -6266,13 +6307,13 @@
   /**
    * The brief page replaces the welcome report's loading card once the brief
    * has landed, or whenever the page has the way forward: Try again on a
-   * failed job, the fix on a held-back one (start the assistant, sign in),
-   * and the page itself when this host runs no brief jobs.
+   * failed job, and the page itself when this host runs no brief jobs. A
+   * held-back job keeps the report's own card (`welcomeReportBlocked`).
    */
   const welcomeReportReady = $derived.by(() => {
     if (!briefRun) return true;
     const kind = briefRun.phase.kind;
-    if (kind === "ready" || kind === "failed" || kind === "blocked") return true;
+    if (kind === "ready" || kind === "failed") return true;
     // Idle once the job already reached this assistant (a failed run
     // dismissed, a reload with no run left): nothing is coming, so the brief
     // page's Create brief shows.
@@ -6280,6 +6321,13 @@
     return kind === "idle" && !!uid && (welcomeReportSent === uid || welcomeReportSentTo(uid));
   });
   const welcomeReportProgress = $derived(briefRun?.phase.kind === "running" ? briefRun.phase.progress : null);
+  /** The held-back job's reason and fix (the brief page's own copy), shown under the report's heading. */
+  const welcomeReportBlocked = $derived.by(() => {
+    const run = briefRun;
+    const phase = run?.phase;
+    if (!run || phase?.kind !== "blocked") return null;
+    return { message: phase.message, label: BRIEF_FIX_LABEL[phase.fix], onfix: () => void run.fix() };
+  });
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
     setupLaunchError = null;
     const res = await adapter.settings.getSetupStatus();
@@ -15340,6 +15388,7 @@
               progress={welcomeReportProgress}
               connect={welcomeConnect}
               onsetup={welcomeReportNeedsAssistant ? openWelcomeSetup : null}
+              blocked={welcomeReportBlocked}
             >
               {@render briefPage()}
             </WelcomeReport>

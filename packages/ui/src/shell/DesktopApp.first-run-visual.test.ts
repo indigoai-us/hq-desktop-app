@@ -705,22 +705,152 @@ describe("welcome report (US-009)", () => {
     expect(q('[data-testid="welcome-route-pending"]')).toBeNull();
   });
 
-  it("an assistant that cannot take the job shows the brief page's fix on the welcome report, never the loading card", async () => {
+  // Lane A (2026-10-16): a held-back job kept the generic brief page ("Your
+  // first brief is waiting"), so nothing said the welcome report was coming.
+  it("an assistant that cannot take the job keeps the welcome report's card with the reason and the fix, never the loading card", async () => {
     const stoppedSetupBot = { ...runningSetupBot, state: "stopped", pid: null, processAlive: false, online: false };
     const { platform, sendDm } = adapter({ flag: true, bots: [stoppedSetupBot], activeCompany: "indigo" });
     await boot(platform);
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await settle();
-    // The brief page loads lazily; its fix shows once it is in.
-    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-fix"]')).toBeTruthy(), {
-      timeout: 10_000,
-    });
-    expect(q('[data-testid="welcome-report"] [data-testid="brief-fix"]')?.textContent).toContain("Start it");
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    const card = q('[data-testid="welcome-report-blocked"]')!;
+    expect(card.textContent).toContain("Your assistant writes your welcome report");
+    expect(card.textContent).toContain("is not running.");
+    expect(q('[data-testid="welcome-report-blocked-fix"]')?.textContent?.trim()).toBe("Start it");
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-blocked"]')).toBeNull();
     expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
     expect(q('[data-testid="welcome-report-setup"]')).toBeNull();
     expect(briefJobs(sendDm)).toHaveLength(0);
   }, 15_000);
+
+  // Lane A (2026-10-16, VM run of 2f736a47e): Claude Code installed but
+  // signed out. The job was held back on "connect a model", the page never
+  // said the welcome report waits on it, a sign-in made outside the app was
+  // never read again, and the log had no welcome report line at all.
+  it("a signed-out model holds the job with the report's card, logs why, and sends it once the window comes back signed in", async () => {
+    let signedIn = false;
+    const preflightImpl = vi.fn(async () =>
+      ok({
+        claudeAvailable: true,
+        claudeLoggedIn: signedIn,
+        codexAvailable: false,
+        codexLoggedIn: false,
+        grokAvailable: false,
+        grokLoggedIn: false,
+      }),
+    );
+    const log = logSink();
+    let created = false;
+    const create = vi.fn(async () => {
+      created = true;
+      return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
+    });
+    const listImpl = async () => ok({ bots: created ? [runningSetupBot] : [] });
+    const { platform, sendDm } = adapter({
+      flag: true,
+      create,
+      listImpl,
+      activeCompany: "indigo",
+      preflightImpl,
+      logToFile: log.logToFile,
+    });
+    await boot(platform);
+    // Signed out, so only the bot path shows: name it, then Talk.
+    await chooseBot();
+    typeName("Biscuit");
+    confirmName();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit"));
+    // Later the person opens the Daily Brief, where the report is owed.
+    await vi.waitFor(() => expect(q('[data-testid="rail-brief"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="rail-brief"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    const card = q('[data-testid="welcome-report-blocked"]')!;
+    expect(card.textContent).toContain("Your assistant writes your welcome report");
+    expect(card.textContent).toContain("has no model connected on this computer.");
+    expect(q('[data-testid="welcome-report-blocked-fix"]')?.textContent?.trim()).toBe("Connect a model");
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-blocked"]')).toBeNull();
+    await vi.waitFor(() => expect(log.of("welcome-report")).toEqual(["kind=welcome-report event=blocked reason=connect-model"]));
+    expect(briefJobs(sendDm)).toHaveLength(0);
+
+    // Signed in from a terminal or the browser; the window comes back.
+    signedIn = true;
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
+    expect(q('[data-testid="welcome-report-blocked"]')).toBeNull();
+    await vi.waitFor(() =>
+      expect(log.of("welcome-report")).toEqual([
+        "kind=welcome-report event=blocked reason=connect-model",
+        "kind=welcome-report event=dispatched",
+      ]),
+    );
+    // No names, uids or messages in the lines.
+    for (const line of log.of("welcome-report")) {
+      expect(line).not.toContain(SETUP_BOT_UID);
+      expect(line).not.toMatch(/setup|Quill|connected on/i);
+    }
+    await settle(20);
+    expect(briefJobs(sendDm)).toHaveLength(1);
+  }, 20_000);
+
+  it("logs started, landed and failed for the welcome report's job", async () => {
+    const log = logSink();
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo", logToFile: log.logToFile });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    const runId = /--run-id (\S+)/.exec(briefJobs(sendDm)[0]![1])![1]!;
+    let state = "running";
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent =
+      async (path: string) =>
+        path.endsWith(`${runId}/status.json`)
+          ? ok(JSON.stringify({ run_id: runId, state, message: "The assistant could not finish the brief." }))
+          : { ok: false as const, reason: "not found" };
+    await vi.waitFor(() => expect(log.of("welcome-report")).toContain("kind=welcome-report event=started"), {
+      timeout: 10_000,
+    });
+    state = "failed";
+    await vi.waitFor(() => expect(log.of("welcome-report")).toContain("kind=welcome-report event=failed"), {
+      timeout: 10_000,
+    });
+    expect(log.of("welcome-report")).toEqual([
+      "kind=welcome-report event=dispatched",
+      "kind=welcome-report event=started",
+      "kind=welcome-report event=failed",
+    ]);
+    for (const line of log.of("welcome-report")) expect(line).not.toContain("could not finish");
+  }, 25_000);
+
+  it("logs landed once when the welcome report's job writes its report", async () => {
+    const log = logSink();
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo", logToFile: log.logToFile });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    const runId = /--run-id (\S+)/.exec(briefJobs(sendDm)[0]![1])![1]!;
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent =
+      async (path: string) =>
+        path.endsWith(`${runId}/status.json`)
+          ? ok(JSON.stringify({ run_id: runId, state: "ready" }))
+          : { ok: false as const, reason: "not found" };
+    await vi.waitFor(() => expect(log.of("welcome-report")).toContain("kind=welcome-report event=landed"), {
+      timeout: 10_000,
+    });
+    await settle(20);
+    expect(log.of("welcome-report")).toEqual([
+      "kind=welcome-report event=dispatched",
+      "kind=welcome-report event=landed",
+    ]);
+  }, 25_000);
 
   it("a reload after the job was sent never sends it again, and lands on the report the run wrote", async () => {
     localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);

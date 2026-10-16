@@ -108,6 +108,26 @@ describe("WelcomeReport", () => {
     expect(onsetup).toHaveBeenCalledTimes(1);
   });
 
+  it("a job held back on a fix keeps the report's heading with the reason and the fix, never the loading bar", async () => {
+    const onfix = vi.fn();
+    mountReport({
+      ready: false,
+      blocked: { message: "Quill has no model connected on this computer.", label: "Connect a model", onfix },
+      children: briefPage,
+    });
+    await settle();
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+    expect(q('[role="progressbar"]')).toBeNull();
+    expect(q('[data-testid="brief-page"]')).toBeNull();
+    const card = q('[data-testid="welcome-report-blocked"]');
+    expect(card?.querySelector("h2")?.textContent?.trim()).toBe(WELCOME_REPORT_NEEDS_ASSISTANT);
+    expect(card?.querySelector("p")?.textContent?.trim()).toBe("Quill has no model connected on this computer.");
+    const button = q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]');
+    expect(button?.textContent?.trim()).toBe("Connect a model");
+    button!.click();
+    expect(onfix).toHaveBeenCalledTimes(1);
+  });
+
   it("renders the connect card from the scan when the shell passes it, and leaves it out when connect is null", async () => {
     mountReport({
       ready: false,
