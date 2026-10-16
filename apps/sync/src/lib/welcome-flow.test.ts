@@ -136,21 +136,29 @@ describe('welcome flow chrome and gating', () => {
   });
 
   it('keeps Open HQ Desktop disabled until the install is done', () => {
-    expect(readyGate({ installPending: true, consent: 'clear', finishing: false, launching: false }))
+    expect(readyGate({ installPending: true, installRunning: true, consent: 'clear', finishing: false, launching: false }))
       .toEqual({ enabled: false, label: 'Getting ready…' });
-    expect(readyGate({ installPending: false, consent: 'clear', finishing: false, launching: false }))
+    expect(readyGate({ installPending: false, installRunning: false, consent: 'clear', finishing: false, launching: false }))
       .toEqual({ enabled: true, label: 'Open HQ Desktop' });
+  });
+
+  // Owner item 7 (2026-10-16): the blocking phase is done but the background
+  // phase or the host's install queue still runs.
+  it('keeps Open HQ Desktop disabled while any part of the install still runs', () => {
+    expect(
+      readyGate({ installPending: false, installRunning: true, consent: 'clear', finishing: false, launching: false }),
+    ).toEqual({ enabled: false, label: 'Getting ready…' });
   });
 
   it('holds Open HQ Desktop while a held consent answer is sent, and after a server failure', () => {
     expect(
-      readyGate({ installPending: false, consent: 'pending', finishing: false, launching: false }),
+      readyGate({ installPending: false, installRunning: false, consent: 'pending', finishing: false, launching: false }),
     ).toEqual({ enabled: false, label: 'Getting ready…' });
     expect(
-      readyGate({ installPending: false, consent: 'blocked', finishing: false, launching: false }),
+      readyGate({ installPending: false, installRunning: false, consent: 'blocked', finishing: false, launching: false }),
     ).toEqual({ enabled: false, label: 'Open HQ Desktop' });
     expect(
-      readyGate({ installPending: false, consent: 'clear', finishing: true, launching: false }),
+      readyGate({ installPending: false, installRunning: false, consent: 'clear', finishing: true, launching: false }),
     ).toEqual({ enabled: false, label: 'Opening…' });
   });
 });

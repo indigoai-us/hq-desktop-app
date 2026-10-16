@@ -40,6 +40,7 @@ import {
   READY_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
 } from '../../lib/onboarding-wizard';
+import { READY_PROGRESS_DONE_TEXT } from '../../lib/welcome-flow';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 
 const TOOLS = {
@@ -335,6 +336,141 @@ describe('welcome flow: the install runs in the background', () => {
     expect(title()).toBe('HQ is ready.');
     expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
     expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
+  });
+
+  // Owner item 7 (2026-10-15, 2026-10-16): the ready screen said "HQ is
+  // ready." with Open HQ Desktop enabled while the install queue was still
+  // installing. It waits, with the existing copy, until every item settled.
+  const readyTitle = () => host.querySelector('#onboarding-title-ready')?.textContent?.trim();
+  const readyLine = () => host.querySelector('[data-scene="ready"] .pl')?.textContent?.trim();
+  const open = () => byId('onboarding-open-desktop')!;
+  const queueStatus = (state: string, done: number, total = 12, failed: string[] = []) => ({
+    state,
+    current: state === 'running' ? 'Claude Code' : null,
+    currentId: state === 'running' ? 'claude-code' : null,
+    done,
+    total,
+    failed,
+  });
+  const progress = (payload: unknown) => events.handlers.get('install-queue:progress')!({ payload });
+  /** The greyed Continue with the "Getting ready…" line, and no white card. */
+  const expectWaiting = () => {
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(readyLine()).not.toBe(READY_PROGRESS_DONE_TEXT);
+    expect(readyLine()).toMatch(/Step \d of 5 · /);
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain(READY_PROGRESS_DONE_TEXT);
+    expect(open().disabled).toBe(true);
+    expect(open().textContent?.trim()).toBe('Continue');
+    expect(byId('onboarding-ready-wait')?.textContent).toContain('Getting ready…');
+    expect(host.querySelector('[data-scene="ready"] .tool-card-desktop')).toBeNull();
+  };
+  const expectReady = () => {
+    expect(readyTitle()).toBe('HQ is ready.');
+    expect(readyLine()).toBe(READY_PROGRESS_DONE_TEXT);
+    expect(byId('onboarding-ready-wait')).toBeNull();
+    expect(open().classList.contains('tool-card-desktop')).toBe(true);
+    expect(open().querySelector('.tc-name')?.textContent?.trim()).toBe('Open HQ Desktop');
+    expect(open().disabled).toBe(false);
+  };
+
+  it('keeps Open HQ Desktop waiting while the queue runs after the blocking phase', async () => {
+    const template = deferred();
+    const deps = deferred();
+    stubInvoke({
+      fetch_and_extract_template: () => template.promise,
+      start_install_queue: () => deps.promise,
+    });
+    mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+
+    template.resolve();
+    await flushUntil(() => commands().includes('start_install_queue'), 'the background phase');
+    await flush();
+    expectWaiting();
+    expect(byId('onboarding-launch-claude')!.disabled).toBe(true);
+
+    // start_install_queue returns once the queue has started: this flow's
+    // stages can settle while the host queue is still installing.
+    progress(queueStatus('running', 9));
+    deps.resolve();
+    await flushUntil(() => commands().includes('record_install_complete'), 'the settled stages');
+    await flush();
+    expectWaiting();
+
+    progress(queueStatus('complete', 12));
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the settled queue');
+    expectReady();
+    expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
+  });
+
+  it('shows HQ is ready. and enables Open HQ Desktop once the whole queue has settled', async () => {
+    stubInvoke({ get_install_queue_status: () => queueStatus('complete', 12) });
+    mountAt(2);
+    await flushUntil(() => commands().includes('record_install_complete'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
+    await flush();
+    expectReady();
+  });
+
+  it('enables Open HQ Desktop when the queue settles with a failed item', async () => {
+    stubInvoke({ get_install_queue_status: () => queueStatus('running', 10) });
+    mountAt(READY_STEP_INDEX);
+    await flushUntil(() => readyTitle() === 'Almost ready.', 'the running queue');
+    expect(open().disabled).toBe(true);
+
+    // gh failed: the queue settles in "attention". The desktop's own note
+    // tells the person what failed, so the ready screen does not hold them.
+    progress(queueStatus('attention', 11, 12, ['gh']));
+    await flushUntil(() => !open().disabled, 'Open HQ Desktop');
+    expectReady();
+  });
+
+  it('waits on the ready step while a queue this wizard did not start still runs', async () => {
+    stubInvoke({ get_install_queue_status: () => queueStatus('running', 9) });
+    mountAt(READY_STEP_INDEX);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
+    await flushUntil(() => readyTitle() === 'Almost ready.', 'the pending state');
+    expect(commands()).not.toContain('fetch_and_extract_template');
+    expectWaiting();
+
+    progress(queueStatus('complete', 12));
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the settled queue');
+    expectReady();
+  });
+
+  it('does not open HQ Desktop by itself or on a press while the queue runs', async () => {
+    stubInvoke({ get_install_queue_status: () => queueStatus('running', 9) });
+    const onfinish = mountAt(READY_STEP_INDEX);
+    await flushUntil(() => readyTitle() === 'Almost ready.', 'the pending state');
+    open().click();
+    host.querySelector('[data-scene="ready"]')!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(commands()).not.toContain('open_desktop_alt_window');
+
+    progress(queueStatus('complete', 12));
+    await flushUntil(() => !open().disabled, 'Open HQ Desktop');
+    open().click();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+  });
+
+  it('does not let a queue read that a progress event overtook bring back a running queue', async () => {
+    const read = deferred<unknown>();
+    stubInvoke({ get_install_queue_status: () => read.promise });
+    mountAt(READY_STEP_INDEX);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
+    progress(queueStatus('complete', 12));
+    read.resolve(queueStatus('running', 11));
+    await flush();
+    await flush();
+    expectReady();
   });
 });
 

@@ -357,6 +357,12 @@ export interface ReadyGateInput {
   /** An install this flow started is still running. */
   installPending: boolean;
   /**
+   * Some part of the install is still running: this flow's background phase
+   * or the host's install queue. A queue that settled with failures is not
+   * running, so a failed item never keeps the control disabled.
+   */
+  installRunning: boolean;
+  /**
    * The held usage-data answer: `pending` while it waits to be sent or is
    * being sent, `blocked` after a server failure that needs a retry.
    */
@@ -367,11 +373,17 @@ export interface ReadyGateInput {
 }
 
 /** Whether Open HQ Desktop can be pressed, and what it says. */
-export function readyGate({ installPending, consent, finishing, launching }: ReadyGateInput): {
+export function readyGate({
+  installPending,
+  installRunning,
+  consent,
+  finishing,
+  launching,
+}: ReadyGateInput): {
   enabled: boolean;
   label: string;
 } {
   if (finishing) return { enabled: false, label: 'Opening…' };
-  if (installPending || consent === 'pending') return { enabled: false, label: 'Getting ready…' };
+  if (installPending || installRunning || consent === 'pending') return { enabled: false, label: 'Getting ready…' };
   return { enabled: consent === 'clear' && !launching, label: 'Open HQ Desktop' };
 }

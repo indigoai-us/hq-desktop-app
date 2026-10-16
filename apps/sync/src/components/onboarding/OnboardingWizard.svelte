@@ -880,9 +880,10 @@
   /** Every install item has settled: this flow's stages and the host's queue. */
   const installSettled = $derived(setupCompleted && !hostQueueRunning);
   /**
-   * Some part of the install is still running, the background phase included.
-   * The ready screen's heading and progress line follow this; the control
-   * follows installPending, so the background phase never blocks opening HQ.
+   * Some part of the install is still running, the background phase and the
+   * host's queue included. The ready screen's heading, progress line and
+   * control all follow this, so Open HQ Desktop waits until every install
+   * item has settled. A queue that settled with failures is not running.
    */
   const readyInstallRunning = $derived(
     (setupStarted && !setupCompleted && (!blockingPhaseDone || backgroundPhaseRunning)) ||
@@ -906,10 +907,11 @@
   const installCardLines = installCardStepLines();
   const consentGate = $derived(deferredConsentGate(deferredConsent));
   /** Finishing (Open HQ Desktop, or handing off to a tool) waits for the install and the answer. */
-  const finishBlocked = $derived(installPending || consentGate !== 'clear');
+  const finishBlocked = $derived(installPending || readyInstallRunning || consentGate !== 'clear');
   const openDesktop = $derived(
     readyGate({
       installPending,
+      installRunning: readyInstallRunning,
       consent: consentGate,
       finishing,
       launching: launching !== null,
@@ -972,8 +974,11 @@
   // Entering the ready step reads the host's queue, so a run this wizard did
   // not start (or one still going after this flow's stages settled) keeps the
   // screen from saying the install is done.
+  // It reads again when this flow's stages settle, so the control never
+  // enables on a queue status that predates the queue's start.
   $effect(() => {
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX) return;
+    void setupCompleted;
     void refreshHostQueueStatus();
   });
 
@@ -5025,12 +5030,13 @@
            the tools detection says are installed. Nothing shows for them
            while detection is in flight. -->
       <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers">
-        {#if installPending}
-          <!-- Item 7 (owner and Corey, standup 2026-10-15): while the blocking
-               install runs this is not the primary action, so no white card.
-               A quiet line with a greyed Continue that reads as waiting; the
-               white Open HQ Desktop card takes its place once the blocking
-               phase is done. -->
+        {#if readyInstallRunning}
+          <!-- Item 7 (owner and Corey, standup 2026-10-15; owner 2026-10-16):
+               while any part of the install runs (the blocking phase, the
+               background phase or the host's install queue) this is not the
+               primary action, so no white card. A quiet line with a greyed
+               Continue that reads as waiting; the white Open HQ Desktop card
+               takes its place once every install item has settled. -->
           <p class="ready-wait" data-testid="onboarding-ready-wait" aria-live="polite">
             <span class="ready-wait-line">{openDesktop.label}</span>
             <button
