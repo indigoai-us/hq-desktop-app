@@ -43,7 +43,8 @@
     type FirstRunRuntime,
     type FirstRunToolUsage,
   } from "./visual-first-run.js";
-  import { createScreenTimer, type FirstRunTimingSink } from "./first-run-timing.js";
+  import { createScreenTimer, formatSignIn, writeFirstRunLine, type FirstRunTimingSink, type SignInEvent } from "./first-run-timing.js";
+  import { FIRST_RUN_SIGNIN_COPY, type FirstRunSignInHost } from "./first-run-signin.js";
   import "../create-bot/new-bot-takeover.css";
 
   interface Props {
@@ -76,6 +77,11 @@
     initialChoseBot?: boolean;
     /** Receives the `kind=screen surface=takeover` timing lines. */
     timingLog?: FirstRunTimingSink | null;
+    /**
+     * Signs the detected coding tool in before "Continue in <tool>" and the
+     * name path go on. Null: neither waits on a sign-in.
+     */
+    signin?: FirstRunSignInHost | null;
   }
 
   let {
@@ -94,6 +100,7 @@
     initialScreen = "decision",
     initialChoseBot = false,
     timingLog = null,
+    signin = null,
   }: Props = $props();
 
   let hostNoun = $state(hostComputerNoun());
@@ -190,12 +197,114 @@
     }
   }
 
+  // ── the coding tool's sign-in (owner, 2026-10-16) ──────────────────────
+  /** The sign-in on screen: waiting on the browser, or did not finish. */
+  let signinView = $state<{ runtime: FirstRunRuntime; state: "waiting" | "failed" } | null>(null);
+  /** Lets the action that asked for the sign-in go on (signed in or skipped). */
+  let signinGoOn: (() => void) | null = null;
+  /** Bumped by Skip and by leaving: an older attempt's answer is dropped. */
+  let signinAttempt = 0;
+  let live = true;
+  onDestroy(() => {
+    live = false;
+    // Leaving stops the browser sign-in and lets the waiting press() end;
+    // the callers check `live` and do not go on.
+    if (signinView?.state === "waiting") cancelSignIn(signinView.runtime);
+    signinAttempt += 1;
+    goOnAfterSignIn();
+  });
+
+  function logSignIn(event: SignInEvent, runtime: FirstRunRuntime): void {
+    writeFirstRunLine(timingLog, formatSignIn(event, runtime));
+  }
+
+  /**
+   * The one sign-in step before "Continue in <tool>" and the name path go
+   * on. Resolves at once when `runtime` is signed in (or the host has no
+   * sign-in); otherwise once the sign-in connected or the person skipped it.
+   * Never rejects.
+   */
+  async function signInFirst(runtime: FirstRunRuntime): Promise<void> {
+    const host = signin;
+    if (!host || installed?.[runtime] === true) return;
+    try {
+      if (await host.signedIn(runtime)) return;
+    } catch (error) {
+      console.warn("[first-run] sign-in check failed", error);
+    }
+    if (!live) return;
+    await new Promise<void>((resolve) => {
+      signinGoOn = resolve;
+      void attemptSignIn(runtime);
+    });
+  }
+
+  async function attemptSignIn(runtime: FirstRunRuntime): Promise<void> {
+    const host = signin;
+    if (!host) return;
+    const mine = ++signinAttempt;
+    signinView = { runtime, state: "waiting" };
+    logSignIn("start", runtime);
+    let connected = false;
+    try {
+      connected = await host.run(runtime, { cancelled: () => mine !== signinAttempt });
+    } catch (error) {
+      console.warn("[first-run] sign-in failed", error);
+    }
+    if (mine !== signinAttempt) return;
+    if (connected) {
+      logSignIn("done", runtime);
+      goOnAfterSignIn();
+    } else {
+      logSignIn("failed", runtime);
+      signinView = { runtime, state: "failed" };
+    }
+  }
+
+  function goOnAfterSignIn(): void {
+    signinView = null;
+    const goOn = signinGoOn;
+    signinGoOn = null;
+    goOn?.();
+  }
+
+  /** Stops the running browser sign-in; the host refreshes readiness if it had connected. */
+  function cancelSignIn(runtime: FirstRunRuntime): void {
+    const cancel = signin?.cancel;
+    if (!cancel) return;
+    void cancel(runtime).catch((error: unknown) => console.warn("[first-run] sign-in cancel failed", error));
+  }
+
+  /** Skip for now: go on without a sign-in; the welcome report waits on it as before. */
+  function skipSignIn(): void {
+    const view = signinView;
+    if (!view) return;
+    signinAttempt += 1;
+    logSignIn("skipped", view.runtime);
+    if (view.state === "waiting") cancelSignIn(view.runtime);
+    goOnAfterSignIn();
+  }
+
+  function retrySignIn(): void {
+    if (signinView?.state === "failed") void attemptSignIn(signinView.runtime);
+  }
+
+  /**
+   * The name path's sign-in, kept in this one function so it can be taken off
+   * the name path alone: only a tool the scan or the stored logins found.
+   */
+  async function signInBeforeNaming(): Promise<void> {
+    if (tool) await signInFirst(tool);
+  }
+
   function confirmName(event: SubmitEvent): void {
     event.preventDefault();
     tried = true;
     if (issue || pressed !== null) return;
     const runtime = tool ?? SETUP_BOT_RUNTIME_ORDER[0];
-    void press("name", () => {
+    void press("name", async () => {
+      await signInBeforeNaming();
+      if (!live) return;
       onconfirmname(normalizeAssistantName(name), runtime);
       screen = "done";
     });
@@ -208,10 +317,19 @@
   const question = $derived(
     !answered ? "" : screen === "done" ? "" : showBot ? COPY.botQuestion : COPY.toolQuestion,
   );
+  const signinText = $derived(
+    signinView === null
+      ? ""
+      : signinView.state === "waiting"
+        ? FIRST_RUN_SIGNIN_COPY.waiting(runtimeLabel(signinView.runtime))
+        : FIRST_RUN_SIGNIN_COPY.failed,
+  );
   const liveText = $derived(
-    screen === "done" && creation.state === "failed"
-      ? creation.reason
-      : [announcement, question].filter(Boolean).join(" "),
+    signinText
+      ? signinText
+      : screen === "done" && creation.state === "failed"
+        ? creation.reason
+        : [announcement, question].filter(Boolean).join(" "),
   );
 
   function onKeydown(event: KeyboardEvent): void {
@@ -227,7 +345,33 @@
 
 {#snippet decision()}
   <div class="fr-decision" data-testid="first-run-decision" data-screen={screen} data-path={showBot ? "bot" : "tool"}>
-    {#if !answered}
+    {#if signinView}
+      <div class="fr-decision-head">
+        {#if signinView.state === "waiting"}
+          <p class="fr-decision-lead" data-testid="first-run-signin-waiting" aria-busy="true">{signinText}</p>
+        {:else}
+          <p class="fr-decision-lead fr-decision-failed" data-testid="first-run-signin-failed">{signinText}</p>
+        {/if}
+      </div>
+      {#if signinView.state === "failed"}
+        <div class="new-bot-foot-actions single">
+          <button
+            type="button"
+            class="new-bot-create-submit"
+            data-testid="first-run-signin-retry"
+            onclick={retrySignIn}
+          >{FIRST_RUN_COPY.retry}</button>
+        </div>
+      {/if}
+      <p class="fr-skip-row">
+        <button
+          type="button"
+          class="fr-link fr-skip"
+          data-testid="first-run-signin-skip"
+          onclick={skipSignIn}
+        >{FIRST_RUN_SIGNIN_COPY.skip}</button>
+      </p>
+    {:else if !answered}
       <p class="fr-decision-wait" data-testid="first-run-decision-scanning">{COPY.scanning}</p>
     {:else if screen === "done"}
       {#if creation.state === "failed"}
@@ -325,7 +469,11 @@
           data-testid="first-run-decision-primary"
           disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
-          onclick={() => void press("tool", () => oncontinueintool(tool))}
+          onclick={() =>
+            void press("tool", async () => {
+              await signInFirst(tool);
+              if (live) await oncontinueintool(tool);
+            })}
         >{pressed === "tool" ? FIRST_RUN_COPY.opening : COPY.toolPrimary(toolName)}</button>
         <button
           type="button"

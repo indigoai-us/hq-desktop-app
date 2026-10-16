@@ -317,6 +317,20 @@ describe("the handoff note (one note, sent when the takeover closes)", () => {
     expect(intro).toContain("As soon as you finish setting up in the app");
   });
 
+  // Owner (PR 1647): the hello says only what is true. On "Continue in <tool>"
+  // the app named the assistant, so its hello must not say the person did.
+  it("an assistant named for the person on Continue does not claim it was named", () => {
+    for (const signInChecked of [true, false]) {
+      const intro = firstRunIntro({ name: "Cheddar", runtime: "claude", signInChecked }, { noun: "Mac", autoNamed: true });
+      expect(intro).not.toContain("named me");
+      expect(intro).not.toContain("signed in");
+      expect(intro).toContain("Hi, I'm Cheddar, your HQ assistant.");
+      expect(intro).toContain("As soon as you finish setting up in the app");
+    }
+    // The name path keeps the line.
+    expect(firstRunIntro({ name: "Cheddar", runtime: "claude", signInChecked: false })).toContain("You've named me");
+  });
+
   // The owner's assistant said "You've named me and signed in Claude Code"
   // on a dead stored login, and its first turn failed to sign in.
   it("the hello and the note do not claim signed in when the real check did not pass", () => {

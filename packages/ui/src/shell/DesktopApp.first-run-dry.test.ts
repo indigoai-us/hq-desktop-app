@@ -18,7 +18,7 @@ import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
-import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
+import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import { VISUAL_FIRST_RUN_DONE_KEY } from "../chat/first-run/visual-first-run.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
 
@@ -240,6 +240,14 @@ describe("VITE_HQ_DEV_FIRST_RUN_FORCE + VITE_HQ_DEV_FIRST_RUN_DRY", () => {
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    // Talk lands on the welcome report (US-009); #welcome is in the rail.
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    const welcome = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>(`[data-conversation-id="${SETUP_ROW_ID}"]`);
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    welcome.click();
     await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
     q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();

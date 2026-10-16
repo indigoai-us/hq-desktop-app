@@ -116,6 +116,13 @@ describe("signInAgain", () => {
     expect(t.order).toEqual(["list", "stop:setup", "start:setup"]);
   });
 
+  it("force: false lets the tool's own probe answer, with no sign-out first", async () => {
+    const t = deps(["connected"], []);
+    const result = await signInAgain("claude", { ...t.deps, force: false });
+    expect(t.loginStart).toHaveBeenCalledWith("claude", { force: false });
+    expect(result.ok).toBe(true);
+  });
+
   it("restarts through the host's start gate, not around it", async () => {
     const paused = bot({ name: "setup", runtimeSignIn: expired("claude") });
     const blocked = bot({ name: "scout", agentUid: "agt_scout", runtimeSignIn: expired("claude") });

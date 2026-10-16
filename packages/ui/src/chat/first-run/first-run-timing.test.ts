@@ -7,6 +7,8 @@ import {
   formatFlagLookup,
   formatRoute,
   formatSetupRunSet,
+  formatWelcomeReport,
+  formatSignIn,
   formatInstallEnd,
   formatInstallStart,
   formatProbe,
@@ -198,6 +200,22 @@ describe("route, flag and setup-run lines", () => {
       "kind=flag flag=found-apps path=unscoped value=true applied=false elapsed_ms=12",
     );
     expect(formatSetupRunSet("mark-already-set-up")).toBe("kind=setup-run event=set caller=mark-already-set-up");
+  });
+
+  it("formats welcome report lines, with a reason only on blocked", () => {
+    expect(formatWelcomeReport("dispatched")).toBe("kind=welcome-report event=dispatched");
+    expect(formatWelcomeReport("blocked", "connect-model")).toBe("kind=welcome-report event=blocked reason=connect-model");
+    expect(formatWelcomeReport("started")).toBe("kind=welcome-report event=started");
+    expect(formatWelcomeReport("landed")).toBe("kind=welcome-report event=landed");
+    expect(formatWelcomeReport("failed")).toBe("kind=welcome-report event=failed");
+    expect(formatWelcomeReport("blocked", "")).toBe("kind=welcome-report event=blocked reason=unknown");
+  });
+
+  it("formats sign-in lines with the tool", () => {
+    expect(formatSignIn("start", "claude")).toBe("kind=signin event=start tool=claude");
+    expect(formatSignIn("done", "codex")).toBe("kind=signin event=done tool=codex");
+    expect(formatSignIn("failed", "claude")).toBe("kind=signin event=failed tool=claude");
+    expect(formatSignIn("skipped", "codex")).toBe("kind=signin event=skipped tool=codex");
   });
 
   it("adds late= only for an answer that landed after its wait", () => {
