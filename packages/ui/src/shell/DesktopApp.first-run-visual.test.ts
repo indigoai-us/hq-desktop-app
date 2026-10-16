@@ -870,6 +870,42 @@ describe("welcome report (US-009)", () => {
     expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
   }, 15_000);
 
+  // Lane A (2026-10-16): the report is owed for the whole session, so once it
+  // landed a brief the person made by hand that was held back showed the
+  // report's card again, and the window coming back re-ran it on its own.
+  it("after the report landed, a held-back brief made by hand is the Brief page's own: its fix shows, and the window coming back starts nothing", async () => {
+    localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);
+    let bot: typeof runningSetupBot | Record<string, unknown> = {
+      ...runningSetupBot,
+      state: "stopped",
+      pid: null,
+      processAlive: false,
+      online: false,
+    };
+    const listImpl = async () => ok({ bots: [bot] });
+    const { platform, sendDm } = adapter({ flag: true, listImpl, activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-create"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    q<HTMLButtonElement>('[data-testid="welcome-report"] [data-testid="brief-create"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-fix"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(q('[data-testid="welcome-report-blocked"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+
+    // The assistant comes up and the window comes back: nothing is sent by itself.
+    bot = runningSetupBot;
+    window.dispatchEvent(new Event("focus"));
+    await settle(30);
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-fix"]')).toBeTruthy();
+  }, 20_000);
+
   it("Dismiss after the job failed shows the brief page's Create brief, never a loading card that cannot end", async () => {
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
     await boot(platform);

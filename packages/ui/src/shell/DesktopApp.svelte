@@ -4196,6 +4196,10 @@
     }
   }
   let welcomeReportSent = $state<string | null>(null);
+  /** The welcome report's job has not reached this assistant yet. */
+  function welcomeReportUnsent(uid: string | null): boolean {
+    return !!uid && !(welcomeReportSent === uid || welcomeReportSentTo(uid));
+  }
   /** The assistant's state the last held-back job was checked against. */
   let welcomeReportBlockedOn: string | null = null;
   // The brief job builds the report once the assistant is known. Without one
@@ -4236,7 +4240,11 @@
   // assistant started by hand) checks again when the window comes back.
   $effect(() => {
     const run = briefRun;
-    if (!welcomeReportOwed || !run || run.phase.kind !== "blocked" || typeof window === "undefined") return;
+    const uid = assistantUid;
+    if (!welcomeReportOwed || !run || firstRunDev.dry || run.phase.kind !== "blocked" || typeof window === "undefined") return;
+    // Once the report reached the assistant, a later held-back brief is the
+    // Brief page's own; the window coming back does not re-run it.
+    if (!welcomeReportUnsent(uid)) return;
     const onBack = (): void => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       if (run.phase.kind === "blocked") void run.start();
@@ -6318,15 +6326,16 @@
     // dismissed, a reload with no run left): nothing is coming, so the brief
     // page's Create brief shows.
     const uid = assistantUid;
-    return kind === "idle" && !!uid && (welcomeReportSent === uid || welcomeReportSentTo(uid));
+    // Held back after it landed: the Brief page's own fix shows, not the card.
+    return (kind === "idle" || kind === "blocked") && !!uid && !welcomeReportUnsent(uid);
   });
   const welcomeReportProgress = $derived(briefRun?.phase.kind === "running" ? briefRun.phase.progress : null);
   /** The held-back job's reason and fix (the brief page's own copy), shown under the report's heading. */
   const welcomeReportBlocked = $derived.by(() => {
     const run = briefRun;
     const phase = run?.phase;
-    if (!run || phase?.kind !== "blocked") return null;
-    return { message: phase.message, label: BRIEF_FIX_LABEL[phase.fix], onfix: () => void run.fix() };
+    if (!run || phase?.kind !== "blocked" || !welcomeReportUnsent(assistantUid)) return null;
+    return { message: phase.message, label: BRIEF_FIX_LABEL[phase.fix], onfix: () => run.fix() };
   });
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
     setupLaunchError = null;

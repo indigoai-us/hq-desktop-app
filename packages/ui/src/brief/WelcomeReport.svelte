@@ -40,10 +40,27 @@
      * model connected): the brief check's own sentence and fix button, under
      * the report's heading, so the page still says the report is coming.
      */
-    blocked?: { message: string; label: string; onfix: () => void } | null;
+    blocked?: { message: string; label: string; onfix: () => Promise<string | null> | void } | null;
     children: Snippet;
   }
   let { ready, progress = null, connect = null, onsetup = null, blocked = null, children }: Props = $props();
+
+  /** What the fix said when it could not finish (the brief page's own copy), as on the run bar. */
+  let fixError = $state<string | null>(null);
+  let fixing = $state(false);
+  async function runFix(): Promise<void> {
+    if (!blocked || fixing) return;
+    fixing = true;
+    fixError = null;
+    try {
+      fixError = (await blocked.onfix()) ?? null;
+    } catch (err) {
+      console.warn("[welcome-report] fix failed", err);
+      fixError = "Something went wrong.";
+    } finally {
+      fixing = false;
+    }
+  }
 
   const pct = $derived(progress == null ? null : Math.round(Math.min(1, Math.max(0, progress)) * 100));
 </script>
@@ -73,7 +90,8 @@
     <section class="card loading" data-testid="welcome-report-blocked">
       <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>
       <p class="reason">{blocked.message}</p>
-      <button type="button" class="cta" onclick={blocked.onfix} data-testid="welcome-report-blocked-fix">{blocked.label}</button>
+      <button type="button" class="cta" onclick={runFix} disabled={fixing} data-testid="welcome-report-blocked-fix">{blocked.label}</button>
+      {#if fixError}<p class="reason" data-testid="welcome-report-blocked-error">{fixError}</p>{/if}
     </section>
   {:else}
     <section class="card loading" data-testid="welcome-report-loading" aria-busy="true">

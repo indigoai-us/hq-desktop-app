@@ -128,6 +128,37 @@ describe("WelcomeReport", () => {
     expect(onfix).toHaveBeenCalledTimes(1);
   });
 
+  it("says what the fix returned when it could not finish, and a fix that throws says something went wrong", async () => {
+    let answer: () => Promise<string | null> = async () => "Could not start Quill. Try again.";
+    const onfix = vi.fn(() => answer());
+    mountReport({
+      ready: false,
+      blocked: { message: "Quill is not running.", label: "Start it", onfix },
+      children: briefPage,
+    });
+    await settle();
+    expect(q('[data-testid="welcome-report-blocked-error"]')).toBeNull();
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    await settle();
+    expect(q('[data-testid="welcome-report-blocked-error"]')?.textContent?.trim()).toBe("Could not start Quill. Try again.");
+
+    answer = async () => {
+      throw new Error("host gone");
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    await settle();
+    expect(q('[data-testid="welcome-report-blocked-error"]')?.textContent?.trim()).toBe("Something went wrong.");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+
+    answer = async () => null;
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    await settle();
+    expect(q('[data-testid="welcome-report-blocked-error"]')).toBeNull();
+    expect(onfix).toHaveBeenCalledTimes(3);
+  });
+
   it("renders the connect card from the scan when the shell passes it, and leaves it out when connect is null", async () => {
     mountReport({
       ready: false,
