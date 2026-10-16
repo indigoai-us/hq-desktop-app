@@ -381,7 +381,7 @@
     type FlagLateOutcome,
     type WelcomeReportEvent,
   } from "../chat/first-run/first-run-timing.js";
-  import { runFirstRunSignIn, type FirstRunSignInHost } from "../chat/first-run/first-run-signin.js";
+  import { runFirstRunSignIn, waitForToolInstall, type FirstRunSignInHost } from "../chat/first-run/first-run-signin.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
   import { createYourAppsHost } from "../chat/first-run/your-apps-host.js";
@@ -4080,6 +4080,9 @@
             if (ok) await onBotRuntimeSignedIn(runtime);
             return ok;
           },
+          // The tool picked may still be installing in the background queue.
+          waitForInstall: async (runtime, opts) =>
+            installQueue ? waitForToolInstall(runtime, installQueue, opts) : "present",
           // Skip or leaving: stop the browser sign-in. One that connected
           // anyway refreshes readiness so the held report starts.
           cancel: async (runtime) => {

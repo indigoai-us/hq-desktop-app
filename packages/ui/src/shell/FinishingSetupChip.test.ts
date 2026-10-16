@@ -199,6 +199,14 @@ describe("finishing-setup model", () => {
     expect(parseInstallQueueStatus(wire)).toEqual(wire);
   });
 
+  it("reads the unsettled and unfinished item ids when the payload has them", () => {
+    const wire = { ...RUNNING, unsettled: ["codex", 7, "qmd"], unfinished: ["codex", "qmd", "node"] };
+    expect(parseInstallQueueStatus(wire)?.unsettled).toEqual(["codex", "qmd"]);
+    expect(parseInstallQueueStatus(wire)?.unfinished).toEqual(["codex", "qmd", "node"]);
+    expect(parseInstallQueueStatus(RUNNING)?.unsettled).toBeUndefined();
+    expect(parseInstallQueueStatus(RUNNING)?.unfinished).toBeUndefined();
+  });
+
   it("labels a running item with no name by count only", () => {
     expect(finishingSetupLabel({ ...RUNNING, current: null })).toBe("Finishing setup (5 of 11)");
   });

@@ -44,7 +44,7 @@
     type FirstRunToolUsage,
   } from "./visual-first-run.js";
   import { createScreenTimer, formatSignIn, writeFirstRunLine, type FirstRunTimingSink, type SignInEvent } from "./first-run-timing.js";
-  import { FIRST_RUN_SIGNIN_COPY, type FirstRunSignInHost } from "./first-run-signin.js";
+  import { FIRST_RUN_SIGNIN_COPY, type FirstRunInstallWait, type FirstRunSignInHost } from "./first-run-signin.js";
   import "../create-bot/new-bot-takeover.css";
 
   interface Props {
@@ -239,19 +239,50 @@
     });
   }
 
-  async function attemptSignIn(runtime: FirstRunRuntime): Promise<void> {
+  async function attemptSignIn(runtime: FirstRunRuntime, retry = false): Promise<void> {
     const host = signin;
     if (!host) return;
     const mine = ++signinAttempt;
+    const cancelled = () => mine !== signinAttempt;
     signinView = { runtime, state: "waiting" };
     logSignIn("start", runtime);
+    // The tool picked can still be installing in the background queue: wait
+    // for its item to settle before the login, which needs the binary.
+    if (host.waitForInstall) {
+      let install: FirstRunInstallWait = "present";
+      try {
+        install = await host.waitForInstall(runtime, { cancelled, retry });
+      } catch (error) {
+        console.warn("[first-run] install wait failed", error);
+      }
+      if (cancelled()) return;
+      if (install === "failed") {
+        logSignIn("failed", runtime);
+        signinView = { runtime, state: "failed" };
+        return;
+      }
+      if (install === "installed") {
+        let signedIn = false;
+        try {
+          signedIn = await host.signedIn(runtime);
+        } catch (error) {
+          console.warn("[first-run] sign-in check failed", error);
+        }
+        if (cancelled()) return;
+        if (signedIn) {
+          logSignIn("done", runtime);
+          goOnAfterSignIn();
+          return;
+        }
+      }
+    }
     let connected = false;
     try {
-      connected = await host.run(runtime, { cancelled: () => mine !== signinAttempt });
+      connected = await host.run(runtime, { cancelled });
     } catch (error) {
       console.warn("[first-run] sign-in failed", error);
     }
-    if (mine !== signinAttempt) return;
+    if (cancelled()) return;
     if (connected) {
       logSignIn("done", runtime);
       goOnAfterSignIn();
@@ -286,7 +317,7 @@
   }
 
   function retrySignIn(): void {
-    if (signinView?.state === "failed") void attemptSignIn(signinView.runtime);
+    if (signinView?.state === "failed") void attemptSignIn(signinView.runtime, true);
   }
 
   /**
