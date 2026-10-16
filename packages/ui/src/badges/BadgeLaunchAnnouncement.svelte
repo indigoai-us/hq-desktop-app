@@ -20,6 +20,7 @@
   import { suspendShortcuts } from "../common/keyboard-shortcuts.js";
   import { inertOutside, restoreFocus, trapTab } from "../chat/messaging/card-modal.js";
   import BadgeCard from "./BadgeCard.svelte";
+  import BadgeCardModal from "./BadgeCardModal.svelte";
   import BadgeMark from "./BadgeMark.svelte";
   import CardBackLogo from "./CardBackLogo.svelte";
   import { BADGE_BY_ID, TIER_NAME, type ResolvedBadge } from "./badge-catalog.js";
@@ -67,6 +68,13 @@
   let settled = $state(reduced);
   let leaving = $state(false);
   let panelEl = $state<HTMLDivElement | null>(null);
+  let layerEl = $state<HTMLDivElement | null>(null);
+  /**
+   * The card open in the card viewer, and the card in the hand it came from.
+   * Clicking a dealt card opens it there to look at and turn over (owner,
+   * 2026-10-16); closing it comes back to the announcement.
+   */
+  let viewing = $state<{ badge: ResolvedBadge; origin: HTMLElement } | null>(null);
   let primaryEl = $state<HTMLButtonElement | null>(null);
 
   $effect(() => {
@@ -109,6 +117,8 @@
 
   $effect(() => {
     const onKeydown = (event: KeyboardEvent): void => {
+      // The card viewer handles its own keys; Escape closes it, not this.
+      if (viewing) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -128,6 +138,7 @@
 </script>
 
 <div
+  bind:this={layerEl}
   class="la-layer t{tierKey}"
   class:reduced
   class:leaving
@@ -148,7 +159,7 @@
       <p class="la-lead" id="la-lead">{launchLead(badges.length)}</p>
     </header>
 
-    <div class="la-hand" class:empty aria-hidden="true">
+    <div class="la-hand" class:empty aria-hidden={empty ? "true" : undefined}>
       <span class="la-light"></span>
       {#each slots as slot, i (i)}
         <div
@@ -157,7 +168,17 @@
         >
           <div class="la-flip" class:face-down={empty}>
             {#if !empty}
-              <div class="la-face"><BadgeCard badge={hand.shown[i]} interactive={settled && !leaving} /></div>
+              <div class="la-face">
+                <button
+                  type="button"
+                  class="la-view"
+                  data-testid="badge-launch-card"
+                  data-badge-id={hand.shown[i].def.id}
+                  aria-label="View {badgeLabel(hand.shown[i])}"
+                  disabled={!settled || leaving}
+                  onclick={(event) => (viewing = { badge: hand.shown[i], origin: event.currentTarget })}
+                ><BadgeCard badge={hand.shown[i]} interactive={settled && !leaving} /></button>
+              </div>
             {/if}
             <div class="la-back"><span class="la-back-frame"></span><CardBackLogo class="la-back-logo" /></div>
           </div>
@@ -197,6 +218,17 @@
       <button type="button" class="la-later" data-testid="badge-launch-later" onclick={() => leave(onclose)}>Not now</button>
     </div>
   </div>
+
+  {#if viewing}
+    <BadgeCardModal
+      open
+      badge={viewing.badge}
+      origin={viewing.origin}
+      returnFocus={viewing.origin}
+      host={layerEl}
+      onclose={() => (viewing = null)}
+    />
+  {/if}
 </div>
 
 <style>
@@ -296,6 +328,13 @@
 
   .la-flip { position: relative; transform-style: preserve-3d; animation: la-turn 640ms cubic-bezier(0.45, 0, 0.2, 1) calc(var(--d) + 200ms) both; }
   .la-flip.face-down { animation: none; transform: rotateY(180deg); }
+  .la-view {
+    display: block; width: 100%; padding: 0; margin: 0; border: 0;
+    background: none; color: inherit; font: inherit; text-align: inherit;
+    border-radius: 14px; cursor: pointer;
+  }
+  .la-view:disabled { cursor: default; }
+  .la-view:focus-visible { outline: 2px solid oklch(0.97 0.004 75 / 0.7); outline-offset: 4px; }
   .la-face { backface-visibility: hidden; -webkit-backface-visibility: hidden; animation: la-show 640ms linear calc(var(--d) + 200ms) both; }
   .la-back {
     position: absolute; inset: 0; display: grid; place-items: center;
@@ -312,7 +351,10 @@
   .la-back-frame { position: absolute; inset: 2.9%; border-radius: 3.2% / 2.3%; border: 1px solid oklch(0.97 0.004 75 / 0.12); }
   .la-back :global(.la-back-logo) { width: 26%; fill: rgba(244, 239, 232, 0.42); }
 
+  /* Above the dealt cards: in WebKit their 3D layers can paint over a later
+     flat sibling. */
   .la-more {
+    position: relative; z-index: 30;
     padding: 4px 11px; border-radius: 999px;
     background: oklch(0.24 0.006 285); border: 1px solid oklch(0.97 0.004 75 / 0.22);
     color: var(--ink); font-size: 12px;

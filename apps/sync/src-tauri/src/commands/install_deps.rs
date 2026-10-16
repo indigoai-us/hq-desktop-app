@@ -6609,6 +6609,7 @@ mod rsync_core_update_rescue_tests {
 /// the npm-prefix shims when no real `rsync.exe` is present.
 #[cfg(windows)]
 pub(crate) async fn ensure_rsync_for_core_update_rescue() -> RsyncRescueProvisioning {
+    repair_managed_cwrsync_fstab("core-update preflight");
     if rescue_rsync_is_ready().await.is_ok() {
         return RsyncRescueProvisioning::AlreadyRescueReady;
     }
@@ -6734,7 +6735,7 @@ async fn install_rsync_with_progress_inner(
         let _ = std::fs::remove_dir_all(&staged_bin);
         return Err(e);
     }
-    activate_staged_bin_files(&staged_bin, &bin_dir)?;
+    activate_managed_rsync(&staged_bin, &managed_toolchain_dir())?;
 
     append_user_path(&bin_dir)?;
 
@@ -6797,6 +6798,102 @@ fn extract_rsync_zip_to_bin(bytes: &[u8], staged_bin: &Path) -> Result<(), Strin
                 .to_string(),
         )
     }
+}
+
+/// Cygwin mount table for the managed cwRsync. Cygwin reads `/etc/fstab`
+/// from the parent of the directory holding `cygwin1.dll`, so for the
+/// managed install (`<toolchain>/bin/rsync.exe`) that is
+/// `<toolchain>/etc/fstab`. Without a `noacl` cygdrive mount, cwRsync reads
+/// Windows ACLs for every new directory once rsync runs with `--no-perms`
+/// (hq-cloud 6.18.76+ passes it on win32), logs
+/// `unpack_smb_acl: sys_acl_get_info(): Invalid argument (22)` and exits 23,
+/// which fails every Core update. This is the stock cwRsync line.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const CWRSYNC_FSTAB_BODY: &str = "# Written by HQ Desktop for the managed cwRsync.\n\
+# noacl stops rsync from reading Windows ACLs (exit 23 with --no-perms).\n\
+none /cygdrive cygdrive binary,posix=0,user,noacl 0 0\n";
+
+/// True when `body` has an active (uncommented) mount line for `/cygdrive`
+/// whose options include `noacl`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn fstab_has_noacl_cygdrive_mount(body: &str) -> bool {
+    body.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return false;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        fields.len() >= 4
+            && fields[1] == "/cygdrive"
+            && fields[3].split(',').any(|opt| opt == "noacl")
+    })
+}
+
+/// Makes sure `<toolchain_dir>/etc/fstab` has a `noacl` cygdrive mount.
+/// Leaves a correct file alone; writes the stock table when the file is
+/// missing or lacks the mount. Returns `true` when it wrote the file.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn ensure_cwrsync_fstab_in(toolchain_dir: &Path) -> Result<bool, String> {
+    let etc_dir = toolchain_dir.join("etc");
+    let fstab = etc_dir.join("fstab");
+    match std::fs::read_to_string(&fstab) {
+        Ok(body) if fstab_has_noacl_cygdrive_mount(&body) => return Ok(false),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("read {fstab:?}: {e}")),
+    }
+    std::fs::create_dir_all(&etc_dir).map_err(|e| format!("mkdir {etc_dir:?}: {e}"))?;
+    let staged = etc_dir.join(format!(".fstab-{}", Uuid::new_v4()));
+    std::fs::write(&staged, CWRSYNC_FSTAB_BODY).map_err(|e| format!("write {staged:?}: {e}"))?;
+    if let Err(e) = std::fs::rename(&staged, &fstab) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("replace {fstab:?}: {e}"));
+    }
+    Ok(true)
+}
+
+/// Repairs the mount table of an existing managed cwRsync install. Installs
+/// made before the fstab was written have `bin/rsync.exe` and no
+/// `etc/fstab`, and the rescue preflight treats them as ready, so they are
+/// never reinstalled. Does nothing when HQ did not install rsync.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn repair_managed_cwrsync_fstab_in(toolchain_dir: &Path) -> Result<bool, String> {
+    if !toolchain_dir.join("bin").join("rsync.exe").is_file() {
+        return Ok(false);
+    }
+    ensure_cwrsync_fstab_in(toolchain_dir)
+}
+
+#[cfg(windows)]
+fn repair_managed_cwrsync_fstab(context: &str) {
+    match repair_managed_cwrsync_fstab_in(&managed_toolchain_dir()) {
+        Ok(true) => log(
+            "rsync-fstab",
+            &format!("{context}: wrote noacl etc/fstab for the managed cwRsync"),
+        ),
+        Ok(false) => {}
+        Err(e) => log(
+            "rsync-fstab",
+            &format!("{context}: could not write etc/fstab for the managed cwRsync: {e}"),
+        ),
+    }
+}
+
+/// App-start repair for managed cwRsync installs that predate the fstab.
+#[cfg(windows)]
+pub fn setup_cwrsync_fstab_repair() {
+    if !crate::scratch_build::launch_side_effect_allowed("cwRsync fstab repair") {
+        return;
+    }
+    std::thread::spawn(|| repair_managed_cwrsync_fstab("app start"));
+}
+
+/// Moves the staged rsync binaries into `<toolchain_dir>/bin` and writes
+/// the cwRsync mount table next to them.
+#[cfg(windows)]
+fn activate_managed_rsync(staged_bin: &Path, toolchain_dir: &Path) -> Result<(), String> {
+    activate_staged_bin_files(staged_bin, &toolchain_dir.join("bin"))?;
+    ensure_cwrsync_fstab_in(toolchain_dir).map(|_| ())
 }
 
 #[cfg(windows)]
@@ -10191,6 +10288,32 @@ mod windows_tests {
         assert!(err.contains("bin/rsync.exe"), "{err}");
     }
 
+    /// feedback_33684c6f: the installed cwRsync tree must carry
+    /// `etc/fstab` with a `noacl` cygdrive mount, or rsync with
+    /// `--no-perms` reads Windows ACLs and exits 23 on every Core update.
+    #[test]
+    fn installed_cwrsync_tree_has_noacl_fstab() {
+        let toolchain = tempfile::tempdir().unwrap();
+        let staged = toolchain.path().join(".rsync-bin-test");
+        let bytes = zip_fixture(&[
+            ("portable-rsync/bin/rsync.exe", b"rsync"),
+            ("portable-rsync/bin/cygwin1.dll", b"dll"),
+        ]);
+        extract_rsync_zip_to_bin(&bytes, &staged).expect("rsync zip should extract");
+        activate_managed_rsync(&staged, toolchain.path()).expect("activate managed rsync");
+
+        assert!(toolchain.path().join("bin").join("rsync.exe").is_file());
+        assert!(toolchain.path().join("bin").join("cygwin1.dll").is_file());
+        assert!(!staged.exists(), "staging dir must be removed");
+        let fstab = std::fs::read_to_string(toolchain.path().join("etc").join("fstab"))
+            .expect("installed cwRsync tree must contain etc/fstab");
+        assert!(fstab_has_noacl_cygdrive_mount(&fstab), "{fstab}");
+        assert!(
+            fstab.contains("none /cygdrive cygdrive binary,posix=0,user,noacl 0 0"),
+            "{fstab}"
+        );
+    }
+
     #[test]
     fn shim_writers_emit_expected_files() {
         let tmp = tempfile::tempdir().unwrap();
@@ -13039,5 +13162,99 @@ mod cancellation_reporting_tests {
             event.message.as_deref(),
             Some("Desktop setup dependency installation failed")
         );
+    }
+}
+
+#[cfg(test)]
+mod cwrsync_fstab_tests {
+    use super::*;
+
+    fn read_fstab(toolchain: &Path) -> String {
+        std::fs::read_to_string(toolchain.join("etc").join("fstab")).unwrap()
+    }
+
+    #[test]
+    fn stock_body_has_noacl_cygdrive_mount() {
+        assert!(fstab_has_noacl_cygdrive_mount(CWRSYNC_FSTAB_BODY));
+        assert!(CWRSYNC_FSTAB_BODY
+            .lines()
+            .any(|l| l == "none /cygdrive cygdrive binary,posix=0,user,noacl 0 0"));
+    }
+
+    #[test]
+    fn noacl_detection_ignores_comments_and_other_mounts() {
+        assert!(!fstab_has_noacl_cygdrive_mount(""));
+        assert!(!fstab_has_noacl_cygdrive_mount(
+            "# none /cygdrive cygdrive binary,posix=0,user,noacl 0 0\n"
+        ));
+        assert!(!fstab_has_noacl_cygdrive_mount(
+            "none /cygdrive cygdrive binary,posix=0,user 0 0\n"
+        ));
+        assert!(!fstab_has_noacl_cygdrive_mount(
+            "C:/tmp /tmp ntfs binary,noacl 0 0\n"
+        ));
+        assert!(fstab_has_noacl_cygdrive_mount(
+            "  none   /cygdrive  cygdrive  noacl,binary  0 0\r\n"
+        ));
+    }
+
+    #[test]
+    fn writes_fstab_when_missing() {
+        let toolchain = tempfile::tempdir().unwrap();
+        assert!(ensure_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert!(fstab_has_noacl_cygdrive_mount(&read_fstab(
+            toolchain.path()
+        )));
+        let leftovers: Vec<_> = std::fs::read_dir(toolchain.path().join("etc"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "fstab")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staged files left behind: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn rewrites_fstab_without_noacl_and_keeps_a_correct_one() {
+        let toolchain = tempfile::tempdir().unwrap();
+        let etc = toolchain.path().join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        std::fs::write(
+            etc.join("fstab"),
+            "none /cygdrive cygdrive binary,posix=0,user 0 0\n",
+        )
+        .unwrap();
+        assert!(ensure_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert_eq!(read_fstab(toolchain.path()), CWRSYNC_FSTAB_BODY);
+
+        let custom = "none /cygdrive cygdrive binary,noacl 0 0\n";
+        std::fs::write(etc.join("fstab"), custom).unwrap();
+        assert!(!ensure_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert_eq!(read_fstab(toolchain.path()), custom);
+    }
+
+    /// Existing installs: a managed `bin/rsync.exe` with no `etc/fstab`
+    /// gets the mount table on the next app start or Core-update preflight.
+    #[test]
+    fn repair_writes_fstab_for_existing_managed_install() {
+        let toolchain = tempfile::tempdir().unwrap();
+        let bin = toolchain.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("rsync.exe"), b"rsync").unwrap();
+
+        assert!(repair_managed_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert!(fstab_has_noacl_cygdrive_mount(&read_fstab(
+            toolchain.path()
+        )));
+        assert!(!repair_managed_cwrsync_fstab_in(toolchain.path()).unwrap());
+    }
+
+    #[test]
+    fn repair_leaves_toolchain_without_managed_rsync_alone() {
+        let toolchain = tempfile::tempdir().unwrap();
+        assert!(!repair_managed_cwrsync_fstab_in(toolchain.path()).unwrap());
+        assert!(!toolchain.path().join("etc").exists());
     }
 }

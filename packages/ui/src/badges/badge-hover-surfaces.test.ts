@@ -22,8 +22,8 @@ describe("badge hover cards are solid at every window-transparency setting", () 
     expect(solids.length).toBeGreaterThanOrEqual(3);
     for (const value of solids) expect(value).toMatch(/^#[0-9a-f]{6}$/i);
     expect(css).toMatch(/--overlay-bg-solid:\s*var\(--v4-popover-solid, var\(--overlay-bg\)\);/);
-    // The translucent overlay token itself is unchanged for every other overlay.
-    expect(css).toMatch(/--overlay-bg:\s*var\(--v4-popover-strong\);/);
+    // Every overlay is solid now too (owner, 2026-10-16).
+    expect(css).toMatch(/--overlay-bg:\s*var\(--v4-popover-solid, var\(--v4-popover-strong\)\);/);
   });
 
   it("the rail's badges card paints the solid surface", () => {
