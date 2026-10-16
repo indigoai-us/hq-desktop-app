@@ -6,6 +6,7 @@ import {
   createConsentEngine,
   createFolderEngine,
   createKeyboardEngine,
+  createMarkEngine,
   createOrbitEngine,
   createPanelEngine,
   createReadyEngine,
@@ -198,6 +199,73 @@ describe('createReadyEngine layout', () => {
     const altTop = parseFloat(refs.alt.style.top);
     expect(altTop + 18).toBeLessThanOrEqual(560 - skylineBand(560));
     expect(parseFloat(refs.copy.style.top)).toBeGreaterThanOrEqual(56);
+  });
+});
+
+// Owner run 2026-10-16: the intro started from the top-left corner. The
+// engine was built while the window was still at heads-up card size (440x380)
+// and its particles kept start points drawn across that box.
+describe('createMarkEngine start points', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function markRun(resizeTo: { width: number; height: number }) {
+    vi.stubGlobal('innerWidth', 440);
+    vi.stubGlobal('innerHeight', 380);
+    const canvas = document.createElement('canvas');
+    const dots: Array<{ x: number; y: number }> = [];
+    const ctx = {
+      setTransform() {},
+      clearRect() {},
+      beginPath() {},
+      fill() {},
+      arc(x: number, y: number) {
+        dots.push({ x, y });
+      },
+      fillStyle: '',
+      globalAlpha: 1,
+    };
+    canvas.getContext = (() => ctx) as unknown as HTMLCanvasElement['getContext'];
+    const engine = createMarkEngine(
+      {
+        canvas,
+        cap: sized(document.createElement('div'), 600, 80),
+        signin: sized(document.createElement('div'), 400, 48),
+        nav: null,
+      },
+      { replay: false, onSettle: () => {} },
+    );
+    vi.stubGlobal('innerWidth', resizeTo.width);
+    vi.stubGlobal('innerHeight', resizeTo.height);
+    engine.size();
+    return { engine, dots };
+  }
+
+  it('spreads the field across the window when it grows before the mark settles', () => {
+    const { engine, dots } = markRun({ width: 1440, height: 900 });
+    engine.enter(0);
+    // 2.5s in: the field is visible and no particle has started its pull yet.
+    engine.frame(2500);
+    expect(dots.length).toBe(3400);
+    // Each particle drifts at most 40px across and 30px down from its start.
+    expect(Math.max(...dots.map((d) => d.x))).toBeGreaterThan(1200);
+    expect(Math.max(...dots.map((d) => d.y))).toBeGreaterThan(750);
+    expect(dots.filter((d) => d.x > 480 || d.y > 410).length).toBeGreaterThan(3400 * 0.7);
+  });
+
+  it('flies in from across the new window when entered again after a resize once settled', () => {
+    const { engine, dots } = markRun({ width: 440, height: 380 });
+    engine.enter(0);
+    engine.frame(6100);
+    vi.stubGlobal('innerWidth', 1440);
+    vi.stubGlobal('innerHeight', 900);
+    engine.size();
+    dots.length = 0;
+    // Back from the folder screen plays the welcome again.
+    engine.enter(0);
+    engine.frame(2500);
+    expect(Math.max(...dots.map((d) => d.x))).toBeGreaterThan(1200);
   });
 });
 

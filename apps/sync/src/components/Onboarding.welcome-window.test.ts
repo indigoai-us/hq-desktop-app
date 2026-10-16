@@ -44,6 +44,7 @@ import { flushSync, mount, tick, unmount } from 'svelte';
 
 import Onboarding from './Onboarding.svelte';
 import { CONSENT_STEP_INDEX, DIRECTORY_STEP_INDEX } from '../lib/onboarding-wizard';
+import { WELCOME_RESIZE_TIMEOUT_MS } from '../lib/welcome-window-size';
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 12; i += 1) {
@@ -64,6 +65,18 @@ async function startNow(): Promise<void> {
 }
 
 const WALLPAPER = 'data:image/jpeg;base64,/9j/';
+
+/** Sizes the window, as the webview reports it, smaller than the screen. */
+function setViewport(width: number, height: number): void {
+  vi.stubGlobal('innerWidth', width);
+  vi.stubGlobal('innerHeight', height);
+}
+
+/** The native resize lands: the webview reports the new size. */
+function resizeViewport(width: number, height: number): void {
+  setViewport(width, height);
+  window.dispatchEvent(new Event('resize'));
+}
 
 let host: HTMLDivElement;
 
@@ -86,6 +99,8 @@ describe('Onboarding: the welcome flow window', () => {
     if (component) unmount(component);
     component = null;
     host.remove();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('opens a first install on the small heads-up window, not the full-screen flow', async () => {
@@ -218,6 +233,79 @@ describe('Onboarding: the welcome flow window', () => {
     expect(commands()).not.toContain('mark_first_run_complete');
   });
 
+  it('"Start now" mounts the flow only once the window has its welcome size', async () => {
+    // The window starts at the heads-up card's size, and the native side
+    // applies the welcome size after `set_welcome_window` returns.
+    setViewport(440, 380);
+    let handOver: () => void = () => {};
+    tauri.invoke.mockImplementation(async (command: unknown, args: unknown) => {
+      if (command === 'set_welcome_window' && (args as { enabled: boolean }).enabled) {
+        await new Promise<void>((done) => (handOver = done));
+      }
+      return undefined;
+    });
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    await startNow();
+    const wizard = () => host.querySelector('[data-testid="wizard-stub"]');
+
+    // The command has not returned: the card stays and the flow is not built.
+    expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: true });
+    expect(wizard()).toBeNull();
+    expect(host.querySelector('[data-testid="heads-up"]')).not.toBeNull();
+
+    // The command returned, but the window is still card-sized.
+    handOver();
+    await settle();
+    expect(wizard()).toBeNull();
+    expect(host.querySelector('[data-testid="heads-up"]')).not.toBeNull();
+
+    // The resize lands.
+    resizeViewport(1440, 900);
+    await settle();
+    expect(wizard()).not.toBeNull();
+    expect(host.querySelector('[data-testid="heads-up"]')).toBeNull();
+    expect(commands()).toContain('get_desktop_wallpaper');
+  });
+
+  it('"Start now" mounts the flow anyway when the resize never arrives', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    setViewport(440, 380);
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    await startNow();
+    expect(host.querySelector('[data-testid="wizard-stub"]')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(WELCOME_RESIZE_TIMEOUT_MS);
+    await settle();
+    expect(host.querySelector('[data-testid="wizard-stub"]')).not.toBeNull();
+  });
+
+  it('"Start now" does not wait for a resize when the window could not be handed over', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setViewport(440, 380);
+    tauri.invoke.mockImplementation(async (command: unknown, args: unknown) => {
+      if (command === 'set_welcome_window' && (args as { enabled: boolean }).enabled) {
+        throw new Error('no window');
+      }
+      return undefined;
+    });
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    await startNow();
+    expect(host.querySelector('[data-testid="wizard-stub"]')).not.toBeNull();
+    logged.mockRestore();
+  });
+
   it('"Do it later" sets a reminder and hides HQ to the tray without finishing first run', async () => {
     component = mount(Onboarding, {
       target: host,
@@ -337,6 +425,21 @@ describe('Onboarding: the welcome flow window', () => {
     expect(host.querySelector<HTMLElement>('[data-testid="wizard-stub"]')?.dataset.initialStep).toBe(
       '2',
     );
+  });
+
+  it('mounts a resumed install only once the window has its welcome size', async () => {
+    setViewport(440, 380);
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'InstallResume', mode: 'onboarding' },
+    });
+    await settle();
+    expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: true });
+    expect(host.querySelector('[data-testid="wizard-stub"]')).toBeNull();
+
+    resizeViewport(1440, 900);
+    await settle();
+    expect(host.querySelector('[data-testid="wizard-stub"]')).not.toBeNull();
   });
 
   it('opens folder recovery directly when a completed install has lost its HQ root', async () => {

@@ -171,11 +171,15 @@ export function createMarkEngine(
   let t0 = 0;
   let capOn = false;
   let settled = false;
+  // The viewport the start points were drawn across. The window can still be
+  // growing from the heads-up card to the screen when the engine is built.
+  let fieldW = vw();
+  let fieldH = vh();
 
   for (let i = 0; i < N; i += 1) {
     pts.push({
-      sx: Math.random() * vw(),
-      sy: Math.random() * vh(),
+      sx: Math.random() * fieldW,
+      sy: Math.random() * fieldH,
       ox: 0,
       oy: 0,
       r: Math.random() < 0.08 ? 1.6 : 1,
@@ -183,6 +187,19 @@ export function createMarkEngine(
       ph: Math.random() * 6.28,
       dl: Math.random() * 0.9,
     });
+  }
+
+  // Redraw the start points across the current viewport when they were drawn
+  // across another one: a field drawn in the 440x380 heads-up window would
+  // otherwise gather in the top-left corner of the screen.
+  function fitField(): void {
+    if (W === 0 || H === 0 || (W === fieldW && H === fieldH)) return;
+    for (const p of pts) {
+      p.sx = Math.random() * W;
+      p.sy = Math.random() * H;
+    }
+    fieldW = W;
+    fieldH = H;
   }
 
   // mark + headline + sub + sign-in are one block, centred in the window
@@ -250,9 +267,13 @@ export function createMarkEngine(
       const resample = W !== sampledW || H !== sampledH;
       sampledW = W;
       sampledH = H;
+      // Before the mark settles the field still flies in from its start
+      // points, so they follow the new viewport.
+      if (!settled) fitField();
       layout(resample);
     },
     enter(now) {
+      fitField();
       t0 = now;
       capOn = false;
       settled = false;

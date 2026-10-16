@@ -23,6 +23,7 @@
   import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
   import HeadsUpWindow from './onboarding/HeadsUpWindow.svelte';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
+  import { viewportSize, waitForWelcomeSize } from '../lib/welcome-window-size';
 
   interface Props {
     state: string;
@@ -85,6 +86,12 @@
       initialStepForLifecycle(lifecycleStateProp, setupEvidence) === WELCOME_SIGNIN_STEP_INDEX,
   );
   let showHeadsUp = $state(opensOnHeadsUp);
+  /**
+   * The window has its welcome size, so the flow can mount. Its scenes read
+   * the window size when they are built: mounted at the heads-up card's size,
+   * the intro started in the top-left corner of the screen.
+   */
+  let welcomeWindowReady = $state(false);
   /** The heads-up card paints only once the window is at card size. */
   let headsUpReady = $state(false);
 
@@ -114,11 +121,16 @@
     });
   }
 
-  async function setWelcomeWindow(enabled: boolean) {
-    if (typeof invoke !== 'function') return;
-    await invoke('set_welcome_window', { enabled }).catch((error) => {
-      console.error('onboarding: welcome window failed', error);
-    });
+  /** Resolves `false` when the window could not be handed over. */
+  async function setWelcomeWindow(enabled: boolean): Promise<boolean> {
+    if (typeof invoke !== 'function') return false;
+    return invoke('set_welcome_window', { enabled }).then(
+      () => true,
+      (error) => {
+        console.error('onboarding: welcome window failed', error);
+        return false;
+      },
+    );
   }
 
   async function readWallpaper(): Promise<string | null> {
@@ -133,14 +145,25 @@
 
   /**
    * Give the window to the welcome flow: it fills the work area of the current
-   * monitor (native, `set_welcome_window`), and the person's wallpaper goes
-   * behind it. Without a wallpaper, the native blur of whatever is behind the
-   * window stands in, as before.
+   * monitor (native, `set_welcome_window`). The native side applies the size
+   * after the command returns, so wait for the webview to report it before the
+   * flow mounts. A failed hand-over or a resize that never lands still mounts
+   * the flow.
    */
-  async function enterWelcomeWindow() {
+  async function takeWelcomeWindow() {
     await setWindowVibrancy(false);
     if (destroyed) return;
-    await setWelcomeWindow(true);
+    const before = viewportSize();
+    if (await setWelcomeWindow(true)) await waitForWelcomeSize(before);
+    if (!destroyed) welcomeWindowReady = true;
+  }
+
+  /**
+   * The person's wallpaper goes behind the flow. Without a wallpaper, the
+   * native blur of whatever is behind the window stands in, as before.
+   */
+  async function paintWelcomeBackdrop() {
+    if (destroyed) return;
     const url = await readWallpaper();
     if (destroyed) return;
     if (url) {
@@ -198,8 +221,10 @@
     await runHeadsUpAction(action, {
       startFlow: async () => {
         headsUpTimer.close();
+        // Resize first, then swap the card for the flow.
+        await takeWelcomeWindow();
         showHeadsUp = false;
-        await enterWelcomeWindow();
+        await paintWelcomeBackdrop();
       },
       hideToTray: async () => {
         if (typeof invoke !== 'function') return;
@@ -223,7 +248,7 @@
       void startSessionScan(typeof invoke === 'function' ? invoke : undefined);
       void enterHeadsUpWindow();
     } else {
-      void enterWelcomeWindow();
+      void takeWelcomeWindow().then(paintWelcomeBackdrop);
     }
   });
 
@@ -282,7 +307,7 @@
 
 {#if showHeadsUp}
   <HeadsUpWindow ready={headsUpReady} onaction={handleHeadsUpAction} />
-{:else}
+{:else if welcomeWindowReady}
   <OnboardingWizard
     {initialStep}
     {onboardingFlow}

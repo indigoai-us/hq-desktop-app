@@ -268,6 +268,7 @@ describe("FirstRunDecisionTakeover", () => {
     const { handlers } = render({ initialScreen: "done", creation: READY });
     await waitForDecision();
     const talk = byId<HTMLButtonElement>("first-run-talk")!;
+    expect(talk.textContent?.trim()).toBe("Open HQ");
     expect(talk.disabled).toBe(false);
     talk.click();
     talk.click();
