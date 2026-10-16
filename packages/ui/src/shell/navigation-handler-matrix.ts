@@ -139,6 +139,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // shell stays where it is.
   openConnectionModal: "none",
   closeConnectionModal: "none",
+  openBrainReconnect: "none",
+  openConversationUrl: "none",
   // #welcome / Home setup card → the setup bot's DM (handleSelect).
   openSetupBotDm: "push",
   // Daily Brief Team peek, Open thread: that person's DM (handleSelect).

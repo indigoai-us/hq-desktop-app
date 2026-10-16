@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Bots: a cloud bot that has been signed out of its AI account (ChatGPT, Claude or Grok) now shows a "Signed out of ChatGPT" card in its direct message. The bot's owner can press "Sign back in" to get a fresh sign-in code and link, or for Claude a box to paste the code, without leaving the app. The screen keeps checking until the bot is signed in again. Anyone else who opens the bot sees who has to sign it back in. The "Sign back in" link in HQ's message about a signed-out bot now opens the same screen in the app instead of the browser.
 - Badges: in the accomplishments announcement, clicking a card opens it in the card viewer, where you can turn it over to read how you earned it. Closing it goes back to the announcement. The "+N more" label under the cards now always draws above them.
 - Windows: HQ core updates ("Update now", automatic updates and `hq rescue`) no longer fail with "rsync status 23". The rsync that HQ installs on Windows was missing a settings file that stops it from reading Windows file permissions, so every update stopped during its first check. HQ now writes that file when it installs rsync, and adds it to an existing install the next time the app starts and before each core update.
 - The bundled sync runner moves to hq-cloud 6.18.80. Sync never uploads, downloads or deletes the vault `secrets/` folder, which stops stale integration tokens from overwriting fresh ones, and `hq outposts status` now reads company job health from the correct route.

@@ -8,22 +8,14 @@
     recordWakingHello,
     markWakingHelloAsking,
     recordWakingHelloAsked,
-    SIGN_IN_CONFIRM_LATE_MS,
-    SIGN_IN_CONFIRM_SLOW_MS,
-    signInConfirmMessage,
     wakingNudgeIntervalMs,
     wakingPollDelayMs,
     WAKING_POLL_MS,
     wakingStatusLine,
     type WakingBotSession,
   } from "./waking-model.js";
-  import {
-    approvalExpired,
-    approvalOpenUrl,
-    brainApprovalLabel,
-    type BrainProvider,
-  } from "./bot-brain-approval.js";
-  import { claudeCodeAnswer, submitClaudeCode as runClaudeCodeSubmit, type ClaudeCodeAnswer } from "./claude-code-submit.js";
+  import type { BrainProvider } from "./bot-brain-approval.js";
+  import BrainSignInStep from "./BrainSignInStep.svelte";
   import { focusOnMount } from "../portal.js";
   import NewBotDawn, { type DawnMode } from "./NewBotDawn.svelte";
 
@@ -70,22 +62,10 @@
   /** When this screen was opened. A person who opens it is watching, so the fast stretch of asking starts here. */
   const openedAt = Date.now();
 
-  let approvalOpened = $state(false);
-  let codeCopied = $state(false);
-  let codeCopiedTimer: ReturnType<typeof setTimeout> | null = null;
-  let signInCheckTimer: ReturnType<typeof setTimeout> | null = null;
   // The create request has just started the work; the first re-check waits a
   // full interval.
   let lastNudgeAt = Date.now();
-  let claudeCode = $state("");
-  /** True from the press of Submit until the sign-in is seen or the wait ends. */
-  let codeChecking = $state(false);
-  /** The last submit ended without an advance; the button offers to try again. */
-  let codeRetry = $state(false);
-  /** Claude accepted the code in the field: a retry only checks again, it does not send it twice. */
-  let codeAccepted = false;
-  /** Set synchronously on the press, so a second press cannot send the code twice. */
-  let codeInFlight = false;
+  let codeChecking = false;
   /** When the server was last asked to re-check during a code submit. */
   let codeRecheckAt = 0;
   let destroyed = false;
@@ -94,8 +74,6 @@
    * started before one of them is older, and is dropped when it lands.
    */
   let submitReads = 0;
-  let actionBusy = $state(false);
-  let actionMessage = $state("");
 
   const dawnMode = $derived<DawnMode>(
     session.phase === "failed" || session.phase === "stopped"
@@ -108,15 +86,6 @@
   );
   const statusLine = $derived(wakingStatusLine(session));
   const approval = $derived(session.approval);
-  const approvalAsk = $derived(
-    !approval
-      ? ""
-      : approval.provider === "codex"
-        ? "Sign in to Codex and paste this code when it asks."
-        : approval.provider === "claude"
-          ? "Sign in to Claude, then paste the code it gives you here."
-          : `Sign in to Grok to approve ${session.name}.`,
-  );
 
   /**
    * Ask the server to re-check the current setup step. Setup only advances on
@@ -160,105 +129,13 @@
     return next;
   }
 
-  /** Coming back from the browser is the usual sign that the sign-in is done. */
-  function onWindowFocus(): void {
-    if (approvalOpened && approval) void nudge(true);
-  }
-
-  function confirmSignedIn(): void {
-    if (!approval) return;
-    actionMessage = signInConfirmMessage(0, brainApprovalLabel(approval.provider));
-    void nudge(true);
-    if (signInCheckTimer) clearTimeout(signInCheckTimer);
-    // The machine's next heartbeat carries the sign-in, up to a minute or two
-    // later: keep "checking" that long before asking the person to look again.
-    const slow = () => {
-      signInCheckTimer = null;
-      if (!session.approval) return;
-      actionMessage = signInConfirmMessage(SIGN_IN_CONFIRM_SLOW_MS, brainApprovalLabel(session.approval.provider));
-      signInCheckTimer = setTimeout(() => {
-        signInCheckTimer = null;
-        if (session.approval) {
-          actionMessage = signInConfirmMessage(SIGN_IN_CONFIRM_LATE_MS, brainApprovalLabel(session.approval.provider));
-        }
-      }, SIGN_IN_CONFIRM_LATE_MS - SIGN_IN_CONFIRM_SLOW_MS);
-    };
-    signInCheckTimer = setTimeout(slow, SIGN_IN_CONFIRM_SLOW_MS);
-  }
-
-  async function copyCode(): Promise<void> {
-    if (!approval?.code) return;
-    try {
-      await navigator.clipboard?.writeText(approval.code);
-      codeCopied = true;
-      if (codeCopiedTimer) clearTimeout(codeCopiedTimer);
-      codeCopiedTimer = setTimeout(() => { codeCopied = false; codeCopiedTimer = null; }, 2_000);
-    } catch {
-      actionMessage = "We couldn't copy the code. Select it and copy it yourself.";
-    }
-  }
-
-  /**
-   * Open the sign-in page, and for Codex put its code on the clipboard.
-   *
-   * Both are started inside the press, before anything is awaited: a window
-   * opened or a clipboard written after an `await` is no longer the person's
-   * own action, and the webview may block it. The button says the page is
-   * open only when it did open.
-   *
-   * The clipboard is written here and by the Copy button, and nowhere else,
-   * and it is never read: reading it outside a press makes the webview show
-   * a paste prompt, so the code is not cleared from it afterwards.
-   */
-  async function openApproval(): Promise<void> {
-    if (!approval || actionBusy) return;
-    actionMessage = "";
-    if (!openExternal) {
-      actionMessage = "We couldn't open the sign-in page. Try again.";
-      return;
-    }
-    actionBusy = true;
-    const target = approval;
-    let copying: Promise<unknown> | null = null;
-    if (target.provider === "codex") {
-      try {
-        copying = Promise.resolve(navigator.clipboard?.writeText(target.code));
-      } catch (error) {
-        copying = Promise.reject(error);
-      }
-      // The answer is read below; a refusal must not go unhandled meanwhile.
-      copying.catch((error: unknown) => {
-        console.warn(
-          "new-bot: clipboard write failed",
-          error instanceof Error ? error.message : String(error),
-        );
-      });
-    }
-    let opening: Promise<void | boolean>;
-    try {
-      opening = Promise.resolve(openExternal(approvalOpenUrl(target)));
-    } catch (error) {
-      opening = Promise.reject(error);
-    }
-    try {
-      const opened = await opening;
-      if (opened === false) actionMessage = "We couldn't open the sign-in page. Try again.";
-      else approvalOpened = true;
-    } catch {
-      actionMessage = "We couldn't open the sign-in page. Try again.";
-    }
-    if (copying && approvalOpened) {
-      try {
-        await copying;
-      } catch {
-        actionMessage = "Copy the code and paste it on the next page.";
-      }
-    }
-    actionBusy = false;
-  }
-
   /** How often a code submit asks the server to re-check while it waits. */
   const CODE_RECHECK_EVERY_MS = 9_000;
+
+  function onCodeChecking(checking: boolean): void {
+    codeChecking = checking;
+    if (checking) codeRecheckAt = 0;
+  }
 
   /**
    * Ask the server to re-check the sign-in step and read the status once.
@@ -291,87 +168,13 @@
     }
   }
 
-  function codeMessage(result: "rejected" | "invalid" | "failed" | "timeout"): string {
-    if (result === "invalid") return "That doesn't look like a Claude code. Copy the code from Claude and paste it here.";
-    if (result === "rejected") return "Claude didn't accept that code. Open Claude again for a new code, then paste it here.";
-    if (result === "failed") return "We couldn't send that code. Try again.";
-    return "We couldn't confirm your sign-in yet. Try again.";
-  }
-
-  async function submitClaudeCode(): Promise<void> {
-    if (!approval || approval.provider !== "claude" || !submitClaudeLoginCode || codeInFlight || actionBusy) return;
-    const code = claudeCode.trim();
-    if (!code) {
-      actionMessage = "Paste the code from Claude to continue.";
-      return;
-    }
-    codeInFlight = true;
-    codeChecking = true;
-    codeRetry = false;
-    actionMessage = "Checking your sign-in.";
-    codeRecheckAt = 0;
-    const agentUid = session.agentUid;
-    const send = submitClaudeLoginCode;
-    let lastAnswer: ClaudeCodeAnswer | null = null;
-    try {
-      const result = await runClaudeCodeSubmit({
-        alreadyAccepted: codeAccepted,
-        send: async () => {
-          const answer = await send(agentUid, code);
-          lastAnswer = claudeCodeAnswer(answer);
-          if (lastAnswer === "accepted") codeAccepted = true;
-          return answer;
-        },
-        confirm: confirmClaudeSignIn,
-        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-        now: () => Date.now(),
-        cancelled: () => destroyed,
-        // Outcome names only. The code is never logged.
-        log: (event, detail) => console.info(`new-bot: ${event}`, detail),
-      });
-      if (destroyed) return;
-      if (result === "signed-in") {
-        claudeCode = "";
-        codeAccepted = false;
-        actionMessage = "";
-        return;
-      }
-      if (result === "rejected" || result === "invalid") codeAccepted = false;
-      // A code Claude or the server turned down is not offered again as it
-      // is: the person edits the field and submits.
-      codeRetry = result !== "rejected" && result !== "invalid";
-      actionMessage = codeMessage(result);
-    } catch (error) {
-      console.warn("new-bot: claude code submit failed", error instanceof Error ? error.name : "unknown", lastAnswer ?? "none");
-      if (!destroyed) {
-        codeRetry = true;
-        actionMessage = codeMessage("failed");
-      }
-    } finally {
-      codeInFlight = false;
-      codeChecking = false;
-    }
-  }
-
-  async function restartApproval(): Promise<void> {
-    if (!approval || !restartBrainApproval || actionBusy || codeChecking) return;
-    actionBusy = true;
-    actionMessage = "";
-    try {
-      const result = await restartBrainApproval(session.agentUid, approval.provider);
-      const response = result as { ok?: unknown; value?: unknown } | null;
-      if (response?.ok === true) {
-        approvalOpened = false;
-        claudeCode = "";
-        onupdate(applyWakingStatus({ ...session, approval: null }, response.value));
-        return;
-      }
-      actionMessage = "We couldn't start a fresh approval. Try again.";
-    } catch {
-      actionMessage = "We couldn't start a fresh approval. Try again.";
-    } finally {
-      actionBusy = false;
-    }
+  async function restartApproval(): Promise<boolean> {
+    if (!approval || !restartBrainApproval) return false;
+    const result = await restartBrainApproval(session.agentUid, approval.provider);
+    const response = result as { ok?: unknown; value?: unknown } | null;
+    if (response?.ok !== true) return false;
+    onupdate(applyWakingStatus({ ...session, approval: null }, response.value));
+    return true;
   }
 
   onMount(() => {
@@ -429,7 +232,6 @@
           : applyWakingCheckFailure(checkedSession, result);
         next = await settleHello(next);
         if (stopped) return;
-        if (checkedSession.approval && !next.approval) actionMessage = "";
         latest = next;
         onupdate(next);
         if (next.phase === "waking" && next.chatReadyAt == null) void nudge();
@@ -456,13 +258,9 @@
       destroyed = true;
       document.removeEventListener("visibilitychange", onVisibility);
       if (timer) clearTimeout(timer);
-      if (codeCopiedTimer) clearTimeout(codeCopiedTimer);
-      if (signInCheckTimer) clearTimeout(signInCheckTimer);
     };
   });
 </script>
-
-<svelte:window onfocus={onWindowFocus} />
 
 <section class="new-bot-waking" data-testid="new-bot-waking-screen">
   <NewBotDawn
@@ -480,100 +278,17 @@
   >{statusLine}</p>
 
   {#if approval && session.phase === "waking"}
-    <div class="new-bot-approval" data-testid="new-bot-approval">
-      {#if approvalExpired(approval)}
-        <p class="new-bot-approval-ask" data-testid="new-bot-approval-expired">This approval link has expired.</p>
-        <button
-          type="button"
-          class="new-bot-waking-action"
-          data-testid="new-bot-approval-restart"
-          disabled={!restartBrainApproval || actionBusy}
-          onclick={() => void restartApproval()}
-        ><RailIcon name="refresh" />{actionBusy ? "Starting again..." : "Start again"}</button>
-      {:else}
-        <p class="new-bot-approval-ask">{approvalAsk}</p>
-
-        {#if approval.provider === "codex" && approval.code}
-          <div class="new-bot-code">
-            <span class="new-bot-code-label">Your one-time code</span>
-            <div class="new-bot-code-row">
-              <code class="new-bot-code-value" data-testid="new-bot-codex-code">{approval.code}</code>
-              <button
-                type="button"
-                class="new-bot-code-copy"
-                data-testid="new-bot-codex-copy"
-                aria-label={codeCopied ? "Code copied" : "Copy code"}
-                onclick={() => void copyCode()}
-              >
-                {#if codeCopied}
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" /></svg>
-                  <span>Copied</span>
-                {:else}
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="M10.5 3.5v-1h-8v8h1" fill="none" stroke="currentColor" stroke-width="1.3" /></svg>
-                  <span>Copy</span>
-                {/if}
-              </button>
-            </div>
-          </div>
-        {/if}
-
-        <div class="new-bot-approval-actions">
-          <button
-            type="button"
-            class="new-bot-waking-action"
-            data-testid="new-bot-approval-open"
-            disabled={actionBusy || codeChecking}
-            use:focusOnMount
-            onclick={() => void openApproval()}
-          ><RailIcon name="external" />{actionBusy
-            ? "Opening..."
-            : approvalOpened
-              ? `Open ${brainApprovalLabel(approval.provider)} again`
-              : `Continue with ${brainApprovalLabel(approval.provider)}`}</button>
-          {#if approvalOpened && approval.provider !== "claude"}
-            <button
-              type="button"
-              class="new-bot-waking-secondary"
-              data-testid="new-bot-approval-done"
-              onclick={confirmSignedIn}
-            ><RailIcon name="check" />I've signed in</button>
-          {/if}
-        </div>
-
-        {#if approval.provider === "claude" && approvalOpened}
-          <label class="new-bot-create-label" for="new-bot-claude-code">Paste the code from Claude</label>
-          <input
-            id="new-bot-claude-code"
-            class="new-bot-create-input"
-            data-testid="new-bot-claude-code"
-            value={claudeCode}
-            disabled={actionBusy || codeChecking}
-            autocomplete="off"
-            oninput={(event) => {
-              claudeCode = (event.currentTarget as HTMLInputElement).value;
-              codeAccepted = false;
-              codeRetry = false;
-            }}
-            onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); void submitClaudeCode(); } }}
-          />
-          <button
-            type="button"
-            class="new-bot-waking-action"
-            data-testid="new-bot-claude-submit"
-            disabled={actionBusy || codeChecking || !submitClaudeLoginCode}
-            aria-busy={codeChecking ? "true" : undefined}
-            onclick={() => void submitClaudeCode()}
-          ><RailIcon name={codeRetry ? "refresh" : "send"} />{codeChecking ? "Checking..." : codeRetry ? "Try again" : "Submit code"}</button>
-        {/if}
-
-        {#if approvalOpened && approval.provider !== "claude" && !actionMessage}
-          <p class="new-bot-approval-note" data-testid="new-bot-approval-waiting">Waiting for {brainApprovalLabel(approval.provider)}. This moves on by itself when you finish there.</p>
-        {/if}
-      {/if}
-      {#if actionMessage}
-        <p class="new-bot-approval-note" data-testid="new-bot-approval-message" role="status">{actionMessage}</p>
-      {/if}
-    </div>
+    <BrainSignInStep
+      {approval}
+      agentUid={session.agentUid}
+      name={session.name}
+      {openExternal}
+      {submitClaudeLoginCode}
+      confirmSignIn={confirmClaudeSignIn}
+      restart={restartBrainApproval ? restartApproval : null}
+      onnudge={() => void nudge(true)}
+      onchecking={onCodeChecking}
+    />
   {/if}
 
   {#if session.phase === "failed"}

@@ -141,7 +141,7 @@ export const RUNTIME_LABEL: Readonly<Record<RepairRuntime, string>> = {
 };
 
 /** The domain whose bundled mark heads the card; null draws the generic glyph. */
-const RUNTIME_DOMAIN: Readonly<Record<RepairRuntime, string | null>> = {
+export const RUNTIME_DOMAIN: Readonly<Record<RepairRuntime, string | null>> = {
   claude: "anthropic.com",
   codex: null,
   grok: null,
