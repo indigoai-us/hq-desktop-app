@@ -293,6 +293,13 @@
      */
     belowMessages?: Snippet;
     /**
+     * A row the host draws right under one message (by eventId), in the
+     * scroll flow, so it stays there as later messages arrive. Nothing is
+     * drawn when that message is not on screen.
+     */
+    belowEventId?: string | null;
+    belowEvent?: Snippet;
+    /**
      * The bot whose suggestions are drawn: its newest message's `suggestions`
      * block becomes a row of buttons under that message's bubble, part of the
      * message, while nothing has been written after it. Older messages draw
@@ -431,6 +438,8 @@
     attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
+    belowEventId = null,
+    belowEvent,
     suggestionsFrom = null,
     suggestedReplyText = null,
     connections = null,
@@ -2558,6 +2567,7 @@
               </div>
             </div>
           {/if}
+          {#if belowEvent && belowEventId && msg.eventId === belowEventId}{@render belowEvent()}{/if}
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
         {/if}
