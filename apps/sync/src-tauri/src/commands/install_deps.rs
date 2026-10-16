@@ -9831,20 +9831,11 @@ mod install_deps_planner_tests {
         let scope_guard_panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let scope_guard_panic_observer = scope_guard_panicked.clone();
         // Keeps the install queue's item panic hook in place across the swap.
-        let _panic_hook_guard = crate::commands::install_queue::panic_hook_swap_guard_for_test();
-        let previous_panic_hook =
-            std::sync::Arc::new(std::sync::Mutex::new(Some(std::panic::take_hook())));
-        let previous_panic_hook_for_observer = previous_panic_hook.clone();
-        std::panic::set_hook(Box::new(move |info| {
+        let panic_hook_swap = crate::commands::install_queue::swap_panic_hook_for_test(move |info| {
             if info.to_string().contains("Popped scope guard out of order") {
                 scope_guard_panic_observer.store(true, std::sync::atomic::Ordering::SeqCst);
             }
-            previous_panic_hook_for_observer
-                .lock()
-                .unwrap()
-                .as_ref()
-                .expect("previous panic hook is installed")(info);
-        }));
+        });
 
         sentry::Hub::run(hub.clone(), || {
             queue_setup_dependency_failure(
@@ -9889,13 +9880,7 @@ mod install_deps_planner_tests {
 
         let observed_scope_guard_panic =
             scope_guard_panicked.load(std::sync::atomic::Ordering::SeqCst);
-        let _ = std::panic::take_hook();
-        let previous_panic_hook = previous_panic_hook
-            .lock()
-            .unwrap()
-            .take()
-            .expect("previous panic hook is installed");
-        std::panic::set_hook(previous_panic_hook);
+        drop(panic_hook_swap);
 
         assert_eq!(
             node_arrival.expect("node reporter should reach the transport"),

@@ -410,10 +410,70 @@ fn install_item_panic_hook() {
 /// hook first, so the swap takes it and restores it, and keeps two swapping
 /// tests from interleaving.
 #[cfg(test)]
-pub(crate) fn panic_hook_swap_guard_for_test() -> std::sync::MutexGuard<'static, ()> {
-    static SWAP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static PANIC_HOOK_SWAP: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+#[cfg(test)]
+fn panic_hook_swap_guard_for_test() -> std::sync::RwLockWriteGuard<'static, ()> {
     install_item_panic_hook();
-    SWAP.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    PANIC_HOOK_SWAP.write().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Held by a test whose item panics, so no hook swap runs during it.
+///
+/// Replacing the hook takes the standard library's hook lock for writing.
+/// While another test's panic is still in its hook (a backtrace print), the
+/// replacement waits, and a panic that starts after it waits too, before any
+/// hook runs. The item is not marked in time and settles as a timeout.
+#[cfg(test)]
+fn item_panic_test_guard() -> std::sync::RwLockReadGuard<'static, ()> {
+    install_item_panic_hook();
+    PANIC_HOOK_SWAP.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
+
+/// A test's replacement of the process-wide panic hook. It runs `observe`,
+/// then the hook it replaced, and puts that hook back when dropped.
+///
+/// PR 1656 Windows CI: the swaps used to call the replaced hook through a
+/// `Mutex`. Every panic in the test binary runs the hook, and with
+/// RUST_BACKTRACE set the replaced hook prints a backtrace, which takes
+/// hundreds of milliseconds. A panicking item in another test then waited
+/// on that lock before the item hook could mark it, and its deadline settled
+/// it as "installer timed out". This swap calls the replaced hook without a
+/// lock.
+#[cfg(test)]
+pub(crate) struct PanicHookSwapForTest {
+    previous: Option<Arc<PanicHook>>,
+    _guard: std::sync::RwLockWriteGuard<'static, ()>,
+}
+
+#[cfg(test)]
+pub(crate) fn swap_panic_hook_for_test(
+    observe: impl Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static,
+) -> PanicHookSwapForTest {
+    let guard = panic_hook_swap_guard_for_test();
+    let previous: Arc<PanicHook> = Arc::new(std::panic::take_hook());
+    let chained = Arc::clone(&previous);
+    std::panic::set_hook(Box::new(move |info| {
+        observe(info);
+        chained(info);
+    }));
+    PanicHookSwapForTest { previous: Some(previous), _guard: guard }
+}
+
+#[cfg(test)]
+impl Drop for PanicHookSwapForTest {
+    fn drop(&mut self) {
+        // Dropping the test hook releases its copy of the replaced hook.
+        drop(std::panic::take_hook());
+        let Some(previous) = self.previous.take() else { return };
+        match Arc::try_unwrap(previous) {
+            Ok(previous) => std::panic::set_hook(previous),
+            Err(_) => panic!("the replaced panic hook is still shared"),
+        }
+    }
 }
 
 /// Polls `inner` with the item's panic flag published to the panic hook.
@@ -1279,6 +1339,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn item_panic_still_settles_as_failed() {
+        let _hook = item_panic_test_guard();
         let outcome = run_with_deadline(QueueItemId::Jq, short_deadline(), test_lingering(), async {
             panic!("boom");
         })
@@ -1298,6 +1359,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn panic_that_outlasts_the_deadline_still_settles_as_panicked() {
+        let _hook = item_panic_test_guard();
         let lingering = test_lingering();
         // The panic starts at once, but unwinding takes longer than the limit
         // and the stop wait together.
@@ -1325,14 +1387,7 @@ mod tests {
             .build()
             .expect("runtime");
         {
-            let _guard = panic_hook_swap_guard_for_test();
-            let previous = std::sync::Arc::new(std::sync::Mutex::new(Some(std::panic::take_hook())));
-            let chained = std::sync::Arc::clone(&previous);
-            std::panic::set_hook(Box::new(move |info| {
-                if let Some(hook) = chained.lock().unwrap().as_ref() {
-                    hook(info);
-                }
-            }));
+            let _swap = swap_panic_hook_for_test(|_| {});
             // An item runs while the swap is in place.
             let during = runtime.block_on(run_with_deadline(
                 QueueItemId::RuntimeHooks,
@@ -1341,16 +1396,44 @@ mod tests {
                 async { ItemOutcome::Done },
             ));
             assert_eq!(during, ItemOutcome::Done);
-            let _ = std::panic::take_hook();
-            let restored = previous.lock().unwrap().take().expect("previous hook");
-            std::panic::set_hook(restored);
         }
+        let _hook = item_panic_test_guard();
         let lingering = test_lingering();
         let outcome = runtime.block_on(run_with_deadline(QueueItemId::RuntimeHooks, short_deadline(), lingering, async {
             let _slow = SlowDrop(Duration::from_millis(300));
             panic!("boom");
         }));
         assert_eq!(outcome, ItemOutcome::Failed("installer panicked".to_string()));
+    }
+
+    /// PR 1656 Windows CI: a test's hook swap called the replaced hook under a
+    /// lock, so a panicking item waited behind another test's backtrace print
+    /// and settled as "installer timed out".
+    #[test]
+    fn item_panic_is_marked_while_another_panic_is_still_in_its_hook() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let (in_hook_tx, in_hook_rx) = std::sync::mpsc::channel();
+        let in_hook_tx = std::sync::Mutex::new(in_hook_tx);
+        let _swap = swap_panic_hook_for_test(move |info| {
+            if info.to_string().contains("slow hook") {
+                let _ = in_hook_tx.lock().unwrap().send(());
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+        let slow = std::thread::spawn(|| panic!("slow hook"));
+        in_hook_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the other panic reaches its hook");
+        let outcome = runtime.block_on(run_with_deadline(QueueItemId::Embeddings, short_deadline(), test_lingering(), async {
+            let _slow = SlowDrop(Duration::from_millis(300));
+            panic!("boom");
+        }));
+        assert_eq!(outcome, ItemOutcome::Failed("installer panicked".to_string()));
+        assert!(slow.join().is_err());
     }
 
     /// PR 1656 review: the queue's state check and the wizard's mark ran under
@@ -1398,6 +1481,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn panic_during_the_stop_wait_settles_as_panicked() {
+        let _hook = item_panic_test_guard();
         let deadline = ItemDeadline {
             limit: Duration::from_millis(50),
             stop_grace: Duration::from_secs(2),
@@ -1413,6 +1497,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn caught_panic_followed_by_a_hang_settles_as_a_timeout() {
+        let _hook = item_panic_test_guard();
         // The limit leaves the caught panic's hook (a backtrace capture when
         // RUST_BACKTRACE is set) time to finish before the deadline fires.
         let deadline = ItemDeadline {
@@ -1430,6 +1515,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn item_timing_out_while_another_item_panics_keeps_both_causes() {
+        let _hook = item_panic_test_guard();
         let lingering = test_lingering();
         let hung_handle = uuid::Uuid::new_v4().to_string();
         let panicking_handle = uuid::Uuid::new_v4().to_string();
@@ -1458,6 +1544,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deadline_cancel_during_a_panic_cancels_the_item_and_reports_the_panic() {
+        let _hook = item_panic_test_guard();
         let lingering = test_lingering();
         let handle = uuid::Uuid::new_v4().to_string();
         let registered = handle.clone();
@@ -1533,8 +1620,12 @@ mod tests {
         let hq = fake_hq_with_grandchild(dir.path());
         let root = dir.path().to_path_buf();
         let lingering = test_lingering();
+        // The limit must cover the fake hq starting its worker. At 500 ms a
+        // loaded test run could time out before the worker existed, and the
+        // test then failed reading grandchild.pid.
+        let limit = Duration::from_secs(3);
         let deadline = ItemDeadline {
-            limit: Duration::from_millis(500),
+            limit,
             stop_grace: Duration::from_secs(2),
         };
         let outcome = run_with_deadline(QueueItemId::SearchIndex, deadline, lingering, async move {
@@ -1544,7 +1635,7 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(outcome, ItemOutcome::Failed(timeout_reason(Duration::from_millis(500))));
+        assert_eq!(outcome, ItemOutcome::Failed(timeout_reason(limit)));
         assert!(!lingering.borrow().contains(&QueueItemId::SearchIndex), "the attempt ended inside the stop wait");
 
         let pid: i32 = std::fs::read_to_string(dir.path().join("grandchild.pid"))
