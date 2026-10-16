@@ -331,7 +331,33 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `HQ_CLOUD_IDENTITIES` remains 59. `src/bin/sync-runner-events.ts` is
 /// untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
 /// source-version marker moves with the runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.60";
+///
+/// The `~6.18.60` -> `~6.18.79` bump was derived from both published runner
+/// trees (`git diff v6.18.60..v6.18.79 -- src`, excluding tests). It adds four
+/// literal `this.name` identities, none of which reaches the runner-error
+/// event surface: `SamePathUploadSupersededError`
+/// (src/lib/same-path-upload-lock.ts) is thrown only inside `performUpload`
+/// in src/cli/share.ts, and all three `performUpload` call sites catch it and
+/// restart the upload decision; `MultipartVerifyError`
+/// (src/multipart-upload.ts) is thrown only by `uploadLargeObjectVerified`,
+/// a library export for `hq storage offload` that no sync runner code calls;
+/// `CompanyTargetError` and `JobDefinitionError` (src/outposts/company.ts)
+/// belong to the `hq outposts` CLI commands, which the sync runner does not
+/// import. All four are excluded like `PushScopeForbiddenError`.
+/// `HQ_CLOUD_IDENTITIES` remains 59. `src/bin/sync-runner-events.ts` is
+/// untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The runner
+/// adds a diagnostic `error` event with the fixed message prefix
+/// `pass request directory startup failed:` and `path: "(pass-request)"`, so
+/// no class name leads the message, plus additive `capabilities`,
+/// `pass-request`, `scope-shrink-refused`, and `secrets-not-synced` events,
+/// which `parse_sync_line` skips as unknown types. The source-version marker
+/// moves with the runner pin.
+///
+/// The `~6.18.79` -> `~6.18.80` bump (`git diff v6.18.79..v6.18.80 -- src`,
+/// excluding tests) only retargets the company job-health path in
+/// src/outposts/company.ts (hq-cloud#955). It adds no `this.name` identity, so
+/// `HQ_CLOUD_IDENTITIES` remains 59 and `ERROR_TYPES` is unchanged.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.80";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -3518,6 +3544,15 @@ mod tests {
             // src/sync/push-receiver.ts.
             "JournalIncompleteUpsertError",
             "RealtimePushYield",
+            // Added at ~6.18.79 (git diff v6.18.60..v6.18.79): the supersede
+            // signal is caught at every performUpload call site in
+            // src/cli/share.ts; the multipart class is thrown only by the
+            // offload upload export, which no runner code calls; the
+            // outposts classes live in a module the runner does not import.
+            "SamePathUploadSupersededError",
+            "MultipartVerifyError",
+            "CompanyTargetError",
+            "JobDefinitionError",
         ];
         for name in EXCLUDED {
             assert!(
