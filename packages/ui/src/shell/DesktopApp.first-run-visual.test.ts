@@ -996,8 +996,8 @@ describe("welcome report (US-009)", () => {
   });
 
   /**
-   * A host whose scan finds Linear. By default the person has one company,
-   * the one the takeover would have picked; `companies` lists their slugs.
+   * A host whose scan finds Linear. By default the person has one company;
+   * `companies` lists their slugs.
    */
   async function bootWithApps(foundApps: boolean, companies: readonly string[] = ["northwind"]): Promise<void> {
     const hasFeatureImpl = async (name: string) =>
@@ -1044,8 +1044,17 @@ describe("welcome report (US-009)", () => {
     expect(q<HTMLElement>('[data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("tile");
   });
 
-  it("found-apps flag on, but no company the person picked: the suggestions show, and Connect opens a new company instead of an arbitrary one", async () => {
+  it("found-apps flag on, two companies and none picked: the report connects in the first company, with no new-company step", async () => {
     await bootWithApps(true, ["northwind", "acme"]);
+    await vi.waitFor(() =>
+      expect(q('[data-testid="welcome-report-connect"] [data-testid="suggested-app-connect-linear.app"]')).toBeTruthy(),
+    );
+    expect(q<HTMLElement>('[data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("tile");
+    expect(q('[data-testid="new-company-sheet"]')).toBeNull();
+  });
+
+  it("found-apps flag on, but no company at all: the suggestions show, and Connect opens a new company", async () => {
+    await bootWithApps(true, []);
     await vi.waitFor(() => expect(q('[data-testid="suggested-app-linear.app"]')).toBeTruthy());
     expect(q<HTMLElement>('[data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("found");
     expect(q('[data-testid="new-company-sheet"]')).toBeNull();
