@@ -15,6 +15,9 @@
     restoreNotification,
   } from "./notifications-cache.svelte.js";
   import { pushToast } from "../shell/toast-stack.svelte.js";
+  import BadgeNoticeMarks from "../badges/BadgeNoticeMarks.svelte";
+  import { revealBadgeCard } from "../badges/badge-announce.js";
+  import { badgeNotice } from "../badges/badge-notification.js";
   import {
     companyInvitesFromWorkspaces,
     isCompanyInviteRequest,
@@ -231,6 +234,33 @@
       </div>
     {:else}
       {#each rows as item (item.id)}
+        {@const notice = item.displayKind === "badge_earned" ? badgeNotice(item) : null}
+        {#if notice}
+          <!-- A badge earned: the "You earned" notice's holographic look and
+               mark, with the card one click away (owner, 2026-10-16). -->
+          <div
+            class="ni holo"
+            class:unread={item.status === "unread"}
+            data-testid="notification-row"
+            data-kind="badge_earned"
+            data-badge-id={notice.badge.def.id}
+          >
+            <span class="holo-edge" aria-hidden="true"></span>
+            <span class="lead"><BadgeNoticeMarks badges={[notice.badge]} size={22} /></span>
+            <div>
+              <span class="verb">{notice.title}</span>
+              <span class="m">{notice.detail}</span>
+              <div class="act">
+                <button
+                  type="button"
+                  class="btn"
+                  data-testid="notification-reveal-badge"
+                  onclick={() => void revealBadgeCard(notice.badge)}
+                >Reveal card</button>
+              </div>
+            </div>
+          </div>
+        {:else}
         <div class="ni" class:unread={item.status === "unread"} data-testid="notification-row">
           <span class="mini">{item.actorInitials}</span>
           <div>
@@ -285,6 +315,7 @@
             {/if}
           </div>
         </div>
+        {/if}
       {/each}
     {/if}
   </div>
@@ -483,5 +514,73 @@
 
   .loading {
     padding: 8px;
+  }
+  /* Holographic badge row: the "You earned" notice's look (ToastStack.svelte)
+     on a list row. A thin iridescent edge on the row's border and a sheen
+     that sweeps once when the list opens and again while hovered. */
+  @property --np-holo-a {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+  }
+  .ni.holo {
+    position: relative;
+    margin: 2px 0;
+  }
+  .ni.holo > :not(.holo-edge) {
+    position: relative;
+    z-index: 1;
+  }
+  .holo-edge {
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    pointer-events: none;
+    background: conic-gradient(from var(--np-holo-a), #6ee7f9, #a78bfa, #f472b6, #fbbf24, #86efac, #6ee7f9);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    opacity: 0.85;
+    animation: np-holo-turn 3.2s linear 1;
+  }
+  .ni.holo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(
+      115deg,
+      rgba(110, 231, 249, 0) 30%,
+      rgba(110, 231, 249, 0.14) 40%,
+      rgba(167, 139, 250, 0.18) 46%,
+      rgba(244, 114, 182, 0.16) 52%,
+      rgba(251, 191, 36, 0.12) 58%,
+      rgba(134, 239, 172, 0) 68%
+    );
+    background-size: 260% 100%;
+    background-position: 130% 0;
+    animation: np-holo-sweep 1.6s ease-in-out 200ms 1 both;
+  }
+  .ni.holo:hover .holo-edge { animation: np-holo-turn 3.2s linear infinite; }
+  .ni.holo:hover::after { animation: np-holo-sweep 1.6s ease-in-out infinite; }
+  .lead {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+  }
+  @keyframes np-holo-turn {
+    to { --np-holo-a: 360deg; }
+  }
+  @keyframes np-holo-sweep {
+    from { background-position: 130% 0; }
+    to { background-position: -30% 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .holo-edge, .ni.holo:hover .holo-edge { animation: none; }
+    .ni.holo::after, .ni.holo:hover::after { animation: none; opacity: 0; }
   }
 </style>
