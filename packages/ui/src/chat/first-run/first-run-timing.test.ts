@@ -200,6 +200,18 @@ describe("route, flag and setup-run lines", () => {
     expect(formatSetupRunSet("mark-already-set-up")).toBe("kind=setup-run event=set caller=mark-already-set-up");
   });
 
+  it("adds late= only for an answer that landed after its wait", () => {
+    expect(formatFlagLookup("visual-first-run", "unscoped", true, true, 6200, "applied")).toBe(
+      "kind=flag flag=visual-first-run path=unscoped value=true applied=true late=applied elapsed_ms=6200",
+    );
+    expect(formatFlagLookup("visual-first-run", "unscoped", true, false, 6200, "legacy-started")).toBe(
+      "kind=flag flag=visual-first-run path=unscoped value=true applied=false late=legacy-started elapsed_ms=6200",
+    );
+    expect(formatFlagLookup("visual-first-run", "unscoped", true, false, 13000, "too-late")).toBe(
+      "kind=flag flag=visual-first-run path=unscoped value=true applied=false late=too-late elapsed_ms=13000",
+    );
+  });
+
   it("logs the route only when its value changes", () => {
     const lines: string[] = [];
     const logger = createRouteLogger((line) => lines.push(line));

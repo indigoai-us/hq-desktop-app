@@ -25,6 +25,7 @@ import type { LocalBotRow } from "@hq/platform";
 import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
 import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "../agent-channel.js";
 import { SETUP_BOT_RUNTIME_ORDER, type SetupBotRef } from "../setup-bot.js";
+import type { FlagLateOutcome } from "./first-run-timing.js";
 
 export type FirstRunRuntime = LocalBotRow["runtime"];
 
@@ -774,12 +775,47 @@ export type FirstRunRoute = "legacy" | "visual" | "pending";
 export const VISUAL_FIRST_RUN_FLAG_GRACE_MS = 1000;
 
 /**
+ * The same wait when the host says setup is owed (a new install). A cold
+ * start reads the flag right after sign-in, and that read can take well over
+ * a second (2.8 s on a cold VM); counting it as off sends a new install to
+ * the old setup. In line with the other first-run waits.
+ */
+export const VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS = 5_000;
+
+/**
  * The longest the takeover waits for the bot listings (this computer's and
  * the account's) before its name step opens anyway. Within it, an account
  * that already has an assistant is offered that assistant's name; after it,
  * a slow listing means a friendly free name, as for a new account.
  */
 export const FIRST_RUN_LISTINGS_WAIT_MS = 5_000;
+
+/**
+ * How long after its wait ran out a flag answer may still open the takeover.
+ * By then the old setup has been on screen for this long, so a later answer
+ * leaves it there.
+ */
+export const VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS = 5_000;
+
+/**
+ * What a flag answer that lands after its wait ran out does (the flag counted
+ * as off, the route went legacy). Null when it is "off" or setup is not owed:
+ * nothing to say. Otherwise "too-late" when it came more than the late window
+ * after the timeout, "legacy-started" when the person had already started on
+ * the old setup (a setup run, a bot, the tour, an install or sign-in, another
+ * row, a sent message), and "applied" when the takeover opens after all.
+ */
+export function lateFlagVerdict(input: {
+  value: boolean;
+  welcomeSetupOwed: boolean | null;
+  legacyStarted: boolean;
+  sinceTimeoutMs: number;
+}): FlagLateOutcome | null {
+  if (!input.value || input.welcomeSetupOwed !== true) return null;
+  if (input.sinceTimeoutMs > VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS) return "too-late";
+  if (input.legacyStarted) return "legacy-started";
+  return "applied";
+}
 
 export interface FirstRunRouteInput {
   /** The host can run local bots (desktop app). */
