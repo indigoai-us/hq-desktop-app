@@ -6544,6 +6544,19 @@
           if (!/not found/i.test(why)) console.warn("[daily-brief] could not read", path, why);
           return null;
         },
+        onsent: (_runId, company) => {
+          // A personal-scope brief: a company would add its meetings, signals and
+          // team agents. The welcome report's own job shows no note.
+          if (company || (welcomeReportOwed && welcomeReportUnsent(assistantUid))) return;
+          pushToast({
+            key: "brief-add-company",
+            title: "Add a company to include meetings, signals and team agents.",
+            detail: "",
+            tone: "neutral",
+            testId: "brief-add-company",
+            actions: [{ label: "New company", testId: "brief-add-company-new", onAction: () => (newCompanyOpen = true) }],
+          });
+        },
       })
     : null;
   onMount(() => {
@@ -14472,7 +14485,7 @@
 
   /**
    * ⌘⇧A: Atlas for the active company; on Home the first rail company; with
-   * no company at all, a one-line toast (QA-077).
+   * no company at all, a one-line toast with a New company button (QA-077).
    */
   function openAtlasShortcut(): void {
     paletteOpen = false;
@@ -14482,7 +14495,12 @@
       railCompanyRoster.map((company) => company.uid),
     );
     if (target.kind === "none") {
-      pushToast({ title: "Open a company first", detail: "", tone: "neutral" });
+      pushToast({
+        title: "Open a company first",
+        detail: "",
+        tone: "neutral",
+        actions: [{ label: "New company", testId: "atlas-new-company", onAction: () => (newCompanyOpen = true) }],
+      });
       return;
     }
     const item = railItemList.find(

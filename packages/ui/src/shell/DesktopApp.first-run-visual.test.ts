@@ -20,6 +20,7 @@ import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
+import { dismissToast, toastItems } from "./toast-stack.svelte.js";
 import { SETUP_BOT_COPY_STATIC, SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
 import {
   VISUAL_FIRST_RUN_DONE_KEY,
@@ -62,8 +63,11 @@ interface AdapterOptions {
   loginCancel?: (runtime: string) => Promise<unknown>;
   /** `hq bot list --remote` (the account's own listing); absent leaves the host without it. */
   listRemote?: () => Promise<unknown>;
-  /** The app's active company slug (the brief job names it); absent leaves the host without its company reads. */
-  activeCompany?: string;
+  /**
+   * The app's active company slug (the brief job names it); null is a host
+   * with no company open; absent leaves the host without its company reads.
+   */
+  activeCompany?: string | null;
   /** The host's hq-sync.log writer; absent leaves the host without one. */
   logToFile?: (tag: string, message: string) => Promise<unknown>;
 }
@@ -95,10 +99,10 @@ function adapter({
     isAvailable: () => false,
     capabilities: {},
     identity: { hasFeature, updateAgentProfile },
-    ...(activeCompany || logToFile
+    ...(activeCompany !== undefined || logToFile
       ? {
           appShell: {
-            ...(activeCompany
+            ...(activeCompany !== undefined
               ? {
                   getActiveCompany: async () => ok(activeCompany),
                   showOsNotification: async () => ok(undefined),
@@ -147,7 +151,7 @@ function adapter({
       ...(probe ? { probe } : {}),
       ...(listRemote ? { listRemote } : {}),
     },
-    ...(activeCompany
+    ...(activeCompany !== undefined
       ? {
           files: { getFileContent: async () => ({ ok: false as const, reason: "not found" }) },
         }
@@ -880,6 +884,57 @@ describe("welcome report (US-009)", () => {
     expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
   }, 15_000);
 
+  // Owner, 2026-10-16: "Open a company first then create the brief? Why do we
+  // need a company?" With no company the job was never sent, so the report
+  // waited on a company the person had no way to open.
+  it("with no company the welcome report's job still goes out, in personal scope, and is marked sent with no company note", async () => {
+    const log = logSink();
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null, logToFile: log.logToFile });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    const [to, body] = briefJobs(sendDm)[0]!;
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(body.split("\n")[0]).toMatch(/^\/daily-brief --personal --run-id brief-\d{8}-\d{6}$/);
+    expect(body).toContain("do not pick a company");
+    await vi.waitFor(() => expect(localStorage.getItem("hq.welcome-report.sent")).toBe(SETUP_BOT_UID));
+    await vi.waitFor(() => expect(log.of("welcome-report")).toEqual(["kind=welcome-report event=dispatched"]));
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
+    expect(toastItems().map((t) => t.title)).not.toContain("Add a company to include meetings, signals and team agents.");
+    await settle(20);
+    expect(briefJobs(sendDm)).toHaveLength(1);
+  }, 15_000);
+
+  it("a brief made by hand with no company goes out in personal scope and offers to add a company", async () => {
+    localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-create"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    q<HTMLButtonElement>('[data-testid="brief-create"]')!.click();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(briefJobs(sendDm)[0]![1].split("\n")[0]).toMatch(/^\/daily-brief --personal --run-id /);
+    expect(q('[data-testid="brief-failed"]')?.textContent ?? "").not.toContain("Open a company first");
+    const note = await vi.waitFor(() => {
+      const found = toastItems().find((t) => t.key === "brief-add-company");
+      expect(found).toBeDefined();
+      return found!;
+    });
+    expect(note.title).toBe("Add a company to include meetings, signals and team agents.");
+    expect(note.actions?.map((a) => a.label)).toEqual(["New company"]);
+    expect(q('[data-testid="new-company-sheet"]')).toBeNull();
+    note.actions![0]!.onAction();
+    await vi.waitFor(() => expect(q('[data-testid="new-company-sheet"]')).toBeTruthy(), { timeout: 10_000 });
+    dismissToast(note.id);
+  }, 20_000);
+
   // Lane A (2026-10-16): the report is owed for the whole session, so once it
   // landed a brief the person made by hand that was held back showed the
   // report's card again, and the window coming back re-ran it on its own.
@@ -1354,9 +1409,17 @@ describe("visual first run: #welcome while the takeover waits for the bot listin
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
   }
 
+  // With no company the welcome report's brief job now goes out too, so the
+  // handoff note is counted among the messages that are not brief jobs, and
+  // the brief job is counted on its own.
+  const isBriefJob = (call: unknown[]) => String(call[1]).startsWith("/daily-brief ");
+  const notBriefJobs = (sendDm: ReturnType<typeof vi.fn>) => sendDm.mock.calls.filter((call) => !isBriefJob(call));
+
   function expectOneHandoffNote(sendDm: ReturnType<typeof vi.fn>): void {
-    expect(sendDm).toHaveBeenCalledTimes(1);
-    const [to, , extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+    const notes = notBriefJobs(sendDm);
+    expect(notes).toHaveLength(1);
+    expect(sendDm.mock.calls.filter(isBriefJob), "the welcome report's one brief job").toHaveLength(1);
+    const [to, , extras] = notes[0] as unknown as [string, string, Record<string, unknown>];
     expect(to).toBe(SETUP_BOT_UID);
     expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
   }
@@ -1382,7 +1445,8 @@ describe("visual first run: #welcome while the takeover waits for the bot listin
 
     listing.release();
     await walkTheTakeoverToDone();
-    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(notBriefJobs(sendDm)).toHaveLength(1));
+    await vi.waitFor(() => expect(sendDm.mock.calls.filter(isBriefJob)).toHaveLength(1), { timeout: 10_000 });
     await settle(12);
     expect(create).toHaveBeenCalledTimes(1);
     expect(openAtCreate).toEqual([true]);

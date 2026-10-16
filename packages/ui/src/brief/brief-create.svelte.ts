@@ -34,8 +34,9 @@ import {
 /** What the host provides so the brief can start a run on a local bot. */
 export interface BriefCreator {
   /**
-   * The app's active company slug. The job always names it: a bot that
-   * belongs to several companies would otherwise pick one itself.
+   * The app's active company slug. The job names it when there is one: a bot
+   * that belongs to several companies would otherwise pick one itself. With
+   * none the job runs in personal scope.
    */
   company(): string | null | Promise<string | null>;
   /** Fresh bot list and model check. */
@@ -51,6 +52,8 @@ export interface BriefCreator {
 export interface BriefCreateDeps {
   creator: BriefCreator;
   read(relPath: string): Promise<string | null>;
+  /** The job reached the bot; `company` is null for a personal-scope run. */
+  onsent?(runId: string, company: string | null): void;
   /** The run finished, ready or failed. */
   onfinish?(phase: Extract<BriefCreatePhase, { kind: "ready" | "failed" }>): void;
   now?: () => Date;
@@ -157,10 +160,6 @@ export class BriefCreateRun {
       company = null;
     }
     if (this.stopped) return;
-    if (!company) {
-      this.finish({ kind: "failed", runId: null, message: "Open a company first, then create the brief." });
-      return;
-    }
     let error: string | null;
     try {
       error = await creator.dispatch(check.bot, briefJobMessage(runId, company), runId);
@@ -174,6 +173,7 @@ export class BriefCreateRun {
     }
     this.company = company;
     this.remember(runId);
+    this.deps.onsent?.(runId, company);
     const label = briefBotLabel(check.bot);
     const bot = label === "Your assistant" ? "your assistant" : label;
     this.phase = { kind: "waiting", runId, sentAt: this.now().getTime(), ...(bot ? { bot } : {}) };
@@ -268,6 +268,8 @@ export class BriefCreateRun {
     try {
       this.storage?.setItem(ACTIVE_RUN_KEY, runId);
       if (this.company) this.storage?.setItem(ACTIVE_RUN_COMPANY_KEY, this.company);
+      // A personal-scope run must not resume with an earlier run's company.
+      else this.storage?.removeItem(ACTIVE_RUN_COMPANY_KEY);
     } catch (err) {
       this.log("could not remember the active run", err);
     }

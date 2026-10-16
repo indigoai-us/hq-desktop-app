@@ -12,7 +12,7 @@ import {
   stillWorkingLine,
   type BriefCreatePhase,
 } from "./brief-runs.js";
-import { BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
+import { ACTIVE_RUN_COMPANY_KEY, ACTIVE_RUN_KEY, BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
 import BriefActivity from "./BriefActivity.svelte";
 import type { BriefActivity as Item } from "./brief-runs.js";
 
@@ -126,7 +126,7 @@ describe("elapsed and estimate", () => {
   });
 });
 
-describe("dispatch names the app's active company", () => {
+describe("dispatch names the app's active company, or runs in personal scope", () => {
   const creator = (company: () => string | null | Promise<string | null>): BriefCreator => ({
     company,
     check: async () => ({ ok: true, bot: BOT }),
@@ -145,12 +145,42 @@ describe("dispatch names the app's active company", () => {
     run.stop();
   });
 
-  it("does not dispatch when there is no active company", async () => {
+  it("dispatches a personal-scope job when there is no active company", async () => {
+    // The brief is above the company level: with no company it still runs, for
+    // the person across their HQ, and the bot is told not to pick a company.
     const c = creator(() => null);
-    const run = new BriefCreateRun({ creator: c, read: async () => null, storage: null, setTimer: () => 0, clearTimer: () => {}, log: () => {} });
+    const sent = vi.fn();
+    const store = new Map<string, string>([[ACTIVE_RUN_COMPANY_KEY, "stale-co"]]);
+    const storage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    };
+    const run = new BriefCreateRun({ creator: c, read: async () => null, storage, onsent: sent, setTimer: () => 0, clearTimer: () => {}, log: () => {} });
     await run.start();
-    expect(c.dispatch).not.toHaveBeenCalled();
-    expect(run.phase).toEqual({ kind: "failed", runId: null, message: "Open a company first, then create the brief." });
+    expect(c.dispatch).toHaveBeenCalledTimes(1);
+    const body = (c.dispatch as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    expect(body).toMatch(/^\/daily-brief --personal --run-id brief-\d{8}-\d{6}\n/);
+    expect(body).toContain("in personal scope");
+    expect(body).toContain("across their HQ");
+    expect(body).toContain("do not pick a company");
+    expect(body).not.toContain("for company");
+    expect(run.phase.kind).toBe("waiting");
+    expect(run.company).toBeNull();
+    expect(sent).toHaveBeenCalledWith(expect.stringMatching(/^brief-\d{8}-\d{6}$/), null);
+    // A reload resumes this run without an earlier run's company.
+    expect(store.get(ACTIVE_RUN_KEY)).toMatch(/^brief-\d{8}-\d{6}$/);
+    expect(store.has(ACTIVE_RUN_COMPANY_KEY)).toBe(false);
+    run.stop();
+  });
+
+  it("tells the host the company a job was sent for", async () => {
+    const c = creator(async () => "indigo");
+    const sent = vi.fn();
+    const run = new BriefCreateRun({ creator: c, read: async () => null, storage: null, onsent: sent, setTimer: () => 0, clearTimer: () => {}, log: () => {} });
+    await run.start();
+    expect(sent).toHaveBeenCalledWith(expect.stringMatching(/^brief-\d{8}-\d{6}$/), "indigo");
+    run.stop();
   });
 });
 

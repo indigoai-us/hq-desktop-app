@@ -338,6 +338,17 @@ describe("the bot that runs the job", () => {
     expect(indigo).toContain("for company indigo");
     expect(indigo).toContain("do not pick another company");
   });
+
+  it("with no company the job message runs the brief in personal scope", () => {
+    for (const company of [null, undefined, "", "  "]) {
+      const msg = briefJobMessage("brief-20261016-090000", company);
+      expect(msg.split("\n")[0]).toBe("/daily-brief --personal --run-id brief-20261016-090000");
+      expect(msg).toContain("in personal scope");
+      expect(msg).toContain("It covers this person across their HQ");
+      expect(msg).toContain("so do not pick a company");
+      expect(msg).toContain("workspace/brief/brief-20261016-090000/status.json");
+    }
+  });
 });
 
 describe("previousReadyRun", () => {
