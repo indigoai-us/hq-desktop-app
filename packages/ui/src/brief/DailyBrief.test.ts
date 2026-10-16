@@ -309,6 +309,48 @@ describe("DailyBrief report action cards", () => {
     expect(onlog).toHaveBeenCalledWith({ event: "launch", itemId: item.id, engine: "claude" });
   });
 
+  async function launchFirstCard(onlaunch: (engine: string, prompt: string) => Promise<string | null>) {
+    const onlog = vi.fn();
+    const input = { ...day(), runId: "run-1" };
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    app = mount(DailyBrief, { target, props: { input, onlaunch, onlog, actions: { destinations, onassistant: vi.fn(async () => null) } } });
+    flushSync();
+    const before = qa('[data-testid="brief-action-card"]').length;
+    const first = qa('[data-testid="brief-action-card"]')[0]!;
+    const title = first.querySelector("h3")!.textContent!;
+    const item = input.decisions.find((d) => d.title === title)!;
+    (first.querySelector('[data-testid="brief-action-claude"]') as HTMLElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+    flushSync();
+    const card = qa('[data-testid="brief-action-card"]').find((c) => c.querySelector("h3")!.textContent === title);
+    return { onlog, item, before, card };
+  }
+
+  it("a card launch clears the item like Start and leaves the card with the Started note and no buttons", async () => {
+    const { onlog, item, before, card } = await launchFirstCard(vi.fn(async () => null));
+    expect(onlog).toHaveBeenCalledWith({ event: "launch", itemId: item.id, engine: "claude" });
+    expect(qa('[data-testid="brief-action-card"]')).toHaveLength(before);
+    expect(card).toBeDefined();
+    expect(card!.querySelector('[data-testid="brief-action-launched"]')!.textContent).toBe("Started in Claude.");
+    expect(card!.querySelector("button")).toBeNull();
+  });
+
+  it("the Prompt copied fallback also clears the item and shows its note", async () => {
+    const { onlog, item, card } = await launchFirstCard(vi.fn(async () => "Prompt copied. Paste it into Claude."));
+    expect(onlog).toHaveBeenCalledWith({ event: "launch", itemId: item.id, engine: "claude" });
+    expect(card!.querySelector('[data-testid="brief-action-launched"]')!.textContent).toBe("Prompt copied. Paste it into Claude.");
+    expect(card!.querySelector("button")).toBeNull();
+  });
+
+  it("a failed launch keeps the buttons, logs nothing and shows the error", async () => {
+    const { onlog, card } = await launchFirstCard(vi.fn(async () => "Could not open Claude."));
+    expect(onlog).not.toHaveBeenCalled();
+    expect(card!.querySelector('[data-testid="brief-action-launched"]')).toBeNull();
+    expect(card!.querySelector('[data-testid="brief-action-claude"]')).not.toBeNull();
+    expect(card!.textContent).toContain("Could not open Claude.");
+  });
+
   it("shows no cards when the host passes no destinations", () => {
     render({});
     expect(q('[data-testid="brief-action-cards"]')).toBeNull();

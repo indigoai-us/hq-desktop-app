@@ -28,8 +28,10 @@
     onopenmeetings?: () => void;
     /** Report action cards on the brief page. */
     actions?: BriefActions | null;
+    /** Told which run the brief page has on screen. */
+    onshown?: (runId: string | null) => void;
   }
-  let { adapter, companies, onlaunch, creator = null, run = null, onopenthread, onopenmeetings, actions = null }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run = null, onopenthread, onopenmeetings, actions = null, onshown }: Props = $props();
 
   let mod = $state<BriefModule | null>(null);
   let failed = $state(false);
@@ -52,7 +54,7 @@
 
 <div class="host" data-testid="brief-host">
   {#if mod}
-    <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} {onopenthread} {onopenmeetings} {actions} />
+    <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} {onopenthread} {onopenmeetings} {actions} {onshown} />
   {:else if failed}
     <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
   {:else}

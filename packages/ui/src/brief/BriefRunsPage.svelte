@@ -49,8 +49,10 @@
     initialRunId?: string | null;
     /** Report action cards; passed through to the brief page. */
     actions?: BriefActions | null;
+    /** Told which run is on screen (null for none or the no-run brief), including after a run bar pick. */
+    onshown?: (runId: string | null) => void;
   }
-  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp, initialRunId = null, actions = null }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp, initialRunId = null, actions = null, onshown }: Props = $props();
 
   const LAST_KEY = "hq.brief.lastOpenedAt";
   // Fixed for the page's life; the host remounts the page for a new adapter.
@@ -70,6 +72,12 @@
   let alive = true;
   let seq = 0;
   const latestRunId = $derived(latestReadyRun(entries)?.runId ?? null);
+  $effect(() => {
+    const id = shownRunId;
+    onshown?.(id);
+  });
+  // Leaving the page puts no run on screen.
+  $effect(() => () => onshown?.(null));
 
   function storage(): Storage | null {
     try {

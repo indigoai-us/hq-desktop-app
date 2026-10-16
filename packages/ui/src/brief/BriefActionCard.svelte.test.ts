@@ -33,7 +33,7 @@ const DECISION: BriefDecision = {
   detail: { why: "Launch is Friday", unlocks: [{ label: "Sam", state: "waiting since Monday" }], source: "prs" },
 };
 
-function render(destinations: BriefActionDestinations, over: Partial<{ runId: string | null; onassistant: (prompt: string, idempotencyKey: string) => Promise<string | null>; onlaunch: (engine: "claude" | "codex", prompt: string) => Promise<string | null> }> = {}) {
+function render(destinations: BriefActionDestinations, over: Partial<{ runId: string | null; onassistant: (prompt: string, idempotencyKey: string) => Promise<string | null>; onlaunch: (engine: "claude" | "codex", prompt: string) => Promise<string | null>; launched: string | null }> = {}) {
   const onassistant = vi.fn(async () => null);
   const onlaunch = vi.fn(async () => null);
   target = document.createElement("div");
@@ -60,6 +60,13 @@ describe("BriefActionCard", () => {
     expect(q('[data-testid="brief-action-why"]')?.textContent).toBe("Launch is Friday");
     expect(q('[data-testid="brief-action-evidence"]')?.textContent).toContain("Sam: waiting since Monday");
     expect(q('[data-testid="brief-action-evidence"]')?.textContent).toContain("prs");
+  });
+
+  it("once a launch cleared the item, shows the launch note in place of the buttons", () => {
+    render(ALL, { launched: "Started in Claude." });
+    expect(q('[data-testid="brief-action-launched"]')?.textContent).toBe("Started in Claude.");
+    expect(target.querySelector("button")).toBeNull();
+    expect(q("h3")?.textContent).toBe("Review the pricing page PR");
   });
 
   it("labels the three buttons with the decided copy", () => {

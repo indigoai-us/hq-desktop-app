@@ -46,16 +46,25 @@ export function assistantNameInSentence(name: string): string {
  * button shows only when the assistant runs on this computer: a cloud-only
  * one would accept the DM and nothing would happen here. A send always
  * leaves a note, so success is distinguishable from nothing.
+ *
+ * While the brief job is held back (no assistant running, no model
+ * connected, sign-in needed) the assistant cannot do the work, so its button
+ * is hidden. Claude Code and Codex then show only when the coding-tool check
+ * reads that tool as signed in here (`held.signedIn`); before the check has
+ * run they are hidden too.
  */
 export function briefActionsFor(
   assistant: { uid: string; name: string; runsHere: boolean } | null,
   cli: { claudeCode: boolean; codex: boolean },
   send: (uid: string, prompt: string, idempotencyKey: string) => Promise<AdapterResult<unknown>>,
+  held: { signedIn: Record<string, boolean> | null } | null = null,
 ): BriefActions {
-  const here = assistant?.runsHere ? assistant : null;
+  const here = assistant?.runsHere && !held ? assistant : null;
   const name = here ? assistantNameInSentence(here.name) : null;
+  const claudeCode = cli.claudeCode && (!held || held.signedIn?.claude === true);
+  const codex = cli.codex && (!held || held.signedIn?.codex === true);
   return {
-    destinations: { assistantName: name, claudeCode: cli.claudeCode, codex: cli.codex },
+    destinations: { assistantName: name, claudeCode, codex },
     async onassistant(prompt, idempotencyKey) {
       if (!here) return "Your assistant is not set up on this computer yet.";
       const failed = `Could not send this to ${name}. Try again in a moment.`;

@@ -47,4 +47,42 @@ describe("briefActionsFor", () => {
     expect(actions.destinations.assistantName).toBe("your assistant");
     expect(await actions.onassistant("p", "k")).toBe("Sent to your assistant. Watch your messages.");
   });
+
+  describe("while the brief job is held back", () => {
+    const BOTH = { claudeCode: true, codex: true };
+    const ada = { uid: "agt_ada", name: "Ada", runsHere: true };
+
+    it("hides the assistant button and sends nothing", async () => {
+      const send = vi.fn(sent);
+      const actions = briefActionsFor(ada, BOTH, send, { signedIn: { claude: true, codex: true } });
+      expect(actions.destinations.assistantName).toBeNull();
+      await actions.onassistant("p", "k");
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("keeps Claude Code when Claude is signed in and hides Codex when Codex is not", () => {
+      const actions = briefActionsFor(ada, BOTH, sent, { signedIn: { claude: true, codex: false } });
+      expect(actions.destinations).toEqual({ assistantName: null, claudeCode: true, codex: false });
+    });
+
+    it("keeps Codex when only Codex is signed in", () => {
+      const actions = briefActionsFor(ada, BOTH, sent, { signedIn: { claude: false, codex: true } });
+      expect(actions.destinations).toEqual({ assistantName: null, claudeCode: false, codex: true });
+    });
+
+    it("hides both tools before the sign-in check has run", () => {
+      const actions = briefActionsFor(ada, BOTH, sent, { signedIn: null });
+      expect(actions.destinations).toEqual({ assistantName: null, claudeCode: false, codex: false });
+    });
+
+    it("never shows a tool that is not installed, even when it reads as signed in", () => {
+      const actions = briefActionsFor(ada, CLI, sent, { signedIn: { claude: true, codex: true } });
+      expect(actions.destinations).toEqual({ assistantName: null, claudeCode: true, codex: false });
+    });
+  });
+
+  it("outside the held state keeps the assistant and both installed tools, signed in or not", () => {
+    const actions = briefActionsFor({ uid: "agt_ada", name: "Ada", runsHere: true }, { claudeCode: true, codex: true }, sent, null);
+    expect(actions.destinations).toEqual({ assistantName: "Ada", claudeCode: true, codex: true });
+  });
 });

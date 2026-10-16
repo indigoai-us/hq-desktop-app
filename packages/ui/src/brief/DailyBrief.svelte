@@ -99,13 +99,19 @@
   const needsRows = $derived(rankDecisions(ctx));
   const cleared = $derived(input.decisions.filter((d) => briefState.cleared[d.id]).length);
   // One card per open decision that carries a launch prompt, in the Needs-you order.
+  // A card its own launch cleared stays, with the launch note and no buttons.
+  const launchedNote = (id: string): string | null => (briefState.launched[id] ? (briefState.notes[id] ?? null) : null);
   const actionCards = $derived(
-    actions ? needsRows.filter((d) => !briefState.cleared[d.id]).map((d) => actionCardData(d, plan.prompts)).filter((c) => c !== null) : [],
+    actions
+      ? needsRows
+          .filter((d) => !briefState.cleared[d.id] || launchedNote(d.id))
+          .map((d) => actionCardData(d, plan.prompts))
+          .filter((c) => c !== null)
+      : [],
   );
-  async function launchAction(itemId: string, engine: "claude" | "codex", prompt: string): Promise<string | null> {
-    const problem = await briefState.launch(engine, prompt);
-    if (!problem) onlog?.({ event: "launch", itemId, engine });
-    return problem;
+  /** A card launch takes the Start path: it logs, clears the item and leaves the Started note. */
+  function launchAction(itemId: string, engine: "claude" | "codex", prompt: string): Promise<string> {
+    return briefState.start(itemId, prompt, engine);
   }
   // Every live incident the catalogue counted; the lead is the one a priority points at (by rank), else the first.
   const incidents = $derived(input.risks.filter((r) => r.severity === "incident"));
@@ -442,6 +448,7 @@
           now={input.now}
           onassistant={actions.onassistant}
           onlaunch={(engine, prompt) => launchAction(card.id, engine, prompt)}
+          launched={launchedNote(card.id)}
         />
       {/each}
     </section>

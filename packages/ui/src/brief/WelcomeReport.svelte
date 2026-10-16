@@ -39,10 +39,10 @@
     /** No assistant to write the report yet: the card offers setting one up. */
     onsetup?: (() => void) | null;
     /**
-     * Who made the report: the assistant and a way to open its DM, or null
-     * when no assistant exists yet. Left out, the line is not shown.
+     * Who made the report: the assistant and a way to open its DM. Left out
+     * (no assistant, or no landed report on screen), the line is not shown.
      */
-    madeBy?: { name: string; onmeet: () => void } | null;
+    madeBy?: { name: string; onmeet: () => void };
     /** The "Connect your AI apps" card inputs; null leaves it out. */
     aiApps?: { detect: () => Promise<FoundWorkApps | null>; cli: { claudeCode: boolean; codex: boolean } } | null;
     /**
@@ -92,14 +92,10 @@
   {/if}
   {#if ready}
     <div class="report" data-testid="welcome-report-ready">
-      {#if madeBy !== undefined}
+      {#if madeBy}
         <p class="made-by" data-testid="welcome-report-made-by">
-          {#if madeBy}
-            <span>{madeBy.name} made this report.</span>
-            <button type="button" data-testid="welcome-report-meet" onclick={() => madeBy.onmeet()}>Meet {assistantNameInSentence(madeBy.name)}</button>
-          {:else}
-            <span>Your assistant will make the next one.</span>
-          {/if}
+          <span>{madeBy.name} made this report.</span>
+          <button type="button" data-testid="welcome-report-meet" onclick={() => madeBy.onmeet()}>Meet {assistantNameInSentence(madeBy.name)}</button>
         </p>
       {/if}
       {@render children()}

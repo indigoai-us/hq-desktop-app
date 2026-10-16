@@ -4442,14 +4442,6 @@
       ? { detect: () => welcomeAppsHost.detect(), cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) } }
       : null,
   );
-  /** Report action cards: where each item can be done, and the assistant DM send (only when it runs here). */
-  const briefActions = $derived(
-    briefActionsFor(
-      assistantUid ? { uid: assistantUid, name: assistantLabel, runsHere: botRunsHere(localBotRecords, assistantUid) } : null,
-      { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) },
-      (uid, prompt, idempotencyKey) => adapter.messaging.sendDm(uid, prompt, { audience: "agent", idempotencyKey }),
-    ),
-  );
   // The cards and the AI apps card need launch detection; ask for it once the report shows.
   // The call is untracked: a host whose request reads its own state (a probing flag) would
   // otherwise re-run this effect when that state changes and probe forever after a failure.
@@ -6487,6 +6479,18 @@
     void briefRun?.rehydrate();
     return () => briefRun?.stop();
   });
+  /**
+   * Report action cards: where each item can be done, and the assistant DM send (only when it runs here).
+   * While the brief job is held back, only a signed-in Claude Code or Codex is offered.
+   */
+  const briefActions = $derived(
+    briefActionsFor(
+      assistantUid ? { uid: assistantUid, name: assistantLabel, runsHere: botRunsHere(localBotRecords, assistantUid) } : null,
+      { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) },
+      (uid, prompt, idempotencyKey) => adapter.messaging.sendDm(uid, prompt, { audience: "agent", idempotencyKey }),
+      briefRun?.phase.kind === "blocked" ? { signedIn: localBotRuntimeReady } : null,
+    ),
+  );
   /** The Brief's "Open thread": the DM with that person or agent, in Messages. */
   function openBriefDm(uid: string): void {
     const existing = railRows.find((row) => row.kind === "dm" && row.personUid === uid);
@@ -6532,7 +6536,9 @@
     return (kind === "idle" || kind === "blocked") && !!uid && !welcomeReportUnsent(uid);
   });
   const welcomeReportProgress = $derived(briefRun?.phase.kind === "running" ? briefRun.phase.progress : null);
-  /** The welcome report's "made this report" line: shown once the report landed, null when no assistant exists yet. */
+  /** The run the brief page has on screen; the run bar can put an earlier one there. */
+  let briefShownRunId = $state<string | null>(null);
+  /** The welcome report's "made this report" line: shown only while the run that landed is on screen. */
   const welcomeMadeByLine = $derived(
     welcomeMadeBy(
       assistantUid
@@ -6541,7 +6547,8 @@
             onmeet: () => openSetupBotDm({ agentUid: assistantUid, handle: existingSetupBot?.handle ?? "" }),
           }
         : null,
-      briefRun?.phase.kind === "ready",
+      briefRun?.phase.kind === "ready" ? briefRun.phase.runId : null,
+      briefShownRunId,
     ),
   );
   /** The held-back job's reason and fix (the brief page's own copy), shown under the report's heading. */
@@ -15604,6 +15611,7 @@
               onopenthread={openBriefDm}
               onopenmeetings={() => void navigate({ kind: "meetings" })}
               actions={briefActions}
+              onshown={(runId) => (briefShownRunId = runId)}
             />
           {/snippet}
           {#if welcomeReportOwed}

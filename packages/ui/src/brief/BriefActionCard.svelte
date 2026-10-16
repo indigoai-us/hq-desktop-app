@@ -2,7 +2,8 @@
   /**
    * One suggested piece of work as a card: what it is, why now, the evidence,
    * and one button per place it can be done. A tool that is not installed has
-   * no button; with no assistant there is no assistant button.
+   * no button; with no assistant there is no assistant button. Once a launch
+   * has cleared the item, the card shows the launch note instead of buttons.
    */
   import { assistantIdempotencyKey, type BriefActionCardData, type BriefActionDestinations } from "./brief-action-cards.js";
 
@@ -14,10 +15,12 @@
     now: string;
     /** Sends the prompt to the assistant's DM; resolves to the note to show (sent or failed). */
     onassistant: (prompt: string, idempotencyKey: string) => Promise<string | null>;
-    /** Opens the tool in the HQ folder with the prompt; resolves to an error message or null. */
+    /** Opens the tool in the HQ folder with the prompt; resolves to the note to show (started, copied or failed). */
     onlaunch: (engine: "claude" | "codex", prompt: string) => Promise<string | null>;
+    /** The launch note once a launch cleared this item: shown in place of the buttons. */
+    launched?: string | null;
   }
-  let { card, destinations, runId = null, now, onassistant, onlaunch }: Props = $props();
+  let { card, destinations, runId = null, now, onassistant, onlaunch, launched = null }: Props = $props();
   let note = $state<string | null>(null);
   let busy = $state(false);
 
@@ -43,6 +46,9 @@
       {#each card.evidence as line, i (i)}<li>{line}</li>{/each}
     </ul>
   {/if}
+  {#if launched}
+    <p class="note" role="status" data-testid="brief-action-launched">{launched}</p>
+  {:else}
   <div class="dest">
     {#if destinations.assistantName}
       <button
@@ -64,6 +70,7 @@
     {/if}
   </div>
   {#if note}<p class="note" role="status">{note}</p>{/if}
+  {/if}
 </article>
 
 <style>

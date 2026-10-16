@@ -196,11 +196,13 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="welcome-report-meet"]')?.textContent).toBe("Meet your assistant");
   });
 
-  it("with no assistant yet, says the assistant will make the next one and has no button", async () => {
-    mountReport({ ready: true, madeBy: null, children: briefPage });
+  it("with no assistant, shows no made-by line and no Meet button", async () => {
+    mountReport({ ready: true, children: briefPage });
     await settle();
-    expect(q('[data-testid="welcome-report-made-by"]')?.textContent?.trim()).toBe("Your assistant will make the next one.");
+    expect(q('[data-testid="welcome-report-ready"]')).not.toBeNull();
+    expect(q('[data-testid="welcome-report-made-by"]')).toBeNull();
     expect(q('[data-testid="welcome-report-meet"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("make the next one");
   });
 
   it("a held-back job keeps Connect a model with the AI apps card above it and never says who made the report", async () => {
