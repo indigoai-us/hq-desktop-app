@@ -7,8 +7,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { teamCardReplyText } from "./team-card-pick";
 import {
   TEAM_CARD_RECORDS_KEY,
+  clearTeamCardCreating,
+  loadTeamCardCreating,
   loadTeamCardRecords,
+  loadTeamCardUnsentCreate,
+  saveTeamCardCreating,
+  saveTeamCardFailedLooks,
   saveTeamCardRecord,
+  saveTeamCardReplyFailures,
+  saveTeamCardUnsentCreate,
   teamCardRecordKey,
   teamCardSettledFromReply,
   teamCardSettledFromReplyText,
@@ -117,5 +124,158 @@ describe("settled line from the person's reply", () => {
     ).toBeNull();
     expect(teamCardSettledFromReply([{ fromPersonUid: BOT, body: "Hi." }], BOT)).toBeNull();
     expect(teamCardSettledFromReply([{ fromPersonUid: ME, body: "Just me for now." }], " ")).toBeNull();
+  });
+});
+
+describe("a created company whose reply has not gone through", () => {
+  const key = teamCardRecordKey(ME, BOT);
+  const unsent = { created: { companyUid: "cmp_new", slug: "pickle", name: "Pickle" }, name: "Pickle" };
+
+  it("is read back by a fresh load, as after a restart, and is not a settled line", () => {
+    const storage = memoryStorage();
+    saveTeamCardUnsentCreate(storage, key, unsent);
+    expect(loadTeamCardUnsentCreate(storage, key)).toEqual(unsent);
+    expect(loadTeamCardRecords(storage)).toEqual({});
+    expect(loadTeamCardUnsentCreate(storage, teamCardRecordKey("prs_other", BOT))).toBeNull();
+  });
+
+  it("is replaced by the settled line once the reply goes through, and other records are kept", () => {
+    const other = teamCardRecordKey("prs_other", BOT);
+    const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [other]: "Working solo" }) });
+    saveTeamCardUnsentCreate(storage, key, unsent);
+    const records = saveTeamCardRecord(storage, loadTeamCardRecords(storage), key, "Created Pickle");
+    expect(records).toEqual({ [other]: "Working solo", [key]: "Created Pickle" });
+    expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+    expect(JSON.parse(storage.data.get(TEAM_CARD_RECORDS_KEY)!)).toEqual({ [other]: "Working solo", [key]: "Created Pickle" });
+  });
+
+  it("never replaces a settled line", () => {
+    const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: "Joined Acme" }) });
+    saveTeamCardUnsentCreate(storage, key, unsent);
+    expect(loadTeamCardRecords(storage)).toEqual({ [key]: "Joined Acme" });
+    expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+  });
+
+  it("keeps how many sends of its reply failed, across a restart", () => {
+    const other = teamCardRecordKey("prs_other", BOT);
+    const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [other]: "Working solo" }) });
+    saveTeamCardUnsentCreate(storage, key, unsent);
+    expect(saveTeamCardReplyFailures(storage, key, 2)).toBe(true);
+    expect(loadTeamCardUnsentCreate(storage, key)).toEqual({ ...unsent, replyFailures: 2 });
+    expect(loadTeamCardRecords(storage)).toEqual({ [other]: "Working solo" });
+    // Nothing to count against without a made company.
+    expect(saveTeamCardReplyFailures(storage, other, 1)).toBe(false);
+    expect(loadTeamCardRecords(storage)).toEqual({ [other]: "Working solo" });
+  });
+
+  it("a count that is not a whole number above zero reads as none", () => {
+    for (const replyFailures of [0, -1, 1.5, "2", null]) {
+      const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: { ...unsent, replyFailures } }) });
+      expect(loadTeamCardUnsentCreate(storage, key)).toEqual(unsent);
+    }
+  });
+
+  it("anything malformed under the key reads as none", () => {
+    for (const value of [{ created: { slug: "pickle" }, name: "Pickle" }, { created: unsent.created, name: " " }, 7, null]) {
+      const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: value }) });
+      expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+    }
+  });
+});
+
+describe("a create that was sent and has not answered", () => {
+  const key = teamCardRecordKey(ME, BOT);
+  const pending = { name: "Pickle", slug: "pickle" };
+  const unsent = { created: { companyUid: "cmp_new", slug: "pickle", name: "Pickle" }, name: "Pickle" };
+
+  it("is read back by a fresh load, as after a restart, and is neither a settled line nor a made company", () => {
+    const storage = memoryStorage();
+    expect(saveTeamCardCreating(storage, key, pending)).toBe(true);
+    expect(loadTeamCardCreating(storage, key)).toEqual(pending);
+    expect(loadTeamCardRecords(storage)).toEqual({});
+    expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+  });
+
+  it("is replaced by the company the create made, and by the settled line", () => {
+    const storage = memoryStorage();
+    saveTeamCardCreating(storage, key, pending);
+    expect(saveTeamCardUnsentCreate(storage, key, unsent)).toBe(true);
+    expect(loadTeamCardCreating(storage, key)).toBeNull();
+    expect(loadTeamCardUnsentCreate(storage, key)).toEqual(unsent);
+
+    const other = memoryStorage();
+    saveTeamCardCreating(other, key, pending);
+    saveTeamCardRecord(other, loadTeamCardRecords(other), key, "Created Pickle");
+    expect(loadTeamCardCreating(other, key)).toBeNull();
+  });
+
+  it("never replaces a settled line or a company a create made", () => {
+    const settled = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: "Joined Acme" }) });
+    expect(saveTeamCardCreating(settled, key, pending)).toBe(false);
+    expect(loadTeamCardRecords(settled)).toEqual({ [key]: "Joined Acme" });
+
+    const made = memoryStorage();
+    saveTeamCardUnsentCreate(made, key, unsent);
+    expect(saveTeamCardCreating(made, key, { name: "Brine", slug: "brine" })).toBe(false);
+    expect(loadTeamCardUnsentCreate(made, key)).toEqual(unsent);
+  });
+
+  it("is cleared alone: other accounts' records and a made company stay", () => {
+    const other = teamCardRecordKey("prs_other", BOT);
+    const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [other]: "Working solo" }) });
+    saveTeamCardCreating(storage, key, pending);
+    clearTeamCardCreating(storage, key);
+    expect(loadTeamCardCreating(storage, key)).toBeNull();
+    expect(loadTeamCardRecords(storage)).toEqual({ [other]: "Working solo" });
+
+    const made = memoryStorage();
+    saveTeamCardUnsentCreate(made, key, unsent);
+    clearTeamCardCreating(made, key);
+    expect(loadTeamCardUnsentCreate(made, key)).toEqual(unsent);
+  });
+
+  it("a write that fails reports false and says so", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const storage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("quota");
+      },
+    };
+    expect(saveTeamCardCreating(storage, key, pending)).toBe(false);
+    expect(saveTeamCardCreating(null, key, pending)).toBe(false);
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("keeps how many looks failed, across a restart, and only for a pending create", () => {
+    const storage = memoryStorage();
+    expect(saveTeamCardFailedLooks(storage, key, 1)).toBe(false);
+    saveTeamCardCreating(storage, key, pending);
+    expect(saveTeamCardFailedLooks(storage, key, 2)).toBe(true);
+    expect(loadTeamCardCreating(memoryStorage({ [TEAM_CARD_RECORDS_KEY]: storage.getItem(TEAM_CARD_RECORDS_KEY)! }), key)).toEqual({
+      ...pending,
+      failedLooks: 2,
+    });
+    expect(saveTeamCardCreating(storage, key, { ...pending, failedLooks: 1 })).toBe(true);
+    expect(loadTeamCardCreating(storage, key)).toEqual({ ...pending, failedLooks: 1 });
+
+    const made = memoryStorage();
+    saveTeamCardUnsentCreate(made, key, unsent);
+    expect(saveTeamCardFailedLooks(made, key, 1)).toBe(false);
+    expect(loadTeamCardUnsentCreate(made, key)).toEqual(unsent);
+  });
+
+  it("a look count that is not a whole number above zero reads as none", () => {
+    for (const failedLooks of [0, -1, 1.5, "2", null]) {
+      const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: { creating: { ...pending, failedLooks } } }) });
+      expect(loadTeamCardCreating(storage, key)).toEqual(pending);
+    }
+  });
+
+  it("anything malformed under the key reads as none", () => {
+    for (const value of [{ creating: { name: "Pickle" } }, { creating: { name: " ", slug: "pickle" } }, { creating: 7 }, "x"]) {
+      const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: value }) });
+      expect(loadTeamCardCreating(storage, key)).toBeNull();
+    }
   });
 });
