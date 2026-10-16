@@ -3274,7 +3274,18 @@
           // Worked out from the bot list: never set while the assistant is here.
           error: assistantNow.state === "failed" ? assistantNow.reason : null,
           // Known and empty: #welcome shows the install guide before the bot runs.
-          needsCodingTool: setupNeedsCodingTool(botRuntimeReadiness),
+          // After the first run, installed but signed out: the assistant's DM card signs in.
+          needsCodingTool:
+            setupNeedsCodingTool(botRuntimeReadiness) &&
+            !(
+              visualFirstRunFinished &&
+              existingSetupBot &&
+              localBotCodingToolNeed(
+                localBotRecords.find((bot) => bot.agentUid === existingSetupBot.agentUid),
+                localBotRuntimeReady,
+                localCodingToolsInstalled,
+              ) === "signIn"
+            ),
           start: startSetupBot,
           // The first-run create does not open its conversation by itself.
           ...(firstRunStart.state === "running" && firstRunConfirmedName
@@ -3448,7 +3459,8 @@
       // The progress card and the DM row carry the person's name for it.
       { displayName },
       // The takeover selects on Done ("Talk to <Name>"); #welcome opens it now.
-      { select: !visualFirstRunOpen, cliNamed: assistantCliOwns },
+      // A takeover create that finishes after Skip leaves the welcome report up.
+      { select: !visualFirstRunOpen && !firstRunCreateRunning, cliNamed: assistantCliOwns },
     );
     if (created.ok) {
       // The facts belong to the assistant this create made, and to no other.
@@ -3863,6 +3875,8 @@
    * other operation on it, finds it if it is here, and otherwise creates or
    * adopts it under this name.
    */
+  /** A create the takeover started is running; it may finish after the takeover closes. */
+  let firstRunCreateRunning = false;
   function startFirstRunAssistant(name: string): void {
     if (firstRunStart.state === "running") return;
     if (firstRunStart.state === "settled" && firstRunCreation.state !== "failed") return;
@@ -3878,7 +3892,9 @@
     // The conversation starts before the create: its intro (written while
     // `hq bot create` runs, which can take well over the grace) must show.
     const startedAt = firstRunConversationStartAt ?? Date.now();
+    firstRunCreateRunning = true;
     void assistantOwner.start({ name }).then((result) => {
+      firstRunCreateRunning = false;
       if (result.ok) adoptFirstRunAssistant(result.bot, result.outcome, name, startedAt);
       firstRunStart = { state: "settled" };
     });
@@ -4013,6 +4029,10 @@
    * then it hands off to the setup chat, as the old flow's last step did.
    */
   async function continueFirstRunInTool(runtime: FirstRunRuntime): Promise<void> {
+    // The assistant is made here too, under the suggested name, whether the
+    // sign-in connected, failed or was skipped: only the welcome report waits
+    // on the sign-in, and its chat asks for it.
+    if (!firstRunConfirmedName) confirmFirstRunName(firstRunSuggestedName || firstRunInitialName(), runtime);
     firstRunRuntime = runtime;
     await continueFirstRunInChat();
   }
@@ -4430,42 +4450,20 @@
   /** Bots this takeover created in this session (their DM and progress card are already set up). */
   const firstRunCreatedUids = new Set<string>();
   /**
-   * Done: "Talk to <Name>" opens the assistant's DM directly (owner,
-   * 2026-10-15); the welcome report is still owed and its job still goes
-   * out. One that already existed keeps the setup bot's runnability check,
-   * so a bot that cannot run here says so.
+   * Done: "Talk to <Name>" lands on the Daily Brief page with the welcome
+   * report, the same as "Continue in chat" (owner, 2026-10-16). The
+   * assistant's DM stays in the sidebar.
    */
   function talkToFirstRunAssistant(): void {
-    const creation = firstRunCreation;
-    if (creation.state !== "ready") return;
-    closeVisualFirstRun();
-    if (firstRunDev.dry) return;
-    const bot = creation.bot;
-    if (!firstRunCreatedUids.has(bot.agentUid)) {
-      openSetupBotDm(bot);
-      return;
-    }
-    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
-    handleSelect(
-      existing ?? {
-        id: `dm:${bot.agentUid}`,
-        kind: "dm",
-        title: assistantLabel,
-        companyUid: null,
-        unreadDot: false,
-        lastActivityAt: Date.now(),
-        pinned: false,
-        personUid: bot.agentUid,
-      },
-    );
-    recordWelcomeSetupRun("talk-to-first-run-assistant");
+    if (firstRunCreation.state !== "ready") return;
+    continueFirstRunInChat("talk-to-first-run-assistant");
   }
   /**
    * "Continue in chat" and the automatic handoff: the welcome report
    * (US-009), with the assistant's setup recorded when it is ready. One that
    * already existed keeps its runnability check; its DM says so.
    */
-  function continueFirstRunInChat(): void {
+  function continueFirstRunInChat(caller = "continue-first-run-in-chat"): void {
     closeVisualFirstRun();
     if (firstRunDev.dry) return;
     const creation = firstRunCreation;
@@ -4475,7 +4473,7 @@
       noteBotCannotRunHere(bot.agentUid);
       void refreshRemoteBots(true);
     }
-    recordWelcomeSetupRun("continue-first-run-in-chat");
+    recordWelcomeSetupRun(caller);
   }
   /** Retry from the progress card: start the bot if it exists, else re-run the same create. */
   async function retryBotProgress(uid: string): Promise<void> {

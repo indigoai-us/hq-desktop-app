@@ -20,7 +20,7 @@ import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
-import { SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
+import { SETUP_BOT_COPY_STATIC, SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
 import {
   VISUAL_FIRST_RUN_DONE_KEY,
   VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS,
@@ -360,13 +360,11 @@ describe("visual first run, flag on", () => {
         { noun: "computer" },
       ),
     );
-    // The assistant's chat is open, the takeover is gone for good.
+    // The takeover is gone for good.
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    // (The rail labels the setup bot's DM the same way today's flow does.)
-    await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
-    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit");
-    // Talk opens the DM directly (owner, 2026-10-15), never the welcome report.
-    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    // Talk lands on the Daily Brief page's welcome report, not the DM (owner, 2026-10-16).
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="channel-name"]')).toBeNull();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     // The legacy automatic start never ran alongside it.
@@ -463,7 +461,7 @@ describe("visual first run, flag on", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it("Continue in the coding tool lands on the welcome report, starts nothing by itself, and the takeover never opens again", async () => {
+  it("Continue in the coding tool makes the assistant once, lands on the welcome report, and the takeover never opens again", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const { platform } = adapter({ create, flag: true });
     await boot(platform);
@@ -481,7 +479,12 @@ describe("visual first run, flag on", () => {
     expect(q('[data-testid="setup-hero"]')).toBeNull();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     await settle();
-    expect(create).not.toHaveBeenCalled();
+    // The assistant is made on this path too, under the suggested name.
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toEqual(
+      expect.objectContaining({ worker: "setup", runtime: "claude" }),
+    );
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
   });
 });
 
@@ -689,8 +692,9 @@ describe("welcome report (US-009)", () => {
   const briefJobs = (sendDm: ReturnType<typeof vi.fn>) =>
     (sendDm.mock.calls as unknown as [string, string][]).filter(([, body]) => body.startsWith("/daily-brief "));
 
-  it("the coding tool path with no assistant offers the way to set one up, never a loading card that cannot end", async () => {
-    const { platform, sendDm } = adapter({ flag: true });
+  it("the coding tool path whose assistant could not be made offers the way to set one up, never a loading card that cannot end", async () => {
+    const create = vi.fn(async () => ({ ok: false as const, reason: "unavailable" as const, message: "hq bot create failed" }));
+    const { platform, sendDm } = adapter({ flag: true, create });
     await boot(platform);
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
@@ -766,12 +770,11 @@ describe("welcome report (US-009)", () => {
     confirmName();
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit"));
-    // Later the person opens the Daily Brief, where the report is owed.
-    await vi.waitFor(() => expect(q('[data-testid="rail-brief"]')).toBeTruthy());
-    q<HTMLButtonElement>('[data-testid="rail-brief"]')!.click();
-    await settle();
-    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    // Talk lands on the Daily Brief page, where the welcome report is held (owner, 2026-10-16).
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="welcome-report-blocked"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(q('[data-testid="channel-name"]')).toBeNull();
     const card = q('[data-testid="welcome-report-blocked"]')!;
     expect(card.textContent).toContain("Your assistant writes your welcome report");
     expect(card.textContent).toContain("has no model connected on this computer.");
@@ -943,7 +946,7 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)).toHaveLength(1);
   }, 25_000);
 
-  it("sends the brief job to the assistant once, only after it appears, even when Talk opens its DM", async () => {
+  it("sends the brief job to the assistant once, only after it appears, and Talk lands on the welcome report", async () => {
     let created = false;
     const create = vi.fn(async () => {
       created = true;
@@ -965,9 +968,9 @@ describe("welcome report (US-009)", () => {
     const [to, body] = briefJobs(sendDm)[0]!;
     expect(to).toBe(SETUP_BOT_UID);
     expect(body.startsWith("/daily-brief indigo --run-id")).toBe(true);
-    // Talk opens the assistant's DM directly (owner, 2026-10-15).
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit"));
-    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    // Talk lands on the welcome report, not the DM (owner, 2026-10-16).
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="channel-name"]')).toBeNull();
     await settle(30);
     expect(briefJobs(sendDm)).toHaveLength(1);
   });
@@ -2228,6 +2231,66 @@ describe("visual first run, the detected tool's sign-in", () => {
     await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
     expect(q('[data-testid="welcome-report-blocked"]')).toBeNull();
   }, 20_000);
+
+  // Test Mac, ffdfa27f7 pass A: signed out, Continue in Claude Code, Skip
+  // landed on "Set up your assistant" with no assistant made at all.
+  it("signed out with no assistant yet, Continue in Claude Code then Skip makes the assistant: held report, its DM signed-out card, #welcome points there", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const loginCancel = vi.fn(async () => ok({ state: "disconnected" }));
+    const rows: unknown[] = [];
+    const create = vi.fn(async (input: { displayName: string }) => {
+      rows.push({ ...runningSetupBot, displayName: input.displayName, state: "stopped", processAlive: false, online: false });
+      return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
+    });
+    const { platform, sendDm } = adapter({
+      flag: true,
+      create: create as never,
+      listImpl: async () => ok({ bots: [...rows] }),
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      loginCancel,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-skip"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-signin-skip"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+
+    // The assistant is made, under the suggested name, on Claude Code.
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    const input = (create.mock.calls as unknown as Array<[{ displayName: string; runtime: string }]>)[0]![0];
+    expect(SETUP_BOT_NAMES).toContain(input.displayName);
+    expect(input.runtime).toBe("claude");
+    // The report is held on the sign-in, not asking for an assistant.
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    expect(q('[data-testid="welcome-report-blocked-fix"]')?.textContent?.trim()).toBe("Connect a model");
+    expect(document.body.textContent).not.toContain("Set up your assistant");
+    expect(briefJobs(sendDm)).toHaveLength(0);
+
+    // Its DM gets the handoff note, and "Connect a model" opens it on the signed-out card.
+    await vi.waitFor(() =>
+      expect((sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string } | undefined]>).some((c) => c[0] === SETUP_BOT_UID && c[2]?.idempotencyKey === `first-run-handoff:${SETUP_BOT_UID}`)).toBe(true),
+      { timeout: 10_000 },
+    );
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="bot-sign-in-card"] [data-testid="runtime-repair-card"]')).toBeTruthy(),
+      { timeout: 10_000 },
+    );
+
+    // #welcome sends the person to that conversation.
+    q<HTMLButtonElement>(`[data-conversation-id="${SETUP_ROW_ID}"]`)!.click();
+    await vi.waitFor(() =>
+      expect(q(".hero-body")?.textContent?.trim()).toBe(SETUP_BOT_COPY_STATIC.bodyExisting),
+      { timeout: 10_000 },
+    );
+    expect(q('[data-testid="setup-bot-failure"]')).toBeNull();
+    expect(document.querySelector("main")?.textContent).not.toContain("Sign in to Claude");
+  }, 30_000);
 
   it("a failed sign-in check never signs a signed-in person out: Continue asks the tool unforced, and it answers connected", async () => {
     // The preflight fails, so the app cannot tell Claude Code is signed in.
