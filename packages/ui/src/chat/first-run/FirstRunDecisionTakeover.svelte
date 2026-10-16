@@ -490,7 +490,9 @@
           aria-busy={pressed === "tool" ? "true" : undefined}
           onclick={() =>
             void press("tool", async () => {
-              await signInFirst(tool);
+              // Retry after a failed open: the sign-in step already ran
+              // (connected or skipped), so go straight to the open.
+              if (!toolError) await signInFirst(tool);
               if (live) await continueInTool(tool);
             })}
         >{pressed === "tool"

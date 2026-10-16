@@ -2439,6 +2439,44 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(create).toHaveBeenCalledTimes(1);
   }, 20_000);
 
+  it("after Skip for now and a failed open, Retry opens the tool without asking to sign in again", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const loginCancel = vi.fn(async () => ok({ state: "disconnected" }));
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    let opens = 0;
+    const launchClaudeCode = vi.fn(async () => {
+      opens += 1;
+      return opens === 1 ? failure("spawn", "no terminal") : ok(undefined);
+    });
+    const { platform } = adapter({
+      flag: true,
+      create,
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      loginCancel,
+      shell: { launchClaudeCode },
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-skip"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-signin-skip"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-decision-error"]')).toBeTruthy(), { timeout: 10_000 });
+    expect(q('[data-testid="first-run-decision-primary"]')?.textContent?.trim()).toBe("Retry");
+    expect(tool.loginStart).toHaveBeenCalledTimes(1);
+
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 10_000 });
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="first-run-signin-waiting"]')).toBeNull();
+    expect(launchClaudeCode).toHaveBeenCalledTimes(2);
+    expect(tool.loginStart).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
   it("signed out, Continue in Codex signs Codex in the same way before it goes on", async () => {
     const tool = signsInThroughBrowser("codex");
     const log = logSink();
