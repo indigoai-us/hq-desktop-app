@@ -5,6 +5,7 @@ import { mount, tick, unmount } from "svelte";
 
 import BrainReconnectScreen from "./BrainReconnectScreen.svelte";
 import { RECONNECT_POLL_MS } from "./brain-reconnect-model";
+import type { BrainProvider } from "./bot-brain-approval";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -40,7 +41,7 @@ function render(overrides: Record<string, unknown> = {}) {
   const props = {
     agentUid: "agt_sasha",
     name: "Sasha",
-    brain: "codex",
+    brain: "codex" as BrainProvider,
     getStatus,
     restartBrainApproval,
     retryAgent,
