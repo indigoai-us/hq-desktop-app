@@ -171,6 +171,9 @@ export function createMarkEngine(
   let t0 = 0;
   let capOn = false;
   let settled = false;
+  // The field fades in 2.2s after enter. From then on its start points stay
+  // put: redrawing them would make visible particles jump.
+  let fieldShown = false;
   // The viewport the start points were drawn across. The window can still be
   // growing from the heads-up card to the screen when the engine is built.
   let fieldW = vw();
@@ -267,9 +270,9 @@ export function createMarkEngine(
       const resample = W !== sampledW || H !== sampledH;
       sampledW = W;
       sampledH = H;
-      // Before the mark settles the field still flies in from its start
-      // points, so they follow the new viewport.
-      if (!settled) fitField();
+      // While the field is still hidden its start points follow the new
+      // viewport. Once it shows, they stay where the particles are.
+      if (!fieldShown) fitField();
       layout(resample);
     },
     enter(now) {
@@ -277,6 +280,7 @@ export function createMarkEngine(
       t0 = now;
       capOn = false;
       settled = false;
+      fieldShown = false;
       cap.classList.remove('on');
       signin.classList.remove('on');
     },
@@ -289,6 +293,7 @@ export function createMarkEngine(
       if (ctx) {
         ctx.clearRect(0, 0, W, H);
         const appear = clamp01((t - 2.2) / 0.8); // holds the whole field off until the veil has landed
+        if (appear > 0) fieldShown = true;
         const pull = clamp01((t - 3.0) / 2.2);
         ctx.fillStyle = '#fff';
         for (let i = 0; i < N; i += 1) {

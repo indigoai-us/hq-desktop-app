@@ -23,7 +23,8 @@
   import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
   import HeadsUpWindow from './onboarding/HeadsUpWindow.svelte';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
-  import { viewportSize, waitForWelcomeSize } from '../lib/welcome-window-size';
+  import './onboarding/welcome/welcome.css';
+  import { fillsWorkArea, viewportSize, waitForWelcomeSize } from '../lib/welcome-window-size';
 
   interface Props {
     state: string;
@@ -147,12 +148,15 @@
    * Give the window to the welcome flow: it fills the work area of the current
    * monitor (native, `set_welcome_window`). The native side applies the size
    * after the command returns, so wait for the webview to report it before the
-   * flow mounts. A failed hand-over or a resize that never lands still mounts
-   * the flow.
+   * flow mounts. A window that already fills the work area (the first run,
+   * which the native side fits before it shows the window) mounts the flow at
+   * once. A failed hand-over or a resize that never lands still mounts the
+   * flow.
    */
   async function takeWelcomeWindow() {
     await setWindowVibrancy(false);
     if (destroyed) return;
+    if (fillsWorkArea()) welcomeWindowReady = true;
     const before = viewportSize();
     if (await setWelcomeWindow(true)) await waitForWelcomeSize(before);
     if (!destroyed) welcomeWindowReady = true;
@@ -221,9 +225,11 @@
     await runHeadsUpAction(action, {
       startFlow: async () => {
         headsUpTimer.close();
-        // Resize first, then swap the card for the flow.
-        await takeWelcomeWindow();
+        // The card goes before the resize starts, so it never sits in a
+        // full-screen window. The flow's background shows until the resize
+        // lands.
         showHeadsUp = false;
+        await takeWelcomeWindow();
         await paintWelcomeBackdrop();
       },
       hideToTray: async () => {
@@ -317,4 +323,10 @@
     {wallpaper}
     onfinish={handleFinish}
   />
+{:else}
+  <!-- The flow's own first frame (the desktop, veil not yet on) while the
+       window takes its welcome size. -->
+  <div class="hq-welcome" data-testid="welcome-window-pending" aria-hidden="true">
+    <div class="veil"></div>
+  </div>
 {/if}

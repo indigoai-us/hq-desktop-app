@@ -267,6 +267,50 @@ describe('createMarkEngine start points', () => {
     engine.frame(2500);
     expect(Math.max(...dots.map((d) => d.x))).toBeGreaterThan(1200);
   });
+
+  it('redraws the start points when the window grows while the field is still hidden', () => {
+    const { engine, dots } = markRun({ width: 440, height: 380 });
+    engine.enter(0);
+    // 1s in: the field has not faded in yet.
+    engine.frame(1000);
+    vi.stubGlobal('innerWidth', 1440);
+    vi.stubGlobal('innerHeight', 900);
+    engine.size();
+    dots.length = 0;
+    engine.frame(2500);
+    expect(Math.max(...dots.map((d) => d.x))).toBeGreaterThan(1200);
+    expect(Math.max(...dots.map((d) => d.y))).toBeGreaterThan(750);
+  });
+
+  it('keeps the start points once the field is visible', () => {
+    const { engine, dots } = markRun({ width: 440, height: 380 });
+    engine.enter(0);
+    engine.frame(2500);
+    vi.stubGlobal('innerWidth', 1440);
+    vi.stubGlobal('innerHeight', 900);
+    engine.size();
+    dots.length = 0;
+    // Same moment again: a redraw would move the visible particles.
+    engine.frame(2500);
+    expect(dots.length).toBe(3400);
+    // 440 wide plus at most 40px of drift and the pointer push.
+    expect(Math.max(...dots.map((d) => d.x))).toBeLessThan(500);
+    expect(Math.max(...dots.map((d) => d.y))).toBeLessThan(430);
+  });
+
+  it('keeps the start points after the mark settles', () => {
+    const { engine, dots } = markRun({ width: 440, height: 380 });
+    engine.enter(0);
+    engine.frame(6100);
+    vi.stubGlobal('innerWidth', 1440);
+    vi.stubGlobal('innerHeight', 900);
+    engine.size();
+    dots.length = 0;
+    // Read the start points back through a frame before the pull.
+    engine.frame(2500);
+    expect(Math.max(...dots.map((d) => d.x))).toBeLessThan(500);
+    expect(Math.max(...dots.map((d) => d.y))).toBeLessThan(430);
+  });
 });
 
 describe('createPanelEngine', () => {

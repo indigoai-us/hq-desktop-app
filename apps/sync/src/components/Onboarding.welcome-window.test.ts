@@ -251,22 +251,27 @@ describe('Onboarding: the welcome flow window', () => {
     await settle();
     await startNow();
     const wizard = () => host.querySelector('[data-testid="wizard-stub"]');
+    const pending = () => host.querySelector('[data-testid="welcome-window-pending"]');
 
-    // The command has not returned: the card stays and the flow is not built.
+    // The command has not returned: the flow is not built, and the card is
+    // already gone so it never sits in a full-screen window. The flow's
+    // background stands in.
     expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: true });
     expect(wizard()).toBeNull();
-    expect(host.querySelector('[data-testid="heads-up"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="heads-up"]')).toBeNull();
+    expect(pending()?.classList.contains('hq-welcome')).toBe(true);
 
     // The command returned, but the window is still card-sized.
     handOver();
     await settle();
     expect(wizard()).toBeNull();
-    expect(host.querySelector('[data-testid="heads-up"]')).not.toBeNull();
+    expect(pending()).not.toBeNull();
 
     // The resize lands.
     resizeViewport(1440, 900);
     await settle();
     expect(wizard()).not.toBeNull();
+    expect(pending()).toBeNull();
     expect(host.querySelector('[data-testid="heads-up"]')).toBeNull();
     expect(commands()).toContain('get_desktop_wallpaper');
   });
@@ -436,10 +441,37 @@ describe('Onboarding: the welcome flow window', () => {
     await settle();
     expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: true });
     expect(host.querySelector('[data-testid="wizard-stub"]')).toBeNull();
+    // The flow's background shows while the window is resized, not an empty
+    // window.
+    expect(
+      host.querySelector('[data-testid="welcome-window-pending"]')?.classList.contains('hq-welcome'),
+    ).toBe(true);
 
     resizeViewport(1440, 900);
     await settle();
     expect(host.querySelector('[data-testid="wizard-stub"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="welcome-window-pending"]')).toBeNull();
+  });
+
+  it('mounts at once when the window already fills the work area', async () => {
+    // The first run: the native side fitted the window before showing it.
+    setViewport(1440, 900);
+    vi.stubGlobal('screen', { availWidth: 1440, availHeight: 900 });
+    // The hand-over has not returned yet; the flow must not wait for it.
+    tauri.invoke.mockImplementation(async (command: unknown, args: unknown) => {
+      if (command === 'set_welcome_window' && (args as { enabled: boolean }).enabled) {
+        await new Promise<void>(() => {});
+      }
+      return undefined;
+    });
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'InstallResume', mode: 'onboarding' },
+    });
+    await settle();
+    expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: true });
+    expect(host.querySelector('[data-testid="wizard-stub"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="welcome-window-pending"]')).toBeNull();
   });
 
   it('opens folder recovery directly when a completed install has lost its HQ root', async () => {
