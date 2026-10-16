@@ -670,15 +670,18 @@ export function signInPassedOrUnchecked(runtime: string, checks: Readonly<Record
  */
 export function firstRunIntro(
   handoff: Pick<FirstRunHandoff, "name" | "runtime" | "signInChecked">,
-  opts: { noun?: string } = {},
+  opts: { noun?: string; autoNamed?: boolean } = {},
 ): string {
-  void opts;
   const name = normalizeAssistantName(handoff.name) || "your HQ assistant";
   const tool = runtimeLabel(handoff.runtime);
   // Only a passing real check may say "signed in": a stored login can be dead.
   // Signed out says nothing about the tool: the repair card asks for the sign-in.
-  const settled =
-    handoff.signInChecked === false
+  // The hello says only what is true (owner, PR 1647): an assistant named for
+  // the person on "Continue in <tool>" was not named by them, so it claims
+  // neither the name nor the sign-in (no new words for that path).
+  const settled = opts.autoNamed
+    ? ""
+    : handoff.signInChecked === false
       ? "You've named me, so I won't ask about that again. "
       : `You've named me and signed in ${tool}, so I won't ask about those again. `;
   return (

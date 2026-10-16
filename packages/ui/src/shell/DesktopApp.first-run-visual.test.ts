@@ -484,6 +484,10 @@ describe("visual first run, flag on", () => {
     expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toEqual(
       expect.objectContaining({ worker: "setup", runtime: "claude" }),
     );
+    // The person did not name it: its hello must not say they did (owner, PR 1647).
+    const intro = String((create.mock.calls[0] as unknown as [Record<string, unknown>])[0].intro ?? "");
+    expect(intro).toContain("your HQ assistant");
+    expect(intro).not.toContain("named me");
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
   });
 });

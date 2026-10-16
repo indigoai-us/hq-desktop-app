@@ -3439,7 +3439,7 @@
         displayName,
         worker: SETUP_BOT_WORKER,
         runtime,
-        intro: firstRunIntro({ name: displayName, runtime, signInChecked }, { noun }),
+        intro: firstRunIntro({ name: displayName, runtime, signInChecked }, { noun, autoNamed: firstRunAutoNamed }),
       };
     } else {
       // `intro` is sent by the runtime on start, so the first message is
@@ -3939,10 +3939,17 @@
     if (!name || firstRunCreation.state !== "failed") return;
     startFirstRunAssistant(name);
   }
-  function confirmFirstRunName(typed: string, runtime: LocalBotRow["runtime"]): void {
+  /** True when "Continue in <tool>" named the assistant for the person (its hello then claims no name). */
+  let firstRunAutoNamed = false;
+  function confirmFirstRunName(
+    typed: string,
+    runtime: LocalBotRow["runtime"],
+    opts: { auto?: boolean } = {},
+  ): void {
     // The host's display-name rule collapses spaces; send what it checks.
     const name = normalizeAssistantName(typed);
     if (!name) return;
+    firstRunAutoNamed = opts.auto === true;
     firstRunRuntime = runtime;
     firstRunPendingName = name;
     firstRunConfirmedName = name;
@@ -4032,7 +4039,7 @@
     // The assistant is made here too, under the suggested name, whether the
     // sign-in connected, failed or was skipped: only the welcome report waits
     // on the sign-in, and its chat asks for it.
-    if (!firstRunConfirmedName) confirmFirstRunName(firstRunSuggestedName || firstRunInitialName(), runtime);
+    if (!firstRunConfirmedName) confirmFirstRunName(firstRunSuggestedName || firstRunInitialName(), runtime, { auto: true });
     firstRunRuntime = runtime;
     await continueFirstRunInChat();
   }
