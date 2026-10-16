@@ -5839,7 +5839,7 @@ describe('company onboarding step', () => {
     const source = readFileSync(join(__dirname, 'CompanyStep.svelte'), 'utf8');
     const planCardsRule = /\.plan-cards\s*\{([^}]*)\}/u.exec(source)?.[1] ?? '';
     expect(planCardsRule).toMatch(/display:\s*grid/u);
-    expect(planCardsRule).toMatch(/margin:\s*36px auto 0/u);
+    expect(planCardsRule).toMatch(/margin:\s*28px auto 0/u);
     expect(planCardsRule).not.toMatch(/transform/u);
     expect(planCardsRule).not.toMatch(/margin[^;]*:\s*-/u);
     const actionsRule = /\.cs-actions\s*\{([^}]*)\}/u.exec(source)?.[1] ?? '';

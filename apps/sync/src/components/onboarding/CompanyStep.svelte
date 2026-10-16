@@ -1043,7 +1043,7 @@
             <p class="plan-blurb">{usageCard.blurb}</p>
             <ul class="plan-rows">
               {#each usageCard.rows as row (row.label)}
-                <li class="plan-row" data-state={row.state} data-testid="onboarding-plan-row">
+                <li class="plan-row" class:wide={row.wide} data-state={row.state} data-testid="onboarding-plan-row">
                   <span class="plan-mark" aria-hidden="true">{@render mark(row.state)}</span>
                   <span class="plan-row-text">
                     <span class="sr-only">{markLabel(row.state)}: </span><span class="plan-label">{row.label}</span> <span class="plan-value">{row.value}</span>{#if row.detail}<span class="plan-row-detail">{` · ${row.detail}`}</span>{/if}
@@ -1052,20 +1052,25 @@
               {/each}
             </ul>
             <div class="plan-spacer" aria-hidden="true"></div>
-            <button
-              class="btn btn-primary plan-cta"
-              type="button"
-              data-testid={`onboarding-plan-choose-${usageCard.plan}`}
-              disabled={busy}
-              onclick={() => confirmPlan(usageCard.plan)}
-            >{usageCard.cta}</button>
+            <div class="plan-actions">
+              <button
+                class="btn btn-primary plan-cta"
+                type="button"
+                data-testid={`onboarding-plan-choose-${usageCard.plan}`}
+                disabled={busy}
+                onclick={() => confirmPlan(usageCard.plan)}
+              >{usageCard.cta}</button>
+              {#if usageCard.enterprise}
+                {@const enterprise = usageCard.enterprise}
+                <button
+                  class="btn btn-secondary plan-cta"
+                  type="button"
+                  data-testid="onboarding-plan-enterprise"
+                  onclick={() => openPlanLink('enterprise', enterprise.url)}
+                >{enterprise.label}</button>
+              {/if}
+            </div>
             <p class="plan-cta-note" data-testid="onboarding-plan-trial">{usageCard.ctaNote}</p>
-            {#if usageCard.enterprise}
-              {@const enterprise = usageCard.enterprise}
-              <p class="plan-enterprise">
-                <button class="link" type="button" data-testid="onboarding-plan-enterprise" onclick={() => openPlanLink('enterprise', enterprise.url)}>{enterprise.label}</button>
-              </p>
-            {/if}
           </section>
         </div>
         <p class="plan-custom">
@@ -1535,7 +1540,7 @@
     box-sizing: border-box;
     width: 100%;
     max-width: 560px;
-    margin: 36px auto 0;
+    margin: 28px auto 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     text-align: left;
@@ -1544,11 +1549,20 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     column-gap: 16px;
   }
+  .plan-row.wide {
+    grid-column: 1 / -1;
+  }
+  .plan-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    gap: 10px;
+  }
   @media (max-width: 720px) {
     .plan-cards {
       max-width: 400px;
     }
-    .plan-cards .plan-rows {
+    .plan-cards .plan-rows,
+    .plan-actions {
       grid-template-columns: minmax(0, 1fr);
     }
   }
@@ -1650,12 +1664,6 @@
   .plan-row-detail {
     color: rgba(255, 255, 255, 0.5);
   }
-  .plan-enterprise {
-    margin: 10px 0 0;
-    text-align: center;
-    font-size: 12px;
-    line-height: 16px;
-  }
   /* Keeps the action at the bottom of the card. */
   .plan-spacer {
     flex: 1 1 auto;
@@ -1691,7 +1699,7 @@
     .plan-rows {
       margin-top: 10px;
       padding-top: 8px;
-      gap: 6px;
+      gap: 4px;
     }
     .plan-spacer {
       min-height: 8px;

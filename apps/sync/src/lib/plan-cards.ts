@@ -38,6 +38,8 @@ export interface PlanRow {
   /** Fine print, run on after the value. */
   detail?: string;
   state: PlanRowState;
+  /** Spans the card's full width (rows with fine print). */
+  wide?: boolean;
 }
 
 export interface PlanLink {
@@ -92,6 +94,7 @@ export function usageCardFor(feed: PricingFeed): UsageCardCopy {
       value: `${money(vault.unitUsd)} per vault a month`,
       detail: vault.waivedInTrial ? 'Company and personal vaults. Waived during the trial' : 'Company and personal vaults',
       state: 'on',
+      wide: true,
     });
   }
   if (usage.boxes.length > 0) {
@@ -100,10 +103,11 @@ export function usageCardFor(feed: PricingFeed): UsageCardCopy {
       value: boxRange(usage.boxes),
       detail: boxLadder(usage.boxes),
       state: 'on',
+      wide: true,
     });
   }
   const freeWords = freeList(usage.free);
-  if (freeWords) rows.push({ label: 'Free', value: freeWords, state: 'on' });
+  if (freeWords) rows.push({ label: 'Free', value: freeWords, state: 'on', wide: true });
   return {
     plan: 'free',
     name: 'Usage',
