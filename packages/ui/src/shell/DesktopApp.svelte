@@ -10382,6 +10382,8 @@
       welcomeSetupOwed = owed;
       if (owed) return;
       if (!welcomeSetupRun) writeFirstRunLine(firstRunTimingLog, formatSetupRunSet("mark-already-set-up"));
+      // Remembered, so the next launch knows before the host answers.
+      markWelcomeSetupRun();
       welcomeSetupRun = true;
       setupAgent.markAlreadySetUp();
     };
