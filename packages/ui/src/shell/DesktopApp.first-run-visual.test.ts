@@ -20,7 +20,7 @@ import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
-import { SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
+import { SETUP_BOT_COPY_STATIC, SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
 import {
   VISUAL_FIRST_RUN_DONE_KEY,
   VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS,
@@ -59,8 +59,11 @@ interface AdapterOptions {
   /** The tool's browser sign-in (`agent_provider_login_start` / status). */
   loginStart?: (runtime: string, opts?: { force?: boolean }) => Promise<unknown>;
   loginStatus?: (runtime: string) => Promise<unknown>;
+  loginCancel?: (runtime: string) => Promise<unknown>;
   /** `hq bot list --remote` (the account's own listing); absent leaves the host without it. */
   listRemote?: () => Promise<unknown>;
+  /** The app's active company slug (the brief job names it); absent leaves the host without its company reads. */
+  activeCompany?: string;
   /** The host's hq-sync.log writer; absent leaves the host without one. */
   logToFile?: (tag: string, message: string) => Promise<unknown>;
 }
@@ -76,8 +79,10 @@ function adapter({
   probe = async () => ok({ ok: true, class: null }),
   loginStart,
   loginStatus,
+  loginCancel,
   listRemote,
   listImpl,
+  activeCompany,
   logToFile,
 }: AdapterOptions = {}) {
   const hasFeature = vi.fn(
@@ -90,7 +95,19 @@ function adapter({
     isAvailable: () => false,
     capabilities: {},
     identity: { hasFeature, updateAgentProfile },
-    ...(logToFile ? { appShell: { logToFile } } : {}),
+    ...(activeCompany || logToFile
+      ? {
+          appShell: {
+            ...(activeCompany
+              ? {
+                  getActiveCompany: async () => ok(activeCompany),
+                  showOsNotification: async () => ok(undefined),
+                }
+              : {}),
+            ...(logToFile ? { logToFile } : {}),
+          },
+        }
+      : {}),
     messaging: {
       listContacts: async () => ok({ contacts: [] }),
       listChannelMembers: async () => ok({ members: [] }),
@@ -118,6 +135,7 @@ function adapter({
         })),
       ...(loginStart ? { loginStart } : {}),
       ...(loginStatus ? { loginStatus } : {}),
+      ...(loginCancel ? { loginCancel } : {}),
     },
     bots: {
       list: listImpl ?? (async () => ok({ bots })),
@@ -129,6 +147,11 @@ function adapter({
       ...(probe ? { probe } : {}),
       ...(listRemote ? { listRemote } : {}),
     },
+    ...(activeCompany
+      ? {
+          files: { getFileContent: async () => ({ ok: false as const, reason: "not found" }) },
+        }
+      : {}),
   } as unknown as PlatformAdapter;
   return { platform, hasFeature, updateAgentProfile, sendDm };
 }
@@ -201,6 +224,7 @@ async function boot(
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
       coreFixtures: false,
+      ...extraProps,
       extraPages: {
         sessions: {
           label: "Sessions",
@@ -336,11 +360,11 @@ describe("visual first run, flag on", () => {
         { noun: "computer" },
       ),
     );
-    // The assistant's chat is open, the takeover is gone for good.
+    // The takeover is gone for good.
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    // (The rail labels the setup bot's DM the same way today's flow does.)
-    await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
-    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Biscuit");
+    // Talk lands on the Daily Brief page's welcome report, not the DM (owner, 2026-10-16).
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="channel-name"]')).toBeNull();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     // The legacy automatic start never ran alongside it.
@@ -437,7 +461,7 @@ describe("visual first run, flag on", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it("Continue in the coding tool leaves for #welcome, starts nothing by itself, and the takeover never opens again", async () => {
+  it("Continue in the coding tool makes the assistant once, lands on the welcome report, and the takeover never opens again", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const { platform } = adapter({ create, flag: true });
     await boot(platform);
@@ -451,10 +475,20 @@ describe("visual first run, flag on", () => {
     primary.click();
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
-    await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="setup-hero"]')).toBeNull();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     await settle();
-    expect(create).not.toHaveBeenCalled();
+    // The assistant is made on this path too, under the suggested name.
+    expect(create).toHaveBeenCalledTimes(1);
+    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toEqual(
+      expect.objectContaining({ worker: "setup", runtime: "claude" }),
+    );
+    // The person did not name it: its hello must not say they did (owner, PR 1647).
+    const intro = String((create.mock.calls[0] as unknown as [Record<string, unknown>])[0].intro ?? "");
+    expect(intro).toContain("your HQ assistant");
+    expect(intro).not.toContain("named me");
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
   });
 });
 
@@ -640,6 +674,386 @@ describe("visual first run with a setup bot that already exists", () => {
         { noun: "computer" },
       ),
     );
+  });
+});
+
+describe("welcome report (US-009)", () => {
+  const runningSetupBot = {
+    name: "setup",
+    agentUid: SETUP_BOT_UID,
+    ownerUid: "prs_test",
+    runtime: "claude",
+    state: "running",
+    pid: 11,
+    processAlive: true,
+    online: true,
+    lastHeartbeatAt: null,
+    daemonInstalled: true,
+    daemonLoaded: true,
+    dir: "/tmp/HQ/personal/workers/setup",
+    workerId: "setup",
+  };
+  const briefJobs = (sendDm: ReturnType<typeof vi.fn>) =>
+    (sendDm.mock.calls as unknown as [string, string][]).filter(([, body]) => body.startsWith("/daily-brief "));
+
+  it("the coding tool path whose assistant could not be made offers the way to set one up, never a loading card that cannot end", async () => {
+    const create = vi.fn(async () => ({ ok: false as const, reason: "unavailable" as const, message: "hq bot create failed" }));
+    const { platform, sendDm } = adapter({ flag: true, create });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-setup"]')).toBeTruthy());
+    expect(q('[data-testid="welcome-report-setup"]')?.textContent).toContain("Your assistant writes your welcome report");
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+    expect(q('[data-testid="welcome-report"] [role="progressbar"]')).toBeNull();
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    // The way out: #welcome, where Start sets the assistant up.
+    q<HTMLButtonElement>('[data-testid="welcome-report-setup-button"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    // The takeover is finished, so the route is legacy: #welcome's first-run loader is gone for good.
+    expect(q('[data-testid="welcome-route-pending"]')).toBeNull();
+  });
+
+  // Lane A (2026-10-16): a held-back job kept the generic brief page ("Your
+  // first brief is waiting"), so nothing said the welcome report was coming.
+  it("an assistant that cannot take the job keeps the welcome report's card with the reason and the fix, never the loading card", async () => {
+    const stoppedSetupBot = { ...runningSetupBot, state: "stopped", pid: null, processAlive: false, online: false };
+    const { platform, sendDm } = adapter({ flag: true, bots: [stoppedSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    const card = q('[data-testid="welcome-report-blocked"]')!;
+    expect(card.textContent).toContain("Your assistant writes your welcome report");
+    expect(card.textContent).toContain("is not running.");
+    expect(q('[data-testid="welcome-report-blocked-fix"]')?.textContent?.trim()).toBe("Start it");
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-blocked"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-setup"]')).toBeNull();
+    expect(briefJobs(sendDm)).toHaveLength(0);
+  }, 15_000);
+
+  // Lane A (2026-10-16, VM run of 2f736a47e): Claude Code installed but
+  // signed out. The job was held back on "connect a model", the page never
+  // said the welcome report waits on it, a sign-in made outside the app was
+  // never read again, and the log had no welcome report line at all.
+  it("a signed-out model holds the job with the report's card, logs why, and sends it once the window comes back signed in", async () => {
+    let signedIn = false;
+    const preflightImpl = vi.fn(async () =>
+      ok({
+        claudeAvailable: true,
+        claudeLoggedIn: signedIn,
+        codexAvailable: false,
+        codexLoggedIn: false,
+        grokAvailable: false,
+        grokLoggedIn: false,
+      }),
+    );
+    const log = logSink();
+    let created = false;
+    const create = vi.fn(async () => {
+      created = true;
+      return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
+    });
+    const listImpl = async () => ok({ bots: created ? [runningSetupBot] : [] });
+    const { platform, sendDm } = adapter({
+      flag: true,
+      create,
+      listImpl,
+      activeCompany: "indigo",
+      preflightImpl,
+      logToFile: log.logToFile,
+    });
+    await boot(platform);
+    // Signed out, so only the bot path shows: name it, then Talk.
+    await chooseBot();
+    typeName("Biscuit");
+    confirmName();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    // Talk lands on the Daily Brief page, where the welcome report is held (owner, 2026-10-16).
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="welcome-report-blocked"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(q('[data-testid="channel-name"]')).toBeNull();
+    const card = q('[data-testid="welcome-report-blocked"]')!;
+    expect(card.textContent).toContain("Your assistant writes your welcome report");
+    expect(card.textContent).toContain("has no model connected on this computer.");
+    expect(q('[data-testid="welcome-report-blocked-fix"]')?.textContent?.trim()).toBe("Connect a model");
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-blocked"]')).toBeNull();
+    await vi.waitFor(() => expect(log.of("welcome-report")).toEqual(["kind=welcome-report event=blocked reason=connect-model"]));
+    expect(briefJobs(sendDm)).toHaveLength(0);
+
+    // Signed in from a terminal or the browser; the window comes back.
+    signedIn = true;
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
+    expect(q('[data-testid="welcome-report-blocked"]')).toBeNull();
+    await vi.waitFor(() =>
+      expect(log.of("welcome-report")).toEqual([
+        "kind=welcome-report event=blocked reason=connect-model",
+        "kind=welcome-report event=dispatched",
+      ]),
+    );
+    // No names, uids or messages in the lines.
+    for (const line of log.of("welcome-report")) {
+      expect(line).not.toContain(SETUP_BOT_UID);
+      expect(line).not.toMatch(/setup|Quill|connected on/i);
+    }
+    await settle(20);
+    expect(briefJobs(sendDm)).toHaveLength(1);
+  }, 20_000);
+
+  it("logs started, landed and failed for the welcome report's job", async () => {
+    const log = logSink();
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo", logToFile: log.logToFile });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    const runId = /--run-id (\S+)/.exec(briefJobs(sendDm)[0]![1])![1]!;
+    let state = "running";
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent =
+      async (path: string) =>
+        path.endsWith(`${runId}/status.json`)
+          ? ok(JSON.stringify({ run_id: runId, state, message: "The assistant could not finish the brief." }))
+          : { ok: false as const, reason: "not found" };
+    await vi.waitFor(() => expect(log.of("welcome-report")).toContain("kind=welcome-report event=started"), {
+      timeout: 10_000,
+    });
+    state = "failed";
+    await vi.waitFor(() => expect(log.of("welcome-report")).toContain("kind=welcome-report event=failed"), {
+      timeout: 10_000,
+    });
+    expect(log.of("welcome-report")).toEqual([
+      "kind=welcome-report event=dispatched",
+      "kind=welcome-report event=started",
+      "kind=welcome-report event=failed",
+    ]);
+    for (const line of log.of("welcome-report")) expect(line).not.toContain("could not finish");
+  }, 25_000);
+
+  it("logs landed once when the welcome report's job writes its report", async () => {
+    const log = logSink();
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo", logToFile: log.logToFile });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    const runId = /--run-id (\S+)/.exec(briefJobs(sendDm)[0]![1])![1]!;
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent =
+      async (path: string) =>
+        path.endsWith(`${runId}/status.json`)
+          ? ok(JSON.stringify({ run_id: runId, state: "ready" }))
+          : { ok: false as const, reason: "not found" };
+    await vi.waitFor(() => expect(log.of("welcome-report")).toContain("kind=welcome-report event=landed"), {
+      timeout: 10_000,
+    });
+    await settle(20);
+    expect(log.of("welcome-report")).toEqual([
+      "kind=welcome-report event=dispatched",
+      "kind=welcome-report event=landed",
+    ]);
+  }, 25_000);
+
+  it("a reload after the job was sent never sends it again, and lands on the report the run wrote", async () => {
+    localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    await settle(20);
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    // No run left to wait on: the brief page's own Create brief shows, never
+    // a loading card with nothing coming.
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-create"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+  }, 15_000);
+
+  // Lane A (2026-10-16): the report is owed for the whole session, so once it
+  // landed a brief the person made by hand that was held back showed the
+  // report's card again, and the window coming back re-ran it on its own.
+  it("after the report landed, a held-back brief made by hand is the Brief page's own: its fix shows, and the window coming back starts nothing", async () => {
+    localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);
+    let bot: typeof runningSetupBot | Record<string, unknown> = {
+      ...runningSetupBot,
+      state: "stopped",
+      pid: null,
+      processAlive: false,
+      online: false,
+    };
+    const listImpl = async () => ok({ bots: [bot] });
+    const { platform, sendDm } = adapter({ flag: true, listImpl, activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-create"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    q<HTMLButtonElement>('[data-testid="welcome-report"] [data-testid="brief-create"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-fix"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    expect(q('[data-testid="welcome-report-blocked"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+
+    // The assistant comes up and the window comes back: nothing is sent by itself.
+    bot = runningSetupBot;
+    window.dispatchEvent(new Event("focus"));
+    await settle(30);
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-fix"]')).toBeTruthy();
+  }, 20_000);
+
+  it("Dismiss after the job failed shows the brief page's Create brief, never a loading card that cannot end", async () => {
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    const runId = /--run-id (\S+)/.exec(briefJobs(sendDm)[0]![1])![1]!;
+    // The assistant takes the job, then it fails.
+    let state = "running";
+    (platform as unknown as { files: { getFileContent: (path: string) => Promise<unknown> } }).files.getFileContent =
+      async (path: string) =>
+        path.endsWith(`${runId}/status.json`)
+          ? ok(JSON.stringify({ run_id: runId, state, message: "The assistant could not finish the brief." }))
+          : { ok: false as const, reason: "not found" };
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
+    await vi.waitFor(() => expect(localStorage.getItem("hq.welcome-report.sent")).toBe(SETUP_BOT_UID), {
+      timeout: 10_000,
+    });
+    state = "failed";
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"] [data-testid="brief-retry"]')).toBeTruthy(), {
+      timeout: 10_000,
+    });
+    const dismiss = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="welcome-report"] button')].find(
+      (b) => b.textContent?.trim() === "Dismiss",
+    );
+    dismiss!.click();
+    await settle(10);
+    expect(q('[data-testid="welcome-report"] [data-testid="brief-create"]')).toBeTruthy();
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+    // Dismissing never sends the job again.
+    expect(briefJobs(sendDm)).toHaveLength(1);
+  }, 25_000);
+
+  it("sends the brief job to the assistant once, only after it appears, and Talk lands on the welcome report", async () => {
+    let created = false;
+    const create = vi.fn(async () => {
+      created = true;
+      return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
+    });
+    const listImpl = async () => ok({ bots: created ? [runningSetupBot] : [] });
+    const { platform, sendDm } = adapter({ create, flag: true, listImpl, activeCompany: "indigo" });
+    await boot(platform);
+    await chooseBot();
+    typeName("Biscuit");
+    confirmName();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+    await settle(12);
+    // Nothing for the report before the person leaves the takeover.
+    expect(briefJobs(sendDm)).toHaveLength(0);
+
+    q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    const [to, body] = briefJobs(sendDm)[0]!;
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(body.startsWith("/daily-brief indigo --run-id")).toBe(true);
+    // Talk lands on the welcome report, not the DM (owner, 2026-10-16).
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="channel-name"]')).toBeNull();
+    await settle(30);
+    expect(briefJobs(sendDm)).toHaveLength(1);
+  });
+
+  it("Continue in the coding tool with an assistant already here lands on the welcome report, not its DM", async () => {
+    const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="channel-name"]')?.textContent?.trim()).not.toBe("Biscuit");
+    // The report's job still reaches the assistant once.
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
+    expect(briefJobs(sendDm)[0]![0]).toBe(SETUP_BOT_UID);
+    await settle(10);
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+  });
+
+  /**
+   * A host whose scan finds Linear. By default the person has one company,
+   * the one the takeover would have picked; `companies` lists their slugs.
+   */
+  async function bootWithApps(foundApps: boolean, companies: readonly string[] = ["northwind"]): Promise<void> {
+    const hasFeatureImpl = async (name: string) =>
+      ok(name === VISUAL_FIRST_RUN_FLAG ? true : name === FIRST_RUN_FOUND_APPS_FLAG ? foundApps : false);
+    const { platform } = adapter({ flag: true, hasFeatureImpl });
+    const raw = platform as unknown as Record<string, Record<string, unknown>>;
+    raw.shell = {
+      ...raw.shell,
+      detectWorkApps: async () =>
+        ok({ platform: "macos", scannedAtMs: 1, apps: [{ bundleId: "com.linear", name: "Linear" }], mcpServers: [], sources: [], truncated: false }),
+    };
+    raw.integrations = {
+      catalogLookup: async () => ok({ entries: [] }),
+      listConnections: async () => ok({ connections: [] }),
+    };
+    const workspace = (slug: string) => ({
+      slug,
+      displayName: slug[0]!.toUpperCase() + slug.slice(1),
+      kind: "company",
+      state: "synced",
+      cloudUid: `cmp_${slug}`,
+      bucketName: `hq-${slug}`,
+      hasLocalFolder: true,
+      localPath: `/tmp/hq-folder/${slug}`,
+      membershipStatus: "active",
+      role: "owner",
+      lastSyncedAt: null,
+      brokenReason: null,
+      invitedBy: null,
+      invitedAt: null,
+    });
+    await boot(platform, DesktopApp, mount, { companies: companies.map(workspace), rosterStatus: "ready" });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+  }
+
+  it("found-apps flag on: the connect card offers the apps the scan found", async () => {
+    await bootWithApps(true);
+    await vi.waitFor(() =>
+      expect(q('[data-testid="welcome-connect-card"] [data-testid="first-run-app-linear.app"]')).toBeTruthy(),
+    );
+  });
+
+  it("found-apps flag on, but no company the person picked: no connect card, so no app lands in an arbitrary company", async () => {
+    await bootWithApps(true, ["northwind", "acme"]);
+    await settle(20);
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+    expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
+  });
+
+  it("found-apps flag off: the welcome report has no connect card", async () => {
+    await bootWithApps(false);
+    await settle(20);
+    expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
   });
 });
 
@@ -1613,4 +2027,386 @@ describe("first-run conversation start with a slow create", () => {
     expect(starts[SETUP_BOT_UID]).toBe(confirmedAt);
     expect(fromConversationStart([intro], starts, SETUP_BOT_UID)).toEqual([intro]);
   });
+});
+
+// Owner (2026-10-16): "we want the report to run so make sure the user
+// connects their coding tool during install flow", then "Just have them sign
+// in after we identify what they use most often". The detected tool signs in
+// before Continue in <tool> and the name path go on.
+describe("visual first run, the detected tool's sign-in", () => {
+  const runningSetupBot = {
+    name: "setup",
+    agentUid: SETUP_BOT_UID,
+    ownerUid: "prs_test",
+    runtime: "claude",
+    state: "running",
+    pid: 11,
+    processAlive: true,
+    online: true,
+    lastHeartbeatAt: null,
+    daemonInstalled: true,
+    daemonLoaded: true,
+    dir: "/tmp/HQ/personal/workers/setup",
+    workerId: "setup",
+  };
+  const briefJobs = (sendDm: ReturnType<typeof vi.fn>) =>
+    (sendDm.mock.calls as unknown as [string, string][]).filter(([, body]) => body.startsWith("/daily-brief "));
+
+  /** The launch scan finds `tool` used most here. */
+  function scanFinds(platform: PlatformAdapter, tool: "claude-code" | "codex"): void {
+    (platform as unknown as { localScan: unknown }).localScan = {
+      scan: async () =>
+        ok({
+          tools: [{ tool, sessions_total: 9, sessions_last_30d: 3, last_active_at: null }],
+          projects: [],
+          repos: [],
+          apps: [],
+          mcp_servers: [],
+          sources: [],
+          truncated: false,
+          elapsed_ms: 1,
+        }),
+    };
+  }
+
+  /** A tool that is signed out until its browser sign-in connects. */
+  function signsInThroughBrowser(runtime: "claude" | "codex") {
+    const state = { signedIn: false, connect: false };
+    const preflightImpl = vi.fn(async () =>
+      ok({
+        claudeAvailable: true,
+        claudeLoggedIn: runtime === "claude" ? state.signedIn : true,
+        codexAvailable: true,
+        codexLoggedIn: runtime === "codex" ? state.signedIn : false,
+        grokAvailable: false,
+        grokLoggedIn: false,
+      }),
+    );
+    const loginStart = vi.fn(async () => ok({ state: "waiting" }));
+    const loginStatus = vi.fn(async () => {
+      if (!state.connect) return ok({ state: "waiting" });
+      state.signedIn = true;
+      return ok({ state: "connected" });
+    });
+    return { state, preflightImpl, loginStart, loginStatus };
+  }
+
+  it("a signed-in tool continues to the welcome report with no sign-in step", async () => {
+    const loginStart = vi.fn(async () => ok({ state: "waiting" }));
+    const loginStatus = vi.fn(async () => ok({ state: "waiting" }));
+    const log = logSink();
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      loginStart,
+      loginStatus,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(loginStart).not.toHaveBeenCalled();
+    expect(log.of("signin")).toEqual([]);
+  }, 15_000);
+
+  it("signed out, Continue in Claude Code signs in, waits, then lands on the welcome report and sends its job", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const log = logSink();
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    const primary = q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!;
+    expect(primary.textContent).toContain("Continue in Claude Code");
+    primary.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-signin-waiting"]')?.textContent?.trim()).toBe("Signing in to Claude Code…"),
+    );
+    expect(tool.loginStart).toHaveBeenCalledWith("claude", { force: false });
+    expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    expect(briefJobs(sendDm)).toHaveLength(0);
+
+    tool.state.connect = true;
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 10_000 });
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(q('[data-testid="welcome-report-blocked"]')).toBeNull();
+    expect(log.of("signin")).toEqual(["kind=signin event=start tool=claude", "kind=signin event=done tool=claude"]);
+  }, 20_000);
+
+  it("signed out, Continue in Codex signs Codex in the same way before it goes on", async () => {
+    const tool = signsInThroughBrowser("codex");
+    const log = logSink();
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "codex");
+    await boot(platform);
+    await decisionShown();
+    const primary = q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!;
+    expect(primary.textContent).toContain("Continue in Codex");
+    primary.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-signin-waiting"]')?.textContent?.trim()).toBe("Signing in to Codex…"),
+    );
+    expect(tool.loginStart).toHaveBeenCalledWith("codex", { force: false });
+    tool.state.connect = true;
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 10_000 });
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(log.of("signin")).toEqual(["kind=signin event=start tool=codex", "kind=signin event=done tool=codex"]);
+  }, 20_000);
+
+  it("Skip for now stops the browser sign-in and lands on the welcome report held on the sign-in, as before", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const loginCancel = vi.fn(async () => ok({ state: "disconnected" }));
+    const log = logSink();
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      loginCancel,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-skip"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-signin-skip"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    expect(q('[data-testid="welcome-report-blocked-fix"]')?.textContent?.trim()).toBe("Connect a model");
+    expect(briefJobs(sendDm)).toHaveLength(0);
+    expect(log.of("signin")).toEqual(["kind=signin event=start tool=claude", "kind=signin event=skipped tool=claude"]);
+    expect(loginCancel).toHaveBeenCalledTimes(1);
+    expect(loginCancel).toHaveBeenCalledWith("claude");
+  }, 20_000);
+
+  it("a sign-in that connects after Skip starts the held report", async () => {
+    const tool = signsInThroughBrowser("claude");
+    // The browser sign-in finishes while the cancel is still on its way, after
+    // the report already shows it is held.
+    let finishCancel: (value: unknown) => void = () => undefined;
+    const loginCancel = vi.fn(() => new Promise<unknown>((resolve) => (finishCancel = resolve)));
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      loginCancel,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-skip"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-signin-skip"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    expect(loginCancel).toHaveBeenCalledWith("claude");
+    expect(briefJobs(sendDm)).toHaveLength(0);
+
+    tool.state.signedIn = true;
+    finishCancel(ok({ state: "connected" }));
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(q('[data-testid="welcome-report-blocked"]')).toBeNull();
+  }, 20_000);
+
+  // Test Mac, ffdfa27f7 pass A: signed out, Continue in Claude Code, Skip
+  // landed on "Set up your assistant" with no assistant made at all.
+  it("signed out with no assistant yet, Continue in Claude Code then Skip makes the assistant: held report, its DM signed-out card, #welcome points there", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const loginCancel = vi.fn(async () => ok({ state: "disconnected" }));
+    const rows: unknown[] = [];
+    const create = vi.fn(async (input: { displayName: string }) => {
+      rows.push({ ...runningSetupBot, displayName: input.displayName, state: "stopped", processAlive: false, online: false });
+      return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
+    });
+    const { platform, sendDm } = adapter({
+      flag: true,
+      create: create as never,
+      listImpl: async () => ok({ bots: [...rows] }),
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      loginCancel,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-skip"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-signin-skip"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+
+    // The assistant is made, under the suggested name, on Claude Code.
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    const input = (create.mock.calls as unknown as Array<[{ displayName: string; runtime: string }]>)[0]![0];
+    expect(SETUP_BOT_NAMES).toContain(input.displayName);
+    expect(input.runtime).toBe("claude");
+    // The report is held on the sign-in, not asking for an assistant.
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    expect(q('[data-testid="welcome-report-blocked-fix"]')?.textContent?.trim()).toBe("Connect a model");
+    expect(document.body.textContent).not.toContain("Set up your assistant");
+    expect(briefJobs(sendDm)).toHaveLength(0);
+
+    // Its DM gets the handoff note, and "Connect a model" opens it on the signed-out card.
+    await vi.waitFor(() =>
+      expect((sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string } | undefined]>).some((c) => c[0] === SETUP_BOT_UID && c[2]?.idempotencyKey === `first-run-handoff:${SETUP_BOT_UID}`)).toBe(true),
+      { timeout: 10_000 },
+    );
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="bot-sign-in-card"] [data-testid="runtime-repair-card"]')).toBeTruthy(),
+      { timeout: 10_000 },
+    );
+
+    // #welcome sends the person to that conversation.
+    q<HTMLButtonElement>(`[data-conversation-id="${SETUP_ROW_ID}"]`)!.click();
+    await vi.waitFor(() =>
+      expect(q(".hero-body")?.textContent?.trim()).toBe(SETUP_BOT_COPY_STATIC.bodyExisting),
+      { timeout: 10_000 },
+    );
+    expect(q('[data-testid="setup-bot-failure"]')).toBeNull();
+    expect(document.querySelector("main")?.textContent).not.toContain("Sign in to Claude");
+  }, 30_000);
+
+  it("a failed sign-in check never signs a signed-in person out: Continue asks the tool unforced, and it answers connected", async () => {
+    // The preflight fails, so the app cannot tell Claude Code is signed in.
+    const state = { probed: false };
+    const preflightImpl = vi.fn(async () =>
+      state.probed
+        ? ok({
+            claudeAvailable: true,
+            claudeLoggedIn: true,
+            codexAvailable: false,
+            codexLoggedIn: false,
+            grokAvailable: false,
+            grokLoggedIn: false,
+          })
+        : failure("unavailable", "preflight timed out"),
+    );
+    // Unforced, Rust probes the tool first and answers connected with no sign-out.
+    const loginStart = vi.fn(async (_runtime: string, opts?: { force?: boolean }) => {
+      if (opts?.force) return ok({ state: "waiting" });
+      state.probed = true;
+      return ok({ state: "connected" });
+    });
+    const loginStatus = vi.fn(async () => ok({ state: "waiting" }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl,
+      loginStart,
+      loginStatus,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    const primary = q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!;
+    expect(primary.textContent).toContain("Continue in Claude Code");
+    primary.click();
+    await vi.waitFor(() => expect(loginStart).toHaveBeenCalled());
+    expect(loginStart).toHaveBeenCalledTimes(1);
+    expect(loginStart).toHaveBeenCalledWith("claude", { force: false });
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 10_000 });
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(loginStatus).not.toHaveBeenCalled();
+    warn.mockRestore();
+  }, 20_000);
+
+  it("a sign-in that cannot start says so, with Retry and Skip for now", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const loginStart = vi.fn(async () => failure("unavailable", "no browser"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const log = logSink();
+    const { platform } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart,
+      loginStatus: tool.loginStatus,
+      logToFile: log.logToFile,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-signin-failed"]')?.textContent?.trim()).toBe(
+        "Sign-in didn't finish. Try again or skip for now.",
+      ),
+    );
+    expect(q('[data-testid="first-run-signin-retry"]')?.textContent?.trim()).toBe("Retry");
+    expect(q('[data-testid="first-run-signin-skip"]')?.textContent?.trim()).toBe("Skip for now");
+    expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+    q<HTMLButtonElement>('[data-testid="first-run-signin-retry"]')!.click();
+    await vi.waitFor(() => expect(loginStart).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-failed"]')).toBeTruthy());
+    await vi.waitFor(() => expect(log.of("signin")).toHaveLength(4));
+    expect(log.of("signin")).toEqual([
+      "kind=signin event=start tool=claude",
+      "kind=signin event=failed tool=claude",
+      "kind=signin event=start tool=claude",
+      "kind=signin event=failed tool=claude",
+    ]);
+    warn.mockRestore();
+  }, 15_000);
+
+  it("the name path signs the detected tool in before it makes the assistant", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform } = adapter({
+      flag: true,
+      create,
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await chooseBot();
+    typeName("Biscuit");
+    confirmName();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-signin-waiting"]')?.textContent?.trim()).toBe("Signing in to Claude Code…"),
+    );
+    expect(tool.loginStart).toHaveBeenCalledWith("claude", { force: false });
+    await settle();
+    expect(create).not.toHaveBeenCalled();
+    tool.state.connect = true;
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    expect((create.mock.calls[0] as unknown as [Record<string, unknown>])[0]).toEqual(
+      expect.objectContaining({ displayName: "Biscuit", runtime: "claude" }),
+    );
+    expect(step()).toBe("done");
+  }, 20_000);
 });

@@ -63,6 +63,12 @@ export interface SignInAgainDeps {
    * other start. A host that omits it starts every paused bot unconditionally.
    */
   gate?: RestartGate;
+  /**
+   * Sign out first, then the browser flow (default true: the repair card's
+   * dead-login fix). False lets the vendor probe answer first, so a person
+   * already signed in is never signed out.
+   */
+  force?: boolean;
   /** Called once the browser sign-in is open and HQ is waiting on it. */
   onwaiting?: () => void;
   /** Stop waiting (the view went away). */
@@ -107,7 +113,7 @@ export async function signInAgain(runtime: BotRuntimeId, deps: SignInAgainDeps):
 
   let current: LoginState;
   try {
-    current = stateOf(await sessions.loginStart(runtime, { force: true }));
+    current = stateOf(await sessions.loginStart(runtime, { force: deps.force ?? true }));
   } catch {
     return { ok: false, reason: `Could not open the ${tool} sign-in. Try again.` };
   }
