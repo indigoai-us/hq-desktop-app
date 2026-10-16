@@ -7,7 +7,9 @@
    * Rows, only the ones that apply, in this order: join a company that
    * invited the person, open a company they belong to, create a company
    * (a name field opens inline), and "Just me for now" as a quiet link.
-   * After a pick the card settles into one line with a tick.
+   * While a pick runs, every control is disabled and the pressed one shows a
+   * spinner (`aria-busy` on it and on the card). After a pick the card
+   * settles into one line with a tick.
    *
    * Presentational: the host runs the pick (claim invite, create company,
    * pin company) and replies to the bot. Failures arrive as plain sentences.
@@ -58,7 +60,7 @@
     {settled}
   </p>
 {:else}
-  <section class="team-card" data-testid="team-card" role="group" aria-label={TEAM_CARD_COPY.heading}>
+  <section class="team-card" data-testid="team-card" role="group" aria-label={TEAM_CARD_COPY.heading} aria-busy={busy}>
     <h3 class="heading">{TEAM_CARD_COPY.heading}</h3>
     <p class="line">{TEAM_CARD_COPY.line}</p>
     <div class="rows">
@@ -69,6 +71,7 @@
             variant={primary === "invite" ? "primary" : "secondary"}
             data-testid="team-card-join"
             disabled={busy}
+            aria-busy={pendingKey === `invite:${company.slug}` || undefined}
             onclick={() => onpick({ kind: "invite", company })}
           >
             {#if pendingKey === `invite:${company.slug}`}{@render spinner()}{/if}
@@ -86,6 +89,7 @@
             variant={primary === "existing" ? "primary" : "secondary"}
             data-testid="team-card-open"
             disabled={busy}
+            aria-busy={pendingKey === `existing:${company.slug}` || undefined}
             onclick={() => onpick({ kind: "existing", company })}
           >
             {#if pendingKey === `existing:${company.slug}`}{@render spinner()}{/if}
@@ -109,6 +113,7 @@
               type="submit"
               data-testid="team-card-create-submit"
               disabled={busy || name.trim() === ""}
+              aria-busy={pendingKey === "create" || undefined}
             >
               {#if pendingKey === "create"}{@render spinner()}{/if}
               {TEAM_CARD_COPY.createButton}
@@ -136,7 +141,13 @@
         {/if}
       </p>
     {/if}
-    <SetupButton variant="quiet" data-testid="team-card-personal" disabled={busy} onclick={() => onpick({ kind: "personal" })}>
+    <SetupButton
+      variant="quiet"
+      data-testid="team-card-personal"
+      disabled={busy}
+      aria-busy={pendingKey === "personal" || undefined}
+      onclick={() => onpick({ kind: "personal" })}
+    >
       {#if pendingKey === "personal"}{@render spinner()}{/if}
       {TEAM_CARD_COPY.personal}
     </SetupButton>

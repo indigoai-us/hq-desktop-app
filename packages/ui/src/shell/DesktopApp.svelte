@@ -231,6 +231,12 @@
     type TeamCardPick,
   } from "../chat/first-run/team-step.js";
   import { createTeamCardReplies, runTeamCardPick } from "../chat/first-run/team-card-pick.js";
+  import {
+    loadTeamCardRecords,
+    saveTeamCardRecord,
+    teamCardRecordKey,
+    teamCardSettledFromReply,
+  } from "../chat/first-run/team-card-record.js";
   import { createFirstRunTeamHost } from "../chat/first-run/first-run-hosts.js";
   import { teamBlockInMessage } from "../chat/messaging/richMessageContent.js";
   import {
@@ -4549,9 +4555,16 @@
    */
   let teamCardPending = $state<string | null>(null);
   let teamCardError = $state<string | null>(null);
-  let teamCardSettled = $state<string | null>(null);
-  /** Where the settled line goes: the setup conversation and the message the card was drawn under. */
-  let teamCardAnchor = $state<{ rowId: string; eventId: string | null } | null>(null);
+  /** Settled lines kept per account and setup bot, so they survive a company switch and a restart. */
+  let teamCardRecords = $state(loadTeamCardRecords(teamCardStorage()));
+  function teamCardStorage(): Storage | null {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch (err) {
+      console.warn("[hq-desktop] no local storage for the team card pick:", err);
+      return null;
+    }
+  }
   let teamCardLastPick: TeamCardPick | null = null;
   let teamCardCompleted: FirstRunTeamChoice | undefined;
   /** The setup bot and its conversation, as they were when the pick was made. */
@@ -4589,13 +4602,26 @@
       { afterMs: newestMessageAtFrom(before, target.agentUid), asked: { eventId: wire?.eventId ?? null } },
     );
   }
-  const teamCardShown = $derived.by((): "block" | "fallback" | null => {
+  /**
+   * The card, or its settled line, and the message it is drawn under: the
+   * bot's first message, so a later bot message never pushes it down. The
+   * settled line comes from durable state (the saved pick, or the person's
+   * reply in the conversation), so it is back after a company switch or a
+   * restart.
+   */
+  const teamCardView = $derived.by((): { anchor: string; settled: string | null } | null => {
     const bot = selectedLocalBot;
     const row = selectedRow;
     if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return null;
     const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    const anchor = teamCardAnchorEventId(timeline, bot.agentUid, teamBlockInMessage, messageHasVisibleContent);
+    if (!anchor) return null;
+    const settled =
+      teamCardRecords[teamCardRecordKey(self?.uid, bot.agentUid)] ?? teamCardSettledFromReply(timeline, bot.agentUid);
+    if (settled) return { anchor, settled };
     const due = teamCardDue(timeline, bot.agentUid, firstRunSettled.team === null, teamBlockInMessage, messageHasVisibleContent);
-    return due === "fallback" && firstRunHandoffName === null ? null : due;
+    if (!due || (due === "fallback" && firstRunHandoffName === null)) return null;
+    return { anchor, settled: null };
   });
   const teamCardHost = createFirstRunTeamHost({
     dry: firstRunDev.dry,
@@ -4625,8 +4651,7 @@
     teamCardLastPick = pick;
     teamCardError = null;
     teamCardPending = teamCardPickKey(pick);
-    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
-    const anchor = { rowId: row.id, eventId: teamCardAnchorEventId(timeline, bot.agentUid) };
+    const recordKey = teamCardRecordKey(self?.uid, bot.agentUid);
     const result = await runTeamCardPick(pick, {
       host: teamCardHost,
       agentUid: target.agentUid,
@@ -4635,27 +4660,12 @@
       completed: teamCardCompleted,
     });
     teamCardPending = null;
-    if (result.ok) {
-      teamCardAnchor = anchor;
-      teamCardSettled = result.settled;
-    }
+    if (result.ok) teamCardRecords = saveTeamCardRecord(teamCardStorage(), teamCardRecords, recordKey, result.settled);
     else {
       teamCardCompleted = result.completed;
       teamCardError = result.reason;
     }
   }
-  /**
-   * The settled line stays on the message the card was drawn under, as a
-   * badge on it, so it does not move down under each new message.
-   */
-  const conversationExtraBlocks = $derived.by((): Record<string, RichBlock[]> | null => {
-    const anchor = teamCardAnchor;
-    const label = teamCardSettled;
-    if (!anchor?.eventId || !label || selectedRow?.id !== anchor.rowId) return cloudBotExtraCards;
-    const out: Record<string, RichBlock[]> = { ...(cloudBotExtraCards ?? {}) };
-    out[anchor.eventId] = [...(out[anchor.eventId] ?? []), { kind: "badge", label, tone: "success", icon: "check" }];
-    return out;
-  });
   /** "Keep going here": the reply the bot waits for before it starts setup. */
   function keepSetupHere(tool: SetupOfferTool): void {
     setupToolOfferError = null;
@@ -15844,6 +15854,16 @@
                 : "false"}
             >
               {#key selectedRow.id}
+                {#snippet teamCardBelow()}
+                  <TeamCard
+                    options={teamOptionsFrom(companies)}
+                    onpick={(pick) => void pickTeamCard(pick)}
+                    pendingKey={teamCardPending}
+                    error={teamCardError}
+                    onretry={() => teamCardLastPick && void pickTeamCard(teamCardLastPick)}
+                    settled={teamCardView?.settled ?? null}
+                  />
+                {/snippet}
                 {#snippet agentThinkingBelow()}
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
@@ -15856,16 +15876,6 @@
                       launchError={setupToolOfferError}
                       oncontinue={() => void continueSetupInTool(offerTool)}
                       onkeep={() => keepSetupHere(offerTool)}
-                    />
-                  {/if}
-                  {#if (teamCardShown && !teamCardSettled) || (teamCardSettled && teamCardAnchor && teamCardAnchor.rowId === selectedRow?.id && !teamCardAnchor.eventId)}
-                    <TeamCard
-                      options={teamOptionsFrom(companies)}
-                      onpick={(pick) => void pickTeamCard(pick)}
-                      pendingKey={teamCardPending}
-                      error={teamCardError}
-                      onretry={() => teamCardLastPick && void pickTeamCard(teamCardLastPick)}
-                      settled={teamCardSettled}
                     />
                   {/if}
                   {#if agentChannelFallbackVisible}
@@ -16292,10 +16302,12 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
+                  belowEventId={teamCardView?.anchor ?? null}
+                  belowEvent={teamCardBelow}
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
                   runtimeRepair={selectedRuntimeRepair}
-                  extraBlocksByEventId={conversationExtraBlocks}
+                  extraBlocksByEventId={cloudBotExtraCards}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />

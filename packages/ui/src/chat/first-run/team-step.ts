@@ -377,20 +377,27 @@ export function teamCardDue(
 }
 
 /**
- * The message the team card is drawn under: the last of the bot's opening
- * messages, before the person first wrote. The settled line stays on it when
- * later messages arrive. Null when no such message has an event id.
+ * The message the team card is drawn under, and its settled line stays under
+ * for good: among the bot's opening messages (before the person first wrote),
+ * the one carrying a `team` block, else the first one with visible content.
+ * A later bot message (the "Claude Code is signed out" reply, say) never moves
+ * it. Null when no such message has an event id.
  */
 export function teamCardAnchorEventId(
   messages: ReadonlyArray<TeamCardMessage & { eventId?: string | null }>,
   botUid: string,
+  hasTeamBlock: (message: TeamCardMessage) => boolean,
+  hasVisibleContent: (message: TeamCardMessage) => boolean,
 ): string | null {
   const uid = botUid.trim();
-  let anchor: string | null = null;
+  if (!uid) return null;
+  let first: string | null = null;
   for (const message of messages) {
-    if (!uid || (message.fromPersonUid ?? "").trim() !== uid) break;
+    if ((message.fromPersonUid ?? "").trim() !== uid) break;
     const id = message.eventId?.trim();
-    if (id) anchor = id;
+    if (!id) continue;
+    if (hasTeamBlock(message)) return id;
+    if (first === null && hasVisibleContent(message)) first = id;
   }
-  return anchor;
+  return first;
 }

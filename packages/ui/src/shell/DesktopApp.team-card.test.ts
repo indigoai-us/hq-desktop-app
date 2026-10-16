@@ -146,6 +146,19 @@ async function settle(times = 12): Promise<void> {
 
 const q = <T extends Element = HTMLElement>(sel: string): T | null => host.querySelector<T>(sel);
 
+/** The fixture sidebar, with the setup bot's conversation listed so a test can come back to it. */
+function sidebarWithSetupBot() {
+  const api = createFixtureChatSidebarApi();
+  return {
+    ...api,
+    listContacts: async () => {
+      const { contacts } = await api.listContacts();
+      const now = new Date().toISOString();
+      return { contacts: [{ personUid: SETUP_UID, email: "", displayName: "setup", lastMessageAt: now, lastActivityAt: now }, ...contacts] };
+    },
+  };
+}
+
 interface OpenOptions {
   wakes?: ChatWakeBus;
   companies?: Workspace[];
@@ -161,7 +174,7 @@ async function openSetupDm(messages: Array<Record<string, unknown>>, options: Op
       adapter: adapter(messages, options.claim),
       wakes: options.wakes ?? null,
       companies: options.companies ?? null,
-      sidebarApi: createFixtureChatSidebarApi(),
+      sidebarApi: sidebarWithSetupBot(),
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_me", displayName: "Corey", email: "me@example.com" },
       coreFixtures: false,
@@ -177,8 +190,85 @@ const TEAM_FIRST =
   "Hi, I'm Pickles, your setup bot.\n\n" + "```hq-block\n" + JSON.stringify({ v: 1, blocks: [{ kind: "team" }] }) + "\n```";
 const teamMessage = { ...offerMessage, eventId: "evt_team", body: TEAM_FIRST };
 
-/** The settled line, as a badge on one message. */
-const settledOn = (eventId: string) => q(`[data-event-id="${eventId}"] [data-testid="rich-badge"]`);
+/** The signed-out reply a local bot sends when Claude Code cannot answer; drawn as the repair card. */
+const signedOutMessage = {
+  ...offerMessage,
+  eventId: "evt_signed_out",
+  body: "I couldn't answer because Claude Code is signed out on this Mac. Sign in, then send your message again.",
+  richContent: {
+    v: 1,
+    blocks: [{ v: 1, kind: "runtime-repair", class: "signed-out", runtime: "claude", action: "signIn", botName: "setup" }],
+  },
+  createdAt: "2026-10-02T10:00:05.000Z",
+};
+
+/** Message rows in the conversation, outermost only. */
+const messageRows = () =>
+  [...host.querySelectorAll<HTMLElement>("[data-event-id]")].filter((el) => !el.parentElement?.closest("[data-event-id]"));
+
+/**
+ * Whether `el` is drawn right under the message `eventId`: after it, outside
+ * it, and before the next message.
+ */
+function drawnUnder(el: Element, eventId: string): boolean {
+  const rows = messageRows();
+  const i = rows.findIndex((row) => row.getAttribute("data-event-id") === eventId);
+  if (i < 0) return false;
+  const anchor = rows[i]!;
+  if (anchor.contains(el) || !(anchor.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+  const next = rows[i + 1];
+  return !next || Boolean(next.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING);
+}
+
+/** The settled line, when it is drawn right under the message `eventId`. */
+function settledOn(eventId: string): HTMLElement | null {
+  const el = q('[data-testid="team-card-settled"]');
+  return el && drawnUnder(el, eventId) ? el : null;
+}
+
+async function waitFor<T extends Element = HTMLElement>(sel: string): Promise<T> {
+  return vi.waitFor(() => {
+    const el = q<T>(sel);
+    expect(el).toBeTruthy();
+    return el!;
+  });
+}
+
+/** Opens a conversation other than the setup bot's, and waits for it. */
+async function openOtherConversation(): Promise<void> {
+  const other = await vi.waitFor(() => {
+    const el = [...host.querySelectorAll<HTMLElement>("[data-conversation-id]")].find(
+      (row) => row.getAttribute("data-conversation-id") !== SETUP_DM_ROW.id,
+    );
+    expect(el).toBeTruthy();
+    return el!;
+  });
+  other.click();
+  await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).not.toContain("setup"));
+}
+
+async function openSetupRowAgain(): Promise<void> {
+  const row = await waitFor(`[data-conversation-id="${SETUP_DM_ROW.id}"]`);
+  row.click();
+  await waitFor('[data-event-id="evt_team"]');
+}
+
+/** Unmounts the app and mounts it again on the same storage, as an app restart does. */
+async function restart(messages: Array<Record<string, unknown>>, options: OpenOptions = {}): Promise<void> {
+  if (component) await unmount(component);
+  component = null;
+  host.remove();
+  await openSetupDm(messages, options);
+}
+
+const myReply = (eventId: string, body: string, createdAt: string) => ({
+  eventId,
+  body,
+  fromPersonUid: "prs_me",
+  fromDisplayName: "Corey",
+  createdAt,
+  direction: "out",
+});
 
 function pendingInvite(slug: string, displayName: string): Workspace {
   return {
@@ -255,15 +345,7 @@ describe("the setup bot's team card", () => {
     join.click();
     await vi.waitFor(() => expect(claimInvite).toHaveBeenCalledWith("acme"));
     // The person opens another conversation while the join is on the network.
-    const other = await vi.waitFor(() => {
-      const el = [...host.querySelectorAll<HTMLElement>("[data-conversation-id]")].find(
-        (row) => row.getAttribute("data-conversation-id") !== SETUP_DM_ROW.id,
-      );
-      expect(el).toBeTruthy();
-      return el!;
-    });
-    other.click();
-    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).not.toContain("setup"));
+    await openOtherConversation();
     await vi.waitFor(() => expect(q('[data-testid="team-card"]')).toBeNull());
     claim.resolve(ok({ companyUid: "cmp_acme" }));
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledOnce());
@@ -297,7 +379,7 @@ describe("the setup bot's team card", () => {
       el.textContent?.includes("Working solo"),
     );
     expect(badges).toHaveLength(1);
-    expect(q('[data-event-id="evt_team"]')!.contains(badges[0]!)).toBe(true);
+    expect(drawnUnder(badges[0]!, "evt_team")).toBe(true);
     // Not drawn after the later message.
     expect(laterEl.compareDocumentPosition(badges[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(0);
   });
@@ -306,5 +388,108 @@ describe("the setup bot's team card", () => {
     await openSetupDm([offerMessage]);
     await settle();
     expect(q('[data-testid="team-card"]')).toBeNull();
+  });
+  it("sits under the bot's first message, above a later signed-out reply", async () => {
+    await openSetupDm([teamMessage, signedOutMessage]);
+    const card = await waitFor('[data-testid="team-card"]');
+    await waitFor('[data-event-id="evt_signed_out"]');
+    expect(drawnUnder(card, "evt_team")).toBe(true);
+  });
+
+  it("settles under the bot's first message, not on the signed-out reply after it", async () => {
+    await openSetupDm([teamMessage, signedOutMessage]);
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-personal"]')).click();
+    await vi.waitFor(() => expect(settledOn("evt_team")?.textContent).toContain("Working solo"));
+    expect(q('[data-testid="team-card"]')).toBeNull();
+  });
+
+  it("the settled line is still there after opening another conversation and coming back", async () => {
+    await openSetupDm([teamMessage, signedOutMessage]);
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-personal"]')).click();
+    await vi.waitFor(() => expect(settledOn("evt_team")?.textContent).toContain("Working solo"));
+    await openOtherConversation();
+    await openSetupRowAgain();
+    await waitFor('[data-event-id="evt_team"]');
+    await vi.waitFor(() => expect(settledOn("evt_team")?.textContent).toContain("Working solo"));
+    expect(q('[data-testid="team-card"]')).toBeNull();
+  });
+
+  it("the settled line comes back after a restart, from the saved pick", async () => {
+    // The server has not handed the reply back yet: only the saved pick knows.
+    const messages = [teamMessage, signedOutMessage];
+    await openSetupDm(messages);
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-personal"]')).click();
+    await vi.waitFor(() => expect(settledOn("evt_team")?.textContent).toContain("Working solo"));
+    await restart(messages);
+    await waitFor('[data-event-id="evt_team"]');
+    await vi.waitFor(() => expect(settledOn("evt_team")?.textContent).toContain("Working solo"));
+    expect(q('[data-testid="team-card"]')).toBeNull();
+  });
+
+  it("the settled line comes from the person's reply in the conversation, with nothing saved on this Mac", async () => {
+    await openSetupDm([
+      teamMessage,
+      signedOutMessage,
+      myReply("evt_reply", "I created Rethink Test.", "2026-10-02T10:01:00.000Z"),
+      myReply("evt_next", "Thanks, what is next?", "2026-10-02T10:02:00.000Z"),
+    ]);
+    await waitFor('[data-event-id="evt_next"]');
+    await vi.waitFor(() => expect(settledOn("evt_team")?.textContent).toContain("Created Rethink Test"));
+    expect(q('[data-testid="team-card"]')).toBeNull();
+  });
+
+  it("the settled line stays under the first message after the person writes again", async () => {
+    await openSetupDm([teamMessage, signedOutMessage]);
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-personal"]')).click();
+    await vi.waitFor(() => expect(settledOn("evt_team")?.textContent).toContain("Working solo"));
+    sendDm.mockResolvedValue(ok({ eventId: "evt_mine_later", createdAt: new Date(Date.now() + 60_000).toISOString() }));
+    const composer = await waitFor<HTMLTextAreaElement>('[data-testid="conversation-composer"]');
+    composer.value = "Thanks, what is next?";
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(2));
+    await waitFor('[data-event-id="evt_mine_later"]');
+    await settle();
+    expect(settledOn("evt_team")?.textContent).toContain("Working solo");
+    expect(host.querySelectorAll('[data-testid="team-card-settled"]')).toHaveLength(1);
+  });
+
+  it("a person's own first message that is not a card reply does not settle the card", async () => {
+    await openSetupDm([teamMessage, myReply("evt_hi", "Hello there.", "2026-10-02T10:01:00.000Z")]);
+    await waitFor('[data-event-id="evt_hi"]');
+    await settle();
+    expect(q('[data-testid="team-card-settled"]')).toBeNull();
+    expect(q('[data-testid="team-card"]')).toBeNull();
+  });
+
+  it("while a pick runs every control is disabled and the pressed one shows it is working", async () => {
+    const claim = deferred<unknown>();
+    await openSetupDm([teamMessage], { companies: [pendingInvite("acme", "Acme Robotics")], claim: () => claim.promise });
+    const join = await waitFor<HTMLButtonElement>('[data-testid="team-card-join"]');
+    join.click();
+    await vi.waitFor(() => expect(join.getAttribute("aria-busy")).toBe("true"));
+    const card = q('[data-testid="team-card"]')!;
+    expect(card.getAttribute("aria-busy")).toBe("true");
+    expect(join.querySelector('[data-testid="team-card-spinner"]')).toBeTruthy();
+    for (const button of card.querySelectorAll<HTMLButtonElement>("button")) expect(button.disabled).toBe(true);
+    claim.resolve(ok({ companyUid: "cmp_acme" }));
+    await vi.waitFor(() => expect(settledOn("evt_team")?.textContent).toContain("Joined Acme Robotics"));
+  });
+
+  it("a failed join shows the error line and Retry, and Retry joins", async () => {
+    const claimInvite = vi
+      .fn<(slug: string) => Promise<unknown>>()
+      .mockResolvedValueOnce({ ok: false, message: "invite expired" })
+      .mockResolvedValue(ok({ companyUid: "cmp_acme" }));
+    await openSetupDm([teamMessage], { companies: [pendingInvite("acme", "Acme Robotics")], claim: claimInvite });
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-join"]')).click();
+    const error = await waitFor('[data-testid="team-card-error"]');
+    expect(error.getAttribute("role")).toBe("alert");
+    const card = q('[data-testid="team-card"]')!;
+    expect(card.getAttribute("aria-busy")).toBe("false");
+    expect(q<HTMLButtonElement>('[data-testid="team-card-join"]')!.disabled).toBe(false);
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-retry"]')).click();
+    await vi.waitFor(() => expect(claimInvite).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(settledOn("evt_team")?.textContent).toContain("Joined Acme Robotics"));
   });
 });

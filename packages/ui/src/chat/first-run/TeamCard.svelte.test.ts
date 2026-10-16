@@ -104,6 +104,54 @@ describe("TeamCard states", () => {
     }
   });
 
+  it("pending: the card and the pressed row say they are busy", () => {
+    const { root } = render({ invites: [acme], companies: [pickle] }, { pendingKey: "invite:acme" });
+    expect(q(root, "team-card")?.getAttribute("aria-busy")).toBe("true");
+    expect(q(root, "team-card-join")?.getAttribute("aria-busy")).toBe("true");
+    expect(q(root, "team-card-open")?.hasAttribute("aria-busy")).toBe(false);
+  });
+
+  it("pending Create: the name field and every row wait while the Create button spins", () => {
+    const props = $state<Record<string, unknown>>({
+      options: { invites: [acme], companies: [] },
+      onpick: vi.fn(),
+      onretry: vi.fn(),
+      pendingKey: null,
+      error: null,
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(TeamCard, { target: host, props: props as never });
+    flushSync();
+    q(host, "team-card-create")!.click();
+    flushSync();
+    const input = q(host, "team-card-name") as HTMLInputElement;
+    input.value = "Pickle Works";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    q(host, "team-card-create-submit")!.click();
+    flushSync();
+    expect(props.onpick).toHaveBeenCalledWith({ kind: "create", name: "Pickle Works" });
+    props.pendingKey = "create";
+    flushSync();
+    const submit = q(host, "team-card-create-submit") as HTMLButtonElement;
+    expect(submit.querySelector('[data-testid="team-card-spinner"]')).not.toBeNull();
+    expect(submit.getAttribute("aria-busy")).toBe("true");
+    expect(submit.disabled).toBe(true);
+    expect(input.disabled).toBe(true);
+    expect((q(host, "team-card-join") as HTMLButtonElement).disabled).toBe(true);
+    expect((q(host, "team-card-personal") as HTMLButtonElement).disabled).toBe(true);
+    expect(q(host, "team-card")?.getAttribute("aria-busy")).toBe("true");
+    // The create fails: the error line and Retry show, and the field is usable again.
+    props.pendingKey = null;
+    props.error = "Something went wrong. Try again.";
+    flushSync();
+    expect(q(host, "team-card-error")?.textContent).toContain("Something went wrong. Try again.");
+    expect(q(host, "team-card-retry")).not.toBeNull();
+    expect(q(host, "team-card")?.getAttribute("aria-busy")).toBe("false");
+    expect(input.disabled).toBe(false);
+  });
+
   it("failure: a plain sentence with Retry", () => {
     const { root, onretry } = render({ invites: [acme], companies: [] }, { error: "Couldn't join the company. Try again." });
     expect(q(root, "team-card-error")?.textContent).toContain("Couldn't join the company. Try again.");

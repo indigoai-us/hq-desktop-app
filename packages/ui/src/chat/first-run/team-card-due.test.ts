@@ -36,27 +36,45 @@ describe("teamCardDue", () => {
   });
 });
 
+const anchor = (messages: { eventId?: string; fromPersonUid: string; body: string; richContent?: unknown }[]) =>
+  teamCardAnchorEventId(messages, BOT, teamBlockInMessage, messageHasVisibleContent);
+const signedOut = {
+  eventId: "evt_signed_out",
+  fromPersonUid: BOT,
+  body: "I couldn't answer because Claude Code is signed out on this Mac. Sign in, then send your message again.",
+  richContent: { v: 1, blocks: [{ v: 1, kind: "runtime-repair", class: "signed-out", runtime: "claude", action: "signIn", botName: "setup" }] },
+};
+
 describe("teamCardAnchorEventId", () => {
-  it("is the last of the bot's opening messages", () => {
+  it("is the opening message that carries the team block", () => {
     const messages = [
       { eventId: "evt_1", fromPersonUid: BOT, body: "Hi." },
       { eventId: "evt_2", fromPersonUid: BOT, body: withBlock },
     ];
-    expect(teamCardAnchorEventId(messages, BOT)).toBe("evt_2");
+    expect(anchor(messages)).toBe("evt_2");
+  });
+
+  it("stays on the block message when the bot sends a signed-out reply after it", () => {
+    expect(anchor([{ eventId: "evt_team", fromPersonUid: BOT, body: withBlock }, signedOut])).toBe("evt_team");
+  });
+
+  it("without a block, is the bot's first visible message, not a later one", () => {
+    expect(anchor([{ eventId: "evt_hi", fromPersonUid: BOT, body: "Hi there." }, signedOut])).toBe("evt_hi");
   });
 
   it("stops at the person's first message, so later bot messages never move it", () => {
     const messages = [
       { eventId: "evt_team", fromPersonUid: BOT, body: withBlock },
       { eventId: "evt_me", fromPersonUid: ME, body: "Just me for now." },
-      { eventId: "evt_later", fromPersonUid: BOT, body: "Great." },
+      { eventId: "evt_later", fromPersonUid: BOT, body: withBlock },
     ];
-    expect(teamCardAnchorEventId(messages, BOT)).toBe("evt_team");
+    expect(anchor(messages)).toBe("evt_team");
   });
 
   it("is null when the person wrote first or nothing has an id", () => {
-    expect(teamCardAnchorEventId([{ eventId: "evt_me", fromPersonUid: ME, body: "hi" }], BOT)).toBeNull();
-    expect(teamCardAnchorEventId([{ fromPersonUid: BOT, body: "Hi." }], BOT)).toBeNull();
-    expect(teamCardAnchorEventId([], BOT)).toBeNull();
+    expect(anchor([{ eventId: "evt_me", fromPersonUid: ME, body: "hi" }])).toBeNull();
+    expect(anchor([{ fromPersonUid: BOT, body: "Hi." }])).toBeNull();
+    expect(anchor([])).toBeNull();
+    expect(teamCardAnchorEventId([{ eventId: "evt_1", fromPersonUid: BOT, body: "Hi." }], " ", teamBlockInMessage, messageHasVisibleContent)).toBeNull();
   });
 });
