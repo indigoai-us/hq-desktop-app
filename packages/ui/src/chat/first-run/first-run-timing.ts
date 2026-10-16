@@ -12,7 +12,7 @@
  * [first-run] kind=probe tool=<claude|codex|...> result=<passed|signed-out|failed|timeout> elapsed_ms=<n>
  * [first-run] kind=phase phase=<blocking> result=<ok|failed> elapsed_ms=<n since launch> (logged from Rust)
  * [first-run] kind=route route=<pending|visual|legacy> flag=<true|false|null> owed=<true|false|null> setupRun=<bool> finished=<bool> finishedUnconfirmed=<bool> hasBots=<bool>
- * [first-run] kind=flag flag=<visual-first-run|found-apps> path=<scoped|unscoped|timeout|error|skipped> value=<bool> applied=<bool> elapsed_ms=<n>
+ * [first-run] kind=flag flag=<visual-first-run|found-apps> path=<scoped|unscoped|timeout|error|skipped> value=<bool> applied=<bool> [late=<applied|legacy-started|too-late>] elapsed_ms=<n>
  * [first-run] kind=setup-run event=set caller=<call site>
  * ```
  *
@@ -20,6 +20,8 @@
  * lookup answer: `path` says what answered (the flag service read with or
  * without a company, the wait running out, an error, or no read at all), and
  * `applied=false` means an earlier answer had already settled the value.
+ * `late` appears only on an "on" answer that landed after its wait ran out on
+ * a new install, and says whether it still opened the takeover.
  * Setup-run lines say which call site set the "setup run" record to true.
  *
  * Install ids: node, git, hq-cli, qmd, claude-code, codex, gh, yq, jq (logged
@@ -161,14 +163,23 @@ export function formatRoute(state: FirstRunRouteState): string {
 export type FirstRunFlagName = "visual-first-run" | "found-apps";
 export type FlagLookupPath = "scoped" | "unscoped" | "timeout" | "error" | "skipped";
 
+/**
+ * An "on" answer that lands after its wait ran out on a new install: applied
+ * (the takeover opens after all), or not, because the old setup had started
+ * or the answer came after the late window closed.
+ */
+export type FlagLateOutcome = "applied" | "legacy-started" | "too-late";
+
 export function formatFlagLookup(
   flag: FirstRunFlagName,
   path: FlagLookupPath,
   value: boolean,
   applied: boolean,
   elapsedMs: number,
+  late?: FlagLateOutcome,
 ): string {
-  return `kind=flag flag=${flag} path=${path} value=${value} applied=${applied} elapsed_ms=${ms(elapsedMs)}`;
+  const lateField = late ? ` late=${late}` : "";
+  return `kind=flag flag=${flag} path=${path} value=${value} applied=${applied}${lateField} elapsed_ms=${ms(elapsedMs)}`;
 }
 
 export function formatSetupRunSet(caller: string): string {

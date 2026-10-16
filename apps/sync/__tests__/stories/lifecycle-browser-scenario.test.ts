@@ -436,23 +436,54 @@ describe('desktop shell boots the lifecycle scenario', () => {
     const { invokeFn, calls } = createLifecycleInvoke({ delayScale: 0 });
     host = document.createElement('div');
     document.body.appendChild(host);
+    // A new install: #setup holds a loader until the visual-first-run flag
+    // answers, then the route settles (legacy here: the flag is off) and the
+    // banner paints. The setup bot's DM opens soon after and replaces #setup,
+    // so every DOM change is recorded from mount and the banner is checked on
+    // the frames after the loader leaves.
+    const has = (testId: string) => host.querySelector(`[data-testid="${testId}"]`) !== null;
+    let sawLoader = false;
+    const settledFrames: Array<{ skeleton: boolean; intro: boolean; run: boolean; card: boolean; composer: boolean }> = [];
+    const observer = new MutationObserver(() => {
+      if (has('welcome-route-pending')) {
+        sawLoader = true;
+        return;
+      }
+      if (!sawLoader || !has('setup-channel-intro')) return;
+      settledFrames.push({
+        skeleton: has('channel-skeleton'),
+        intro: has('setup-channel-intro'),
+        run: has('setup-run'),
+        card: has('lifecycle-card'),
+        composer: has('conversation-composer'),
+      });
+    });
+    observer.observe(host, { childList: true, subtree: true });
     component = mount(HqWorkWorkShell, {
       target: host,
       props: { invokeFn, bootTimeoutMs: 40 },
     });
     await flush();
     expect(host.querySelector('[data-testid="hq-work-identity-error"]')).toBeNull();
-    await vi.waitFor(
-      () => {
-        expect(host.querySelector('[data-testid="channel-skeleton"]')).toBeNull();
-        expect(host.querySelector('[data-testid="setup-channel-intro"]')).toBeTruthy();
-        expect(host.querySelector('[data-testid="setup-run"]')).toBeTruthy();
-        // #welcome is only the banner in setup-bot mode: no seeded cards, no composer.
-        expect(host.querySelector('[data-testid="lifecycle-card"]')).toBeNull();
-        expect(host.querySelector('[data-testid="conversation-composer"]')).toBeNull();
-        expect(calls).toContain('shell_ready');
-      },
-      { timeout: 5_000 },
-    );
+    try {
+      await vi.waitFor(
+        () => {
+          expect(sawLoader).toBe(true);
+          expect(settledFrames.length).toBeGreaterThan(0);
+          expect(calls).toContain('shell_ready');
+        },
+        { timeout: 5_000 },
+      );
+    } finally {
+      observer.disconnect();
+    }
+    // The first frame after the route settles shows the banner.
+    const [banner] = settledFrames;
+    expect(banner.skeleton).toBe(false);
+    expect(banner.intro).toBe(true);
+    expect(banner.run).toBe(true);
+    // #welcome is only the banner in setup-bot mode: no seeded cards, no composer.
+    expect(banner.card).toBe(false);
+    expect(banner.composer).toBe(false);
   }, 15_000);
 });

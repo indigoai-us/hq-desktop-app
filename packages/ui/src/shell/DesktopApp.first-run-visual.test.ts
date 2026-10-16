@@ -19,11 +19,12 @@ import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
-import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
+import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import { SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
 import {
   VISUAL_FIRST_RUN_DONE_KEY,
-  VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+  VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS,
+  VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS,
   FIRST_RUN_LISTINGS_WAIT_MS,
   firstRunHandoffNotice,
   firstRunIntro,
@@ -230,6 +231,7 @@ async function boot(
           setupRun: fakeSetupRun(),
         },
       },
+      ...extraProps,
     },
   });
   await settle();
@@ -263,6 +265,16 @@ function typeName(value: string): void {
 /** The bot path's one action: Continue confirms the name. */
 function confirmName(): void {
   q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+}
+
+/** A log writer that keeps the `[first-run]` lines in order. */
+function logSink() {
+  const lines: string[] = [];
+  const logToFile = vi.fn(async (tag: string, message: string) => {
+    if (tag === "first-run") lines.push(message);
+    return ok(undefined);
+  });
+  return { lines, logToFile, of: (kind: string) => lines.filter((line) => line.startsWith(`kind=${kind} `)) };
 }
 
 describe("visual first run, flag off", () => {
@@ -689,6 +701,8 @@ describe("welcome report (US-009)", () => {
     q<HTMLButtonElement>('[data-testid="welcome-report-setup-button"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="setup-hero"]')).toBeTruthy());
     expect(q('[data-testid="welcome-report"]')).toBeNull();
+    // The takeover is finished, so the route is legacy: #welcome's first-run loader is gone for good.
+    expect(q('[data-testid="welcome-route-pending"]')).toBeNull();
   });
 
   it("an assistant that cannot take the job shows the brief page's fix on the welcome report, never the loading card", async () => {
@@ -1103,12 +1117,13 @@ describe("visual first run: the found-apps flag is settled before the takeover o
   });
 });
 
-describe("visual first run: #welcome's start while the takeover waits for the bot listings", () => {
-  // #1570 holds the takeover until the bot listings answer, and #welcome's
-  // start button is live in that wait. A create made there with #welcome's
-  // kickoff, then adopted by the takeover, would write twice: once on create
-  // and once on the note at close. The start reads the listings itself before
-  // it creates, which ends the wait first; these pin that order.
+describe("visual first run: #welcome while the takeover waits for the bot listings", () => {
+  // #1570 holds the takeover until the bot listings answer. #welcome showed
+  // the old setup, with its start button, in that wait; a create made there
+  // with #welcome's kickoff, then adopted by the takeover, would write twice.
+  // #welcome now shows a loader until the takeover opens, so the old setup is
+  // never on view and only the takeover creates: once, with no kickoff, and
+  // one note at close.
   const listedSetupBot = {
     name: "setup",
     agentUid: SETUP_BOT_UID,
@@ -1145,11 +1160,14 @@ describe("visual first run: #welcome's start while the takeover waits for the bo
 
   const takeoverOpen = () => Boolean(q('[data-testid="first-run-takeover"]'));
 
-  async function clickWelcomeStartInTheWait(): Promise<void> {
+  /** The route is visual and the takeover not yet open: #welcome shows the loader and no old setup. */
+  async function expectWelcomeWaiting(log: ReturnType<typeof logSink>): Promise<void> {
     await settle(12);
     expect(takeoverOpen()).toBe(false);
-    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="setup-run"]')?.disabled).toBe(false));
-    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    expect(log.of("route").at(-1)).toMatch(/^kind=route route=visual /);
+    expect(q('[data-testid="welcome-route-pending"]')).toBeTruthy();
+    expect(q('[data-testid="setup-run"]')).toBeNull();
+    expect(q('[data-testid="setup-bot-fallback"]')).toBeNull();
   }
 
   async function walkTheTakeoverToDone(): Promise<void> {
@@ -1167,59 +1185,41 @@ describe("visual first run: #welcome's start while the takeover waits for the bo
     expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
   }
 
-  it("with this computer's bot list slow, the click creates nothing until the takeover is open; no kickoff, one note at close", async () => {
-    const listing = slowListing({ holdAll: true });
-    const openAtCreate: boolean[] = [];
-    let landCreate!: (value: unknown) => void;
-    const create = vi.fn((_input: unknown) => {
-      openAtCreate.push(takeoverOpen());
-      return new Promise((r) => (landCreate = r));
-    });
-    const { platform, sendDm } = adapter({ create: create as never, flag: true, listImpl: listing.listImpl });
-    await boot(platform);
-    await clickWelcomeStartInTheWait();
-    await settle(12);
-    expect(create).not.toHaveBeenCalled();
-
-    listing.release();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(openAtCreate).toEqual([true]);
-    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
-    listing.rows.push(listedSetupBot);
-    landCreate(ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    await settle(12);
-    expect(sendDm).not.toHaveBeenCalled();
-
-    await walkTheTakeoverToDone();
-    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
-    await settle(12);
-    expect(create).toHaveBeenCalledTimes(1);
-    expectOneHandoffNote(sendDm);
-  });
-
-  it("with only the boot read slow, the click's own read opens the takeover before it creates; no kickoff, one note at close", async () => {
-    const listing = slowListing({ holdAll: false });
+  async function walkCreatesOnceWithOneNote(holdAll: boolean): Promise<void> {
+    const listing = slowListing({ holdAll });
     const openAtCreate: boolean[] = [];
     const create = vi.fn(async (_input: unknown) => {
       openAtCreate.push(takeoverOpen());
       listing.rows.push(listedSetupBot);
       return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
     });
-    const { platform, sendDm } = adapter({ create: create as never, flag: true, listImpl: listing.listImpl });
+    const log = logSink();
+    const { platform, sendDm } = adapter({
+      create: create as never,
+      flag: true,
+      listImpl: listing.listImpl,
+      logToFile: log.logToFile,
+    });
     await boot(platform);
-    await clickWelcomeStartInTheWait();
-    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-    expect(openAtCreate).toEqual([true]);
-    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
-    await settle(12);
-    expect(sendDm).not.toHaveBeenCalled();
+    await expectWelcomeWaiting(log);
+    expect(create).not.toHaveBeenCalled();
 
     listing.release();
     await walkTheTakeoverToDone();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
     await settle(12);
     expect(create).toHaveBeenCalledTimes(1);
+    expect(openAtCreate).toEqual([true]);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("kickoff");
     expectOneHandoffNote(sendDm);
+  }
+
+  it("with this computer's bot list slow, #welcome shows the loader until the takeover opens; one create, no kickoff, one note at close", async () => {
+    await walkCreatesOnceWithOneNote(true);
+  });
+
+  it("with only the boot read slow, #welcome shows the loader until the takeover opens; one create, no kickoff, one note at close", async () => {
+    await walkCreatesOnceWithOneNote(false);
   });
 });
 
@@ -1412,7 +1412,7 @@ describe("the flag read overlaps the setup-owed check (fake timers)", () => {
     const fresh = (await import("./DesktopApp.svelte")).default;
     await boot(platform, fresh, svelte.mount);
     let elapsed = 0;
-    while (create.mock.calls.length === 0 && elapsed < 6000) {
+    while (create.mock.calls.length === 0 && elapsed < 8000) {
       await vi.advanceTimersByTimeAsync(25);
       await settle(4);
       elapsed += 25;
@@ -1430,7 +1430,7 @@ describe("the flag read overlaps the setup-owed check (fake timers)", () => {
     vi.useRealTimers();
   });
 
-  it("a flag that answers before the setup-owed answer adds no wait; a slow one adds at most the grace", async () => {
+  it("a flag that answers before the setup-owed answer adds no wait; a slow one adds at most the owed wait", async () => {
     // Today's timing: a flag that is off the moment it is asked.
     const baseline = await startTime({ hasFeatureImpl: flagAfter(0) });
     // Off, answered at 400 ms: before the owed answer at 500 ms.
@@ -1441,7 +1441,7 @@ describe("the flag read overlaps the setup-owed check (fake timers)", () => {
     const answeredLater = await startTime({
       hasFeatureImpl: flagAfter(1200),
     });
-    // Never answers: off once the grace past the owed answer runs out.
+    // Never answers: off once the wait past the owed answer runs out.
     // (Read in sequence, a 1200 ms flag would have started at 1700 ms.)
     const neverAnswers = await startTime({ hasFeatureImpl: flagAfter(null) });
 
@@ -1450,21 +1450,12 @@ describe("the flag read overlaps the setup-owed check (fake timers)", () => {
     expect(answeredLater).toBeLessThanOrEqual(1200 + 50);
     expect(answeredLater).toBeLessThan(OWED_AT_MS + 1200);
     expect(neverAnswers).toBeGreaterThan(baseline);
-    expect(neverAnswers).toBeLessThanOrEqual(baseline + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 50);
+    expect(neverAnswers).toBeGreaterThanOrEqual(OWED_AT_MS + VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS);
+    expect(neverAnswers).toBeLessThanOrEqual(baseline + VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS + 50);
   });
 });
 
 describe("first-run route log (hq-sync.log)", () => {
-  /** A log writer that keeps the `[first-run]` lines in order. */
-  function logSink() {
-    const lines: string[] = [];
-    const logToFile = vi.fn(async (tag: string, message: string) => {
-      if (tag === "first-run") lines.push(message);
-      return ok(undefined);
-    });
-    return { lines, logToFile, of: (kind: string) => lines.filter((line) => line.startsWith(`kind=${kind} `)) };
-  }
-
   it("logs one line per route change, with what the route came from, and the flag read that answered", async () => {
     const log = logSink();
     const { platform } = adapter({ flag: true, logToFile: log.logToFile });
@@ -1503,41 +1494,327 @@ describe("first-run route log (hq-sync.log)", () => {
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
   });
 
-  describe("with a flag answer slower than the grace (fake timers)", () => {
+  describe("with a slow flag answer on a new install (fake timers)", () => {
     beforeEach(() => {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      // Date too: the late window is measured from the timeout with Date.now().
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     });
     afterEach(() => {
       vi.useRealTimers();
     });
 
-    it("logs the grace running out, the legacy route it chose, and the late answer that was not applied", async () => {
-      const log = logSink();
-      const delayed = <T,>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
-      const { platform } = adapter({
-        logToFile: log.logToFile,
-        setupStatusImpl: () =>
-          delayed(200, ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true })),
-        // On, but answered past the grace that starts once owed is in.
-        hasFeatureImpl: (name) =>
-          name === VISUAL_FIRST_RUN_FLAG ? delayed(200 + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 300, ok(true)) : Promise.resolve(ok(false)),
-      });
-      await boot(platform);
-      for (let elapsed = 0; elapsed < 200 + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 600; elapsed += 50) {
+    const OWED_AT = 200;
+    const delayed = <T,>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+    const owedAfter = (owed: boolean) => () =>
+      delayed(OWED_AT, ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: owed }));
+    /** `desktop.visual-first-run` answers on after `ms` (never with null); every other flag is off at once. */
+    const flagOnAfter =
+      (ms: number | null) =>
+      (name: string): Promise<unknown> => {
+        if (name !== VISUAL_FIRST_RUN_FLAG) return Promise.resolve(ok(false));
+        return ms === null ? new Promise(() => {}) : delayed(ms, ok(true));
+      };
+    async function advance(until: number, from = 0): Promise<void> {
+      for (let elapsed = from; elapsed < until; elapsed += 50) {
         await vi.advanceTimersByTimeAsync(50);
         await settle(4);
       }
+    }
+    const flagLines = (log: ReturnType<typeof logSink>) =>
+      log.of("flag").map((line) => line.replace(/ elapsed_ms=\d+$/, ""));
+    const legacyStart = (create: ReturnType<typeof vi.fn>) =>
+      create.mock.calls.some((call) => (call[0] as { kickoff?: string } | undefined)?.kickoff === SETUP_BOT_KICKOFF);
 
-      const flagLines = log.of("flag").map((line) => line.replace(/ elapsed_ms=\d+$/, ""));
-      expect(flagLines).toEqual([
+    it("an on answer at 1.5 s, past the old 1 s grace, opens the takeover, and nothing old starts while it waits", async () => {
+      const log = logSink();
+      const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+      const { platform } = adapter({
+        create,
+        logToFile: log.logToFile,
+        setupStatusImpl: owedAfter(true),
+        hasFeatureImpl: flagOnAfter(1500),
+      });
+      await boot(platform);
+      await advance(1400);
+      // Still waiting: no takeover yet, and the old setup has not started.
+      expect(log.of("route").at(-1)).toMatch(/^kind=route route=pending /);
+      expect(legacyStart(create)).toBe(false);
+      await advance(2400, 1400);
+
+      expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+      expect(legacyStart(create)).toBe(false);
+      expect(flagLines(log)[0]).toBe("kind=flag flag=visual-first-run path=unscoped value=true applied=true");
+      expect(log.of("route")).toEqual([
+        "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+        "kind=route route=visual flag=true owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+      ]);
+    });
+
+    it("no answer within the wait: the old setup, logged as a timeout", async () => {
+      const log = logSink();
+      const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+      const { platform } = adapter({
+        create,
+        logToFile: log.logToFile,
+        setupStatusImpl: owedAfter(true),
+        hasFeatureImpl: flagOnAfter(null),
+      });
+      await boot(platform);
+      await advance(OWED_AT + VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS - 200);
+      expect(log.of("route").at(-1)).toMatch(/^kind=route route=pending /);
+      expect(legacyStart(create)).toBe(false);
+      await advance(OWED_AT + VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS + 600, OWED_AT + VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS - 200);
+
+      expect(flagLines(log)).toEqual(["kind=flag flag=visual-first-run path=timeout value=false applied=true"]);
+      expect(log.of("route").at(-1)).toBe(
+        "kind=route route=legacy flag=false owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+      );
+      expect(legacyStart(create)).toBe(true);
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    });
+
+    it("an on answer after the wait ran out, before anything old started, still opens the takeover", async () => {
+      const log = logSink();
+      const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+      const lateAt = OWED_AT + VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS + 800;
+      // No coding tool signed in: the old setup does not start by itself.
+      const { platform } = adapter({
+        create,
+        claudeLoggedIn: false,
+        probe: null,
+        logToFile: log.logToFile,
+        setupStatusImpl: owedAfter(true),
+        hasFeatureImpl: flagOnAfter(lateAt),
+      });
+      await boot(platform);
+      await advance(lateAt - 200);
+      expect(log.of("route").at(-1)).toMatch(/^kind=route route=legacy /);
+      await advance(lateAt + 1000, lateAt - 200);
+
+      expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+      expect(create).not.toHaveBeenCalled();
+      expect(flagLines(log).slice(0, 2)).toEqual([
         "kind=flag flag=visual-first-run path=timeout value=false applied=true",
-        "kind=flag flag=visual-first-run path=unscoped value=true applied=false",
+        "kind=flag flag=visual-first-run path=unscoped value=true applied=true late=applied",
       ]);
       expect(log.of("route")).toEqual([
         "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
         "kind=route route=legacy flag=false owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+        "kind=route route=visual flag=true owed=true setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
       ]);
+    });
+
+    it("an on answer after the old setup already started keeps the old setup, and says so", async () => {
+      const log = logSink();
+      const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+      const lateAt = OWED_AT + VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS + 800;
+      const { platform } = adapter({
+        create,
+        logToFile: log.logToFile,
+        setupStatusImpl: owedAfter(true),
+        hasFeatureImpl: flagOnAfter(lateAt),
+      });
+      await boot(platform);
+      await advance(lateAt - 200);
+      expect(legacyStart(create)).toBe(true);
+      await advance(lateAt + 1000, lateAt - 200);
+
       expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+      expect(flagLines(log)).toEqual([
+        "kind=flag flag=visual-first-run path=timeout value=false applied=true",
+        "kind=flag flag=visual-first-run path=unscoped value=true applied=false late=legacy-started",
+      ]);
+      expect(log.of("route").at(-1)).toMatch(/^kind=route route=legacy /);
+    });
+
+    describe("the late window and what counts as the old setup having started", () => {
+      // The wait runs out at about OWED_AT + the owed wait; the late window is measured from then.
+      const TIMED_OUT_AT = OWED_AT + VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS;
+      const FIRST_LINE = "kind=flag flag=visual-first-run path=timeout value=false applied=true";
+      // A row click moves the address; start each test from the app's own start.
+      const startUrl = window.location.href;
+      afterEach(() => window.history.replaceState(null, "", startUrl));
+
+      /** No coding tool signed in, so nothing old starts by itself while the late answer is coming. */
+      function lateOn(lateAt: number, extra: Partial<AdapterOptions> = {}) {
+        const log = logSink();
+        const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+        const { platform } = adapter({
+          create,
+          claudeLoggedIn: false,
+          probe: null,
+          logToFile: log.logToFile,
+          setupStatusImpl: owedAfter(true),
+          hasFeatureImpl: flagOnAfter(lateAt),
+          ...extra,
+        });
+        return { log, create, platform };
+      }
+      /** The install is still running when the late answer lands, so nothing else has started the old setup yet. */
+      function installGuide() {
+        return {
+          oninstall: vi.fn(() => new Promise<{ ok: boolean }>(() => undefined)),
+          onsignin: vi.fn(async () => ({ ok: true })),
+          onrefresh: vi.fn(async () => undefined),
+          downloadUrlFor: () => "https://claude.com/download",
+          onopen: vi.fn(() => undefined),
+        };
+      }
+      /** A sidebar row other than #welcome. */
+      function otherRow(): HTMLButtonElement {
+        const row = [...document.querySelectorAll<HTMLButtonElement>("button[data-conversation-id]")].find(
+          (button) => button.getAttribute("data-conversation-id") !== SETUP_ROW_ID,
+        );
+        expect(row, "a row other than #welcome").toBeTruthy();
+        return row!;
+      }
+      function stayedLegacy(log: ReturnType<typeof logSink>, late: string): void {
+        expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+        expect(flagLines(log).slice(0, 2)).toEqual([
+          FIRST_LINE,
+          `kind=flag flag=visual-first-run path=unscoped value=true applied=false late=${late}`,
+        ]);
+        expect(log.of("route").at(-1)).toMatch(/^kind=route route=legacy /);
+      }
+
+      it("an on answer inside the window with nothing touched still opens the takeover", async () => {
+        const lateAt = TIMED_OUT_AT + VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS - 500;
+        const { log, create, platform } = lateOn(lateAt);
+        await boot(platform);
+        await advance(lateAt + 1000);
+
+        expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+        expect(create).not.toHaveBeenCalled();
+        expect(flagLines(log).slice(0, 2)).toEqual([
+          FIRST_LINE,
+          "kind=flag flag=visual-first-run path=unscoped value=true applied=true late=applied",
+        ]);
+      });
+
+      it("#welcome shows the loader while the flag is pending, and the old setup once the wait runs out", async () => {
+        const { log, platform } = lateOn(TIMED_OUT_AT + 8_000);
+        await boot(platform);
+        await advance(OWED_AT + 1_000);
+        expect(log.of("route").at(-1)).toMatch(/^kind=route route=pending /);
+        expect(q('[data-testid="welcome-route-pending"]')).toBeTruthy();
+        expect(q('[data-testid="setup-bot-fallback"]')).toBeNull();
+
+        await advance(TIMED_OUT_AT + 600, OWED_AT + 1_000);
+        expect(log.of("route").at(-1)).toMatch(/^kind=route route=legacy /);
+        expect(q('[data-testid="welcome-route-pending"]')).toBeNull();
+        expect(q('[data-testid="setup-bot-fallback"]')).toBeTruthy();
+      });
+
+      it("an on answer 8 s after the wait ran out keeps the old setup, logged as too late", async () => {
+        const lateAt = TIMED_OUT_AT + 8_000;
+        const { log, platform } = lateOn(lateAt);
+        await boot(platform);
+        await advance(lateAt + 1000);
+
+        stayedLegacy(log, "too-late");
+      });
+
+      it("an install-guide action in #welcome before the late on answer keeps the old setup", async () => {
+        const lateAt = TIMED_OUT_AT + 2_000;
+        const guide = installGuide();
+        const { log, platform } = lateOn(lateAt);
+        await boot(platform, DesktopApp, mount, { setupInstallGuide: guide });
+        await advance(TIMED_OUT_AT + 600);
+        q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!.click();
+        await settle();
+        expect(guide.oninstall).toHaveBeenCalled();
+        await advance(lateAt + 1000, TIMED_OUT_AT + 600);
+
+        stayedLegacy(log, "legacy-started");
+      });
+
+      it("the step-by-step setup link in #welcome before the late on answer keeps the old setup", async () => {
+        const lateAt = TIMED_OUT_AT + 2_000;
+        const { log, platform } = lateOn(lateAt);
+        await boot(platform);
+        await advance(TIMED_OUT_AT + 600);
+        q<HTMLButtonElement>('[data-testid="setup-bot-fallback"]')!.click();
+        await settle();
+        await advance(lateAt + 1000, TIMED_OUT_AT + 600);
+
+        stayedLegacy(log, "legacy-started");
+      });
+
+      it("selecting another row before the late on answer keeps the old setup", async () => {
+        const lateAt = TIMED_OUT_AT + 2_000;
+        const { log, platform } = lateOn(lateAt);
+        await boot(platform);
+        await advance(TIMED_OUT_AT + 600);
+        otherRow().click();
+        await settle();
+        await advance(lateAt + 1000, TIMED_OUT_AT + 600);
+
+        stayedLegacy(log, "legacy-started");
+      });
+
+      it("a message sent before the late on answer keeps the old setup", async () => {
+        const lateAt = TIMED_OUT_AT + 2_000;
+        const { log, platform } = lateOn(lateAt);
+        await boot(platform);
+        await advance(TIMED_OUT_AT + 600);
+        // #welcome has no composer, so the message goes from another row.
+        otherRow().click();
+        await settle();
+        const composer = q<HTMLTextAreaElement>('[data-testid="conversation-composer"]')!;
+        composer.value = "hello";
+        composer.dispatchEvent(new Event("input", { bubbles: true }));
+        await settle();
+        q<HTMLButtonElement>('[data-testid="composer-send"]')!.click();
+        await settle();
+        await advance(lateAt + 1000, TIMED_OUT_AT + 600);
+
+        stayedLegacy(log, "legacy-started");
+      });
+
+      it("something old starting after the late on answer, before the takeover opens, stops it opening", async () => {
+        const lateAt = TIMED_OUT_AT + 2_000;
+        // This computer's bot list answers 1.5 s after the flag, so the takeover is still waiting to open.
+        const { log, create, platform } = lateOn(lateAt, {
+          listImpl: () => delayed(lateAt + 1_500, ok({ bots: [] })),
+        });
+        await boot(platform);
+        await advance(lateAt + 200);
+        expect(flagLines(log)[1]).toBe(
+          "kind=flag flag=visual-first-run path=unscoped value=true applied=true late=applied",
+        );
+        expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+        otherRow().click();
+        await settle();
+        await advance(lateAt + 1_500 + FIRST_RUN_LISTINGS_WAIT_MS + 1000, lateAt + 200);
+
+        expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+        expect(create).not.toHaveBeenCalled();
+        expect(log.of("route").at(-1)).toMatch(/^kind=route route=legacy /);
+      });
+    });
+
+    it("setup not owed: unchanged, the old route at once and a later on answer is not applied", async () => {
+      const log = logSink();
+      const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+      const { platform } = adapter({
+        create,
+        logToFile: log.logToFile,
+        setupStatusImpl: owedAfter(false),
+        hasFeatureImpl: flagOnAfter(1500),
+      });
+      await boot(platform);
+      await advance(2500);
+
+      expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+      expect(log.of("route")).toEqual([
+        "kind=route route=pending flag=null owed=null setupRun=false finished=false finishedUnconfirmed=false hasBots=true",
+        "kind=route route=legacy flag=null owed=false setupRun=true finished=false finishedUnconfirmed=false hasBots=true",
+      ]);
+      // The short grace still applies when setup is not owed, and the late on is dropped as before.
+      expect(flagLines(log)).toEqual([
+        "kind=flag flag=visual-first-run path=timeout value=false applied=true",
+        "kind=flag flag=visual-first-run path=unscoped value=true applied=false",
+      ]);
     });
   });
 });
