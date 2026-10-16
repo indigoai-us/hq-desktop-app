@@ -24,7 +24,8 @@ export function isAlreadyScheduledError(err: unknown): boolean {
 }
 
 /**
- * Classify a bot invite/join failure as requiring the Meetings Team plan.
+ * Classify a bot invite/join failure as a plan refusal (the company's plan
+ * does not include meeting recording).
  *
  * The server rejects recording-bot scheduling with HTTP 402 when the company
  * is not on the required Team plan. See hq-pro `bot.controller.ts`, which

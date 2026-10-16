@@ -76,7 +76,7 @@ describe("New bot: a bot that runs somewhere else", () => {
     await settle();
     const external = host.querySelector("[data-testid=chat-bot-where-external]");
     expect(external).not.toBeNull();
-    expect(host.querySelector("[data-testid=chat-bot-external-paid]")?.textContent).toContain("paid plans");
+    expect(host.querySelector("[data-testid=chat-bot-external-paid]")?.textContent).toBe("External bots count toward the company's plan.");
     expect(host.querySelector("[data-testid=chat-bot-external-enroll-mask]")?.textContent).toContain("••••");
     expect(external?.textContent).toContain("hq agent enroll");
     expect(host.textContent).not.toMatch(/sk_live_|enroll_[A-Za-z0-9]{8}/);

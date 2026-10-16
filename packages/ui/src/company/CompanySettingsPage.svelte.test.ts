@@ -289,3 +289,110 @@ describe("CompanySettingsPage Billing: Manage payment", () => {
     expect(target.textContent).not.toContain("Requires owner role");
   });
 });
+
+describe("CompanySettingsPage Billing: usage-priced companies (US-014)", () => {
+  const roster = () => ({
+    getTeamTelemetry: vi.fn(async () => ({ ok: true as const, value: { perMember: [] } })),
+    listMembers: vi.fn(async () => ({ ok: true as const, value: [] })),
+  });
+  const statement = {
+    scope: "company",
+    companyUid: "cmp_unicom",
+    window: "month",
+    periodStart: "2026-10-01",
+    periodEnd: "2026-10-31",
+    asOf: "2026-10-14",
+    complete: true,
+    allowanceCents: 1000,
+    usageCents: 340,
+    allowanceLeftCents: 660,
+    billCents: 0,
+    lines: [{ key: "member-sync", displayName: "Sync", costCents: 300 }],
+  };
+  const usageOnlySummary = {
+    companyUid: "cmp_unicom",
+    pricingPlan: "usage-only",
+    usageTrial: { status: "active", endsAt: "2026-11-15T13:00:00Z", capCents: 50000 },
+  };
+
+  it("shows month-to-date usage, credit left, the vault fee and boxes instead of seats, and no Workforce upgrade", async () => {
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: true as const, value: usageOnlySummary })),
+      getUsageStatement: vi.fn(async () => ({ ok: true as const, value: statement })),
+      getPricing: vi.fn(async () => ({ ok: false as const, reason: "http" as const, message: "HTTP 503" })),
+    };
+    const openExternal = vi.fn();
+    const target = render({ slug: "unicom-usage", companyUid: "cmp_unicom", company, openExternal, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='usage-billing']")).not.toBeNull();
+    });
+    expect(company.getBillingSummary).toHaveBeenCalledWith("cmp_unicom");
+    expect(company.getUsageStatement).toHaveBeenCalledWith("cmp_unicom");
+    expect(text(target, "usage-month-to-date")).toBe("$3.40Usage this month");
+    expect(text(target, "usage-credit-left")).toBe("$6.60Credit left of $10 included");
+    expect(text(target, "usage-vault-fee")).toBe("$5Vault fee per vault a month · waived during the trial");
+    expect(text(target, "usage-boxes")).toBe("0Cloud bot boxes · $100 to $800 a month");
+    expect(text(target, "usage-box-ladder")).toBe("Box sizes: small $100 · medium $200 · large $400 · xlarge $800 a month.");
+    expect(text(target, "usage-trial")).toMatch(/^Trial until .+, usage capped at \$500\.$/);
+    expect(target.querySelector("[data-testid='workforce-seats']")).toBeNull();
+    expect(target.querySelector("[data-testid='workforce-upgrade']")).toBeNull();
+    expect(target.textContent).not.toMatch(/Seats used|Workforce|checkout\.stripe\.com/);
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("shows the vault line's cost when the statement carries one", async () => {
+    const withVault = { ...statement, lines: [...statement.lines, { key: "vault", displayName: "Vault", costCents: 500 }] };
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: true as const, value: { ...usageOnlySummary, usageTrial: { status: "ended" } } })),
+      getUsageStatement: vi.fn(async () => ({ ok: true as const, value: withVault })),
+    };
+    const target = render({ slug: "unicom-vault", companyUid: "cmp_unicom", company, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "usage-vault-fee")).toBe("$5.00Vault fee this month");
+    });
+    expect(target.querySelector("[data-testid='usage-trial']")).toBeNull();
+  });
+
+  it("says the statement is not available instead of showing $0", async () => {
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => ({ ok: true as const, value: usageOnlySummary })),
+      getUsageStatement: vi.fn(async () => ({ ok: false as const, reason: "http" as const, message: "HTTP 500" })),
+    };
+    const target = render({ slug: "unicom-nostatement", companyUid: "cmp_unicom", company, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='usage-statement-unavailable']")).not.toBeNull();
+    });
+    expect(text(target, "usage-month-to-date")).toBe("–Usage this month");
+    expect(target.textContent).not.toContain("$0.00");
+  });
+
+  it.each([
+    ["current", { ok: true as const, value: { companyUid: "cmp_unicom", pricingPlan: "current" } }],
+    ["absent", { ok: true as const, value: { companyUid: "cmp_unicom" } }],
+    ["forbidden", { ok: false as const, reason: "error" as const, code: "FORBIDDEN", message: "Requires owner role" }],
+  ])("keeps seats and Upgrade when the summary is %s", async (label, answer) => {
+    const company = {
+      ...roster(),
+      getBillingSummary: vi.fn(async () => answer),
+      getUsageStatement: vi.fn(),
+    };
+    const target = render({ slug: `unicom-legacy-${label}`, companyUid: "cmp_unicom", company, role: "Owner" });
+    openWorkforce(target);
+    await vi.waitFor(() => expect(company.getBillingSummary).toHaveBeenCalled());
+    await Promise.resolve();
+    flushSync();
+    expect(target.querySelector("[data-testid='workforce-seats']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='workforce-upgrade']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='usage-billing']")).toBeNull();
+    expect(company.getUsageStatement).not.toHaveBeenCalled();
+  });
+});

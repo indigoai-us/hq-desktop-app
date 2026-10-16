@@ -1,9 +1,9 @@
 /**
  * New company (console-rail US-037).
  *
- * Step 1 collects name, slug, and plan. HQ Workforce leaves the desktop for
- * Stripe checkout and does nothing else on that click. Free creates the
- * company in-app and opens step 2. Finish pins the tile on this device,
+ * Step 1 collects name and slug. New companies start on usage pricing
+ * (Workforce closed to new signups on 2026-10-16), so step 1 creates the
+ * company in-app and opens step 2; nothing goes to checkout. Finish pins the tile on this device,
  * sends invites, and optionally names a first project, then the host opens
  * Atlas for the new company.
  *
@@ -11,7 +11,7 @@
  * shell-ready.
  */
 
-import { stripeDestination } from "../../company/company-settings.js";
+import { USAGE_PRICING_FALLBACK, formatCardUsd } from "../../company/usage-pricing.js";
 import { pinCompany } from "../more-companies.js";
 import { serverCompanySlug } from "../../chat/first-run/team-step.js";
 
@@ -22,16 +22,14 @@ export const metadata = {
   },
 };
 
+const CARD = USAGE_PRICING_FALLBACK;
+
+/** The one plan a new company starts on: usage pricing ("Sign up free"). */
 export const NEW_COMPANY_PLANS = [
   {
     id: "free",
-    title: "Free",
-    detail: "1 owner, 2 bots, local vault. Upgrade any time.",
-  },
-  {
-    id: "workforce",
-    title: "HQ Workforce",
-    detail: "Hosted agents, cloud vault, team sync. Per seat, billed monthly.",
+    title: "Usage",
+    detail: `${formatCardUsd(CARD.includedUsd)} of usage included every month. ${CARD.trial.days}-day trial, usage capped at ${formatCardUsd(CARD.trial.capUsd)}.`,
   },
 ] as const;
 
@@ -95,16 +93,13 @@ export function parseInviteEmails(raw: string): string[] {
 }
 
 /**
- * What the primary button on step 1 is allowed to do.
- * Workforce opens Stripe checkout and does not create the company on that click.
+ * What the primary button on step 1 is allowed to do: create the company.
+ * There is no checkout for a new company.
  */
-export function stepOneEffects(plan: NewCompanyPlan): {
+export function stepOneEffects(_plan: NewCompanyPlan): {
   checkoutUrl: string | null;
   createNow: boolean;
 } {
-  if (plan === "workforce") {
-    return { checkoutUrl: stripeDestination("upgrade"), createNow: false };
-  }
   return { checkoutUrl: null, createNow: true };
 }
 
