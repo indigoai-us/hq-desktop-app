@@ -74,6 +74,42 @@
       }
     }
     if (next.join() !== heldIds.join()) heldIds = next;
+    measureLift();
+  }
+
+  /**
+   * A message composer the toasts would cover at their resting place (16px
+   * from the bottom and the right). The stack lifts just clear of it, so a
+   * sticky notice never hides the Send button (Shawon's review, 2026-10-16);
+   * anywhere else the stack keeps its equal gaps.
+   */
+  const COMPOSER_SELECTOR = '[data-testid="conversation-composer"], [data-testid="composer-send"]';
+  const COMPOSER_GAP = 12;
+  let composerLift = $state(0);
+
+  function measureLift(): void {
+    if (!stackEl || typeof document === "undefined") return;
+    const boxes = Array.from(stackEl.querySelectorAll<HTMLElement>("[data-toast-id]"))
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0);
+    if (!boxes.length) {
+      if (composerLift) composerLift = 0;
+      return;
+    }
+    // Where the toasts sit without any lift.
+    const top = Math.min(...boxes.map((r) => r.top)) + composerLift;
+    const bottom = Math.max(...boxes.map((r) => r.bottom)) + composerLift;
+    const left = Math.min(...boxes.map((r) => r.left));
+    const right = Math.max(...boxes.map((r) => r.right));
+    let lift = 0;
+    for (const el of Array.from(document.querySelectorAll(COMPOSER_SELECTOR))) {
+      if (stackEl.contains(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) continue;
+      const covers = Math.min(r.right, right) > Math.max(r.left, left) && Math.min(r.bottom, bottom) > Math.max(r.top, top);
+      if (covers) lift = Math.max(lift, Math.ceil(bottom - r.top + COMPOSER_GAP));
+    }
+    if (lift !== composerLift) composerLift = lift;
   }
 
   // Re-measure when the DOM or the window changes, at most once per frame.
@@ -120,6 +156,8 @@
   bind:this={stackEl}
   aria-live="polite"
   data-testid="toast-stack"
+  data-composer-lift={composerLift || undefined}
+  style:--ts-lift="{composerLift}px"
   data-reduced-motion={reduced ? "true" : "false"}
   class:reduced
 >
@@ -227,7 +265,8 @@
     --ts-inset: 16px;
     position: fixed;
     right: var(--ts-inset);
-    bottom: var(--toast-bottom-inset, var(--ts-inset));
+    /* --ts-lift: clear of a message composer it would cover (measureLift). */
+    bottom: calc(var(--toast-bottom-inset, var(--ts-inset)) + var(--ts-lift, 0px));
     z-index: 50000;
     display: flex;
     flex-direction: column;

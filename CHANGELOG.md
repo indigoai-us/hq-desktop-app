@@ -29,7 +29,7 @@ The release moves it under the version it ships in.
 - Linux: the `.deb` package now includes the app's screens. Before, the installed app opened to a blank window because every page came back "not found"; the screens were only present in the macOS and Windows installers. The app now finds them under the package's own library folder.
 - Linux: HQ's managed toolchain (Node, Git, the HQ command line tool) now installs under `~/.local/share/IndigoHQ/toolchain`, or under `$XDG_DATA_HOME/IndigoHQ/toolchain` when that variable is set to a full path, which is where the HQ installer puts it on Linux. Before, it used the macOS "Library/Application Support" folder on Linux too. macOS is unchanged.
 - Linux: every release now ships a `.deb` package and an AppImage for x86_64 computers, both signed for the updater. Both auto-update: the `.deb` asks for your system password (through the usual polkit prompt) to install the new package, and the AppImage replaces itself in place. A copy of the app that is not installed from one of these (a bare binary) still does not check for updates. Until the first Linux release is published, the app says there is no update available instead of logging an error. macOS and Windows are unchanged.
-- Notices in the bottom-right corner, such as the update notice, now sit the same distance from the bottom of the window as from its right edge. Before, they sat much higher above the bottom.
+- Notices in the bottom-right corner, such as the update notice, now sit the same distance from the bottom of the window as from its right edge. Before, they sat much higher above the bottom. When a conversation's message box is in that corner, they sit just above it so they never cover the Send button.
 
 ## [0.11.9] — 2026-10-14
 
