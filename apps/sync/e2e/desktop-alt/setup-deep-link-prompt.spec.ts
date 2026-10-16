@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readRepoFile } from './harness';
 
 /**
- * Source contract for the four Claude Code DESKTOP DEEP LINK setup CTAs.
+ * Source contract for the Claude Code DESKTOP DEEP LINK setup CTAs.
  *
  * The bug: every one of them pre-typed the bare `/setup` slash command into
  * the composer. Claude Desktop treats a folder handed to it by a `claude://`
@@ -21,6 +21,10 @@ import { readRepoFile } from './harness';
  * TERMINAL launches (`launch_claude_code`, `launch_cli_in_terminal`) and the
  * clipboard fallback must KEEP `/setup` — trust is settled before the scan
  * there, so the slash command works.
+ *
+ * The onboarding ready screen no longer has a Claude Code launcher (owner
+ * decision 2026-10-15): it finishes by itself and the desktop opens, so the
+ * Setup incomplete card is the only deep-link CTA left to check here.
  */
 describe('Claude setup deep link carries a skill-independent prompt', () => {
   const wizard = readRepoFile('src/components/onboarding/OnboardingWizard.svelte');
@@ -28,10 +32,7 @@ describe('Claude setup deep link carries a skill-independent prompt', () => {
   const launchLib = readRepoFile('../../packages/ui/src/settings/setup-launch.ts');
 
   it('never hands the /setup slash command to buildClaudeCodeUrl', () => {
-    for (const [name, source] of [
-      ['OnboardingWizard.svelte', wizard],
-      ['SetupIncompleteCard.svelte', card],
-    ] as const) {
+    for (const [name, source] of [['SetupIncompleteCard.svelte', card]] as const) {
       const calls = source.match(/buildClaudeCodeUrl\(\{[\s\S]*?\}\)/g) ?? [];
       expect(calls.length, `${name} still builds a Claude deep link`).toBeGreaterThan(0);
       for (const call of calls) {
@@ -45,8 +46,17 @@ describe('Claude setup deep link carries a skill-independent prompt', () => {
     }
   });
 
+  it('opens no Claude Code launcher from the onboarding ready screen', () => {
+    expect(wizard).not.toMatch(/buildClaudeCodeUrl\(/);
+    expect(wizard).not.toContain('SETUP_DEEP_LINK_PROMPT');
+    expect(wizard).not.toContain('Open HQ Desktop');
+    // The ready screen finishes on its own through the AUTO-FINISH effect.
+    expect(wizard).toMatch(
+      /\$effect\(\(\) => \{\s*if \(consentOnly \|\| replay \|\| currentStep !== READY_STEP_INDEX \|\| scene !== 'ready'\) return;[\s\S]*?autoFinishAttempted = true;\s*void finishWithRecovery\(\)/,
+    );
+  });
+
   it('imports the prompt from the shared constant rather than inlining it', () => {
-    expect(wizard).toContain("import { SETUP_DEEP_LINK_PROMPT } from '../../lib/setup-channel';");
     expect(card).toContain('SETUP_DEEP_LINK_PROMPT');
     // Re-exported (not redeclared) so the deep-link prompt has exactly one
     // definition across @hq/ui and this app.

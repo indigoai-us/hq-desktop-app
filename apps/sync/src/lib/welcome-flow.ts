@@ -6,12 +6,12 @@
  *   1 folder    "It's a folder" + where HQ lives      (wizard step directory)
  *   2 cloud     company cloud orbit                   (wizard step setup; install runs)
  *   3 shortcut  the Option-Shift-O keyboard           (wizard step setup; install runs)
- *   4 ready     "HQ is ready." + Open HQ Desktop,     (wizard step ready)
- *               the Claude Code / Codex options and
- *               the usage-data checkbox
+ *   4 ready     "HQ is ready." + install progress     (wizard step ready)
+ *               and the usage-data checkbox; no
+ *               buttons, it finishes by itself
  *
  * The usage-data question is not a screen of its own in the first-run flow:
- * it is one checkbox line on the ready screen, recorded when the person
+ * it is one checkbox line on the ready screen, recorded when the flow
  * finishes. The `consent` scene is still the whole of the consent-only runs
  * (the US-005 re-prompt, an installed machine missing its answer).
  *
@@ -261,7 +261,9 @@ export function forwardLabel(scene: StorySceneId, replay: boolean): string | nul
     case 'shortcut':
       return 'Next';
     case 'ready':
-      return 'Open HQ Desktop';
+      // The ready screen has no forward button: it finishes by itself once
+      // the install has settled and the post-ready steps are done.
+      return null;
   }
 }
 
@@ -315,6 +317,39 @@ const INSTALL_CARD_DONE_LINE = 'Keep going, you’re all set.';
 export const READY_PROGRESS_DONE_TEXT = 'Installed and synced across your devices.';
 
 /**
+ * The ready screen's two waits. The usage-data checkbox is ticked by default,
+ * so the screen stays up READY_CONSENT_DWELL_MS after the checkbox appears (or
+ * after the person last touched a checkbox) before it finishes by itself and
+ * records the answer. A ready screen that has not finished READY_WATCHDOG_MS
+ * after it opened shows the Finish setup button.
+ */
+export const READY_CONSENT_DWELL_MS = 8_000;
+export const READY_WATCHDOG_MS = 90_000;
+
+interface ReadyTimings {
+  consentDwellMs: number;
+  watchdogMs: number;
+}
+
+const DEFAULT_READY_TIMINGS: ReadyTimings = {
+  consentDwellMs: READY_CONSENT_DWELL_MS,
+  watchdogMs: READY_WATCHDOG_MS,
+};
+let readyTimingsNow: ReadyTimings = DEFAULT_READY_TIMINGS;
+
+export function readyTimings(): Readonly<ReadyTimings> {
+  return readyTimingsNow;
+}
+
+/**
+ * Tests that are not about the waits shorten them; the tests of the waits
+ * themselves run on the real values. `null` restores the real values.
+ */
+export function __setReadyTimingsForTests(next: Partial<ReadyTimings> | null): void {
+  readyTimingsNow = next ? { ...DEFAULT_READY_TIMINGS, ...next } : DEFAULT_READY_TIMINGS;
+}
+
+/**
  * The corner card and the ready screen's capsule, driven by the install's real
  * progress. A stage waiting on its automatic retry says so in place of the
  * step line; failures that remain once every stage has settled are recorded
@@ -351,27 +386,4 @@ export function installCardStepLines(): string[] {
     lines.push(`Step ${summary.step} of ${summary.total} · ${summary.compactLabel}`);
   }
   return lines;
-}
-
-export interface ReadyGateInput {
-  /** An install this flow started is still running. */
-  installPending: boolean;
-  /**
-   * The held usage-data answer: `pending` while it waits to be sent or is
-   * being sent, `blocked` after a server failure that needs a retry.
-   */
-  consent: 'clear' | 'pending' | 'blocked';
-  finishing: boolean;
-  /** A tool launch is in flight (not the Claude readiness watch). */
-  launching: boolean;
-}
-
-/** Whether Open HQ Desktop can be pressed, and what it says. */
-export function readyGate({ installPending, consent, finishing, launching }: ReadyGateInput): {
-  enabled: boolean;
-  label: string;
-} {
-  if (finishing) return { enabled: false, label: 'Opening…' };
-  if (installPending || consent === 'pending') return { enabled: false, label: 'Getting ready…' };
-  return { enabled: consent === 'clear' && !launching, label: 'Open HQ Desktop' };
 }
