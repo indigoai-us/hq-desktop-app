@@ -51,6 +51,7 @@ import {
   READY_STEP_INDEX,
 } from '../../src/lib/onboarding-wizard';
 import { TELEMETRY_CONSENT_VERSION } from '../../src/lib/consent-version';
+import { __setReadyTimingsForTests } from '../../src/lib/welcome-flow';
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -166,6 +167,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   __resetWizardRouterCompletionForTests();
+  // The ready screen's consent dwell is covered by the welcome-flow tests;
+  // these tests skip it.
+  __setReadyTimingsForTests({ consentDwellMs: 0 });
   invoke.mockReset();
   listen.mockClear();
   openExternal.mockClear();
@@ -180,6 +184,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setReadyTimingsForTests(null);
   if (component) {
     void unmount(component);
     component = null;

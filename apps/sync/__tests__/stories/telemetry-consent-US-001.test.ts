@@ -55,6 +55,7 @@ import {
   getStepValidity,
 } from '../../src/lib/onboarding-wizard';
 import { TELEMETRY_CONSENT_VERSION } from '../../src/lib/consent-version';
+import { __setReadyTimingsForTests } from '../../src/lib/welcome-flow';
 
 const wizardSource = readFileSync(
   resolve(process.cwd(), 'src/components/onboarding/OnboardingWizard.svelte'),
@@ -201,6 +202,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   __resetWizardRouterCompletionForTests();
+  // The ready screen's consent dwell is covered by the welcome-flow tests;
+  // these tests skip it.
+  __setReadyTimingsForTests({ consentDwellMs: 0 });
   invoke.mockReset();
   listen.mockClear();
   eventHandlers.clear();
@@ -213,6 +217,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setReadyTimingsForTests(null);
   if (component) {
     void unmount(component);
     component = null;
