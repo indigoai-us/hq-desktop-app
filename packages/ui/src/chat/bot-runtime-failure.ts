@@ -136,7 +136,9 @@ export function localBotNeedsCodingTool(
  * "Not ready" alone cannot pick between them: it is installed AND signed in,
  * so a signed-out Claude Code read as missing and the DM offered Install
  * Claude under the signed-out repair card. Only the install guide fixes
- * "install"; only the signed-out repair card fixes "signIn".
+ * "install"; only the signed-out repair card fixes "signIn". Until the host
+ * has said whether the tool is installed, the answer is null: an install
+ * prompt shown while the check runs flashes on a Mac that has the tool.
  */
 export function localBotCodingToolNeed(
   bot: Pick<LocalBotRow, "runtime"> | null | undefined,
@@ -145,7 +147,10 @@ export function localBotCodingToolNeed(
 ): "install" | "signIn" | null {
   if (!localBotNeedsCodingTool(bot, ready)) return null;
   const runtime = (bot?.runtime ?? "").trim().toLowerCase();
-  return installed?.[runtime] === true ? "signIn" : "install";
+  const isInstalled = installed?.[runtime];
+  if (isInstalled === true) return "signIn";
+  if (isInstalled === false) return "install";
+  return null;
 }
 
 /** The one line above the install guide in a bot's DM. */

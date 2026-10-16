@@ -2892,7 +2892,8 @@
     const installed: Record<string, boolean> = {};
     for (const id of ["claude", "codex", "grok"]) {
       next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
-      installed[id] = rec[`${id}Available`] === true;
+      // A host that does not say leaves the tool unknown, not missing.
+      if (typeof rec[`${id}Available`] === "boolean") installed[id] = rec[`${id}Available`] === true;
       const status = parseRuntimeStatus(rec[`${id}Status`]);
       if (status) statuses[id] = status;
     }

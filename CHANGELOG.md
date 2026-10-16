@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Messages: a bot's chat no longer offers "Install Claude" when Claude Code is installed on this Mac but signed out. It shows only the card that signs you back in, even before the bot has reported the sign-out. The install prompt now shows only when the coding tool is not on this Mac at all.
+- Messages: a bot's chat no longer offers "Install Claude" when Claude Code is installed on this Mac but signed out. It shows only the card that signs you back in, even before the bot has reported the sign-out. The install prompt now shows only when the coding tool is not on this Mac at all, and no longer flashes up while HQ is still checking. The same applies to Codex.
 - First run: your assistant's first message now shows even when making the assistant takes longer than 30 seconds. The conversation starts when you confirm the name, not when the assistant is ready. A finished first run on this Mac no longer waits on this computer's bot list for the rest of the session when that list never answers; after 5 seconds the app keeps the finished first run and opens as usual. The first-run lines in hq-sync.log now also record which first run was picked and why, each feature flag answer, and what marked setup as already run, so a first run that skips the welcome screens can be traced.
 
 - First run: your assistant's first message no longer says you signed in to Claude Code or Codex when that sign-in has not happened yet; it says only that you named it. Reinstalling HQ on the same Mac now shows the first-run screens again. Before, the app remembered the earlier install's finished first run and went straight to the old welcome screen, even though the assistant was not on this computer.

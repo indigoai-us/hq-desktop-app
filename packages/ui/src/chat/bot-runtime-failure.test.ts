@@ -123,7 +123,10 @@ describe("localBotNeedsCodingTool", () => {
     expect(localBotCodingToolNeed(bot, { claude: false }, { claude: true })).toBe("signIn");
     // Not on this computer: the install strip.
     expect(localBotCodingToolNeed(bot, { claude: false }, { claude: false })).toBe("install");
-    expect(localBotCodingToolNeed(bot, { claude: false }, {})).toBe("install");
+    // Not known yet whether it is installed: neither, until the host says.
+    expect(localBotCodingToolNeed(bot, { claude: false }, {})).toBeNull();
+    expect(localBotCodingToolNeed(bot, { claude: false }, null)).toBeNull();
+    expect(localBotCodingToolNeed(bot, { claude: false }, { codex: false })).toBeNull();
     // Installed and signed in: nothing to offer.
     expect(localBotCodingToolNeed(bot, { claude: true }, { claude: true })).toBeNull();
     // Unknown readiness is neither.

@@ -44,6 +44,10 @@ let rows: LocalBotRow[] = [];
 let dm: unknown[] = [];
 let claudeInstalled = true;
 let claudeSignedIn = false;
+/** Replaces the whole preflight answer when set (Codex, unknown, probe failed). */
+let preflightAnswer: Record<string, unknown> | null = null;
+/** Holds the preflight until released, like a slow first check on a cold Mac. */
+let preflightGate: Promise<void> | null = null;
 
 function adapter(): PlatformAdapter {
   return {
@@ -65,8 +69,10 @@ function adapter(): PlatformAdapter {
     // Still null in the guide, as on the VM: "Checking whether Claude Code is on this Mac…".
     shell: { detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }) },
     sessions: {
-      preflight: async () =>
-        ok({
+      preflight: async () => {
+        if (preflightGate) await preflightGate;
+        if (preflightAnswer) return ok(preflightAnswer);
+        return ok({
           claudeAvailable: claudeInstalled,
           claudeLoggedIn: claudeInstalled && claudeSignedIn,
           claudeStatus: { state: !claudeInstalled ? "notInstalled" : claudeSignedIn ? "signedIn" : "signedOut" },
@@ -74,7 +80,8 @@ function adapter(): PlatformAdapter {
           codexLoggedIn: false,
           grokAvailable: false,
           grokLoggedIn: false,
-        }),
+        });
+      },
       loginStart: vi.fn(async () => ok({ state: "waiting" })),
       loginStatus: async () => ok({ state: "waiting" }),
     },
@@ -110,6 +117,8 @@ beforeEach(() => {
   dm = [];
   claudeInstalled = true;
   claudeSignedIn = false;
+  preflightAnswer = null;
+  preflightGate = null;
   vi.stubGlobal("fetch", vi.fn(async () => new Response("missing", { status: 404 })));
 });
 
@@ -237,6 +246,94 @@ describe("a local bot's DM offers one fix for its coding tool", () => {
     expect(host.querySelector('[data-testid="bot-needs-coding-tool-guide"]')).not.toBeNull();
     expect(repairCards()).toHaveLength(0);
     expect(host.querySelector('[data-testid="bot-sign-in-card"]')).toBeNull();
+  });
+
+  it("while the tools check is still running: neither the install strip nor the sign-in card", async () => {
+    let release!: () => void;
+    preflightGate = new Promise<void>((resolve) => (release = resolve));
+    claudeInstalled = false;
+    await openBotDm();
+    expect(repairCards()).toHaveLength(0);
+    noInstallStrip();
+    // Once the check says it is missing, the strip shows.
+    release();
+    await vi.waitFor(() => expect(strip()).not.toBeNull());
+  });
+
+  it("not known whether it is installed: neither the install strip nor the sign-in card", async () => {
+    // A host that reports sign-in but not whether the tool is on this Mac.
+    preflightAnswer = { claudeLoggedIn: false, codexLoggedIn: false, grokLoggedIn: false };
+    await openBotDm();
+    await settle(30);
+    expect(repairCards()).toHaveLength(0);
+    expect(host.querySelector('[data-testid="bot-sign-in-card"]')).toBeNull();
+    noInstallStrip();
+  });
+
+  it("not known whether it is installed, with the bot's own repair card: that card still shows", async () => {
+    preflightAnswer = { claudeLoggedIn: false, codexLoggedIn: false, grokLoggedIn: false };
+    dm = [repairReply()];
+    await openBotDm();
+    await vi.waitFor(() => expect(repairCards()).toHaveLength(1));
+    expect(repairCards()[0]!.textContent).toContain("Claude Code is signed out");
+    noInstallStrip();
+  });
+
+  it("installed but its status check failed: the sign-in card, no install strip", async () => {
+    preflightAnswer = {
+      claudeAvailable: true,
+      claudeLoggedIn: false,
+      claudeStatus: { state: "probeFailed", reason: "" },
+      codexAvailable: false,
+      codexLoggedIn: false,
+      grokAvailable: false,
+      grokLoggedIn: false,
+    };
+    await openBotDm();
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="bot-sign-in-card"] [data-testid="runtime-repair-card"]')).not.toBeNull(),
+    );
+    expect(repairCards()).toHaveLength(1);
+    noInstallStrip();
+  });
+
+  it("Codex not installed: the install strip only", async () => {
+    rows = [bot({ runtime: "codex" })];
+    preflightAnswer = {
+      claudeAvailable: true,
+      claudeLoggedIn: true,
+      codexAvailable: false,
+      codexLoggedIn: false,
+      grokAvailable: false,
+      grokLoggedIn: false,
+    };
+    await openBotDm();
+    await vi.waitFor(() => expect(strip()).not.toBeNull());
+    expect(strip()!.textContent).toContain("Quill needs Codex on this computer to answer.");
+    expect(repairCards()).toHaveLength(0);
+    expect(host.querySelector('[data-testid="bot-sign-in-card"]')).toBeNull();
+  });
+
+  it("Codex installed but signed out: the sign-in card only", async () => {
+    rows = [bot({ runtime: "codex" })];
+    preflightAnswer = {
+      claudeAvailable: true,
+      claudeLoggedIn: true,
+      codexAvailable: true,
+      codexLoggedIn: false,
+      grokAvailable: false,
+      grokLoggedIn: false,
+    };
+    await openBotDm();
+    const card = await vi.waitFor(() => {
+      const el = host.querySelector<HTMLElement>('[data-testid="bot-sign-in-card"] [data-testid="runtime-repair-card"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(repairCards()).toHaveLength(1);
+    expect(card.textContent).toContain("Codex");
+    expect(strip()).toBeNull();
+    expect(host.textContent).not.toContain("needs Codex on this");
   });
 
   it("installed and signed in: neither", async () => {
