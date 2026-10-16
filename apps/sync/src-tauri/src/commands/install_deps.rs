@@ -3978,6 +3978,161 @@ fn npm_public_registry_args(prefix: &str, spec: &str, extra_args: &[&str]) -> Ve
     npm_args_with_public_registry(&args)
 }
 
+/// Flags every managed `npm install -g` carries.
+///
+/// `--fetch-timeout` is not a whole-download limit for package tarballs, so
+/// 60 s does not cut off a large tarball (claude-code win32 is ~123 MB) on a
+/// slow link. Source, npm 11.19.1:
+/// - `@npmcli/config/lib/definitions/definitions.js:817-827` maps
+///   `fetch-timeout` (default 300000) to `timeout`;
+///   `npm-registry-fetch/lib/index.js:132` passes it on.
+/// - `minipass-fetch/lib/index.js:104-112,136` arms it on socket connect and
+///   clears it when response headers arrive.
+/// - `@npmcli/agent/lib/options.js:25-27` and `agents.js:155-157` reuse it
+///   as the socket idle timeout, which resets whenever bytes arrive.
+/// - The whole-body timer in `minipass-fetch/lib/body.js:136-143` only runs
+///   for `json()`/`text()`/`buffer()`; pacote streams tarballs through
+///   `res.body.pipe()` (`pacote/lib/remote.js:44-54`), so it never applies to
+///   them. It does apply to packuments (`pacote/lib/registry.js:98`), which
+///   are a few MB at most.
+/// So 60 s bounds a stalled connection instead of npm's 5 minutes, and
+/// `--fetch-retries=4` (default 2) retries it.
+const MANAGED_NPM_INSTALL_FLAGS: [&str; 4] = [
+    "--no-audit",
+    "--no-fund",
+    "--fetch-timeout=60000",
+    "--fetch-retries=4",
+];
+
+/// First npm release that defines `allow-scripts`
+/// (`@npmcli/config/lib/definitions/definitions.js`, absent in 11.15.0).
+const NPM_ALLOW_SCRIPTS_MIN_VERSION: (u32, u32) = (11, 16);
+
+/// Packages whose install scripts a managed install must run. npm 11.16+
+/// skips install scripts that are not listed for `npm install -g`; earlier
+/// npm runs them all and has no such option.
+fn managed_npm_allow_scripts(package_name: &str) -> &'static [&'static str] {
+    const QMD_NATIVE: [&str; 7] = [
+        "better-sqlite3",
+        "node-llama-cpp",
+        "tree-sitter-go",
+        "tree-sitter-python",
+        "tree-sitter-rust",
+        "tree-sitter-typescript",
+        "tree-sitter-javascript",
+    ];
+    const HQ_CLI: [&str; 8] = [
+        "@indigoai-us/hq-cli",
+        "better-sqlite3",
+        "node-llama-cpp",
+        "tree-sitter-go",
+        "tree-sitter-python",
+        "tree-sitter-rust",
+        "tree-sitter-typescript",
+        "tree-sitter-javascript",
+    ];
+    match package_name {
+        "@anthropic-ai/claude-code" => &["@anthropic-ai/claude-code"],
+        "@xai-official/grok" => &["@xai-official/grok"],
+        "@tobilu/qmd" => &QMD_NATIVE,
+        "@indigoai-us/hq-cli" => &HQ_CLI,
+        _ => &[],
+    }
+}
+
+/// `(major, minor)` from `npm --version` output such as `11.19.1\n`.
+fn npm_version_major_minor(output: &str) -> Option<(u32, u32)> {
+    let mut parts = output.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// Managed flags plus caller flags, without repeating a managed flag, plus
+/// one `--allow-scripts=<name>` per listed package when this npm supports it.
+fn managed_npm_install_extra_args(
+    package_name: &str,
+    npm_version: Option<(u32, u32)>,
+    extra_args: &[&str],
+) -> Vec<String> {
+    let mut args = MANAGED_NPM_INSTALL_FLAGS
+        .iter()
+        .map(|flag| (*flag).to_string())
+        .collect::<Vec<_>>();
+    if npm_version.is_some_and(|version| version >= NPM_ALLOW_SCRIPTS_MIN_VERSION) {
+        args.extend(
+            managed_npm_allow_scripts(package_name)
+                .iter()
+                .map(|name| format!("--allow-scripts={name}")),
+        );
+    }
+    args.extend(
+        extra_args
+            .iter()
+            .filter(|arg| !MANAGED_NPM_INSTALL_FLAGS.contains(arg))
+            .map(|arg| (*arg).to_string()),
+    );
+    args
+}
+
+fn npm_version_output(npm: &str) -> Option<String> {
+    let search_path = extended_search_path();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let resolved = which::which_in(npm, Some(&search_path), &cwd).ok()?;
+    let mut command = Command::new(resolved);
+    command
+        .arg("--version")
+        .env("PATH", &search_path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+async fn probe_npm_version(npm: &str) -> Option<(u32, u32)> {
+    let npm = npm.to_string();
+    let probe = tokio::task::spawn_blocking(move || npm_version_output(&npm));
+    let output = tokio::time::timeout(Duration::from_secs(30), probe)
+        .await
+        .ok()?
+        .ok()??;
+    npm_version_major_minor(&output)
+}
+
+const MANAGED_NPM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Runs `future`, calling `beat` with the elapsed time every `interval`
+/// until it finishes, so a quiet npm install still shows it is alive.
+async fn with_install_heartbeat<T>(
+    future: impl Future<Output = T>,
+    interval: Duration,
+    mut beat: impl FnMut(Duration),
+) -> T {
+    tokio::pin!(future);
+    let started = tokio::time::Instant::now();
+    let mut ticker = tokio::time::interval_at(started + interval, interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            output = &mut future => return output,
+            _ = ticker.tick() => beat(started.elapsed()),
+        }
+    }
+}
+
+fn managed_npm_heartbeat_line(tag: &str, package_name: &str, elapsed: Duration) -> String {
+    format!(
+        "[{tag}] still installing {package_name} ({}s so far)",
+        elapsed.as_secs()
+    )
+}
+
 async fn run_managed_npm_install<R: tauri::Runtime>(
     app: &AppHandle<R>,
     npm: &str,
@@ -4029,13 +4184,23 @@ async fn run_managed_npm_install_with_cancellation<R: tauri::Runtime>(
         );
         error
     })?;
-    let base_args = npm_install_args(prefix, spec, extra_args);
-    let public_registry_args = retry_public_registry
-        .then(|| npm_public_registry_args(prefix, spec, extra_args));
+    let npm_version = probe_npm_version(npm).await;
+    let install_args = managed_npm_install_extra_args(package_name, npm_version, extra_args);
+    let install_arg_refs = install_args.iter().map(String::as_str).collect::<Vec<_>>();
+    let base_args = npm_install_args(prefix, spec, &install_arg_refs);
+    let public_registry_args =
+        retry_public_registry.then(|| npm_public_registry_args(prefix, spec, &install_arg_refs));
     let npm_cache = npm_cache.as_path();
     let mut run = |args: Vec<String>| async move {
         let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-        run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await
+        with_install_heartbeat(
+            async { run_streaming_with_npm_cache(app, npm, &arg_refs, Some(npm_cache)).await },
+            MANAGED_NPM_HEARTBEAT_INTERVAL,
+            |elapsed| {
+                emit_install_line(app, &managed_npm_heartbeat_line(tag, package_name, elapsed))
+            },
+        )
+        .await
     };
     let mut cleanup = |scope: &Path, package_name: &str| {
         crate::commands::hq_cli_update::clean_partial_install_scope(scope, package_name);
@@ -6251,7 +6416,7 @@ async fn install_qmd_windows(app: AppHandle) -> Result<String, String> {
         &qmd_spec,
         "@tobilu/qmd",
         "qmd",
-        &["--no-audit", "--no-fund"],
+        &[],
         false,
     )
     .await?;
@@ -11566,6 +11731,145 @@ mod npm_setup_recovery_tests {
             preflight: Rc::try_unwrap(preflight).unwrap().into_inner(),
             cleared_failures: Rc::try_unwrap(cleared_failures).unwrap().into_inner(),
         }
+    }
+
+    #[test]
+    fn npm_version_major_minor_parses_npm_version_output() {
+        assert_eq!(npm_version_major_minor("11.19.1\n"), Some((11, 19)));
+        assert_eq!(npm_version_major_minor("10.9.2"), Some((10, 9)));
+        assert_eq!(npm_version_major_minor("12.0.0-pre.1\r\n"), Some((12, 0)));
+        assert_eq!(npm_version_major_minor(""), None);
+        assert_eq!(npm_version_major_minor("npm WARN config\n"), None);
+    }
+
+    #[test]
+    fn managed_npm_install_args_carry_quiet_timeout_and_retry_flags() {
+        let extra = managed_npm_install_extra_args("pnpm", Some((10, 9)), &[]);
+        let extra_refs = extra.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(
+            npm_install_args("/tmp/setup-prefix", "pnpm@9", &extra_refs),
+            [
+                "install",
+                "-g",
+                "--prefix",
+                "/tmp/setup-prefix",
+                "--no-audit",
+                "--no-fund",
+                "--fetch-timeout=60000",
+                "--fetch-retries=4",
+                "pnpm@9",
+            ]
+        );
+        let public = npm_public_registry_args("/tmp/setup-prefix", "pnpm@9", &extra_refs);
+        for flag in MANAGED_NPM_INSTALL_FLAGS {
+            assert!(
+                public.iter().any(|arg| arg == flag),
+                "public-registry retry must keep {flag}: {public:?}"
+            );
+        }
+        assert_eq!(public.last().map(String::as_str), Some("pnpm@9"));
+    }
+
+    #[test]
+    fn managed_npm_install_args_do_not_repeat_caller_flags() {
+        let extra = managed_npm_install_extra_args(
+            "@indigoai-us/hq-cli",
+            None,
+            &[
+                "--no-audit",
+                "--no-fund",
+                "--registry=https://registry.npmjs.org/",
+            ],
+        );
+        assert_eq!(
+            extra,
+            [
+                "--no-audit",
+                "--no-fund",
+                "--fetch-timeout=60000",
+                "--fetch-retries=4",
+                "--registry=https://registry.npmjs.org/",
+            ]
+        );
+    }
+
+    #[test]
+    fn managed_npm_allow_scripts_only_on_npm_that_defines_it() {
+        let allow = |package: &str, version: Option<(u32, u32)>| {
+            managed_npm_install_extra_args(package, version, &[])
+                .into_iter()
+                .filter_map(|arg| arg.strip_prefix("--allow-scripts=").map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        for version in [None, Some((10, 9)), Some((11, 15))] {
+            assert!(
+                allow("@anthropic-ai/claude-code", version).is_empty(),
+                "npm {version:?} has no allow-scripts option and runs scripts by default"
+            );
+        }
+        for version in [Some((11, 16)), Some((11, 19)), Some((12, 0))] {
+            assert_eq!(
+                allow("@anthropic-ai/claude-code", version),
+                ["@anthropic-ai/claude-code"]
+            );
+        }
+        let npm_11 = Some((11, 19));
+        assert_eq!(allow("@xai-official/grok", npm_11), ["@xai-official/grok"]);
+        assert!(allow("@openai/codex", npm_11).is_empty());
+        assert!(allow("pnpm", npm_11).is_empty());
+        let qmd_native = [
+            "better-sqlite3",
+            "node-llama-cpp",
+            "tree-sitter-go",
+            "tree-sitter-python",
+            "tree-sitter-rust",
+            "tree-sitter-typescript",
+            "tree-sitter-javascript",
+        ];
+        assert_eq!(allow("@tobilu/qmd", npm_11), qmd_native);
+        let mut hq_cli = vec!["@indigoai-us/hq-cli"];
+        hq_cli.extend(qmd_native);
+        assert_eq!(allow("@indigoai-us/hq-cli", npm_11), hq_cli);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn install_heartbeat_reports_elapsed_time_while_npm_runs() {
+        let mut beats = Vec::new();
+        let output = with_install_heartbeat(
+            async {
+                tokio::time::sleep(Duration::from_secs(40)).await;
+                "installed"
+            },
+            MANAGED_NPM_HEARTBEAT_INTERVAL,
+            |elapsed| beats.push(elapsed.as_secs()),
+        )
+        .await;
+        assert_eq!(output, "installed");
+        assert_eq!(
+            beats,
+            [15, 30],
+            "one line every 15 s while npm is still running"
+        );
+        assert_eq!(
+            managed_npm_heartbeat_line("qmd", "@tobilu/qmd", Duration::from_secs(30)),
+            "[qmd] still installing @tobilu/qmd (30s so far)"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn install_heartbeat_stays_quiet_for_a_fast_install() {
+        let mut beats = 0;
+        let output = with_install_heartbeat(
+            async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                7
+            },
+            MANAGED_NPM_HEARTBEAT_INTERVAL,
+            |_| beats += 1,
+        )
+        .await;
+        assert_eq!(output, 7);
+        assert_eq!(beats, 0);
     }
 
     #[test]
