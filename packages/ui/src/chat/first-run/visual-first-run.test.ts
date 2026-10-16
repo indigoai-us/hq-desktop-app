@@ -33,6 +33,10 @@ import {
   normalizeAssistantName,
   nextFirstRunStep,
   prevFirstRunStep,
+  lateFlagVerdict,
+  VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS,
+  VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+  VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS,
   type FirstRunCreation,
   type FirstRunStep,
 } from "./visual-first-run.js";
@@ -428,6 +432,30 @@ describe("first-run routing", () => {
     expect(firstRunRoute({ ...base, finished: true, finishedUnconfirmed: true })).toBe("pending");
     expect(firstRunRoute({ ...base, finished: true, finishedUnconfirmed: false })).toBe("legacy");
     expect(firstRunRoute({ ...base, hasBots: false, finishedUnconfirmed: true })).toBe("legacy");
+  });
+});
+
+describe("a flag answer after its wait ran out", () => {
+  it("waits longer on a new install than the grace, and covers a 2.8 s cold read", () => {
+    expect(VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS).toBeGreaterThan(VISUAL_FIRST_RUN_FLAG_GRACE_MS);
+    expect(VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS).toBeGreaterThanOrEqual(2800);
+  });
+
+  it("applies only an on answer, on a new install, before the old setup started", () => {
+    const base = { value: true, welcomeSetupOwed: true, legacyStarted: false, sinceTimeoutMs: 1000 } as const;
+    expect(lateFlagVerdict(base)).toBe("applied");
+    expect(lateFlagVerdict({ ...base, legacyStarted: true })).toBe("legacy-started");
+    expect(lateFlagVerdict({ ...base, value: false })).toBeNull();
+    expect(lateFlagVerdict({ ...base, welcomeSetupOwed: false })).toBeNull();
+    expect(lateFlagVerdict({ ...base, welcomeSetupOwed: null })).toBeNull();
+  });
+
+  it("keeps the old setup once the late window has closed", () => {
+    const base = { value: true, welcomeSetupOwed: true, legacyStarted: false } as const;
+    expect(VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS).toBe(5_000);
+    expect(lateFlagVerdict({ ...base, sinceTimeoutMs: VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS })).toBe("applied");
+    expect(lateFlagVerdict({ ...base, sinceTimeoutMs: VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS + 1 })).toBe("too-late");
+    expect(lateFlagVerdict({ ...base, legacyStarted: true, sinceTimeoutMs: 8000 })).toBe("too-late");
   });
 });
 
