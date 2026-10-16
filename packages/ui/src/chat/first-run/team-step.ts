@@ -305,3 +305,99 @@ export function createTeamActionRunner(
     },
   };
 }
+
+// ── The team card in the setup chat ────────────────────────────────────────
+
+/** Copy for the "Who do you work with?" card (COMPANY-CARD-DESIGN-2026-10-15). */
+export const TEAM_CARD_COPY = {
+  heading: "Who do you work with?",
+  line: "HQ keeps your company's context in one place. You can change this later.",
+  create: "Create a company",
+  createButton: "Create",
+  nameLabel: "Company name",
+  personal: "Just me for now",
+  retry: "Retry",
+} as const;
+
+/** A row pressed on the team card. */
+export type TeamCardPick =
+  | { kind: "invite"; company: FirstRunTeamCompany }
+  | { kind: "existing"; company: FirstRunTeamCompany }
+  | { kind: "create"; name: string }
+  | { kind: "personal" };
+
+/** The row key the card marks as pending while a pick runs. */
+export function teamCardPickKey(pick: TeamCardPick): string {
+  if (pick.kind === "invite" || pick.kind === "existing") return `${pick.kind}:${pick.company.slug}`;
+  return pick.kind;
+}
+
+/**
+ * What a pick is, for deciding whether a retry is the same pick: a create
+ * names its company, so a different name is a different pick.
+ */
+export function teamCardPickIdentity(pick: TeamCardPick): string {
+  if (pick.kind !== "create") return teamCardPickKey(pick);
+  return `create:${companySlugFromName(pick.name) ?? pick.name.trim().toLowerCase()}`;
+}
+
+/** The one line the card settles into after a pick. */
+export function teamCardSettledLine(choice: FirstRunTeamChoice): string {
+  if (choice.kind === "personal") return "Working solo";
+  if (choice.how === "created") return `Created ${choice.company.name}`;
+  if (choice.how === "joined") return `Joined ${choice.company.name}`;
+  return `Opened ${choice.company.name}`;
+}
+
+type TeamCardMessage = { fromPersonUid?: string | null; body?: string | null; richContent?: unknown };
+
+/**
+ * Whether the team card shows under the setup bot's first message, and why.
+ * Shown while the conversation is still only the bot's (the person has not
+ * written) and the team is not settled: "block" when the bot's first message
+ * carries a `team` block, "fallback" when the handoff left the team unsettled
+ * and an older hq-cli sent none. Never when the team is settled.
+ */
+export function teamCardDue(
+  messages: ReadonlyArray<TeamCardMessage>,
+  botUid: string,
+  teamUnsettled: boolean,
+  hasTeamBlock: (message: TeamCardMessage) => boolean,
+  hasVisibleContent: (message: TeamCardMessage) => boolean,
+): "block" | "fallback" | null {
+  const uid = botUid.trim();
+  if (!uid || !teamUnsettled) return null;
+  let first: TeamCardMessage | null = null;
+  for (const message of messages) {
+    if ((message.fromPersonUid ?? "").trim() !== uid) return null;
+    if (first === null && (hasTeamBlock(message) || hasVisibleContent(message))) first = message;
+  }
+  if (!first) return null;
+  return hasTeamBlock(first) ? "block" : "fallback";
+}
+
+/**
+ * The message the team card is drawn under, and its settled line stays under
+ * for good: among the bot's opening messages (before the person first wrote),
+ * the one carrying a `team` block, else the first one with visible content.
+ * A later bot message (the "Claude Code is signed out" reply, say) never moves
+ * it. Null when no such message has an event id.
+ */
+export function teamCardAnchorEventId(
+  messages: ReadonlyArray<TeamCardMessage & { eventId?: string | null }>,
+  botUid: string,
+  hasTeamBlock: (message: TeamCardMessage) => boolean,
+  hasVisibleContent: (message: TeamCardMessage) => boolean,
+): string | null {
+  const uid = botUid.trim();
+  if (!uid) return null;
+  let first: string | null = null;
+  for (const message of messages) {
+    if ((message.fromPersonUid ?? "").trim() !== uid) break;
+    const id = message.eventId?.trim();
+    if (!id) continue;
+    if (hasTeamBlock(message)) return id;
+    if (first === null && hasVisibleContent(message)) first = id;
+  }
+  return first;
+}
