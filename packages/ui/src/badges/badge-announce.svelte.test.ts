@@ -45,11 +45,12 @@ describe("You earned", () => {
   // Owner review 2026-10-12: OG, Captain and Patient Zero are given, not
   // earned; Core Builder is earned by merging pull requests.
   it("tells you that you were awarded the given honors, and that you earned Core Builder", () => {
-    for (const id of ["og", "captain", "patientzero", "corebuilder"]) announceBadgeEarned({ id, tier: "L", earnedAt: "2026-10-11" });
+    for (const id of ["og", "captain", "patientzero", "ecomrat", "corebuilder"]) announceBadgeEarned({ id, tier: "L", earnedAt: "2026-10-11" });
     expect(toastItems().map((t) => t.title)).toEqual([
       "You were awarded OG",
       "You were awarded Captain",
       "You were awarded Patient Zero",
+      "You were awarded Ecom Rat",
       "You earned Core Builder",
     ]);
   });

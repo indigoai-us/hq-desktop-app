@@ -26,9 +26,10 @@ const BOTS: EarnedBadge[] = [
 ];
 
 /**
- * The honors badges (OG, Captain, Patient Zero, Core Builder) go to named
- * people, not to a random mix: here, only Corey Epstein has them, so the
- * Legendary tier and Core Builder's fourth level can be seen in the harness.
+ * The honors badges (OG, Captain, Patient Zero, Core Builder, Ecom Rat) go
+ * to named people, not to a random mix: here, Corey Epstein has the first
+ * four and Spencer has Ecom Rat, so the Legendary tier and Core Builder's
+ * fourth level can be seen in the harness.
  */
 const HONORS: Readonly<Record<string, EarnedBadge[]>> = {
   'corey epstein': [
@@ -37,6 +38,7 @@ const HONORS: Readonly<Record<string, EarnedBadge[]>> = {
     { id: 'patientzero', tier: 'L', earnedAt: '2026-10-11' },
     { id: 'corebuilder', tier: 'L', earnedAt: '2026-10-11' },
   ],
+  spencer: [{ id: 'ecomrat', tier: 'L', earnedAt: '2026-10-16' }],
 };
 
 function hash(s: string): number {
