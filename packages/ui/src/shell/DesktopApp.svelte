@@ -75,7 +75,7 @@
   import WelcomeReport from "../brief/WelcomeReport.svelte";
   import { welcomeMadeBy } from "../brief/welcome-made-by.js";
   import { briefActionsFor } from "../brief/brief-action-cards.js";
-  import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
+  import type { WelcomeConnectMemory } from "../brief/welcome-ai-apps.js";
   import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
@@ -4424,18 +4424,37 @@
         dry: firstRunDev.dry,
       })
     : null;
-  /** The connect card's inputs; `desktop.first-run-found-apps-v1` is its kill switch. */
+  /**
+   * The suggested integrations' inputs; `desktop.first-run-found-apps-v1` is
+   * its kill switch. With no company the suggestions still show, and Connect
+   * opens the new-company sheet first: integrations always belong to a company.
+   */
   const welcomeConnect = $derived(
-    foundAppsFlag && welcomeAppsHost && welcomeAppsCompany
+    foundAppsFlag && welcomeAppsHost
       ? {
           host: welcomeAppsHost,
           company: welcomeAppsCompany,
-          assistantName: assistantLabel,
           onopenintegrations: openCompanyIntegrations,
-          memory: welcomeConnectMemoryFor(welcomeAppsCompany.uid),
+          onnewcompany: openNewCompanyFromWelcome,
+          memory: welcomeAppsCompany ? welcomeConnectMemoryFor(welcomeAppsCompany.uid) : undefined,
         }
       : null,
   );
+  /** Set while the new-company sheet is open for a welcome report Connect; answers with the new company's uid. */
+  let welcomeNewCompanyResolve: ((companyUid: string | null) => void) | null = null;
+  function openNewCompanyFromWelcome(): Promise<string | null> {
+    welcomeNewCompanyResolve?.(null);
+    return new Promise((resolve) => {
+      welcomeNewCompanyResolve = resolve;
+      newCompanyOpen = true;
+    });
+  }
+  function answerWelcomeNewCompany(companyUid: string | null): boolean {
+    const resolve = welcomeNewCompanyResolve;
+    welcomeNewCompanyResolve = null;
+    resolve?.(companyUid);
+    return resolve !== null;
+  }
   /**
    * No assistant to write the welcome report (none here yet, the create
    * failed, or a dry walk's pretend one): the report offers #welcome, where
@@ -10910,7 +10929,10 @@
       const pinned = pinCompany(pinnedCompanyIds ?? [], result.companyUid);
       if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
     }
-    if (!result.companyUid) return;
+    if (!result.companyUid) {
+      answerWelcomeNewCompany(null);
+      return;
+    }
     if (result.invites.length > 0) {
       void sendCompanyInvites(
         conversationApi,
@@ -10922,6 +10944,12 @@
     companyRecentIds = nextRecent;
     writeSettingsPrefs({ companyRecentIds: nextRecent });
     companyPaneOpen = true;
+    if (welcomeNewCompanyResolve) {
+      // From a welcome report Connect: stay on the report so the connect continues in the new company.
+      setTenantScope(result.companyUid);
+      answerWelcomeNewCompany(result.companyUid);
+      return;
+    }
     changeTenantCompany(result.companyUid);
     void navigate(companyRowDestination("atlas", result.companyUid));
   }
@@ -15028,7 +15056,10 @@
             .map((id) => railCompanyRoster.find((company) => company.uid === id)?.label ?? "")
             .filter(Boolean)
             .map((label) => label.slice(0, 2).toUpperCase()),
-          onclose: () => (newCompanyOpen = false),
+          onclose: () => {
+            newCompanyOpen = false;
+            answerWelcomeNewCompany(null);
+          },
           oncheckout: (url: string) => onopenurl?.(url),
           oncreate: createCompanyFromSheet,
           onfinish: finishNewCompany,

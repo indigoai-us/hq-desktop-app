@@ -7,19 +7,22 @@
 <script lang="ts">
   /**
    * The welcome report (US-009): where a new person lands when the visual
-   * first run closes. First the card that connects the apps the launch scan
-   * found (when there is one), then the report itself: one loading card with
-   * a progress bar until the brief job's report is ready, then the Daily
-   * Brief page (`children`). With no assistant yet there is no job to wait
-   * for, so the card offers the way to set one up instead of a spinner.
-   * Same backdrop and type scale as the decision
-   * takeover and BriefDawn, so the handoff never shows an empty pane.
+   * first run closes. One loading card with a progress bar until the brief
+   * job's report is ready, then the Daily Brief page (`children`). With no
+   * assistant yet there is no job to wait for, so the card offers the way to
+   * set one up instead of a spinner. Same backdrop and type scale as the
+   * decision takeover and BriefDawn, so the handoff never shows an empty pane.
+   *
+   * "Connect your AI apps" (with the suggested integrations under it) is a
+   * brief card inside the report: the Daily Brief shows it after its action
+   * cards (read from the welcome-ai-apps context set here), and while the
+   * report is held, loading or waiting on setup it sits under that card.
    */
   import type { Snippet } from "svelte";
-  import WelcomeConnectCard, { type WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
   import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
   import type { FoundWorkApps } from "@hq/platform";
-  import ConnectAiAppsCard from "./ConnectAiAppsCard.svelte";
+  import BriefConnectApps from "./BriefConnectApps.svelte";
+  import { setWelcomeAiApps, type WelcomeAiApps, type WelcomeConnectMemory } from "./welcome-ai-apps.js";
   import { assistantNameInSentence } from "./brief-action-cards.js";
 
   interface Props {
@@ -27,13 +30,15 @@
     ready: boolean;
     /** The job's progress (0 to 1) while it runs; null shows a moving bar. */
     progress?: number | null;
-    /** The connect card's inputs; null leaves it out (flag off, no host or no company). */
+    /** The suggested integrations' inputs; null leaves that group out (flag off or no host). */
     connect?: {
       host: YourAppsHost;
-      company: { uid: string; name: string };
-      assistantName: string;
+      /** The company the apps connect to; null still shows the suggestions and offers a new company first. */
+      company: { uid: string; name: string } | null;
       onopenintegrations?: (companyUid: string) => void;
-      /** The card's per-company memory, kept across remounts. */
+      /** With no company: opens the new-company flow; resolves with its uid, or null when closed. */
+      onnewcompany?: (() => Promise<string | null>) | null;
+      /** The section's per-company memory, kept across remounts. */
       memory?: WelcomeConnectMemory;
     } | null;
     /** No assistant to write the report yet: the card offers setting one up. */
@@ -72,24 +77,34 @@
     }
   }
 
+  /** The connect section's inputs: one scan for the AI apps and the suggested integrations. */
+  const connectApps = $derived.by((): WelcomeAiApps | null => {
+    if (!aiApps && !connect) return null;
+    const host = connect?.host;
+    return {
+      detect: aiApps?.detect ?? (() => (host ? host.detect() : Promise.resolve(null))),
+      cli: aiApps?.cli ?? { claudeCode: false, codex: false },
+      suggest: connect
+        ? {
+            host: connect.host,
+            company: connect.company,
+            onopenintegrations: connect.onopenintegrations,
+            onnewcompany: connect.onnewcompany ?? null,
+            memory: connect.memory,
+          }
+        : null,
+    };
+  });
+  setWelcomeAiApps({
+    get current() {
+      return connectApps;
+    },
+  });
+
   const pct = $derived(progress == null ? null : Math.round(Math.min(1, Math.max(0, progress)) * 100));
 </script>
 
 <div class="welcome" data-testid="welcome-report">
-  {#if connect}
-    {#key connect.company.uid}
-      <WelcomeConnectCard
-        host={connect.host}
-        company={connect.company}
-        assistantName={connect.assistantName}
-        onopenintegrations={connect.onopenintegrations}
-        memory={connect.memory}
-      />
-    {/key}
-  {/if}
-  {#if aiApps}
-    <ConnectAiAppsCard detect={aiApps.detect} cli={aiApps.cli} />
-  {/if}
   {#if ready}
     <div class="report" data-testid="welcome-report-ready">
       {#if madeBy}
@@ -100,32 +115,40 @@
       {/if}
       {@render children()}
     </div>
-  {:else if onsetup}
-    <section class="card loading" data-testid="welcome-report-setup">
-      <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>
-      <button type="button" class="cta" onclick={onsetup} data-testid="welcome-report-setup-button">{WELCOME_REPORT_SETUP_LABEL}</button>
-    </section>
-  {:else if blocked}
-    <section class="card loading" data-testid="welcome-report-blocked">
-      <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>
-      <p class="reason">{blocked.message}</p>
-      <button type="button" class="cta" onclick={runFix} disabled={fixing} data-testid="welcome-report-blocked-fix">{blocked.label}</button>
-      {#if fixError}<p class="reason" data-testid="welcome-report-blocked-error">{fixError}</p>{/if}
-    </section>
   {:else}
-    <section class="card loading" data-testid="welcome-report-loading" aria-busy="true">
-      <h2>{WELCOME_REPORT_LOADING}</h2>
-      <div
-        class="bar"
-        role="progressbar"
-        aria-label={WELCOME_REPORT_LOADING}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={pct ?? undefined}
-      >
-        <span class="fill" class:indeterminate={pct === null} style:--fill={pct === null ? null : pct / 100}></span>
+    {#if onsetup}
+      <section class="card loading" data-testid="welcome-report-setup">
+        <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>
+        <button type="button" class="cta" onclick={onsetup} data-testid="welcome-report-setup-button">{WELCOME_REPORT_SETUP_LABEL}</button>
+      </section>
+    {:else if blocked}
+      <section class="card loading" data-testid="welcome-report-blocked">
+        <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>
+        <p class="reason">{blocked.message}</p>
+        <button type="button" class="cta" onclick={runFix} disabled={fixing} data-testid="welcome-report-blocked-fix">{blocked.label}</button>
+        {#if fixError}<p class="reason" data-testid="welcome-report-blocked-error">{fixError}</p>{/if}
+      </section>
+    {:else}
+      <section class="card loading" data-testid="welcome-report-loading" aria-busy="true">
+        <h2>{WELCOME_REPORT_LOADING}</h2>
+        <div
+          class="bar"
+          role="progressbar"
+          aria-label={WELCOME_REPORT_LOADING}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={pct ?? undefined}
+        >
+          <span class="fill" class:indeterminate={pct === null} style:--fill={pct === null ? null : pct / 100}></span>
+        </div>
+      </section>
+    {/if}
+    <!-- Under the status card, outside its branches, so a status change (loading to held) keeps a Connect in progress. -->
+    {#if connectApps}
+      <div class="held-connect" data-testid="welcome-report-connect">
+        <BriefConnectApps detect={connectApps.detect} cli={connectApps.cli} suggest={connectApps.suggest} />
       </div>
-    </section>
+    {/if}
   {/if}
 </div>
 
@@ -140,6 +163,10 @@
     background: var(--b-bg, #1b1b1e);
     font-family: var(--font-ui, "Geist", system-ui, sans-serif);
     color: var(--b-t1, rgba(255, 255, 255, 0.95));
+  }
+  /* The card brings its own top margin for the brief body; the column gap spaces it here. */
+  .held-connect :global([data-testid="connect-ai-apps-card"]) {
+    margin-top: 0;
   }
   .report {
     flex: 1;

@@ -1036,24 +1036,36 @@ describe("welcome report (US-009)", () => {
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
   }
 
-  it("found-apps flag on: the connect card offers the apps the scan found", async () => {
+  it("found-apps flag on: the report suggests the apps the scan found, under the status card, with Connect", async () => {
     await bootWithApps(true);
     await vi.waitFor(() =>
-      expect(q('[data-testid="welcome-connect-card"] [data-testid="first-run-app-linear.app"]')).toBeTruthy(),
+      expect(q('[data-testid="welcome-report-connect"] [data-testid="suggested-app-connect-linear.app"]')).toBeTruthy(),
     );
+    expect(q<HTMLElement>('[data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("tile");
   });
 
-  it("found-apps flag on, but no company the person picked: no connect card, so no app lands in an arbitrary company", async () => {
+  it("found-apps flag on, but no company the person picked: the suggestions show, and Connect opens a new company instead of an arbitrary one", async () => {
     await bootWithApps(true, ["northwind", "acme"]);
-    await settle(20);
+    await vi.waitFor(() => expect(q('[data-testid="suggested-app-linear.app"]')).toBeTruthy());
+    expect(q<HTMLElement>('[data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("found");
+    expect(q('[data-testid="new-company-sheet"]')).toBeNull();
+    q<HTMLButtonElement>('[data-testid="suggested-app-connect-linear.app"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="new-company-sheet"]')).toBeTruthy());
+    expect(q('[data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Waiting");
+    q<HTMLButtonElement>('[data-testid="new-company-scrim"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="new-company-sheet"]')).toBeNull());
+    await vi.waitFor(() =>
+      expect(q('[data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Connect"),
+    );
     expect(q('[data-testid="welcome-report"]')).toBeTruthy();
-    expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
   });
 
-  it("found-apps flag off: the welcome report has no connect card", async () => {
+  it("found-apps flag off: the welcome report suggests no apps", async () => {
     await bootWithApps(false);
     await settle(20);
-    expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+    expect(q('[data-testid="connect-suggested-apps"]')).toBeNull();
   });
 });
 
