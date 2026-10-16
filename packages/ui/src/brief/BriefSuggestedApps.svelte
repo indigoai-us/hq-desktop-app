@@ -7,7 +7,8 @@
    * With a company, the rows are your-apps.ts's view and every connect goes
    * through the shared `YourAppsHost` (the takeover's "Your apps" flow): one
    * browser sign-in at a time, the no-sign-in auto-connect once per company,
-   * Undo kept in the owner's memory.
+   * Undo kept in the owner's session (welcome-connect-session.svelte.ts),
+   * so a remount (the report turning ready) keeps a sign-in running.
    *
    * With no company the rows still show. Integrations always belong to a
    * company (the gateway refuses a connect without a `cmp_` uid), so Connect
@@ -25,19 +26,20 @@
     opensSignIn,
     signInRunning,
     yourAppsView,
-    type AppRun,
     type AppTile,
     type ConnectedChip,
   } from "../chat/first-run/your-apps.js";
-  import type { YourAppsLoad } from "../chat/first-run/your-apps-host.js";
-  import type { WelcomeConnectMemory, WelcomeSuggest } from "./welcome-ai-apps.js";
+  import type { WelcomeSuggest } from "./welcome-ai-apps.js";
+  import { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
 
   interface Props {
     /** The shared scan, matched to known apps. */
     scan: FoundAppsResult;
     suggest: WelcomeSuggest;
+    /** The owner's connect session; without one the card keeps its own while mounted. */
+    session?: WelcomeConnectSession | null;
   }
-  let { scan, suggest }: Props = $props();
+  let { scan, suggest, session: given = null }: Props = $props();
 
   /** Rows shown before "Show all". */
   const SHOWN = 6;
@@ -45,69 +47,21 @@
   let hostNoun = $state(hostComputerNoun());
   onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
 
-  let load = $state.raw<YourAppsLoad | null>(null);
-  let appRuns = $state<Record<string, AppRun>>({});
-  let undoProblem = $state<string | null>(null);
+  const local = untrack(() => given) ? null : new WelcomeConnectSession();
+  onDestroy(() => local?.dispose());
+  const session = $derived(given ?? (local as WelcomeConnectSession));
+
   let showAll = $state(false);
-  /** The app whose Connect is waiting on a new company, and that company once it exists. */
-  let pending = $state<string | null>(null);
-  let pendingUid = $state<string | null>(null);
-  /** Bumped per load: an answer for an older company or an older Retry is dropped. */
-  let gen = 0;
-  let loading = false;
-  let alive = true;
-  let abort = new AbortController();
-  onDestroy(() => {
-    alive = false;
-    abort.abort();
-  });
 
   const companyUid = $derived(suggest.company?.uid ?? null);
-  /** Memory per company: the owner's when given, else one kept while mounted. */
-  const localMemory = new Map<string, WelcomeConnectMemory>();
-  function memoryFor(uid: string): WelcomeConnectMemory {
-    if (suggest.memory) return suggest.memory;
-    let mem = localMemory.get(uid);
-    if (!mem) localMemory.set(uid, (mem = { autoRan: false, undone: new Set<string>() }));
-    return mem;
-  }
 
-  // A different company starts over: its own catalog, connections and runs.
+  // A different company starts over in the session; the same one (a remount) keeps its runs.
   $effect(() => {
     const uid = companyUid;
-    untrack(() => {
-      gen += 1;
-      loading = false;
-      abort.abort();
-      abort = new AbortController();
-      load = null;
-      appRuns = {};
-      undoProblem = null;
-      if (uid) loadApps(uid);
-    });
+    untrack(() => session.setCompany(suggest.host, uid));
   });
 
-  function loadApps(uid: string): void {
-    if (loading) return;
-    loading = true;
-    const mine = ++gen;
-    void suggest.host.load(uid).then(
-      (next) => {
-        if (mine !== gen) return;
-        loading = false;
-        if (alive) load = next;
-      },
-      (err: unknown) => {
-        if (mine !== gen) return;
-        loading = false;
-        console.warn("[hq-desktop] welcome report apps load threw:", err);
-        if (alive) {
-          load = { catalog: null, connections: [], installations: {}, canManage: false, problem: { reason: "Couldn't load your apps. Try again.", retry: true } };
-        }
-      },
-    );
-  }
-
+  const load = $derived(session.load);
   const found = $derived(scan.apps);
   const byDomain = $derived(new Map(found.map((app) => [app.domain, app])));
   const evidence = (app: FoundApp): string => evidenceLine(app.evidence, hostNoun);
@@ -121,7 +75,7 @@
           connections: load.connections,
           installations: load.installations,
           canManage: load.canManage,
-          runs: appRuns,
+          runs: session.runs,
           evidence,
         })
       : null,
@@ -146,41 +100,28 @@
   const shown = $derived(showAll ? rows : rows.slice(0, SHOWN));
   const browserBusy = $derived(view ? signInRunning(view) : false);
 
-  function setRun(domain: string, run: AppRun): void {
-    appRuns = { ...appRuns, [domain]: run };
-  }
-
   /** Connect the found no-sign-in catalog apps once per company (owner or admin only). */
   function runAutoConnect(uid: string): void {
     const current = load;
-    const remembered = memoryFor(uid);
+    const remembered = session.memoryFor(uid);
     if (remembered.autoRan || !current || !found.length) return;
     remembered.autoRan = true;
     const plan = autoConnectPlan(
-      { found, catalog: current.catalog, connections: current.connections, canManage: current.canManage, runs: appRuns },
+      { found, catalog: current.catalog, connections: current.connections, canManage: current.canManage, runs: session.runs },
       remembered.undone,
     );
-    const mine = gen;
-    for (const item of plan) {
-      const name = byDomain.get(item.domain)?.name ?? item.domain;
-      setRun(item.domain, { state: "connecting", via: "install" });
-      void suggest.host.autoConnect(uid, item.entryId, name).then((res) => {
-        if (!alive || mine !== gen) return;
-        if (res.ok) setRun(item.domain, { state: "connected", how: "auto", connectionId: res.connectionId, installationId: res.installationId });
-        else setRun(item.domain, res.reason ? { state: "failed", reason: res.reason, retry: res.retry } : { state: "idle" });
-      });
-    }
+    session.autoConnect(plan.map((item) => ({ domain: item.domain, entryId: item.entryId, name: byDomain.get(item.domain)?.name ?? item.domain })));
   }
 
-  // Once the new company's apps load, the Connect that waited for it runs.
+  // Once the new company's apps load, the Connect that waited for it runs
+  // (also when the shell switched to the company before the step answered).
   $effect(() => {
+    void session.pendingUid;
     if (!view || !companyUid) return;
     const uid = companyUid;
     untrack(() => {
-      if (pending && pendingUid === uid) {
-        const domain = pending;
-        pending = null;
-        pendingUid = null;
+      const domain = session.takePending(uid);
+      if (domain) {
         const tile = [...view.ready, ...view.notInHq].find((t) => t.domain === domain);
         if (tile && tile.run.state === "idle" && pressable(tile)) press(tile);
       }
@@ -197,75 +138,24 @@
     }
     // One browser sign-in at a time.
     if (opensSignIn(tile) && view && signInRunning(view)) return;
-    const mine = gen;
-    setRun(tile.domain, { state: "connecting", via: tile.action === "install" ? "install" : "browser" });
-    void suggest.host.connect(uid, tile, abort.signal).then((res) => {
-      if (!alive || mine !== gen) return;
-      if (res.ok) setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
-      else setRun(tile.domain, res.reason ? { state: "failed", reason: res.reason, retry: res.retry } : { state: "idle" });
-    });
+    session.connect(tile);
   }
 
   function setupTile(tile: AppTile): void {
-    const uid = companyUid;
-    if (!uid || (view && signInRunning(view))) return;
-    const mine = gen;
-    setRun(tile.domain, { state: "checking-docs" });
-    void suggest.host.setup(uid, tile, abort.signal).then((res) => {
-      if (!alive || mine !== gen) return;
-      if (res.ok) setRun(tile.domain, { state: "connected", how: "person", connectionId: res.connectionId });
-      else if (res.unsupported) setRun(tile.domain, { state: "unsupported" });
-      else setRun(tile.domain, res.reason ? { state: "failed", reason: res.reason, retry: res.retry } : { state: "idle" });
-    });
-  }
-
-  function undoChip(chip: ConnectedChip): void {
-    const uid = companyUid;
-    const installationId = chip.installationId;
-    if (!uid || !installationId) return;
-    const before = appRuns[chip.domain] ?? { state: "idle" };
-    const mine = gen;
-    undoProblem = null;
-    setRun(chip.domain, { state: "undoing", connectionId: chip.connectionId, installationId });
-    void suggest.host.undo(uid, installationId).then((res) => {
-      if (!alive || mine !== gen) return;
-      if (res.ok) {
-        memoryFor(uid).undone.add(chip.domain);
-        if (load && chip.connectionId) load = { ...load, connections: load.connections.filter((c) => c.id !== chip.connectionId) };
-        setRun(chip.domain, { state: "idle" });
-      } else {
-        setRun(chip.domain, before.state === "idle" ? { state: "connected", how: "auto", connectionId: chip.connectionId, installationId } : before);
-        undoProblem = res.reason;
-      }
-    });
+    if (!companyUid || (view && signInRunning(view))) return;
+    session.setup(tile);
   }
 
   /** No company yet: open the new-company flow, then connect this app in it. */
-  async function connectAfterNewCompany(app: FoundApp): Promise<void> {
+  function connectAfterNewCompany(app: FoundApp): void {
     const open = suggest.onnewcompany;
-    if (!open || pending) return;
-    pending = app.domain;
-    let uid: string | null = null;
-    try {
-      uid = await open();
-    } catch (err) {
-      console.warn("[hq-desktop] welcome report new company threw:", err);
-    }
-    if (!alive) return;
-    if (!uid) {
-      pending = null;
-      return;
-    }
-    pendingUid = uid;
+    if (open) void session.connectAfterNewCompany(app.domain, open);
   }
 
-  function reload(): void {
-    const uid = companyUid;
-    if (!uid) return;
-    undoProblem = null;
-    load = null;
-    memoryFor(uid).autoRan = false;
-    loadApps(uid);
+  /** The found row's button: Connect, Waiting while the new company is made, Try again once the wait ran out. */
+  function foundLabel(domain: string): string {
+    if (session.pending === domain) return YOUR_APPS_COPY.waiting;
+    return session.waitFailed === domain ? YOUR_APPS_COPY.retry : YOUR_APPS_COPY.connect;
   }
 
   // The button rules are FirstRunYourAppsStep's.
@@ -319,13 +209,13 @@
     return chip.how === "team" ? YOUR_APPS_COPY.team : chip.how === "auto" ? YOUR_APPS_COPY.noSignIn : YOUR_APPS_COPY.you;
   }
 
-  const problem = $derived(undoProblem ? { reason: undoProblem, retry: false } : (load?.problem ?? null));
+  const problem = $derived(session.undoProblem ? { reason: session.undoProblem, retry: false } : (load?.problem ?? null));
 </script>
 
 {#if problem}
   <p class="problem" role="status" data-testid="suggested-apps-problem">
     {problem.reason}
-    {#if problem.retry}<button type="button" class="link" data-testid="suggested-apps-reload" onclick={reload}>Retry</button>{/if}
+    {#if problem.retry}<button type="button" class="link" data-testid="suggested-apps-reload" onclick={() => session.reload()}>Retry</button>{/if}
   </p>
 {/if}
 {#if rows.length}
@@ -340,7 +230,7 @@
           {:else if row.kind === "tile"}
             <span class="note" aria-live="polite" title={tileNote(row.tile)} data-testid={`suggested-app-note-${row.domain}`}>{tileNote(row.tile)}</span>
           {:else}
-            <span class="note" data-testid={`suggested-app-note-${row.domain}`}>{evidence(row.app)}</span>
+            <span class="note" data-testid={`suggested-app-note-${row.domain}`}>{session.waitFailed === row.domain ? YOUR_APPS_COPY.failed : evidence(row.app)}</span>
           {/if}
         </span>
         {#if row.kind === "chip"}
@@ -353,7 +243,7 @@
               aria-label={`${YOUR_APPS_COPY.undo} ${row.name}`}
               disabled={row.chip.undoing}
               aria-busy={row.chip.undoing ? "true" : undefined}
-              onclick={() => undoChip(row.chip)}
+              onclick={() => session.undo(row.chip)}
             >{YOUR_APPS_COPY.undo}</button>
           {/if}
         {:else if row.kind === "tile"}
@@ -373,11 +263,11 @@
           <button
             type="button"
             data-testid={`suggested-app-connect-${row.domain}`}
-            aria-label={`${pending === row.domain ? YOUR_APPS_COPY.waiting : YOUR_APPS_COPY.connect} ${row.name}`}
-            disabled={pending !== null}
-            aria-busy={pending === row.domain ? "true" : undefined}
-            onclick={() => void connectAfterNewCompany(row.app)}
-          >{pending === row.domain ? YOUR_APPS_COPY.waiting : YOUR_APPS_COPY.connect}</button>
+            aria-label={`${foundLabel(row.domain)} ${row.name}`}
+            disabled={session.pending !== null}
+            aria-busy={session.pending === row.domain ? "true" : undefined}
+            onclick={() => connectAfterNewCompany(row.app)}
+          >{foundLabel(row.domain)}</button>
         {/if}
       </li>
     {/each}

@@ -16,7 +16,7 @@ import Harness from "./BriefSuggestedAppsHarness.test-support.svelte";
 import { hostComputerNoun } from "@hq/platform";
 import { evidenceLine, matchFoundApps } from "../chat/first-run/found-apps.js";
 import type { YourAppsHost, YourAppsLoad, YourAppsResult } from "../chat/first-run/your-apps-host.js";
-import type { WelcomeConnectMemory } from "./welcome-ai-apps.js";
+import { NEW_COMPANY_WAIT_MS, WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -89,7 +89,7 @@ function render(
   opts: {
     company?: Company;
     onnewcompany?: () => Promise<string | null>;
-    memory?: WelcomeConnectMemory;
+    session?: WelcomeConnectSession;
     scan?: FoundWorkApps;
   } = {},
 ): { setCompany: (next: Company) => void } {
@@ -103,7 +103,7 @@ function render(
       host,
       company: opts.company === undefined ? { uid: "cmp_acme", name: "Acme" } : opts.company,
       onnewcompany: opts.onnewcompany,
-      memory: opts.memory,
+      session: opts.session,
       control,
     },
   });
@@ -111,6 +111,7 @@ function render(
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   if (component) unmount(component);
   component = null;
   target?.remove();
@@ -166,8 +167,8 @@ describe("BriefSuggestedApps with a company", () => {
       connectionId: "conn-linear",
       installationId: "inst-linear",
     }));
-    const memory: WelcomeConnectMemory = { autoRan: false, undone: new Set() };
-    render(host, { memory });
+    const session = new WelcomeConnectSession();
+    render(host, { session });
     await settle();
     expect(host.autoConnect).toHaveBeenCalledTimes(1);
     expect(host.autoConnect).toHaveBeenCalledWith("cmp_acme", "e-linear", "Linear");
@@ -176,13 +177,13 @@ describe("BriefSuggestedApps with a company", () => {
     q<HTMLButtonElement>("suggested-app-undo-linear.app")!.click();
     await settle();
     expect(host.undo).toHaveBeenCalledWith("cmp_acme", "inst-linear");
-    expect(memory.undone.has("linear.app")).toBe(true);
+    expect(session.memoryFor("cmp_acme").undone.has("linear.app")).toBe(true);
 
     unmount(component!);
     component = null;
     target.remove();
 
-    render(host, { memory });
+    render(host, { session });
     await settle();
     expect(host.autoConnect).toHaveBeenCalledTimes(1);
     expect(q("suggested-app-linear.app")?.dataset.kind).toBe("tile");
@@ -226,6 +227,24 @@ describe("BriefSuggestedApps with no company", () => {
     expect(q("suggested-app-connect-linear.app")?.textContent?.trim()).toBe("Waiting");
   });
 
+  it("connects in the new company when the report switched to it before the new-company flow answered", async () => {
+    const host = fakeHost();
+    let answer: (uid: string | null) => void = () => undefined;
+    const onnewcompany = vi.fn(() => new Promise<string | null>((resolve) => (answer = resolve)));
+    const { setCompany } = render(host, { company: null, onnewcompany });
+    await settle();
+
+    q<HTMLButtonElement>("suggested-app-connect-linear.app")!.click();
+    await settle();
+    setCompany({ uid: "cmp_new", name: "New Co" });
+    await settle();
+    expect(host.connect).not.toHaveBeenCalled();
+    answer("cmp_new");
+    await settle();
+    expect(host.connect).toHaveBeenCalledTimes(1);
+    expect(host.connect).toHaveBeenCalledWith("cmp_new", expect.objectContaining({ domain: "linear.app" }), expect.anything());
+  });
+
   it("closing the new-company flow without a company leaves Connect ready again", async () => {
     const host = fakeHost();
     let answer: (uid: string | null) => void = () => undefined;
@@ -240,5 +259,58 @@ describe("BriefSuggestedApps with no company", () => {
     expect(host.connect).not.toHaveBeenCalled();
     expect(q("suggested-app-connect-linear.app")?.textContent?.trim()).toBe("Connect");
     expect(q<HTMLButtonElement>("suggested-app-connect-notion.com")?.disabled).toBe(false);
+  });
+
+  it("stops waiting after the bounded wait when the new company never becomes the report's, with Try again", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const host = fakeHost();
+    let answer: (uid: string | null) => void = () => undefined;
+    const onnewcompany = vi.fn(() => new Promise<string | null>((resolve) => (answer = resolve)));
+    render(host, { company: null, onnewcompany });
+    await settle();
+
+    q<HTMLButtonElement>("suggested-app-connect-linear.app")!.click();
+    await settle();
+    answer("cmp_new");
+    await settle();
+    vi.advanceTimersByTime(NEW_COMPANY_WAIT_MS - 1);
+    await settle();
+    expect(q("suggested-app-connect-linear.app")?.textContent?.trim()).toBe("Waiting");
+
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(q("suggested-app-connect-linear.app")?.textContent?.trim()).toBe("Try again");
+    expect(q("suggested-app-note-linear.app")?.textContent).toBe("Didn't connect");
+    expect(q<HTMLButtonElement>("suggested-app-connect-notion.com")?.disabled).toBe(false);
+    expect(host.connect).not.toHaveBeenCalled();
+
+    q<HTMLButtonElement>("suggested-app-connect-linear.app")!.click();
+    await settle();
+    expect(onnewcompany).toHaveBeenCalledTimes(2);
+    expect(q("suggested-app-connect-linear.app")?.textContent?.trim()).toBe("Waiting");
+  });
+
+  it("a different company than the new one ends the wait: the app says it didn't connect, and Try again connects it there", async () => {
+    const host = fakeHost();
+    let answer: (uid: string | null) => void = () => undefined;
+    const onnewcompany = vi.fn(() => new Promise<string | null>((resolve) => (answer = resolve)));
+    const { setCompany } = render(host, { company: null, onnewcompany });
+    await settle();
+
+    q<HTMLButtonElement>("suggested-app-connect-linear.app")!.click();
+    await settle();
+    answer("cmp_new");
+    await settle();
+    setCompany({ uid: "cmp_other", name: "Other Co" });
+    await settle();
+    expect(host.load).toHaveBeenCalledWith("cmp_other");
+    expect(host.connect).not.toHaveBeenCalled();
+    expect(q("suggested-app-connect-linear.app")?.textContent?.trim()).toBe("Try again");
+    expect(q("suggested-app-note-linear.app")?.textContent).toBe("Didn't connect");
+
+    q<HTMLButtonElement>("suggested-app-connect-linear.app")!.click();
+    await settle();
+    expect(host.connect).toHaveBeenCalledTimes(1);
+    expect(host.connect).toHaveBeenCalledWith("cmp_other", expect.objectContaining({ domain: "linear.app" }), expect.anything());
   });
 });

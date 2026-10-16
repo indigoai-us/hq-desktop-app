@@ -75,7 +75,8 @@
   import WelcomeReport from "../brief/WelcomeReport.svelte";
   import { welcomeMadeBy } from "../brief/welcome-made-by.js";
   import { briefActionsFor } from "../brief/brief-action-cards.js";
-  import type { WelcomeConnectMemory } from "../brief/welcome-ai-apps.js";
+  import { welcomeAppsCompanyFor } from "../brief/welcome-ai-apps.js";
+  import { WelcomeConnectSession } from "../brief/welcome-connect-session.svelte.js";
   import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
   import {
@@ -4377,32 +4378,22 @@
   });
   /**
    * The company the welcome report's connect card connects apps to: the
-   * tenant company, else the takeover's own default (the person's only
-   * company, `defaultTeamChoice`). With neither there is no card; apps never
-   * land in a company the person did not pick. (The visual takeover settles no
-   * team here, so `firstRunSettled.team` is never read.)
+   * tenant company, else the most recently used one, else the only one, else
+   * the first in the roster. Null only with no company at all, where Connect
+   * asks for a new company first. (The visual takeover settles no team here,
+   * so `firstRunSettled.team` is never read.)
    */
   const welcomeAppsCompany = $derived.by(() => {
-    const company =
-      railCompanyRoster.find((c) => c.uid === tenantCompanyId) ??
-      (railCompanyRoster.length === 1 ? railCompanyRoster[0] : undefined) ??
-      null;
+    const company = welcomeAppsCompanyFor(railCompanyRoster, tenantCompanyId, companyRecentIds);
     return company ? { uid: company.uid, name: company.label } : null;
   });
   /**
-   * What the connect card already did per company (the auto-connect ran, the
-   * apps the person undid). Held by the shell so a later Daily Brief visit
-   * never re-installs an app the person took back out.
+   * The connect card's session (the scan, the sign-ins running, the Connect
+   * waiting on a new company, what it did per company). Held by the shell so
+   * the report turning ready or a later Daily Brief visit keeps it.
    */
-  const welcomeConnectMemory = new Map<string, WelcomeConnectMemory>();
-  function welcomeConnectMemoryFor(companyUid: string): WelcomeConnectMemory {
-    let memory = welcomeConnectMemory.get(companyUid);
-    if (!memory) {
-      memory = { autoRan: false, undone: new Set<string>() };
-      welcomeConnectMemory.set(companyUid, memory);
-    }
-    return memory;
-  }
+  const welcomeConnectSession = new WelcomeConnectSession();
+  onDestroy(() => welcomeConnectSession.dispose());
   /** Detection and connects for the connect card: the shared "Your apps" host. */
   // svelte-ignore state_referenced_locally
   const welcomeAppsHost = adapter.integrations
@@ -4436,7 +4427,6 @@
           company: welcomeAppsCompany,
           onopenintegrations: openCompanyIntegrations,
           onnewcompany: openNewCompanyFromWelcome,
-          memory: welcomeAppsCompany ? welcomeConnectMemoryFor(welcomeAppsCompany.uid) : undefined,
         }
       : null,
   );
@@ -15724,6 +15714,7 @@
               onsetup={welcomeReportNeedsAssistant ? openWelcomeSetup : null}
               madeBy={welcomeMadeByLine}
               aiApps={welcomeAiApps}
+              session={welcomeConnectSession}
               blocked={welcomeReportBlocked}
             >
               {@render briefPage()}

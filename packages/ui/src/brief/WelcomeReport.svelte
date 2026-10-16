@@ -17,12 +17,15 @@
    * brief card inside the report: the Daily Brief shows it after its action
    * cards (read from the welcome-ai-apps context set here), and while the
    * report is held, loading or waiting on setup it sits under that card.
+   * The card remounts when the report turns ready; its connect session (the
+   * owner's, or one kept here) keeps the scan and the sign-ins across that.
    */
-  import type { Snippet } from "svelte";
+  import { onDestroy, untrack, type Snippet } from "svelte";
   import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
   import type { FoundWorkApps } from "@hq/platform";
   import BriefConnectApps from "./BriefConnectApps.svelte";
-  import { setWelcomeAiApps, type WelcomeAiApps, type WelcomeConnectMemory } from "./welcome-ai-apps.js";
+  import { setWelcomeAiApps, type WelcomeAiApps } from "./welcome-ai-apps.js";
+  import { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
   import { assistantNameInSentence } from "./brief-action-cards.js";
 
   interface Props {
@@ -38,9 +41,9 @@
       onopenintegrations?: (companyUid: string) => void;
       /** With no company: opens the new-company flow; resolves with its uid, or null when closed. */
       onnewcompany?: (() => Promise<string | null>) | null;
-      /** The section's per-company memory, kept across remounts. */
-      memory?: WelcomeConnectMemory;
     } | null;
+    /** The owner's connect session; without one the report keeps its own while mounted. */
+    session?: WelcomeConnectSession | null;
     /** No assistant to write the report yet: the card offers setting one up. */
     onsetup?: (() => void) | null;
     /**
@@ -58,7 +61,11 @@
     blocked?: { message: string; label: string; onfix: () => Promise<string | null> | void } | null;
     children: Snippet;
   }
-  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, blocked = null, children }: Props = $props();
+  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, session: given = null, blocked = null, children }: Props = $props();
+
+  const local = untrack(() => given) ? null : new WelcomeConnectSession();
+  onDestroy(() => local?.dispose());
+  const session = $derived(given ?? (local as WelcomeConnectSession));
 
   /** What the fix said when it could not finish (the brief page's own copy), as on the run bar. */
   let fixError = $state<string | null>(null);
@@ -90,9 +97,9 @@
             company: connect.company,
             onopenintegrations: connect.onopenintegrations,
             onnewcompany: connect.onnewcompany ?? null,
-            memory: connect.memory,
           }
         : null,
+      session,
     };
   });
   setWelcomeAiApps({
@@ -146,7 +153,7 @@
     <!-- Under the status card, outside its branches, so a status change (loading to held) keeps a Connect in progress. -->
     {#if connectApps}
       <div class="held-connect" data-testid="welcome-report-connect">
-        <BriefConnectApps detect={connectApps.detect} cli={connectApps.cli} suggest={connectApps.suggest} />
+        <BriefConnectApps detect={connectApps.detect} cli={connectApps.cli} suggest={connectApps.suggest} session={connectApps.session} />
       </div>
     {/if}
   {/if}

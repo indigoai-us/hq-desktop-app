@@ -163,6 +163,26 @@ describe("BriefConnectApps", () => {
     expect(q("connect-ai-app-chatgpt-manual")?.textContent).toBe(CONNECTOR_APPS.find((a) => a.id === "chatgpt")!.copyText);
   });
 
+  it("warns and leaves the card out when the scan throws", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const err = new Error("scan broke");
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(BriefConnectApps, {
+      target,
+      props: {
+        detect: vi.fn(async () => {
+          throw err;
+        }),
+        cli: { claudeCode: false, codex: false },
+        suggest: null,
+      },
+    });
+    await settle();
+    expect(warn).toHaveBeenCalledWith("[hq-desktop] welcome report app scan threw:", err);
+    expect(q("connect-ai-apps-card")).toBeNull();
+  });
+
   it("is left out when no found app matches and there are no suggestions", async () => {
     render([{ bundleId: "com.linear", name: "Linear" }]);
     await settle();

@@ -13,9 +13,10 @@
    *
    * The AI apps are one group (`.group`). Below them, in the same card, the
    * suggested integrations (BriefSuggestedApps): the work apps the same scan
-   * found, a row per app with a Connect action. One detect() feeds both.
+   * found, a row per app with a Connect action. One detect() feeds both,
+   * held in the owner's connect session so a remount does not scan again.
    */
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import type { FoundWorkApps } from "@hq/platform";
   import { copyConnectorSetup, foundConnectorApps, type ConnectorApp } from "../settings/hq-connector-setup.js";
   import { BRAND_ICONS, type BrandIconName } from "../common/button/rail-icons.js";
@@ -23,6 +24,7 @@
   import { YOUR_APPS_COPY } from "../chat/first-run/your-apps.js";
   import BriefSuggestedApps from "./BriefSuggestedApps.svelte";
   import type { WelcomeSuggest } from "./welcome-ai-apps.js";
+  import { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
 
   interface Props {
     /** The launch scan (names only). */
@@ -31,8 +33,10 @@
     cli: { claudeCode: boolean; codex: boolean };
     /** The suggested integrations; null or missing leaves that group out. */
     suggest?: WelcomeSuggest | null;
+    /** The owner's connect session; without one the card keeps its own while mounted. */
+    session?: WelcomeConnectSession | null;
   }
-  let { detect, cli, suggest = null }: Props = $props();
+  let { detect, cli, suggest = null, session: given = null }: Props = $props();
 
   /** The brand mark per app: Claude and Claude Code share the Claude mark, ChatGPT and Codex the OpenAI mark. */
   const MARK: Record<ConnectorApp["id"], BrandIconName> = {
@@ -44,20 +48,15 @@
     grok: "grok",
   };
 
-  let scan = $state.raw<FoundWorkApps | null>(null);
-  let alive = true;
+  const local = untrack(() => given) ? null : new WelcomeConnectSession();
+  const session = $derived(given ?? (local as WelcomeConnectSession));
   onDestroy(() => {
-    alive = false;
+    local?.dispose();
     clearTimeout(copyTimer);
   });
-  onMount(() => {
-    void detect().then(
-      (found) => {
-        if (alive) scan = found ?? null;
-      },
-      () => undefined,
-    );
-  });
+  onMount(() => session.detectOnce(detect));
+
+  const scan = $derived<FoundWorkApps | null>(session.scan);
 
   const apps = $derived(foundConnectorApps(scan?.apps ?? [], cli));
   const matched = $derived(matchFoundApps(scan));
@@ -118,7 +117,7 @@
       <div class="group" class:next={apps.length > 0} data-group="suggested" data-testid="connect-suggested-apps">
         <h2 class="eyebrow">{YOUR_APPS_COPY.kicker}</h2>
         <h3>{YOUR_APPS_COPY.lead} {YOUR_APPS_COPY.em}</h3>
-        <div class="group"><BriefSuggestedApps scan={matched} {suggest} /></div>
+        <div class="rows-wrap"><BriefSuggestedApps scan={matched} {suggest} {session} /></div>
       </div>
     {/if}
   </section>
@@ -183,6 +182,9 @@
   }
   .connect > .group:first-child {
     margin-top: 0;
+  }
+  .rows-wrap {
+    margin-top: 14px;
   }
   /* The second group sits under the AI apps with a hairline between them. */
   .group.next {

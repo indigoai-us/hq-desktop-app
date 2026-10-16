@@ -8,6 +8,7 @@
 import { getContext, setContext } from "svelte";
 import type { FoundWorkApps } from "@hq/platform";
 import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
+import type { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
 
 /**
  * What the connect section did for one company, kept by its owner across
@@ -31,8 +32,6 @@ export interface WelcomeSuggest {
    * company's uid, or null when the person closed it without one.
    */
   onnewcompany?: (() => Promise<string | null>) | null;
-  /** The section's per-company memory, kept across remounts. */
-  memory?: WelcomeConnectMemory;
 }
 
 export interface WelcomeAiApps {
@@ -42,6 +41,29 @@ export interface WelcomeAiApps {
   cli: { claudeCode: boolean; codex: boolean };
   /** The suggested integrations; null leaves the group out (flag off or no host). */
   suggest?: WelcomeSuggest | null;
+  /** The owner's connect session: the scan, the runs and the memory, kept across remounts. */
+  session?: WelcomeConnectSession | null;
+}
+
+/**
+ * The company the report's apps connect to: the tenant, else the most
+ * recently used company, else the only one, else the first in the roster.
+ * Null only when there is no company at all, the one case that asks for a
+ * new company first.
+ */
+export function welcomeAppsCompanyFor<T extends { uid: string }>(
+  roster: readonly T[],
+  tenantId: string | null,
+  recentIds: readonly string[],
+): T | null {
+  const byUid = (uid: string | null): T | undefined => (uid ? roster.find((co) => co.uid === uid) : undefined);
+  const tenant = byUid(tenantId);
+  if (tenant) return tenant;
+  for (const uid of recentIds) {
+    const recent = byUid(uid);
+    if (recent) return recent;
+  }
+  return roster[0] ?? null;
 }
 
 const KEY = Symbol("welcome-ai-apps");

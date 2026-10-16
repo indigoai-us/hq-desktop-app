@@ -7,7 +7,7 @@
   import BriefSuggestedApps from "./BriefSuggestedApps.svelte";
   import type { FoundAppsResult } from "../chat/first-run/found-apps.js";
   import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
-  import type { WelcomeConnectMemory } from "./welcome-ai-apps.js";
+  import type { WelcomeConnectSession } from "./welcome-connect-session.svelte.js";
 
   type Company = { uid: string; name: string } | null;
   interface Props {
@@ -15,10 +15,10 @@
     host: YourAppsHost;
     company?: Company;
     onnewcompany?: () => Promise<string | null>;
-    memory?: WelcomeConnectMemory;
+    session?: WelcomeConnectSession;
     control: { setCompany?: (next: Company) => void };
   }
-  let { scan, host, company: initial = null, onnewcompany, memory, control }: Props = $props();
+  let { scan, host, company: initial = null, onnewcompany, session, control }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   let company = $state<Company>(initial);
@@ -26,4 +26,4 @@
   control.setCompany = (next) => (company = next);
 </script>
 
-<BriefSuggestedApps {scan} suggest={{ host, company, onnewcompany, memory }} />
+<BriefSuggestedApps {scan} suggest={{ host, company, onnewcompany }} {session} />

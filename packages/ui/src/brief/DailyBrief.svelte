@@ -461,7 +461,7 @@
 
   {#if welcomeAiApps?.current}
     {@const connect = welcomeAiApps.current}
-    <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} />
+    <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} session={connect.session} />
   {/if}
 
   {#if notShown.length}

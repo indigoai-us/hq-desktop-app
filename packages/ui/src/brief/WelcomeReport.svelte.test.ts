@@ -269,6 +269,88 @@ describe("WelcomeReport", () => {
     await settle();
   });
 
+  it("keeps a sign-in running when the report turns ready mid-Connect: it lands as connected, with one scan", async () => {
+    const props = $state({ ready: false });
+    const host = fakeHost();
+    let signal: AbortSignal | null = null;
+    let finish: (res: YourAppsResult) => void = () => undefined;
+    host.connect = vi.fn((_uid: string, _tile: unknown, sig: AbortSignal) => {
+      signal = sig;
+      return new Promise<YourAppsResult>((resolve) => (finish = resolve));
+    }) as YourAppsHost["connect"];
+    const detect = vi.fn(async () => SCAN);
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(ReportWithBrief, {
+      target,
+      props: {
+        input: { ...octoberEightBrief(new Date(2026, 9, 8, 7, 42)), today: "2026-10-08" },
+        get ready() {
+          return props.ready;
+        },
+        report: {
+          aiApps: { detect, cli: { claudeCode: true, codex: false } },
+          connect: { host, company: { uid: "cmp_acme", name: "Acme" } },
+        },
+      },
+    });
+    await settle();
+    q<HTMLButtonElement>('[data-testid="welcome-report-connect"] [data-testid="suggested-app-connect-linear.app"]')!.click();
+    await settle();
+    expect(host.connect).toHaveBeenCalledTimes(1);
+
+    props.ready = true;
+    await settle();
+    expect(signal!.aborted).toBe(false);
+    expect(q('[data-testid="welcome-report-ready"] [data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Waiting");
+
+    finish({ ok: true, connectionId: "conn-linear", installationId: null });
+    await settle();
+    expect(q<HTMLElement>('[data-testid="welcome-report-ready"] [data-testid="suggested-app-linear.app"]')?.dataset.kind).toBe("chip");
+    expect(detect).toHaveBeenCalledTimes(1);
+    expect(host.load).toHaveBeenCalledTimes(1);
+    expect(host.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a Connect waiting on a new company when the report turns ready, and connects once the company lands", async () => {
+    const props = $state({ ready: false, company: null as { uid: string; name: string } | null });
+    const host = fakeHost();
+    let answer: (uid: string | null) => void = () => undefined;
+    const onnewcompany = vi.fn(() => new Promise<string | null>((resolve) => (answer = resolve)));
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(ReportWithBrief, {
+      target,
+      props: {
+        input: { ...octoberEightBrief(new Date(2026, 9, 8, 7, 42)), today: "2026-10-08" },
+        get ready() {
+          return props.ready;
+        },
+        report: {
+          aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } },
+          get connect() {
+            return { host, company: props.company, onnewcompany };
+          },
+        },
+      },
+    });
+    await settle();
+    q<HTMLButtonElement>('[data-testid="welcome-report-connect"] [data-testid="suggested-app-connect-linear.app"]')!.click();
+    await settle();
+    expect(onnewcompany).toHaveBeenCalledTimes(1);
+
+    props.ready = true;
+    await settle();
+    expect(q('[data-testid="welcome-report-ready"] [data-testid="suggested-app-connect-linear.app"]')?.textContent?.trim()).toBe("Waiting");
+
+    answer("cmp_new");
+    props.company = { uid: "cmp_new", name: "New Co" };
+    await settle();
+    expect(onnewcompany).toHaveBeenCalledTimes(1);
+    expect(host.connect).toHaveBeenCalledTimes(1);
+    expect(host.connect).toHaveBeenCalledWith("cmp_new", expect.objectContaining({ domain: "linear.app" }), expect.anything());
+  });
+
   it("says the assistant made the report and Meet <Name> opens its DM", async () => {
     const onmeet = vi.fn();
     mountReport({ ready: true, madeBy: { name: "Atlas", onmeet }, children: briefPage });

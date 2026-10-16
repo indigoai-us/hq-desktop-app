@@ -13,10 +13,12 @@
     input: BriefInput;
     actions?: BriefActions;
     report: Record<string, unknown>;
+    /** The report turns ready when this does, as the shell's job lands. */
+    ready?: boolean;
   }
-  let { input, actions, report }: Props = $props();
+  let { input, actions, report, ready = true }: Props = $props();
 </script>
 
-<WelcomeReport ready={true} {...report}>
+<WelcomeReport {ready} {...report}>
   <DailyBrief {input} {actions} onlaunch={async () => null} />
 </WelcomeReport>
