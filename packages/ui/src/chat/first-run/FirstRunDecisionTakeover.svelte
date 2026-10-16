@@ -254,11 +254,22 @@
     if (mine !== signinAttempt) return;
     if (connected) {
       logSignIn("done", runtime);
+      focusHq();
       goOnAfterSignIn();
     } else {
       logSignIn("failed", runtime);
+      focusHq();
       signinView = { runtime, state: "failed" };
     }
+  }
+
+  /** The browser sign-in left the browser in front: bring HQ back. */
+  function focusHq(): void {
+    const focus = signin?.focus;
+    if (!focus) return;
+    void Promise.resolve()
+      .then(() => focus())
+      .catch((error: unknown) => console.warn("[first-run] focus after sign-in failed", error));
   }
 
   function goOnAfterSignIn(): void {
@@ -282,6 +293,7 @@
     signinAttempt += 1;
     logSignIn("skipped", view.runtime);
     if (view.state === "waiting") cancelSignIn(view.runtime);
+    focusHq();
     goOnAfterSignIn();
   }
 

@@ -335,10 +335,100 @@ describe("FirstRunDecisionTakeover sign-in", () => {
           new Promise<boolean>((resolve) => runs.push({ runtime, cancelled: opts.cancelled, finish: resolve })),
       ),
       cancel: vi.fn(async () => undefined),
+      focus: vi.fn(async () => undefined),
     };
     return { signin, runs };
   }
   const SIGNED_OUT = { claude: true, codex: false };
+
+  /**
+   * The browser sign-in leaves the browser in front of HQ, so the person
+   * never saw the Daily Brief (test Mac, 2026-10-16). Each way the step ends
+   * brings HQ back; the wait itself never does.
+   */
+  describe("brings HQ back to the front when the step ends", () => {
+    async function pressContinue(signin: FirstRunSignInHost) {
+      const result = render({ signin, installed: SIGNED_OUT });
+      await waitForDecision();
+      byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+      await settle();
+      return result;
+    }
+
+    it("never while the browser sign-in waits", async () => {
+      const { signin } = fakeSignIn(false);
+      await pressContinue(signin);
+      expect(byId("first-run-signin-waiting")).toBeTruthy();
+      expect(signin.focus).not.toHaveBeenCalled();
+    });
+
+    it("once the sign-in is done", async () => {
+      const { signin, runs } = fakeSignIn(false);
+      const { handlers } = await pressContinue(signin);
+      runs[0]!.finish(true);
+      await settle();
+      expect(signin.focus).toHaveBeenCalledTimes(1);
+      expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    });
+
+    it("once the sign-in failed or timed out", async () => {
+      const { signin, runs } = fakeSignIn(false);
+      await pressContinue(signin);
+      runs[0]!.finish(false);
+      await settle();
+      expect(byId("first-run-signin-failed")).toBeTruthy();
+      expect(signin.focus).toHaveBeenCalledTimes(1);
+    });
+
+    it("on Skip for now while it waits, and a late answer does not raise it again", async () => {
+      const { signin, runs } = fakeSignIn(false);
+      await pressContinue(signin);
+      byId<HTMLButtonElement>("first-run-signin-skip")!.click();
+      await settle();
+      expect(signin.focus).toHaveBeenCalledTimes(1);
+      runs[0]!.finish(true);
+      await settle();
+      expect(signin.focus).toHaveBeenCalledTimes(1);
+    });
+
+    it("on Skip for now after a failure, and not again while a retry waits", async () => {
+      const { signin, runs } = fakeSignIn(false);
+      await pressContinue(signin);
+      runs[0]!.finish(false);
+      await settle();
+      byId<HTMLButtonElement>("first-run-signin-retry")!.click();
+      await settle();
+      expect(byId("first-run-signin-waiting")).toBeTruthy();
+      expect(signin.focus).toHaveBeenCalledTimes(1);
+      runs[1]!.finish(false);
+      await settle();
+      expect(signin.focus).toHaveBeenCalledTimes(2);
+      byId<HTMLButtonElement>("first-run-signin-skip")!.click();
+      await settle();
+      expect(signin.focus).toHaveBeenCalledTimes(3);
+    });
+
+    it("not when the tool is already signed in and no browser opened", async () => {
+      const { signin } = fakeSignIn(true);
+      const { handlers } = await pressContinue(signin);
+      expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+      expect(signin.focus).not.toHaveBeenCalled();
+    });
+
+    it("a raise that fails is only logged and the first run goes on", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const { signin, runs } = fakeSignIn(false);
+      signin.focus = vi.fn(async () => {
+        throw new Error("window gone");
+      });
+      const { handlers } = await pressContinue(signin);
+      runs[0]!.finish(true);
+      await settle();
+      expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+      expect(warn).toHaveBeenCalledWith("[first-run] focus after sign-in failed", expect.any(Error));
+      warn.mockRestore();
+    });
+  });
 
   it("a signed-in tool continues with no sign-in step", async () => {
     const { signin } = fakeSignIn(true);

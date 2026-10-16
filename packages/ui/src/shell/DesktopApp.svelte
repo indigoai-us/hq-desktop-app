@@ -4077,6 +4077,10 @@
               await onBotRuntimeSignedIn(runtime);
             }
           },
+          // The sign-in left the browser in front of the Daily Brief.
+          focus: async () => {
+            await adapter.sessions?.bringToFront?.();
+          },
         }
       : null;
   /** The finished scan's counts and report path, for the setup bot's handoff. */
