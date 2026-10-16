@@ -21,6 +21,23 @@ export function canInviteNotetaker(raw: string): boolean {
   return Boolean(link) && notetakerLinkProblem(link) === null;
 }
 
+/**
+ * Companies the notetaker can save to, by name. Personal is not offered:
+ * hq-pro refuses every Personal recording with the HQ Workforce prompt.
+ */
+export function notetakerCompanyOptions(
+  companyNamesByUid: ReadonlyMap<string, string>,
+): Array<{ value: string; label: string }> {
+  return [...companyNamesByUid.entries()]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** The sole company, preselected; "" when the user must choose (or has none). */
+export function defaultNotetakerCompany(companyNamesByUid: ReadonlyMap<string, string>): string {
+  return companyNamesByUid.size === 1 ? [...companyNamesByUid.keys()][0]! : "";
+}
+
 export interface NotetakerStatus {
   /** What the notetaker is doing, in plain words; empty when none is invited. */
   label: string;
