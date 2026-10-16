@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Meetings: Invite notetaker always saves to one of your companies. If you have one company, it is used automatically. If you have several, pick one under "Save to" before inviting. Before this change, every pasted link was sent as Personal, which cannot record, so you saw the HQ Workforce upgrade prompt even when your company already had meeting recording.
 - Usage pricing: first-run setup shows one card for a new company: $10 of usage included every month, the per-use rates (sync, gateway call, HQ MCP call, agent run, storage, secret), the $5 vault fee waived during the trial, cloud bot boxes from $100 to $800 a month, and a 30-day trial capped at $500. The rates come from HQ's price list and fall back to the published card when it cannot be read. "Sign up free" continues setup; "Request an enterprise demo" and "Use HQ free, self-hosted or on-prem" open in your browser. Starter and Workforce are no longer offered to new companies, and nothing goes to checkout. Existing companies keep their plans.
 - Company settings: Billing for a usage-priced company shows this month's usage, the credit left of the $10 included, the vault fee and the cloud bot box prices instead of seats, and has no Workforce upgrade. Other companies see seats as before.
 - Cloud bot, Slack bot, external bot, meeting recording and invite messages no longer say you need Starter, Workforce or a seat upgrade. They say the company's plan does not include the feature yet.
