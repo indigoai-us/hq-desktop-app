@@ -4078,8 +4078,10 @@
             }
           },
           // The sign-in left the browser in front of the Daily Brief.
+          // The adapter answers a failure as {ok:false}; throw it so the caller logs it.
           focus: async () => {
-            await adapter.sessions?.bringToFront?.();
+            const result = await adapter.sessions?.bringToFront?.();
+            if (result && !result.ok) throw new Error(result.message ?? "could not bring HQ to the front");
           },
         }
       : null;

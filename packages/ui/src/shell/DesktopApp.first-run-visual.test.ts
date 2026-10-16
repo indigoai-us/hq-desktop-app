@@ -2155,6 +2155,34 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(bringToFront).toHaveBeenCalledTimes(1);
   }, 20_000);
 
+  it("a raise the app answers as failed is logged, and the person still lands on the welcome report", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const bringToFront = vi.fn(async () => failure("unavailable", "Desktop window is not available."));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      bringToFront,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-waiting"]')).toBeTruthy());
+    tool.state.connect = true;
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy(), { timeout: 10_000 });
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(bringToFront).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(warn.mock.calls.some((call) => call.map(String).join(" ").includes("Desktop window is not available."))).toBe(true),
+    );
+    warn.mockRestore();
+  }, 20_000);
+
   it("signed out, Continue in Codex signs Codex in the same way before it goes on", async () => {
     const tool = signsInThroughBrowser("codex");
     const log = logSink();
