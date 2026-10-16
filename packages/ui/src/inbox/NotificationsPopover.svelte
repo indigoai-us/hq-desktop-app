@@ -11,6 +11,7 @@
   import {
     hideNotification,
     markAllCachedNotificationsRead,
+    markCachedNotificationRead,
     notificationsCacheSnapshot,
     restoreNotification,
   } from "./notifications-cache.svelte.js";
@@ -31,6 +32,7 @@
     itemsForTab,
     metadata,
     newestFirst,
+    pinUnrevealedBadges,
     type NotificationPanelTab,
   } from "./notifications-panel.js";
   import "../chat/chat-tokens.css";
@@ -76,8 +78,21 @@
       (item) => !dismissedInviteIds.includes(item.id),
     ),
   );
-  const rows = $derived(itemsForTab(newestFirst(merged), tab));
+  const rows = $derived(itemsForTab(pinUnrevealedBadges(newestFirst(merged)), tab));
   let markAllPending = $state(false);
+
+  /** Reveal the card, then mark the row read so it leaves the top of the list. */
+  async function revealBadge(item: NotificationItem, badge: Parameters<typeof revealBadgeCard>[0]): Promise<void> {
+    void revealBadgeCard(badge);
+    if (item.status !== "unread") return;
+    const restore = markCachedNotificationRead(item.id);
+    try {
+      await api.ackNotification(item.id);
+    } catch (err) {
+      console.error("notifications-popover: ack after badge reveal failed", err);
+      restore();
+    }
+  }
   const requestCount = $derived(merged.filter(isRequestRow).length);
 
   function onWindowPointer(event: PointerEvent): void {
@@ -255,7 +270,7 @@
                   type="button"
                   class="btn"
                   data-testid="notification-reveal-badge"
-                  onclick={() => void revealBadgeCard(notice.badge)}
+                  onclick={() => void revealBadge(item, notice.badge)}
                 >Reveal card</button>
               </div>
             </div>
