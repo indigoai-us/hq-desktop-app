@@ -15,6 +15,7 @@
 
 import type { LocalBotRow } from "@hq/platform";
 import { repairPayloadForMessage } from "./messaging/runtime-repair-model.js";
+import { botNeedsSignIn, expiredRuntimeOf } from "./runtime-sign-in-again.js";
 
 const RUNTIME_LABELS: Record<string, string> = {
   claude: "Claude Code",
@@ -151,6 +152,30 @@ export function localBotCodingToolNeed(
   if (isInstalled === true) return "signIn";
   if (isInstalled === false) return "install";
   return null;
+}
+
+/**
+ * True while a local bot cannot answer because its coding tool is signed out
+ * here: the same state that draws the "Claude Code is signed out" card. The
+ * bot reported an expired sign-in, or the tool is installed but not signed in,
+ * and no sign-in has finished here since (`signedInAt`, per runtime, in ms).
+ *
+ * The DM shows no "is thinking" or "is still working" line in this state: the
+ * bot will not reply until the tool signs in, and the card says so.
+ */
+export function localBotSignedOutHere(
+  bot: LocalBotRow | null | undefined,
+  ready: Record<string, boolean> | null | undefined,
+  installed: Record<string, boolean> | null | undefined,
+  signedInAt: Partial<Record<string, number>>,
+): boolean {
+  if (!bot) return false;
+  if (!botNeedsSignIn(bot) && localBotCodingToolNeed(bot, ready, installed) !== "signIn") return false;
+  const runtime = expiredRuntimeOf(bot);
+  if (runtime !== "claude" && runtime !== "codex" && runtime !== "grok") return false;
+  const at = signedInAt[runtime];
+  const sinceMs = Date.parse(bot.runtimeSignIn?.since ?? "");
+  return at === undefined || (Number.isFinite(sinceMs) && at < sinceMs);
 }
 
 /** The one line above the install guide in a bot's DM. */
