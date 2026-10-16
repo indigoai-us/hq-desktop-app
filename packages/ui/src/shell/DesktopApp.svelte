@@ -213,6 +213,7 @@
   import SetupInstallGuide from "../settings/SetupInstallGuide.svelte";
   import {
     botNeedsCodingToolNotice,
+    localBotCodingToolNeed,
     localBotNeedsCodingTool,
     withPlainBotFailureReplies,
   } from "../chat/bot-runtime-failure.js";
@@ -2898,7 +2899,8 @@
     const installed: Record<string, boolean> = {};
     for (const id of ["claude", "codex", "grok"]) {
       next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
-      installed[id] = rec[`${id}Available`] === true;
+      // A host that does not say leaves the tool unknown, not missing.
+      if (typeof rec[`${id}Available`] === "boolean") installed[id] = rec[`${id}Available`] === true;
       const status = parseRuntimeStatus(rec[`${id}Status`]);
       if (status) statuses[id] = status;
     }
@@ -4821,7 +4823,10 @@
   });
   /** The card for a bot paused on a sign-in whose conversation has no waiting signed-out card. */
   function pausedSignInCard(bot: LocalBotRow, own: readonly ConversationMessageWire[]) {
-    if (!botNeedsSignIn(bot)) return null;
+    // Installed but signed out here counts too, before the bot reports it.
+    const signedOutHere =
+      localBotCodingToolNeed(bot, localBotRuntimeReady, localCodingToolsInstalled) === "signIn";
+    if (!botNeedsSignIn(bot) && !signedOutHere) return null;
     const runtime = expiredRuntimeOf(bot);
     if (runtime !== "claude" && runtime !== "codex" && runtime !== "grok") return null;
     const since = bot.runtimeSignIn?.since ?? "";
@@ -4865,13 +4870,14 @@
     });
   });
   /**
-   * The open bot runs on a coding tool that is not installed or not signed in
-   * here (an expired sign-in has its own repair card). The DM says so in one
-   * line and offers the same guided install the setup channel uses, instead
+   * The open bot runs on a coding tool that is not installed here (a signed-out
+   * or expired one has the signed-out repair card instead). The DM says so in
+   * one line and offers the same guided install the setup channel uses, instead
    * of letting each message come back as a failure.
    */
   const selectedLocalBotNeedsCodingTool = $derived(
-    !selectedLocalBotNeedsSignIn && localBotNeedsCodingTool(selectedLocalBot, localBotRuntimeReady),
+    !selectedLocalBotNeedsSignIn &&
+      localBotCodingToolNeed(selectedLocalBot, localBotRuntimeReady, localCodingToolsInstalled) === "install",
   );
   /** The install guide's Continue: re-read the tools, then start the bot again. */
   async function continueBotAfterCodingTool(): Promise<void> {
