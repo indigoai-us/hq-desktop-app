@@ -8,7 +8,7 @@ import type { InvokeFn } from './first-run-company';
 const FEED = {
   usage: {
     version: '2026-10-16',
-    newSignupsFrom: '2026-10-16T13:00:00Z',
+    newSignupsFrom: '2026-10-16T18:00:00Z',
     includedUsd: 10,
     trial: { days: 30, capUsd: 500 },
     meters: [
@@ -37,7 +37,7 @@ const FEED = {
     selfHosted: { label: 'Use HQ free, self-hosted or on-prem', url: 'https://docs.hq.computer/hq/guide/use-hq-for-free/' },
   },
   // Legacy plans stay in the feed for existing customers.
-  plans: [{ id: 'free', displayName: 'Starter', newSignupsUntil: '2026-10-16T13:00:00Z', included: {} }],
+  plans: [{ id: 'free', displayName: 'Starter', newSignupsUntil: '2026-10-16T18:00:00Z', included: {} }],
 };
 
 function rows(card = USAGE_CARD): Array<[string, string, string | null]> {
