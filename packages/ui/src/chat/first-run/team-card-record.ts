@@ -17,6 +17,9 @@
  * key. While it is there, the outcome of that create is unknown (it may time
  * out, fail, or be cut off by a restart after the server made the company), so
  * the card stays on that name and the next Create first looks for the company.
+ * Its `failedLooks` counts the presses that looked and did not find it; once
+ * that reaches the bound the card is unlocked and the entry is only a lookup
+ * hint, so a later find still settles it.
  */
 import type { FirstRunTeamCompany } from "./team-step";
 
@@ -37,6 +40,8 @@ export interface TeamCardUnsentCreate {
 export interface TeamCardCreating {
   name: string;
   slug: string;
+  /** Presses that looked for the company and did not find it. */
+  failedLooks?: number;
 }
 
 type ReadStorage = Pick<Storage, "getItem">;
@@ -145,9 +150,10 @@ function pendingCreate(value: unknown): TeamCardCreating | null {
   if (!value || typeof value !== "object") return null;
   const { creating } = value as { creating?: unknown };
   if (!creating || typeof creating !== "object") return null;
-  const { name, slug } = creating as { name?: unknown; slug?: unknown };
+  const { name, slug, failedLooks } = creating as { name?: unknown; slug?: unknown; failedLooks?: unknown };
   if (typeof name !== "string" || !name.trim() || typeof slug !== "string" || !slug.trim()) return null;
-  return { name, slug };
+  const looks = typeof failedLooks === "number" && Number.isInteger(failedLooks) && failedLooks > 0 ? failedLooks : 0;
+  return { name, slug, ...(looks ? { failedLooks: looks } : {}) };
 }
 
 /** The create under `key` that was sent and has not answered, if any. */
@@ -166,7 +172,16 @@ export function saveTeamCardCreating(
 ): boolean {
   const entries = readTeamCardEntries(storage);
   if (typeof entries[key] === "string" || unsentCreate(entries[key])) return false;
-  return writeTeamCardEntries(storage, { ...entries, [key]: { creating: { name: creating.name, slug: creating.slug } } });
+  const { name, slug, failedLooks } = creating;
+  return writeTeamCardEntries(storage, { ...entries, [key]: { creating: { name, slug, ...(failedLooks ? { failedLooks } : {}) } } });
+}
+
+/** Count the presses that looked for a pending create's company and did not find it. Leaves anything else under `key`. */
+export function saveTeamCardFailedLooks(storage: WriteStorage | null | undefined, key: string, failedLooks: number): boolean {
+  const entries = readTeamCardEntries(storage);
+  const pending = pendingCreate(entries[key]);
+  if (!pending) return false;
+  return writeTeamCardEntries(storage, { ...entries, [key]: { creating: { name: pending.name, slug: pending.slug, failedLooks } } });
 }
 
 /** Forget a pending create: it is known to have made no company. Leaves anything else under `key`. */

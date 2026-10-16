@@ -11,8 +11,14 @@ import {
   teamCardResume,
   teamCardStoredLast,
   TEAM_CARD_FAILURE,
+  TEAM_CARD_LOOK_TRIES,
 } from "./team-card-pick";
-import { saveTeamCardCreating, saveTeamCardReplyFailures, saveTeamCardUnsentCreate } from "./team-card-record";
+import {
+  saveTeamCardCreating,
+  saveTeamCardFailedLooks,
+  saveTeamCardReplyFailures,
+  saveTeamCardUnsentCreate,
+} from "./team-card-record";
 
 const acme = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
 
@@ -288,7 +294,7 @@ describe("a create whose outcome is unknown", () => {
     const findCreated = vi.fn(async () => null);
     const host = { ...d.host, findCreated };
     const result = await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...d, host, unresolved: true, notCreating });
-    expect(result).toEqual({ ok: false, reason: TEAM_CARD_FAILURE, creating: true, refused: true });
+    expect(result).toEqual({ ok: false, reason: TEAM_CARD_FAILURE, creating: true, refused: true, failedLooks: 1 });
     expect(notCreating).not.toHaveBeenCalled();
     // Looked before the create and again after the refusal.
     expect(findCreated).toHaveBeenCalledTimes(2);
@@ -320,6 +326,7 @@ describe("a create whose outcome is unknown", () => {
       reason: TEAM_CARD_FAILURE,
       creating: true,
       refused: true,
+      failedLooks: 1,
     });
     expect(d.create).not.toHaveBeenCalled();
     expect(notCreating).not.toHaveBeenCalled();
@@ -367,6 +374,132 @@ describe("a create whose outcome is unknown", () => {
       completed: created,
       replyFailures: 2,
     });
+  });
+});
+
+describe("a create that is never found", () => {
+  const pickle = { companyUid: "cmp_pickle", slug: "pickle", name: "Pickle" };
+  const refusedCreate = () => vi.fn(async () => ({ ok: false, reason: "That handle is taken.", blocked: true }));
+
+  it("unlocks after two failed looks, keeping the name only as a lookup hint", async () => {
+    expect(TEAM_CARD_LOOK_TRIES).toBe(2);
+    const looked = vi.fn();
+    const notCreating = vi.fn();
+    const d = deps();
+    const host = { ...d.host, findCreated: vi.fn(async () => null) };
+    const last = { pick: { kind: "create" as const, name: "Pickle" }, creating: true, refused: true, failedLooks: 1 };
+    const run = teamCardResume({ kind: "create", name: "Brine" }, last);
+    expect(run).toEqual({ pick: { kind: "create", name: "Pickle" }, unresolved: true, refused: true, failedLooks: 1 });
+    const result = await runTeamCardPick(run.pick, { ...d, host, ...run, looked, notCreating });
+    expect(result).toEqual({ ok: false, reason: TEAM_CARD_FAILURE, lookupHint: "Pickle" });
+    expect(looked).toHaveBeenCalledWith(2);
+    expect(notCreating).not.toHaveBeenCalled();
+    expect(d.create).not.toHaveBeenCalled();
+    // Unlocked: nothing holds the card on the name.
+    expect(teamCardLockName({ pick: run.pick, lookupHint: "Pickle" })).toBeNull();
+  });
+
+  it("a create that fails without a refusal counts as a failed look too", async () => {
+    const d = deps({ create: vi.fn(async () => ({ ok: false, reason: "No answer." })) });
+    const host = { ...d.host, findCreated: vi.fn(async () => null) };
+    const looked = vi.fn();
+    const first = await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...d, host, unresolved: true, looked });
+    expect(first).toEqual({ ok: false, reason: "No answer.", creating: true, failedLooks: 1 });
+    const second = await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...d, host, unresolved: true, failedLooks: 1, looked });
+    expect(second).toEqual({ ok: false, reason: "No answer.", lookupHint: "Pickle" });
+    expect(looked.mock.calls).toEqual([[1], [2]]);
+  });
+
+  it("after the unlock, Just me and join run as usual", () => {
+    const last = { pick: { kind: "create" as const, name: "Pickle" }, lookupHint: "Pickle" };
+    expect(teamCardResume({ kind: "personal" }, last)).toEqual({ pick: { kind: "personal" } });
+  });
+
+  it("after the unlock, the same name is the unresolved create on its last look", () => {
+    const last = { pick: { kind: "create" as const, name: "Pickle" }, lookupHint: "Pickle" };
+    expect(teamCardResume({ kind: "create", name: "pickle " }, last)).toEqual({
+      pick: { kind: "create", name: "pickle " },
+      unresolved: true,
+      failedLooks: TEAM_CARD_LOOK_TRIES - 1,
+    });
+  });
+
+  it("after the unlock, another name looks for the hinted company first and settles on it when found", async () => {
+    const d = deps();
+    const kept = vi.fn();
+    const last = { pick: { kind: "create" as const, name: "Pickle" }, lookupHint: "Pickle" };
+    const run = teamCardResume({ kind: "create", name: "Brine" }, last);
+    expect(run).toEqual({ pick: { kind: "create", name: "Brine" }, lookupHint: "Pickle" });
+    const findCreated = vi.fn(async (name: string) => (name === "Pickle" ? pickle : null));
+    const result = await runTeamCardPick(run.pick, { ...d, host: { ...d.host, findCreated }, ...run, created: kept });
+    expect(findCreated).toHaveBeenCalledWith("Pickle");
+    expect(d.create).not.toHaveBeenCalled();
+    expect(kept).toHaveBeenCalledWith({ kind: "company", how: "created", company: pickle });
+    expect(result).toMatchObject({ ok: true, settled: "Created Pickle" });
+  });
+
+  it("after the unlock, another name creates when the hinted company is still missing", async () => {
+    const d = deps();
+    const creating = vi.fn();
+    const findCreated = vi.fn(async () => null);
+    const result = await runTeamCardPick(
+      { kind: "create", name: "Brine" },
+      { ...d, host: { ...d.host, findCreated }, lookupHint: "Pickle", creating },
+    );
+    expect(d.create).toHaveBeenCalledWith("Brine");
+    expect(creating).toHaveBeenCalledWith({ name: "Brine", slug: "brine" });
+    expect(result).toMatchObject({ ok: true, settled: "Created Brine" });
+  });
+
+  it("a slug someone else has clears the pending create at once and unlocks the card", async () => {
+    const create = refusedCreate();
+    const d = deps({ create });
+    const notCreating = vi.fn();
+    const looked = vi.fn();
+    const slugTaken = vi.fn(async () => true);
+    const findCreated = vi.fn(async () => null);
+    const result = await runTeamCardPick(
+      { kind: "create", name: "Pickle" },
+      { ...d, host: { ...d.host, findCreated }, unresolved: true, notCreating, slugTaken, looked },
+    );
+    expect(result).toEqual({ ok: false, reason: "That handle is taken." });
+    expect(slugTaken).toHaveBeenCalledWith("pickle");
+    expect(notCreating).toHaveBeenCalledOnce();
+    expect(looked).not.toHaveBeenCalled();
+    expect(teamCardLockName({ pick: { kind: "create", name: "Pickle" } })).toBeNull();
+  });
+
+  it("a slug check that is not sure, or fails, keeps the card on the name", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const slugTaken of [vi.fn(async () => false), vi.fn(async () => Promise.reject(new Error("offline")))]) {
+      const d = deps({ create: refusedCreate() });
+      const notCreating = vi.fn();
+      const result = await runTeamCardPick(
+        { kind: "create", name: "Pickle" },
+        { ...d, host: { ...d.host, findCreated: vi.fn(async () => null) }, unresolved: true, notCreating, slugTaken },
+      );
+      expect(result).toEqual({ ok: false, reason: TEAM_CARD_FAILURE, creating: true, refused: true, failedLooks: 1 });
+      expect(notCreating).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a first create that is refused never asks whose slug it is", async () => {
+    const slugTaken = vi.fn(async () => true);
+    const d = deps({ create: refusedCreate() });
+    const notCreating = vi.fn();
+    await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...d, notCreating, slugTaken });
+    expect(slugTaken).not.toHaveBeenCalled();
+    expect(notCreating).toHaveBeenCalledOnce();
+  });
+
+  it("storage after a restart keeps the count, and unlocks at the bound", () => {
+    const data = new Map<string, string>();
+    const storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v) };
+    saveTeamCardCreating(storage, "me:bot", { name: "Pickle", slug: "pickle" });
+    saveTeamCardFailedLooks(storage, "me:bot", 1);
+    expect(teamCardStoredLast(storage, "me:bot")).toEqual({ pick: { kind: "create", name: "Pickle" }, creating: true, failedLooks: 1 });
+    saveTeamCardFailedLooks(storage, "me:bot", 2);
+    expect(teamCardStoredLast(storage, "me:bot")).toEqual({ pick: { kind: "create", name: "Pickle" }, lookupHint: "Pickle" });
   });
 });
 

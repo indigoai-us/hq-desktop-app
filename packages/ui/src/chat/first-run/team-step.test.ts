@@ -262,35 +262,39 @@ describe("one join or create at a time", () => {
 });
 
 describe("the company a Retry may find in the roster", () => {
-  it("uses an active cloud company with that slug", () => {
-    expect(ownCloudCompanyBySlug([ws("pickle-works", "active")], "pickle-works")).toEqual({
+  const owner = { role: "owner" };
+
+  it("uses a cloud company they own with that slug, active as a create makes it", () => {
+    expect(ownCloudCompanyBySlug([ws("pickle-works", "active", owner)], "pickle-works")).toEqual({
       companyUid: "cmp_pickle-works",
       slug: "pickle-works",
       name: "PICKLE-WORKS",
     });
+    expect(ownCloudCompanyBySlug([ws("pickle-works", " Active ", { role: "Owner" })], "pickle-works")).not.toBeNull();
   });
 
   it("ignores a local-only folder with the same slug", () => {
-    const local = ws("pickle-works", null, { cloudUid: null, state: "local-only", membershipStatus: null });
+    const local = ws("pickle-works", null, { cloudUid: null, state: "local-only", membershipStatus: null, role: "owner" });
     expect(ownCloudCompanyBySlug([local], "pickle-works")).toBeNull();
     // Even when it claims to be active, no cloud id means no company.
     expect(ownCloudCompanyBySlug([{ ...local, membershipStatus: "active", cloudUid: "  " }], "pickle-works")).toBeNull();
   });
 
-  it("uses a cloud company of theirs that is not active yet", () => {
-    // A company just made can show up before its membership reads active.
-    expect(ownCloudCompanyBySlug([ws("pickle-works", null)], "pickle-works")).toEqual({
-      companyUid: "cmp_pickle-works",
-      slug: "pickle-works",
-      name: "PICKLE-WORKS",
-    });
+  it("ignores an invited, unknown or other non-active membership, even as owner", () => {
+    for (const status of ["invited", null, "", "declined", "removed", "pending", "revoked"]) {
+      expect(ownCloudCompanyBySlug([ws("pickle-works", status, owner)], "pickle-works")).toBeNull();
+    }
   });
 
-  it("ignores a pending invite, a revoked membership, another slug and the personal vault", () => {
-    expect(ownCloudCompanyBySlug([ws("pickle-works", "pending")], "pickle-works")).toBeNull();
-    expect(ownCloudCompanyBySlug([ws("pickle-works", "revoked")], "pickle-works")).toBeNull();
-    expect(ownCloudCompanyBySlug([ws("acme", "active")], "pickle-works")).toBeNull();
-    expect(ownCloudCompanyBySlug([ws("personal", "active")], "personal")).toBeNull();
+  it("ignores an active company someone else owns", () => {
+    for (const role of ["member", "admin", null]) {
+      expect(ownCloudCompanyBySlug([ws("pickle-works", "active", { role })], "pickle-works")).toBeNull();
+    }
+  });
+
+  it("ignores another slug and the personal vault", () => {
+    expect(ownCloudCompanyBySlug([ws("acme", "active", owner)], "pickle-works")).toBeNull();
+    expect(ownCloudCompanyBySlug([ws("personal", "active", owner)], "personal")).toBeNull();
     expect(ownCloudCompanyBySlug(null, "pickle-works")).toBeNull();
   });
 });

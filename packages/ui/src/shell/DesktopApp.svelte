@@ -240,6 +240,7 @@
     clearTeamCardCreating,
     loadTeamCardRecords,
     saveTeamCardCreating,
+    saveTeamCardFailedLooks,
     saveTeamCardReplyFailures,
     saveTeamCardRecord,
     saveTeamCardUnsentCreate,
@@ -247,6 +248,7 @@
     teamCardSettledFromReply,
   } from "../chat/first-run/team-card-record.js";
   import { createFirstRunTeamHost } from "../chat/first-run/first-run-hosts.js";
+  import { parseSlugAvailability } from "../chat/create-company/slug-availability.js";
   import { teamBlockInMessage } from "../chat/messaging/richMessageContent.js";
   import {
     connectItemCarriesState,
@@ -4687,6 +4689,8 @@
       completed: run.completed,
       creating: run.pick.kind === "create" && !run.completed,
       refused: run.refused,
+      failedLooks: run.failedLooks,
+      lookupHint: run.lookupHint,
     };
     teamCardError = null;
     teamCardPending = teamCardPickKey(run.pick);
@@ -4699,6 +4703,14 @@
       replyFailures: run.replyFailures,
       unresolved: run.unresolved,
       refused: run.refused,
+      failedLooks: run.failedLooks,
+      lookupHint: run.lookupHint,
+      slugTaken: async (slug) => {
+        if (!conversationApi.checkCompanySlug) return false;
+        const answer = parseSlugAvailability(await conversationApi.checkCompanySlug(slug));
+        return answer?.valid === true && !answer.available;
+      },
+      looked: (failedLooks) => saveTeamCardFailedLooks(teamCardStorage(), recordKey, failedLooks),
       creating: (pending) => saveTeamCardCreating(teamCardStorage(), recordKey, pending),
       notCreating: () => clearTeamCardCreating(teamCardStorage(), recordKey),
       created: (choice) => {
@@ -4719,6 +4731,8 @@
           completed: result.completed,
           creating: result.creating,
           refused: result.refused,
+          failedLooks: result.failedLooks,
+          lookupHint: result.lookupHint,
           replyFailures: result.replyFailures,
         };
     if (!result.ok) teamCardError = result.reason;

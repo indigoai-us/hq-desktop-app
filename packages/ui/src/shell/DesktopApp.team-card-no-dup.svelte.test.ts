@@ -73,6 +73,8 @@ function botRow(): LocalBotRow {
 }
 
 let sendDm: ReturnType<typeof vi.fn>;
+/** The server's per-person handle check: someone else's company reads as not available. */
+let checkCompanySlug: ReturnType<typeof vi.fn>;
 let logToFile: ReturnType<typeof vi.fn>;
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -88,6 +90,7 @@ function adapter(messages: Array<Record<string, unknown>>): PlatformAdapter {
       fetchChannel: async () => ok({ messages: [...messages].reverse() }),
       fetchDmThread: async () => ok({ messages: [...messages].reverse() }),
       sendDm,
+      checkCompanySlug,
       sendChannelMessage: async () => ok({ eventId: "evt_self_1", createdAt: new Date().toISOString() }),
       fetchReactions: async () => ok({ reactions: [] }),
       // Creating a company runs card actions; the flow is stubbed above.
@@ -123,6 +126,7 @@ beforeEach(() => {
   window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   sendDm = vi.fn(async () => ok({ eventId: "evt_self_1", createdAt: new Date().toISOString() }));
+  checkCompanySlug = vi.fn(async (slug: string) => ok({ valid: true, available: true, normalized: slug }));
   logToFile = vi.fn(async () => undefined);
   flow.open.mockReset().mockResolvedValue({ ok: true, form: DRAFT });
   flow.submit.mockReset().mockImplementation(async (_api: unknown, _form: unknown, values: Record<string, string>) => ({
@@ -429,6 +433,20 @@ describe("the team card never creates a second company", () => {
     expect(logToFile.mock.calls.some((call) => String(call[1]).includes("kind=team-card event=reply-abandoned"))).toBe(true);
   });
 
+  /** The pending create kept for the setup bot's card. */
+  function storedCreating(): unknown {
+    const raw = window.localStorage.getItem("hq.firstRun.teamCard.v1");
+    const entries = raw ? (JSON.parse(raw) as Record<string, { creating?: unknown }>) : {};
+    return entries[`prs_me:${SETUP_UID}`]?.creating ?? null;
+  }
+
+  /** The card holds no name: the field takes what is typed and every other pick is open. */
+  function expectUnlocked(): void {
+    typeName("Brine");
+    expect(q<HTMLInputElement>('[data-testid="team-card-name"]')!.value).toBe("Brine");
+    expect(q<HTMLButtonElement>('[data-testid="team-card-personal"]')!.disabled).toBe(false);
+  }
+
   it("a create sent again after a timeout and refused keeps the card on its name, and only looks for the company", async () => {
     flow.submit
       .mockResolvedValueOnce({ ok: false, reason: CREATE_COMPANY_NO_RESULT_REASON, blocked: false })
@@ -438,22 +456,16 @@ describe("the team card never creates a second company", () => {
     await waitFor('[data-testid="team-card-error"]');
 
     // Not in the roster yet: the same name is sent again, and the server
-    // refuses it because the first create took the slug.
+    // refuses it; the handle check does not say it is someone else's.
     renameAndCreate();
     await vi.waitFor(() => expect(flow.submit).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(q('[data-testid="team-card"]')?.getAttribute("aria-busy")).toBe("false"));
     await waitFor('[data-testid="team-card-error"]');
+    expect(checkCompanySlug).toHaveBeenCalledWith("pickle");
     expect(q<HTMLInputElement>('[data-testid="team-card-name"]')!.value).toBe("Pickle");
 
-    // A new name and Create only look again.
-    renameAndCreate();
-    await vi.waitFor(() => expect(q('[data-testid="team-card"]')?.getAttribute("aria-busy")).toBe("false"));
-    await waitFor('[data-testid="team-card-error"]');
-    expect(flow.submit).toHaveBeenCalledTimes(2);
-    expect(q<HTMLInputElement>('[data-testid="team-card-name"]')!.value).toBe("Pickle");
-
-    // The company shows up, not active yet; Retry finds it.
-    props.companies = [{ ...pickleWorkspace(), membershipStatus: null }] as never;
+    // The company shows up; Retry only looks, and finds it.
+    props.companies = [pickleWorkspace()] as never;
     (await waitFor<HTMLButtonElement>('[data-testid="team-card-retry"]')).click();
     await vi.waitFor(() => expect(sendDm).toHaveBeenCalledOnce());
     await toSetupBot();
@@ -461,6 +473,94 @@ describe("the team card never creates a second company", () => {
     expect(flow.submit).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(flow.submit.mock.calls)).not.toMatch(/brine/i);
     expect(sentTexts()).toEqual(["I created Pickle."]);
+  });
+
+  it("a lookup that never finds the company unlocks the card after two looks, and a later find still settles it", async () => {
+    flow.submit
+      .mockResolvedValueOnce({ ok: false, reason: CREATE_COMPANY_NO_RESULT_REASON, blocked: false })
+      .mockResolvedValueOnce({ ok: false, reason: "That handle is taken.", blocked: true });
+    const messages = [teamMessage];
+    const props = await openSetupDm(messages);
+    await create("Pickle");
+    await waitFor('[data-testid="team-card-error"]');
+
+    // First look: not found, refused, still locked on the name.
+    renameAndCreate();
+    await vi.waitFor(() => expect(flow.submit).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(q('[data-testid="team-card"]')?.getAttribute("aria-busy")).toBe("false"));
+    expect(q<HTMLButtonElement>('[data-testid="team-card-personal"]')!.disabled).toBe(true);
+
+    // Second look: still not found. The card unlocks with the same error line.
+    renameAndCreate();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="team-card-personal"]')?.disabled).toBe(false));
+    expect(q('[data-testid="team-card-error"]')?.textContent).toContain("Something went wrong. Try again.");
+    expect(flow.submit).toHaveBeenCalledTimes(2);
+    expectUnlocked();
+    // The old name stays only as a lookup hint, across a restart too.
+    expect(storedCreating()).toEqual({ name: "Pickle", slug: "pickle", failedLooks: 2 });
+    await restart(messages);
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-create"]')).click();
+    await waitFor('[data-testid="team-card-name"]');
+    expectUnlocked();
+
+    // The company shows up later: a create under another name finds it and creates nothing.
+    props.companies = null;
+    const after = await restart(messages);
+    after.companies = [pickleWorkspace()] as never;
+    await create("Brine");
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledOnce());
+    await toSetupBot();
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Created Pickle"));
+    expect(flow.submit).toHaveBeenCalledTimes(2);
+    expect(sentTexts()).toEqual(["I created Pickle."]);
+  });
+
+  it("an unlocked card still lets the person work solo", async () => {
+    flow.submit
+      .mockResolvedValueOnce({ ok: false, reason: CREATE_COMPANY_NO_RESULT_REASON, blocked: false })
+      .mockResolvedValueOnce({ ok: false, reason: "That handle is taken.", blocked: true });
+    await openSetupDm([teamMessage]);
+    await create("Pickle");
+    await waitFor('[data-testid="team-card-error"]');
+    renameAndCreate();
+    await vi.waitFor(() => expect(flow.submit).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(q('[data-testid="team-card"]')?.getAttribute("aria-busy")).toBe("false"));
+    renameAndCreate();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="team-card-personal"]')?.disabled).toBe(false));
+
+    q<HTMLButtonElement>('[data-testid="team-card-personal"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Working solo"));
+    expect(sentTexts()).toEqual(["Just me for now."]);
+  });
+
+  it("a handle taken by someone else clears the pending create at once and unlocks the card", async () => {
+    flow.submit
+      .mockResolvedValueOnce({ ok: false, reason: CREATE_COMPANY_NO_RESULT_REASON, blocked: false })
+      .mockResolvedValueOnce({ ok: false, reason: "That handle is taken.", blocked: true });
+    checkCompanySlug.mockResolvedValue(ok({ valid: true, available: false, normalized: "pickle" }));
+    await openSetupDm([teamMessage]);
+    await create("Pickle");
+    await waitFor('[data-testid="team-card-error"]');
+    expect(storedCreating()).toEqual({ name: "Pickle", slug: "pickle" });
+
+    renameAndCreate();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="team-card-personal"]')?.disabled).toBe(false));
+    expect(checkCompanySlug).toHaveBeenCalledWith("pickle");
+    expect(q('[data-testid="team-card-error"]')?.textContent).toContain("That handle is taken.");
+    expect(storedCreating()).toBeNull();
+    expectUnlocked();
+
+    // A new name creates.
+    q<HTMLButtonElement>('[data-testid="team-card-create-submit"]')!.click();
+    await vi.waitFor(() => expect(flow.submit).toHaveBeenCalledTimes(3));
+    expect(JSON.stringify(flow.submit.mock.calls[2])).toMatch(/brine/i);
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledOnce());
+    // The create switches into Brine; once that has landed, come back to the setup bot.
+    await vi.waitFor(() => {
+      if (!q('[data-testid="team-card-settled"]')) q<HTMLElement>(`[data-conversation-id="${SETUP_DM_ROW.id}"]`)?.click();
+      expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Created Brine");
+    });
+    expect(sentTexts()).toEqual(["I created Brine."]);
   });
 
   it("the failed sends of a reply count across a restart", async () => {

@@ -12,6 +12,7 @@ import {
   loadTeamCardRecords,
   loadTeamCardUnsentCreate,
   saveTeamCardCreating,
+  saveTeamCardFailedLooks,
   saveTeamCardRecord,
   saveTeamCardReplyFailures,
   saveTeamCardUnsentCreate,
@@ -244,6 +245,31 @@ describe("a create that was sent and has not answered", () => {
     expect(saveTeamCardCreating(storage, key, pending)).toBe(false);
     expect(saveTeamCardCreating(null, key, pending)).toBe(false);
     expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("keeps how many looks failed, across a restart, and only for a pending create", () => {
+    const storage = memoryStorage();
+    expect(saveTeamCardFailedLooks(storage, key, 1)).toBe(false);
+    saveTeamCardCreating(storage, key, pending);
+    expect(saveTeamCardFailedLooks(storage, key, 2)).toBe(true);
+    expect(loadTeamCardCreating(memoryStorage({ [TEAM_CARD_RECORDS_KEY]: storage.getItem(TEAM_CARD_RECORDS_KEY)! }), key)).toEqual({
+      ...pending,
+      failedLooks: 2,
+    });
+    expect(saveTeamCardCreating(storage, key, { ...pending, failedLooks: 1 })).toBe(true);
+    expect(loadTeamCardCreating(storage, key)).toEqual({ ...pending, failedLooks: 1 });
+
+    const made = memoryStorage();
+    saveTeamCardUnsentCreate(made, key, unsent);
+    expect(saveTeamCardFailedLooks(made, key, 1)).toBe(false);
+    expect(loadTeamCardUnsentCreate(made, key)).toEqual(unsent);
+  });
+
+  it("a look count that is not a whole number above zero reads as none", () => {
+    for (const failedLooks of [0, -1, 1.5, "2", null]) {
+      const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: { creating: { ...pending, failedLooks } } }) });
+      expect(loadTeamCardCreating(storage, key)).toEqual(pending);
+    }
   });
 
   it("anything malformed under the key reads as none", () => {
