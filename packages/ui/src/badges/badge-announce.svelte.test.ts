@@ -118,17 +118,23 @@ describe("You earned", () => {
 describe("the notice is a demo", () => {
   it("no app code raises it: only the badges module defines it and the package re-exports it", () => {
     const src = join(dirname(fileURLToPath(import.meta.url)), "..");
-    const callers: string[] = [];
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const path = join(dir, entry.name);
-        if (entry.isDirectory()) walk(path);
-        else if (/\.(ts|svelte)$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) {
-          if (/\b(announceBadgesEarned|announceBadgeEarned|revealBadgeCards|revealBadgeCard)\s*\(/.test(readFileSync(path, "utf8"))) callers.push(relative(src, path));
+    const callersOf = (pattern: RegExp): string[] => {
+      const callers: string[] = [];
+      const walk = (dir: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const path = join(dir, entry.name);
+          if (entry.isDirectory()) walk(path);
+          else if (/\.(ts|svelte)$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) {
+            if (pattern.test(readFileSync(path, "utf8"))) callers.push(relative(src, path));
+          }
         }
-      }
+      };
+      walk(src);
+      return callers.sort();
     };
-    walk(src);
-    expect(callers).toEqual(["badges/badge-announce.ts"]);
+    expect(callersOf(/\b(announceBadgesEarned|announceBadgeEarned|revealBadgeCards)\s*\(/)).toEqual(["badges/badge-announce.ts"]);
+    // One real caller of the card reveal: a "badge_earned" row in the bell
+    // list, which comes from hq-pro's award job (owner, 2026-10-16).
+    expect(callersOf(/\brevealBadgeCard\s*\(/)).toEqual(["badges/badge-announce.ts", "inbox/NotificationsPopover.svelte"]);
   });
 });

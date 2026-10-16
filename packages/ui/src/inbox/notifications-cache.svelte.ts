@@ -50,6 +50,20 @@ export function markAllCachedNotificationsRead(): () => void {
   };
 }
 
+/**
+ * Optimistic read for one row (a revealed badge card). Returns a restore
+ * function for a failed server call, like `markAllCachedNotificationsRead`.
+ */
+export function markCachedNotificationRead(id: string): () => void {
+  const previous = items;
+  items = items.map((item) =>
+    item.id === id && item.status === "unread" ? { ...item, status: "read" as const } : item,
+  );
+  return () => {
+    items = previous;
+  };
+}
+
 /** Drop a row immediately. A failed grant puts it back. */
 export function hideNotification(id: string): void {
   hidden.add(id);
