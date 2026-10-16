@@ -318,6 +318,8 @@
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+    VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS,
+    lateFlagApplies,
     FIRST_RUN_LISTINGS_WAIT_MS,
     markVisualFirstRunFinished,
     type FirstRunCreation,
@@ -338,6 +340,7 @@
     formatFlagLookup,
     formatSetupRunSet,
     writeFirstRunLine,
+    type FlagLateOutcome,
   } from "../chat/first-run/first-run-timing.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
@@ -3472,9 +3475,11 @@
    * The flag; null until it answers. Unreadable counts as off, and so does
    * slow: the read starts at mount, alongside the host's "setup owed" check
    * below, and once that check has answered the flag gets at most
-   * `VISUAL_FIRST_RUN_FLAG_GRACE_MS` more. So with the flag off a first run
-   * waits for the later of the two answers, never their sum, and no more than
-   * the grace past the wait it already had.
+   * `VISUAL_FIRST_RUN_FLAG_GRACE_MS` more, or `VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS`
+   * when setup is owed (a cold first read takes 1.5 to 2.8 s). So with the flag
+   * off a first run waits for the later of the two answers, never their sum.
+   * An "on" that lands after the wait still applies on a new install while
+   * nothing on the old setup has started (lateFlagApplies).
    */
   /**
    * Dev-only build switches (dev-switches.ts, docs/dev-switches.md), off in
@@ -3485,11 +3490,28 @@
   const firstRunDev = FIRST_RUN_DEV_SWITCHES;
   let visualFirstRunFlag = $state<boolean | null>(firstRunDev.force ? true : null);
   let visualFirstRunFinished = $state(firstRunDev.force ? false : hasFinishedVisualFirstRun());
+  /** The flag counted as off because its wait ran out, not because it answered. */
+  let visualFirstRunFlagTimedOut = false;
   /** Settles the flag once; says whether this answer was the one applied. */
   function settleVisualFirstRunFlag(value: boolean): boolean {
-    if (visualFirstRunFlag !== null) return false;
-    visualFirstRunFlag = value;
+    if (visualFirstRunFlag === null) {
+      visualFirstRunFlag = value;
+      return true;
+    }
+    if (!visualFirstRunFlagTimedOut || !lateFlagApplies({ value, welcomeSetupOwed, legacyStarted: legacyFirstRunStarted() })) {
+      return false;
+    }
+    visualFirstRunFlagTimedOut = false;
+    visualFirstRunFlag = true;
     return true;
+  }
+  function legacyFirstRunStarted(): boolean {
+    return welcomeSetupRun || setupBotAutoStarted || tourStartedThisSession;
+  }
+  /** The late=... log field: only for an "on" past the wait on a new install. */
+  function lateFlagOutcome(value: boolean, applied: boolean, wasTimedOut: boolean): FlagLateOutcome | undefined {
+    if (!value || !wasTimedOut || welcomeSetupOwed !== true) return undefined;
+    return applied ? "applied" : "legacy-started";
   }
   let visualFirstRunFlagReadAt = Date.now();
   onMount(() => readVisualFirstRunFlag());
@@ -3507,21 +3529,24 @@
     const since = Date.now();
     visualFirstRunFlagReadAt = since;
     // Read without a company: the person's own answer (the "unscoped" path).
-    const logLookup = (path: "unscoped" | "error", value: boolean, applied: boolean): void =>
+    const logLookup = (path: "unscoped" | "error", value: boolean, settle: boolean): void => {
+      const wasTimedOut = visualFirstRunFlagTimedOut;
+      const applied = settle && settleVisualFirstRunFlag(value);
       writeFirstRunLine(
         firstRunTimingLog,
-        formatFlagLookup("visual-first-run", path, value, applied, Date.now() - since),
+        formatFlagLookup("visual-first-run", path, value, applied, Date.now() - since, lateFlagOutcome(value, applied, wasTimedOut)),
       );
+    };
     void Promise.resolve()
       .then(() => identity.hasFeature(VISUAL_FIRST_RUN_FLAG))
       .then(
         (result) => {
           const value = result.ok && result.value === true;
-          logLookup(result.ok ? "unscoped" : "error", value, active && settleVisualFirstRunFlag(value));
+          logLookup(result.ok ? "unscoped" : "error", value, active);
         },
         (err: unknown) => {
           console.warn("[hq-desktop] visual first-run flag lookup failed:", err);
-          logLookup("error", false, active && settleVisualFirstRunFlag(false));
+          logLookup("error", false, active);
         },
       );
     return () => {
@@ -3558,6 +3583,7 @@
       visualFirstRunFinished = false;
       welcomeSetupRun = false;
       visualFirstRunFlag = null;
+      visualFirstRunFlagTimedOut = false;
       readVisualFirstRunFlag();
     });
   });
@@ -3620,16 +3646,18 @@
     return () => window.clearTimeout(timer);
   });
   // The "setup owed" answer is in and the flag is not: the flag has the grace
-  // left, then counts as off.
+  // left (the longer wait on a new install), then counts as off.
   $effect(() => {
     if (visualFirstRunFlag !== null || welcomeSetupOwed === null) return;
+    const wait = welcomeSetupOwed ? VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS : VISUAL_FIRST_RUN_FLAG_GRACE_MS;
     const timer = window.setTimeout(() => {
       if (!settleVisualFirstRunFlag(false)) return;
+      visualFirstRunFlagTimedOut = true;
       writeFirstRunLine(
         firstRunTimingLog,
         formatFlagLookup("visual-first-run", "timeout", false, true, Date.now() - visualFirstRunFlagReadAt),
       );
-    }, VISUAL_FIRST_RUN_FLAG_GRACE_MS);
+    }, wait);
     return () => window.clearTimeout(timer);
   });
   const firstRunRouteNow = $derived.by(() =>

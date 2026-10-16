@@ -774,12 +774,34 @@ export type FirstRunRoute = "legacy" | "visual" | "pending";
 export const VISUAL_FIRST_RUN_FLAG_GRACE_MS = 1000;
 
 /**
+ * The same wait when the host says setup is owed (a new install). A cold
+ * start reads the flag right after sign-in, and that read can take well over
+ * a second (2.8 s on a cold VM); counting it as off sends a new install to
+ * the old setup. In line with the other first-run waits.
+ */
+export const VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS = 5_000;
+
+/**
  * The longest the takeover waits for the bot listings (this computer's and
  * the account's) before its name step opens anyway. Within it, an account
  * that already has an assistant is offered that assistant's name; after it,
  * a slow listing means a friendly free name, as for a new account.
  */
 export const FIRST_RUN_LISTINGS_WAIT_MS = 5_000;
+
+/**
+ * A flag answer that lands after its wait ran out (the flag counted as off,
+ * the route went legacy) still applies when it is "on", setup is owed, and
+ * the person has not started anything on the old setup yet: nothing created,
+ * no setup run recorded, no tour shown. Otherwise the old setup stays.
+ */
+export function lateFlagApplies(input: {
+  value: boolean;
+  welcomeSetupOwed: boolean | null;
+  legacyStarted: boolean;
+}): boolean {
+  return input.value && input.welcomeSetupOwed === true && !input.legacyStarted;
+}
 
 export interface FirstRunRouteInput {
   /** The host can run local bots (desktop app). */

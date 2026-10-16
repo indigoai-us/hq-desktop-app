@@ -161,14 +161,22 @@ export function formatRoute(state: FirstRunRouteState): string {
 export type FirstRunFlagName = "visual-first-run" | "found-apps";
 export type FlagLookupPath = "scoped" | "unscoped" | "timeout" | "error" | "skipped";
 
+/**
+ * An "on" answer that lands after its wait ran out on a new install: applied
+ * (the takeover opens after all) or not, because the old setup had started.
+ */
+export type FlagLateOutcome = "applied" | "legacy-started";
+
 export function formatFlagLookup(
   flag: FirstRunFlagName,
   path: FlagLookupPath,
   value: boolean,
   applied: boolean,
   elapsedMs: number,
+  late?: FlagLateOutcome,
 ): string {
-  return `kind=flag flag=${flag} path=${path} value=${value} applied=${applied} elapsed_ms=${ms(elapsedMs)}`;
+  const lateField = late ? ` late=${late}` : "";
+  return `kind=flag flag=${flag} path=${path} value=${value} applied=${applied}${lateField} elapsed_ms=${ms(elapsedMs)}`;
 }
 
 export function formatSetupRunSet(caller: string): string {
