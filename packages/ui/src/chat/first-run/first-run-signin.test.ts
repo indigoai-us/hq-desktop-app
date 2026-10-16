@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  FIRST_RUN_INSTALL_IDLE_GRACE_MS,
   FIRST_RUN_INSTALL_WAIT_MS,
   FIRST_RUN_SIGNIN_COPY,
   FIRST_RUN_SIGNIN_TIMEOUT_MS,
@@ -182,10 +183,41 @@ describe("waitForToolInstall", () => {
   });
 
   it("a queue that stopped short of the item is failed, not an endless wait", async () => {
-    const { queue } = fakeQueue(status({ state: "idle" }));
+    const { queue } = fakeQueue(status({ state: "attention" }));
     expect(await waitForToolInstall("claude", queue, { cancelled: () => false })).toBe("present");
     expect(await waitForToolInstall("codex", queue, { cancelled: () => false })).toBe("failed");
+    expect(queue.listen).not.toHaveBeenCalled();
     expect(queue.retry).not.toHaveBeenCalled();
+  });
+
+  it("an idle queue before the launch resume starts it is waited on, not failed", async () => {
+    const { queue, emit } = fakeQueue(status({ state: "idle" }));
+    const result = waitForToolInstall("codex", queue, { cancelled: () => false, pollMs: 60_000 });
+    await flush();
+    expect(queue.listen).toHaveBeenCalledWith(INSTALL_QUEUE_PROGRESS_EVENT, expect.any(Function));
+    emit(status());
+    await flush();
+    emit(status({ current: "qmd", currentId: "qmd", unsettled: ["qmd"], unfinished: ["qmd"] }));
+    expect(await result).toBe("installed");
+    expect(queue.retry).not.toHaveBeenCalled();
+  });
+
+  it("an idle queue that never starts within the grace is failed", async () => {
+    vi.useFakeTimers();
+    try {
+      const { queue } = fakeQueue(status({ state: "idle" }));
+      let settled: string | null = null;
+      void waitForToolInstall("codex", queue, { cancelled: () => false, pollMs: 2_000 }).then((r) => {
+        settled = r;
+      });
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_INSTALL_IDLE_GRACE_MS - 1);
+      expect(settled).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe("failed");
+      expect(queue.retry).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives up at the bound", async () => {

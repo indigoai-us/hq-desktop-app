@@ -66,6 +66,11 @@ export const FIRST_RUN_TOOL_INSTALL_ITEM: Readonly<Partial<Record<FirstRunRuntim
  * ahead of it.
  */
 export const FIRST_RUN_INSTALL_WAIT_MS = 25 * 60_000;
+/**
+ * How long an idle queue with the tool unsettled still counts as about to
+ * run: on launch the queue reads idle until `resume_on_launch` starts it.
+ */
+export const FIRST_RUN_INSTALL_IDLE_GRACE_MS = 10_000;
 const INSTALL_POLL_MS = 2_000;
 
 /**
@@ -85,7 +90,7 @@ export type FirstRunInstallWait = "present" | "installed" | "failed";
 export async function waitForToolInstall(
   runtime: FirstRunRuntime,
   queue: InstallQueueHost,
-  opts: { cancelled: () => boolean; retry?: boolean; timeoutMs?: number; pollMs?: number },
+  opts: { cancelled: () => boolean; retry?: boolean; timeoutMs?: number; pollMs?: number; idleGraceMs?: number },
 ): Promise<FirstRunInstallWait> {
   const id = FIRST_RUN_TOOL_INSTALL_ITEM[runtime];
   if (!id) return "present";
@@ -116,10 +121,15 @@ export async function waitForToolInstall(
   }
   // An older app build sends no `unsettled`: wait while the queue runs.
   // After a retry the queue's runner was just started, so its first status
-  // can still read idle.
+  // can still read idle. On launch the queue also reads idle until
+  // `resume_on_launch` starts it, so idle holds for a short grace (ended
+  // early by the first progress event) before it counts as stopped.
+  const graceUntil = Date.now() + (opts.idleGraceMs ?? FIRST_RUN_INSTALL_IDLE_GRACE_MS);
+  let progressed = false;
+  const idleGrace = (s: InstallQueueStatus) => s.state === "idle" && !progressed && Date.now() < graceUntil;
   const holds = (s: InstallQueueStatus): boolean =>
     !s.failed.includes(id) &&
-    (s.unsettled ? s.unsettled.includes(id) && (kicked || s.state === "running") : s.state === "running");
+    (s.unsettled ? s.unsettled.includes(id) && (kicked || s.state === "running" || idleGrace(s)) : s.state === "running");
   const outcome = (waited: boolean): FirstRunInstallWait =>
     blocked(status) || unsettled(status) ? "failed" : waited || kicked ? "installed" : "present";
   if (!holds(status)) return outcome(false);
@@ -133,6 +143,7 @@ export async function waitForToolInstall(
       const next = parseInstallQueueStatus(event?.payload);
       if (!next) return;
       status = next;
+      progressed = true;
       wake?.();
     });
   } catch (error) {
@@ -143,8 +154,10 @@ export async function waitForToolInstall(
       if (opts.cancelled()) return "failed";
       const left = deadline - Date.now();
       if (left <= 0) return "failed";
+      // Wake when the idle grace ends so a queue that never started fails then.
+      const graceLeft = idleGrace(status) ? graceUntil - Date.now() : Infinity;
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, Math.min(pollMs, left));
+        const timer = setTimeout(resolve, Math.max(0, Math.min(pollMs, left, graceLeft)));
         wake = () => {
           clearTimeout(timer);
           resolve();
