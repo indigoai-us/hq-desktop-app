@@ -831,6 +831,24 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn unforced_start_answers_connected_for_a_signed_in_codex() {
+        let (dir, program) = fake(SessionTool::Codex, "exit 9");
+        std::fs::write(dir.path().join("connected"), "existing account").unwrap();
+        let attempts = Attempts::default();
+        assert_eq!(
+            start_with(&attempts, SessionTool::Codex, program, LOGIN_TIMEOUT, false,)
+                .await
+                .state,
+            "connected"
+        );
+        assert!(!dir.path().join("calls").exists());
+        assert!(attempts.lock().await.get(key(SessionTool::Codex)).is_none());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("connected")).unwrap(),
+            "existing account"
+        );
+    }
+    #[tokio::test]
     async fn force_reauth_replaces_a_stale_login() {
         let (dir, program) = fake(SessionTool::Claude, "touch connected; exit 0");
         std::fs::write(dir.path().join("connected"), "stale").unwrap();

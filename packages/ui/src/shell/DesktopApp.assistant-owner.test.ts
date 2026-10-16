@@ -223,6 +223,30 @@ function boot(platform: PlatformAdapter, initialRow?: ConversationRow): void {
   });
 }
 
+/** "Talk to <Name>" lands on the Daily Brief page's welcome report, never the DM (owner, 2026-10-16). */
+async function landsOnWelcomeReport(): Promise<void> {
+  await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+  expect(q('[data-testid="channel-name"]')).toBeNull();
+}
+
+/** Open the assistant's conversation the way the person would: #welcome, then its run button. */
+async function openAssistantDm(): Promise<void> {
+  const welcome = await vi.waitFor(() => {
+    const el = q<HTMLElement>(`.chat-row[data-conversation-id="${SETUP_ROW_ID}"]`);
+    expect(el).toBeTruthy();
+    return el!;
+  });
+  welcome.click();
+  await settle();
+  const run = await vi.waitFor(() => {
+    const el = q<HTMLButtonElement>('[data-testid="setup-run"]');
+    expect(el?.disabled).toBe(false);
+    return el!;
+  });
+  run.click();
+  await settle();
+}
+
 /**
  * Name the assistant on the takeover's decision screen: pick the bot path
  * (a signed-in coding tool opens on the tool path), type the name, Continue.
@@ -320,12 +344,14 @@ describe("first-run create racing automatic restore", () => {
     expect(q('[data-testid="bot-restore-banner"]')).toBeNull();
 
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
+    await landsOnWelcomeReport();
+    await openAssistantDm();
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));
     expect(screenText()).not.toMatch(/couldn't start/i);
     expectNoSlug("the assistant's conversation");
   });
 
-  it("fresh install, no coding tool signed in: the assistant is still made here and its chat opens (owner, 2026-10-15)", async () => {
+  it("fresh install, no coding tool signed in: the assistant is still made here, Talk lands on the held welcome report, and its fix opens the chat", async () => {
     // Hazel on the account only (with her DM history), Claude Code installed
     // but signed out. The typed name must not relabel Hazel's remote record;
     // the assistant is created on this computer on the installed tool, and
@@ -353,6 +379,15 @@ describe("first-run create racing automatic restore", () => {
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
     await settle(20);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    await landsOnWelcomeReport();
+    // Signed out: the report waits on a model, and its fix opens the assistant's chat.
+    const fix = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]');
+      expect(el?.textContent?.trim()).toBe("Connect a model");
+      return el!;
+    });
+    fix.click();
+    await settle();
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Nibbles"));
     expect(screenText()).not.toContain("another computer");
     expectNoSlug("the assistant made with no signed-in tool");
@@ -618,6 +653,8 @@ describe("round 2 review items", () => {
     const [to, , opts] = (sendDm.mock.calls as unknown as Array<[string, string, { idempotencyKey?: string }]>)[0]!;
     expect(to).toBe(ASSISTANT_UID);
     expect(opts.idempotencyKey).toBe(`first-run-handoff:${ASSISTANT_UID}`);
+    await landsOnWelcomeReport();
+    await openAssistantDm();
     await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent?.trim()).toBe("Hazel"));
     // The note starts its first turn: the open conversation shows it working,
     // under its name, never the handle.
