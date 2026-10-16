@@ -155,7 +155,7 @@ describe("runDirectCloudCreate (web adapter, mocked API)", () => {
     });
     expect(result).toEqual({
       ok: false,
-      reason: "Cloud bots need the Agents plan ($500 a month). Indigo isn't on it yet.",
+      reason: "Cloud bots are not on Indigo's plan yet ($500 a month).",
       blocked: true,
       fix: { kind: "checkout", url: "https://checkout.test/agents", label: "Upgrade plan" },
     });

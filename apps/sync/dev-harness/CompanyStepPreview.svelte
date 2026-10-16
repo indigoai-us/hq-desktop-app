@@ -1,15 +1,15 @@
 <script lang="ts">
   /**
    * Preview of the first-run company step (?view=onboarding-company).
-   * ?scenario=create (default) | join | paused | existing | other-email |
+   * ?scenario=create (default) | join | existing | other-email |
    * expired | slow | provisioning-failed | resume | other-account | plan-limit.
-   * ?plan=starter|workforce acts as a plan already picked on the website (the
-   * "Choose how your HQ runs." plan screen is skipped). Uses its own in-page answers
-   * for the server so every screen of the step can be reached in a browser:
-   * name the company, pick a plan, open checkout, and the checkout return
-   * (the harness emits `messages:open-setup` for "Simulate checkout return").
+   * ?plan=free acts as the free start already picked on the website (the
+   * "Choose how your HQ runs." plan screen is skipped). ?pricing=offline makes
+   * GET /v1/pricing fail so the bundled card shows. Uses its own in-page
+   * answers for the server so every screen of the step can be reached in a
+   * browser: name the company, see the usage card, invite, finish.
    */
-  import { emit, listen } from '@tauri-apps/api/event';
+  import { listen } from '@tauri-apps/api/event';
   import { open } from '@tauri-apps/plugin-shell';
   import '../src/styles/design-system.css';
   import '../src/components/onboarding/welcome/welcome.css';
@@ -18,11 +18,13 @@
     type CompanyStepResult,
   } from '../src/components/onboarding/CompanyStep.svelte';
   import type { FirstRunCompanyPath, FirstRunPlan, InvokeFn } from '../src/lib/first-run-company';
+  import { PRICING_FALLBACK } from '@hq/ui';
 
   const params = new URLSearchParams(window.location.search);
   const scenario = params.get('scenario') ?? 'create';
   const planParam = params.get('plan');
-  const priorPlan: FirstRunPlan | null = planParam === 'starter' || planParam === 'workforce' ? planParam : null;
+  const priorPlan: FirstRunPlan | null = planParam === 'free' ? 'free' : null;
+  const pricingOffline = params.get('pricing') === 'offline';
 
   const card = {
     v: 1,
@@ -107,10 +109,11 @@
             body: JSON.stringify({ entity: { status: 'active', bucketName: 'hq-vault-preview' } }),
           };
         }
-        if (scenario === 'paused') {
-          return { status: 503, body: JSON.stringify({ code: 'team_signup_disabled' }) };
+        if (args?.url === '/v1/pricing') {
+          if (pricingOffline) return { status: 503, body: '{}' };
+          return { status: 200, body: JSON.stringify({ usage: PRICING_FALLBACK.usage, signup: PRICING_FALLBACK.signup }) };
         }
-        return { status: 200, body: JSON.stringify({ url: 'https://checkout.stripe.com/c/pay/cs_preview' }) };
+        return { status: 404, body: '{}' };
       default:
         return null;
     }
@@ -176,12 +179,6 @@
       {/if}
     </div>
   </section>
-  <button
-    class="simulate"
-    type="button"
-    data-testid="company-preview-return"
-    onclick={() => void emit('messages:open-setup', { companyUid: 'cmp_preview', checkout: 'done' })}
-  >Simulate checkout return</button>
   <pre class="events" data-testid="company-preview-events">{events.map((event) => event.action).join('\n')}</pre>
 </div>
 
@@ -208,13 +205,6 @@
   }
   .company-preview :global(.follow-on *) {
     opacity: 1;
-  }
-  .simulate {
-    position: fixed;
-    right: 12px;
-    bottom: 12px;
-    font-size: 11px;
-    opacity: 0.6;
   }
   .events {
     position: fixed;

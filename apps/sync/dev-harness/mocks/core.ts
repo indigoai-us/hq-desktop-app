@@ -2,7 +2,7 @@
 // Returns plausible fixture data per command so components mount and render
 // without a Tauri backend. Design-only: no real side effects.
 import type { Workspace } from '../../src/lib/workspaces';
-import { personaHasLocalHq, resolveHarnessPersona, type ShellPersona } from '../personas';
+import { harnessNotificationsFeed, personaHasLocalHq, resolveHarnessPersona, type ShellPersona } from '../personas';
 import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../state-flags';
 import { conflictNoticesSwitch, readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
@@ -1304,6 +1304,9 @@ This final paragraph verifies spacing after a thematic break.
   // Notifications feed (the popover's default body since the redesign). Returns
   // a representative mix of DMs, shares, and cross-session new-file rows so the
   // inline feed renders fully in the browser harness (?view=popover).
+  // The shell's bell + Notifications feed (createNotificationsApi ->
+  // sync-adapter fetchNotifications). Empty unless ?notify=badges.
+  fetch_notifications: () => harnessNotificationsFeed(),
   fetch_notification_history: () => {
     const iso = (minsAgo: number) => new Date(Date.now() - minsAgo * 60 * 1000).toISOString();
     return {

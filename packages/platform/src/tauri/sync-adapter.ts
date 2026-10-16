@@ -1429,6 +1429,11 @@ export function createSyncPlatformAdapter(
         hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingPortal(), {
           companyUid,
         }),
+      getBillingSummary: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companyBillingSummary(companyUid)),
+      getUsageStatement: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.companyUsageStatement(companyUid)),
+      getPricing: () => hqProJson('GET', WEB_PATHS.pricing),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,
