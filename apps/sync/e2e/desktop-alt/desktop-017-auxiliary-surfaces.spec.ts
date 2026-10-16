@@ -99,18 +99,15 @@ describe('DESKTOP-017: auxiliary desktop surfaces', () => {
     expect(scene).toContain('overscroll-behavior: contain');
   });
 
-  it('keeps the ready-step caution open and neutral while retaining its compact warning cue', () => {
-    expectOpenSection(welcomeCss, '.hq-welcome .setup-caution', 'onboarding setup caution');
-    expect(onboarding).toContain('class="setup-caution-icon"');
-    expect(rule(welcomeCss, '.hq-welcome .setup-caution-icon')).toContain(
-      'stroke: var(--w-muted)',
-    );
-    expect(rule(welcomeCss, '.hq-welcome .setup-caution-icon')).not.toMatch(
-      /(?:#a66b00|v4-warn|amber|yellow)/i,
-    );
-    expect(rule(welcomeCss, '.hq-welcome .setup-caution-copy span')).toContain(
-      'color: var(--w-muted)',
-    );
+  // The ready step's caution was the launcher fallback note ("launchEscape").
+  // The ready screen has no launchers now (owner decision 2026-10-15), so it
+  // has no caution: it finishes by itself and the desktop opens.
+  it('keeps the ready step free of launchers and their fallback caution', () => {
+    expect(onboarding).not.toContain('setup-caution');
+    expect(onboarding).not.toContain('launchEscape');
+    expect(onboarding).not.toContain('data-testid="onboarding-escape"');
+    expect(rule(welcomeCss, '.hq-welcome .setup-caution')).toBe('');
+    expect(onboarding).toContain('void finishWithRecovery()');
   });
 
   it('provides deterministic onboarding data and a stable in-progress setup preview', () => {
