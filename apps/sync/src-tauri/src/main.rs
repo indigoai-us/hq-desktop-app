@@ -1588,6 +1588,10 @@ fn main() {
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
             commands::install_deps::setup_qmd_abi_repair(app.handle());
+            // Older managed cwRsync installs have no etc/fstab, so rsync
+            // reads Windows ACLs and every Core update exits 23.
+            #[cfg(windows)]
+            commands::install_deps::setup_cwrsync_fstab_repair();
             commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 
