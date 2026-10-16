@@ -35,11 +35,16 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 import { flushSync, mount, tick, unmount } from 'svelte';
 
 import OnboardingWizard from './OnboardingWizard.svelte';
-import { BRAND_ICONS } from '@hq/ui/rail-icons';
 import {
   READY_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
 } from '../../lib/onboarding-wizard';
+import {
+  READY_CONSENT_DWELL_MS,
+  READY_PROGRESS_DONE_TEXT,
+  READY_WATCHDOG_MS,
+  __setReadyTimingsForTests,
+} from '../../lib/welcome-flow';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 
 const TOOLS = {
@@ -126,9 +131,7 @@ const scene = () => root().dataset.currentScene;
 const byId = <T extends HTMLElement = HTMLButtonElement>(id: string) =>
   host.querySelector<T>(`[data-testid="${id}"]`);
 const forwardIn = (sceneName: string) =>
-  sceneName === 'ready'
-    ? host.querySelector<HTMLButtonElement>('[data-scene="ready"] [data-testid="onboarding-open-desktop"]')
-    : host.querySelector<HTMLButtonElement>(`[data-scene="${sceneName}"] .nav .btn-primary`);
+  host.querySelector<HTMLButtonElement>(`[data-scene="${sceneName}"] .nav .btn-primary`);
 const commands = () => calls.map((c) => c.command);
 
 beforeEach(() => {
@@ -150,6 +153,9 @@ beforeEach(() => {
   events.handlers.clear();
   __resetWizardRouterCompletionForTests();
   __resetInstallerStepTelemetryForTests();
+  // Tests that are not about the ready screen's consent dwell skip it; the
+  // "ready screen's waits" tests below run on the real values.
+  __setReadyTimingsForTests({ consentDwellMs: 0 });
   localStorage.clear();
 });
 
@@ -159,6 +165,7 @@ afterEach(async () => {
     component = null;
   }
   host.remove();
+  __setReadyTimingsForTests(null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -304,37 +311,233 @@ describe('welcome flow: the install runs in the background', () => {
     vi.useRealTimers();
   });
 
-  it('keeps Open HQ Desktop disabled, and says so, until the install is done', async () => {
+  // Owner decision (2026-10-15): the ready screen does not open HQ Desktop
+  // from a button. It shows honest progress and finishes by itself once the
+  // install has settled and the post-ready steps are done; the desktop then
+  // opens on the knowledge tree.
+  const readyTitle = () => host.querySelector('#onboarding-title-ready')?.textContent?.trim();
+  const readyLine = () => host.querySelector('[data-scene="ready"] .pl')?.textContent?.trim();
+  const queueStatus = (state: string, done: number, total = 12, failed: string[] = []) => ({
+    state,
+    current: state === 'running' ? 'Claude Code' : null,
+    currentId: state === 'running' ? 'claude-code' : null,
+    done,
+    total,
+    failed,
+  });
+  const progress = (payload: unknown) => events.handlers.get('install-queue:progress')!({ payload });
+  /** The ready screen while the install runs: honest progress, no buttons, no finish. */
+  const expectWaiting = (onfinish: ReturnType<typeof vi.fn>) => {
+    expect(readyTitle()).toBe('Almost ready.');
+    expect(readyLine()).not.toBe(READY_PROGRESS_DONE_TEXT);
+    expect(readyLine()).toMatch(/Step \d of 5 · /);
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain(READY_PROGRESS_DONE_TEXT);
+    expect(byId<HTMLElement>('onboarding-launchers')!.querySelectorAll('button')).toHaveLength(0);
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(commands()).not.toContain('open_desktop_alt_window');
+  };
+  const expectReady = () => {
+    expect(readyTitle()).toBe('HQ is ready.');
+    expect(readyLine()).toBe(READY_PROGRESS_DONE_TEXT);
+  };
+
+  it('says Almost ready. while the install runs, then HQ is ready. and finishes once it is done', async () => {
     const template = deferred();
     stubInvoke({ fetch_and_extract_template: () => template.promise });
-    mountAt(2);
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await flush();
+    expectWaiting(onfinish);
+
+    template.resolve();
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    expectReady();
+  });
+
+  // (b) The finish waits for the whole install, the host queue included.
+  it('does not finish while the queue runs after the blocking phase, and finishes once when it settles', async () => {
+    const template = deferred();
+    const deps = deferred();
+    stubInvoke({
+      fetch_and_extract_template: () => template.promise,
+      start_install_queue: () => deps.promise,
+    });
+    const onfinish = mountAt(2);
     await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
     byId('welcome-skip')!.click();
     await flushUntil(() => scene() === 'ready', 'the ready screen');
 
-    const open = () => byId('onboarding-open-desktop')!;
-    const title = () => host.querySelector('#onboarding-title-ready')?.textContent?.trim();
-    expect(open().disabled).toBe(true);
-    // Item 7 (standup 2026-10-15): while the blocking install runs there is
-    // no white card. A quiet line says why it waits, with a greyed Continue.
-    expect(open().classList.contains('tool-card')).toBe(false);
-    expect(open().textContent?.trim()).toBe('Continue');
-    expect(byId('onboarding-ready-wait')?.textContent).toContain('Getting ready…');
-    expect(host.querySelector('[data-scene="ready"] .tool-card-desktop')).toBeNull();
-    expect(title()).toBe('Almost ready.');
-    // The Claude Code and Codex options wait with it.
-    expect(byId('onboarding-launch-claude')!.disabled).toBe(true);
-    expect(byId('onboarding-launch-codex')!.disabled).toBe(true);
-
     template.resolve();
-    await flushUntil(() => !open().disabled, 'Open HQ Desktop');
-    expect(open().querySelector('.tc-name')?.textContent?.trim()).toBe('Open HQ Desktop');
-    expect(open().querySelector('.tc-spin')).toBeNull();
-    expect(open().querySelector('.tc-line')).toBeNull();
-    expect(open().textContent).not.toContain('Use HQ’s own app');
-    expect(title()).toBe('HQ is ready.');
-    expect(byId('onboarding-launch-claude')!.disabled).toBe(false);
-    expect(byId('onboarding-launch-codex')!.disabled).toBe(false);
+    await flushUntil(() => commands().includes('start_install_queue'), 'the background phase');
+    await flush();
+    expectWaiting(onfinish);
+
+    // start_install_queue returns once the queue has started: this flow's
+    // stages can settle while the host queue is still installing.
+    progress(queueStatus('running', 9));
+    deps.resolve();
+    await flushUntil(() => commands().includes('record_install_complete'), 'the settled stages');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expectWaiting(onfinish);
+
+    progress(queueStatus('complete', 12));
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    expectReady();
+
+    // A later event does not finish a second time.
+    progress(queueStatus('complete', 12));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes when the queue settles with a failed item', async () => {
+    stubInvoke({ get_install_queue_status: () => queueStatus('running', 10) });
+    const onfinish = mountAt(READY_STEP_INDEX);
+    await flushUntil(() => readyTitle() === 'Almost ready.', 'the running queue');
+    expectWaiting(onfinish);
+
+    // gh failed: the queue settles in "attention". The desktop's own note
+    // tells the person what failed, so the ready screen does not hold them.
+    progress(queueStatus('attention', 11, 12, ['gh']));
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    expectReady();
+  });
+
+  it('waits on the ready step while a queue this wizard did not start still runs', async () => {
+    stubInvoke({ get_install_queue_status: () => queueStatus('running', 9) });
+    const onfinish = mountAt(READY_STEP_INDEX);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
+    await flushUntil(() => readyTitle() === 'Almost ready.', 'the pending state');
+    expect(commands()).not.toContain('fetch_and_extract_template');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expectWaiting(onfinish);
+
+    progress(queueStatus('complete', 12));
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    expectReady();
+  });
+
+  // (d) The keyboard cannot finish the ready screen early.
+  it('does not finish on Enter or the right arrow while the install runs', async () => {
+    stubInvoke({ get_install_queue_status: () => queueStatus('running', 9) });
+    const onfinish = mountAt(READY_STEP_INDEX);
+    await flushUntil(() => readyTitle() === 'Almost ready.', 'the pending state');
+    for (const key of ['Enter', 'ArrowRight', ' ']) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      host.querySelector('[data-scene="ready"]')!.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true }),
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expectWaiting(onfinish);
+    expect(scene()).toBe('ready');
+
+    progress(queueStatus('complete', 12));
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    // Enter after the finish does not finish again.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a queue read that a progress event overtook bring back a running queue', async () => {
+    const read = deferred<unknown>();
+    stubInvoke({ get_install_queue_status: () => read.promise });
+    const onfinish = mountAt(READY_STEP_INDEX);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
+    progress(queueStatus('complete', 12));
+    read.resolve(queueStatus('running', 11));
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    expectReady();
+  });
+
+  // PR 1656 review: a queue item that finishes without its progress event
+  // reaching the wizard must not hold the ready screen.
+  it('reads the queue again every 10 seconds, so a missed settle event cannot hold the step', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    try {
+      const advance = async (ms: number) => {
+        await vi.advanceTimersByTimeAsync(ms);
+        await flush();
+      };
+      const statusReads = () => commands().filter((c) => c === 'get_install_queue_status').length;
+      let status = queueStatus('running', 11);
+      stubInvoke({ get_install_queue_status: () => status });
+      const onfinish = mountAt(READY_STEP_INDEX);
+      for (let i = 0; i < 20 && readyTitle() !== 'Almost ready.'; i += 1) await advance(5);
+      expectWaiting(onfinish);
+      const before = statusReads();
+
+      // The queue settles, but its progress event never reaches the wizard.
+      status = queueStatus('attention', 11, 12, ['gh']);
+      await advance(9_000);
+      expectWaiting(onfinish);
+      await advance(1_000);
+      expect(statusReads()).toBe(before + 1);
+      for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+      expect(onfinish).toHaveBeenCalledTimes(1);
+      expectReady();
+      // Nothing stops or restarts the queue.
+      expect(commands()).not.toContain('cancel_install');
+      expect(commands()).not.toContain('start_install_queue');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // (c) A post-ready step that is still to come holds the finish. The
+  // install settles while the post-setup lookup (which names the company the
+  // connector import offers itself for) is still out, so the ready screen is
+  // on show with the install done and the post-ready steps not yet known.
+  it('does not finish while a post-ready step is pending, and finishes after it hands back', async () => {
+    const activeCompany = deferred<string | null>();
+    const connectors = deferred<unknown>();
+    stubInvoke({
+      get_desktop_active_company: () => activeCompany.promise,
+      detect_claude_desktop_connectors: () => connectors.promise,
+    });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('record_install_complete'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await flushUntil(
+      () => commands().includes('get_desktop_active_company'),
+      'the post-setup lookup',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    // The install is done, but the post-ready steps are not known yet.
+    expect(scene()).toBe('ready');
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(commands()).not.toContain('open_desktop_alt_window');
+
+    // The lookup names a company: the connector import opens and holds the
+    // finish while it looks.
+    activeCompany.resolve('placeholder-co');
+    await flushUntil(
+      () => commands().includes('detect_claude_desktop_connectors'),
+      'the connector import',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(commands()).not.toContain('open_desktop_alt_window');
+
+    // Nothing to import: the step hands back to the ready screen, which
+    // then finishes by itself, once.
+    connectors.resolve({ present: false, count: 0, outcome: 'none', inspectedSources: 'unknown' });
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
+    expect(scene()).toBe('ready');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -353,7 +556,7 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     expect(box.checked).toBe(false);
   }
 
-  it('records nothing while the install runs, then records the answer when the person finishes', async () => {
+  it('records nothing while the install runs, then records the answer when the flow finishes', async () => {
     const template = deferred();
     stubInvoke({ fetch_and_extract_template: () => template.promise });
     const onfinish = vi.fn();
@@ -365,11 +568,6 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     expect(commands()).not.toContain('post_telemetry_opt_in');
 
     template.resolve();
-    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
-    // Still nothing: the answer is recorded on finish, not on install.
-    expect(commands()).not.toContain('post_telemetry_opt_in');
-
-    byId('onboarding-open-desktop')!.click();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     const order = commands();
     expect(order.indexOf('record_install_complete')).toBeLessThan(
@@ -402,9 +600,7 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     mountAt(2, { onfinish });
     await skipToReady();
     template.resolve();
-    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
 
-    byId('onboarding-open-desktop')!.click();
     await flushUntil(() => Boolean(byId('consent-error')), 'the failure');
     expect(onfinish).not.toHaveBeenCalled();
     expect(byId('consent-finish-offline')).toBeNull();
@@ -413,6 +609,9 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     byId('consent-retry')!.click();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     expect(byId('consent-error')).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
   });
 
   it('never traps an offline person: the answer waits on this machine and they can finish', async () => {
@@ -427,69 +626,187 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
     mountAt(2, { onfinish });
     await skipToReady();
     template.resolve();
-    await flushUntil(() => !byId('onboarding-open-desktop')!.disabled, 'Open HQ Desktop');
-    byId('onboarding-open-desktop')!.click();
     await flushUntil(() => Boolean(byId('consent-error')), 'the offline note');
     expect(byId('consent-error')!.textContent).toContain('saved on this machine');
     expect(onfinish).not.toHaveBeenCalled();
     byId('consent-finish-offline')!.click();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     expect(calls.filter((c) => c.command === 'post_telemetry_opt_in')).toHaveLength(1);
+    // The automatic finish that failed on the write does not run again after
+    // the person finished from the button.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expect(onfinish).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('welcome flow: Claude Code and Codex on the ready screen', () => {
-  it('offers HQ Desktop as the large card and the installed tools as smaller buttons under it', async () => {
-    stubInvoke();
-    mountAt(READY_STEP_INDEX);
-    await flushUntil(() => Boolean(byId('onboarding-launch-codex')), 'the tool options');
+describe('welcome flow: the ready screen has no launch buttons', () => {
+  // (a) Even with Claude Code and Codex installed and the install settled.
+  it('shows no Open HQ Desktop, Claude Code or Codex button, and finishes by itself', async () => {
+    const onfinish = vi.fn();
+    stubInvoke({ get_install_queue_status: () => queueStatusComplete() });
+    // Hold the finish open long enough to inspect the settled screen.
+    const finishGate = deferred();
+    onfinish.mockImplementation(() => finishGate.promise);
+    mountAt(READY_STEP_INDEX, { onfinish });
+    await flushUntil(() => commands().includes('detect_ai_tools'), 'the tool probe');
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
 
     const launchers = byId<HTMLElement>('onboarding-launchers')!;
-    const desktop = launchers.querySelector<HTMLButtonElement>('.tool-card-desktop')!;
-    expect(desktop.dataset.testid).toBe('onboarding-open-desktop');
-    // The HQ app icon, and one call to action as its only label.
-    expect(desktop.querySelector('.tc-icon img')).not.toBeNull();
-    expect(desktop.querySelector('.tc-icon svg')).toBeNull();
-    expect(desktop.querySelector('.tc-name')?.textContent?.trim()).toBe('Open HQ Desktop');
-    expect(desktop.textContent?.trim()).toBe('Open HQ Desktop');
-    expect(desktop.querySelector('.tc-line')).toBeNull();
-    expect(desktop.querySelector('.tc-spin')).toBeNull();
-    const pills = Array.from(launchers.querySelectorAll<HTMLButtonElement>('.tool-pill'));
-    expect(pills.map((pill) => pill.textContent?.trim())).toEqual(['Claude Code', 'Codex']);
-    // Each tool wears its vendor's mark in single-colour white.
-    const brands = [BRAND_ICONS['claude-code'], BRAND_ICONS.codex];
-    pills.forEach((pill, index) => {
-      expect(pill.classList.contains('tool-card')).toBe(false);
-      const svg = pill.querySelector('.tp-icon svg')!;
-      expect(svg).not.toBeNull();
-      expect(svg.getAttribute('viewBox')).toBe(brands[index]!.viewBox);
-      const paths = svg.querySelectorAll('path');
-      expect(paths).toHaveLength(1);
-      expect(paths[0]!.getAttribute('fill')).toBe('currentColor');
-      expect(paths[0]!.getAttribute('d')).toBe(brands[index]!.d);
-    });
-    expect(forwardIn('ready')!.getAttribute('aria-label')).toBe('Open HQ Desktop');
-
-    // Product decision (2026-09-27): no Advanced section and no manual tools.
+    expect(launchers).not.toBeNull();
+    expect(launchers.querySelectorAll('button')).toHaveLength(0);
+    for (const id of ['onboarding-open-desktop', 'onboarding-launch-claude', 'onboarding-launch-codex']) {
+      expect(byId(id)).toBeNull();
+    }
+    const ready = host.querySelector<HTMLElement>('[data-scene="ready"]')!;
+    expect(ready.querySelector('.tool-pill, .tool-card, .tool-card-desktop')).toBeNull();
+    expect(ready.textContent).not.toContain('Open HQ Desktop');
+    expect(ready.textContent).not.toContain('Claude Code');
+    expect(ready.textContent).not.toContain('Codex');
+    // The only controls left are the usage-data line (its checkbox and the
+    // "What's collected" link) and HQ Anywhere.
+    const buttons = Array.from(ready.querySelectorAll<HTMLButtonElement>('button'));
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(['What’s collected']);
     expect(byId('onboarding-advanced')).toBeNull();
-    const ready = byId<HTMLElement>('onboarding-summary')!;
     for (const tool of ['Reveal folder', 'Copy path', 'Copy command', 'Copy /setup', 'Copy /import-claude']) {
       expect(ready.textContent).not.toContain(tool);
     }
-    // The usage-data line sits under the options.
-    const consent = byId<HTMLElement>('ready-consent')!;
-    expect(
-      [desktop, ...pills].every((card) => card.compareDocumentPosition(consent) & Node.DOCUMENT_POSITION_FOLLOWING),
-    ).toBe(true);
+    expect(byId<HTMLInputElement>('ready-consent-share')).not.toBeNull();
+    expect(commands()).not.toContain('open_claude_code_link');
+    finishGate.resolve();
+  });
+});
+
+function queueStatusComplete() {
+  return { state: 'complete', current: null, currentId: null, done: 12, total: 12, failed: [] };
+}
+
+// PR 1656 review. The usage-data checkbox is ticked by default, so the ready
+// screen must not finish (and record "share") before the person could untick
+// it, and a ready screen that never finishes by itself must not leave the
+// person with no button.
+describe("welcome flow: the ready screen's waits", () => {
+  beforeEach(() => {
+    __setReadyTimingsForTests(null);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it('opens Claude Code the way the ready screen always did, then finishes', async () => {
-    stubInvoke();
-    const onfinish = mountAt(READY_STEP_INDEX);
-    await flushUntil(() => Boolean(byId('onboarding-launch-claude')), 'the Claude Code option');
-    byId('onboarding-launch-claude')!.click();
-    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
-    expect(commands()).toContain('open_claude_code_link');
+  const advance = async (ms: number) => {
+    await vi.advanceTimersByTimeAsync(ms);
+    await flush();
+  };
+  const optIns = () => calls.filter((c) => c.command === 'post_telemetry_opt_in');
+  const finishNote = () => byId<HTMLElement>('launcher-finish-error');
+  const queueRunning = () => ({
+    state: 'running',
+    current: 'Claude Code',
+    currentId: 'claude-code',
+    done: 9,
+    total: 12,
+    failed: [],
+  });
+
+  async function mountSettledReady(overrides: Record<string, Handler> = {}) {
+    stubInvoke({ get_install_queue_status: () => queueStatusComplete(), ...overrides });
+    const onfinish = vi.fn();
+    mountAt(READY_STEP_INDEX, { onfinish });
+    for (let i = 0; i < 40 && !byId('ready-consent-share'); i += 1) await advance(5);
+    await advance(5);
+    return onfinish;
+  }
+
+  it('stays up for the consent dwell after the checkbox appears, then records the answer and finishes', async () => {
+    const onfinish = await mountSettledReady();
+    expect(byId<HTMLInputElement>('ready-consent-share')!.checked).toBe(true);
+
+    await advance(READY_CONSENT_DWELL_MS - 200);
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(optIns()).toHaveLength(0);
+
+    await advance(400);
+    for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(optIns()).toHaveLength(1);
+    expect(optIns()[0].args).toMatchObject({ enabled: true, surface: 'onboarding' });
+  });
+
+  it('starts the wait again when the person touches the checkbox, and records the answer they left', async () => {
+    const onfinish = await mountSettledReady();
+    await advance(READY_CONSENT_DWELL_MS - 200);
+    const box = byId<HTMLInputElement>('ready-consent-share')!;
+    box.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    box.click();
+    await flush();
+    expect(box.checked).toBe(false);
+
+    // The first wait would have run out here: nothing finishes.
+    await advance(400);
+    expect(onfinish).not.toHaveBeenCalled();
+    await advance(READY_CONSENT_DWELL_MS - 800);
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(optIns()).toHaveLength(0);
+
+    await advance(600);
+    for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(optIns()).toHaveLength(1);
+    expect(optIns()[0].args).toMatchObject({ enabled: false, surface: 'onboarding' });
+  });
+
+  it('finishes by itself once more after a failed write, when the person changes their answer', async () => {
+    let fail = true;
+    const onfinish = await mountSettledReady({
+      post_telemetry_opt_in: () => {
+        if (fail) throw 'HTTP 500: internal server error';
+        return undefined;
+      },
+    });
+    await advance(READY_CONSENT_DWELL_MS + 100);
+    for (let i = 0; i < 20 && !byId('consent-error'); i += 1) await advance(5);
+    expect(byId('consent-error')).not.toBeNull();
+    expect(onfinish).not.toHaveBeenCalled();
+
+    // A failed write that stays failed does not finish again by itself.
+    await advance(READY_CONSENT_DWELL_MS * 2);
+    expect(optIns()).toHaveLength(1);
+
+    fail = false;
+    byId<HTMLInputElement>('ready-consent-share')!.click();
+    await flush();
+    expect(byId('consent-error')).toBeNull();
+    await advance(READY_CONSENT_DWELL_MS - 200);
+    expect(onfinish).not.toHaveBeenCalled();
+    await advance(400);
+    for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(optIns()).toHaveLength(2);
+    expect(optIns()[1].args).toMatchObject({ enabled: false });
+  });
+
+  it('shows Finish setup when the ready screen has not finished by itself after the watchdog', async () => {
+    stubInvoke({ get_install_queue_status: () => queueRunning() });
+    const onfinish = vi.fn();
+    mountAt(READY_STEP_INDEX, { onfinish });
+    for (let i = 0; i < 40 && host.querySelector('#onboarding-title-ready')?.textContent?.trim() !== 'Almost ready.'; i += 1) {
+      await advance(5);
+    }
+    await advance(READY_WATCHDOG_MS - 1_000);
+    expect(finishNote()).toBeNull();
+    expect(onfinish).not.toHaveBeenCalled();
+
+    await advance(1_500);
+    const note = finishNote()!;
+    expect(note).not.toBeNull();
+    const button = note.querySelector<HTMLButtonElement>('button')!;
+    expect(button.textContent?.trim()).toBe('Finish setup');
+    expect(button.disabled).toBe(false);
+
+    button.click();
+    for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
   });
 });
 

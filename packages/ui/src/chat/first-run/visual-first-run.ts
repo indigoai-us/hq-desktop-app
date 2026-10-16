@@ -25,6 +25,7 @@ import type { LocalBotRow } from "@hq/platform";
 import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
 import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "../agent-channel.js";
 import { SETUP_BOT_RUNTIME_ORDER, type SetupBotRef } from "../setup-bot.js";
+import type { FlagLateOutcome } from "./first-run-timing.js";
 
 export type FirstRunRuntime = LocalBotRow["runtime"];
 
@@ -652,6 +653,16 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
 }
 
 /**
+ * True when the hello and the note may say `runtime` is signed in: Claude Code
+ * and Codex only after the real check passed (a missing check is not a pass, it
+ * was signed out on a cold computer); other runtimes are not checked here.
+ */
+export function signInPassedOrUnchecked(runtime: string, checks: Readonly<Record<string, unknown>>): boolean {
+  if (runtime !== "claude" && runtime !== "codex") return true;
+  return checks[runtime] === "passed";
+}
+
+/**
  * The bot's hello (`hq bot create --intro`, under 500 characters, one line)
  * when it was named in the takeover: it already knows its name and tool. It
  * promises nothing before the takeover closes: the assistant runs no turn
@@ -659,15 +670,22 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
  */
 export function firstRunIntro(
   handoff: Pick<FirstRunHandoff, "name" | "runtime" | "signInChecked">,
-  opts: { noun?: string } = {},
+  opts: { noun?: string; autoNamed?: boolean } = {},
 ): string {
-  void opts;
   const name = normalizeAssistantName(handoff.name) || "your HQ assistant";
   const tool = runtimeLabel(handoff.runtime);
   // Only a passing real check may say "signed in": a stored login can be dead.
-  const settled = handoff.signInChecked === false ? `picked ${tool}` : `signed in ${tool}`;
+  // Signed out says nothing about the tool: the repair card asks for the sign-in.
+  // The hello says only what is true (owner, PR 1647): an assistant named for
+  // the person on "Continue in <tool>" was not named by them, so it claims
+  // neither the name nor the sign-in (no new words for that path).
+  const settled = opts.autoNamed
+    ? ""
+    : handoff.signInChecked === false
+      ? "You've named me, so I won't ask about that again. "
+      : `You've named me and signed in ${tool}, so I won't ask about those again. `;
   return (
-    `Hi, I'm ${name}, your HQ assistant. You've named me and ${settled}, so I won't ask about those again. ` +
+    `Hi, I'm ${name}, your HQ assistant. ${settled}` +
     "As soon as you finish setting up in the app, I'll pick up from there and post my next question here."
   );
 }
@@ -708,6 +726,36 @@ export function markVisualFirstRunFinished(storage?: StorageLike | null): void {
   }
 }
 
+/** Drop a finished marker an earlier install left (see finishedMarkerLeftOver). */
+export function forgetVisualFirstRunFinished(storage?: StorageLike | null): void {
+  try {
+    (firstRunStorage(storage) as Partial<Pick<Storage, "removeItem">> | null)?.removeItem?.(VISUAL_FIRST_RUN_DONE_KEY);
+  } catch {
+    // Storage unavailable: the in-session reset still holds.
+  }
+}
+
+/**
+ * Was the finished marker left by an earlier install? The window's storage
+ * outlives a reinstall that wipes ~/.hq and the HQ folder, so the marker can
+ * be there on a computer that is starting over. Finishing the takeover leaves
+ * the assistant on this computer, so a marker on a computer that still owes
+ * setup (the host's answer) and lists no bots of its own is a leftover.
+ * null until both answers are in. A listing that failed (localBots null once
+ * read) keeps the marker.
+ */
+export function finishedMarkerLeftOver(input: {
+  welcomeSetupOwed: boolean | null;
+  localBotsRead: boolean;
+  localBots: number | null;
+}): boolean | null {
+  if (input.welcomeSetupOwed === false) return false;
+  if (!input.localBotsRead) return null;
+  if (input.localBots === null || input.localBots > 0) return false;
+  if (input.welcomeSetupOwed === null) return null;
+  return true;
+}
+
 // ── routing ─────────────────────────────────────────────────────────────────
 
 /**
@@ -730,12 +778,47 @@ export type FirstRunRoute = "legacy" | "visual" | "pending";
 export const VISUAL_FIRST_RUN_FLAG_GRACE_MS = 1000;
 
 /**
+ * The same wait when the host says setup is owed (a new install). A cold
+ * start reads the flag right after sign-in, and that read can take well over
+ * a second (2.8 s on a cold VM); counting it as off sends a new install to
+ * the old setup. In line with the other first-run waits.
+ */
+export const VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS = 5_000;
+
+/**
  * The longest the takeover waits for the bot listings (this computer's and
  * the account's) before its name step opens anyway. Within it, an account
  * that already has an assistant is offered that assistant's name; after it,
  * a slow listing means a friendly free name, as for a new account.
  */
 export const FIRST_RUN_LISTINGS_WAIT_MS = 5_000;
+
+/**
+ * How long after its wait ran out a flag answer may still open the takeover.
+ * By then the old setup has been on screen for this long, so a later answer
+ * leaves it there.
+ */
+export const VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS = 5_000;
+
+/**
+ * What a flag answer that lands after its wait ran out does (the flag counted
+ * as off, the route went legacy). Null when it is "off" or setup is not owed:
+ * nothing to say. Otherwise "too-late" when it came more than the late window
+ * after the timeout, "legacy-started" when the person had already started on
+ * the old setup (a setup run, a bot, the tour, an install or sign-in, another
+ * row, a sent message), and "applied" when the takeover opens after all.
+ */
+export function lateFlagVerdict(input: {
+  value: boolean;
+  welcomeSetupOwed: boolean | null;
+  legacyStarted: boolean;
+  sinceTimeoutMs: number;
+}): FlagLateOutcome | null {
+  if (!input.value || input.welcomeSetupOwed !== true) return null;
+  if (input.sinceTimeoutMs > VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS) return "too-late";
+  if (input.legacyStarted) return "legacy-started";
+  return "applied";
+}
 
 export interface FirstRunRouteInput {
   /** The host can run local bots (desktop app). */
@@ -748,9 +831,12 @@ export interface FirstRunRouteInput {
   flag: boolean | null;
   /** The takeover was finished or left for chat on this computer. */
   finished: boolean;
+  /** A finished marker from before this launch is still being checked (finishedMarkerLeftOver). */
+  finishedUnconfirmed?: boolean;
 }
 
 export function firstRunRoute(input: FirstRunRouteInput): FirstRunRoute {
+  if (input.hasBots && input.finishedUnconfirmed) return "pending";
   if (!input.hasBots || input.welcomeSetupRun || input.finished) return "legacy";
   if (input.flag === null) return "pending";
   if (!input.flag) return "legacy";

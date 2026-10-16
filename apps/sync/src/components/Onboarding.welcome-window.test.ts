@@ -413,6 +413,12 @@ describe('Onboarding: the welcome flow window', () => {
     expect(commands().indexOf('mark_first_run_complete')).toBeLessThan(
       commands().indexOf('show_main_window_at_tray'),
     );
+    // The desktop opens with no route, so its first-run decision (the tree
+    // takeover when the visual first run is on) picks the first page. Asking
+    // for a page here would skip the tree.
+    const opens = tauri.invoke.mock.calls.filter(([command]) => command === 'show_main_window_at_tray');
+    expect(opens).toEqual([['show_main_window_at_tray']]);
+    expect(commands()).not.toContain('open_desktop_alt_window');
     expect(onfinish).toHaveBeenCalledTimes(1);
   });
 

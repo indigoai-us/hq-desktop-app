@@ -519,7 +519,146 @@ fn cancel_registry() -> &'static Arc<Mutex<HashMap<String, CancelState>>> {
 /// Exposed publicly so the test suite can exercise `cancel_install` without
 /// spawning a real Tauri runtime.
 pub fn register_cancel_handle(handle: String) {
-    recover_lock(cancel_registry()).insert(handle, CancelState::default());
+    recover_lock(cancel_registry()).insert(handle.clone(), CancelState::default());
+    // A queue item that already ran out of time must not start new work: a
+    // handle registered after the deadline is cancelled at once.
+    let expired = ACTIVE_QUEUE_ITEM_CANCEL_SCOPE
+        .try_with(|scope| scope.adopt(&handle))
+        .unwrap_or(false);
+    if expired {
+        cancel_install(handle);
+    }
+}
+
+/// The cancel handles one install queue item registered. The queue's
+/// per-item deadline uses it to stop exactly that item's child processes
+/// through the existing cancel path (SIGTERM, then SIGKILL after 2 s in the
+/// streaming loop), without touching items that run beside it.
+#[derive(Clone, Default)]
+pub(crate) struct QueueItemCancelScope {
+    inner: Arc<Mutex<QueueItemCancelState>>,
+}
+
+#[derive(Default)]
+struct QueueItemCancelState {
+    handles: Vec<String>,
+    expired: bool,
+}
+
+impl QueueItemCancelScope {
+    /// Record `handle` and report whether the item already ran out of time.
+    fn adopt(&self, handle: &str) -> bool {
+        let mut state = recover_lock(&self.inner);
+        state.handles.push(handle.to_string());
+        state.expired
+    }
+
+    /// Mark the item as out of time and cancel every handle it registered.
+    /// Returns how many handles were still live and got the cancel request.
+    pub(crate) fn expire(&self) -> usize {
+        let handles = {
+            let mut state = recover_lock(&self.inner);
+            state.expired = true;
+            state.handles.clone()
+        };
+        handles
+            .into_iter()
+            .filter(|handle| cancel_install(handle.clone()))
+            .count()
+    }
+
+    pub(crate) async fn scope<F: Future>(&self, fut: F) -> F::Output {
+        ACTIVE_QUEUE_ITEM_CANCEL_SCOPE.scope(self.clone(), fut).await
+    }
+}
+
+tokio::task_local! {
+    static ACTIVE_QUEUE_ITEM_CANCEL_SCOPE: QueueItemCancelScope;
+}
+
+/// Cancel tracking for a child started with `tokio::process::Command` outside
+/// the streaming helper (such as `hq reindex`). The child joins the cancel
+/// registry, so a queue item's deadline reaches it, and its process tree is
+/// killed when the registration is dropped after a cancel, including when the
+/// item's task is aborted mid-wait.
+pub(crate) struct TrackedChild {
+    handle: String,
+}
+
+impl TrackedChild {
+    /// Register before spawning. Returns `None` when the queue item already
+    /// ran out of time, so the caller must not start the child.
+    pub(crate) fn register(cmd: &mut tokio::process::Command) -> Option<Self> {
+        let handle = Uuid::new_v4().to_string();
+        register_cancel_handle(handle.clone());
+        let tracked = Self { handle };
+        if is_cancelled(&tracked.handle) {
+            return None;
+        }
+        cmd.kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
+        Some(tracked)
+    }
+
+    /// Record the spawned child as this registration's kill target. A cancel
+    /// that arrived between spawn and attach is applied here.
+    pub(crate) fn attach(&self, child: &tokio::process::Child) {
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            register_process_group(&self.handle, pid as i32);
+        }
+        #[cfg(windows)]
+        match (create_job_object(), child.raw_handle()) {
+            (Ok(job), Some(raw)) => match assign_process_to_job(job.0, raw as HANDLE) {
+                // The registry holds the job until this registration is dropped.
+                Ok(()) => register_job_handle(&self.handle, Arc::new(job)),
+                Err(e) => log_untracked_child(&self.handle, &e),
+            },
+            (Err(e), _) => log_untracked_child(&self.handle, &e),
+            (Ok(_), None) => log_untracked_child(&self.handle, "the child has no process handle"),
+        }
+        if is_cancelled(&self.handle) {
+            self.kill_tree();
+        }
+    }
+
+    fn kill_tree(&self) {
+        #[cfg(unix)]
+        let result = terminate_process_tree(&self.handle, Signal::SIGKILL);
+        #[cfg(windows)]
+        let result = terminate_process_tree(&self.handle);
+        if let Err(e) = result {
+            record_cleanup_failure(&self.handle, e);
+        }
+    }
+}
+
+/// A child whose process tree could not be put in a job object still runs,
+/// but a deadline can only kill the child itself, not what it started. The
+/// log line is the record of why a cancelled item may leave processes behind.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn log_untracked_child(handle: &str, reason: &str) {
+    log("hq-deps", &format!("child {handle} not tracked for cancel: {reason}"));
+}
+
+impl Drop for TrackedChild {
+    fn drop(&mut self) {
+        if is_cancelled(&self.handle) {
+            self.kill_tree();
+        }
+        deregister_handle(&self.handle);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn is_cancelled_for_test(handle: &str) -> bool {
+    is_cancelled(handle)
+}
+
+#[cfg(test)]
+pub(crate) fn deregister_handle_for_test(handle: &str) {
+    deregister_handle(handle);
 }
 
 fn is_cancelled(handle: &str) -> bool {
@@ -8696,6 +8835,21 @@ mod install_deps_planner_tests {
             .collect()
     }
 
+    /// PR 1656 review: a failed job-object setup in `TrackedChild::attach` was
+    /// dropped silently.
+    #[test]
+    fn untracked_child_is_logged_with_its_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("hq-sync.log");
+        let _guard = hq_desktop_core::logfile::LogOverrideGuard::new(log.clone());
+        log_untracked_child("h-1", "AssignProcessToJobObject failed: access denied");
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            text.contains("[hq-deps] child h-1 not tracked for cancel: AssignProcessToJobObject failed: access denied"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn command_install_timing_logs_outside_the_batch_only() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -9676,19 +9830,12 @@ mod install_deps_planner_tests {
 
         let scope_guard_panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let scope_guard_panic_observer = scope_guard_panicked.clone();
-        let previous_panic_hook =
-            std::sync::Arc::new(std::sync::Mutex::new(Some(std::panic::take_hook())));
-        let previous_panic_hook_for_observer = previous_panic_hook.clone();
-        std::panic::set_hook(Box::new(move |info| {
+        // Keeps the install queue's item panic hook in place across the swap.
+        let panic_hook_swap = crate::commands::install_queue::swap_panic_hook_for_test(move |info| {
             if info.to_string().contains("Popped scope guard out of order") {
                 scope_guard_panic_observer.store(true, std::sync::atomic::Ordering::SeqCst);
             }
-            previous_panic_hook_for_observer
-                .lock()
-                .unwrap()
-                .as_ref()
-                .expect("previous panic hook is installed")(info);
-        }));
+        });
 
         sentry::Hub::run(hub.clone(), || {
             queue_setup_dependency_failure(
@@ -9733,13 +9880,7 @@ mod install_deps_planner_tests {
 
         let observed_scope_guard_panic =
             scope_guard_panicked.load(std::sync::atomic::Ordering::SeqCst);
-        let _ = std::panic::take_hook();
-        let previous_panic_hook = previous_panic_hook
-            .lock()
-            .unwrap()
-            .take()
-            .expect("previous panic hook is installed");
-        std::panic::set_hook(previous_panic_hook);
+        drop(panic_hook_swap);
 
         assert_eq!(
             node_arrival.expect("node reporter should reach the transport"),

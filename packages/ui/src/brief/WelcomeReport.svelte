@@ -45,9 +45,32 @@
     madeBy?: { name: string; onmeet: () => void } | null;
     /** The "Connect your AI apps" card inputs; null leaves it out. */
     aiApps?: { detect: () => Promise<FoundWorkApps | null>; cli: { claudeCode: boolean; codex: boolean } } | null;
+    /**
+     * The job is held back until the assistant can take it (not running, no
+     * model connected): the brief check's own sentence and fix button, under
+     * the report's heading, so the page still says the report is coming.
+     */
+    blocked?: { message: string; label: string; onfix: () => Promise<string | null> | void } | null;
     children: Snippet;
   }
-  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, children }: Props = $props();
+  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, blocked = null, children }: Props = $props();
+
+  /** What the fix said when it could not finish (the brief page's own copy), as on the run bar. */
+  let fixError = $state<string | null>(null);
+  let fixing = $state(false);
+  async function runFix(): Promise<void> {
+    if (!blocked || fixing) return;
+    fixing = true;
+    fixError = null;
+    try {
+      fixError = (await blocked.onfix()) ?? null;
+    } catch (err) {
+      console.warn("[welcome-report] fix failed", err);
+      fixError = "Something went wrong.";
+    } finally {
+      fixing = false;
+    }
+  }
 
   const pct = $derived(progress == null ? null : Math.round(Math.min(1, Math.max(0, progress)) * 100));
 </script>
@@ -85,6 +108,13 @@
     <section class="card loading" data-testid="welcome-report-setup">
       <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>
       <button type="button" class="cta" onclick={onsetup} data-testid="welcome-report-setup-button">{WELCOME_REPORT_SETUP_LABEL}</button>
+    </section>
+  {:else if blocked}
+    <section class="card loading" data-testid="welcome-report-blocked">
+      <h2>{WELCOME_REPORT_NEEDS_ASSISTANT}</h2>
+      <p class="reason">{blocked.message}</p>
+      <button type="button" class="cta" onclick={runFix} disabled={fixing} data-testid="welcome-report-blocked-fix">{blocked.label}</button>
+      {#if fixError}<p class="reason" data-testid="welcome-report-blocked-error">{fixError}</p>{/if}
     </section>
   {:else}
     <section class="card loading" data-testid="welcome-report-loading" aria-busy="true">
@@ -160,6 +190,11 @@
     font-weight: 500;
     letter-spacing: -0.01em;
     color: var(--b-t1, rgba(255, 255, 255, 0.95));
+  }
+  .reason {
+    margin: 0;
+    font-size: 13px;
+    color: var(--b-t2, rgba(255, 255, 255, 0.6));
   }
   .cta {
     font: inherit;

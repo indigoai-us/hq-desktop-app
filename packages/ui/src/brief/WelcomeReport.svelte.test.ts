@@ -108,6 +108,57 @@ describe("WelcomeReport", () => {
     expect(onsetup).toHaveBeenCalledTimes(1);
   });
 
+  it("a job held back on a fix keeps the report's heading with the reason and the fix, never the loading bar", async () => {
+    const onfix = vi.fn();
+    mountReport({
+      ready: false,
+      blocked: { message: "Quill has no model connected on this computer.", label: "Connect a model", onfix },
+      children: briefPage,
+    });
+    await settle();
+    expect(q('[data-testid="welcome-report-loading"]')).toBeNull();
+    expect(q('[role="progressbar"]')).toBeNull();
+    expect(q('[data-testid="brief-page"]')).toBeNull();
+    const card = q('[data-testid="welcome-report-blocked"]');
+    expect(card?.querySelector("h2")?.textContent?.trim()).toBe(WELCOME_REPORT_NEEDS_ASSISTANT);
+    expect(card?.querySelector("p")?.textContent?.trim()).toBe("Quill has no model connected on this computer.");
+    const button = q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]');
+    expect(button?.textContent?.trim()).toBe("Connect a model");
+    button!.click();
+    expect(onfix).toHaveBeenCalledTimes(1);
+  });
+
+  it("says what the fix returned when it could not finish, and a fix that throws says something went wrong", async () => {
+    let answer: () => Promise<string | null> = async () => "Could not start Quill. Try again.";
+    const onfix = vi.fn(() => answer());
+    mountReport({
+      ready: false,
+      blocked: { message: "Quill is not running.", label: "Start it", onfix },
+      children: briefPage,
+    });
+    await settle();
+    expect(q('[data-testid="welcome-report-blocked-error"]')).toBeNull();
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    await settle();
+    expect(q('[data-testid="welcome-report-blocked-error"]')?.textContent?.trim()).toBe("Could not start Quill. Try again.");
+
+    answer = async () => {
+      throw new Error("host gone");
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    await settle();
+    expect(q('[data-testid="welcome-report-blocked-error"]')?.textContent?.trim()).toBe("Something went wrong.");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+
+    answer = async () => null;
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    await settle();
+    expect(q('[data-testid="welcome-report-blocked-error"]')).toBeNull();
+    expect(onfix).toHaveBeenCalledTimes(3);
+  });
+
   it("renders the connect card from the scan when the shell passes it, and leaves it out when connect is null", async () => {
     mountReport({
       ready: false,
@@ -150,5 +201,26 @@ describe("WelcomeReport", () => {
     await settle();
     expect(q('[data-testid="welcome-report-made-by"]')?.textContent?.trim()).toBe("Your assistant will make the next one.");
     expect(q('[data-testid="welcome-report-meet"]')).toBeNull();
+  });
+
+  it("a held-back job keeps Connect a model with the AI apps card above it and never says who made the report", async () => {
+    const onfix = vi.fn();
+    mountReport({
+      ready: false,
+      madeBy: { name: "Quill", onmeet: vi.fn() },
+      aiApps: { detect: async () => null, cli: { claudeCode: true, codex: false } },
+      blocked: { message: "Quill has no model connected on this computer.", label: "Connect a model", onfix },
+      children: briefPage,
+    });
+    await settle();
+    const apps = q('[data-testid="connect-ai-apps-card"]');
+    const held = q('[data-testid="welcome-report-blocked"]');
+    expect(apps).not.toBeNull();
+    expect(held).not.toBeNull();
+    expect(apps!.compareDocumentPosition(held!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(q('[data-testid="welcome-report-made-by"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-meet"]')).toBeNull();
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    expect(onfix).toHaveBeenCalledTimes(1);
   });
 });

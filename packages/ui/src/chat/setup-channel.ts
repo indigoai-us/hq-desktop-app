@@ -228,6 +228,15 @@ export function markWelcomeSetupRun(storage?: StorageLike | null): void {
   }
 }
 
+/** Drop the record when it was left by an earlier install (finishedMarkerLeftOver). */
+export function forgetWelcomeSetupRun(storage?: StorageLike | null): void {
+  try {
+    (welcomeStorage(storage) as Partial<Pick<Storage, "removeItem">> | null)?.removeItem?.(WELCOME_SETUP_RUN_KEY);
+  } catch {
+    // Storage unavailable: the in-session reset still holds.
+  }
+}
+
 /**
  * Hero copy while the shell is still fetching the roster for this session.
  * Leading with "Create or choose a company" before the roster has loaded
