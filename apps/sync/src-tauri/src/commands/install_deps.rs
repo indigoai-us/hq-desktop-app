@@ -609,11 +609,14 @@ impl TrackedChild {
             register_process_group(&self.handle, pid as i32);
         }
         #[cfg(windows)]
-        if let (Ok(job), Some(raw)) = (create_job_object(), child.raw_handle()) {
-            // The registry holds the job until this registration is dropped.
-            if assign_process_to_job(job.0, raw as HANDLE).is_ok() {
-                register_job_handle(&self.handle, Arc::new(job));
-            }
+        match (create_job_object(), child.raw_handle()) {
+            (Ok(job), Some(raw)) => match assign_process_to_job(job.0, raw as HANDLE) {
+                // The registry holds the job until this registration is dropped.
+                Ok(()) => register_job_handle(&self.handle, Arc::new(job)),
+                Err(e) => log_untracked_child(&self.handle, &e),
+            },
+            (Err(e), _) => log_untracked_child(&self.handle, &e),
+            (Ok(_), None) => log_untracked_child(&self.handle, "the child has no process handle"),
         }
         if is_cancelled(&self.handle) {
             self.kill_tree();
@@ -629,6 +632,14 @@ impl TrackedChild {
             record_cleanup_failure(&self.handle, e);
         }
     }
+}
+
+/// A child whose process tree could not be put in a job object still runs,
+/// but a deadline can only kill the child itself, not what it started. The
+/// log line is the record of why a cancelled item may leave processes behind.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn log_untracked_child(handle: &str, reason: &str) {
+    log("hq-deps", &format!("child {handle} not tracked for cancel: {reason}"));
 }
 
 impl Drop for TrackedChild {
@@ -8824,6 +8835,21 @@ mod install_deps_planner_tests {
             .collect()
     }
 
+    /// PR 1656 review: a failed job-object setup in `TrackedChild::attach` was
+    /// dropped silently.
+    #[test]
+    fn untracked_child_is_logged_with_its_reason() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("hq-sync.log");
+        let _guard = hq_desktop_core::logfile::LogOverrideGuard::new(log.clone());
+        log_untracked_child("h-1", "AssignProcessToJobObject failed: access denied");
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            text.contains("[hq-deps] child h-1 not tracked for cancel: AssignProcessToJobObject failed: access denied"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn command_install_timing_logs_outside_the_batch_only() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -9804,6 +9830,8 @@ mod install_deps_planner_tests {
 
         let scope_guard_panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let scope_guard_panic_observer = scope_guard_panicked.clone();
+        // Keeps the install queue's item panic hook in place across the swap.
+        let _panic_hook_guard = crate::commands::install_queue::panic_hook_swap_guard_for_test();
         let previous_panic_hook =
             std::sync::Arc::new(std::sync::Mutex::new(Some(std::panic::take_hook())));
         let previous_panic_hook_for_observer = previous_panic_hook.clone();

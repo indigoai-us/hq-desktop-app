@@ -16,7 +16,6 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::future::Future;
-use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,7 +23,6 @@ use std::sync::{Arc, Mutex, MutexGuard, Once, OnceLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use futures_util::FutureExt;
 use hq_desktop_core::install_queue::{
     self as core_queue, is_settled, plan_next, ItemOutcome, ItemState, LoadOutcome, Presence,
     QueueChoices, QueueItemId, QueueManifest, QueueStatus, INSTALL_ITEMS, SKIP_ALREADY_PRESENT,
@@ -403,6 +401,21 @@ fn install_item_panic_hook() {
     });
 }
 
+/// Serializes tests that replace the process-wide panic hook.
+///
+/// A test that takes the hook, sets its own and later restores what it took
+/// drops the item hook if `install_item_panic_hook` chains itself on top in
+/// between: the `Once` has run, so the item hook is never installed again and
+/// a panicking item settles as a timeout. Holding this guard installs the item
+/// hook first, so the swap takes it and restores it, and keeps two swapping
+/// tests from interleaving.
+#[cfg(test)]
+pub(crate) fn panic_hook_swap_guard_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static SWAP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    install_item_panic_hook();
+    SWAP.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Polls `inner` with the item's panic flag published to the panic hook.
 struct PanicMarked<F> {
     inner: Pin<Box<F>>,
@@ -749,13 +762,48 @@ fn parse_wait_for(wait_for: Option<Vec<String>>) -> Result<Vec<QueueItemId>, Str
     }
 }
 
+/// How the wizard's run of a queue item found the item.
+#[derive(Debug, PartialEq, Eq)]
+enum ExternalClaim {
+    /// The queue is running the item; the wizard waits for its result.
+    AlreadyRunning,
+    /// The wizard marked the item running and runs it.
+    Claimed,
+}
+
+/// Check and mark the item in one step, under the caller's runtime lock, so
+/// the queue and a second wizard run cannot both start it in between.
+fn claim_external_item(manifest: &mut QueueManifest, id: QueueItemId) -> ExternalClaim {
+    if manifest.state(id) == ItemState::Running {
+        return ExternalClaim::AlreadyRunning;
+    }
+    manifest.release(id);
+    manifest.mark_running(id);
+    ExternalClaim::Claimed
+}
+
+/// The wizard's run of a queue item, bounded like the queue's own run: a hung
+/// run fails with the timeout reason and its processes are cancelled.
+async fn run_external_work<F>(id: QueueItemId, deadline: ItemDeadline, lingering: &'static watch::Sender<HashSet<QueueItemId>>, fut: F) -> ItemOutcome
+where
+    F: Future<Output = Result<(), String>> + Send + 'static,
+{
+    run_with_deadline(id, deadline, lingering, async move {
+        match fut.await {
+            Ok(()) => ItemOutcome::Done,
+            Err(err) => ItemOutcome::Failed(err),
+        }
+    })
+    .await
+}
+
 /// Run a wizard stage that is also a queue item. The queue records it like
 /// its own items, so the stage and the queue never run the same work at the
 /// same time, and the chip and manifest stay accurate. With no queue on
 /// disk (setup that predates the queue), `fut` runs as before.
 pub(crate) async fn track_external_item<F>(app: &AppHandle, id: QueueItemId, fut: F) -> Result<(), String>
 where
-    F: Future<Output = Result<(), String>>,
+    F: Future<Output = Result<(), String>> + Send + 'static,
 {
     // A timed-out queue attempt of this item may still be stopping. Starting
     // the wizard's run beside it would run the item twice at once.
@@ -764,11 +812,21 @@ where
         return fut.await;
     }
 
-    let running_now = {
-        let rt = lock_runtime();
-        rt.manifest.as_ref().map(|m| m.state(id) == ItemState::Running).unwrap_or(false)
+    let (claim, status) = {
+        let mut rt = lock_runtime();
+        let claim = match rt.manifest.as_mut() {
+            Some(manifest) => {
+                let claim = claim_external_item(manifest, id);
+                if claim == ExternalClaim::Claimed {
+                    persist(manifest);
+                }
+                claim
+            }
+            None => ExternalClaim::Claimed,
+        };
+        (claim, current_status(&rt))
     };
-    if running_now {
+    if claim == ExternalClaim::AlreadyRunning {
         log(LOG_TAG, &format!("{} already running in the queue; waiting for it", id.as_str()));
         wait_until(|rt| {
             rt.manifest
@@ -786,28 +844,20 @@ where
         };
     }
 
-    let status = {
-        let mut rt = lock_runtime();
-        if let Some(manifest) = rt.manifest.as_mut() {
-            manifest.release(id);
-            manifest.mark_running(id);
-            persist(manifest);
-        }
-        current_status(&rt)
-    };
     notify();
     emit_status(app, &status);
 
     let timer = InstallTimer::start(&id.timing_id());
     let started = Instant::now();
-    let result = match AssertUnwindSafe(fut).catch_unwind().await {
-        Ok(result) => result,
-        Err(_) => Err(format!("{} panicked", id.label())),
+    let deadline = ItemDeadline {
+        limit: item_time_limit(id),
+        stop_grace: TIMEOUT_STOP_GRACE,
     };
+    let outcome = run_external_work(id, deadline, lingering_items(), fut).await;
     let elapsed_ms = started.elapsed().as_millis() as u64;
-    let outcome = match &result {
-        Ok(()) => ItemOutcome::Done,
-        Err(err) => ItemOutcome::Failed(err.clone()),
+    let result = match &outcome {
+        ItemOutcome::Failed(err) => Err(err.clone()),
+        ItemOutcome::Done | ItemOutcome::Skipped(_) => Ok(()),
     };
     finish_item(app, id, timer, &outcome, elapsed_ms);
     record_finish(app, id, &outcome, elapsed_ms);
@@ -1262,6 +1312,88 @@ mod tests {
             .await
             .expect("the unwinding attempt leaves the lingering set when it ends")
             .expect("channel open");
+    }
+
+    /// PR 1656 CI: a test in install_deps.rs swaps the global panic hook. When
+    /// the item hook was first installed inside that swap, the restore dropped
+    /// it and a panicking item settled as "installer timed out".
+    #[test]
+    fn item_hook_survives_a_test_that_swaps_the_panic_hook() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        {
+            let _guard = panic_hook_swap_guard_for_test();
+            let previous = std::sync::Arc::new(std::sync::Mutex::new(Some(std::panic::take_hook())));
+            let chained = std::sync::Arc::clone(&previous);
+            std::panic::set_hook(Box::new(move |info| {
+                if let Some(hook) = chained.lock().unwrap().as_ref() {
+                    hook(info);
+                }
+            }));
+            // An item runs while the swap is in place.
+            let during = runtime.block_on(run_with_deadline(
+                QueueItemId::RuntimeHooks,
+                short_deadline(),
+                test_lingering(),
+                async { ItemOutcome::Done },
+            ));
+            assert_eq!(during, ItemOutcome::Done);
+            let _ = std::panic::take_hook();
+            let restored = previous.lock().unwrap().take().expect("previous hook");
+            std::panic::set_hook(restored);
+        }
+        let lingering = test_lingering();
+        let outcome = runtime.block_on(run_with_deadline(QueueItemId::RuntimeHooks, short_deadline(), lingering, async {
+            let _slow = SlowDrop(Duration::from_millis(300));
+            panic!("boom");
+        }));
+        assert_eq!(outcome, ItemOutcome::Failed("installer panicked".to_string()));
+    }
+
+    /// PR 1656 review: the queue's state check and the wizard's mark ran under
+    /// two locks, so a second run could start the item in between.
+    #[test]
+    fn wizard_claim_checks_and_marks_the_item_in_one_step() {
+        let mut m = manifest();
+        assert_eq!(claim_external_item(&mut m, QueueItemId::SearchIndex), ExternalClaim::Claimed);
+        assert_eq!(m.state(QueueItemId::SearchIndex), ItemState::Running);
+        // A second run that arrives after the claim waits for the first.
+        assert_eq!(claim_external_item(&mut m, QueueItemId::SearchIndex), ExternalClaim::AlreadyRunning);
+        assert_eq!(m.state(QueueItemId::SearchIndex), ItemState::Running);
+    }
+
+    /// PR 1656 review: the wizard's run of the search index and the vault
+    /// upload had no deadline, so a hang kept the ready screen waiting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wizard_run_of_a_queue_item_fails_at_its_deadline() {
+        let handle = uuid::Uuid::new_v4().to_string();
+        let registered = handle.clone();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_external_work(QueueItemId::VaultUpload, short_deadline(), test_lingering(), async move {
+                install_deps::register_cancel_handle(registered);
+                std::future::pending::<Result<(), String>>().await
+            }),
+        )
+        .await
+        .expect("the deadline ends the wizard's run");
+        assert_eq!(outcome, ItemOutcome::Failed(timeout_reason(Duration::from_millis(50))));
+        assert!(install_deps::is_cancelled_for_test(&handle), "the run's process is cancelled");
+        install_deps::deregister_handle_for_test(&handle);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wizard_run_of_a_queue_item_keeps_its_result() {
+        let ok = run_external_work(QueueItemId::SearchIndex, short_deadline(), test_lingering(), async { Ok(()) }).await;
+        assert_eq!(ok, ItemOutcome::Done);
+        let failed = run_external_work(QueueItemId::SearchIndex, short_deadline(), test_lingering(), async {
+            Err("reindex failed".to_string())
+        })
+        .await;
+        assert_eq!(failed, ItemOutcome::Failed("reindex failed".to_string()));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
