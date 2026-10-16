@@ -207,6 +207,9 @@ describe("route, flag and setup-run lines", () => {
     expect(formatFlagLookup("visual-first-run", "unscoped", true, false, 6200, "legacy-started")).toBe(
       "kind=flag flag=visual-first-run path=unscoped value=true applied=false late=legacy-started elapsed_ms=6200",
     );
+    expect(formatFlagLookup("visual-first-run", "unscoped", true, false, 13000, "too-late")).toBe(
+      "kind=flag flag=visual-first-run path=unscoped value=true applied=false late=too-late elapsed_ms=13000",
+    );
   });
 
   it("logs the route only when its value changes", () => {

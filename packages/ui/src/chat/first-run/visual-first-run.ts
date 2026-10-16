@@ -25,6 +25,7 @@ import type { LocalBotRow } from "@hq/platform";
 import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
 import { FIRST_RUN_HANDOFF_MARKER, FIRST_RUN_NOTE_LEAD } from "../agent-channel.js";
 import { SETUP_BOT_RUNTIME_ORDER, type SetupBotRef } from "../setup-bot.js";
+import type { FlagLateOutcome } from "./first-run-timing.js";
 
 export type FirstRunRuntime = LocalBotRow["runtime"];
 
@@ -790,17 +791,30 @@ export const VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS = 5_000;
 export const FIRST_RUN_LISTINGS_WAIT_MS = 5_000;
 
 /**
- * A flag answer that lands after its wait ran out (the flag counted as off,
- * the route went legacy) still applies when it is "on", setup is owed, and
- * the person has not started anything on the old setup yet: nothing created,
- * no setup run recorded, no tour shown. Otherwise the old setup stays.
+ * How long after its wait ran out a flag answer may still open the takeover.
+ * By then the old setup has been on screen for this long, so a later answer
+ * leaves it there.
  */
-export function lateFlagApplies(input: {
+export const VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS = 5_000;
+
+/**
+ * What a flag answer that lands after its wait ran out does (the flag counted
+ * as off, the route went legacy). Null when it is "off" or setup is not owed:
+ * nothing to say. Otherwise "too-late" when it came more than the late window
+ * after the timeout, "legacy-started" when the person had already started on
+ * the old setup (a setup run, a bot, the tour, an install or sign-in, another
+ * row, a sent message), and "applied" when the takeover opens after all.
+ */
+export function lateFlagVerdict(input: {
   value: boolean;
   welcomeSetupOwed: boolean | null;
   legacyStarted: boolean;
-}): boolean {
-  return input.value && input.welcomeSetupOwed === true && !input.legacyStarted;
+  sinceTimeoutMs: number;
+}): FlagLateOutcome | null {
+  if (!input.value || input.welcomeSetupOwed !== true) return null;
+  if (input.sinceTimeoutMs > VISUAL_FIRST_RUN_FLAG_LATE_WINDOW_MS) return "too-late";
+  if (input.legacyStarted) return "legacy-started";
+  return "applied";
 }
 
 export interface FirstRunRouteInput {

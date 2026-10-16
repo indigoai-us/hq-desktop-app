@@ -319,7 +319,7 @@
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
     VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS,
-    lateFlagApplies,
+    lateFlagVerdict,
     FIRST_RUN_LISTINGS_WAIT_MS,
     markVisualFirstRunFinished,
     type FirstRunCreation,
@@ -3478,8 +3478,9 @@
    * `VISUAL_FIRST_RUN_FLAG_GRACE_MS` more, or `VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS`
    * when setup is owed (a cold first read takes 1.5 to 2.8 s). So with the flag
    * off a first run waits for the later of the two answers, never their sum.
-   * An "on" that lands after the wait still applies on a new install while
-   * nothing on the old setup has started (lateFlagApplies).
+   * An "on" that lands after the wait still applies on a new install within
+   * the late window, while nothing on the old setup has started
+   * (lateFlagVerdict).
    */
   /**
    * Dev-only build switches (dev-switches.ts, docs/dev-switches.md), off in
@@ -3490,28 +3491,80 @@
   const firstRunDev = FIRST_RUN_DEV_SWITCHES;
   let visualFirstRunFlag = $state<boolean | null>(firstRunDev.force ? true : null);
   let visualFirstRunFinished = $state(firstRunDev.force ? false : hasFinishedVisualFirstRun());
-  /** The flag counted as off because its wait ran out, not because it answered. */
-  let visualFirstRunFlagTimedOut = false;
-  /** Settles the flag once; says whether this answer was the one applied. */
-  function settleVisualFirstRunFlag(value: boolean): boolean {
+  /** When the flag counted as off because its wait ran out; null otherwise. */
+  let visualFirstRunFlagTimedOutAt: number | null = null;
+  /** The flag is on through a late answer, so the old setup starting before the open still keeps it. */
+  let visualFirstRunFlagLate = false;
+  /** Settles the flag once; says whether this answer was the one applied, and the late=... log field. */
+  function settleVisualFirstRunFlag(value: boolean): { applied: boolean; late?: FlagLateOutcome } {
     if (visualFirstRunFlag === null) {
       visualFirstRunFlag = value;
-      return true;
+      return { applied: true };
     }
-    if (!visualFirstRunFlagTimedOut || !lateFlagApplies({ value, welcomeSetupOwed, legacyStarted: legacyFirstRunStarted() })) {
-      return false;
-    }
-    visualFirstRunFlagTimedOut = false;
+    if (visualFirstRunFlagTimedOutAt === null) return { applied: false };
+    const late =
+      lateFlagVerdict({
+        value,
+        welcomeSetupOwed,
+        legacyStarted: legacyFirstRunStarted(),
+        sinceTimeoutMs: Date.now() - visualFirstRunFlagTimedOutAt,
+      }) ?? undefined;
+    if (late !== "applied") return { applied: false, late };
+    visualFirstRunFlagTimedOutAt = null;
+    visualFirstRunFlagLate = true;
     visualFirstRunFlag = true;
-    return true;
+    return { applied: true, late };
   }
+  /** The person did something on the old first run: an install or sign-in, another row, a message. */
+  let firstRunPersonActed = false;
+  function noteFirstRunAction(): void {
+    firstRunPersonActed = true;
+  }
+  // The #welcome install, sign-in and AI tools actions count as starting the old setup.
+  const firstRunAssistedInstall = $derived(
+    onassistedinstall
+      ? (...args: Parameters<typeof onassistedinstall>) => {
+          noteFirstRunAction();
+          return onassistedinstall(...args);
+        }
+      : undefined,
+  );
+  const firstRunRequestAiTools = $derived(
+    onrequestaitools
+      ? () => {
+          noteFirstRunAction();
+          onrequestaitools();
+        }
+      : undefined,
+  );
+  const firstRunInstallGuide = $derived(
+    setupInstallGuide
+      ? {
+          ...setupInstallGuide,
+          oninstall: (tool: "claude" | "codex") => {
+            noteFirstRunAction();
+            return setupInstallGuide.oninstall(tool);
+          },
+          onsignin: (tool: "claude" | "codex", options?: { signal?: AbortSignal }) => {
+            noteFirstRunAction();
+            return setupInstallGuide.onsignin(tool, options);
+          },
+          onopen: (url: string) => {
+            noteFirstRunAction();
+            return setupInstallGuide.onopen(url);
+          },
+        }
+      : null,
+  );
   function legacyFirstRunStarted(): boolean {
-    return welcomeSetupRun || setupBotAutoStarted || tourStartedThisSession;
-  }
-  /** The late=... log field: only for an "on" past the wait on a new install. */
-  function lateFlagOutcome(value: boolean, applied: boolean, wasTimedOut: boolean): FlagLateOutcome | undefined {
-    if (!value || !wasTimedOut || welcomeSetupOwed !== true) return undefined;
-    return applied ? "applied" : "legacy-started";
+    return (
+      welcomeSetupRun ||
+      setupBotAutoStarted ||
+      tourStartedThisSession ||
+      firstRunPersonActed ||
+      // A step-by-step run the person started (a remembered one resuming is not new).
+      (setupAgent.busy && setupAgent.mode !== "resume")
+    );
   }
   let visualFirstRunFlagReadAt = Date.now();
   onMount(() => readVisualFirstRunFlag());
@@ -3530,12 +3583,8 @@
     visualFirstRunFlagReadAt = since;
     // Read without a company: the person's own answer (the "unscoped" path).
     const logLookup = (path: "unscoped" | "error", value: boolean, settle: boolean): void => {
-      const wasTimedOut = visualFirstRunFlagTimedOut;
-      const applied = settle && settleVisualFirstRunFlag(value);
-      writeFirstRunLine(
-        firstRunTimingLog,
-        formatFlagLookup("visual-first-run", path, value, applied, Date.now() - since, lateFlagOutcome(value, applied, wasTimedOut)),
-      );
+      const { applied, late } = settle ? settleVisualFirstRunFlag(value) : { applied: false, late: undefined };
+      writeFirstRunLine(firstRunTimingLog, formatFlagLookup("visual-first-run", path, value, applied, Date.now() - since, late));
     };
     void Promise.resolve()
       .then(() => identity.hasFeature(VISUAL_FIRST_RUN_FLAG))
@@ -3583,7 +3632,8 @@
       visualFirstRunFinished = false;
       welcomeSetupRun = false;
       visualFirstRunFlag = null;
-      visualFirstRunFlagTimedOut = false;
+      visualFirstRunFlagTimedOutAt = null;
+      visualFirstRunFlagLate = false;
       readVisualFirstRunFlag();
     });
   });
@@ -3651,8 +3701,8 @@
     if (visualFirstRunFlag !== null || welcomeSetupOwed === null) return;
     const wait = welcomeSetupOwed ? VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS : VISUAL_FIRST_RUN_FLAG_GRACE_MS;
     const timer = window.setTimeout(() => {
-      if (!settleVisualFirstRunFlag(false)) return;
-      visualFirstRunFlagTimedOut = true;
+      if (!settleVisualFirstRunFlag(false).applied) return;
+      visualFirstRunFlagTimedOutAt = Date.now();
       writeFirstRunLine(
         firstRunTimingLog,
         formatFlagLookup("visual-first-run", "timeout", false, true, Date.now() - visualFirstRunFlagReadAt),
@@ -3689,6 +3739,15 @@
   });
   /** Latched: once open it stays until Done or Continue in chat. */
   let visualFirstRunOpen = $state(false);
+  /**
+   * #welcome shows a loader while the route is pending, or visual with the
+   * takeover not yet open. Not once setup has run here: that route is legacy.
+   */
+  const firstRunWelcomeWaits = $derived.by(
+    () =>
+      (firstRunRouteNow === "pending" && welcomeSetupOwed !== false && !welcomeSetupRun) ||
+      (firstRunRouteNow === "visual" && !visualFirstRunOpen),
+  );
   /** The name the name step opens with, picked when the takeover opens. */
   let firstRunSuggestedName = $state("");
   /**
@@ -3708,6 +3767,12 @@
   $effect(() => {
     if (firstRunRouteNow !== "visual" || !firstRunListingsRead || !foundAppsFlagSettled || untrack(() => visualFirstRunOpen)) return;
     untrack(() => {
+      // The old setup started after a late flag answer: it stays, the route goes back to legacy.
+      // An answer in time keeps #welcome's start, which the takeover adopts.
+      if (visualFirstRunFlagLate && !firstRunDev.force && legacyFirstRunStarted()) {
+        visualFirstRunFlag = false;
+        return;
+      }
       firstRunSuggestedName = firstRunInitialName();
       visualFirstRunOpen = true;
     });
@@ -5834,6 +5899,7 @@
   // Starting is not finishing: a relaunch mid-run must still land on
   // #welcome, so only the finish graduates welcome-first boot.
   const setupAgent = new SetupAgent(extraPages?.sessions?.setupRun ?? null, {
+    onstarted: noteFirstRunAction,
     onfinished: () => {
       recordWelcomeSetupRun("setup-agent-finished");
       // On disk too: the window's memory does not survive a reinstall.
@@ -12258,6 +12324,7 @@
   }
 
   async function sendForward(req: ForwardRequest): Promise<ForwardResult> {
+    noteFirstRunAction();
     const send = adapter.messaging.forwardMessage;
     if (!send) return { ok: false, code: "UNKNOWN", status: null, files: [], notShareable: [] };
     const http = buildForwardHttpRequest(req);
@@ -12751,6 +12818,7 @@
     if (!row || (!body.trim() && files.length === 0)) {
       throw new Error("Nothing to send");
     }
+    noteFirstRunAction();
     // While the Setup Agent is listening, the composer is its reply box.
     if (isSetupChannel(row.channelId) && setupAgent.listening && files.length === 0) {
       await setupAgent.reply(body.trim());
@@ -14737,11 +14805,14 @@
           {rosterWakeSeq}
           requestsWakeSeq={notificationWakeSeq}
           onavatarmap={(map) => (contactAvatarByUid = map)}
-          onselect={(row, options) =>
+          onselect={(row, options) => {
+            // A row the person picks, other than #welcome, counts as starting the old first run.
+            if (options?.automatic !== true && !isSetupChannel(row.channelId)) noteFirstRunAction();
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
               automatic: options?.automatic === true,
-            })}
+            });
+          }}
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
           onnavigateMessages={() => {
@@ -14781,12 +14852,15 @@
           {aiTools}
           hqFolderPath={hqFolderPath ?? ""}
           {onopenassistant}
-          {onassistedinstall}
-          {onrequestaitools}
+          onassistedinstall={firstRunAssistedInstall}
+          onrequestaitools={firstRunRequestAiTools}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}
-          onbotsignedin={onBotRuntimeSignedIn}
+          onbotsignedin={(runtime) => {
+            noteFirstRunAction();
+            return onBotRuntimeSignedIn(runtime);
+          }}
           probeBotRuntime={adapter.bots?.probe
             ? (input) => adapter.bots!.probe!(input.runtime, input.model, { effort: input.effort, timeoutSecs: PROBE_TIMEOUT_SECS })
             : null}
@@ -15860,36 +15934,41 @@
                   {#if botNoticeBelow}{@render localBotNotice()}{/if}
                 {/snippet}
                 {#snippet setupHeader()}
-                  <SetupChannelIntro
-                    settings={adapter.settings}
-                    shell={adapter.shell}
-                    {onopenurl}
-                    onopensessions={extraPages?.sessions?.setupAction || extraPages?.sessions?.createAction
-                      ? () =>
-                          openExtraPage(
-                            "sessions",
-                            (extraPages!.sessions.setupAction ?? extraPages!.sessions.createAction!).param(),
-                          )
-                      : undefined}
-                    companies={rosterCompanies}
-                    onopencompany={openCompanyFromSetup}
-                    oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
-                    {rosterStatus}
-                    {onretryroster}
-                    onsetupstarted={() => recordWelcomeSetupRun("welcome-setup-started")}
-                    readyFirstActionEnabled={readyFirstActionEnabled}
-                    {readyFirstActionReady}
-                    onstartsync={() => {
-                      restoreSyncToast();
-                      return adapter.sync.startSync();
-                    }}
-                    agent={setupAgent}
-                    setupBot={setupBotLauncher}
-                    installGuide={setupInstallGuide}
-                    onopensessiondetails={extraPages?.sessions
-                      ? (sessionId) => openExtraPage("sessions", sessionId)
-                      : undefined}
-                  />
+                  <!-- Until the takeover opens or the route settles legacy, so the old setup it replaces is never on view. -->
+                  {#if firstRunWelcomeWaits}
+                    <ReadLoader testid="welcome-route-pending" />
+                  {:else}
+                    <SetupChannelIntro
+                      settings={adapter.settings}
+                      shell={adapter.shell}
+                      {onopenurl}
+                      onopensessions={extraPages?.sessions?.setupAction || extraPages?.sessions?.createAction
+                        ? () =>
+                            openExtraPage(
+                              "sessions",
+                              (extraPages!.sessions.setupAction ?? extraPages!.sessions.createAction!).param(),
+                            )
+                        : undefined}
+                      companies={rosterCompanies}
+                      onopencompany={openCompanyFromSetup}
+                      oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+                      {rosterStatus}
+                      {onretryroster}
+                      onsetupstarted={() => recordWelcomeSetupRun("welcome-setup-started")}
+                      readyFirstActionEnabled={readyFirstActionEnabled}
+                      {readyFirstActionReady}
+                      onstartsync={() => {
+                        restoreSyncToast();
+                        return adapter.sync.startSync();
+                      }}
+                      agent={setupAgent}
+                      setupBot={setupBotLauncher}
+                      installGuide={firstRunInstallGuide}
+                      onopensessiondetails={extraPages?.sessions
+                        ? (sessionId) => openExtraPage("sessions", sessionId)
+                        : undefined}
+                    />
+                  {/if}
                 {/snippet}
                 {#snippet companyHeader()}
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
