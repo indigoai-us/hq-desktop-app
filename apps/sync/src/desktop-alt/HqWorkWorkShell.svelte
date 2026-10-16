@@ -56,7 +56,7 @@
   import { emitPlanLimitPromptTelemetry } from '../lib/desktop-telemetry';
   import { isPostReadyActionReady } from '../lib/post-ready-action-telemetry';
   import type { DmRequestContact } from '../lib/dmRequests';
-  import { dismissBootLoader } from './boot-loader';
+  import { dismissBootLoader, removeBootLoaderNow } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
   import PackInstallSheet from '../lib/PackInstallSheet.svelte';
   import {
@@ -1057,9 +1057,12 @@
   /**
    * US-010: tells the first-run handoff the desktop window has painted, so it
    * shows the window and hides the welcome window. A launch with no handoff
-   * waiting ignores it.
+   * waiting ignores it. The window may be hidden and about to be revealed by
+   * this signal, so a boot overlay still in place goes now rather than fading
+   * in front of the revealed window.
    */
   function sendFirstRunPainted(): void {
+    if (document.visibilityState === 'hidden') removeBootLoaderNow();
     void Promise.resolve()
       .then(() => invokeFn('desktop_first_run_takeover_painted'))
       .catch(() => undefined);
@@ -1084,6 +1087,30 @@
       sent = true;
       cancelAnimationFrame(frame);
       clearTimeout(fallback);
+    };
+  });
+
+  // The first-run handoff hides the welcome window only once this window is
+  // on screen: the report goes two frames after the page turns visible. A
+  // launch with no handoff waiting ignores it.
+  onMount(() => {
+    let frame = 0;
+    const reportOnScreen = () => {
+      if (document.visibilityState !== 'visible') return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          void Promise.resolve()
+            .then(() => invokeFn('desktop_first_run_desktop_visible'))
+            .catch(() => undefined);
+        });
+      });
+    };
+    reportOnScreen();
+    document.addEventListener('visibilitychange', reportOnScreen);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener('visibilitychange', reportOnScreen);
     };
   });
 

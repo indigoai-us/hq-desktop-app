@@ -101,14 +101,21 @@ describe('first-run reveal order (US-010)', () => {
       'let hint = hint.await.ok()',
       'release_pending_route(hint.as_deref())',
       'await_takeover_painted(rx, FIRST_RUN_PAINTED_TIMEOUT).await',
+      'arm_desktop_visible()',
       'first_run_reveal_plan(signal)',
       'RevealStep::ShowDesktop',
       'reveal_desktop_alt_window(&window)',
-      'RevealStep::HideWelcome => crate::tray::hide_onboarding_window(&app)',
+      'RevealStep::AwaitDesktopVisible',
+      'await_desktop_on_screen(rx, DESKTOP_VISIBLE_TIMEOUT, DESKTOP_COMPOSITE_MARGIN)',
+      'RevealStep::HideWelcome',
+      'crate::tray::hide_onboarding_window(&app)',
     ]);
-    // The only hide is the plan's last step, after the wait.
+    // The only hide is the plan's last step, after both waits: the painted
+    // report, then the shell's report that the shown desktop is on screen.
     const waitAt = reveal.indexOf('await_takeover_painted(');
-    expect(reveal.indexOf('hide_onboarding_window')).toBeGreaterThan(waitAt);
+    const onScreenAt = reveal.indexOf('await_desktop_on_screen(');
+    expect(onScreenAt).toBeGreaterThan(waitAt);
+    expect(reveal.indexOf('hide_onboarding_window')).toBeGreaterThan(onScreenAt);
     expect(reveal.split('hide_onboarding_window').length - 1).toBe(1);
     // Shown through the placed reveal, never centred a second time.
     expect(reveal).not.toMatch(/\.center\(\)/);
@@ -116,16 +123,17 @@ describe('first-run reveal order (US-010)', () => {
 
   it('the plan shows the desktop before it hides the welcome window, also on the watchdog path', () => {
     const plan = fnBody(desktopAltRs, 'pub fn first_run_reveal_plan(');
-    const paintedAt = plan.indexOf('RevealSignal::Painted =>');
-    const timedOutAt = plan.indexOf('RevealSignal::TimedOut =>');
-    expect(paintedAt).toBeGreaterThan(-1);
-    expect(timedOutAt).toBeGreaterThan(paintedAt);
-    const painted = plan.slice(paintedAt, timedOutAt);
-    const timedOut = plan.slice(timedOutAt);
-    inOrder(painted, ['RevealStep::ShowDesktop', 'RevealStep::HideWelcome']);
-    expect(painted).not.toContain('LogWatchdog');
-    inOrder(timedOut, ['RevealStep::LogWatchdog', 'RevealStep::ShowDesktop', 'RevealStep::HideWelcome']);
+    // The watchdog path only adds the log step in front of the shared tail.
+    const guardAt = plan.indexOf('if signal == RevealSignal::TimedOut {');
+    expect(guardAt).toBeGreaterThan(-1);
+    const painted = fnBody(plan.slice(guardAt), 'if signal == RevealSignal::TimedOut');
+    const tail = plan.slice(guardAt + painted.length);
+    // Both paths share the tail: show, wait until the desktop is on screen, hide.
+    expect(painted).toContain('plan.push(RevealStep::LogWatchdog)');
+    inOrder(tail, ['RevealStep::ShowDesktop', 'RevealStep::AwaitDesktopVisible', 'RevealStep::HideWelcome']);
+    expect(tail).not.toContain('LogWatchdog');
     expect(reveal).toContain('DESKTOP_FIRST_RUN_REVEAL_WATCHDOG');
+    expect(reveal).toContain('DESKTOP_FIRST_RUN_VISIBLE_WATCHDOG');
   });
 
   it('the shell can send the ready signal: the command is registered and the desktop shell calls it', () => {

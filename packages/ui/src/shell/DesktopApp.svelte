@@ -3864,15 +3864,20 @@
    * launch the welcome window did not hand over paints the shell: a first run
    * always comes with the handoff hint, so an unknown status with no hint is
    * an ordinary launch. Once the shell has been on screen for a frame it
-   * stays: a later answer never swaps it for the backdrop.
+   * stays: a later answer never swaps it for the backdrop. A launch that
+   * already knows locally that first run is done (finished marker, or setup
+   * run) is not held while the route settles, unless the welcome window
+   * handed it over.
    */
   let firstRunHoldReleased = $state(false);
+  const firstRunKnownFinished = $derived.by(() => visualFirstRunFinished || welcomeSetupRun);
   const firstRunHeld = $derived.by(
     () =>
       !firstRunHoldReleased &&
       !visualFirstRunOpen &&
       (firstRunRouteNow === "visual" ||
-        (firstRunRouteNow === "pending" && (welcomeSetupOwed !== null || firstRunHandoff != null))),
+        (firstRunRouteNow === "pending" &&
+          (firstRunHandoff != null || (welcomeSetupOwed !== null && !firstRunKnownFinished)))),
   );
   $effect(() => {
     if (firstRunHoldReleased || firstRunHeld || visualFirstRunOpen || !(tourShellReady || sidebarRendered)) return;
@@ -3885,7 +3890,9 @@
   let sidebarRendered = $state(false);
   $effect(() => {
     if (firstRunPaintedSent) return;
-    if (!visualFirstRunOpen && !(firstRunRouteNow === "legacy" && (tourShellReady || sidebarRendered))) return;
+    // The host reveals the window on this report, so an unheld shell reports
+    // as soon as it paints, without waiting for the route to settle.
+    if (!visualFirstRunOpen && !(!firstRunHeld && (tourShellReady || sidebarRendered))) return;
     firstRunPaintedSent = true;
     let done = false;
     const report = (): void => {

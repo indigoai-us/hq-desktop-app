@@ -19,6 +19,7 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 import type { FirstRunHandoffHint } from "../chat/first-run/first-run-handoff.js";
 import { hasRunWelcomeSetup, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
+import { VISUAL_FIRST_RUN_DONE_KEY } from "../chat/first-run/visual-first-run.js";
 
 const memoryStorage = installMemoryLocalStorage();
 
@@ -312,5 +313,35 @@ describe("first run holds the shell", () => {
       },
     });
     await vi.waitFor(() => expect(onFirstRunPainted).toHaveBeenCalledTimes(1), { timeout: 2000, interval: 10 });
+  });
+
+  it("does not hold a relaunch after a finished first run while the route settles", async () => {
+    // Relaunch after first run: the finished marker is on this computer, the
+    // host still says setup is owed, and neither the flag nor this computer's
+    // bot listing has answered, so the route stays pending. No handoff hint.
+    // The shell paints from the first frame and tells the host it painted,
+    // which reveals the window, without waiting for the route.
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    const { adapter } = makeAdapter({
+      hasFeature: () => never(),
+      getSetupStatus: async () => ok({ hqRootValid: true, configured: true, welcomeSetupOwed: true }),
+    });
+    (adapter as unknown as { bots: { list: () => Promise<unknown> } }).bots.list = () => never();
+    const onFirstRunPainted = vi.fn();
+    let heldSeen = false;
+    const seen = new MutationObserver(() => {
+      if (q("first-run-held") || q("first-run-held-page")) heldSeen = true;
+    });
+    seen.observe(document.body, { childList: true, subtree: true });
+    const started = Date.now();
+    mountShell(adapter, { onFirstRunPainted });
+    if (q("first-run-held") || q("first-run-held-page")) heldSeen = true;
+    await vi.waitFor(() => expect(onFirstRunPainted).toHaveBeenCalledTimes(1), { timeout: 1000, interval: 10 });
+    expect(Date.now() - started).toBeLessThan(1000);
+    await new Promise((r) => setTimeout(r, 50));
+    await settle();
+    seen.disconnect();
+    expect(heldSeen).toBe(false);
+    expect(q("first-run-takeover")).toBeNull();
   });
 });
