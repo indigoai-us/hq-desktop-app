@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.11.11] — 2026-10-16
+
 - Windows: HQ core updates ("Update now", automatic updates and `hq rescue`) no longer fail with "rsync status 23". The rsync that HQ installs on Windows was missing a settings file that stops it from reading Windows file permissions, so every update stopped during its first check. HQ now writes that file when it installs rsync, and adds it to an existing install the next time the app starts and before each core update.
 - The bundled sync runner moves to hq-cloud 6.18.80. Sync never uploads, downloads or deletes the vault `secrets/` folder, which stops stale integration tokens from overwriting fresh ones, and `hq outposts status` now reads company job health from the correct route.
 - Long conversations with a cloud bot now keep replies under the message they answer, even when that message is older than the first page HQ loads. Before, a long thread could appear as dozens of separate messages in the main conversation. If HQ cannot load the original message, the replies still appear in the main conversation so they are not lost.
