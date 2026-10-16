@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::AsyncReadExt;
 
+use crate::commands::install_deps::TrackedChild;
 use crate::commands::install_directory::resolve_hq_path;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
 use crate::commands::vault_client::VaultClient;
@@ -281,9 +282,9 @@ pub fn take_onboarding_failure_detail(
 }
 
 #[derive(Debug)]
-struct StageCommandFailure {
-    message: String,
-    error_category: OnboardingErrorCategory,
+pub(crate) struct StageCommandFailure {
+    pub(crate) message: String,
+    pub(crate) error_category: OnboardingErrorCategory,
 }
 
 impl StageCommandFailure {
@@ -395,11 +396,18 @@ fn format_hq_failure(args: &[&str], output: &Output) -> String {
     )
 }
 
+fn cancelled_before_spawn(args: &[&str]) -> StageCommandFailure {
+    StageCommandFailure {
+        message: format!("hq {} was not started: the step ran out of time", args.join(" ")),
+        error_category: OnboardingErrorCategory::Timeout,
+    }
+}
+
 async fn run_hq_output(args: &[&str], hq_root: &Path) -> Result<Output, StageCommandFailure> {
     run_hq_output_with_invocation(args, hq_root, hq_resolver::resolve_hq()).await
 }
 
-async fn run_hq_output_with_invocation(
+pub(crate) async fn run_hq_output_with_invocation(
     args: &[&str],
     hq_root: &Path,
     invocation: hq_resolver::HqInvocation,
@@ -412,20 +420,25 @@ async fn run_hq_output_with_invocation(
         .await
         .map_err(StageCommandFailure::from_npx_lock)?;
     let mut cmd = invocation.command();
-    let output = cmd
-        .args(args)
+    cmd.args(args)
         .current_dir(hq_root)
         .env("PATH", &path_env)
         // Keep mid-call CLI self-updates from racing the command we asked for.
         .env("HQ_NO_UPDATE_CHECK", "1")
-        .output()
-        .await
-        .map_err(|error| {
-            StageCommandFailure::from_spawn_error(
-                &format!("hq ({})", invocation.label()),
-                error,
-            )
-        })?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // A queue item's deadline must reach this child: a timed-out `hq reindex`
+    // that kept running would race the retry's second one.
+    let tracked = TrackedChild::register(&mut cmd).ok_or_else(|| cancelled_before_spawn(args))?;
+    let child = cmd.spawn().map_err(|error| {
+        StageCommandFailure::from_spawn_error(&format!("hq ({})", invocation.label()), error)
+    })?;
+    tracked.attach(&child);
+    let output = child.wait_with_output().await.map_err(|error| {
+        StageCommandFailure::from_spawn_error(&format!("hq ({})", invocation.label()), error)
+    })?;
+    drop(tracked);
 
     if output.status.success() {
         Ok(output)
@@ -469,21 +482,18 @@ async fn run_hq_output_with_reindex_progress<R: Runtime>(
         .await
         .map_err(StageCommandFailure::from_npx_lock)?;
     let mut cmd = invocation.command();
-    let mut child = cmd
-        .args(args)
+    cmd.args(args)
         .current_dir(hq_root)
         .env("PATH", &path_env)
         .env("HQ_NO_UPDATE_CHECK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            StageCommandFailure::from_spawn_error(
-                &format!("hq ({})", invocation.label()),
-                error,
-            )
-        })?;
+        .stderr(Stdio::piped());
+    let tracked = TrackedChild::register(&mut cmd).ok_or_else(|| cancelled_before_spawn(args))?;
+    let mut child = cmd.spawn().map_err(|error| {
+        StageCommandFailure::from_spawn_error(&format!("hq ({})", invocation.label()), error)
+    })?;
+    tracked.attach(&child);
     let stdout = child.stdout.take().ok_or_else(|| StageCommandFailure {
         message: "hq reindex stdout was not piped".to_string(),
         error_category: OnboardingErrorCategory::Unknown,
@@ -507,6 +517,7 @@ async fn run_hq_output_with_reindex_progress<R: Runtime>(
         message: format!("could not read hq reindex stderr: {error}"),
         error_category: OnboardingErrorCategory::Unknown,
     })?;
+    drop(tracked);
     let output = Output {
         status,
         stdout,

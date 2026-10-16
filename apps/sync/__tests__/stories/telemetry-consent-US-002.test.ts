@@ -4,8 +4,9 @@
 //
 // Product decision (2026-09-27): first-run onboarding asks the usage-data
 // question as a checkbox on the final (ready) screen and records the answer
-// when the person finishes from there. The write guarantees are unchanged and
-// now hold for that finish:
+// when the ready screen finishes, which it does by itself once the install has
+// settled (owner decision: it has no Open HQ Desktop or tool buttons). The
+// write guarantees are unchanged and now hold for that finish:
 //
 //   - AC1: the caller's person entity is guaranteed to exist before the POST
 //          (the finish awaits `ensure_person_entity`), so the write cannot 404.
@@ -50,6 +51,7 @@ import {
   READY_STEP_INDEX,
 } from '../../src/lib/onboarding-wizard';
 import { TELEMETRY_CONSENT_VERSION } from '../../src/lib/consent-version';
+import { __setReadyTimingsForTests } from '../../src/lib/welcome-flow';
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -132,11 +134,16 @@ function chooseShare() {
   box.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-/** Finish from the ready screen: Open HQ Desktop. */
-function openDesktop(): HTMLButtonElement {
-  const btn = readyScreen().querySelector<HTMLButtonElement>('[data-testid="onboarding-open-desktop"]');
-  if (!btn) throw new Error('Open HQ Desktop not found');
-  return btn;
+/**
+ * The ready screen has no finish button: it finishes by itself once the
+ * install has settled (here no install runs on this mount and the host queue
+ * is empty). Wait until that finish has started recording the answer.
+ */
+async function autoFinishStarted() {
+  await vi.waitFor(
+    () => expect(calls.some((c) => c.command === 'write_menubar_telemetry_pref')).toBe(true),
+    { timeout: 2000, interval: 10 },
+  );
 }
 
 function finished(): boolean {
@@ -160,6 +167,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   __resetWizardRouterCompletionForTests();
+  // The ready screen's consent dwell is covered by the welcome-flow tests;
+  // these tests skip it.
+  __setReadyTimingsForTests({ consentDwellMs: 0 });
   invoke.mockReset();
   listen.mockClear();
   openExternal.mockClear();
@@ -174,6 +184,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setReadyTimingsForTests(null);
   if (component) {
     void unmount(component);
     component = null;
@@ -187,7 +198,7 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
     chooseShare();
     await flush();
 
-    openDesktop().click();
+    await autoFinishStarted();
     await settle();
     // Give the cross-fade timer a chance too, so a false "advance" would show.
     await new Promise((r) => setTimeout(r, 400));
@@ -213,7 +224,7 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
     chooseShare();
     await flush();
 
-    openDesktop().click();
+    await autoFinishStarted();
     await settle();
     expect(finished()).toBe(false);
     const firstAttempts = postCalls().length;
@@ -239,7 +250,7 @@ describe('US-002 a failed remote write is visible and blocks advance', () => {
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await autoFinishStarted();
     await settle();
     // Positive assertion — wait for the finish rather than sleeping past it.
     await vi.waitFor(() => expect(finished()).toBe(true), { timeout: 2000, interval: 10 });
@@ -255,7 +266,7 @@ describe('US-002 deliberate cache-before-upload ordering (regression)', () => {
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await autoFinishStarted();
     await settle();
 
     const order = calls
@@ -274,7 +285,7 @@ describe('US-002 AC1 — person entity exists before the POST', () => {
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await autoFinishStarted();
     await settle();
 
     const ensureIdx = calls.findIndex((c) => c.command === 'ensure_person_entity');
@@ -296,7 +307,7 @@ describe('US-002 AC4 — offline does not trap the user', () => {
     chooseShare();
     await flush();
 
-    openDesktop().click();
+    await autoFinishStarted();
     await settle();
 
     // Not finished yet, and NOT reported as a successful upload.
@@ -340,7 +351,7 @@ describe('US-002 finding #5 — no "finish offline" when the cache write also fa
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await autoFinishStarted();
     await settle();
 
     expect(
@@ -360,7 +371,7 @@ describe('US-002 finding #5 — no "finish offline" when the cache write also fa
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await autoFinishStarted();
     await settle();
     await new Promise((r) => setTimeout(r, 400));
     await flush();
@@ -381,7 +392,7 @@ describe('US-002 provenance travels with the write', () => {
     await mountReady();
     chooseShare();
     await flush();
-    openDesktop().click();
+    await autoFinishStarted();
     await settle();
 
     const post = postCalls().at(-1);
