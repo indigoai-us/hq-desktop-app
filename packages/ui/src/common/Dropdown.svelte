@@ -19,6 +19,7 @@
    */
   import { tick } from "svelte";
   import { markDropdownOpen } from "./dropdown-open.js";
+  import { menuPortal } from "../chat/portal.js";
 
   interface Props {
     value: V;
@@ -34,6 +35,13 @@
     /** Pill shape for header filters; `active` paints the selected style. */
     pill?: boolean;
     active?: boolean;
+    /**
+     * Open the list on the app shell, fixed to the button, instead of inside
+     * the button's container. Use it when an ancestor clips overflow (the live
+     * meeting card), so every option shows. Flips above the button when there
+     * is no room below.
+     */
+    floating?: boolean;
     onchange?: (value: V) => void;
   }
 
@@ -47,6 +55,7 @@
     block = false,
     pill = false,
     active: selectedStyle = false,
+    floating = false,
     onchange,
   }: Props = $props();
 
@@ -110,7 +119,9 @@
     else if (e.key === "End") { e.preventDefault(); move(options.length - 1); }
     else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choose(active); }
     else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); hide(); }
-    else if (e.key === "Tab") { hide(false); }
+    // A floating list lives at the end of the shell, so Tab would leave from
+    // there. Hand focus back to the button first so Tab moves on from it.
+    else if (e.key === "Tab") { hide(floating); }
     else if (e.key.length === 1 && /\S/.test(e.key)) {
       const now = Date.now();
       typed = now - typedAt > 700 ? e.key.toLowerCase() : typed + e.key.toLowerCase();
@@ -123,11 +134,20 @@
     }
   }
 
+  /** Portal the list to the shell and pin it to the button (see `floating`). */
+  function floatMenu(node: HTMLElement, anchor: HTMLElement | null) {
+    if (!floating) return {};
+    node.style.minWidth = `${Math.max(180, anchor?.offsetWidth ?? 0)}px`;
+    const portaled = menuPortal(node, { anchor, placement: "bottom-start", maxWidth: 360 });
+    return { destroy: () => portaled.destroy?.() };
+  }
+
   $effect(() => {
     if (!open) return;
     markDropdownOpen(true);
     const onDown = (e: PointerEvent) => {
-      if (root && !root.contains(e.target as Node)) hide(false);
+      const target = e.target as Node;
+      if (root && !root.contains(target) && !list?.contains(target)) hide(false);
     };
     document.addEventListener("pointerdown", onDown, true);
     return () => {
@@ -166,6 +186,8 @@
       bind:this={list}
       id={`${uid}-list`}
       class="dd-menu"
+      class:floating
+      use:floatMenu={button}
       role="listbox"
       tabindex="-1"
       aria-label={label}
@@ -241,6 +263,8 @@
     color: var(--v4-text-1);
     outline: none;
   }
+  /* Portaled to the shell: above sheets and dialogs, still under toasts. */
+  .dd-menu.floating { z-index: 40001; }
   .dd-option {
     display: flex;
     align-items: baseline;

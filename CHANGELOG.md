@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Meetings: the "Record as" company list on a detected live meeting now opens over the page and shows every company. Before, it opened inside the short live meeting card and was cut off after one or two rows, so you had to use the arrow keys to change the company. It opens above the picker when there is no room below. The "Save bot to" list next to the meeting link box is fixed the same way.
 - Badges: in the accomplishments announcement, clicking a card opens it in the card viewer, where you can turn it over to read how you earned it. Closing it goes back to the announcement. The "+N more" label under the cards now always draws above them.
 - Windows: HQ core updates ("Update now", automatic updates and `hq rescue`) no longer fail with "rsync status 23". The rsync that HQ installs on Windows was missing a settings file that stops it from reading Windows file permissions, so every update stopped during its first check. HQ now writes that file when it installs rsync, and adds it to an existing install the next time the app starts and before each core update.
 - The bundled sync runner moves to hq-cloud 6.18.80. Sync never uploads, downloads or deletes the vault `secrets/` folder, which stops stale integration tokens from overwriting fresh ones, and `hq outposts status` now reads company job health from the correct route.
