@@ -10,8 +10,11 @@
   import BotAppCredentials from './BotAppCredentials.svelte';
   import { credentialConfigs, type AppCredentialConfig } from './bot-app-credentials.js';
   import BotAppsPanel from './BotAppsPanel.svelte';
+  import BotPersonalApps from './BotPersonalApps.svelte';
   import { botApps, supportedApps, type SupportedApp } from './bot-apps.js';
-  let { uid, companyUid, name, adapter = null, onopenurl }: { uid: string | null; companyUid: string | null; name: string; adapter?: PlatformAdapter | null; onopenurl?: (url: string) => void } = $props();
+  let { uid, companyUid, name, runtimeKind = null, adapter = null, onopenurl }: { uid: string | null; companyUid: string | null; name: string; runtimeKind?: 'local' | 'cloud' | null; adapter?: PlatformAdapter | null; onopenurl?: (url: string) => void } = $props();
+  let personalAppsUnavailableFor = $state<string | null>(null);
+  const personalApps = $derived(runtimeKind === 'cloud' && uid && personalAppsUnavailableFor !== uid ? adapter?.personalApps ?? null : null);
   let facts = $state<CompanyConnections | null>(null);
   let access = $state<Record<string, ConnectionAccess | null>>({});
   let profile = $state<AgentProfileView | null>(null);
@@ -115,7 +118,9 @@
     return () => { generation++; abort?.abort(); abort = null; };
   });
 </script>
+{#if personalApps}<div class="apps-heading"><h4>Company apps</h4><p>Shared company accounts. Choose which ones this bot can use.</p></div>{/if}
 <BotAppsPanel configurable={error || loading ? [] : Object.keys(credentialOptions)} onconfigure={id => { configuring = credentialOptions[id] ?? null; }} {rows} {catalog} {loading} {error} {notice} {catalogLoading} {catalogError} {canConnect} onsearch={search} onrefresh={refresh} onconnect={connect} ontoggle={toggle} oncancel={() => abort?.abort()} />
+{#if personalApps && uid}<BotPersonalApps {uid} api={personalApps} {onopenurl} onunavailable={() => personalAppsUnavailableFor = uid} />{/if}
 {#if keyApp && adapter && uid && onopenurl}
   <IntegrationConnectModal frame={{ open: true, title: `Connect ${keyApp.name}`, icon: 'integration', logo: appLogo(keyApp.domain), art: art.url, artPosition: art.position, onclose: () => { keyApp = null; void refresh(); } }}
     agentUid={uid} botName={name} target="integration" {companyUid} companySlug={null} status={null} statusDenied={false} checkedAt={0} {adapter} openUrl={onopenurl} refresh={refresh} started={() => {}}
@@ -127,3 +132,8 @@
     <BotAppCredentials config={configuring} {companyUid} {onopenurl} api={adapter.integrations} onclose={() => configuring = null} onsaved={() => { void refresh(); }} />
   {/key}
 {/if}
+<style>
+  .apps-heading { display:grid; gap:2px; margin-bottom:8px; }
+  .apps-heading h4 { margin:0; font-weight:500; }
+  .apps-heading p { margin:0; color:var(--v4-text-3); font-size:12px; line-height:1.5; }
+</style>

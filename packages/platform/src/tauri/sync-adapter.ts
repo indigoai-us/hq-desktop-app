@@ -6,6 +6,8 @@
  * must not grow a second fetch stack.
  */
 
+import { createPersonalAppsBridge, personalAppsBridgeUrl } from "../personal-apps-bridge.js";
+import { createPersonalAppsApi } from "../personal-apps.js";
 import {
   type AdapterResult,
   type AdapterPromise,
@@ -1777,6 +1779,13 @@ export function createSyncPlatformAdapter(
       loginStatus: (tool) => call('agent_provider_login_status', { tool }),
       loginCancel: (tool) => call('agent_provider_login_cancel', { tool }),
     },
+
+    // Personal apps (bot-owned MCP servers) go through HQ's runtime-actions
+    // route. A local test build can point them at the spike bridge instead.
+    personalApps: personalAppsBridgeUrl()
+      ? createPersonalAppsBridge(personalAppsBridgeUrl()!)
+      : createPersonalAppsApi((agentUid, input) =>
+          hqProRequestWithStatus('POST', AGENT_PATHS.runtimeActions(agentUid), input)),
 
     // local-bots US-009: desktop-only — every call shells to `hq bot … --json`
     // behind the host's launch boundary (src-tauri/src/commands/bots.rs).

@@ -80,3 +80,39 @@ it('keeps old app cards hidden until connection access has finished refreshing',
   expect(target.querySelector('[data-testid="bot-apps-loading"]')).toBeNull();
   expect(target.querySelector('[data-testid="bot-app"]')).not.toBeNull();
 });
+async function setupPersonal(listResult: unknown, runtimeKind: 'cloud' | 'local' = 'cloud') {
+  target = document.createElement('div'); target.className = 'desktop-shell'; document.body.appendChild(target);
+  const integrations = {
+    listConnections: vi.fn(async () => ({ ok: true, value: { viewer: { canManageIntegrations: true }, connections: [] } })),
+    getConnectionAccess: vi.fn(), grantConnectionAccess: vi.fn(), revokeConnectionAccess: vi.fn(),
+    catalogSearch: vi.fn(async () => ({ ok: true, value: { entries: [] } })), install: vi.fn(), startOAuth: vi.fn(), uninstall: vi.fn(),
+  };
+  const personalApps = {
+    list: vi.fn(async () => listResult), catalog: vi.fn(), add: vi.fn(), remove: vi.fn(), startSignIn: vi.fn(), signInStatus: vi.fn(),
+  };
+  const adapter = { integrations, personalApps, identity: { hasFeature: vi.fn(async () => ({ ok: true, value: true })) }, agents: { getProfile: vi.fn(async () => ({ ok: true, value: { agent: { uid: 'agt_a' }, box: {} } })) } };
+  component = mount(BotAppsHost, { target, props: { uid: 'agt_a', companyUid: 'cmp_a', name: 'Scout', runtimeKind, adapter: adapter as never, onopenurl: vi.fn() } });
+  await settle(); return personalApps;
+}
+it('shows the bot owner its personal apps next to company apps on a cloud bot', async () => {
+  const api = await setupPersonal({ ok: true, value: { apps: [{ name: 'notion', url: 'https://mcp.notion.com', auth: 'oauth', enabled: true, connected: true, tools: 12 }] } });
+  expect(api.list).toHaveBeenCalledWith('agt_a');
+  expect(target.querySelector('[aria-label="Personal apps"]')).toBeTruthy();
+  expect(target.textContent).toContain('Company apps');
+  expect(target.querySelector('[data-testid="personal-app"]')?.textContent).toContain('Signed in · 12 tools');
+});
+it('hides personal apps when HQ answers 404 (not the owner, or turned off for the company)', async () => {
+  await setupPersonal({ ok: false, reason: 'error', code: 'http-404', status: 404 });
+  expect(target.querySelector('[aria-label="Personal apps"]')).toBeNull();
+  expect(target.textContent).not.toContain('Company apps');
+  expect(target.textContent).not.toContain('Could not load this bot');
+});
+it('keeps the section with an error for any other failure', async () => {
+  await setupPersonal({ ok: false, reason: 'error', code: 'http-503', status: 503 });
+  expect(target.querySelector('[aria-label="Personal apps"]')?.textContent).toContain('Could not load this bot');
+});
+it('never shows personal apps on a local bot', async () => {
+  const api = await setupPersonal({ ok: true, value: { apps: [] } }, 'local');
+  expect(api.list).not.toHaveBeenCalled();
+  expect(target.querySelector('[aria-label="Personal apps"]')).toBeNull();
+});

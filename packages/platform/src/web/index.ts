@@ -36,6 +36,7 @@ import {
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
+import { createPersonalAppsApi } from "../personal-apps.js";
 import { WEB_CAPABILITIES, type Capability } from "../capabilities.js";
 import { parseBadgesPayload } from "../badges.js";
 import { createUnsupportedCallsApi } from "../calls/api.js";
@@ -1425,6 +1426,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
 
   readonly sessions: PlatformAdapter["sessions"] = {
   };
+
+  // Personal apps (bot-owned MCP servers) through HQ's runtime-actions route.
+  // The HTTP status rides along: a 404 hides the section.
+  readonly personalApps = createPersonalAppsApi((agentUid, input) =>
+    this.requestWithStatus("POST", WEB_PATHS.agentRuntimeActions(agentUid), input),
+  );
 
   readonly settings: PlatformAdapter["settings"] = {
     // Local, browser-scoped stubs until a web settings store lands.

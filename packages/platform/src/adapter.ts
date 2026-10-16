@@ -3124,6 +3124,52 @@ export interface CallsApi {
 }
 
 // ---------------------------------------------------------------------------
+// Personal apps: MCP servers configured in one cloud bot's own runtime
+// ---------------------------------------------------------------------------
+
+export interface BotPersonalApp {
+  name: string;
+  url: string | null;
+  auth: "oauth" | "header" | "none" | string;
+  enabled: boolean;
+  /** For sign-in apps, whether the bot holds a saved login. */
+  connected: boolean;
+  tools: number | null;
+}
+
+export interface BotPersonalAppSignIn {
+  flowId: string;
+  authorizationUrl: string;
+}
+
+export interface BotPersonalAppSignInStatus {
+  status: "authorization_required" | "approved" | "error" | "expired" | string;
+  error: string | null;
+  tools: number;
+}
+
+/** An entry in the bot runtime's own MCP catalog. */
+export interface BotPersonalCatalogEntry {
+  name: string;
+  description: string;
+  url: string | null;
+  transport: string;
+  auth: "oauth" | "none" | "api_key" | string;
+  installed: boolean;
+  /** Whether this desktop flow can add it (remote, browser sign-in or no sign-in). */
+  supported: boolean;
+}
+
+export interface BotPersonalAppsApi {
+  list(agentUid: string): AdapterPromise<{ apps: BotPersonalApp[] }>;
+  catalog(agentUid: string): AdapterPromise<{ entries: BotPersonalCatalogEntry[] }>;
+  add(agentUid: string, input: { name: string; url: string; auth?: "oauth" | "none" }): AdapterPromise<Json>;
+  remove(agentUid: string, name: string): AdapterPromise<Json>;
+  startSignIn(agentUid: string, name: string): AdapterPromise<BotPersonalAppSignIn>;
+  signInStatus(agentUid: string, flowId: string): AdapterPromise<BotPersonalAppSignInStatus>;
+}
+
+// ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
 
@@ -3162,6 +3208,8 @@ export interface PlatformAdapter {
   readonly contextImport?: ContextImportApi;
   /** Optional: only the desktop host can read and prune local HQ backups. */
   readonly storage?: StorageApi;
+  /** Optional: a cloud bot's own runtime MCPs. */
+  readonly personalApps?: BotPersonalAppsApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
   /** Native calling (US-014). Unsupported hosts implement it as refusals. */

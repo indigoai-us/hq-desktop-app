@@ -380,7 +380,7 @@
       jobsPanel={agentUid && agents ? jobsPanel : undefined}
     />
     {#snippet appsPanel()}
-      {#key `${companyUid}:${agentUid}`}<BotAppsHost uid={agentUid} name={botName} companyUid={appsCompanyUid} {adapter} {onopenurl} />{/key}
+      {#key `${companyUid}:${agentUid}`}<BotAppsHost uid={agentUid} name={botName} companyUid={appsCompanyUid} {runtimeKind} {adapter} {onopenurl} />{/key}
     {/snippet}
     {#snippet brainPanel()}
       {#key `${companyUid}:${agentUid}`}<BotBrainHost uid={agentUid} name={botName} {runtimeKind} {adapter} {onopenurl} />{/key}
