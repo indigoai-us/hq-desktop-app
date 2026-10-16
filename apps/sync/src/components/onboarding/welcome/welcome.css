@@ -1404,16 +1404,6 @@
 .hq-welcome .s-ready .copy {
   top: 64px;
 }
-/* US-010: the automatic handoff to HQ Desktop. The wallpaper and veil stay;
-   the scene's content fades out while the desktop window takes over on the
-   same backdrop. Under 400ms; the reduced-motion block below makes it
-   instant. The "Getting ready" line stays, so the screen never goes blank
-   while the desktop window opens; only its greyed Continue fades. */
-.hq-welcome .s-ready.on[data-handoff] :is(.copy, .prog, .ready-wait-continue),
-.hq-welcome .s-ready.on[data-handoff] .nav > :not(.ready-wait) {
-  opacity: 0;
-  transition: opacity 320ms var(--w-ease-out);
-}
 .hq-welcome .prog {
   position: absolute;
   left: 50%;
@@ -1524,187 +1514,14 @@
   display: inline-flex;
 }
 
-/* The ready screen's options: HQ Desktop, the primary one, as a large white
-   card; under it, the installed tools as smaller dark pill buttons, centred
-   whether there are one or two. */
+/* The ready screen's nav row. It holds no buttons (the screen finishes by
+   itself), but the ready engine measures it, so it stays in the layout. */
 .hq-welcome .ready-options {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
   width: min(600px, 92vw);
-}
-/* The big button spans the row of tool buttons under it (2 x 148 + 12). */
-.hq-welcome .ready-options .tool-card-desktop {
-  width: min(308px, 100%);
-}
-/* The blocking install's waiting line: a subline, not a primary button. */
-.hq-welcome .ready-options .ready-wait {
-  margin: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: var(--w-text-dim, rgba(255, 255, 255, 0.62));
-  font-size: 13px;
-}
-.hq-welcome .ready-options .ready-wait-continue {
-  opacity: 0.45;
-  cursor: default;
-}
-.hq-welcome .tool-pills {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px;
-}
-.hq-welcome .tool-pills.tool-pills-status.ai-tools-status-stack {
-  flex-direction: column;
-  min-width: 0;
-  align-items: center;
-  gap: 12px;
-}
-.hq-welcome .ai-tools-checking {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 13.5px;
-  line-height: 18px;
-}
-.hq-welcome .ai-tools-checking.failed {
-  color: rgba(255, 255, 255, 0.62);
-}
-.hq-welcome .ai-tools-spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 1.4px solid rgba(255, 255, 255, 0.25);
-  border-top-color: rgba(255, 255, 255, 0.85);
-  border-radius: 50%;
-  animation: hq-ai-tools-spin 0.8s linear infinite;
-}
-@keyframes hq-ai-tools-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .hq-welcome .ai-tools-spinner {
-    animation: none;
-  }
-}
-.hq-welcome .tool-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-width: 148px;
-  height: 40px;
-  margin: 0;
-  padding: 0 18px;
-  border: none;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  font-family: inherit;
-  font-size: 14px;
-  line-height: 20px;
-  cursor: pointer;
-  transition:
-    background-color 0.15s,
-    transform 0.15s var(--w-ease-out);
-}
-.hq-welcome .tool-pill:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.17);
-}
-.hq-welcome .tool-pill:active:not(:disabled) {
-  transform: scale(0.97);
-}
-.hq-welcome .tool-pill:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-.hq-welcome .tool-pill:focus-visible {
-  outline: 1.5px solid #fff;
-  outline-offset: 3px;
-}
-.hq-welcome .tool-pill .tp-icon {
-  display: inline-flex;
-}
-.hq-welcome .tool-pill .tp-icon svg {
-  width: 16px;
-  height: 16px;
-}
-/* Open HQ Desktop: the one big, bright call to action on the ready screen.
-   The app's own icon, one label, a soft glow that lifts on hover. */
-.hq-welcome .tool-card {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-width: 0;
-  height: 56px;
-  margin: 0;
-  padding: 0 20px;
-  border: none;
-  border-radius: 14px;
-  background: var(--w-btn-bg);
-  color: var(--w-btn-fg);
-  font-family: inherit;
-  cursor: pointer;
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.2),
-    0 14px 44px -14px rgba(255, 255, 255, 0.55);
-  transition:
-    box-shadow 0.25s var(--w-ease-out),
-    opacity 0.2s,
-    transform 0.25s var(--w-ease-out);
-}
-.hq-welcome .tool-card:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.3),
-    0 20px 56px -12px rgba(255, 255, 255, 0.7);
-}
-.hq-welcome .tool-card:active:not(:disabled) {
-  transform: scale(0.98);
-}
-.hq-welcome .tool-card:disabled {
-  opacity: 0.6;
-  cursor: default;
-  box-shadow: none;
-}
-.hq-welcome .tool-card:focus-visible {
-  outline: 1.5px solid #fff;
-  outline-offset: 4px;
-}
-.hq-welcome .tool-card .tc-icon {
-  display: block;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-}
-.hq-welcome .tool-card .tc-icon img {
-  display: block;
-  width: 32px;
-  height: 32px;
-}
-.hq-welcome .tool-card .tc-name {
-  font-size: 16px;
-  line-height: 22px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-}
-.hq-welcome .tool-card .tc-spin {
-  width: 12px;
-  height: 12px;
-  margin-left: -2px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(0, 0, 0, 0.18);
-  border-top-color: rgba(0, 0, 0, 0.7);
-  animation: hq-ai-tools-spin 0.8s linear infinite;
 }
 /* usage data: one quiet line */
 .hq-welcome .ready-consent {
@@ -1935,44 +1752,6 @@
   .hq-welcome .grain.on {
     animation: none;
   }
-}
-
-/* A launch that could not happen: the honest next step, never a red dump.
-   Open and neutral, with a small outline cue rather than a warning colour. */
-.hq-welcome .setup-caution {
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--w-muted);
-  text-align: left;
-}
-.hq-welcome .setup-caution-icon {
-  width: 15px;
-  height: 15px;
-  flex: 0 0 15px;
-  margin-top: 1px;
-  fill: none;
-  stroke: var(--w-muted);
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.hq-welcome .setup-caution-icon circle {
-  fill: var(--w-muted);
-  stroke: none;
-}
-.hq-welcome .setup-caution-copy strong {
-  color: #fff;
-  font-weight: 500;
-}
-.hq-welcome .setup-caution-copy span {
-  color: var(--w-muted);
 }
 
 /* A screen's motion failed (a canvas or layout error): show everything in its

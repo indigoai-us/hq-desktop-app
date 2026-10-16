@@ -1040,7 +1040,7 @@ export function createConsentEngine(refs: ConsentRefs, options: { reveal: () => 
 
 // ---------------------------------------------------------------------------
 // Scene 5 - ready. The folder screen's skyline returns under the title, the
-// progress capsule finishes, and Open HQ Desktop arrives.
+// progress capsule finishes, and the usage-data line arrives.
 // ---------------------------------------------------------------------------
 
 export interface ReadyRefs {

@@ -278,6 +278,16 @@ export interface ContinueInToolBlock {
 }
 
 /**
+ * The setup bot's first question when the takeover left the team step
+ * unsettled: who the person works with. Carries nothing: the host draws the
+ * card from the workspace roster (join an invite, open a company, create one,
+ * or "Just me for now") and sends the pick back as a reply.
+ */
+export interface TeamBlock {
+  kind: "team";
+}
+
+/**
  * The built-in cards a {@link ConnectItem} can name. A closed list. `tools`
  * is legacy: old messages still draw the generic tools card, but it is no
  * longer advertised to a bot.
@@ -359,6 +369,7 @@ export type RichBlock =
   | SetupDoneBlock
   | SuggestionsBlock
   | ContinueInToolBlock
+  | TeamBlock
   | ConnectBlock
   | StatBlock
   | TableBlock
@@ -379,6 +390,7 @@ export const KNOWN_BLOCK_KINDS = new Set<string>([
   "setupDone",
   "suggestions",
   "continueInTool",
+  "team",
   "connect",
   "stat",
   "table",
@@ -416,6 +428,7 @@ export const HOST_PLACED_BLOCK_KINDS: ReadonlySet<RichBlock["kind"]> = new Set([
   "setupDone",
   "suggestions",
   "continueInTool",
+  "team",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1016,6 +1029,8 @@ function parseBlock(raw: unknown): RichBlock | null {
     case "continueInTool":
       // A closed list: any other tool id drops the block.
       return raw.tool === "claude" || raw.tool === "codex" ? { kind: "continueInTool", tool: raw.tool } : null;
+    case "team":
+      return { kind: "team" };
     case "connect":
       return parseConnectBlock(raw);
     case "stat":
@@ -1686,6 +1701,11 @@ export function replyForSuggestion(label: string, texts: Readonly<Record<string,
   if (!texts || !Object.prototype.hasOwnProperty.call(texts, label)) return label;
   const text = texts[label];
   return typeof text === "string" ? text : label;
+}
+
+/** True when this message carries a `team` block (the "Who do you work with?" card). */
+export function teamBlockInMessage(message: { body?: string | null; richContent?: unknown }): boolean {
+  return richContentForMessage(message).rich?.blocks.some((b): b is TeamBlock => b.kind === "team") ?? false;
 }
 
 /** True when this message carries a `connect` block of its own. */

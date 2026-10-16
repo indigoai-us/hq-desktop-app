@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { isRawBotFailureText } from "./local-bots";
 import {
   botNeedsCodingToolNotice,
+  localBotCodingToolNeed,
   localBotNeedsCodingTool,
   plainBotFailureReply,
   withPlainBotFailureReplies,
@@ -114,6 +115,23 @@ describe("localBotNeedsCodingTool", () => {
     expect(localBotNeedsCodingTool(bot, { claude: true, codex: false, grok: false })).toBe(false);
     expect(localBotNeedsCodingTool(bot, null)).toBe(false);
     expect(localBotNeedsCodingTool(null, { claude: false })).toBe(false);
+  });
+
+  it("tells a missing tool from a signed-out one", () => {
+    const bot = { runtime: "claude" as const };
+    // Installed but signed out: the sign-in repair card, never the install strip.
+    expect(localBotCodingToolNeed(bot, { claude: false }, { claude: true })).toBe("signIn");
+    // Not on this computer: the install strip.
+    expect(localBotCodingToolNeed(bot, { claude: false }, { claude: false })).toBe("install");
+    // Not known yet whether it is installed: neither, until the host says.
+    expect(localBotCodingToolNeed(bot, { claude: false }, {})).toBeNull();
+    expect(localBotCodingToolNeed(bot, { claude: false }, null)).toBeNull();
+    expect(localBotCodingToolNeed(bot, { claude: false }, { codex: false })).toBeNull();
+    // Installed and signed in: nothing to offer.
+    expect(localBotCodingToolNeed(bot, { claude: true }, { claude: true })).toBeNull();
+    // Unknown readiness is neither.
+    expect(localBotCodingToolNeed(bot, null, { claude: true })).toBeNull();
+    expect(localBotCodingToolNeed(null, { claude: false }, { claude: false })).toBeNull();
   });
 
   it("names the bot and its tool in the notice", () => {

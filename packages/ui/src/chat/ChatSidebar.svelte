@@ -206,6 +206,7 @@
     type SortMode,
     type ScopeCompany,
   } from "./sidebar-model";
+  import { contactsFromConversationStart, type ConversationStarts } from "./first-run/conversation-start.js";
   import {
     addToPeerDirectory,
     applyPeerDirectory,
@@ -324,6 +325,11 @@
     seedDirectory?: ChannelDirectoryRow[] | null;
     /** personUid → presigned avatar URL from loaded channel rosters. */
     avatarByUid?: Record<string, string> | null;
+    /**
+     * Where a first-run assistant's conversation starts on this computer
+     * (conversation-start.ts): its row leaves out earlier time and unread.
+     */
+    conversationStarts?: ConversationStarts;
     /** Bump to refetch contacts (after an agent profile save). */
     rosterWakeSeq?: number;
     /**
@@ -581,6 +587,7 @@
     tenantCompanyId = null,
     seedDirectory = null,
     avatarByUid = null,
+    conversationStarts = {},
     rosterWakeSeq = 0,
     requestsWakeSeq = 0,
     onavatarmap,
@@ -1126,7 +1133,7 @@
   // signed-in person is added so notes to self always have a row.
   const contactsWithUnreads = $derived(
     withAssistantNames(
-      applyPairUnreads(withSelfContact(contacts, self), pairUnreads),
+      contactsFromConversationStart(applyPairUnreads(withSelfContact(contacts, self), pairUnreads), conversationStarts),
       assistantName,
       "personUid",
       "displayName",

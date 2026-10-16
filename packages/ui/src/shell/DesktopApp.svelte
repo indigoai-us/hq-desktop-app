@@ -210,6 +210,7 @@
   import SetupInstallGuide from "../settings/SetupInstallGuide.svelte";
   import {
     botNeedsCodingToolNotice,
+    localBotCodingToolNeed,
     localBotNeedsCodingTool,
     withPlainBotFailureReplies,
   } from "../chat/bot-runtime-failure.js";
@@ -218,6 +219,26 @@
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
   import SetupToolOffer from "../chat/SetupToolOffer.svelte";
+  import TeamCard from "../chat/first-run/TeamCard.svelte";
+  import {
+    activeCloudCompanyBySlug,
+    teamCardAnchorEventId,
+    teamCardDue,
+    teamCardPickIdentity,
+    teamCardPickKey,
+    teamOptionsFrom,
+    type FirstRunTeamChoice,
+    type TeamCardPick,
+  } from "../chat/first-run/team-step.js";
+  import { createTeamCardReplies, runTeamCardPick } from "../chat/first-run/team-card-pick.js";
+  import {
+    loadTeamCardRecords,
+    saveTeamCardRecord,
+    teamCardRecordKey,
+    teamCardSettledFromReply,
+  } from "../chat/first-run/team-card-record.js";
+  import { createFirstRunTeamHost } from "../chat/first-run/first-run-hosts.js";
+  import { teamBlockInMessage } from "../chat/messaging/richMessageContent.js";
   import {
     connectItemCarriesState,
     continueInToolForMessage,
@@ -304,13 +325,24 @@
   import type { FirstRunHandoffHint } from "../chat/first-run/first-run-handoff.js";
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
   import {
+    fromConversationStart,
+    readConversationStarts,
+    recordConversationStart,
+    type ConversationStarts,
+  } from "../chat/first-run/conversation-start.js";
+  import {
     assistantNameIssue,
     firstRunHandoffNotice,
     firstRunIntro,
+    signInPassedOrUnchecked,
     firstRunRoute,
+    finishedMarkerLeftOver,
+    forgetVisualFirstRunFinished,
     hasFinishedVisualFirstRun,
     normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+    VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS,
+    lateFlagVerdict,
     FIRST_RUN_LISTINGS_WAIT_MS,
     markVisualFirstRunFinished,
     type FirstRunCreation,
@@ -325,12 +357,20 @@
     type SignInTool,
     type ToolSignInChecks,
   } from "../chat/first-run/tools-signin.js";
-  import { FIRST_RUN_TIMING_TAG } from "../chat/first-run/first-run-timing.js";
+  import {
+    FIRST_RUN_TIMING_TAG,
+    createRouteLogger,
+    formatFlagLookup,
+    formatSetupRunSet,
+    writeFirstRunLine,
+    type FlagLateOutcome,
+  } from "../chat/first-run/first-run-timing.js";
   import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import { createNativeScanHost } from "../chat/first-run/knowledge-tree/native-scan-host.js";
   import { FIRST_RUN_DEV_SWITCHES, FIRST_RUN_DRY_DELAY_MS } from "../chat/first-run/dev-switches.js";
   import type { FirstRunSettled } from "../chat/first-run/first-run-hosts.js";
   import {
+    forgetWelcomeSetupRun,
     hasRunWelcomeSetup,
     isSetupChannel,
     markWelcomeSetupRun,
@@ -2572,6 +2612,8 @@
    */
   let localBotsRead = $state(false);
   let remoteBotsRead = $state(false);
+  /** How many bots this computer's first good listing had; null until then. */
+  let firstRunLocalBotCount = $state<number | null>(null);
   async function refreshLocalBots(): Promise<void> {
     const api = adapter.bots;
     if (!api) return;
@@ -2583,6 +2625,7 @@
     }
     if (!result.ok) return;
     const bots = result.value?.bots ?? [];
+    firstRunLocalBotCount ??= bots.length;
     // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
     // The account's own listing is what turns that into the honest notice,
     // and on the VM it was on a 120 s timer that had stopped — so the DM
@@ -2887,7 +2930,8 @@
     const installed: Record<string, boolean> = {};
     for (const id of ["claude", "codex", "grok"]) {
       next[id] = rec[`${id}Available`] === true && rec[`${id}LoggedIn`] === true;
-      installed[id] = rec[`${id}Available`] === true;
+      // A host that does not say leaves the tool unknown, not missing.
+      if (typeof rec[`${id}Available`] === "boolean") installed[id] = rec[`${id}Available`] === true;
       const status = parseRuntimeStatus(rec[`${id}Status`]);
       if (status) statuses[id] = status;
     }
@@ -3276,7 +3320,7 @@
         personUid: bot.agentUid,
       },
     );
-    recordWelcomeSetupRun();
+    recordWelcomeSetupRun("open-setup-bot-dm");
   }
   /**
    * #welcome's start (its button, Retry and the legacy automatic start):
@@ -3311,9 +3355,9 @@
     if (!result.ok) return { ok: false, reason: result.reason };
     // The person confirmed this name in the takeover and then left for chat:
     // the assistant gets the takeover's handoff note, as from Done.
-    if (confirmed) adoptFirstRunAssistant(result.bot, result.outcome, confirmed);
+    if (confirmed) adoptFirstRunAssistant(result.bot, result.outcome, confirmed, firstRunConversationStartAt ?? Date.now());
     if (result.outcome === "created") {
-      recordWelcomeSetupRun();
+      recordWelcomeSetupRun("start-setup-bot");
       return { ok: true, existing: false };
     }
     openSetupBotDm(result.bot);
@@ -3385,7 +3429,7 @@
       const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
       // The hello and the handoff say "signed in" only when a real turn worked.
       // A runtime the first run does not check (not Claude Code or Codex) keeps today's words.
-      const signInChecked = !(runtime in checks) || checks[runtime as SignInTool] === "passed";
+      const signInChecked = signInPassedOrUnchecked(runtime, checks);
       firstRunCreateFactsPending = { runtime, toolsReady, signInChecked };
       input = {
         name: SETUP_BOT_NAME,
@@ -3468,9 +3512,12 @@
    * The flag; null until it answers. Unreadable counts as off, and so does
    * slow: the read starts at mount, alongside the host's "setup owed" check
    * below, and once that check has answered the flag gets at most
-   * `VISUAL_FIRST_RUN_FLAG_GRACE_MS` more. So with the flag off a first run
-   * waits for the later of the two answers, never their sum, and no more than
-   * the grace past the wait it already had.
+   * `VISUAL_FIRST_RUN_FLAG_GRACE_MS` more, or `VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS`
+   * when setup is owed (a cold first read takes 1.5 to 2.8 s). So with the flag
+   * off a first run waits for the later of the two answers, never their sum.
+   * An "on" that lands after the wait still applies on a new install within
+   * the late window, while nothing on the old setup has started
+   * (lateFlagVerdict).
    */
   /**
    * Dev-only build switches (dev-switches.ts, docs/dev-switches.md), off in
@@ -3483,44 +3530,164 @@
   const FIRST_RUN_PAINTED_FALLBACK_MS = 50;
   let visualFirstRunFinished = $state(firstRunDev.force ? false : hasFinishedVisualFirstRun());
   /**
-   * The flag's answer when it is known before mount, so the first frame is
-   * never held for an answer that needs no read: no first run (no bots, the
-   * welcome setup already ran, the visual first run finished, no flag
-   * service) counts as off, and the welcome window's hint is used as is.
+   * US-010: the welcome window's hint, when it carried the flag's answer, so
+   * the first frame is never held for a read the hint already answered.
    */
-  function knownVisualFirstRunFlag(): boolean | null {
-    if (firstRunDev.force) return true;
-    const identity = adapter.identity;
-    if (!adapter.bots || hasRunWelcomeSetup() || hasFinishedVisualFirstRun() || !identity || typeof identity.hasFeature !== "function") {
-      return false;
-    }
+  function hintedVisualFirstRunFlag(): boolean | null {
     const hinted = untrack(() => firstRunHandoff?.flags.visualFirstRun);
     return typeof hinted === "boolean" ? hinted : null;
   }
-  let visualFirstRunFlag = $state<boolean | null>(knownVisualFirstRunFlag());
-  function settleVisualFirstRunFlag(value: boolean): void {
-    if (visualFirstRunFlag === null) visualFirstRunFlag = value;
+  let visualFirstRunFlag = $state<boolean | null>(firstRunDev.force ? true : hintedVisualFirstRunFlag());
+  /** When the flag counted as off because its wait ran out; null otherwise. */
+  let visualFirstRunFlagTimedOutAt: number | null = null;
+  /** The flag is on through a late answer, so the old setup starting before the open still keeps it. */
+  let visualFirstRunFlagLate = false;
+  /** Settles the flag once; says whether this answer was the one applied, and the late=... log field. */
+  function settleVisualFirstRunFlag(value: boolean): { applied: boolean; late?: FlagLateOutcome } {
+    if (visualFirstRunFlag === null) {
+      visualFirstRunFlag = value;
+      return { applied: true };
+    }
+    if (visualFirstRunFlagTimedOutAt === null) return { applied: false };
+    const late =
+      lateFlagVerdict({
+        value,
+        welcomeSetupOwed,
+        legacyStarted: legacyFirstRunStarted(),
+        sinceTimeoutMs: Date.now() - visualFirstRunFlagTimedOutAt,
+      }) ?? undefined;
+    if (late !== "applied") return { applied: false, late };
+    visualFirstRunFlagTimedOutAt = null;
+    visualFirstRunFlagLate = true;
+    visualFirstRunFlag = true;
+    return { applied: true, late };
   }
-  onMount(() => {
-    // Known before mount (FORCE, no first run, or the welcome window's hint):
-    // the flag service is not read.
-    if (visualFirstRunFlag !== null) return;
-    const identity = adapter.identity!;
+  /** The person did something on the old first run: an install or sign-in, another row, a message. */
+  let firstRunPersonActed = false;
+  function noteFirstRunAction(): void {
+    firstRunPersonActed = true;
+  }
+  // The #welcome install, sign-in and AI tools actions count as starting the old setup.
+  const firstRunAssistedInstall = $derived(
+    onassistedinstall
+      ? (...args: Parameters<typeof onassistedinstall>) => {
+          noteFirstRunAction();
+          return onassistedinstall(...args);
+        }
+      : undefined,
+  );
+  const firstRunRequestAiTools = $derived(
+    onrequestaitools
+      ? () => {
+          noteFirstRunAction();
+          onrequestaitools();
+        }
+      : undefined,
+  );
+  const firstRunInstallGuide = $derived(
+    setupInstallGuide
+      ? {
+          ...setupInstallGuide,
+          oninstall: (tool: "claude" | "codex") => {
+            noteFirstRunAction();
+            return setupInstallGuide.oninstall(tool);
+          },
+          onsignin: (tool: "claude" | "codex", options?: { signal?: AbortSignal }) => {
+            noteFirstRunAction();
+            return setupInstallGuide.onsignin(tool, options);
+          },
+          onopen: (url: string) => {
+            noteFirstRunAction();
+            return setupInstallGuide.onopen(url);
+          },
+        }
+      : null,
+  );
+  function legacyFirstRunStarted(): boolean {
+    return (
+      welcomeSetupRun ||
+      setupBotAutoStarted ||
+      tourStartedThisSession ||
+      firstRunPersonActed ||
+      // A step-by-step run the person started (a remembered one resuming is not new).
+      (setupAgent.busy && setupAgent.mode !== "resume")
+    );
+  }
+  let visualFirstRunFlagReadAt = Date.now();
+  onMount(() => readVisualFirstRunFlag());
+  function readVisualFirstRunFlag(): (() => void) | undefined {
+    // FORCE: the flag service is not read.
+    if (firstRunDev.force) return;
+    const identity = adapter.identity;
+    // Only a first run needs the answer: no read at all otherwise.
+    if (!adapter.bots || welcomeSetupRun || visualFirstRunFinished || !identity || typeof identity.hasFeature !== "function") {
+      visualFirstRunFlag = false;
+      writeFirstRunLine(firstRunTimingLog, formatFlagLookup("visual-first-run", "skipped", false, true, 0));
+      return;
+    }
+    // US-010: the welcome window's hint answered it: the flag service is not read.
+    if (visualFirstRunFlag !== null) {
+      writeFirstRunLine(firstRunTimingLog, formatFlagLookup("visual-first-run", "hint", visualFirstRunFlag, true, 0));
+      return;
+    }
     let active = true;
+    const since = Date.now();
+    visualFirstRunFlagReadAt = since;
+    // Read without a company: the person's own answer (the "unscoped" path).
+    const logLookup = (path: "unscoped" | "error", value: boolean, settle: boolean): void => {
+      const { applied, late } = settle ? settleVisualFirstRunFlag(value) : { applied: false, late: undefined };
+      writeFirstRunLine(firstRunTimingLog, formatFlagLookup("visual-first-run", path, value, applied, Date.now() - since, late));
+    };
     void Promise.resolve()
       .then(() => identity.hasFeature(VISUAL_FIRST_RUN_FLAG))
       .then(
         (result) => {
-          if (active) settleVisualFirstRunFlag(result.ok && result.value === true);
+          const value = result.ok && result.value === true;
+          logLookup(result.ok ? "unscoped" : "error", value, active);
         },
         (err: unknown) => {
           console.warn("[hq-desktop] visual first-run flag lookup failed:", err);
-          if (active) settleVisualFirstRunFlag(false);
+          logLookup("error", false, active);
         },
       );
     return () => {
       active = false;
     };
+  }
+  /**
+   * A finished marker from before this launch decides nothing until it is
+   * known to be this install's own. One a reinstall left behind
+   * (finishedMarkerLeftOver) is dropped with the "setup run" record, and the
+   * first run starts over: the flag is read and the takeover can open.
+   */
+  let finishedMarkerChecked = $state(!visualFirstRunFinished);
+  /** This computer's bot list did not answer within FIRST_RUN_LISTINGS_WAIT_MS: the marker holds. */
+  let finishedMarkerWaitOver = $state(false);
+  $effect(() => {
+    if (finishedMarkerChecked) return;
+    const timer = window.setTimeout(() => (finishedMarkerWaitOver = true), FIRST_RUN_LISTINGS_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  });
+  $effect(() => {
+    if (finishedMarkerChecked) return;
+    const leftOver = finishedMarkerLeftOver({
+      welcomeSetupOwed,
+      localBotsRead,
+      localBots: firstRunLocalBotCount,
+    });
+    if (leftOver === null && !finishedMarkerWaitOver) return;
+    untrack(() => {
+      finishedMarkerChecked = true;
+      if (!leftOver) return;
+      forgetVisualFirstRunFinished();
+      forgetWelcomeSetupRun();
+      visualFirstRunFinished = false;
+      welcomeSetupRun = false;
+      visualFirstRunFlag = null;
+      visualFirstRunFlagTimedOutAt = null;
+      visualFirstRunFlagLate = false;
+      readVisualFirstRunFlag();
+    });
   });
   /**
    * `desktop.first-run-found-apps-v1`, read only once the visual first run is
@@ -3535,45 +3702,70 @@
    * swap while the person is in the flow.
    */
   let foundAppsFlagSettled = $state(false);
-  function settleFoundAppsFlag(value: boolean): void {
-    if (foundAppsFlagSettled) return;
+  function settleFoundAppsFlag(value: boolean): boolean {
+    if (foundAppsFlagSettled) return false;
     foundAppsFlag = value;
     foundAppsFlagSettled = true;
+    return true;
   }
+  let foundAppsFlagReadAt = Date.now();
   $effect(() => {
     if (visualFirstRunFlag !== true || foundAppsFlagRead) return;
     foundAppsFlagRead = true;
     const hintedApps = untrack(() => firstRunHandoff?.flags.foundApps);
     if (typeof hintedApps === "boolean") {
       untrack(() => settleFoundAppsFlag(hintedApps));
+      writeFirstRunLine(firstRunTimingLog, formatFlagLookup("found-apps", "hint", hintedApps, true, 0));
       return;
     }
     const identity = adapter.identity;
     if (!identity || typeof identity.hasFeature !== "function") {
       untrack(() => settleFoundAppsFlag(false));
+      writeFirstRunLine(firstRunTimingLog, formatFlagLookup("found-apps", "skipped", false, true, 0));
       return;
     }
+    const since = Date.now();
+    foundAppsFlagReadAt = since;
+    const logLookup = (path: "unscoped" | "error", value: boolean, applied: boolean): void =>
+      writeFirstRunLine(firstRunTimingLog, formatFlagLookup("found-apps", path, value, applied, Date.now() - since));
     void Promise.resolve()
       .then(() => identity.hasFeature(FIRST_RUN_FOUND_APPS_FLAG))
       .then(
-        (result) => settleFoundAppsFlag(result.ok && result.value === true),
+        (result) => {
+          const value = result.ok && result.value === true;
+          logLookup(result.ok ? "unscoped" : "error", value, settleFoundAppsFlag(value));
+        },
         (err: unknown) => {
           console.warn("[hq-desktop] first-run found-apps flag lookup failed:", err);
-          settleFoundAppsFlag(false);
+          logLookup("error", false, settleFoundAppsFlag(false));
         },
       );
   });
   // A found-apps answer that never comes stops holding the takeover (counts as off).
   $effect(() => {
     if (visualFirstRunFlag !== true || foundAppsFlagSettled) return;
-    const timer = window.setTimeout(() => settleFoundAppsFlag(false), FIRST_RUN_LISTINGS_WAIT_MS);
+    const timer = window.setTimeout(() => {
+      if (!settleFoundAppsFlag(false)) return;
+      writeFirstRunLine(
+        firstRunTimingLog,
+        formatFlagLookup("found-apps", "timeout", false, true, Date.now() - foundAppsFlagReadAt),
+      );
+    }, FIRST_RUN_LISTINGS_WAIT_MS);
     return () => window.clearTimeout(timer);
   });
   // The "setup owed" answer is in and the flag is not: the flag has the grace
-  // left, then counts as off.
+  // left (the longer wait on a new install), then counts as off.
   $effect(() => {
     if (visualFirstRunFlag !== null || welcomeSetupOwed === null) return;
-    const timer = window.setTimeout(() => settleVisualFirstRunFlag(false), VISUAL_FIRST_RUN_FLAG_GRACE_MS);
+    const wait = welcomeSetupOwed ? VISUAL_FIRST_RUN_FLAG_OWED_WAIT_MS : VISUAL_FIRST_RUN_FLAG_GRACE_MS;
+    const timer = window.setTimeout(() => {
+      if (!settleVisualFirstRunFlag(false).applied) return;
+      visualFirstRunFlagTimedOutAt = Date.now();
+      writeFirstRunLine(
+        firstRunTimingLog,
+        formatFlagLookup("visual-first-run", "timeout", false, true, Date.now() - visualFirstRunFlagReadAt),
+      );
+    }, wait);
     return () => window.clearTimeout(timer);
   });
   const firstRunRouteNow = $derived.by(() =>
@@ -3587,10 +3779,33 @@
       welcomeSetupOwed,
       flag: visualFirstRunFlag,
       finished: visualFirstRunFinished,
+      finishedUnconfirmed: !finishedMarkerChecked,
     }),
   );
+  // One hq-sync.log line per route change, with what the route came from.
+  const firstRunRouteLogger = createRouteLogger(firstRunTimingLog);
+  $effect(() => {
+    firstRunRouteLogger.update({
+      route: firstRunRouteNow,
+      flag: visualFirstRunFlag,
+      owed: welcomeSetupOwed,
+      setupRun: welcomeSetupRun,
+      finished: visualFirstRunFinished,
+      finishedUnconfirmed: !finishedMarkerChecked,
+      hasBots: Boolean(adapter.bots),
+    });
+  });
   /** Latched: once open it stays until Done or Continue in chat. */
   let visualFirstRunOpen = $state(false);
+  /**
+   * #welcome shows a loader while the route is pending, or visual with the
+   * takeover not yet open. Not once setup has run here: that route is legacy.
+   */
+  const firstRunWelcomeWaits = $derived.by(
+    () =>
+      (firstRunRouteNow === "pending" && welcomeSetupOwed !== false && !welcomeSetupRun) ||
+      (firstRunRouteNow === "visual" && !visualFirstRunOpen),
+  );
   /** The name the name step opens with, picked when the takeover opens. */
   let firstRunSuggestedName = $state("");
   /**
@@ -3610,6 +3825,12 @@
   $effect(() => {
     if (firstRunRouteNow !== "visual" || !firstRunListingsRead || !foundAppsFlagSettled || untrack(() => visualFirstRunOpen)) return;
     untrack(() => {
+      // The old setup started after a late flag answer: it stays, the route goes back to legacy.
+      // An answer in time keeps #welcome's start, which the takeover adopts.
+      if (visualFirstRunFlagLate && !firstRunDev.force && legacyFirstRunStarted()) {
+        visualFirstRunFlag = false;
+        return;
+      }
       firstRunSuggestedName = firstRunInitialName();
       visualFirstRunOpen = true;
     });
@@ -3691,8 +3912,16 @@
    * flag-off path.
    */
   let firstRunConfirmedName = $state<string | null>(null);
+  /** When the name was confirmed: the assistant's conversation starts here. */
+  let firstRunConversationStartAt: number | null = null;
   /** The setup bot the first run made (or adopted) this session. */
   let firstRunCreatedBot: SetupBotRef | null = null;
+  /**
+   * Where each first-run assistant's conversation starts on this computer
+   * (conversation-start.ts). An adopted assistant keeps the account's earlier
+   * messages on the server; the person sees only what comes after adopt time.
+   */
+  let conversationStarts = $state.raw<ConversationStarts>(readConversationStarts(connectionStorage()));
   /** A dry walk's pretend assistant (dev-switches.ts): nothing is created or sent. */
   let firstRunDryBot = $state<SetupBotRef | null>(null);
   /** Where creating the assistant stands, as the takeover shows it. Derived, never stored. */
@@ -3723,8 +3952,11 @@
       }, FIRST_RUN_DRY_DELAY_MS);
       return;
     }
+    // The conversation starts before the create: its intro (written while
+    // `hq bot create` runs, which can take well over the grace) must show.
+    const startedAt = firstRunConversationStartAt ?? Date.now();
     void assistantOwner.start({ name }).then((result) => {
-      if (result.ok) adoptFirstRunAssistant(result.bot, result.outcome, name);
+      if (result.ok) adoptFirstRunAssistant(result.bot, result.outcome, name, startedAt);
       firstRunStart = { state: "settled" };
     });
   }
@@ -3733,10 +3965,23 @@
    * way it runs no turn for the first run until the takeover closes; then it
    * gets the one handoff note (`deliverFirstRunHandoff`).
    */
-  function adoptFirstRunAssistant(bot: SetupBotRef, outcome: "created" | "adopted" | "existing", name: string): void {
+  function adoptFirstRunAssistant(
+    bot: SetupBotRef,
+    outcome: "created" | "adopted" | "existing",
+    name: string,
+    startedAt: number,
+  ): void {
     if (firstRunCreatedBot?.agentUid === bot.agentUid) return;
     firstRunCreatedBot = bot;
     firstRunHandoffName = name;
+    // The conversation starts when the name was confirmed: earlier messages,
+    // their unread count and their time stay out of this assistant's DM and
+    // its sidebar row.
+    conversationStarts = recordConversationStart(connectionStorage(), bot.agentUid, startedAt);
+    void sidebarApi.markDmThreadRead(bot.agentUid).then(
+      () => wakes?.emit?.("conversation:read", { id: `dm:${bot.agentUid}` }),
+      (err: unknown) => console.warn("[hq-desktop] first-run assistant DM not marked read:", err),
+    );
     if (outcome === "created") firstRunCreatedUids.add(bot.agentUid);
     // The takeover closed while the create ran: the note goes now.
     deliverFirstRunHandoff();
@@ -3746,7 +3991,9 @@
   $effect(() => {
     const creation = firstRunCreation;
     if (creation.state !== "ready" || firstRunDev.dry || firstRunStart.state !== "settled") return;
-    untrack(() => adoptFirstRunAssistant(creation.bot, "existing", creation.name));
+    untrack(() =>
+      adoptFirstRunAssistant(creation.bot, "existing", creation.name, firstRunConversationStartAt ?? Date.now()),
+    );
   });
   function retryFirstRunAssistant(): void {
     const name = firstRunConfirmedName;
@@ -3760,6 +4007,7 @@
     firstRunRuntime = runtime;
     firstRunPendingName = name;
     firstRunConfirmedName = name;
+    firstRunConversationStartAt = Date.now();
     // Started whether or not a coding tool is signed in: the assistant is
     // made on this computer and its chat asks for the sign-in it needs.
     startFirstRunAssistant(name);
@@ -3782,8 +4030,11 @@
   let firstRunSignInChecks = $state<ToolSignInChecks>({});
   /** Writes one first-run timing line to the hq-sync log. Never throws into the flow it measures. */
   function firstRunTimingLog(message: string): void {
+    // A host without a log file (the web build, most tests) gets no line.
+    const appShell = adapter.appShell;
+    if (typeof appShell?.logToFile !== "function") return;
     Promise.resolve()
-      .then(() => adapter.appShell.logToFile(FIRST_RUN_TIMING_TAG, message))
+      .then(() => appShell.logToFile(FIRST_RUN_TIMING_TAG, message))
       .then((result) => {
         if (!result.ok) console.warn("[first-run] timing line was not written", result.message);
       })
@@ -3878,7 +4129,7 @@
     const toolsReady = facts?.toolsReady ?? SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
     const runtime =
       facts?.runtime ?? localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
-    const signInChecked = facts?.signInChecked ?? (!(runtime in checks) || checks[runtime as SignInTool] === "passed");
+    const signInChecked = facts?.signInChecked ?? signInPassedOrUnchecked(runtime, checks);
     const { team, apps } = firstRunSettled;
     return { name, runtime, toolsReady, signInChecked, imported: firstRunImport, team, apps };
   }
@@ -4041,7 +4292,7 @@
         personUid: bot.agentUid,
       },
     );
-    recordWelcomeSetupRun();
+    recordWelcomeSetupRun("talk-to-first-run-assistant");
   }
   /**
    * "Continue in chat": the assistant's DM when it is ready, else #welcome,
@@ -4381,6 +4632,124 @@
       dispatchSetupToolOffer("continued", tool, { launched });
     }
   }
+  /**
+   * "Who do you work with?" under the setup bot's first message: drawn for the
+   * bot's `team` block, or by the host when the handoff left the team
+   * unsettled and no block came (an older hq-cli).
+   */
+  let teamCardPending = $state<string | null>(null);
+  let teamCardError = $state<string | null>(null);
+  /** Settled lines kept per account and setup bot, so they survive a company switch and a restart. */
+  let teamCardRecords = $state(loadTeamCardRecords(teamCardStorage()));
+  function teamCardStorage(): Storage | null {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch (err) {
+      console.warn("[hq-desktop] no local storage for the team card pick:", err);
+      return null;
+    }
+  }
+  let teamCardLastPick: TeamCardPick | null = null;
+  let teamCardCompleted: FirstRunTeamChoice | undefined;
+  /** The setup bot and its conversation, as they were when the pick was made. */
+  type TeamCardTarget = { agentUid: string; row: ConversationRow };
+  const teamCardReply = createTeamCardReplies<TeamCardTarget>(sendTeamCardReply);
+  /**
+   * The pick's reply, in the person's voice, to the bot the card was drawn
+   * for. The join or create before it waits on the network, so the person may
+   * have opened another conversation by now: it never follows `selectedRow`.
+   */
+  async function sendTeamCardReply(text: string, idempotencyKey: string, target: TeamCardTarget): Promise<void> {
+    if (firstRunDev.dry) {
+      console.info("[hq-desktop] dry run: team card reply not sent:", text);
+      return;
+    }
+    const res = await adapter.messaging.sendDm(target.agentUid, text, { idempotencyKey });
+    if (!res.ok) throw new Error(res.message || "Could not send the message");
+    const wire = sentMessageFromResult(res.value, {
+      body: text,
+      fromPersonUid: self?.uid?.trim() || null,
+      fromDisplayName: self?.displayName?.trim() || "You",
+    });
+    const { row } = target;
+    const open = selectedRow?.id === row.id && liveTimelineId === row.id;
+    const before = open ? liveTimeline : (timelineCache.get(row.id) ?? []);
+    if (wire) {
+      if (open) commitTimeline(row, mergeTimelineMessages(before, [wire]));
+      else timelineCache.set(row.id, mergeTimelineMessages(before, [wire]));
+    }
+    thinkingByRow = startThinkingIn(
+      thinkingByRow,
+      row.id,
+      { agentUid: target.agentUid, agentName: agentLabel(target.agentUid, thinkingAgentName(row.title, target.agentUid, localBots, "Bot")) },
+      Date.now(),
+      { afterMs: newestMessageAtFrom(before, target.agentUid), asked: { eventId: wire?.eventId ?? null } },
+    );
+  }
+  /**
+   * The card, or its settled line, and the message it is drawn under: the
+   * bot's first message, so a later bot message never pushes it down. The
+   * settled line comes from durable state (the saved pick, or the person's
+   * reply in the conversation), so it is back after a company switch or a
+   * restart.
+   */
+  const teamCardView = $derived.by((): { anchor: string; settled: string | null } | null => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return null;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    const anchor = teamCardAnchorEventId(timeline, bot.agentUid, teamBlockInMessage, messageHasVisibleContent);
+    if (!anchor) return null;
+    const settled =
+      teamCardRecords[teamCardRecordKey(self?.uid, bot.agentUid)] ?? teamCardSettledFromReply(timeline, bot.agentUid);
+    if (settled) return { anchor, settled };
+    const due = teamCardDue(timeline, bot.agentUid, firstRunSettled.team === null, teamBlockInMessage, messageHasVisibleContent);
+    if (!due || (due === "fallback" && firstRunHandoffName === null)) return null;
+    return { anchor, settled: null };
+  });
+  const teamCardHost = createFirstRunTeamHost({
+    dry: firstRunDev.dry,
+    claimInvite: (slug) => adapter.company?.claimPendingInvite?.(slug) ?? Promise.reject(new Error("unavailable")),
+    createCompany: (name, slug) => createCompanyFromSheet({ name, slug, plan: "free", invites: [] }),
+    joined: pinTeamCardCompany,
+    created: pinTeamCardCompany,
+    findCompany: async (slug) => activeCloudCompanyBySlug(companies, slug),
+  });
+  function pinTeamCardCompany(companyUid: string | null): void {
+    if (!companyUid) return;
+    try {
+      const pinned = pinCompany(pinnedCompanyIds ?? [], companyUid);
+      if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
+      else if (pinned.status === "replace") console.warn("[hq-desktop] team card did not pin the company: the rail is full");
+    } catch (err) {
+      console.warn("[hq-desktop] team card could not pin the company:", err);
+    }
+  }
+  async function pickTeamCard(pick: TeamCardPick): Promise<void> {
+    if (teamCardPending) return;
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return;
+    const target: TeamCardTarget = { agentUid: bot.agentUid, row };
+    if (teamCardLastPick && teamCardPickIdentity(teamCardLastPick) !== teamCardPickIdentity(pick)) teamCardCompleted = undefined;
+    teamCardLastPick = pick;
+    teamCardError = null;
+    teamCardPending = teamCardPickKey(pick);
+    const recordKey = teamCardRecordKey(self?.uid, bot.agentUid);
+    const result = await runTeamCardPick(pick, {
+      host: teamCardHost,
+      agentUid: target.agentUid,
+      pin: pinTeamCardCompany,
+      reply: (text, key) => teamCardReply(text, key, target),
+      completed: teamCardCompleted,
+    });
+    teamCardPending = null;
+    if (result.ok) teamCardRecords = saveTeamCardRecord(teamCardStorage(), teamCardRecords, recordKey, result.settled);
+    else {
+      teamCardCompleted = result.completed;
+      teamCardError = result.reason;
+    }
+  }
   /** "Keep going here": the reply the bot waits for before it starts setup. */
   function keepSetupHere(tool: SetupOfferTool): void {
     setupToolOfferError = null;
@@ -4514,7 +4883,10 @@
   });
   /** The card for a bot paused on a sign-in whose conversation has no waiting signed-out card. */
   function pausedSignInCard(bot: LocalBotRow, own: readonly ConversationMessageWire[]) {
-    if (!botNeedsSignIn(bot)) return null;
+    // Installed but signed out here counts too, before the bot reports it.
+    const signedOutHere =
+      localBotCodingToolNeed(bot, localBotRuntimeReady, localCodingToolsInstalled) === "signIn";
+    if (!botNeedsSignIn(bot) && !signedOutHere) return null;
     const runtime = expiredRuntimeOf(bot);
     if (runtime !== "claude" && runtime !== "codex" && runtime !== "grok") return null;
     const since = bot.runtimeSignIn?.since ?? "";
@@ -4558,13 +4930,14 @@
     });
   });
   /**
-   * The open bot runs on a coding tool that is not installed or not signed in
-   * here (an expired sign-in has its own repair card). The DM says so in one
-   * line and offers the same guided install the setup channel uses, instead
+   * The open bot runs on a coding tool that is not installed here (a signed-out
+   * or expired one has the signed-out repair card instead). The DM says so in
+   * one line and offers the same guided install the setup channel uses, instead
    * of letting each message come back as a failure.
    */
   const selectedLocalBotNeedsCodingTool = $derived(
-    !selectedLocalBotNeedsSignIn && localBotNeedsCodingTool(selectedLocalBot, localBotRuntimeReady),
+    !selectedLocalBotNeedsSignIn &&
+      localBotCodingToolNeed(selectedLocalBot, localBotRuntimeReady, localCodingToolsInstalled) === "install",
   );
   /** The install guide's Continue: re-read the tools, then start the bot again. */
   async function continueBotAfterCodingTool(): Promise<void> {
@@ -5754,8 +6127,9 @@
   // Starting is not finishing: a relaunch mid-run must still land on
   // #welcome, so only the finish graduates welcome-first boot.
   const setupAgent = new SetupAgent(extraPages?.sessions?.setupRun ?? null, {
+    onstarted: noteFirstRunAction,
     onfinished: () => {
-      recordWelcomeSetupRun();
+      recordWelcomeSetupRun("setup-agent-finished");
       // On disk too: the window's memory does not survive a reinstall.
       void adapter.settings.markWelcomeSetupComplete?.();
     },
@@ -6841,7 +7215,7 @@
     timelineCache.set(row.id, next);
     onlivemessages?.(row, next);
     if (row.kind === "dm" && row.personUid) {
-      const entry = dmActivityFromTimeline(row.personUid, next);
+      const entry = dmActivityFromTimeline(row.personUid, fromConversationStart(next, conversationStarts, row.personUid));
       if (entry) {
         const prev = lastDmTimelineStampByUid.get(entry.personUid);
         if (!prev || entry.lastMessageAt > prev) {
@@ -7199,7 +7573,9 @@
     // fetched page, the host's stored thread, a live update), rows written
     // for the bot only are left out and an answer whose root is not shown
     // stays visible.
-    const rows = isBotDmRow(selectedRow) ? botDmRows(source, timelineDisplayFor(selectedRow)) : source;
+    const rows = isBotDmRow(selectedRow)
+      ? botDmRows(fromConversationStart(source, conversationStarts, selectedRow.personUid), timelineDisplayFor(selectedRow))
+      : source;
     if (Object.keys(replyCountOverride).length === 0) return rows;
     return rows.map((msg) =>
       replyCountOverride[msg.eventId] != null
@@ -10005,8 +10381,7 @@
       settled = true;
       welcomeSetupOwed = owed;
       if (owed) return;
-      // Remembered, so the next launch knows before the host answers.
-      markWelcomeSetupRun();
+      if (!welcomeSetupRun) writeFirstRunLine(firstRunTimingLog, formatSetupRunSet("mark-already-set-up"));
       welcomeSetupRun = true;
       setupAgent.markAlreadySetUp();
     };
@@ -10187,8 +10562,9 @@
   const hasBootDeepLink = Boolean(
     bootDeepLink.channelId?.trim() || bootDeepLink.personUid?.trim(),
   );
-  function recordWelcomeSetupRun(): void {
+  function recordWelcomeSetupRun(caller: string): void {
     markWelcomeSetupRun();
+    if (!welcomeSetupRun) writeFirstRunLine(firstRunTimingLog, formatSetupRunSet(caller));
     welcomeSetupRun = true;
   }
   const hasRosterCompany = $derived(rosterCompanies.length > 0);
@@ -12185,6 +12561,7 @@
   }
 
   async function sendForward(req: ForwardRequest): Promise<ForwardResult> {
+    noteFirstRunAction();
     const send = adapter.messaging.forwardMessage;
     if (!send) return { ok: false, code: "UNKNOWN", status: null, files: [], notShareable: [] };
     const http = buildForwardHttpRequest(req);
@@ -12678,6 +13055,7 @@
     if (!row || (!body.trim() && files.length === 0)) {
       throw new Error("Nothing to send");
     }
+    noteFirstRunAction();
     // While the Setup Agent is listening, the composer is its reply box.
     if (isSetupChannel(row.channelId) && setupAgent.listening && files.length === 0) {
       await setupAgent.reply(body.trim());
@@ -14660,14 +15038,18 @@
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
+          {conversationStarts}
           {rosterWakeSeq}
           requestsWakeSeq={notificationWakeSeq}
           onavatarmap={(map) => (contactAvatarByUid = map)}
-          onselect={(row, options) =>
+          onselect={(row, options) => {
+            // A row the person picks, other than #welcome, counts as starting the old first run.
+            if (options?.automatic !== true && !isSetupChannel(row.channelId)) noteFirstRunAction();
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
               automatic: options?.automatic === true,
-            })}
+            });
+          }}
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
           onnavigateMessages={() => {
@@ -14707,12 +15089,15 @@
           {aiTools}
           hqFolderPath={hqFolderPath ?? ""}
           {onopenassistant}
-          {onassistedinstall}
-          {onrequestaitools}
+          onassistedinstall={firstRunAssistedInstall}
+          onrequestaitools={firstRunRequestAiTools}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}
-          onbotsignedin={onBotRuntimeSignedIn}
+          onbotsignedin={(runtime) => {
+            noteFirstRunAction();
+            return onBotRuntimeSignedIn(runtime);
+          }}
           probeBotRuntime={adapter.bots?.probe
             ? (input) => adapter.bots!.probe!(input.runtime, input.model, { effort: input.effort, timeoutSecs: PROBE_TIMEOUT_SECS })
             : null}
@@ -15565,6 +15950,16 @@
                 : "false"}
             >
               {#key selectedRow.id}
+                {#snippet teamCardBelow()}
+                  <TeamCard
+                    options={teamOptionsFrom(companies)}
+                    onpick={(pick) => void pickTeamCard(pick)}
+                    pendingKey={teamCardPending}
+                    error={teamCardError}
+                    onretry={() => teamCardLastPick && void pickTeamCard(teamCardLastPick)}
+                    settled={teamCardView?.settled ?? null}
+                  />
+                {/snippet}
                 {#snippet agentThinkingBelow()}
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
@@ -15789,36 +16184,41 @@
                   {#if botNoticeBelow}{@render localBotNotice()}{/if}
                 {/snippet}
                 {#snippet setupHeader()}
-                  <SetupChannelIntro
-                    settings={adapter.settings}
-                    shell={adapter.shell}
-                    {onopenurl}
-                    onopensessions={extraPages?.sessions?.setupAction || extraPages?.sessions?.createAction
-                      ? () =>
-                          openExtraPage(
-                            "sessions",
-                            (extraPages!.sessions.setupAction ?? extraPages!.sessions.createAction!).param(),
-                          )
-                      : undefined}
-                    companies={rosterCompanies}
-                    onopencompany={openCompanyFromSetup}
-                    oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
-                    {rosterStatus}
-                    {onretryroster}
-                    onsetupstarted={recordWelcomeSetupRun}
-                    readyFirstActionEnabled={readyFirstActionEnabled}
-                    {readyFirstActionReady}
-                    onstartsync={() => {
-                      restoreSyncToast();
-                      return adapter.sync.startSync();
-                    }}
-                    agent={setupAgent}
-                    setupBot={setupBotLauncher}
-                    installGuide={setupInstallGuide}
-                    onopensessiondetails={extraPages?.sessions
-                      ? (sessionId) => openExtraPage("sessions", sessionId)
-                      : undefined}
-                  />
+                  <!-- Until the takeover opens or the route settles legacy, so the old setup it replaces is never on view. -->
+                  {#if firstRunWelcomeWaits}
+                    <ReadLoader testid="welcome-route-pending" />
+                  {:else}
+                    <SetupChannelIntro
+                      settings={adapter.settings}
+                      shell={adapter.shell}
+                      {onopenurl}
+                      onopensessions={extraPages?.sessions?.setupAction || extraPages?.sessions?.createAction
+                        ? () =>
+                            openExtraPage(
+                              "sessions",
+                              (extraPages!.sessions.setupAction ?? extraPages!.sessions.createAction!).param(),
+                            )
+                        : undefined}
+                      companies={rosterCompanies}
+                      onopencompany={openCompanyFromSetup}
+                      oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
+                      {rosterStatus}
+                      {onretryroster}
+                      onsetupstarted={() => recordWelcomeSetupRun("welcome-setup-started")}
+                      readyFirstActionEnabled={readyFirstActionEnabled}
+                      {readyFirstActionReady}
+                      onstartsync={() => {
+                        restoreSyncToast();
+                        return adapter.sync.startSync();
+                      }}
+                      agent={setupAgent}
+                      setupBot={setupBotLauncher}
+                      installGuide={firstRunInstallGuide}
+                      onopensessiondetails={extraPages?.sessions
+                        ? (sessionId) => openExtraPage("sessions", sessionId)
+                        : undefined}
+                    />
+                  {/if}
                 {/snippet}
                 {#snippet companyHeader()}
                   <CompanyHero title={companyHeroTitle} wallpaper={companyWallpaper} />
@@ -15998,6 +16398,8 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
+                  belowEventId={teamCardView?.anchor ?? null}
+                  belowEvent={teamCardBelow}
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
                   runtimeRepair={selectedRuntimeRepair}

@@ -20,7 +20,8 @@ const mainRs = read('src-tauri/src/main.rs');
 const firstRunRs = read('src-tauri/src/commands/first_run.rs');
 const desktopAltRs = read('src-tauri/src/commands/desktop_alt.rs');
 const workShell = read('src/desktop-alt/HqWorkWorkShell.svelte');
-const welcomeCss = read('src/components/onboarding/welcome/welcome.css');
+const onboarding = read('src/components/Onboarding.svelte');
+const wizard = read('src/components/onboarding/OnboardingWizard.svelte');
 
 /** The source from `signature` to the end of its brace-balanced body. */
 function fnBody(source: string, signature: string): string {
@@ -69,6 +70,21 @@ describe('first-run reveal order (US-010)', () => {
     expect(held).not.toContain('hide_onboarding_window');
   });
 
+  it("the ready screen's automatic finish reaches the held reveal", () => {
+    // The ready screen has no button: its auto-finish effect finishes once,
+    // through finishWithRecovery, which calls onfinish.
+    const autoFinish = wizard.slice(wizard.indexOf("if (consentOnly || replay || currentStep !== READY_STEP_INDEX || scene !== 'ready') return;"));
+    inOrder(autoFinish, ['autoFinishAttempted = true;', 'void finishWithRecovery()']);
+    inOrder(fnBody(wizard, 'async function finishWithRecovery('), ['await onfinish?.();']);
+    // onfinish is Onboarding's handleFinish, which opens the desktop through
+    // the command that holds the welcome card until the takeover painted.
+    inOrder(onboarding, ['onfinish={handleFinish}']);
+    const finish = fnBody(onboarding, 'async function handleFinish(');
+    inOrder(finish, ["invoke('mark_first_run_complete')", "await invoke('show_main_window_at_tray');"]);
+    expect(finish).not.toContain('open_desktop_alt_window');
+    expect(mainRs).toContain('commands::first_run::show_main_window_at_tray,');
+  });
+
   it('Windows keeps the original open-then-hide order', () => {
     const windows = cfgBlock(handoff, '#[cfg(target_os = "windows")]');
     inOrder(windows, ['open_desktop_alt_window_inner(app.clone(), None).await?', 'crate::tray::hide_onboarding_window(&app)']);
@@ -115,15 +131,6 @@ describe('first-run reveal order (US-010)', () => {
   it('the shell can send the ready signal: the command is registered and the desktop shell calls it', () => {
     expect(mainRs).toContain('commands::desktop_alt::desktop_first_run_takeover_painted,');
     expect(workShell).toContain("invokeFn('desktop_first_run_takeover_painted')");
-  });
-
-  it("the ready scene's handoff fade stays under 400ms", () => {
-    const at = welcomeCss.indexOf('.hq-welcome .s-ready.on[data-handoff]');
-    expect(at).toBeGreaterThan(-1);
-    const rule = welcomeCss.slice(at, welcomeCss.indexOf('}', at));
-    const ms = Number(/transition:\s*opacity\s+(\d+)ms/.exec(rule)?.[1]);
-    expect(ms).toBeGreaterThan(0);
-    expect(ms).toBeLessThan(400);
   });
 
   it('the shell waits for the held route longer than the host holds it, so a slow flag read still lands its hint', () => {

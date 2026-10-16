@@ -117,7 +117,7 @@ export function deferredConsentBlocksFinish(state: DeferredConsent | null): bool
   return state.phase === 'failed' && state.kind === 'server';
 }
 
-/** How a held answer affects the ready screen's Open HQ Desktop. */
+/** How a held answer affects the ready screen's finish. */
 export function deferredConsentGate(state: DeferredConsent | null): 'clear' | 'pending' | 'blocked' {
   if (!state) return 'clear';
   if (state.phase === 'held' || state.phase === 'sending') return 'pending';

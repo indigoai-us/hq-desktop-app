@@ -19,6 +19,7 @@
   import CompanyStepPreview from './CompanyStepPreview.svelte';
   import HeadsUpWindow from '../src/components/onboarding/HeadsUpWindow.svelte';
   import YourAppsPreview from './YourAppsPreview.svelte';
+  import TeamCardPreview from './TeamCardPreview.svelte';
   import MarketplaceDetailPreview from './MarketplaceDetailPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
@@ -212,7 +213,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'shell' || view === 'lifecycle'
+      : view === 'shell' || view === 'lifecycle' || view === 'team-card'
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
@@ -346,6 +347,10 @@
        ?state=auto|connect|connecting|failed|docs|member|empty|many. Size the
        viewport to ~1200x800 or ~960x600. In-page answers only. -->
   <YourAppsPreview />
+{:else if view === 'team-card'}
+  <!-- The first-run team card on its own (no switch makes the setup bot send
+       its team block): ?state=invite|existing|none|error|settled. -->
+  <TeamCardPreview />
 {:else if view === 'heads-up'}
   <!-- The first-launch heads-up card. Size the viewport to 440x380 (the real
        window). The buttons do nothing here. -->
