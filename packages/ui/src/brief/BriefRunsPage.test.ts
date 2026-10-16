@@ -117,6 +117,27 @@ describe("BriefRunsPage", () => {
     expect(onlaunch).toHaveBeenCalledWith(expect.any(String), "Remove the merged worktrees after checking for unpushed commits.");
   });
 
+  it("shows the stored run before the live sources answer, then lays the live data over it", async () => {
+    let answer: (() => void) | null = null;
+    const adapter = {
+      identity: {
+        whoami: () =>
+          new Promise<{ ok: true; value: { personUid: string; email: string; displayName: string } }>((resolve) => {
+            answer = () => resolve({ ok: true, value: { personUid: "prs_me", email: "corey@getindigo.ai", displayName: "Corey Epstein" } });
+          }),
+      },
+    };
+    render(files(), { adapter });
+    await settle();
+    expect(q("brief-loading")).toBeNull();
+    expect(target.textContent).toContain("Newest call");
+    expect(target.textContent).not.toContain("Corey");
+    answer!();
+    await settle();
+    expect(target.textContent).toContain("Newest call");
+    expect(target.textContent).toContain("Corey");
+  });
+
   it("marks files a run is missing", async () => {
     const f = files();
     delete f[`workspace/brief/${NEW}/brief-data.json`];

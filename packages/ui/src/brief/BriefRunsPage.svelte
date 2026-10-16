@@ -99,7 +99,11 @@
     }
   }
 
-  /** Render one run, or the no-run brief when `runId` is null. */
+  /**
+   * Render one run, or the no-run brief when `runId` is null. A run shows
+   * from its files first, then again with the live sources laid over them
+   * once they answer, so the page never waits on the network to open.
+   */
   async function show(runId: string | null): Promise<void> {
     const mine = ++seq;
     selectedRunId = runId;
@@ -108,27 +112,41 @@
     const created = entry ? new Date(entry.createdAt) : runId ? runIdTime(runId) : null;
     // The brief before this one sets "days away", so a run renders as it did when made.
     const previous = at >= 0 ? (entries.slice(at + 1).find((e) => e.state === "ready") ?? null) : null;
-    try {
-      const { input: day, failures } = await gatherBriefInput(adapter, {
-        companies,
-        now: created ?? new Date(),
-        lastBriefAt: runId ? (previous?.createdAt ?? null) : openedBefore,
-        runId,
-        sweep: source,
-      });
+    const opts = {
+      companies,
+      now: created ?? new Date(),
+      lastBriefAt: runId ? (previous?.createdAt ?? null) : openedBefore,
+      runId,
+      sweep: source,
+    };
+    let shown = false;
+    const present = (day: BriefInput, failures: string[], hk: BriefHousekeeping | null): void => {
       if (failures.length) console.warn("[daily-brief] rendered without", failures.join(", "));
-      const hk = runId && source ? await readRunHousekeeping(source, runId) : null;
-      if (!alive || mine !== seq) return;
       input = day;
-      shownRunId = runId;
-      if (runId) logBrief({ event: "shown", runId });
       housekeeping = hk;
       missing = runId ? failures.filter((f) => f.endsWith(".json")) : [];
       now = new Date();
+      if (shown) return;
+      shown = true;
+      shownRunId = runId;
+      if (runId) logBrief({ event: "shown", runId });
       if (!runId || runId === latestRunId) store?.setItem(LAST_KEY, day.now);
+    };
+    try {
+      const housekeepingRead = runId && source ? readRunHousekeeping(source, runId) : Promise.resolve(null);
+      if (runId && source) {
+        const stored = await gatherBriefInput(adapter, { ...opts, live: false });
+        const hk = await housekeepingRead;
+        if (!alive || mine !== seq) return;
+        present(stored.input, stored.failures, hk);
+      }
+      const live = await gatherBriefInput(adapter, opts);
+      const hk = await housekeepingRead;
+      if (!alive || mine !== seq) return;
+      present(live.input, live.failures, hk);
     } catch (err) {
       console.error("[daily-brief] could not load", err);
-      if (alive && mine === seq) failed = true;
+      if (alive && mine === seq && !shown) failed = true;
     }
   }
 
