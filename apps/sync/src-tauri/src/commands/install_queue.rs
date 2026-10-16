@@ -13,11 +13,15 @@
 //! [`track_external_item`]. Embeddings run last, after the wizard is done.
 //! On relaunch, [`resume_on_launch`] picks up whatever is still pending.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, Once, OnceLock};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures_util::FutureExt;
@@ -373,6 +377,72 @@ fn lingering_items() -> &'static watch::Sender<HashSet<QueueItemId>> {
     LINGERING.get_or_init(|| watch::channel(HashSet::new()).0)
 }
 
+thread_local! {
+    /// The panic flag of the queue item this thread is polling, if any.
+    static POLLING_ITEM_PANIC: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// Chain a panic hook that marks the polling item as panicked before the
+/// existing hook runs. The existing hook can be slow (a backtrace capture can
+/// take longer than a short deadline), and the item's task only ends after
+/// it returns. The mark lets the deadline see that the item panicked.
+fn install_item_panic_hook() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = POLLING_ITEM_PANIC.try_with(|slot| {
+                if let Ok(slot) = slot.try_borrow() {
+                    if let Some(flag) = slot.as_ref() {
+                        flag.store(true, Ordering::SeqCst);
+                    }
+                }
+            });
+            previous(info);
+        }));
+    });
+}
+
+/// Polls `inner` with the item's panic flag published to the panic hook.
+struct PanicMarked<F> {
+    inner: Pin<Box<F>>,
+    panicked: Arc<AtomicBool>,
+}
+
+impl<F: Future> Future for PanicMarked<F> {
+    type Output = F::Output;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        struct Restore(Option<Arc<AtomicBool>>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let previous = self.0.take();
+                let _ = POLLING_ITEM_PANIC.try_with(|slot| {
+                    if let Ok(mut slot) = slot.try_borrow_mut() {
+                        *slot = previous;
+                    }
+                });
+            }
+        }
+        let flag = Arc::clone(&self.panicked);
+        let _restore = Restore(POLLING_ITEM_PANIC.with(|slot| slot.borrow_mut().replace(flag)));
+        let poll = self.inner.as_mut().poll(cx);
+        // Returning from poll means any panic inside it was caught there.
+        self.panicked.store(false, Ordering::SeqCst);
+        poll
+    }
+}
+
+/// Wait until no timed-out attempt of `id` is still alive, so an item never
+/// runs twice at once. Both the queue and the wizard's own run of an item
+/// wait here.
+async fn wait_for_previous_attempt(id: QueueItemId, mut lingering: watch::Receiver<HashSet<QueueItemId>>) {
+    if lingering.borrow().contains(&id) {
+        log(LOG_TAG, &format!("{} waits for its timed-out attempt to stop", id.as_str()));
+    }
+    let _ = lingering.wait_for(|items| !items.contains(&id)).await;
+}
+
 /// Run `work` for item `id` on its own task, bounded by `deadline.limit`.
 ///
 /// On timeout every child process the item registered is cancelled through
@@ -390,15 +460,17 @@ async fn run_with_deadline<F>(
 where
     F: Future<Output = ItemOutcome> + Send + 'static,
 {
+    install_item_panic_hook();
     let cancel_scope = QueueItemCancelScope::default();
     let task_scope = cancel_scope.clone();
-    let mut previous_attempt = lingering.subscribe();
-    let mut task = tokio::spawn(async move {
-        if previous_attempt.borrow().contains(&id) {
-            log(LOG_TAG, &format!("{} waits for its timed-out attempt to stop", id.as_str()));
-        }
-        let _ = previous_attempt.wait_for(|items| !items.contains(&id)).await;
-        task_scope.scope(work).await
+    let previous_attempt = lingering.subscribe();
+    let panicked = Arc::new(AtomicBool::new(false));
+    let mut task = tokio::spawn(PanicMarked {
+        inner: Box::pin(async move {
+            wait_for_previous_attempt(id, previous_attempt).await;
+            task_scope.scope(work).await
+        }),
+        panicked: Arc::clone(&panicked),
     });
 
     match tokio::time::timeout(deadline.limit, &mut task).await {
@@ -416,23 +488,34 @@ where
                 ),
             );
             task.abort();
-            if tokio::time::timeout(deadline.stop_grace, &mut task).await.is_err() {
-                log(
-                    LOG_TAG,
-                    &format!("{} did not stop within {} s; detached", id.as_str(), deadline.stop_grace.as_secs()),
-                );
-                lingering.send_modify(|items| {
-                    items.insert(id);
-                });
-                tokio::spawn(async move {
-                    let _ = task.await;
+            let ended_in_panic = match tokio::time::timeout(deadline.stop_grace, &mut task).await {
+                Ok(Err(err)) => err.is_panic(),
+                Ok(Ok(_)) => false,
+                Err(_) => {
+                    log(
+                        LOG_TAG,
+                        &format!("{} did not stop within {} s; detached", id.as_str(), deadline.stop_grace.as_secs()),
+                    );
                     lingering.send_modify(|items| {
-                        items.remove(&id);
+                        items.insert(id);
                     });
-                    log(LOG_TAG, &format!("{} timed-out attempt stopped", id.as_str()));
-                });
+                    tokio::spawn(async move {
+                        let _ = task.await;
+                        lingering.send_modify(|items| {
+                            items.remove(&id);
+                        });
+                        log(LOG_TAG, &format!("{} timed-out attempt stopped", id.as_str()));
+                    });
+                    false
+                }
+            };
+            // A panic that began before or during the stop wait is the cause,
+            // even when the panic hook or unwinding outlasts the deadline.
+            if ended_in_panic || panicked.load(Ordering::SeqCst) {
+                ItemOutcome::Failed("installer panicked".to_string())
+            } else {
+                ItemOutcome::Failed(timeout_reason(deadline.limit))
             }
-            ItemOutcome::Failed(timeout_reason(deadline.limit))
         }
     }
 }
@@ -450,13 +533,8 @@ async fn run_item(
     let work_app = app.clone();
     let work = install_deps::with_onboarding_failure_scope(scope.clone(), async move {
         install_deps::emit_install_line(&work_app, &format!("[queue] {} started", id.as_str()));
-        match AssertUnwindSafe(execute_item(&work_app, id, scope, hq_path))
-            .catch_unwind()
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => ItemOutcome::Failed("installer panicked".to_string()),
-        }
+        // A panic ends the item's task; run_with_deadline maps it to Failed.
+        execute_item(&work_app, id, scope, hq_path).await
     });
     let deadline = ItemDeadline {
         limit: item_time_limit(id),
@@ -679,6 +757,9 @@ pub(crate) async fn track_external_item<F>(app: &AppHandle, id: QueueItemId, fut
 where
     F: Future<Output = Result<(), String>>,
 {
+    // A timed-out queue attempt of this item may still be stopping. Starting
+    // the wizard's run beside it would run the item twice at once.
+    wait_for_previous_attempt(id, lingering_items().subscribe()).await;
     if !ensure_manifest_ready(false).await {
         return fut.await;
     }
@@ -1153,6 +1234,215 @@ mod tests {
         })
         .await;
         assert_eq!(outcome, ItemOutcome::Failed("installer panicked".to_string()));
+    }
+
+    /// Held by an item's work; dropping it during unwinding blocks the
+    /// thread, like a panic hook capturing a backtrace or a slow cleanup.
+    struct SlowDrop(Duration);
+
+    impl Drop for SlowDrop {
+        fn drop(&mut self) {
+            std::thread::sleep(self.0);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn panic_that_outlasts_the_deadline_still_settles_as_panicked() {
+        let lingering = test_lingering();
+        // The panic starts at once, but unwinding takes longer than the limit
+        // and the stop wait together.
+        let outcome = run_with_deadline(QueueItemId::Yq, short_deadline(), lingering, async {
+            let _slow = SlowDrop(Duration::from_millis(300));
+            panic!("boom");
+        })
+        .await;
+        assert_eq!(outcome, ItemOutcome::Failed("installer panicked".to_string()));
+        let mut changes = lingering.subscribe();
+        tokio::time::timeout(Duration::from_secs(5), changes.wait_for(|items| !items.contains(&QueueItemId::Yq)))
+            .await
+            .expect("the unwinding attempt leaves the lingering set when it ends")
+            .expect("channel open");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn panic_during_the_stop_wait_settles_as_panicked() {
+        let deadline = ItemDeadline {
+            limit: Duration::from_millis(50),
+            stop_grace: Duration::from_secs(2),
+        };
+        // Blocking work ignores the abort and panics inside the stop wait.
+        let outcome = run_with_deadline(QueueItemId::Gh, deadline, test_lingering(), async {
+            std::thread::sleep(Duration::from_millis(150));
+            panic!("boom");
+        })
+        .await;
+        assert_eq!(outcome, ItemOutcome::Failed("installer panicked".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn caught_panic_followed_by_a_hang_settles_as_a_timeout() {
+        // The limit leaves the caught panic's hook (a backtrace capture when
+        // RUST_BACKTRACE is set) time to finish before the deadline fires.
+        let deadline = ItemDeadline {
+            limit: Duration::from_secs(3),
+            stop_grace: Duration::from_millis(20),
+        };
+        let outcome = run_with_deadline(QueueItemId::ClaudeCode, deadline, test_lingering(), async {
+            let caught = std::panic::catch_unwind(|| panic!("handled inside the installer"));
+            assert!(caught.is_err());
+            std::future::pending::<ItemOutcome>().await
+        })
+        .await;
+        assert_eq!(outcome, ItemOutcome::Failed(timeout_reason(Duration::from_secs(3))));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn item_timing_out_while_another_item_panics_keeps_both_causes() {
+        let lingering = test_lingering();
+        let hung_handle = uuid::Uuid::new_v4().to_string();
+        let panicking_handle = uuid::Uuid::new_v4().to_string();
+        let (hung_registered, panic_registered) = (hung_handle.clone(), panicking_handle.clone());
+        let deadline = ItemDeadline {
+            limit: Duration::from_millis(100),
+            stop_grace: Duration::from_millis(20),
+        };
+        let hung = run_with_deadline(QueueItemId::HqCli, deadline, lingering, async move {
+            install_deps::register_cancel_handle(hung_registered);
+            std::future::pending::<ItemOutcome>().await
+        });
+        let panicking = run_with_deadline(QueueItemId::Node, short_deadline(), lingering, async move {
+            install_deps::register_cancel_handle(panic_registered);
+            let _slow = SlowDrop(Duration::from_millis(300));
+            panic!("boom");
+        });
+        let (hung, panicking) = tokio::join!(hung, panicking);
+
+        assert_eq!(hung, ItemOutcome::Failed(timeout_reason(Duration::from_millis(100))));
+        assert_eq!(panicking, ItemOutcome::Failed("installer panicked".to_string()));
+        assert!(install_deps::is_cancelled_for_test(&hung_handle), "the hung item's process is cancelled");
+        install_deps::deregister_handle_for_test(&hung_handle);
+        install_deps::deregister_handle_for_test(&panicking_handle);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deadline_cancel_during_a_panic_cancels_the_item_and_reports_the_panic() {
+        let lingering = test_lingering();
+        let handle = uuid::Uuid::new_v4().to_string();
+        let registered = handle.clone();
+        // The item registers a child process and panics. The deadline fires
+        // while it unwinds, so the cancel request and the panic overlap.
+        let outcome = run_with_deadline(QueueItemId::Embeddings, short_deadline(), lingering, async move {
+            install_deps::register_cancel_handle(registered);
+            let _slow = SlowDrop(Duration::from_millis(200));
+            panic!("boom");
+        })
+        .await;
+        assert_eq!(outcome, ItemOutcome::Failed("installer panicked".to_string()));
+        assert!(install_deps::is_cancelled_for_test(&handle), "the panicking item's process still gets the cancel");
+        let mut changes = lingering.subscribe();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            changes.wait_for(|items| !items.contains(&QueueItemId::Embeddings)),
+        )
+        .await
+        .expect("the panicking attempt leaves the lingering set when it ends")
+        .expect("channel open");
+        install_deps::deregister_handle_for_test(&handle);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wizard_run_waits_while_a_timed_out_attempt_is_alive() {
+        let lingering = test_lingering();
+        lingering.send_modify(|items| {
+            items.insert(QueueItemId::Qmd);
+        });
+        let waiter = tokio::spawn(wait_for_previous_attempt(QueueItemId::Qmd, lingering.subscribe()));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!waiter.is_finished(), "the run does not start beside the stuck attempt");
+
+        lingering.send_modify(|items| {
+            items.insert(QueueItemId::Gh);
+            items.remove(&QueueItemId::Qmd);
+        });
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("the run starts once the old attempt ends")
+            .expect("waiter task");
+    }
+
+    /// A fake `hq` that starts a long-running grandchild, records both pids,
+    /// and waits, like `hq reindex` driving its own worker processes.
+    #[cfg(unix)]
+    fn fake_hq_with_grandchild(dir: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("hq");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho started > started\nsleep 30 &\necho $! > grandchild.pid\nwait\n",
+        )
+        .expect("write fake hq");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod fake hq");
+        script.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    fn process_alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks that the process exists.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timed_out_hq_command_is_stopped_with_its_children() {
+        use crate::commands::install_stages::run_hq_output_with_invocation;
+        use hq_desktop_core::hq_resolver::HqInvocation;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hq = fake_hq_with_grandchild(dir.path());
+        let root = dir.path().to_path_buf();
+        let lingering = test_lingering();
+        let deadline = ItemDeadline {
+            limit: Duration::from_millis(500),
+            stop_grace: Duration::from_secs(2),
+        };
+        let outcome = run_with_deadline(QueueItemId::SearchIndex, deadline, lingering, async move {
+            match run_hq_output_with_invocation(&["reindex"], &root, HqInvocation::Local(hq)).await {
+                Ok(_) => ItemOutcome::Done,
+                Err(failure) => ItemOutcome::Failed(failure.message),
+            }
+        })
+        .await;
+        assert_eq!(outcome, ItemOutcome::Failed(timeout_reason(Duration::from_millis(500))));
+        assert!(!lingering.borrow().contains(&QueueItemId::SearchIndex), "the attempt ended inside the stop wait");
+
+        let pid: i32 = std::fs::read_to_string(dir.path().join("grandchild.pid"))
+            .expect("the fake hq started its worker")
+            .trim()
+            .parse()
+            .expect("pid");
+        let stopped_by = Instant::now() + Duration::from_secs(5);
+        while process_alive(pid) && Instant::now() < stopped_by {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!process_alive(pid), "the timed-out command's worker process keeps running");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hq_command_is_not_started_once_the_item_is_out_of_time() {
+        use crate::commands::install_stages::run_hq_output_with_invocation;
+        use hq_desktop_core::hq_resolver::HqInvocation;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hq = fake_hq_with_grandchild(dir.path());
+        let scope = QueueItemCancelScope::default();
+        scope.expire();
+        let result = scope
+            .scope(run_hq_output_with_invocation(&["reindex"], dir.path(), HqInvocation::Local(hq)))
+            .await;
+        let failure = result.expect_err("an out-of-time item must not start hq");
+        assert_eq!(failure.error_category, crate::commands::install_stages::OnboardingErrorCategory::Timeout);
+        assert!(!dir.path().join("started").exists(), "hq was spawned after the deadline");
     }
 
     #[test]

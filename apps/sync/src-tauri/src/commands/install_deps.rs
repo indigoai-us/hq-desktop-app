@@ -576,6 +576,70 @@ tokio::task_local! {
     static ACTIVE_QUEUE_ITEM_CANCEL_SCOPE: QueueItemCancelScope;
 }
 
+/// Cancel tracking for a child started with `tokio::process::Command` outside
+/// the streaming helper (such as `hq reindex`). The child joins the cancel
+/// registry, so a queue item's deadline reaches it, and its process tree is
+/// killed when the registration is dropped after a cancel, including when the
+/// item's task is aborted mid-wait.
+pub(crate) struct TrackedChild {
+    handle: String,
+}
+
+impl TrackedChild {
+    /// Register before spawning. Returns `None` when the queue item already
+    /// ran out of time, so the caller must not start the child.
+    pub(crate) fn register(cmd: &mut tokio::process::Command) -> Option<Self> {
+        let handle = Uuid::new_v4().to_string();
+        register_cancel_handle(handle.clone());
+        let tracked = Self { handle };
+        if is_cancelled(&tracked.handle) {
+            return None;
+        }
+        cmd.kill_on_drop(true);
+        #[cfg(unix)]
+        cmd.process_group(0);
+        Some(tracked)
+    }
+
+    /// Record the spawned child as this registration's kill target. A cancel
+    /// that arrived between spawn and attach is applied here.
+    pub(crate) fn attach(&self, child: &tokio::process::Child) {
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            register_process_group(&self.handle, pid as i32);
+        }
+        #[cfg(windows)]
+        if let (Ok(job), Some(raw)) = (create_job_object(), child.raw_handle()) {
+            // The registry holds the job until this registration is dropped.
+            if assign_process_to_job(job.0, raw as HANDLE).is_ok() {
+                register_job_handle(&self.handle, Arc::new(job));
+            }
+        }
+        if is_cancelled(&self.handle) {
+            self.kill_tree();
+        }
+    }
+
+    fn kill_tree(&self) {
+        #[cfg(unix)]
+        let result = terminate_process_tree(&self.handle, Signal::SIGKILL);
+        #[cfg(windows)]
+        let result = terminate_process_tree(&self.handle);
+        if let Err(e) = result {
+            record_cleanup_failure(&self.handle, e);
+        }
+    }
+}
+
+impl Drop for TrackedChild {
+    fn drop(&mut self) {
+        if is_cancelled(&self.handle) {
+            self.kill_tree();
+        }
+        deregister_handle(&self.handle);
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn is_cancelled_for_test(handle: &str) -> bool {
     is_cancelled(handle)
