@@ -19,6 +19,33 @@ export interface TeamCardPickDeps {
   reply: (text: string, idempotencyKey: string) => void | Promise<void>;
   /** The runner already succeeded for this pick and only the reply failed: resend without running it again. */
   completed?: FirstRunTeamChoice;
+  /**
+   * A create just made a company, before its reply is sent: keep it, so a
+   * failed reply or a restart never creates a second one.
+   */
+  created?: (choice: FirstRunTeamChoice) => void;
+}
+
+/** The last pick on the card and, when only its reply failed, what it produced. */
+export interface TeamCardLastPick {
+  pick: TeamCardPick;
+  completed?: FirstRunTeamChoice;
+}
+
+/**
+ * What a press runs, given the last pick. Once a create has made a company,
+ * every press resends that company's reply under the original pick (a new
+ * name, or another card, never provisions again). A failed join or open is
+ * resent only when the same card is pressed again.
+ */
+export function teamCardResume(
+  pick: TeamCardPick,
+  last: TeamCardLastPick | null,
+): { pick: TeamCardPick; completed?: FirstRunTeamChoice } {
+  const done = last?.completed;
+  if (done?.kind === "company" && done.how === "created") return { pick: last!.pick, completed: done };
+  if (done && teamCardPickIdentity(last!.pick) === teamCardPickIdentity(pick)) return { pick, completed: done };
+  return { pick };
 }
 
 export type TeamCardPickResult =
@@ -41,6 +68,15 @@ export function teamCardIdempotencyKey(pick: TeamCardPick, agentUid: string): st
   return `first-run-team:${agentUid.trim()}:${teamCardPickIdentity(pick)}`;
 }
 
+/** The company exists now: a failure to keep it must not read as a failed create. */
+function keepCreated(deps: TeamCardPickDeps, choice: FirstRunTeamChoice): void {
+  try {
+    deps.created?.(choice);
+  } catch (err) {
+    console.warn("[hq-desktop] could not keep the created company for the team card:", err);
+  }
+}
+
 export async function runTeamCardPick(pick: TeamCardPick, deps: TeamCardPickDeps): Promise<TeamCardPickResult> {
   let choice: FirstRunTeamChoice;
   try {
@@ -55,6 +91,7 @@ export async function runTeamCardPick(pick: TeamCardPick, deps: TeamCardPickDeps
       const result = pick.kind === "invite" ? await deps.host.join(pick.company) : await deps.host.create(pick.name);
       if (!result.ok) return { ok: false, reason: result.reason || TEAM_CARD_FAILURE };
       choice = result.choice;
+      if (pick.kind === "create") keepCreated(deps, choice);
     }
   } catch (err) {
     console.warn("[hq-desktop] team card pick failed:", err);

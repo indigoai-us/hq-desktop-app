@@ -3,7 +3,13 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createTeamCardReplies, runTeamCardPick, teamCardIdempotencyKey, TEAM_CARD_FAILURE } from "./team-card-pick";
+import {
+  createTeamCardReplies,
+  runTeamCardPick,
+  teamCardIdempotencyKey,
+  teamCardResume,
+  TEAM_CARD_FAILURE,
+} from "./team-card-pick";
 
 const acme = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
 
@@ -113,5 +119,98 @@ describe("createTeamCardReplies", () => {
     await expect(reply("Just me for now.", "first-run-team:personal", "agt_setup")).rejects.toThrow("send failed");
     await reply("Just me for now.", "first-run-team:personal", "agt_setup");
     expect(send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("a create whose reply fails", () => {
+  const created = {
+    kind: "company" as const,
+    how: "created" as const,
+    company: { companyUid: "cmp_new", slug: "pickle", name: "Pickle" },
+  };
+
+  it("keeps the created company before the reply is sent", async () => {
+    const d = deps();
+    const order: string[] = [];
+    const kept = vi.fn(() => void order.push("created"));
+    d.reply.mockImplementation(() => void order.push("reply"));
+    await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...d, created: kept });
+    expect(kept).toHaveBeenCalledWith(created);
+    expect(order).toEqual(["created", "reply"]);
+  });
+
+  it("a failure to keep it still sends the reply and settles", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const d = deps();
+    const result = await runTeamCardPick(
+      { kind: "create", name: "Pickle" },
+      {
+        ...d,
+        created: () => {
+          throw new Error("quota");
+        },
+      },
+    );
+    expect(d.reply).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ ok: true, settled: "Created Pickle" });
+  });
+
+  it("join, open and Just me keep nothing", async () => {
+    const d = deps();
+    const kept = vi.fn();
+    await runTeamCardPick({ kind: "invite", company: acme }, { ...d, created: kept });
+    await runTeamCardPick({ kind: "existing", company: acme }, { ...d, created: kept });
+    await runTeamCardPick({ kind: "personal" }, { ...d, created: kept });
+    expect(kept).not.toHaveBeenCalled();
+  });
+
+  it("returns the created company, and a press with another name resends its reply without creating again", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const d = deps();
+    d.reply.mockImplementationOnce(() => {
+      throw new Error("send failed");
+    });
+    const first = await runTeamCardPick({ kind: "create", name: "Pickle" }, d);
+    expect(first).toEqual({ ok: false, reason: TEAM_CARD_FAILURE, completed: created });
+
+    const run = teamCardResume({ kind: "create", name: "Brine" }, { pick: { kind: "create", name: "Pickle" }, completed: created });
+    const second = await runTeamCardPick(run.pick, { ...d, completed: run.completed });
+    expect(d.create).toHaveBeenCalledOnce();
+    expect(d.reply).toHaveBeenLastCalledWith("I created Pickle.", "first-run-team:agt_setup:create:pickle");
+    expect(second).toMatchObject({ ok: true, settled: "Created Pickle" });
+  });
+});
+
+describe("teamCardResume", () => {
+  const created = {
+    kind: "company" as const,
+    how: "created" as const,
+    company: { companyUid: "cmp_new", slug: "pickle", name: "Pickle" },
+  };
+  const joined = { kind: "company" as const, how: "joined" as const, company: acme };
+
+  it("nothing done yet: runs the press as it is", () => {
+    expect(teamCardResume({ kind: "create", name: "Brine" }, null)).toEqual({ pick: { kind: "create", name: "Brine" } });
+    expect(teamCardResume({ kind: "personal" }, { pick: { kind: "create", name: "Pickle" } })).toEqual({
+      pick: { kind: "personal" },
+    });
+  });
+
+  it("a created company wins over any press: another name, another row, or Just me", () => {
+    const last = { pick: { kind: "create" as const, name: "Pickle" }, completed: created };
+    for (const press of [
+      { kind: "create" as const, name: "Brine" },
+      { kind: "invite" as const, company: acme },
+      { kind: "existing" as const, company: acme },
+      { kind: "personal" as const },
+    ]) {
+      expect(teamCardResume(press, last)).toEqual({ pick: { kind: "create", name: "Pickle" }, completed: created });
+    }
+  });
+
+  it("a failed join reply is resent for the same row only", () => {
+    const last = { pick: { kind: "invite" as const, company: acme }, completed: joined };
+    expect(teamCardResume({ kind: "invite", company: acme }, last)).toEqual({ pick: last.pick, completed: joined });
+    expect(teamCardResume({ kind: "personal" }, last)).toEqual({ pick: { kind: "personal" } });
   });
 });

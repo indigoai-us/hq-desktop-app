@@ -8,7 +8,9 @@ import { teamCardReplyText } from "./team-card-pick";
 import {
   TEAM_CARD_RECORDS_KEY,
   loadTeamCardRecords,
+  loadTeamCardUnsentCreate,
   saveTeamCardRecord,
+  saveTeamCardUnsentCreate,
   teamCardRecordKey,
   teamCardSettledFromReply,
   teamCardSettledFromReplyText,
@@ -117,5 +119,42 @@ describe("settled line from the person's reply", () => {
     ).toBeNull();
     expect(teamCardSettledFromReply([{ fromPersonUid: BOT, body: "Hi." }], BOT)).toBeNull();
     expect(teamCardSettledFromReply([{ fromPersonUid: ME, body: "Just me for now." }], " ")).toBeNull();
+  });
+});
+
+describe("a created company whose reply has not gone through", () => {
+  const key = teamCardRecordKey(ME, BOT);
+  const unsent = { created: { companyUid: "cmp_new", slug: "pickle", name: "Pickle" }, name: "Pickle" };
+
+  it("is read back by a fresh load, as after a restart, and is not a settled line", () => {
+    const storage = memoryStorage();
+    saveTeamCardUnsentCreate(storage, key, unsent);
+    expect(loadTeamCardUnsentCreate(storage, key)).toEqual(unsent);
+    expect(loadTeamCardRecords(storage)).toEqual({});
+    expect(loadTeamCardUnsentCreate(storage, teamCardRecordKey("prs_other", BOT))).toBeNull();
+  });
+
+  it("is replaced by the settled line once the reply goes through, and other records are kept", () => {
+    const other = teamCardRecordKey("prs_other", BOT);
+    const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [other]: "Working solo" }) });
+    saveTeamCardUnsentCreate(storage, key, unsent);
+    const records = saveTeamCardRecord(storage, loadTeamCardRecords(storage), key, "Created Pickle");
+    expect(records).toEqual({ [other]: "Working solo", [key]: "Created Pickle" });
+    expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+    expect(JSON.parse(storage.data.get(TEAM_CARD_RECORDS_KEY)!)).toEqual({ [other]: "Working solo", [key]: "Created Pickle" });
+  });
+
+  it("never replaces a settled line", () => {
+    const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: "Joined Acme" }) });
+    saveTeamCardUnsentCreate(storage, key, unsent);
+    expect(loadTeamCardRecords(storage)).toEqual({ [key]: "Joined Acme" });
+    expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+  });
+
+  it("anything malformed under the key reads as none", () => {
+    for (const value of [{ created: { slug: "pickle" }, name: "Pickle" }, { created: unsent.created, name: " " }, 7, null]) {
+      const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: value }) });
+      expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+    }
   });
 });
