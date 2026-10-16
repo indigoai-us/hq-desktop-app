@@ -13,6 +13,7 @@ import {
   loadTeamCardUnsentCreate,
   saveTeamCardCreating,
   saveTeamCardRecord,
+  saveTeamCardReplyFailures,
   saveTeamCardUnsentCreate,
   teamCardRecordKey,
   teamCardSettledFromReply,
@@ -152,6 +153,25 @@ describe("a created company whose reply has not gone through", () => {
     saveTeamCardUnsentCreate(storage, key, unsent);
     expect(loadTeamCardRecords(storage)).toEqual({ [key]: "Joined Acme" });
     expect(loadTeamCardUnsentCreate(storage, key)).toBeNull();
+  });
+
+  it("keeps how many sends of its reply failed, across a restart", () => {
+    const other = teamCardRecordKey("prs_other", BOT);
+    const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [other]: "Working solo" }) });
+    saveTeamCardUnsentCreate(storage, key, unsent);
+    expect(saveTeamCardReplyFailures(storage, key, 2)).toBe(true);
+    expect(loadTeamCardUnsentCreate(storage, key)).toEqual({ ...unsent, replyFailures: 2 });
+    expect(loadTeamCardRecords(storage)).toEqual({ [other]: "Working solo" });
+    // Nothing to count against without a made company.
+    expect(saveTeamCardReplyFailures(storage, other, 1)).toBe(false);
+    expect(loadTeamCardRecords(storage)).toEqual({ [other]: "Working solo" });
+  });
+
+  it("a count that is not a whole number above zero reads as none", () => {
+    for (const replyFailures of [0, -1, 1.5, "2", null]) {
+      const storage = memoryStorage({ [TEAM_CARD_RECORDS_KEY]: JSON.stringify({ [key]: { ...unsent, replyFailures } }) });
+      expect(loadTeamCardUnsentCreate(storage, key)).toEqual(unsent);
+    }
   });
 
   it("anything malformed under the key reads as none", () => {

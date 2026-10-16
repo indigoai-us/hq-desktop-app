@@ -29,6 +29,8 @@ export type TeamCardRecords = Readonly<Record<string, string>>;
 export interface TeamCardUnsentCreate {
   created: FirstRunTeamCompany;
   name: string;
+  /** How many sends of its reply have failed, so a restart does not reset the bound. */
+  replyFailures?: number;
 }
 
 /** A create that was sent and has not answered: the name the person typed and its slug. */
@@ -98,13 +100,14 @@ export function saveTeamCardRecord(
 
 function unsentCreate(value: unknown): TeamCardUnsentCreate | null {
   if (!value || typeof value !== "object") return null;
-  const { created, name } = value as { created?: unknown; name?: unknown };
+  const { created, name, replyFailures } = value as { created?: unknown; name?: unknown; replyFailures?: unknown };
   if (!created || typeof created !== "object" || typeof name !== "string" || !name.trim()) return null;
   const company = created as Partial<FirstRunTeamCompany>;
   if (typeof company.slug !== "string" || !company.slug.trim()) return null;
   if (typeof company.name !== "string" || !company.name.trim()) return null;
   const companyUid = typeof company.companyUid === "string" ? company.companyUid : null;
-  return { created: { companyUid, slug: company.slug, name: company.name }, name };
+  const failures = typeof replyFailures === "number" && Number.isInteger(replyFailures) && replyFailures > 0 ? replyFailures : 0;
+  return { created: { companyUid, slug: company.slug, name: company.name }, name, ...(failures ? { replyFailures: failures } : {}) };
 }
 
 /** The unsent create under `key`: a create made a company and its reply has not gone through. */
@@ -128,6 +131,14 @@ export function saveTeamCardUnsentCreate(
   const entries = readTeamCardEntries(storage);
   if (typeof entries[key] === "string") return false;
   return writeTeamCardEntries(storage, { ...entries, [key]: { created: unsent.created, name: unsent.name } });
+}
+
+/** Count the failed sends of an unsent create's reply. Leaves anything else under `key`. */
+export function saveTeamCardReplyFailures(storage: WriteStorage | null | undefined, key: string, replyFailures: number): boolean {
+  const entries = readTeamCardEntries(storage);
+  const unsent = unsentCreate(entries[key]);
+  if (!unsent) return false;
+  return writeTeamCardEntries(storage, { ...entries, [key]: { created: unsent.created, name: unsent.name, replyFailures } });
 }
 
 function pendingCreate(value: unknown): TeamCardCreating | null {

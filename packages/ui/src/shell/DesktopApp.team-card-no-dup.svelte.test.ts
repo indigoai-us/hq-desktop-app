@@ -429,6 +429,59 @@ describe("the team card never creates a second company", () => {
     expect(logToFile.mock.calls.some((call) => String(call[1]).includes("kind=team-card event=reply-abandoned"))).toBe(true);
   });
 
+  it("a create sent again after a timeout and refused keeps the card on its name, and only looks for the company", async () => {
+    flow.submit
+      .mockResolvedValueOnce({ ok: false, reason: CREATE_COMPANY_NO_RESULT_REASON, blocked: false })
+      .mockResolvedValueOnce({ ok: false, reason: "That handle is taken.", blocked: true });
+    const props = await openSetupDm([teamMessage]);
+    await create("Pickle");
+    await waitFor('[data-testid="team-card-error"]');
+
+    // Not in the roster yet: the same name is sent again, and the server
+    // refuses it because the first create took the slug.
+    renameAndCreate();
+    await vi.waitFor(() => expect(flow.submit).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(q('[data-testid="team-card"]')?.getAttribute("aria-busy")).toBe("false"));
+    await waitFor('[data-testid="team-card-error"]');
+    expect(q<HTMLInputElement>('[data-testid="team-card-name"]')!.value).toBe("Pickle");
+
+    // A new name and Create only look again.
+    renameAndCreate();
+    await vi.waitFor(() => expect(q('[data-testid="team-card"]')?.getAttribute("aria-busy")).toBe("false"));
+    await waitFor('[data-testid="team-card-error"]');
+    expect(flow.submit).toHaveBeenCalledTimes(2);
+    expect(q<HTMLInputElement>('[data-testid="team-card-name"]')!.value).toBe("Pickle");
+
+    // The company shows up, not active yet; Retry finds it.
+    props.companies = [{ ...pickleWorkspace(), membershipStatus: null }] as never;
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-retry"]')).click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledOnce());
+    await toSetupBot();
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Created Pickle"));
+    expect(flow.submit).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(flow.submit.mock.calls)).not.toMatch(/brine/i);
+    expect(sentTexts()).toEqual(["I created Pickle."]);
+  });
+
+  it("the failed sends of a reply count across a restart", async () => {
+    sendDm.mockResolvedValue({ ok: false, message: "network down" });
+    const messages = [teamMessage];
+    await openSetupDm(messages);
+    await create("Pickle");
+    await backToSetupBot();
+    await waitFor('[data-testid="team-card-error"]');
+
+    await restart(messages);
+    await waitFor('[data-testid="team-card-name"]');
+    renameAndCreate();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(2));
+    (await waitFor<HTMLButtonElement>('[data-testid="team-card-retry"]')).click();
+
+    await vi.waitFor(() => expect(q('[data-testid="team-card-settled"]')?.textContent).toContain("Created Pickle"));
+    expect(sendDm).toHaveBeenCalledTimes(3);
+    expect(flow.submit).toHaveBeenCalledOnce();
+  });
+
   it("a lock the browser cannot store still holds for the session", async () => {
     const setItem = Storage.prototype.setItem;
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {

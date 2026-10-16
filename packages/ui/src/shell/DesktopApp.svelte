@@ -221,7 +221,7 @@
   import SetupToolOffer from "../chat/SetupToolOffer.svelte";
   import TeamCard from "../chat/first-run/TeamCard.svelte";
   import {
-    activeCloudCompanyBySlug,
+    ownCloudCompanyBySlug,
     teamCardAnchorEventId,
     teamCardDue,
     teamCardPickKey,
@@ -240,6 +240,7 @@
     clearTeamCardCreating,
     loadTeamCardRecords,
     saveTeamCardCreating,
+    saveTeamCardReplyFailures,
     saveTeamCardRecord,
     saveTeamCardUnsentCreate,
     teamCardRecordKey,
@@ -4658,7 +4659,7 @@
     created: pinTeamCardCompany,
     findCompany: async (slug) => {
       await refreshRoster();
-      return activeCloudCompanyBySlug(companies, slug);
+      return ownCloudCompanyBySlug(companies, slug);
     },
   });
   function pinTeamCardCompany(companyUid: string | null): void {
@@ -4681,7 +4682,12 @@
     const target: TeamCardTarget = { agentUid: bot.agentUid, row };
     const recordKey = teamCardRecordKey(uid, bot.agentUid);
     const run = teamCardResume(pick, teamCardLast ?? teamCardStoredLast(teamCardStorage(), recordKey));
-    teamCardLast = { pick: run.pick, completed: run.completed, creating: run.pick.kind === "create" && !run.completed };
+    teamCardLast = {
+      pick: run.pick,
+      completed: run.completed,
+      creating: run.pick.kind === "create" && !run.completed,
+      refused: run.refused,
+    };
     teamCardError = null;
     teamCardPending = teamCardPickKey(run.pick);
     const result = await runTeamCardPick(run.pick, {
@@ -4692,6 +4698,7 @@
       completed: run.completed,
       replyFailures: run.replyFailures,
       unresolved: run.unresolved,
+      refused: run.refused,
       creating: (pending) => saveTeamCardCreating(teamCardStorage(), recordKey, pending),
       notCreating: () => clearTeamCardCreating(teamCardStorage(), recordKey),
       created: (choice) => {
@@ -4701,12 +4708,19 @@
       log: (line) => writeFirstRunLine(firstRunTimingLog, line),
     });
     if (result.ok) teamCardRecords = saveTeamCardRecord(teamCardStorage(), teamCardRecords, recordKey, result.settled);
+    else if (result.replyFailures) saveTeamCardReplyFailures(teamCardStorage(), recordKey, result.replyFailures);
     // The account changed while the pick ran: its card was cleared.
     if (self?.uid?.trim() !== uid) return;
     teamCardPending = null;
     teamCardLast = result.ok
       ? null
-      : { pick: run.pick, completed: result.completed, creating: result.creating, replyFailures: result.replyFailures };
+      : {
+          pick: run.pick,
+          completed: result.completed,
+          creating: result.creating,
+          refused: result.refused,
+          replyFailures: result.replyFailures,
+        };
     if (!result.ok) teamCardError = result.reason;
   }
   /** "Keep going here": the reply the bot waits for before it starts setup. */

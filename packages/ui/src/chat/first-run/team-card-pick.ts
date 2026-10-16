@@ -36,6 +36,12 @@ export interface TeamCardPickDeps {
    */
   unresolved?: boolean;
   /**
+   * The unresolved create was sent again and the server refused it: the slug
+   * is taken, most likely by the company the first create made. Only look for
+   * that company; never create again.
+   */
+  refused?: boolean;
+  /**
    * Keep a create before it is sent, so a timeout, a failure or a restart
    * after the server made the company never leads to a second one.
    */
@@ -57,6 +63,8 @@ export interface TeamCardLastPick {
   completed?: FirstRunTeamChoice;
   /** The pick was a create whose outcome is unknown: the card stays on its name. */
   creating?: boolean;
+  /** That create came back refused after an unresolved one: presses only look for the company. */
+  refused?: boolean;
   /** How many sends of the reply have failed. */
   replyFailures?: number;
 }
@@ -71,18 +79,25 @@ export const TEAM_CARD_REPLY_TRIES = 3;
  * What a press runs, given the last pick. Once a create has made a company,
  * every press resends that company's reply under the original pick (a new
  * name, or another card, never provisions again). While a create's outcome is
- * unknown, every press first looks for that company under the original name.
- * A failed join or open is resent only when the same card is pressed again.
+ * unknown, every press first looks for that company under the original name
+ * (and, once a create of it was refused, only looks). A failed join or open is resent only when the same card is pressed again.
  */
 export function teamCardResume(
   pick: TeamCardPick,
   last: TeamCardLastPick | null,
-): { pick: TeamCardPick; completed?: FirstRunTeamChoice; replyFailures?: number; unresolved?: boolean } {
+): {
+  pick: TeamCardPick;
+  completed?: FirstRunTeamChoice;
+  replyFailures?: number;
+  unresolved?: boolean;
+  refused?: boolean;
+} {
   if (!last) return { pick };
   const done = last.completed;
   if (last.pick.kind === "create" && done?.kind === "company")
     return { pick: last.pick, completed: done, replyFailures: last.replyFailures };
-  if (last.pick.kind === "create" && last.creating) return { pick: last.pick, unresolved: true };
+  if (last.pick.kind === "create" && last.creating)
+    return { pick: last.pick, unresolved: true, ...(last.refused ? { refused: true } : {}) };
   if (done && teamCardPickIdentity(last.pick) === teamCardPickIdentity(pick))
     return { pick, completed: done, replyFailures: last.replyFailures };
   return { pick };
@@ -92,7 +107,11 @@ export function teamCardResume(
 export function teamCardStoredLast(storage: Pick<Storage, "getItem"> | null | undefined, key: string): TeamCardLastPick | null {
   const unsent = loadTeamCardUnsentCreate(storage, key);
   if (unsent)
-    return { pick: { kind: "create", name: unsent.name }, completed: { kind: "company", how: "created", company: unsent.created } };
+    return {
+      pick: { kind: "create", name: unsent.name },
+      completed: { kind: "company", how: "created", company: unsent.created },
+      ...(unsent.replyFailures ? { replyFailures: unsent.replyFailures } : {}),
+    };
   const pending = loadTeamCardCreating(storage, key);
   return pending ? { pick: { kind: "create", name: pending.name }, creating: true } : null;
 }
@@ -106,7 +125,14 @@ export function teamCardLockName(last: TeamCardLastPick | null): string | null {
 
 export type TeamCardPickResult =
   | { ok: true; settled: string; choice: FirstRunTeamChoice }
-  | { ok: false; reason: string; completed?: FirstRunTeamChoice; creating?: boolean; replyFailures?: number };
+  | {
+      ok: false;
+      reason: string;
+      completed?: FirstRunTeamChoice;
+      creating?: boolean;
+      refused?: boolean;
+      replyFailures?: number;
+    };
 
 /** Shown when a runner throws instead of answering: never the raw error. */
 export const TEAM_CARD_FAILURE = "Something went wrong. Try again.";
@@ -149,27 +175,43 @@ async function findCreated(host: FirstRunTeamHost, name: string): Promise<FirstR
   }
 }
 
-type CreateOutcome = { ok: true; choice: FirstRunTeamChoice } | { ok: false; reason: string; creating?: boolean };
+type CreateOutcome =
+  | { ok: true; choice: FirstRunTeamChoice }
+  | { ok: false; reason: string; creating?: boolean; refused?: boolean };
+
+/** Look for the company an earlier create of `name` may have made; lock the card on it when found. */
+async function findAndKeep(name: string, deps: TeamCardPickDeps): Promise<FirstRunTeamChoice | null> {
+  const found = await findCreated(deps.host, name);
+  if (!found) return null;
+  // Pinned as a create pins it; the company exists either way.
+  keep("found company's pin", () =>
+    void Promise.resolve(deps.pin(found.companyUid)).catch((err) =>
+      console.warn("[hq-desktop] could not pin the found company for the team card:", err),
+    ),
+  );
+  return keepCreated(deps, found);
+}
+
+/** The company is not found yet: the card stays on the name and Retry looks again. */
+function stillLooking(): CreateOutcome {
+  return { ok: false, reason: TEAM_CARD_FAILURE, creating: true, refused: true };
+}
 
 /**
  * Create once. The create is kept before it is sent; until a company comes of
- * it, or the server refuses it outright, its outcome stays unknown and the
- * next press looks for the company before creating again.
+ * it, or the server refuses a create that was never unresolved, its outcome
+ * stays unknown and the next press looks for the company before creating
+ * again. A refusal after an unresolved create is not proof that nothing was
+ * made: the slug may be taken by that very company, so the card stays locked
+ * and only looks for it from then on.
  */
 async function createOnce(name: string, deps: TeamCardPickDeps): Promise<CreateOutcome> {
   if (deps.unresolved) {
-    const found = await findCreated(deps.host, name);
-    if (found) {
-      // Pinned as a create pins it; the company exists either way.
-      keep("found company's pin", () =>
-        void Promise.resolve(deps.pin(found.companyUid)).catch((err) =>
-          console.warn("[hq-desktop] could not pin the found company for the team card:", err),
-        ),
-      );
-      return { ok: true, choice: keepCreated(deps, found) };
-    }
-    // Not in the roster within the bound: the earlier create made nothing.
-    // The create below keeps the same name again before it is sent.
+    const found = await findAndKeep(name, deps);
+    if (found) return { ok: true, choice: found };
+    if (deps.refused) return stillLooking();
+    // Not in the roster within the bound: the earlier create may have made
+    // nothing. The create below keeps the same name again before it is sent.
   }
   const slug = companySlugFromName(name);
   if (slug) keep("pending create", () => deps.creating?.({ name, slug }));
@@ -182,6 +224,10 @@ async function createOnce(name: string, deps: TeamCardPickDeps): Promise<CreateO
   }
   if (!result.ok) {
     if (!result.blocked) return { ok: false, reason: result.reason || TEAM_CARD_FAILURE, creating: true };
+    if (deps.unresolved) {
+      const found = await findAndKeep(name, deps);
+      return found ? { ok: true, choice: found } : stillLooking();
+    }
     keep("refused create", () => deps.notCreating?.());
     return { ok: false, reason: result.reason || TEAM_CARD_FAILURE };
   }

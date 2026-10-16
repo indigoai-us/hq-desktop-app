@@ -12,7 +12,7 @@ import {
   teamCardStoredLast,
   TEAM_CARD_FAILURE,
 } from "./team-card-pick";
-import { saveTeamCardCreating, saveTeamCardUnsentCreate } from "./team-card-record";
+import { saveTeamCardCreating, saveTeamCardReplyFailures, saveTeamCardUnsentCreate } from "./team-card-record";
 
 const acme = { companyUid: "cmp_acme", slug: "acme", name: "Acme" };
 
@@ -280,6 +280,57 @@ describe("a create whose outcome is unknown", () => {
     expect(result).toMatchObject({ ok: true, settled: "Created Pickle" });
   });
 
+  it("not found, then refused: the slug may be that company's, so the card stays on it and looks again", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const create = vi.fn(async () => ({ ok: false, reason: "That handle is taken.", blocked: true }));
+    const d = deps({ create });
+    const notCreating = vi.fn();
+    const findCreated = vi.fn(async () => null);
+    const host = { ...d.host, findCreated };
+    const result = await runTeamCardPick({ kind: "create", name: "Pickle" }, { ...d, host, unresolved: true, notCreating });
+    expect(result).toEqual({ ok: false, reason: TEAM_CARD_FAILURE, creating: true, refused: true });
+    expect(notCreating).not.toHaveBeenCalled();
+    // Looked before the create and again after the refusal.
+    expect(findCreated).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("refused, then found on the look after it: kept as created", async () => {
+    const d = deps({ create: vi.fn(async () => ({ ok: false, reason: "That handle is taken.", blocked: true })) });
+    const findCreated = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(pickle);
+    const kept = vi.fn();
+    const result = await runTeamCardPick(
+      { kind: "create", name: "Pickle" },
+      { ...d, host: { ...d.host, findCreated }, unresolved: true, created: kept },
+    );
+    expect(kept).toHaveBeenCalledWith(created);
+    expect(result).toMatchObject({ ok: true, settled: "Created Pickle" });
+  });
+
+  it("once refused, a press only looks: another name never creates", async () => {
+    const d = deps();
+    const notCreating = vi.fn();
+    const last = { pick: { kind: "create" as const, name: "Pickle" }, creating: true, refused: true };
+    const run = teamCardResume({ kind: "create", name: "Brine" }, last);
+    expect(run).toEqual({ pick: { kind: "create", name: "Pickle" }, unresolved: true, refused: true });
+
+    const missing = { ...d.host, findCreated: vi.fn(async () => null) };
+    expect(await runTeamCardPick(run.pick, { ...d, host: missing, unresolved: true, refused: true, notCreating })).toEqual({
+      ok: false,
+      reason: TEAM_CARD_FAILURE,
+      creating: true,
+      refused: true,
+    });
+    expect(d.create).not.toHaveBeenCalled();
+    expect(notCreating).not.toHaveBeenCalled();
+
+    const found = { ...d.host, findCreated: vi.fn(async () => pickle) };
+    const result = await runTeamCardPick(run.pick, { ...d, host: found, unresolved: true, refused: true });
+    expect(d.create).not.toHaveBeenCalled();
+    expect(d.reply).toHaveBeenCalledWith("I created Pickle.", "first-run-team:agt_setup:create:pickle");
+    expect(result).toMatchObject({ ok: true, settled: "Created Pickle" });
+  });
+
   it("a company the host found on retry is kept as created", async () => {
     const d = deps({ create: vi.fn(async () => ({ ok: true, choice: { kind: "company", how: "existing", company: pickle } })) });
     const kept = vi.fn();
@@ -304,6 +355,18 @@ describe("a create whose outcome is unknown", () => {
     expect(teamCardStoredLast(storage, "me:bot")).toEqual({ pick: { kind: "create", name: "Pickle" }, creating: true });
     saveTeamCardUnsentCreate(storage, "me:bot", { created: pickle, name: "Pickle" });
     expect(teamCardStoredLast(storage, "me:bot")).toEqual({ pick: { kind: "create", name: "Pickle" }, completed: created });
+  });
+
+  it("storage after a restart keeps the failed sends of a made company's reply", () => {
+    const data = new Map<string, string>();
+    const storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v) };
+    saveTeamCardUnsentCreate(storage, "me:bot", { created: pickle, name: "Pickle" });
+    expect(saveTeamCardReplyFailures(storage, "me:bot", 2)).toBe(true);
+    expect(teamCardStoredLast(storage, "me:bot")).toEqual({
+      pick: { kind: "create", name: "Pickle" },
+      completed: created,
+      replyFailures: 2,
+    });
   });
 });
 

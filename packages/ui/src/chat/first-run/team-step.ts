@@ -93,10 +93,12 @@ export function teamOptionsFrom(workspaces: readonly Workspace[] | null | undefi
 /**
  * The person's company with this slug in the roster, for a Retry after a
  * create that failed or timed out (it may have made the company after all).
- * Only a cloud company the person is an active member of counts: a local
- * folder with the same name is not a company they started.
+ * Any cloud company of theirs counts, active or not yet: a company just made
+ * can show up before its membership reads active. A pending invite is
+ * someone else's company, a revoked membership is no longer theirs, and a
+ * local folder with the same name is not a company they started.
  */
-export function activeCloudCompanyBySlug(
+export function ownCloudCompanyBySlug(
   workspaces: readonly Workspace[] | null | undefined,
   slug: string,
 ): FirstRunTeamCompany | null {
@@ -104,7 +106,8 @@ export function activeCloudCompanyBySlug(
     (w) =>
       w.kind === "company" &&
       w.slug === slug &&
-      w.membershipStatus === "active" &&
+      w.membershipStatus !== "pending" &&
+      w.membershipStatus !== "revoked" &&
       (w.cloudUid ?? "").trim() !== "",
   );
   return row ? toCompany(row) : null;
