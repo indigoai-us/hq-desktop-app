@@ -117,7 +117,7 @@ describe("US-005: the adopted criteria", () => {
   it("drops Signed Up and makes Founding Member a single plain Gold tier", () => {
     expect(BADGE_BY_ID.signedup).toBeUndefined();
     // Legendary is kept for the honors badges added 2026-10-11.
-    expect(BADGES.filter((b) => b.tier === "L").map((b) => b.id)).toEqual(["og", "captain", "patientzero"]);
+    expect(BADGES.filter((b) => b.tier === "L").map((b) => b.id)).toEqual(["og", "captain", "patientzero", "ecomrat"]);
     expect(BADGE_BY_ID.founding.tier).toBe(3);
     expect(BADGE_BY_ID.founding.crit).toBe("Joined HQ before the public launch");
   });

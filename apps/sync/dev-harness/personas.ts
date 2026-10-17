@@ -504,3 +504,40 @@ export function createPersonaInvoke(id: PersonaId): PersonaInvoke {
   };
   return { invokeFn, calls, persona };
 }
+
+/**
+ * ?notify=badges: hq-pro "badge_earned" rows in the bell list, drawn
+ * holographic (NotificationsPopover.svelte), beside a plain DM row.
+ * Without it the feed is empty, as before. The shell page answers
+ * `fetch_notifications` from mocks/core.ts, which calls this.
+ */
+export function harnessNotificationsFeed() {
+  if (new URLSearchParams(location.search).get('notify') !== 'badges') {
+    return { notifications: [], unreadCount: 0, nextCursor: null };
+  }
+  const at = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+  const badge = (id: string, ref: string, min: number) => ({
+    id,
+    type: 'badge_earned',
+    status: 'unread',
+    createdAt: at(min),
+    title: 'Badge earned',
+    targetRef: ref,
+  });
+  return {
+    notifications: [
+      badge('n-badge-maker', 'badge:maker:2', 2),
+      {
+        id: 'n-dm',
+        type: 'dm',
+        status: 'unread',
+        createdAt: at(9),
+        actorName: 'Stefan Johnson',
+        body: "Last one for tonight's queue: hq-console PR 1201.",
+      },
+      badge('n-badge-og', 'badge:og:1', 30),
+    ],
+    unreadCount: 3,
+    nextCursor: null,
+  };
+}
