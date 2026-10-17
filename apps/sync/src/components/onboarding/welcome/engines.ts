@@ -171,11 +171,18 @@ export function createMarkEngine(
   let t0 = 0;
   let capOn = false;
   let settled = false;
+  // The field fades in 2.2s after enter. From then on its start points stay
+  // put: redrawing them would make visible particles jump.
+  let fieldShown = false;
+  // The viewport the start points were drawn across. The window can still be
+  // growing from the heads-up card to the screen when the engine is built.
+  let fieldW = vw();
+  let fieldH = vh();
 
   for (let i = 0; i < N; i += 1) {
     pts.push({
-      sx: Math.random() * vw(),
-      sy: Math.random() * vh(),
+      sx: Math.random() * fieldW,
+      sy: Math.random() * fieldH,
       ox: 0,
       oy: 0,
       r: Math.random() < 0.08 ? 1.6 : 1,
@@ -183,6 +190,19 @@ export function createMarkEngine(
       ph: Math.random() * 6.28,
       dl: Math.random() * 0.9,
     });
+  }
+
+  // Redraw the start points across the current viewport when they were drawn
+  // across another one: a field drawn in the 440x380 heads-up window would
+  // otherwise gather in the top-left corner of the screen.
+  function fitField(): void {
+    if (W === 0 || H === 0 || (W === fieldW && H === fieldH)) return;
+    for (const p of pts) {
+      p.sx = Math.random() * W;
+      p.sy = Math.random() * H;
+    }
+    fieldW = W;
+    fieldH = H;
   }
 
   // mark + headline + sub + sign-in are one block, centred in the window
@@ -250,12 +270,17 @@ export function createMarkEngine(
       const resample = W !== sampledW || H !== sampledH;
       sampledW = W;
       sampledH = H;
+      // While the field is still hidden its start points follow the new
+      // viewport. Once it shows, they stay where the particles are.
+      if (!fieldShown) fitField();
       layout(resample);
     },
     enter(now) {
+      fitField();
       t0 = now;
       capOn = false;
       settled = false;
+      fieldShown = false;
       cap.classList.remove('on');
       signin.classList.remove('on');
     },
@@ -268,6 +293,7 @@ export function createMarkEngine(
       if (ctx) {
         ctx.clearRect(0, 0, W, H);
         const appear = clamp01((t - 2.2) / 0.8); // holds the whole field off until the veil has landed
+        if (appear > 0) fieldShown = true;
         const pull = clamp01((t - 3.0) / 2.2);
         ctx.fillStyle = '#fff';
         for (let i = 0; i < N; i += 1) {

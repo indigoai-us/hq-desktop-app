@@ -73,7 +73,6 @@
     firstRunOffersFinish,
     firstRunStepNumber,
     firstRunStepsFor,
-    firstRunTalkLabel,
     firstRunToolsTitle,
     nextFirstRunStep,
     normalizeAssistantName,
@@ -1096,7 +1095,7 @@
       ? FIRST_RUN_COPY.opening
       : creation.state === "creating"
         ? `Getting ${shownName} ready…`
-        : firstRunTalkLabel(shownName),
+        : FIRST_RUN_COPY.openHq,
   );
 </script>
 

@@ -50,3 +50,26 @@ describe("provider sign-in force flag", () => {
     ]);
   });
 });
+
+describe("bring the desktop window back after a browser sign-in", () => {
+  it("both adapters call the desktop raise command with no arguments", async () => {
+    const calls: Invocation[] = [];
+    const invoke = async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push({ cmd, args });
+      return null;
+    };
+    const tauri = new TauriPlatformAdapter({ invoke });
+    const sync = createSyncPlatformAdapter({
+      invoke,
+      fetch: (() => {
+        throw new Error("the adapter must not use window.fetch");
+      }) as unknown as typeof globalThis.fetch,
+    });
+    expect((await tauri.sessions.bringToFront!()).ok).toBe(true);
+    expect((await sync.sessions!.bringToFront!()).ok).toBe(true);
+    expect(calls).toEqual([
+      { cmd: "bring_desktop_window_to_front", args: undefined },
+      { cmd: "bring_desktop_window_to_front", args: undefined },
+    ]);
+  });
+});

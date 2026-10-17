@@ -45,6 +45,12 @@ export interface FirstRunSignInHost {
    */
   cancel?(runtime: FirstRunRuntime): Promise<void>;
   /**
+   * Brings the HQ window back in front of the browser when the sign-in step
+   * ends (done, failed or timed out, or skipped). Never while it waits: the
+   * person is on the vendor's login page then.
+   */
+  focus?(): Promise<void>;
+  /**
    * Waits (bounded) for the tool's background install to settle before the
    * login. `retry` is the person's Retry press: a failed install is queued
    * again first. See `waitForToolInstall`.
