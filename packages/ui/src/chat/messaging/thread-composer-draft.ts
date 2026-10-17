@@ -1,8 +1,9 @@
 /**
  * Unsent thread composer text and attachments for this app session.
- * Keyed per thread so closing the sidebar does not throw the draft away,
- * and reopening that thread restores it. Cleared on send, and gone when
- * the page reloads.
+ * Keyed per account, company, and thread so closing the sidebar does not
+ * throw the draft away, and reopening that thread restores it. Another
+ * account, or another company in the same account, does not see it.
+ * Cleared on send and on sign-out, and gone when the page reloads.
  */
 
 export interface ThreadComposerDraft {
@@ -13,6 +14,8 @@ export interface ThreadComposerDraft {
 const drafts = new Map<string, ThreadComposerDraft>();
 
 export function threadComposerDraftKey(input: {
+  accountId?: string | null;
+  companyUid?: string | null;
   scope: string;
   channelId?: string | null;
   withPersonUid?: string | null;
@@ -22,7 +25,9 @@ export function threadComposerDraftKey(input: {
     input.scope === "dm"
       ? (input.withPersonUid ?? "").trim()
       : (input.channelId ?? "").trim();
-  return `${input.scope}:${conversation}:${input.rootEventId.trim()}`;
+  const accountId = (input.accountId ?? "").trim();
+  const companyUid = (input.companyUid ?? "").trim();
+  return `${accountId}:${companyUid}:${input.scope}:${conversation}:${input.rootEventId.trim()}`;
 }
 
 export function readThreadComposerDraft(

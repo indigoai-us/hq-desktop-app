@@ -177,8 +177,10 @@
     onreleaseurl?: (url: string) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
     vaultCompanyUid?: string | null;
-    /** Company of the conversation, for "Copy link". */
+    /** Company of the conversation, for "Copy link" and the unsent draft. */
     companyUid?: string | null;
+    /** Signed-in account. Drafts are not shared across accounts. */
+    accountId?: string | null;
     onclose: () => void;
     onreplycount?: (
       rootEventId: string,
@@ -245,6 +247,7 @@
     onreleaseurl = undefined,
     vaultCompanyUid = null,
     companyUid = null,
+    accountId = null,
     onclose,
     onreplycount,
     onactivethreadchange,
@@ -473,6 +476,8 @@
 
   const composerDraftKey = $derived(
     threadComposerDraftKey({
+      accountId,
+      companyUid: companyUid ?? vaultCompanyUid,
       scope,
       channelId,
       withPersonUid,

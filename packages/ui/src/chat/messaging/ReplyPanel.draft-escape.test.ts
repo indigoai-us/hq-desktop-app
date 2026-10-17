@@ -121,6 +121,71 @@ describe("ReplyPanel drafts and Escape layers", () => {
     );
   });
 
+  it("does not show a draft to another account or another company in the same account", async () => {
+    await mountPanel("evt_a", {
+      accountId: "acct_ada",
+      companyUid: "cmp_acme",
+    });
+    await typeDraft("only ada at acme");
+    await unmount(component!);
+    component = null;
+    host.remove();
+
+    await mountPanel("evt_a", {
+      accountId: "acct_bea",
+      companyUid: "cmp_acme",
+    });
+    const otherAccount = host.querySelector(
+      '[data-testid="reply-panel-composer"]',
+    ) as HTMLTextAreaElement;
+    expect(otherAccount.value).toBe("");
+    await unmount(component!);
+    component = null;
+    host.remove();
+
+    await mountPanel("evt_a", {
+      accountId: "acct_ada",
+      companyUid: "cmp_other",
+    });
+    const otherCompany = host.querySelector(
+      '[data-testid="reply-panel-composer"]',
+    ) as HTMLTextAreaElement;
+    expect(otherCompany.value).toBe("");
+    await unmount(component!);
+    component = null;
+    host.remove();
+
+    await mountPanel("evt_a", {
+      accountId: "acct_ada",
+      companyUid: "cmp_acme",
+    });
+    const restored = host.querySelector(
+      '[data-testid="reply-panel-composer"]',
+    ) as HTMLTextAreaElement;
+    expect(restored.value).toBe("only ada at acme");
+  });
+
+  it("drops the draft after sign-out clears the session drafts", async () => {
+    await mountPanel("evt_a", {
+      accountId: "acct_ada",
+      companyUid: "cmp_acme",
+    });
+    await typeDraft("gone after sign-out");
+    resetThreadComposerDrafts();
+    await unmount(component!);
+    component = null;
+    host.remove();
+
+    await mountPanel("evt_a", {
+      accountId: "acct_ada",
+      companyUid: "cmp_acme",
+    });
+    const composer = host.querySelector(
+      '[data-testid="reply-panel-composer"]',
+    ) as HTMLTextAreaElement;
+    expect(composer.value).toBe("");
+  });
+
   it("Escape closes the reaction picker and leaves the thread open", async () => {
     const { onclose } = await mountPanel("evt_a");
     const add = host.querySelector(

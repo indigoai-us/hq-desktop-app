@@ -53,11 +53,17 @@ function pressClose(
   closed: NavigationDestination,
   committed = true,
 ): void {
+  const closingThread = navigation.history.current()?.destination ?? null;
   if (committed) {
     const result = navigation.navigate(closed, "replace");
     expect(result).toMatchObject({ status: "ready", committed: true });
   }
-  settleThreadSidebarClose(navigation.history, closed, committed);
+  settleThreadSidebarClose(
+    navigation.history,
+    closed,
+    committed,
+    closingThread,
+  );
 }
 
 function replyRoots(navigation: NavigationController): (string | null)[] {
@@ -206,6 +212,7 @@ describe("thread sidebar close", () => {
       navigation.history,
       channel("chn_core", null),
       false,
+      channel("chn_core", "evt_b"),
     );
 
     expect(cursor(navigation)).toEqual({
@@ -222,6 +229,34 @@ describe("thread sidebar close", () => {
       kind: "channel",
       channelId: "chn_core",
       replyRootEventId: null,
+    });
+  });
+
+  it("does not overwrite a thread opened in the same conversation while close is in flight", () => {
+    const navigation = shell();
+    navigation.navigate(channel("chn_core", null));
+    navigation.navigate(channel("chn_core", "evt_a"));
+    navigation.navigate(channel("chn_core", "evt_b"));
+    const closingThread = channel("chn_core", "evt_b");
+    navigation.navigate(channel("chn_core", "evt_c"));
+
+    settleThreadSidebarClose(
+      navigation.history,
+      channel("chn_core", null),
+      false,
+      closingThread,
+    );
+
+    expect(cursor(navigation)).toEqual({
+      index: 3,
+      replies: [null, "evt_a", "evt_b", "evt_c"],
+      canGoBack: true,
+      canGoForward: false,
+    });
+    expect(navigation.history.current()?.destination).toMatchObject({
+      kind: "channel",
+      channelId: "chn_core",
+      replyRootEventId: "evt_c",
     });
   });
 
@@ -244,7 +279,12 @@ describe("thread sidebar close", () => {
     release({ status: "cancelled" });
     const result = await pending;
     expect(result.committed).toBe(false);
-    settleThreadSidebarClose(navigation.history, channel("chn_core", null), false);
+    settleThreadSidebarClose(
+      navigation.history,
+      channel("chn_core", null),
+      false,
+      channel("chn_core", "evt_b"),
+    );
 
     expect(cursor(navigation)).toEqual({
       index: 0,

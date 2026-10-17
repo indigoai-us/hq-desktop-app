@@ -68,32 +68,60 @@ export function dropStackedThreadEntries(
   );
 }
 
+/** True when both destinations are the same open thread. */
+function isSameOpenThread(
+  destination: NavigationDestination,
+  thread: NavigationDestination,
+): boolean {
+  const reply = threadReplyRoot(thread);
+  if (!reply || threadReplyRoot(destination) !== reply) return false;
+  const wanted = threadConversationOf(thread);
+  const current = threadConversationOf(destination);
+  return (
+    wanted !== null &&
+    current !== null &&
+    current.kind === wanted.kind &&
+    current.id === wanted.id
+  );
+}
+
 /**
  * Finish a thread-sidebar close against history.
  *
+ * `closingThread` is the history destination captured when close started.
  * When navigation committed, the current entry is already `closed` and this
  * only drops the stack. When it did not (superseded, rejected, or still
  * unavailable), the open thread would stay current and Back could show the
- * previous thread. In that case, if the current entry is still that
- * conversation's thread, replace it with `closed` before dropping the stack.
- * A newer committed destination is left where it is.
+ * previous thread. The fallback replaces that entry only when it is still
+ * `closingThread`. A thread opened in the same conversation after close
+ * started is left as it is, stack included. Any other newer destination is
+ * left in place, and the closed conversation's thread stack is still dropped.
  */
 export function settleThreadSidebarClose(
   history: NavigationHistory,
   closed: NavigationDestination,
   committed: boolean,
+  closingThread: NavigationDestination | null,
 ): void {
-  if (!committed) {
-    const conversation = threadConversationOf(closed);
-    const current = history.current();
-    if (
-      conversation &&
-      !threadReplyRoot(closed) &&
-      current &&
-      isStackedThreadDestination(current.destination, conversation)
-    ) {
-      history.replace({ ...current, destination: closed });
-    }
+  const current = history.current();
+  const stillThatThread =
+    closingThread !== null &&
+    current !== null &&
+    isSameOpenThread(current.destination, closingThread);
+  if (!committed && stillThatThread && !threadReplyRoot(closed)) {
+    history.replace({ ...current, destination: closed });
+  }
+  const after = history.current();
+  const conversation = threadConversationOf(closed);
+  if (
+    !committed &&
+    !stillThatThread &&
+    closingThread !== null &&
+    after !== null &&
+    conversation !== null &&
+    isStackedThreadDestination(after.destination, conversation)
+  ) {
+    return;
   }
   dropStackedThreadEntries(history, closed);
 }
