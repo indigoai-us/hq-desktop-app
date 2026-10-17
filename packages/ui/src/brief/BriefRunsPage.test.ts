@@ -66,42 +66,41 @@ describe("BriefRunsPage", () => {
     [`workspace/brief/${OLD}/brief.json`]: JSON.stringify({ items: { decisions: [{ id: "d0", title: "Older call" }] } }),
   });
 
-  it("opens the newest ready run from its own folder and lists history newest first", async () => {
+  it("opens the newest ready run from its own folder and shows history as quiet squares, oldest on the left", async () => {
     const reads = render(files());
     await settle();
     expect(reads).toContain(`workspace/brief/${NEW}/brief-data.json`);
     expect(reads).toContain(`workspace/brief/${NEW}/brief.json`);
-    // The shared dropdown loads through its lazy door.
-    await vi.waitFor(() => expect(q("brief-history")).not.toBeNull(), { timeout: 5_000 });
-    expect(q("brief-history")!.getAttribute("data-value")).toBe(NEW);
-    q("brief-history")!.click();
+    const cells = [...target.querySelectorAll<HTMLElement>('[data-testid="brief-run-cell"]')];
+    expect(cells.map((c) => c.getAttribute("data-run"))).toEqual([OLD, NEW]);
+    expect(cells[1]!.getAttribute("aria-current")).toBe("true");
+    expect(cells[0]!.getAttribute("aria-label")).toContain("catch-up");
+    expect(cells[1]!.getAttribute("aria-label")).toContain("Headline " + NEW);
+    expect(cells[1]!.getAttribute("aria-label")).not.toMatch(/today/i);
+    // Only the squares: no arrows, no dropdown, no visible tags.
+    expect(q("brief-older")).toBeNull();
+    expect(q("brief-history")).toBeNull();
+    expect(q("brief-catchup-tag")).toBeNull();
+    // A square opens its run.
+    cells[0]!.click();
     await settle();
-    const options = [...target.querySelectorAll<HTMLElement>('[data-testid="brief-history-menu"] [role="option"]')];
-    expect(options.map((o) => o.getAttribute("data-value"))).toEqual([NEW, OLD]);
-    expect(options[1]!.textContent).toContain("catch-up");
-    expect(options[0]!.textContent).toContain("Headline " + NEW);
-    expect(options[0]!.textContent).toContain("2 decisions · 4 shipped · 0 incidents");
-    expect(options[0]!.textContent).not.toMatch(/today/i);
-    // Picking from the list opens that run.
-    options[1]!.click();
-    await settle();
-    expect(q("brief-viewing")).not.toBeNull();
+    expect(q("brief-viewing")?.textContent).toContain("Viewing");
+    expect(target.textContent).toContain("Older call");
     q("brief-latest")!.click();
     await settle();
     expect(q("brief-viewing")).toBeNull();
     expect(target.textContent).toContain("Newest call");
   });
 
-  it("stepping to an older run shows the viewing chip, and Back to latest returns", async () => {
+  it("arrow keys on the squares step older and newer", async () => {
     render(files());
     await settle();
-    q("brief-older")!.click();
+    const strip = q("brief-run-strip")!;
+    strip.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
     await settle();
-    expect(q("brief-viewing")?.textContent).toContain("Viewing");
-    expect(q("brief-catchup-tag")).not.toBeNull();
     expect(target.textContent).toContain("Older call");
-    expect((q("brief-older") as HTMLButtonElement).disabled).toBe(true);
-    q("brief-latest")!.click();
+    expect(q("brief-viewing")).not.toBeNull();
+    q("brief-run-strip")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     await settle();
     expect(q("brief-viewing")).toBeNull();
     expect(target.textContent).toContain("Newest call");
@@ -117,12 +116,15 @@ describe("BriefRunsPage", () => {
     expect(onlaunch).toHaveBeenCalledWith(expect.any(String), "Remove the merged worktrees after checking for unpushed commits.");
   });
 
-  it("marks files a run is missing", async () => {
+  it("marks a run that is missing files in plain words, never by file name", async () => {
+    // Owner report, 2026-10-16: "Missing from this brief: brief-data.json, brief.json".
     const f = files();
     delete f[`workspace/brief/${NEW}/brief-data.json`];
     render(f);
     await settle();
-    expect(q("brief-missing")?.textContent).toContain("brief-data.json");
+    const note = q("brief-missing")?.textContent ?? "";
+    expect(note).toBe("Part of this brief did not finish, so some cards may be empty.");
+    expect(note).not.toMatch(/\.json/);
   });
 
   it("with no runs and a creator, shows the pre-dawn empty state with one Create brief button", async () => {
@@ -231,6 +233,96 @@ describe("BriefRunsPage", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("Refresh over today's brief plays the full-page scene in its place, not a band on top", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    const f = files();
+    f["workspace/brief/index.jsonl"] = entry(NEW, new Date().toISOString());
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: true, bot }),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render(f, { creator });
+    await settle();
+    expect(target.querySelector('[data-testid="daily-brief"]')).not.toBeNull();
+    expect(q("brief-create")?.getAttribute("data-control")).toBe("refresh");
+    q("brief-create")!.click();
+    await settle();
+    expect(target.querySelector('[data-testid="daily-brief"]')).toBeNull();
+    expect(target.querySelector(".daily-brief-dawn-page")).not.toBeNull();
+    expect(q("brief-dawn")?.getAttribute("data-phase")).toBe("running");
+    // A title under the CREATING label, as the first brief has.
+    expect(target.querySelector("header h2")?.textContent).toBe("Your new brief is on its way");
+    expect(target.textContent).not.toContain("Newest call");
+  });
+
+  it("after a refresh hands off, stepping to an older brief shows that brief, not the ready scene again", async () => {
+    const bot = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
+    const f = files();
+    f["workspace/brief/index.jsonl"] = entry(NEW, new Date(Date.now() - 3_600_000).toISOString());
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => ({ ok: true, bot }),
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    const timers: (() => void)[] = [];
+    const run = new BriefCreateRun({
+      creator,
+      read: async (p) => f[p] ?? null,
+      storage: null,
+      setTimer: (fn) => (timers.push(fn), timers.length),
+      clearTimer: () => {},
+      log: () => {},
+    });
+    render(f, { creator, run });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    const runId = (run.phase as { runId: string }).runId;
+    f[`workspace/brief/${runId}/status.json`] = JSON.stringify({ run_id: runId, state: "ready", step: "Done", progress: 1 });
+    f["workspace/brief/index.jsonl"] = [entry(runId, new Date().toISOString()), entry(NEW, new Date(Date.now() - 3_600_000).toISOString())].join("\n");
+    f[`workspace/brief/${runId}/brief.json`] = JSON.stringify({ items: { decisions: [{ id: "d2", title: "Fresh call" }] } });
+    f[`workspace/brief/${runId}/brief-data.json`] = "{}";
+    timers.shift()!();
+    await settle();
+    expect(target.textContent).toContain("Fresh call");
+    target.querySelector<HTMLElement>(`[data-run="${NEW}"]`)!.click();
+    await settle();
+    expect(target.querySelector(".daily-brief-dawn-page")).toBeNull();
+    expect(target.textContent).toContain("Newest call");
+    expect(q("brief-viewing")).not.toBeNull();
+    run.stop();
+  });
+
+  it("a stopped run offers Try again and Dismiss as the app's standard buttons", async () => {
+    const creator: BriefCreator = {
+      company: () => "indigo",
+      check: async () => {
+        throw new Error("offline");
+      },
+      dispatch: vi.fn(async () => null),
+      fix: vi.fn(async () => null),
+      notify: vi.fn(),
+    };
+    render({}, { creator });
+    await settle();
+    q("brief-create")!.click();
+    await settle();
+    const retry = q("brief-retry")!;
+    const dismiss = q("brief-dismiss")!;
+    expect(retry.hasAttribute("data-rail-btn")).toBe(true);
+    expect(retry.classList.contains("primary")).toBe(true);
+    expect(retry.textContent).toContain("Try again");
+    expect(dismiss.hasAttribute("data-rail-btn")).toBe(true);
+    expect(dismiss.classList.contains("ghost")).toBe(true);
+    expect(dismiss.textContent).toContain("Dismiss");
+    expect(target.querySelector(".cta:not(.big)")).toBeNull();
   });
 
   it("a shared run survives the page unmounting and shows its progress on return", async () => {

@@ -85,25 +85,25 @@
 
 <style>
   .q {
-    font-size: 20px;
+    font-size: var(--b-fs-title-lg);
     font-weight: 500;
     letter-spacing: -0.02em;
     line-height: 1.15;
     margin-top: 10px;
   }
   .wide .q {
-    font-size: 22px;
+    font-size: var(--b-fs-title-lg);
   }
   .q.cleared {
     text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
+    text-decoration-color: rgb(var(--b-ink) / 0.4);
     opacity: 0.6;
   }
   .because {
     margin-top: 8px;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.4;
-    color: rgba(255, 255, 255, 0.76);
+    color: rgb(var(--b-ink) / 0.76);
     max-width: 62ch;
   }
   .why {
@@ -116,10 +116,10 @@
   }
   .tag {
     font-family: var(--b-mono);
-    font-size: 10px;
+    font-size: 11px;
     padding: 5px 8px;
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.14);
+    background: rgb(var(--b-ink) / 0.14);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -129,11 +129,11 @@
     margin-left: auto;
   }
   .donechip {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     padding: 6px 12px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.18);
+    background: rgb(var(--b-ink) / 0.18);
   }
   .note {
     margin-top: 6px;

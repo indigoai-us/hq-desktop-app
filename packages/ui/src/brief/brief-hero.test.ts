@@ -4,7 +4,12 @@ import {
   CATCH_UP_TILES,
   catchUpBecause,
   catchUpGreet,
+  catchUpLead,
+  catchUpSince,
+  catchUpStats,
   catchUpTiles,
+  awayDays,
+  orbitPoint,
   dayTag,
   effortMinutes,
   etaLabel,
@@ -14,7 +19,7 @@ import {
   recoveredPeek,
   shippedPeek,
 } from "./brief-hero.js";
-import type { BriefInput } from "./brief-types.js";
+import type { BriefDay, BriefInput } from "./brief-types.js";
 
 // Local midday so day boundaries never straddle the machine's timezone.
 const NOW_DATE = new Date(2026, 9, 15, 13, 0);
@@ -30,11 +35,16 @@ describe("hero lead lines", () => {
     expect(firstLine(null)).toBe("");
   });
 
-  it("the catch-up greeting quotes the lead and keeps the because as its own line", () => {
+  it("the catch-up greeting says since when (never repeating the lead) and the because is its own line", () => {
     const lead = { text: "Acknowledge the Pluto handoff.", because: "Jacob is waiting" };
-    expect(catchUpGreet(lead)).toBe('Here\'s what changed, starting with "Acknowledge the Pluto handoff".');
+    expect(catchUpGreet(localDaysAgo(4), NOW)).toBe("Here's what changed since Sunday's brief.");
+    expect(catchUpGreet(localDaysAgo(1), NOW)).toBe("Here's what changed since yesterday's brief.");
+    expect(catchUpGreet(localDaysAgo(0, 7), NOW)).toBe("Here's what changed since this morning's brief.");
+    expect(catchUpGreet(localDaysAgo(13), NOW)).toBe("Here's what changed since your Oct 2 brief.");
+    expect(catchUpGreet(null, NOW)).toBe("Here's what changed.");
+    expect(catchUpGreet("nope", NOW)).toBe("Here's what changed.");
+    expect(catchUpSince(localDaysAgo(4), NOW)).toBe("since Sunday's brief");
     expect(catchUpBecause(lead)).toBe("Jacob is waiting.");
-    expect(catchUpGreet(null)).toBe("Here's what changed.");
     expect(catchUpBecause(null)).toBe("");
   });
 });
@@ -259,5 +269,110 @@ describe("catchUpTiles", () => {
     expect(s.title).toBe("1 product shipped");
     expect(s.sections[0]!.lines![0]!.label).toBe("HQ command line");
     expect(s.sections).toHaveLength(1);
+  });
+});
+
+describe("Welcome back lead, numbers and orbit", () => {
+  const tiles = catchUpTiles(awayDay(), { decisions: awayDay().decisions, prompts: PROMPTS });
+  const days: BriefDay[] = [
+    { date: "2026-10-10", sessions: 9, meetings: 9, merged: 9, opened: 0 },
+    { date: "2026-10-11", sessions: 6, meetings: 0, merged: 23, opened: 9, beat: { kind: "push", label: "Sunday push" } },
+    { date: "2026-10-12", sessions: 4, meetings: 3, merged: 10, opened: 4 },
+    { date: "2026-10-13", sessions: 5, meetings: 2, merged: 8, opened: 3 },
+    { date: "2026-10-14", sessions: 3, meetings: 4, merged: 4, opened: 2 },
+    { date: "2026-10-15", sessions: 1, meetings: 1, merged: 1, opened: 1 },
+  ];
+
+  it("features priority 1 in the writer's words, matched to its tile by item id, else by its words", () => {
+    const byId = catchUpLead(tiles, { text: "Ship the plan", because: "the team plans around it", itemId: "d1" })!;
+    expect(byId.tile?.id).toBe("d1");
+    expect(byId.text).toBe("Ship the plan");
+    expect(byId.because).toBe("The team plans around it.");
+    const byWords = catchUpLead(tiles, { text: "approve the Q4 plan.", because: null })!;
+    expect(byWords.tile?.id).toBe("d1");
+    // No because from the writer: the tile's own line explains it.
+    expect(catchUpLead(tiles, { text: "HQ Cloud: nightly sync is red", because: null })!.because).toMatch(/^Red for 2 days\. The nightly sync/);
+    // Priority 1 with no tile on this card still leads, in words only.
+    const loose = catchUpLead(tiles, { text: "Reply to the auditor", because: "Still open" })!;
+    expect([loose.text, loose.because, loose.tile]).toEqual(["Reply to the auditor", "Still open.", null]);
+    // No priority: the first tile, as the catalogue counts them.
+    expect(catchUpLead(tiles, null)!.tile?.id).toBe("p1");
+    expect(catchUpLead([], null)).toBeNull();
+  });
+
+  it("numbers what moved in the away window: waiting first and in focus, then merged, meetings, sessions", () => {
+    const input = { ...awayDay(), days, merged: null };
+    const stats = catchUpStats(input, input.decisions);
+    expect(stats.map((s) => [s.key, s.label, s.value, s.focus])).toEqual([
+      ["waiting", "WAITING ON YOU", 3, true],
+      ["merged", "MERGED", 45, false],
+      ["meetings", "MEETINGS", 9, false],
+      ["sessions", "SESSIONS", 18, false],
+    ]);
+    expect(stats[0]!.peek!.title).toBe("3 calls wait on you");
+    expect(stats[0]!.peek!.sections[0]!.lines!.map((l) => [l.label, l.state])).toEqual([
+      ["Approve the Q4 plan", "Desktop app"],
+      ["Pick the launch date", "Desktop app"],
+      ["A third call that is not a tile", "Desktop app"],
+    ]);
+    // The merged number carries what shipped, by product.
+    expect(stats[1]!.peek!.sections[0]!.lines!.map((l) => l.label)).toEqual(["HQ Pro", "Desktop app", "Desktop app"]);
+    expect(stats[2]!.peek!.sections[0]!.lines!.map((l) => l.state)).toEqual(["0", "3", "2", "4"]);
+    // The writer's merged total wins over the day sums.
+    expect(catchUpStats({ ...input, merged: 12 }, []).find((s) => s.key === "merged")!.value).toBe(12);
+  });
+
+  it("leaves out what it does not know, never a made-up 0; waiting always shows", () => {
+    const bare = { ...awayDay(), days: [], shipped: [], merged: null };
+    expect(catchUpStats(bare, []).map((s) => [s.key, s.value, s.focus])).toEqual([["waiting", 0, false]]);
+    expect(catchUpStats(bare, [])[0]!.peek).toBeNull();
+    const shippedOnly = { ...awayDay(), days: [], merged: null };
+    expect(catchUpStats(shippedOnly, []).map((s) => [s.key, s.label, s.value])).toEqual([
+      ["waiting", "WAITING ON YOU", 0],
+      ["shipped", "SHIPPED", 3],
+    ]);
+    const all = catchUpStats({ ...awayDay(), days, dmCount: 7 }, []);
+    expect(all).toHaveLength(4);
+    expect(all.map((s) => s.key)).not.toContain("dms");
+    expect(catchUpStats({ ...bare, dmCount: 7 }, []).map((s) => s.key)).toEqual(["waiting", "dms"]);
+  });
+
+  it("draws one orbit dot per day away from the brief's day stats, each peeking that day", () => {
+    const input = { ...awayDay(), days };
+    const d = awayDays(input, 4);
+    expect(d.map((x) => [x.date, x.tag, x.weight])).toEqual([
+      ["2026-10-11", "SUN", 29],
+      ["2026-10-12", "MON", 17],
+      ["2026-10-13", "TUE", 15],
+      ["2026-10-14", "WED", 11],
+    ]);
+    expect(d[0]!.peek!.title).toBe("Sunday, Oct 11");
+    expect(d[0]!.peek!.status).toBe("Sunday push");
+    expect(d[0]!.peek!.sections[0]!.lines!.map((l) => [l.label, l.state])).toEqual([
+      ["Sessions", "6"],
+      ["Meetings", "0"],
+      ["Merged", "23"],
+    ]);
+    expect(awayDays(input, 0)).toEqual([]);
+  });
+
+  it("without day stats the orbit still counts the days back from today, with no peek", () => {
+    const d = awayDays({ ...awayDay(), days: [] }, 3);
+    expect(d.map((x) => [x.date, x.tag, x.weight, x.peek])).toEqual([
+      ["2026-10-12", "MON", 0, null],
+      ["2026-10-13", "TUE", 0, null],
+      ["2026-10-14", "WED", 0, null],
+    ]);
+    expect(awayDays({ ...awayDay(), days: [] }, 30)).toHaveLength(7);
+  });
+
+  it("the orbit rises from the bottom left to today at the top right", () => {
+    expect(orbitPoint(0)).toEqual([0, 94]);
+    expect(orbitPoint(1)).toEqual([97, 10]);
+    const pts = [0.1, 0.3, 0.5, 0.7, 0.9].map(orbitPoint);
+    for (let i = 1; i < pts.length; i++) {
+      expect(pts[i]![0]).toBeGreaterThan(pts[i - 1]![0]);
+      expect(pts[i]![1]).toBeLessThan(pts[i - 1]![1]);
+    }
   });
 });

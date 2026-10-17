@@ -159,6 +159,109 @@ export function mergesOnTopText(r: BriefRisk): string | null {
   return `${countNoun(Math.round(n), "change")} merged on top`;
 }
 
+const NUMBER_WORDS: Record<string, number> = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+};
+const UNIT_HOURS: Record<string, number> = { hour: 1, day: 24, week: 168 };
+/** "for three days", "for the past 2 weeks", "for 5 hours": the writer's own duration, as hours. */
+const FOR_SPAN = /\bfor\s+(?:the\s+(?:last|past)\s+)?(\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(hour|day|week)s?\b/i;
+
+/**
+ * How long an incident has been live, in hours: a red main's age (age_hours or
+ * since), else the span the writer gave a measured incident in its summary or
+ * title ("Five agents have sat in setup for three days" is 72). Null when the
+ * brief carries no duration, so the card never invents one.
+ */
+export function incidentHoursOf(r: BriefRisk, nowIso: string): number | null {
+  if (r.ci) return redHoursOf(r, nowIso);
+  for (const text of [r.summary, r.title]) {
+    const m = FOR_SPAN.exec(text ?? "");
+    if (!m) continue;
+    const word = m[1]!.toLowerCase();
+    const n = /^\d+$/.test(word) ? Number(word) : NUMBER_WORDS[word];
+    if (n != null && n > 0) return n * UNIT_HOURS[m[2]!.toLowerCase()]!;
+  }
+  return null;
+}
+
+/** The duration as the card's mono pill reads it: "UNDER 1 HOUR", "5 HOURS", "30 HOURS", then "3 DAYS" from two days (as red ages round). */
+export function durationLabel(hours: number): string {
+  if (hours < 1) return "UNDER 1 HOUR";
+  if (hours < 48) {
+    const h = Math.round(hours);
+    return `${h} HOUR${h === 1 ? "" : "S"}`;
+  }
+  return `${Math.round(hours / 24)} DAYS`;
+}
+
+const DAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
+
+/** The incident card's "stuck for" track: where the live stretch sits on a short timeline that ends now. */
+export interface DurationTrack {
+  hours: number;
+  /** "3 DAYS", the pill. */
+  label: string;
+  /** "days": the last seven calendar days, a letter each; "hours": the last 24 hours. */
+  scale: "days" | "hours";
+  /** The live stretch, as fractions of the track (0 = its left end). */
+  from: number;
+  to: number;
+  /** It began before the track does: its left end runs off the track. */
+  clipped: boolean;
+  /** Labels under the track, centred at `at` (a fraction); `now` marks today's / the current one. */
+  ticks: { label: string; at: number; now: boolean }[];
+}
+
+/**
+ * The track for an incident live for `hours` as of `nowIso`. Past a day it is
+ * this week: seven local calendar days with their initials, today last, the
+ * stretch drawn from when it began to now. Under a day it is the last 24 hours.
+ * Null when the duration or the clock is unknown.
+ */
+export function durationTrack(hours: number | null, nowIso: string): DurationTrack | null {
+  const now = Date.parse(nowIso);
+  if (hours == null || !Number.isFinite(hours) || hours < 0 || !Number.isFinite(now)) return null;
+  const label = durationLabel(hours);
+  if (hours < 24) {
+    const from = Math.max(0, 1 - hours / 24);
+    return {
+      hours,
+      label,
+      scale: "hours",
+      from,
+      to: 1,
+      clipped: false,
+      ticks: [
+        { label: "24H AGO", at: 0, now: false },
+        { label: "12H", at: 0.5, now: false },
+        { label: "NOW", at: 1, now: true },
+      ],
+    };
+  }
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  start.setDate(start.getDate() - 6);
+  const end = new Date(today);
+  end.setDate(end.getDate() + 1);
+  const span = end.getTime() - start.getTime();
+  const began = now - hours * 3_600_000;
+  const ticks = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    return { label: DAY_LETTERS[d.getDay()]!, at: (i + 0.5) / 7, now: i === 6 };
+  });
+  return {
+    hours,
+    label,
+    scale: "days",
+    from: Math.max(0, (began - start.getTime()) / span),
+    to: Math.min(1, (now - start.getTime()) / span),
+    clipped: began < start.getTime(),
+    ticks,
+  };
+}
+
 /**
  * A risk or incident's peek: the plain title with the company chip, the
  * summary, the facts the card counted (red age, job, merges on top, the
@@ -382,4 +485,16 @@ export function redAge(ci: NonNullable<BriefRisk["ci"]>, nowIso: string): string
   }
   const since = ci.note?.match(/since\s+([A-Z][a-z]{2}\s+\d{1,2})/)?.[1];
   return since ? `Red since ${since}` : null;
+}
+
+/**
+ * A red main's "N of M workflows red on main." note as numbers, so the card can
+ * draw it (M dots, N lit) instead of a sentence. Null for any other note.
+ */
+export function workflowsRed(note: string | null | undefined): { red: number; total: number } | null {
+  const m = /^(\d+) of (\d+) workflows? red on main\.?$/i.exec((note ?? "").trim());
+  if (!m) return null;
+  const red = Number(m[1]);
+  const total = Number(m[2]);
+  return total > 0 && red <= total && total <= 12 ? { red, total } : null;
 }

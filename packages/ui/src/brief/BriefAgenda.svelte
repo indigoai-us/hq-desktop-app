@@ -3,7 +3,7 @@
    * Today's calls as a list, when the strip alone is not enough. Rows: 5 in a
    * two-row or three-column slot, 3 in a W or S, then a "+N more" row whose
    * peek lists the rest. Every row is a flat glass tile (no inner shadow, no
-   * backdrop-filter): time in mono, the kind dot, the title, and a mono tag
+   * backdrop-filter): the time, the title, and a mono tag
    * for projected, tentative or running calls; past calls dim. Busy holds
    * fold into one "Busy until 2 PM" row. Hover a row for the strip's event
    * peek: countdown from the brief's now, attendees, join link, and Prep in
@@ -13,7 +13,7 @@
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import { agendaLimit, agendaRows, agendaTitle, countdownText, kindEyebrow, prepId, prepPrompt, type AgendaRow } from "./brief-agenda.js";
   import { rangeText } from "./brief-strip.js";
-  import { clockLabel, KIND_COLOR } from "./brief-time.js";
+  import { clockLabel } from "./brief-time.js";
   import type { BriefCalendarEvent } from "./brief-types.js";
 
   interface Props {
@@ -72,11 +72,11 @@
 
   const rowPeek = (r: AgendaRow): PeekContent => (r.kind === "busy" ? busyPeek(r) : eventPeek(r.e));
 
+  // Same card as the timeline's "+N more": "Also today", then the calls.
   const morePeek = (): PeekContent => ({
     sample,
-    title: `${rest.length} more`,
-    status: "Also today",
-    sections: [{ label: "Later", lines: rest.map((r) => ({ label: label(r), state: r.kind === "busy" ? "" : rangeText(r.e) })) }],
+    title: "Also today",
+    sections: [{ label: "", lines: rest.map((r) => ({ label: label(r), state: r.kind === "busy" ? "" : rangeText(r.e) })) }],
     actions: actions(),
   });
 </script>
@@ -101,11 +101,6 @@
         use:peek={{ state: brief, content: () => rowPeek(r) }}
       >
         <span class="t">{clockLabel(iso(r.start))}</span>
-        {#if r.kind === "busy"}
-          <i class="k hold"></i>
-        {:else}
-          <i class="k" style="background:{KIND_COLOR[r.e.kind]}"></i>
-        {/if}
         <b>{label(r)}</b>
         {#if running(r)}<em class="now" data-testid="brief-agenda-now">NOW</em>
         {:else if r.kind === "call" && r.e.projected}<em>PROJECTED</em>
@@ -125,41 +120,37 @@
     gap: 6px;
     margin-top: 12px;
   }
-  /* Glass row: lit from the top, hairline rim, soft drop. No inner shadow and no
-     backdrop-filter (WKWebView draws it as a square that ignores the radius). */
+  /* Glass row on the field: time, then the call. Past calls fade; the one running now gets a brighter rim. */
   .run {
     position: relative;
     display: flex;
     gap: 10px;
     align-items: center;
-    padding: 7px 10px;
-    border-radius: 12px;
-    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    font-size: var(--b-row-fs, 13px);
     min-width: 0;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.025) 45%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.05), transparent 60%);
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.16);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    color: var(--b-t1, #fff);
+    background: var(--b-row-bg, rgb(var(--b-on, 255 255 255) / 0.14));
+    border: 0;
+    box-shadow: none;
     cursor: default;
-    transition: border-color 0.2s, background 0.2s, opacity 0.2s;
+    transition: background 0.2s, opacity 0.2s;
   }
   .run:hover,
   .run:focus-visible {
-    border-color: rgba(255, 255, 255, 0.22);
+    background: var(--b-row-hover, rgb(var(--b-on, 255 255 255) / 0.22));
     outline: none;
   }
   .run.past {
-    opacity: 0.5;
+    opacity: 0.6;
   }
   .run.past:hover {
     opacity: 1;
   }
-  /* The call running now: a soft outer rim, never inset. */
   .run.live {
-    border-color: rgba(255, 128, 159, 0.45);
-    box-shadow: 0 0 0 1px rgba(255, 128, 159, 0.14), 0 8px 20px -8px rgba(0, 0, 0, 0.5);
+    border-color: rgb(var(--b-on, 255 255 255) / 0.55);
+    background: rgb(var(--b-on, 255 255 255) / 0.24);
   }
   .run.tent {
     border-style: dashed;
@@ -168,21 +159,11 @@
     color: var(--b-t2);
   }
   .t {
-    font-family: var(--b-mono);
-    font-size: 10px;
-    color: var(--b-t3);
+    flex: none;
     width: 52px;
-    flex: none;
-  }
-  .k {
-    width: 8px;
-    height: 8px;
-    border-radius: 3px;
-    flex: none;
-  }
-  .k.hold {
-    background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px 4px);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: rgb(var(--b-on, 255 255 255) / 0.72);
   }
   b {
     font-weight: 400;
@@ -195,28 +176,28 @@
     font-style: normal;
     margin-left: auto;
     flex: none;
-    font-family: var(--b-mono);
-    font-size: 9.5px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
     letter-spacing: 0.08em;
-    color: var(--b-t3);
+    color: rgb(var(--b-on, 255 255 255) / 0.75);
   }
   em.now {
-    color: #ff809f;
+    color: var(--b-t1, #fff);
   }
   .more {
     text-align: center;
-    padding: 5px 10px;
+    padding: 6px 10px;
     border-radius: 10px;
-    font-size: 12px;
-    color: var(--b-t2);
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-top-color: rgba(255, 255, 255, 0.16);
+    font-size: var(--b-row-fs, 13px);
+    color: rgb(var(--b-on, 255 255 255) / 0.85);
+    background: var(--b-row-bg, rgb(var(--b-on, 255 255 255) / 0.1));
+    border: 0;
     cursor: default;
   }
   .more:hover,
   .more:focus-visible {
-    background: rgba(255, 255, 255, 0.09);
+    background: rgb(var(--b-on, 255 255 255) / 0.18);
     outline: none;
   }
 </style>

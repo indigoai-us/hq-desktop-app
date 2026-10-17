@@ -11,11 +11,14 @@ import {
   LINE_MAX,
   decidedRows,
   followUpPrompt,
+  groupByMeeting,
+  headingWhen,
   meetingsInWindow,
   morePeek,
   namesOwner,
   rowPeek,
   settledTitle,
+  spansDays,
   truncateLine,
   whenLabel,
 } from "./brief-decided.js";
@@ -107,6 +110,32 @@ describe("decided rows", () => {
   });
 });
 
+describe("decided groups", () => {
+  it("groups rows under their meeting, once per meeting, in row order", () => {
+    const rows = decidedRows(DAY, FROM);
+    const groups = groupByMeeting(rows);
+    expect(groups.map((g) => g.meeting.id)).toEqual(["m1", "m2"]);
+    expect(groups.map((g) => g.rows.map((r) => r.id))).toEqual([
+      ["m1:d0", "m1:d1", "m1:d2"],
+      ["m2:d0", "m2:d1", "m2:d2"],
+    ]);
+    // A cut list keeps only the meetings it reaches.
+    expect(groupByMeeting(rows.slice(0, 3)).map((g) => g.meeting.id)).toEqual(["m1"]);
+    expect(groupByMeeting([])).toEqual([]);
+  });
+
+  it("a heading's time adds the weekday only when asked, for a catch-up that spans days", () => {
+    const iso = "2026-10-10T21:00:00.000Z";
+    const day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(iso).getDay()];
+    expect(headingWhen(iso, false)).toBe(clockLabel(iso));
+    expect(headingWhen(iso, true)).toBe(`${day} ${clockLabel(iso)}`);
+    expect(headingWhen("nope", true)).toBe("");
+    const rows = decidedRows(DAY, FROM);
+    expect(spansDays(rows.filter((r) => r.meeting.id === "m1"))).toBe(false);
+    expect(spansDays(decidedRows(DAY, Date.parse("2026-10-09T12:00:00.000Z")))).toBe(true);
+  });
+});
+
 describe("decided copy", () => {
   it("titles the card with the count, and 'without you' only when none is yours", () => {
     expect(settledTitle(6, { mine: false, away: false })).toBe("6 decisions made yesterday without you");
@@ -192,14 +221,17 @@ describe("BriefDecided", () => {
     expect(target.textContent).not.toContain("Interviews ask one question at a time");
     expect(target.textContent).not.toContain("Raise the SAFE cap");
     expect(target.textContent).not.toContain("Skipped meeting line");
-    expect(q(".foot")!.textContent).toContain("6 settled");
-    expect(q(".foot")!.textContent).toContain("2 meetings");
+    // The title carries the full count; the meetings show as their groups, so nothing repeats them in a footer.
+    expect(qa('[data-testid="brief-decided-group"]').map((g) => g.getAttribute("aria-label"))).toEqual(["Call with Jordan", "HQ Dev Standup"]);
+    expect(q(".foot")).toBeNull();
   });
 
   it("a one-row slot shows three rows and +3 more, with no footer", () => {
     render({ rows: 1 });
     expect(qa('[data-testid="brief-decided-row"]')).toHaveLength(3);
     expect(q('[data-testid="brief-decided-more"]')!.textContent!.trim()).toBe("+3 more");
+    // Only the meeting those three rows came from gets a heading.
+    expect(qa('[data-testid="brief-decided-group"]')).toHaveLength(1);
     expect(q(".foot")).toBeNull();
   });
 
@@ -213,13 +245,32 @@ describe("BriefDecided", () => {
     expect(row.getAttribute("aria-label")).toBe(LONG);
   });
 
-  it("the source line is the meeting's plain title, its local time, and the company's logo", () => {
+  it("names each meeting once, over its decisions: the plain title and local time, no source line on the rows", () => {
     render({});
-    const first = qa('[data-testid="brief-decided-row"]')[0]!;
-    expect(first.querySelector('[data-testid="brief-decided-src-text"]')!.textContent).toBe(`Call with Jordan · ${clockLabel("2026-10-10T21:00:00.000Z")}`);
-    expect(first.querySelector('[data-testid="brief-logo"]')).not.toBeNull();
-    const fourth = qa('[data-testid="brief-decided-row"]')[3]!;
-    expect(fourth.querySelector('[data-testid="brief-decided-src-text"]')!.textContent).toBe(`HQ Dev Standup · ${clockLabel("2026-10-11T00:00:00.000Z")}`);
+    const groups = qa('[data-testid="brief-decided-group"]');
+    expect(groups).toHaveLength(2);
+    expect(qa('[data-testid="brief-decided-src-text"]').map((e) => e.textContent)).toEqual([
+      `Call with Jordan · ${clockLabel("2026-10-10T21:00:00.000Z")}`,
+      `HQ Dev Standup · ${clockLabel("2026-10-11T00:00:00.000Z")}`,
+    ]);
+    // Rows sit under their heading and repeat none of it.
+    expect(groups.map((g) => g.querySelectorAll('[data-testid="brief-decided-row"]').length)).toEqual([3, 2]);
+    for (const row of qa('[data-testid="brief-decided-row"]')) {
+      expect(row.querySelector('[data-testid="brief-decided-src"]')).toBeNull();
+      expect(row.textContent).not.toContain("Call with Jordan");
+      expect(row.textContent).not.toContain("HQ Dev Standup");
+    }
+  });
+
+  it("shows the company's logo on a heading only when the decisions come from more than one company", () => {
+    render({});
+    expect(q('[data-testid="brief-logo"]')).toBeNull();
+    unmount(app!);
+    app = null;
+    render({ meetings: DAY.map((m) => (m.id === "m2" ? { ...m, companyUid: "cmp_liverecover" } : m)) });
+    const groups = qa('[data-testid="brief-decided-group"]');
+    expect(groups.map((g) => g.querySelectorAll('[data-testid="brief-logo"]').length)).toEqual([1, 1]);
+    expect(qa('[data-testid="brief-decided-row"]').some((r) => r.querySelector('[data-testid="brief-logo"]'))).toBe(false);
   });
 
   it("says 'without you' when no line is yours, and drops it when a line names you", () => {
@@ -248,6 +299,8 @@ describe("BriefDecided", () => {
     expect(q('[data-testid="brief-decided-more"]')!.textContent!.trim()).toBe("+2 more");
     expect(q('[data-testid="brief-decided-title"]')!.textContent).toBe("7 decisions made while you were away");
     expect(target.textContent).not.toContain("Skipped meeting line");
+    // Days apart: each heading names its weekday.
+    expect(q('[data-testid="brief-decided-src-text"]')!.textContent).toBe(`Investor call · ${headingWhen("2026-10-09T19:00:00.000Z", true)}`);
   });
 
   it("hovering a row peeks the full decision with a Follow up prompt that sends nothing; +N more peeks the rest", async () => {

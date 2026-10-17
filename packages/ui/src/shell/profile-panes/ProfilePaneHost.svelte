@@ -339,6 +339,7 @@
       {badges}
       progress={badgeProgress}
       owner={kind === "bot" ? botName : name}
+      onselect={(b) => (openBadge = b)}
       onback={() => (badgesPage = false)}
       {onclose}
     />

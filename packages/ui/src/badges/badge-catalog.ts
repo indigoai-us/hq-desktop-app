@@ -13,7 +13,7 @@ export type BadgeTier = 1 | 2 | 3 | "L";
 export type BadgeIcon =
   | "flag" | "house" | "bug" | "rocket" | "bolt" | "toolbox" | "bulb" | "people"
   | "robot" | "plug" | "plane" | "calendar" | "box" | "clipboard" | "flame"
-  | "crown" | "wheel" | "pulse" | "code";
+  | "crown" | "wheel" | "pulse" | "code" | "rat";
 
 /** "honors": given to the people who built and lead HQ, not earned by use. */
 export type BadgeFamily = "early" | "usage" | "honors";
@@ -51,6 +51,7 @@ export const BADGES: readonly BadgeDef[] = [
   { id: "captain", name: "Captain", icon: "wheel", family: "honors", crit: "Leads HQ", levels: "Single level", tier: "L" },
   { id: "patientzero", name: "Patient Zero", icon: "pulse", family: "honors", crit: "The first person to run HQ", levels: "Single level", tier: "L" },
   { id: "corebuilder", name: "Core Builder", icon: "code", family: "honors", crit: "Pull requests merged into HQ core", levels: "1 · 10 · 100 · 200 PRs", tier: 1 },
+  { id: "ecomrat", name: "Ecom Rat", icon: "rat", family: "honors", crit: "Honorary rat of ecommerce", levels: "Single level", tier: "L" },
 ];
 
 export const BADGE_BY_ID: Readonly<Record<string, BadgeDef>> = Object.fromEntries(BADGES.map((b) => [b.id, b]));

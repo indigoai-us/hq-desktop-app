@@ -69,8 +69,9 @@
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
-  import { BRIEF_CLAUDE_PERMISSION_MODE, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
+  import { BRIEF_CLAUDE_PERMISSION_MODE, briefBotLabel, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
+  import { briefBotFailure } from "../brief/brief-bot-failure.js";
   import {
     RAIL_ATLAS_FLAG,
     RAIL_BRIEF_FLAG,
@@ -5805,6 +5806,17 @@
           // Sign-in and model setup live in the bot's conversation.
           openSetupBotDm({ agentUid: bot.agentUid, handle: bot.name });
           return null;
+        },
+        async botFailure(bot, sinceMs) {
+          const res = await adapter.messaging.fetchDmThread({ withPersonUid: bot.agentUid, limit: 20 });
+          if (!res.ok) return null;
+          const label = briefBotLabel(bot);
+          return briefBotFailure(normalizeConversationMessages(res.value), {
+            agentUid: bot.agentUid,
+            sinceMs,
+            bot: label,
+            runtime: bot.runtime,
+          });
         },
         notify(title, body) {
           pushToast({ title, detail: body, tone: "ok" });
