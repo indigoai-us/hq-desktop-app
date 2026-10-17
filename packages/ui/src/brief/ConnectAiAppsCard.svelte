@@ -14,12 +14,12 @@
     /** Claude Code and the Codex CLI, as the launch detection found them. */
     cli: { claudeCode: boolean; codex: boolean };
     /**
-     * The connector whose HQ install succeeded. That row says it is set up
-     * and has no Copy prompt. Null keeps every row's Copy option.
+     * The connector whose local HQ Anywhere install is on. Copy stays, because
+     * that install is not the remote indigo connector. Null adds no note.
      */
-    installedId?: string | null;
+    anywhereOnId?: string | null;
   }
-  let { detect, cli, installedId = null }: Props = $props();
+  let { detect, cli, anywhereOnId = null }: Props = $props();
 
   let scanApps = $state.raw<FoundWorkApps["apps"]>([]);
   let alive = true;
@@ -64,28 +64,23 @@
         <li data-testid={`connect-ai-app-${app.id}`}>
           <div class="text">
             <div class="name">{app.name}</div>
-            {#if installedId === app.id}
-              <div class="help">HQ is already installed in {app.name}.</div>
-            {:else}
-              <div class="help">{app.help}</div>
-              {#if app.steps}
-                <ol class="help steps">
-                  {#each app.steps as step}<li>{step}</li>{/each}
-                </ol>
-              {/if}
-              {#if copyFailedId === app.id}
-                <pre class="help manual" data-testid={`connect-ai-app-${app.id}-manual`}>{app.copyText}</pre>
-                <div class="help" role="status">Copy didn't work. Select the text above, or tap the button to try again.</div>
-              {/if}
+            <div class="help">{app.help}</div>
+            {#if app.steps}
+              <ol class="help steps">
+                {#each app.steps as step}<li>{step}</li>{/each}
+              </ol>
+            {/if}
+            {#if anywhereOnId === app.id}
+              <div class="help" data-testid={`connect-ai-app-${app.id}-anywhere`}>HQ Anywhere on</div>
+            {/if}
+            {#if copyFailedId === app.id}
+              <pre class="help manual" data-testid={`connect-ai-app-${app.id}-manual`}>{app.copyText}</pre>
+              <div class="help" role="status">Copy didn't work. Select the text above, or tap the button to try again.</div>
             {/if}
           </div>
-          {#if installedId === app.id}
-            <span class="status" data-testid={`connect-ai-app-${app.id}-setup`}>Set up</span>
-          {:else}
-            <button type="button" data-testid={`connect-ai-app-${app.id}-copy`} onclick={() => void copy(app)}>
-              {copiedId === app.id ? "Copied" : app.copyLabel || "Copy"}
-            </button>
-          {/if}
+          <button type="button" data-testid={`connect-ai-app-${app.id}-copy`} onclick={() => void copy(app)}>
+            {copiedId === app.id ? "Copied" : app.copyLabel || "Copy"}
+          </button>
         </li>
       {/each}
     </ul>
@@ -158,12 +153,6 @@
   }
   button:active {
     opacity: 0.7;
-  }
-  .status {
-    flex: none;
-    font-size: 12px;
-    line-height: 16px;
-    color: rgba(255, 255, 255, 0.72);
   }
   @media (prefers-reduced-motion: reduce) {
     button {

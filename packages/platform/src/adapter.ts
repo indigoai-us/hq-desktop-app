@@ -2924,6 +2924,11 @@ export interface SettingsApi {
    * coding tool, used by first-run "Continue in <tool>".
    */
   installRuntimeForTool?(runtime: "claude" | "codex"): AdapterPromise<void>;
+  /**
+   * Whether that tool's HQ Anywhere setup is on disk now. Same check the
+   * install uses to skip a tool that is already set up.
+   */
+  hqAnywhereRuntimeInstalled?(runtime: "claude" | "codex"): AdapterPromise<boolean>;
   getSetupStatus(): AdapterPromise<Json>;
   /**
    * The welcome channel's guided setup finished on this machine. Optional:

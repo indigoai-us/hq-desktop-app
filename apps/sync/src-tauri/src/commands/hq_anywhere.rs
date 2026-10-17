@@ -236,10 +236,49 @@ fn parse_tool_runtime(runtime: &str) -> Result<GlobalRuntime, String> {
     GlobalRuntime::parse(runtime).ok_or_else(|| "Unsupported coding tool".to_string())
 }
 
+/// Returned when a one-tool install is refused because this build may not
+/// change the owner's coding tools. It is not success: nothing was installed.
+pub const HQ_ANYWHERE_NOT_INSTALLED: &str = "not-installed";
+
+/// Startup reconcile (`only` is None) still returns Ok for a disallowed
+/// identity, so a scratch launch does not mark setup as failed. A one-tool
+/// install returns [`HQ_ANYWHERE_NOT_INSTALLED`] instead of looking installed.
+fn disallowed_install_result(
+    identity: &crate::scratch_build::LaunchIdentity,
+    only: Option<GlobalRuntime>,
+) -> Result<(), String> {
+    if identity.allows("HQ Anywhere global runtime setup") {
+        return Ok(());
+    }
+    if only.is_some() {
+        return Err(HQ_ANYWHERE_NOT_INSTALLED.to_string());
+    }
+    Ok(())
+}
+
+/// The same check the install skip uses (`global_runtime_is_installed`).
+pub fn runtime_installed_for_tool(home: &Path, runtime: &str) -> Result<bool, String> {
+    Ok(global_runtime_is_installed(
+        home,
+        parse_tool_runtime(runtime)?,
+    ))
+}
+
+/// Cheap read for the welcome report and later briefs. Does not install.
+#[tauri::command]
+pub fn hq_anywhere_runtime_installed(runtime: String) -> Result<bool, String> {
+    let home =
+        dirs::home_dir().ok_or_else(|| "Could not resolve the home directory.".to_string())?;
+    runtime_installed_for_tool(&home, &runtime)
+}
+
 async fn run_global_install(enabled: bool, only: Option<GlobalRuntime>) -> Result<(), String> {
     let _guard = global_install_lock().lock().await;
     let identity = crate::scratch_build::LaunchIdentity::current();
-    if !identity.allows("HQ Anywhere global runtime setup") {
+    // A disallowed one-tool install is an error. A disallowed startup
+    // reconcile stays Ok and must return here, before any home lookup.
+    disallowed_install_result(&identity, only)?;
+    if !identity.is_production() {
         return Ok(());
     }
     let home =
@@ -363,9 +402,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{
-        apply_global_install, detect_present_runtimes, global_runtime_args,
-        global_runtime_is_installed, parse_tool_runtime, safe_renderer_failure, GlobalRuntime,
-        RuntimeAction,
+        apply_global_install, detect_present_runtimes, disallowed_install_result,
+        global_runtime_args, global_runtime_is_installed, parse_tool_runtime,
+        runtime_installed_for_tool, safe_renderer_failure, GlobalRuntime, RuntimeAction,
+        HQ_ANYWHERE_NOT_INSTALLED,
     };
     use crate::scratch_build::LaunchIdentity;
 
@@ -605,6 +645,30 @@ mod tests {
         );
         assert_eq!(result, Ok(()));
         assert!(calls.is_empty(), "a scratch bundle ran hq {calls:?}");
+    }
+
+    #[test]
+    fn a_disallowed_one_tool_install_is_not_installed() {
+        let scratch = bundle(Some(SCRATCH_BUNDLE_ID));
+        assert_eq!(
+            disallowed_install_result(&scratch, Some(GlobalRuntime::Claude)),
+            Err(HQ_ANYWHERE_NOT_INSTALLED.to_string())
+        );
+        assert_eq!(disallowed_install_result(&scratch, None), Ok(()));
+        assert_eq!(
+            disallowed_install_result(&production(), Some(GlobalRuntime::Codex)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn runtime_installed_for_tool_uses_the_full_install_check() {
+        let home = TempHome::new();
+        assert_eq!(runtime_installed_for_tool(home.path(), "claude"), Ok(false));
+        write_claude_install(home.path());
+        assert_eq!(runtime_installed_for_tool(home.path(), "claude"), Ok(true));
+        assert_eq!(runtime_installed_for_tool(home.path(), "codex"), Ok(false));
+        assert!(runtime_installed_for_tool(home.path(), "grok").is_err());
     }
 
     #[test]

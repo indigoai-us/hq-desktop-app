@@ -29,4 +29,13 @@ describe("sync adapter HQ Anywhere person setting", () => {
 
     expect(invoke.mock.calls).toEqual([["install_hq_runtime_for_tool", { runtime: "codex" }]]);
   });
+
+  it("reads whether one tool's HQ Anywhere setup is installed", async () => {
+    const invoke = vi.fn(async () => true);
+    const adapter = createSyncPlatformAdapter({ invoke });
+
+    await expect(adapter.settings.hqAnywhereRuntimeInstalled?.("claude")).resolves.toEqual(ok(true));
+
+    expect(invoke.mock.calls).toEqual([["hq_anywhere_runtime_installed", { runtime: "claude" }]]);
+  });
 });

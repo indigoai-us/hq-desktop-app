@@ -88,9 +88,18 @@ afterEach(() => {
 });
 
 describe("continueInTool", () => {
+  it("does not opt in or install unless Enable was pressed", async () => {
+    const { order, input, putHqAnywherePersonSetting, installRuntimeForTool, launchClaudeCode } = setup();
+    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared", install: "skipped" });
+    expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(order).toEqual([]);
+  });
+
   it("records the HQ Anywhere opt-in before the install and does not open the tool", async () => {
     const { order, input, putHqAnywherePersonSetting, launchClaudeCode } = setup();
-    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared", installed: true });
+    await expect(continueInTool(input("claude", { enableHqAnywhere: true }))).resolves.toEqual({ kind: "prepared", install: "installed" });
     expect(putHqAnywherePersonSetting).toHaveBeenCalledWith(true);
     expect(order).toEqual(["opt-in:true", "install:claude"]);
     expect(launchClaudeCode).not.toHaveBeenCalled();
@@ -98,7 +107,7 @@ describe("continueInTool", () => {
 
   it("a launch after Continue keeps the install: the reconcile reads the saved opt-in and never uninstalls", async () => {
     const { order, input, settings } = setup();
-    await continueInTool(input("claude"));
+    await continueInTool(input("claude", { enableHqAnywhere: true }));
     const identity = {
       resolveFeatureFlagStatus: vi.fn(async (flag: string) =>
         ok({ configured: true, enabled: flag === HQ_ANYWHERE_RUNTIME_FLAG }),
@@ -116,7 +125,7 @@ describe("continueInTool", () => {
     const { order, input, installRuntimeForTool, launchClaudeCode } = setup({
       putSetting: async () => failure("network", "offline"),
     });
-    await expect(continueInTool(input("claude"))).resolves.toEqual({
+    await expect(continueInTool(input("claude", { enableHqAnywhere: true }))).resolves.toEqual({
       kind: "prepared-without-opt-in",
       message: "Couldn't save your HQ Anywhere choice. HQ was not installed in Claude Code. Try again from Settings.",
     });
@@ -127,7 +136,7 @@ describe("continueInTool", () => {
 
   it("with the hq-anywhere-runtime kill switch off, prepares nothing: no opt-in write, no install, no open", async () => {
     const { order, input, putHqAnywherePersonSetting, installRuntimeForTool, launchClaudeCode } = setup({ runtimeFlag: false });
-    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared", installed: false });
+    await expect(continueInTool(input("claude", { enableHqAnywhere: true }))).resolves.toEqual({ kind: "prepared", install: "skipped" });
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(installRuntimeForTool).not.toHaveBeenCalled();
     expect(launchClaudeCode).not.toHaveBeenCalled();
@@ -136,7 +145,7 @@ describe("continueInTool", () => {
 
   it("with no identity to read the kill switch, fails closed and does not install or open", async () => {
     const { order, input, installRuntimeForTool, launchClaudeCode } = setup();
-    await expect(continueInTool(input("claude", { identity: undefined }))).resolves.toEqual({ kind: "prepared", installed: false });
+    await expect(continueInTool(input("claude", { identity: undefined, enableHqAnywhere: true }))).resolves.toEqual({ kind: "prepared", install: "skipped" });
     expect(installRuntimeForTool).not.toHaveBeenCalled();
     expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(order).toEqual([]);
@@ -145,28 +154,37 @@ describe("continueInTool", () => {
   it("a failed install still prepares the Open action and does not open the tool", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { input, launchClaudeCode } = setup({ install: async () => failure("hq-install", "exit 1") });
-    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared", installed: false });
+    await expect(continueInTool(input("claude", { enableHqAnywhere: true }))).resolves.toEqual({ kind: "prepared", install: "failed" });
     expect(launchClaudeCode).not.toHaveBeenCalled();
   });
 
-  it("a hung install resolves once the bounded wait runs out, without opening the tool", async () => {
+  it("a hung install is pending, then reports the real result without opening the tool", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const log = vi.fn();
-    const { input, launchClaudeCode } = setup({ install: () => new Promise(() => undefined) });
-    const pending = continueInTool(input("claude", { log }));
+    const onInstallSettled = vi.fn();
+    let finish: (value: { ok: true; value: undefined }) => void = () => undefined;
+    const { input, launchClaudeCode } = setup({
+      install: () => new Promise((resolve) => {
+        finish = resolve;
+      }),
+    });
+    const pending = continueInTool(input("claude", { log, enableHqAnywhere: true, onInstallSettled }));
     await vi.advanceTimersByTimeAsync(FIRST_RUN_INSTALL_WAIT_MS - 1);
     expect(launchClaudeCode).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    await expect(pending).resolves.toEqual({ kind: "prepared", installed: false });
+    await expect(pending).resolves.toEqual({ kind: "prepared", install: "pending" });
     expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(onInstallSettled).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringContaining("installed runtime=claude ok=timeout"));
     expect(FIRST_RUN_INSTALL_WAIT_MS).toBe(20_000);
+    finish(ok(undefined));
+    await vi.waitFor(() => expect(onInstallSettled).toHaveBeenCalledWith(ok(undefined)));
   });
 
   it("Grok Build prepares without an opt-in, an install, or an open", async () => {
     const { order, input, putHqAnywherePersonSetting, installRuntimeForTool } = setup();
-    await expect(continueInTool(input("grok"))).resolves.toEqual({ kind: "prepared", installed: false });
+    await expect(continueInTool(input("grok", { enableHqAnywhere: true }))).resolves.toEqual({ kind: "prepared", install: "skipped" });
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(installRuntimeForTool).not.toHaveBeenCalled();
     expect(order).toEqual([]);

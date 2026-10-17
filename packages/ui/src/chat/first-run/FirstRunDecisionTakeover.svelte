@@ -65,11 +65,14 @@
     /** Done: open the bot's chat. */
     ontalk: () => void | Promise<void>;
     /**
-     * "Continue in <tool>": install HQ into that tool and land on the
-     * welcome report. The tool stays closed until Open. A returned sentence
-     * is shown here and the takeover stays up.
+     * "Continue in <tool>": land on the welcome report. HQ Anywhere is
+     * installed only when `enableHqAnywhere` is true. The tool stays closed
+     * until Open. A returned sentence is shown here and the takeover stays up.
      */
-    oncontinueintool: (runtime: FirstRunRuntime) => string | null | void | Promise<string | null | void>;
+    oncontinueintool: (
+      runtime: FirstRunRuntime,
+      choice: { enableHqAnywhere: boolean },
+    ) => string | null | void | Promise<string | null | void>;
     /** Skip tool sign-in: keep the welcome report held, without opening the tool. */
     onskipintool?: (runtime: FirstRunRuntime) => void | Promise<void>;
     /** Done without a signed-in tool: the setup chat takes it from there. */
@@ -90,10 +93,12 @@
      */
     signin?: FirstRunSignInHost | null;
     /**
-     * The hq-anywhere-runtime kill switch is on. Off (the default) hides the
-     * install line, because Continue installs nothing then.
+     * The hq-anywhere-runtime kill switch. Null while it is still being read,
+     * so the callout keeps its space and the Continue row does not jump.
      */
-    hqAnywhereOn?: boolean;
+    hqAnywhereFlag?: boolean | null;
+    /** An installer exists. False hides the callout, the same as the real install. */
+    canInstallHq?: boolean;
   }
 
   let {
@@ -114,7 +119,8 @@
     initialChoseBot = false,
     timingLog = null,
     signin = null,
-    hqAnywhereOn = false,
+    hqAnywhereFlag = null,
+    canInstallHq = false,
   }: Props = $props();
 
   let hostNoun = $state(hostComputerNoun());
@@ -190,8 +196,21 @@
   );
   const tool = $derived(decisionToolFor(scanTools, installed));
   const toolName = $derived(tool ? runtimeLabel(tool) : "");
-  /** The line is shown only when this press will install HQ into the tool. */
-  const showInstallNote = $derived(Boolean(tool) && tool !== "grok" && hqAnywhereOn);
+  /**
+   * The callout uses the same predicate as the install. Hidden at once for
+   * Grok, no tool, or no installer (no reserved slot). Pending reserves the
+   * unchosen box while the kill switch is unread.
+   */
+  const calloutPhase = $derived.by((): "hidden" | "pending" | "shown" => {
+    if (!tool || tool === "grok" || !canInstallHq) return "hidden";
+    if (hqAnywhereFlag === null) return "pending";
+    return hqAnywhereFlag ? "shown" : "hidden";
+  });
+  /** Unset until the person presses Enable or Not now. Neither starts selected. */
+  let anywhereChoice = $state<"unset" | "enable" | "later">("unset");
+  $effect(() => {
+    if (calloutPhase === "hidden" && anywhereChoice !== "unset") anywhereChoice = "unset";
+  });
   const toolSessions = $derived(tool ? toolSessionCount(scanTools, tool) : null);
   let choseBot = $state(untrack(() => initialChoseBot));
   const showBot = $derived(choseBot || tool === null);
@@ -206,7 +225,8 @@
   async function continueInTool(runtime: FirstRunRuntime): Promise<void> {
     toolError = null;
     try {
-      toolError = (await oncontinueintool(runtime)) || null;
+      const enableHqAnywhere = calloutPhase === "shown" && anywhereChoice === "enable";
+      toolError = (await oncontinueintool(runtime, { enableHqAnywhere })) || null;
     } catch (error) {
       console.warn("[first-run] tool failed", error);
       toolError = `Could not open ${toolName}. Try again.`;
@@ -491,6 +511,56 @@
         {#if toolError && pressed === null}
           <p class="fr-decision-lead fr-decision-failed" role="alert" data-testid="first-run-decision-error">{toolError}</p>
         {/if}
+        {#if calloutPhase !== "hidden"}
+        <div
+          class="fr-anywhere"
+          id="first-run-anywhere-callout"
+          data-testid="first-run-anywhere-slot"
+          data-state={calloutPhase === "pending" ? "pending" : anywhereChoice}
+          aria-hidden={calloutPhase === "pending" ? "true" : undefined}
+          inert={calloutPhase === "pending"}
+          style={calloutPhase === "pending" ? "visibility: hidden" : undefined}
+        >
+          {#if calloutPhase === "pending" || anywhereChoice === "unset"}
+            <p class="fr-anywhere-title">{COPY.anywhereTitle}</p>
+            <p class="fr-anywhere-body">{COPY.anywhereBody(toolName)}</p>
+            <div class="fr-anywhere-actions">
+              {#if calloutPhase === "shown"}
+                <button
+                  type="button"
+                  class="new-bot-create-next"
+                  data-testid="first-run-anywhere-enable"
+                  disabled={pressed !== null}
+                  onclick={() => (anywhereChoice = "enable")}
+                >{COPY.anywhereEnable}</button>
+                <button
+                  type="button"
+                  class="fr-anywhere-later"
+                  data-testid="first-run-anywhere-not-now"
+                  disabled={pressed !== null}
+                  onclick={() => (anywhereChoice = "later")}
+                >{COPY.anywhereNotNow}</button>
+              {:else}
+                <span class="new-bot-create-next">{COPY.anywhereEnable}</span>
+                <span class="fr-anywhere-later">{COPY.anywhereNotNow}</span>
+              {/if}
+            </div>
+          {:else if anywhereChoice === "enable"}
+            <p class="fr-anywhere-line" data-testid="first-run-anywhere-on">
+              {COPY.anywhereOn}
+              <button
+                type="button"
+                class="fr-anywhere-undo"
+                data-testid="first-run-anywhere-undo"
+                disabled={pressed !== null}
+                onclick={() => (anywhereChoice = "unset")}
+              >{COPY.anywhereUndo}</button>
+            </p>
+          {:else}
+            <p class="fr-anywhere-line" data-testid="first-run-anywhere-off">{COPY.anywhereOff}</p>
+          {/if}
+        </div>
+        {/if}
       </div>
       <!-- Two equal paths (owner, 2026-10-15): the tool, or naming the assistant. -->
       <div class="new-bot-foot-actions">
@@ -500,7 +570,7 @@
           data-testid="first-run-decision-primary"
           disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
-          aria-describedby={showInstallNote ? "first-run-decision-install-note" : undefined}
+          aria-describedby={calloutPhase === "shown" ? "first-run-anywhere-callout" : undefined}
           onclick={() =>
             void press("tool", async () => {
               // A failed handoff can retry directly; Skip never installs or opens the tool.
@@ -522,9 +592,6 @@
           onclick={() => (choseBot = true)}
         >{COPY.toolOther}</button>
       </div>
-      {#if showInstallNote}
-        <p id="first-run-decision-install-note" class="fr-tool-note" data-testid="first-run-decision-install-note">{COPY.toolInstallNote(toolName)}</p>
-      {/if}
     {/if}
   </div>
 {/snippet}
@@ -639,13 +706,67 @@
   .fr-decision .new-bot-foot-actions {
     margin: 0;
   }
-  /* One line under Continue: the press also installs HQ into that tool. */
-  .fr-tool-note {
-    margin: 8px 0 0;
-    color: rgba(255, 255, 255, 0.62);
-    font-size: 12px;
+  /* Raised card above Continue, inside the head so it grows upward and
+     Continue stays on the ground line. This screen's wallpaper stays dark
+     in both app themes, so the card keeps the dark raised-card tokens.
+     The light chat-shell values are near-black and disappear here. */
+  .fr-anywhere {
+    --raised: rgba(255, 255, 255, 0.05);
+    --line: rgba(255, 255, 255, 0.07);
+    --t1: rgba(255, 255, 255, 0.95);
+    --t2: rgba(255, 255, 255, 0.56);
+    margin: 12px 0 0;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--raised);
+    color: var(--t1);
+  }
+  .fr-anywhere-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+  .fr-anywhere-body,
+  .fr-anywhere-line {
+    margin: 6px 0 0;
+    color: var(--t2);
+    font-size: 13px;
     font-weight: 400;
-    line-height: 16px;
+    line-height: 18px;
+  }
+  .fr-anywhere-line {
+    margin: 0;
+  }
+  .fr-anywhere-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .fr-anywhere-actions .new-bot-create-next {
+    padding: 8px 14px;
+  }
+  .fr-anywhere-later,
+  .fr-anywhere-undo {
+    border: 0;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 400;
+    cursor: pointer;
+  }
+  .fr-anywhere-undo {
+    margin-left: 8px;
+    color: var(--t1);
+    text-decoration: underline;
+  }
+  .fr-anywhere-later:disabled,
+  .fr-anywhere-undo:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   /* Read by screen readers only; the visible lines say the same. */
   .first-run-live {

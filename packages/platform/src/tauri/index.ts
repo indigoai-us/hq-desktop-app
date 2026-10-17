@@ -963,6 +963,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.call("set_hq_anywhere_global_install", { enabled }),
     installRuntimeForTool: (runtime) =>
       this.call("install_hq_runtime_for_tool", { runtime }),
+    hqAnywhereRuntimeInstalled: (runtime) =>
+      this.call("hq_anywhere_runtime_installed", { runtime }),
     getSetupStatus: () => this.call("get_setup_status"),
     markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
     markWelcomeTourShown: () => this.call("mark_welcome_tour_shown"),

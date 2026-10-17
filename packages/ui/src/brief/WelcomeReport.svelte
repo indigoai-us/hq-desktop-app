@@ -49,8 +49,8 @@
     aiApps?: {
       detect: () => Promise<FoundWorkApps | null>;
       cli: { claudeCode: boolean; codex: boolean };
-      /** Connector id whose HQ install succeeded. That row has no Copy prompt. */
-      installedId?: string | null;
+      /** Connector id whose local HQ Anywhere install is on. Copy stays on every row. */
+      anywhereOnId?: string | null;
     } | null;
     /**
      * The job is held back until the assistant can take it (not running, no
@@ -103,7 +103,7 @@
     {/key}
   {/if}
   {#if aiApps}
-    <ConnectAiAppsCard detect={aiApps.detect} cli={aiApps.cli} installedId={aiApps.installedId ?? null} />
+    <ConnectAiAppsCard detect={aiApps.detect} cli={aiApps.cli} anywhereOnId={aiApps.anywhereOnId ?? null} />
   {/if}
   {#if ready}
     <div class="report" data-testid="welcome-report-ready">

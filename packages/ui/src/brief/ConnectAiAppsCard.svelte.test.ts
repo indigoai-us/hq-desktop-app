@@ -31,11 +31,11 @@ function scan(apps: FoundWorkApps["apps"]): FoundWorkApps {
 function render(
   apps: FoundWorkApps["apps"],
   cli = { claudeCode: false, codex: false },
-  installedId: string | null = null,
+  anywhereOnId: string | null = null,
 ): void {
   target = document.createElement("div");
   document.body.appendChild(target);
-  component = mount(ConnectAiAppsCard, { target, props: { detect: async () => scan(apps), cli, installedId } });
+  component = mount(ConnectAiAppsCard, { target, props: { detect: async () => scan(apps), cli, anywhereOnId } });
 }
 
 afterEach(() => {
@@ -85,15 +85,16 @@ describe("ConnectAiAppsCard", () => {
     expect(q("connect-ai-app-chatgpt-manual")?.textContent).toBe(CONNECTOR_APPS.find((a) => a.id === "chatgpt")!.copyText);
   });
 
-  it("shows a tool as already set up, with no Copy prompt, when its HQ install succeeded", async () => {
+  it("keeps Copy on every tool and adds a quiet note where HQ Anywhere is on", async () => {
     render([], { claudeCode: true, codex: true }, "codex");
     await settle();
-    expect(q("connect-ai-app-codex")?.textContent).toContain("HQ is already installed in Codex.");
-    expect(q("connect-ai-app-codex-setup")?.textContent).toBe("Set up");
-    expect(q("connect-ai-app-codex-copy")).toBeNull();
-    expect(q("connect-ai-app-codex")?.textContent).not.toContain("Paste into Codex");
+    expect(q("connect-ai-app-codex-anywhere")?.textContent).toBe("HQ Anywhere on");
+    expect(q("connect-ai-app-codex-copy")?.textContent?.trim()).toBe("Copy");
+    expect(q("connect-ai-app-codex-setup")).toBeNull();
+    expect(q("connect-ai-app-codex")?.textContent).toContain("Paste into Codex");
     expect(q("connect-ai-app-claude-code-copy")).not.toBeNull();
-    expect(q("connect-ai-app-claude-code-setup")).toBeNull();
+    expect(q("connect-ai-app-claude-code-anywhere")).toBeNull();
+    expect(q("connect-ai-app-claude-code")?.textContent).not.toContain("HQ is already installed");
   });
 
   it("keeps Copy when the install did not succeed", async () => {

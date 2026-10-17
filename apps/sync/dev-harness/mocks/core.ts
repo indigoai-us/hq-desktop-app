@@ -2097,8 +2097,11 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     const conflicts = conflictNoticesSwitch(search);
     if (conflicts) return conflicts as T;
   }
-  if (cmd === 'install_hq_runtime_for_tool' && new URLSearchParams(search ?? '').get('install') === 'fail') {
-    throw new Error('harness: HQ install failed');
+  if (cmd === 'install_hq_runtime_for_tool') {
+    const install = new URLSearchParams(search ?? '').get('install');
+    if (install === 'fail') throw new Error('harness: HQ install failed');
+    // Past the 20s first-run wait, so the welcome edition can show pending and then the real result.
+    if (install === 'slow') await new Promise((resolve) => setTimeout(resolve, 22_000));
   }
   const switched = switchedHandler(cmd, args, search);
   if (switched) return switched.value as T;

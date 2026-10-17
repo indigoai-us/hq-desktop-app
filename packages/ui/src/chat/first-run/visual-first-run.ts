@@ -344,8 +344,16 @@ export const FIRST_RUN_DECISION_COPY = {
       ? `We noticed you use ${tool} the most on this ${noun}, ${sessions === 1 ? "1 session" : `${sessions} sessions`} so far. Want to keep working there?`
       : `We noticed ${tool} on this ${noun}. Want to keep working there?`,
   toolPrimary: (tool: string) => `Continue in ${tool}`,
-  // One line under Continue (owner, 2026-10-17): the press also installs HQ.
-  toolInstallNote: (tool: string) => `This also installs HQ into your ${tool} setup.`,
+  // The HQ Anywhere callout above Continue (owner, 2026-10-17). Enable is not
+  // preselected. Continue installs only after Enable.
+  anywhereTitle: "Enable HQ Anywhere",
+  anywhereBody: (tool: string) =>
+    `Use HQ in every project, not only in your HQ folder. ${tool} gets HQ's instructions, skills and tools wherever you open it. You can change this later in Settings.`,
+  anywhereEnable: "Enable",
+  anywhereNotNow: "Not now",
+  anywhereOn: "HQ Anywhere is on. Continue sets it up.",
+  anywhereUndo: "Undo",
+  anywhereOff: "HQ Anywhere is off. Turn it on later in Settings.",
   // Two equal paths (owner, 2026-10-15): the tool and naming the assistant.
   toolOther: "Name Your Assistant",
   botQuestion: "Name your assistant.",

@@ -58,11 +58,16 @@ interface Opts {
   importHost?: ImportScanHost | null;
   initialScreen?: FirstRunFlowScreen;
   initialChoseBot?: boolean;
-  oncontinueintool?: (runtime: string) => string | null | void | Promise<string | null | void>;
+  oncontinueintool?: (
+    runtime: string,
+    choice: { enableHqAnywhere: boolean },
+  ) => string | null | void | Promise<string | null | void>;
   onretry?: () => void | Promise<void>;
   signin?: FirstRunSignInHost | null;
-  /** Default true so the install line is on screen unless a test turns it off. */
-  hqAnywhereOn?: boolean;
+  /** Default true so the callout is on screen unless a test turns it off. */
+  hqAnywhereFlag?: boolean | null;
+  /** Default true: an installer exists, matching a callout that can install. */
+  canInstallHq?: boolean;
 }
 
 function render(opts: Opts = {}) {
@@ -90,7 +95,8 @@ function render(opts: Opts = {}) {
       reducedMotion: true,
       timingLog: (line: string) => timing.push(line),
       signin: opts.signin ?? null,
-      hqAnywhereOn: opts.hqAnywhereOn ?? true,
+      hqAnywhereFlag: opts.hqAnywhereFlag === undefined ? true : opts.hqAnywhereFlag,
+      canInstallHq: opts.canInstallHq ?? true,
       ...handlers,
     },
   });
@@ -118,8 +124,11 @@ describe("FirstRunDecisionTakeover", () => {
     expect(text("first-run-decision-question")).toBe(FIRST_RUN_DECISION_COPY.toolQuestion);
     expect(text("first-run-decision-lead")).toMatch(/^We noticed you use Codex the most on this \w+, \d+ sessions so far\. Want to keep working there\?$/);
     expect(text("first-run-decision-primary")).toBe("Continue in Codex");
-    expect(text("first-run-decision-install-note")).toBe("This also installs HQ into your Codex setup.");
-    expect(byId("first-run-decision-primary")?.getAttribute("aria-describedby")).toBe("first-run-decision-install-note");
+    expect(text("first-run-anywhere-slot")).toContain("Enable HQ Anywhere");
+    expect(text("first-run-anywhere-slot")).toContain(FIRST_RUN_DECISION_COPY.anywhereBody("Codex"));
+    expect(byId("first-run-decision-primary")?.getAttribute("aria-describedby")).toBe("first-run-anywhere-callout");
+    expect(byId("first-run-decision-install-note")).toBeNull();
+    expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("This also installs HQ");
     expect(text("first-run-decision-other")).toBe("Name Your Assistant");
     expect(byId("first-run-bot-name")).toBeNull();
     expect(document.querySelectorAll('[data-testid="first-run-decision-primary"]')).toHaveLength(1);
@@ -174,27 +183,93 @@ describe("FirstRunDecisionTakeover", () => {
     expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("Continue in");
   });
 
-  it("hides the install line when HQ Anywhere is off, and when the tool is Grok", async () => {
-    render({ hqAnywhereOn: false });
+  it("hides the callout when HQ Anywhere is off, when no installer exists, and when the tool is Grok", async () => {
+    render({ hqAnywhereFlag: false });
     await waitForDecision();
-    expect(byId("first-run-decision-install-note")).toBeNull();
+    expect(byId("first-run-anywhere-slot")).toBeNull();
     expect(byId("first-run-decision-primary")?.getAttribute("aria-describedby")).toBeNull();
-    expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("This also installs HQ");
+    expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("Enable HQ Anywhere");
     await unmount(component!);
     component = null;
     host?.remove();
 
-    render({ hqAnywhereOn: true, scanTools: [], installed: { claude: false, codex: false, grok: true } });
+    render({ hqAnywhereFlag: true, canInstallHq: false });
+    await waitForDecision();
+    expect(byId("first-run-anywhere-slot")).toBeNull();
+    await unmount(component!);
+    component = null;
+    host?.remove();
+
+    render({ hqAnywhereFlag: true, scanTools: [], installed: { claude: false, codex: false, grok: true } });
     await waitForDecision();
     expect(text("first-run-decision-primary")).toBe("Continue in Grok");
-    expect(byId("first-run-decision-install-note")).toBeNull();
+    expect(byId("first-run-anywhere-slot")).toBeNull();
   });
 
   it("with no scan counts, names the first installed tool", async () => {
     render({ scanTools: null, installed: { claude: true, codex: true } });
     await waitForDecision();
     expect(text("first-run-decision-primary")).toBe("Continue in Claude Code");
-    expect(text("first-run-decision-install-note")).toBe("This also installs HQ into your Claude Code setup.");
+    expect(text("first-run-anywhere-slot")).toContain(FIRST_RUN_DECISION_COPY.anywhereBody("Claude Code"));
+  });
+
+  it("reserves the callout while the flag is unread, then shows it without moving Continue", async () => {
+    render({ hqAnywhereFlag: null });
+    await waitForDecision();
+    const pending = byId("first-run-anywhere-slot")!;
+    expect(pending.getAttribute("data-state")).toBe("pending");
+    expect(pending.getAttribute("aria-hidden")).toBe("true");
+    expect(pending.style.visibility).toBe("hidden");
+    expect(pending.textContent).toContain(FIRST_RUN_DECISION_COPY.anywhereTitle);
+    expect(pending.textContent).toContain("Enable");
+    expect(pending.textContent).toContain("Not now");
+    expect(byId("first-run-anywhere-enable")).toBeNull();
+    const before = byId("first-run-decision-primary");
+    expect(pending.compareDocumentPosition(before!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("Enable, Not now and Undo, and Continue installs only after Enable", async () => {
+    const { handlers } = render();
+    await waitForDecision();
+    const enable = byId<HTMLButtonElement>("first-run-anywhere-enable")!;
+    const notNow = byId<HTMLButtonElement>("first-run-anywhere-not-now")!;
+    const primary = byId<HTMLButtonElement>("first-run-decision-primary")!;
+    expect(enable.classList.contains("new-bot-create-next")).toBe(true);
+    expect(enable.classList.contains("new-bot-create-submit")).toBe(false);
+    expect(primary.classList.contains("new-bot-create-submit")).toBe(true);
+    expect(byId("first-run-anywhere-slot")?.getAttribute("data-state")).toBe("unset");
+    expect(byId("first-run-anywhere-slot")?.closest(".fr-decision-head")).toBeTruthy();
+    expect(primary.closest(".fr-decision-head")).toBeNull();
+    expect(byId("first-run-anywhere-slot")!.compareDocumentPosition(primary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    enable.click();
+    await settle();
+    expect(text("first-run-anywhere-on")).toContain("HQ Anywhere is on. Continue sets it up.");
+    expect(text("first-run-anywhere-undo")).toBe("Undo");
+    byId<HTMLButtonElement>("first-run-anywhere-undo")!.click();
+    await settle();
+    expect(byId("first-run-anywhere-enable")).toBeTruthy();
+
+    byId<HTMLButtonElement>("first-run-anywhere-not-now")!.click();
+    await settle();
+    expect(text("first-run-anywhere-off")).toBe("HQ Anywhere is off. Turn it on later in Settings.");
+    expect(byId("first-run-anywhere-undo")).toBeNull();
+    expect(byId("first-run-anywhere-enable")).toBeNull();
+    primary.click();
+    await settle();
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex", { enableHqAnywhere: false });
+
+    await unmount(component!);
+    component = null;
+    host?.remove();
+    const again = render();
+    await waitForDecision();
+    byId<HTMLButtonElement>("first-run-anywhere-enable")!.click();
+    await settle();
+    byId<HTMLButtonElement>("first-run-decision-primary")!.click();
+    await settle();
+    expect(again.handlers.oncontinueintool).toHaveBeenCalledWith("codex", { enableHqAnywhere: true });
+    expect(notNow).toBeTruthy();
   });
 
   it("waits for the scan before asking", async () => {
@@ -225,7 +300,7 @@ describe("FirstRunDecisionTakeover", () => {
     primary.click();
     await settle();
     expect(handlers.oncontinueintool).toHaveBeenCalledTimes(1);
-    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex", { enableHqAnywhere: false });
     release();
     await settle();
     expect(primary.disabled).toBe(false);
@@ -406,7 +481,7 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     expect(signin.signedIn).toHaveBeenCalledWith("codex");
     expect(signin.run).not.toHaveBeenCalled();
     expect(byId("first-run-signin-waiting")).toBeNull();
-    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex", { enableHqAnywhere: false });
     expect(timing.some((line) => line.includes("kind=signin"))).toBe(false);
   });
 
@@ -418,7 +493,7 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     await settle();
     expect(signin.signedIn).not.toHaveBeenCalled();
     expect(signin.run).not.toHaveBeenCalled();
-    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex", { enableHqAnywhere: false });
   });
 
   it("signed out, Continue in Codex shows the waiting state, then goes on once the sign-in connects", async () => {
@@ -439,7 +514,7 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     await settle();
     expect(byId("first-run-signin-waiting")).toBeNull();
     expect(handlers.oncontinueintool).toHaveBeenCalledTimes(1);
-    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex", { enableHqAnywhere: false });
     expect(timing).toContain("kind=signin event=done tool=codex");
   });
 
@@ -457,7 +532,7 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     expect(text("first-run-signin-waiting")).toBe("Signing in to Claude Code…");
     runs[0]!.finish(true);
     await settle();
-    expect(handlers.oncontinueintool).toHaveBeenCalledWith("claude");
+    expect(handlers.oncontinueintool).toHaveBeenCalledWith("claude", { enableHqAnywhere: false });
   });
 
   it("a failed sign-in says so and offers Retry and Skip for now; Retry runs it again", async () => {

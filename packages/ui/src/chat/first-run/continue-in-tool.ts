@@ -1,13 +1,15 @@
 /**
  * "Continue in <tool>" on the first-run decision screen (US-008).
  *
- * The press is the person's explicit HQ Anywhere opt-in for that tool, so the
- * person setting is written first. The startup reconcile reads the same
- * setting, so an install made here is kept on the next launch instead of
- * being uninstalled. Then the one tool's global runtime is installed (bounded,
- * so a hung `hq install` cannot hold the takeover). The tool stays closed:
- * the welcome edition, and later the Daily Brief, open it when the person
- * presses Open.
+ * HQ Anywhere is installed only after the person presses Enable on the
+ * callout. That press is the explicit opt-in, so the person setting is
+ * written first. The startup reconcile reads the same setting, so an install
+ * made here is kept on the next launch instead of being uninstalled. Then
+ * the one tool's global runtime is installed (bounded, so a hung `hq install`
+ * cannot hold the takeover). A wait that runs out is pending, not failed:
+ * the install keeps running and reports its real result later. Not now, or
+ * no callout, installs nothing. The tool stays closed: the welcome edition,
+ * and later the Daily Brief, open it when the person presses Open.
  */
 
 import {
@@ -29,9 +31,12 @@ export function optInNotSavedMessage(runtime: FirstRunRuntime): string {
   return `Couldn't save your HQ Anywhere choice. HQ was not installed in ${tool}. Try again from Settings.`;
 }
 
+/** What Continue did about HQ Anywhere. `pending` is still running after the wait. */
+export type ContinueInstallState = "installed" | "pending" | "failed" | "skipped";
+
 export type ContinueInToolOutcome =
-  /** The tool was not opened. `installed` is true only when the runtime install returned ok. */
-  | { kind: "prepared"; installed: boolean }
+  /** The tool was not opened. `install` is skipped unless Enable was pressed. */
+  | { kind: "prepared"; install: ContinueInstallState }
   /** The opt-in write failed, so nothing was installed. The tool was not opened. */
   | { kind: "prepared-without-opt-in"; message: string }
   /** No HQ folder to open the tool in later; the caller takes the chat path. */
@@ -53,6 +58,13 @@ export interface ContinueInToolInput {
   installWaitMs?: number;
   /** Test seam: the opt-in write's retry pause. */
   pause?: (milliseconds: number) => Promise<void>;
+  /**
+   * True only after Enable on the callout. Absent or false installs nothing,
+   * even when the kill switch is on and an installer exists.
+   */
+  enableHqAnywhere?: boolean;
+  /** A timed-out install settled. Not called when the wait already saw the result. */
+  onInstallSettled?: (result: AdapterResult<void> | undefined) => void;
 }
 
 /**
@@ -79,22 +91,29 @@ async function hqFolder(settings: ContinueInToolInput["settings"]): Promise<stri
   }
 }
 
-/** Resolves with the install result, or "timeout" once the wait runs out. */
+/**
+ * Resolves with the install result, or "timeout" once the wait runs out.
+ * The install itself is not cancelled: `settled` is that same promise.
+ */
 function boundedInstall(
   install: () => Promise<AdapterResult<void> | undefined>,
   waitMs: number,
-): Promise<AdapterResult<void> | undefined | "timeout"> {
+): {
+  raced: Promise<AdapterResult<void> | undefined | "timeout">;
+  settled: Promise<AdapterResult<void> | undefined>;
+} {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), waitMs);
   });
-  const run = install().catch((error: unknown) => {
+  const settled = install().catch((error: unknown) => {
     console.warn("[first-run] runtime install threw", error);
     return undefined;
   });
-  return Promise.race([run, timeout]).finally(() => {
+  const raced = Promise.race([settled, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
+  return { raced, settled };
 }
 
 export async function continueInTool(input: ContinueInToolInput): Promise<ContinueInToolOutcome> {
@@ -110,11 +129,16 @@ export async function continueInTool(input: ContinueInToolInput): Promise<Contin
   }
 
   let notice: string | null = null;
-  let installedOk = false;
-  // The admin kill switch gates every install and reconcile; with it off the
-  // reconcile never removes hooks, so Continue changes nothing in the tool.
-  const runtimeEnabled = input.identity ? await hqAnywhereRuntimeEnabled(input.identity as IdentityApi) : false;
-  if (continueWillInstallHq({ runtime, runtimeEnabled, canInstall: Boolean(settings.installRuntimeForTool) })) {
+  let installState: ContinueInstallState = "skipped";
+  // Enable is the consent. Not now, or a callout that was never shown, skips
+  // the opt-in and the install. The kill switch still gates a consented install.
+  const runtimeEnabled = input.enableHqAnywhere === true && input.identity
+    ? await hqAnywhereRuntimeEnabled(input.identity as IdentityApi)
+    : false;
+  if (
+    input.enableHqAnywhere === true &&
+    continueWillInstallHq({ runtime, runtimeEnabled, canInstall: Boolean(settings.installRuntimeForTool) })
+  ) {
     const optIn = await putHqAnywherePersonSetting(settings as SettingsApi, true, { pause: input.pause });
     if (!optIn.ok) {
       // Without the saved opt-in the next launch would uninstall, so skip the install.
@@ -122,13 +146,27 @@ export async function continueInTool(input: ContinueInToolInput): Promise<Contin
       log(`continue-in-tool opt-in failed runtime=${runtime} ms=${Date.now() - startedAt}`);
       notice = optInNotSavedMessage(runtime);
     } else {
-      const installed = await boundedInstall(
+      const { raced, settled } = boundedInstall(
         () => settings.installRuntimeForTool!(runtime as "claude" | "codex"),
         input.installWaitMs ?? FIRST_RUN_INSTALL_WAIT_MS,
       );
-      installedOk = installed !== "timeout" && installed?.ok === true;
-      if (installed === "timeout") console.warn("[first-run] runtime install is still running; landing on the welcome report");
-      else if (installed && !installed.ok) console.warn("[first-run] runtime install failed", installed.message);
+      const installed = await raced;
+      if (installed === "timeout") {
+        installState = "pending";
+        console.warn("[first-run] runtime install is still running; landing on the welcome report");
+        void settled.then((result) => {
+          try {
+            input.onInstallSettled?.(result);
+          } catch (error) {
+            console.warn("[first-run] install follow-up failed", error);
+          }
+        });
+      } else if (installed?.ok === true) {
+        installState = "installed";
+      } else {
+        installState = "failed";
+        if (installed && !installed.ok) console.warn("[first-run] runtime install failed", installed.message);
+      }
       const state = installed === "timeout" ? "timeout" : String(installed?.ok ?? "skipped");
       log(`continue-in-tool installed runtime=${runtime} ok=${state} ms=${Date.now() - startedAt}`);
     }
@@ -136,7 +174,7 @@ export async function continueInTool(input: ContinueInToolInput): Promise<Contin
 
   log(`continue-in-tool prepared runtime=${runtime} ms=${Date.now() - startedAt}`);
   if (notice) return { kind: "prepared-without-opt-in", message: notice };
-  return { kind: "prepared", installed: installedOk };
+  return { kind: "prepared", install: installState };
 }
 
 /**

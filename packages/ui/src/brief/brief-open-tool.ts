@@ -5,14 +5,23 @@
  * uses to open the tool when they ask.
  */
 export const BRIEF_OPEN_TOOL_KEY = "hq.brief.open-tool";
-/** "1" only when the HQ install for that tool returned ok. Absent means it did not. */
+/**
+ * How Continue left the install. Older sessions stored "1" (the install
+ * returned ok) or "0" (it did not). A live check replaces a stale "1".
+ */
 export const BRIEF_OPEN_TOOL_INSTALLED_KEY = "hq.brief.open-tool-installed";
 
 export type BriefOpenToolRuntime = "claude" | "codex" | "grok";
 
+/** What Continue recorded. `pending` is still running. `skipped` installed nothing. */
+export type BriefInstallSettle = "installed" | "pending" | "failed" | "skipped";
+
+/** What the line under Open says, after a live check is applied. */
+export type BriefInstallView = "installed" | "pending" | "failed" | "folder";
+
 export interface BriefOpenToolAction {
   label: string;
-  /** One line under the button. Says the tool is set up only when the install worked. */
+  /** One line under the button. Says the tool is set up only when HQ is installed now. */
   detail: string;
   busy: boolean;
   error: string | null;
@@ -32,13 +41,45 @@ export function briefOpenToolLabel(runtime: BriefOpenToolRuntime): string {
 }
 
 /**
- * The line under Open. The set-up sentence is only for an install that
- * returned ok. Anything else stays honest and leaves Copy on the connect card.
+ * The line under Open.
+ * `installed` is a live install. `pending` is still running and must not be
+ * frozen as failed. `failed` is a real install error after Enable. `folder`
+ * is Not now, HQ Anywhere off, or a setup that was removed.
  */
-export function briefOpenToolContext(runtime: BriefOpenToolRuntime, installed: boolean): string {
+export function briefOpenToolContext(runtime: BriefOpenToolRuntime, view: BriefInstallView): string {
   const name = briefOpenToolName(runtime);
-  if (installed) return `${name} is set up with HQ. Open it to keep working there.`;
-  return `HQ is not installed in ${name} yet. You can still open it.`;
+  if (view === "installed") return `${name} is set up with HQ. Open it to keep working there.`;
+  if (view === "pending") return `HQ is still setting up in ${name}. You can open it in your HQ folder.`;
+  if (view === "failed") return `HQ is not installed in ${name} yet. You can try again from Settings.`;
+  return `Open ${name} in your HQ folder to keep working there.`;
+}
+
+/**
+ * What to store after a live check. A miss does not turn a running install
+ * into a failure, and it does clear a recorded install that is gone.
+ * `checked` null is not this function: the recorded settle stands.
+ */
+export function briefInstallAfterCheck(settle: BriefInstallSettle, checked: boolean): BriefInstallSettle {
+  if (checked) return "installed";
+  if (settle === "pending" || settle === "failed") return settle;
+  return "skipped";
+}
+
+/** A timed-out install's real result. Ignored once a later check already moved on. */
+export function briefInstallAfterSettle(settle: BriefInstallSettle, ok: boolean): BriefInstallSettle {
+  if (settle !== "pending") return settle;
+  return ok ? "installed" : "failed";
+}
+
+export function briefOpenToolView(settle: BriefInstallSettle, checked: boolean | null): BriefInstallView {
+  if (checked === true) return "installed";
+  if (checked === false && settle === "pending") return "pending";
+  if (checked === false && settle === "failed") return "failed";
+  if (checked === false) return "folder";
+  if (settle === "installed") return "installed";
+  if (settle === "pending") return "pending";
+  if (settle === "failed") return "failed";
+  return "folder";
 }
 
 /** The Connect your AI apps row for this tool. Grok has no HQ install. */
@@ -63,25 +104,32 @@ export function readBriefOpenTool(): BriefOpenToolRuntime | null {
   }
 }
 
-export function rememberBriefOpenTool(runtime: BriefOpenToolRuntime, installed = false): void {
+function isSettle(value: string | null): value is BriefInstallSettle {
+  return value === "installed" || value === "pending" || value === "failed" || value === "skipped";
+}
+
+export function rememberBriefOpenTool(runtime: BriefOpenToolRuntime, settle: BriefInstallSettle = "skipped"): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(BRIEF_OPEN_TOOL_KEY, runtime);
-    window.localStorage.setItem(BRIEF_OPEN_TOOL_INSTALLED_KEY, installed ? "1" : "0");
+    window.localStorage.setItem(BRIEF_OPEN_TOOL_INSTALLED_KEY, settle);
   } catch (err) {
     console.warn("[brief] could not keep the open-tool choice", err);
   }
 }
 
-/** True only when Continue's install for the remembered tool returned ok. */
-export function readBriefOpenToolInstalled(): boolean {
-  if (!readBriefOpenTool()) return false;
-  if (typeof window === "undefined") return false;
+/** What Continue recorded. An older "1" is installed; an older "0" installed nothing. */
+export function readBriefOpenToolSettle(): BriefInstallSettle {
+  if (!readBriefOpenTool()) return "skipped";
+  if (typeof window === "undefined") return "skipped";
   try {
-    return window.localStorage.getItem(BRIEF_OPEN_TOOL_INSTALLED_KEY) === "1";
+    const value = window.localStorage.getItem(BRIEF_OPEN_TOOL_INSTALLED_KEY);
+    if (value === "1") return "installed";
+    if (isSettle(value)) return value;
+    return "skipped";
   } catch (err) {
     console.warn("[brief] could not read whether HQ was installed", err);
-    return false;
+    return "skipped";
   }
 }
 

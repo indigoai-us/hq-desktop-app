@@ -69,6 +69,8 @@ interface AdapterOptions {
   putHqAnywherePersonSetting?: (value: boolean) => Promise<unknown>;
   /** The hq-anywhere-runtime admin kill switch; off (fail closed) by default. */
   hqAnywhereRuntime?: boolean;
+  /** Live check of the tool's HQ Anywhere files. Absent: the recorded settle stands. */
+  hqAnywhereRuntimeInstalled?: (runtime: string) => Promise<unknown>;
   /** Mount the Connect your AI apps card (needs an integrations host). */
   aiApps?: boolean;
   /** Shell launch methods for "Continue in <tool>"; by default both CLIs are found and open. */
@@ -96,6 +98,7 @@ function adapter({
   installRuntimeForTool,
   putHqAnywherePersonSetting,
   hqAnywhereRuntime = false,
+  hqAnywhereRuntimeInstalled,
   aiApps = false,
   shell,
   activeCompany,
@@ -141,6 +144,7 @@ function adapter({
         setupStatusImpl ??
         (async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true })),
       ...(installRuntimeForTool ? { installRuntimeForTool } : {}),
+      ...(hqAnywhereRuntimeInstalled ? { hqAnywhereRuntimeInstalled } : {}),
       ...(putHqAnywherePersonSetting ? { putHqAnywherePersonSetting } : {}),
     },
     shell: {
@@ -286,6 +290,15 @@ function step(): string | null {
 /** The decision is on screen (it renders inside the lazily loaded context scene). */
 async function decisionShown(): Promise<void> {
   await vi.waitFor(() => expect(q('[data-testid="first-run-decision-question"]')).toBeTruthy(), { timeout: 5000 });
+}
+
+/** Press Enable on the callout. Continue stays the primary action. */
+async function enableAnywhere(): Promise<void> {
+  await vi.waitFor(() => expect(q('[data-testid="first-run-anywhere-enable"]')).toBeTruthy());
+  q<HTMLButtonElement>('[data-testid="first-run-anywhere-enable"]')!.click();
+  await vi.waitFor(() =>
+    expect(q('[data-testid="first-run-anywhere-on"]')?.textContent).toContain("HQ Anywhere is on. Continue sets it up."),
+  );
 }
 
 /** Take the bot path: with a signed-in coding tool the takeover opens on the tool path. */
@@ -540,13 +553,8 @@ describe("visual first run, flag on", () => {
     expect(q('[data-testid="first-run-decision-question"]')?.textContent).toBe("Where do you want to keep working?");
     const primary = q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!;
     expect(primary.textContent).toContain("Continue in Claude Code");
-    primary.click();
-
-    await vi.waitFor(() =>
-      expect(q('[data-testid="first-run-decision-install-note"]')?.textContent).toBe(
-        "This also installs HQ into your Claude Code setup.",
-      ),
-    );
+    await enableAnywhere();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     // The takeover holds "Setting up Claude Code…" while the install runs. The tool stays closed.
     await vi.waitFor(() => expect(installRuntimeForTool).toHaveBeenCalledWith("claude"));
     await settle();
@@ -599,11 +607,7 @@ describe("visual first run, flag on", () => {
     await boot(platform, DesktopApp, mount, { aiTools: CLAUDE_TOOLS });
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     await decisionShown();
-    await vi.waitFor(() =>
-      expect(q('[data-testid="first-run-decision-install-note"]')?.textContent).toBe(
-        "This also installs HQ into your Claude Code setup.",
-      ),
-    );
+    await enableAnywhere();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
@@ -612,8 +616,9 @@ describe("visual first run, flag on", () => {
     expect(q('[data-testid="brief-open-tool-detail"]')?.textContent).toBe(
       "Claude Code is set up with HQ. Open it to keep working there.",
     );
-    await vi.waitFor(() => expect(q('[data-testid="connect-ai-app-claude-code-setup"]')).toBeTruthy());
-    expect(q('[data-testid="connect-ai-app-claude-code-copy"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="connect-ai-app-claude-code-anywhere"]')?.textContent).toBe("HQ Anywhere on"));
+    expect(q('[data-testid="connect-ai-app-claude-code-copy"]')).toBeTruthy();
+    expect(q('[data-testid="connect-ai-app-claude-code-setup"]')).toBeNull();
 
     q<HTMLButtonElement>('[data-testid="brief-open-tool-button"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="brief-open-tool-error"]')).toBeTruthy());
@@ -640,6 +645,7 @@ describe("visual first run, flag on", () => {
     await boot(platform, DesktopApp, mount, { aiTools: CLAUDE_TOOLS });
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     await decisionShown();
+    await enableAnywhere();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
@@ -647,7 +653,7 @@ describe("visual first run, flag on", () => {
     expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(q('[data-testid="brief-open-tool-button"]')?.textContent?.trim()).toBe("Open Claude Code");
     expect(q('[data-testid="brief-open-tool-detail"]')?.textContent).toBe(
-      "HQ is not installed in Claude Code yet. You can still open it.",
+      "HQ is not installed in Claude Code yet. You can try again from Settings.",
     );
     await vi.waitFor(() => expect(q('[data-testid="connect-ai-app-claude-code-copy"]')).toBeTruthy());
     expect(q('[data-testid="connect-ai-app-claude-code-setup"]')).toBeNull();
@@ -671,6 +677,7 @@ describe("visual first run, flag on", () => {
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     await decisionShown();
+    await enableAnywhere();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     // The opt-in write retries with its real 250 ms and 750 ms pauses first.
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 3000 });
@@ -702,19 +709,100 @@ describe("visual first run, flag on", () => {
     await boot(platform);
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     await decisionShown();
-    expect(q('[data-testid="first-run-decision-install-note"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-anywhere-slot"]')).toBeNull());
+    expect(q('[data-testid="first-run-takeover"]')?.textContent ?? "").not.toContain("Enable HQ Anywhere");
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
     expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(q('[data-testid="brief-open-tool-detail"]')?.textContent).toBe(
-      "HQ is not installed in Claude Code yet. You can still open it.",
+      "Open Claude Code in your HQ folder to keep working there.",
     );
     expect(installRuntimeForTool).not.toHaveBeenCalled();
     expect(q('[data-testid="brief-open-tool-button"]')?.textContent?.trim()).toBe("Open Claude Code");
     q<HTMLButtonElement>('[data-testid="brief-open-tool-button"]')!.click();
     await vi.waitFor(() => expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ"));
+  });
+
+  it("Not now installs nothing and the Open line stays in the HQ folder", async () => {
+    const installRuntimeForTool = vi.fn(async () => ok(undefined));
+    const putHqAnywherePersonSetting = vi.fn(async () => ok(undefined));
+    const { platform } = adapter({
+      flag: true,
+      installRuntimeForTool,
+      putHqAnywherePersonSetting,
+      hqAnywhereRuntime: true,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+      },
+    });
+    await boot(platform);
+    await decisionShown();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-anywhere-not-now"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="first-run-anywhere-not-now"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="first-run-anywhere-off"]')?.textContent).toBe(
+        "HQ Anywhere is off. Turn it on later in Settings.",
+      ),
+    );
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(q('[data-testid="brief-open-tool-detail"]')?.textContent).toBe(
+      "Open Claude Code in your HQ folder to keep working there.",
+    );
+  });
+
+  it("stops saying set up when the disk check says HQ Anywhere is gone", async () => {
+    const { platform } = adapter({
+      flag: true,
+      installRuntimeForTool: async () => ok(undefined),
+      putHqAnywherePersonSetting: async () => ok(undefined),
+      hqAnywhereRuntime: true,
+      hqAnywhereRuntimeInstalled: async () => ok(false),
+      aiApps: true,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+      },
+    });
+    await boot(platform, DesktopApp, mount, { aiTools: CLAUDE_TOOLS });
+    await decisionShown();
+    await enableAnywhere();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="brief-open-tool-detail"]')?.textContent).toBe(
+        "Open Claude Code in your HQ folder to keep working there.",
+      ),
+    );
+    expect(q('[data-testid="connect-ai-app-claude-code-anywhere"]')).toBeNull();
+    expect(q('[data-testid="connect-ai-app-claude-code-copy"]')).toBeTruthy();
+  });
+
+  it("a disk check that finds HQ Anywhere says set up even when the install command failed", async () => {
+    const { platform } = adapter({
+      flag: true,
+      installRuntimeForTool: async () => failure("hq-install", "exit 1"),
+      putHqAnywherePersonSetting: async () => ok(undefined),
+      hqAnywhereRuntime: true,
+      hqAnywhereRuntimeInstalled: async () => ok(true),
+      aiApps: true,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+      },
+    });
+    await boot(platform, DesktopApp, mount, { aiTools: CLAUDE_TOOLS });
+    await decisionShown();
+    await enableAnywhere();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="brief-open-tool-detail"]')?.textContent).toBe(
+        "Claude Code is set up with HQ. Open it to keep working there.",
+      ),
+    );
+    await vi.waitFor(() => expect(q('[data-testid="connect-ai-app-claude-code-anywhere"]')?.textContent).toBe("HQ Anywhere on"));
+    expect(q('[data-testid="connect-ai-app-claude-code-copy"]')).toBeTruthy();
   });
 
   it("with no HQ folder to open, lands on the welcome report instead of leaving the button silent", async () => {
@@ -2436,6 +2524,7 @@ describe("visual first run, the detected tool's sign-in", () => {
     scanFinds(platform, "claude-code");
     await boot(platform);
     await decisionShown();
+    await enableAnywhere();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() =>
       expect(q('[data-testid="first-run-signin-waiting"]')?.textContent?.trim()).toBe("Signing in to Claude Code…"),
@@ -2484,11 +2573,7 @@ describe("visual first run, the detected tool's sign-in", () => {
     scanFinds(platform, "codex");
     await boot(platform);
     await decisionShown();
-    await vi.waitFor(() =>
-      expect(q('[data-testid="first-run-decision-install-note"]')?.textContent).toBe(
-        "This also installs HQ into your Codex setup.",
-      ),
-    );
+    await enableAnywhere();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy(), { timeout: 10_000 });
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();

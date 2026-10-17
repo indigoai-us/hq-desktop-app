@@ -111,6 +111,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // A failed bot start becomes state (honest notice + start gate), never a
   // navigation.
   applyBotStartFailure: "none",
+  // The brief's live HQ Anywhere check updates the Open line. It does not
+  // change the page.
+  applyBriefInstallCheck: "none",
   handleCardAction: "push",
   openReply: "push",
   openArtifact: "none",
