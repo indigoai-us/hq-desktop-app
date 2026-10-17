@@ -11,6 +11,8 @@ import type { BriefSession } from "./brief-types.js";
 
 /** Every list on the card: five, then "+N more". */
 export const FOCUS_CAP = 5;
+/** Product tiles in a one-row slot before the slim "+N more" column (four fit when there is no fifth). */
+export const FOCUS_ONE_ROW_CAP = 3;
 /** The picker's gate: fewer own sessions, or fewer products, and the card is hidden. */
 export const FOCUS_MIN_SESSIONS = 3;
 export const FOCUS_MIN_PRODUCTS = 2;
@@ -155,7 +157,9 @@ export function sessionLabel(title: string): string {
  * Treemap shape for `n` tiles (product tiles plus the "+N more" tile): the
  * busiest product takes the wide left column; never an empty cell.
  */
-export function tileLayout(n: number): TileLayout {
+export function tileLayout(n: number, oneRow = false, hasMore = false): TileLayout {
+  // A one-row slot keeps every tile on one line: four products, or three and a slim "+N more" column.
+  if (oneRow && n >= 4) return { columns: hasMore ? "2fr 1fr 1fr 76px" : "2fr 1fr 1fr 1fr", rows: 1, spanFirst: false, spanLast: false };
   if (n <= 1) return { columns: "1fr", rows: 1, spanFirst: false, spanLast: false };
   if (n === 2) return { columns: "2fr 1fr", rows: 1, spanFirst: false, spanLast: false };
   if (n === 3) return { columns: "2fr 1fr 1fr", rows: 1, spanFirst: false, spanLast: false };

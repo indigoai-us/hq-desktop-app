@@ -66,3 +66,38 @@ export function bloomAt(ms: number): number {
 export function clamp01(v: number): number {
   return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
 }
+
+/** Cells in the progress strip before it has been measured (and in tests without layout). */
+export const DAWN_CELLS = 24;
+/** One strip cell and the least gap after it, in px (8 px cells, 3 px apart). */
+const CELL = 8;
+const GAP = 3;
+
+/**
+ * How many cells fill a strip this wide: as many whole 8 px cells as fit with
+ * at least 3 px between them, so the row runs the full width (the leftover is
+ * shared out between the gaps and both ends sit flush). Unmeasured: DAWN_CELLS.
+ */
+export function stripCells(width: number): number {
+  if (!Number.isFinite(width) || width <= 0) return DAWN_CELLS;
+  return Math.max(2, Math.floor((width + GAP) / (CELL + GAP)));
+}
+
+/**
+ * How many cells of the progress strip are lit: the run's real progress,
+ * rounded down so the strip never claims more than the run reported. Ready
+ * lights them all; idle lights none; failed keeps what was lit when it stopped.
+ */
+export function litCells(progress: number, phase: DawnPhase, count = DAWN_CELLS): number {
+  if (phase === "ready") return count;
+  if (phase === "idle") return 0;
+  return Math.min(count, Math.floor(clamp01(progress) * count + 1e-9));
+}
+
+/** The strip's mono readout: the percent while running, then READY, or where it stopped. (Waiting shows no strip.) */
+export function dawnReadout(progress: number, phase: DawnPhase): string {
+  const pct = `${Math.round(clamp01(progress) * 100)}%`;
+  if (phase === "ready") return "Ready";
+  if (phase === "failed") return `Stopped at ${pct}`;
+  return pct;
+}

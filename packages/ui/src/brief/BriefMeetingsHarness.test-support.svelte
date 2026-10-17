@@ -15,6 +15,7 @@
     today = null,
     companies = [],
     launch = async () => null,
+    settled = false,
   }: {
     meetings: BriefMeeting[];
     rows?: number;
@@ -25,6 +26,7 @@
     today?: string | null;
     companies?: BriefCompanyLogo[];
     launch?: BriefLaunch;
+    settled?: boolean;
   } = $props();
 
   const state = new BriefState((engine, prompt) => launch(engine, prompt), () => companies);
@@ -32,6 +34,6 @@
 </script>
 
 <div class="daily-brief">
-  <BriefMeetings {meetings} {rows} {cols} {now} {windowFrom} {days} {today} />
+  <BriefMeetings {meetings} {rows} {cols} {now} {windowFrom} {days} {today} {settled} />
   <BriefPeek />
 </div>

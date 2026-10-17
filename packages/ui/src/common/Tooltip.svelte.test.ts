@@ -3,6 +3,8 @@
 // Tooltip layering contract: a tooltip must never sit on top of the menu its
 // own control opened (the Launch tooltip stayed over the open Launch menu).
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRawSnippet, flushSync, mount, unmount } from "svelte";
 
@@ -57,5 +59,20 @@ describe("Tooltip layering", () => {
     wrap.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     flushSync();
     expect(host?.querySelector('[role="tooltip"]')).toBeNull();
+  });
+});
+
+describe("Tooltip bubble text", () => {
+  it("wraps a long label inside the bubble instead of running past its edge (regression: the Daily Brief rail tooltip bled off)", () => {
+    const style = readFileSync(resolve(process.cwd(), "src/common/Tooltip.svelte"), "utf8").match(/\.tooltip-bubble \{([^}]*)\}/)![1]!;
+    expect(style).toMatch(/width: max-content/);
+    expect(style).toMatch(/max-width: \d+px/);
+    expect(style).toMatch(/white-space: normal/);
+    expect(style).not.toMatch(/white-space: nowrap/);
+  });
+
+  it("reads in the regular weight (owner, 2026-10-14: tooltips are regular, not medium)", () => {
+    const style = readFileSync(resolve(process.cwd(), "src/common/Tooltip.svelte"), "utf8").match(/\.tooltip-bubble \{([^}]*)\}/)![1]!;
+    expect(style).toMatch(/font-weight: 400;/);
   });
 });

@@ -1,24 +1,34 @@
 <script lang="ts">
   /**
-   * What your calls unblock: the people and work stopped until you act.
-   * Two rows (M): a bipartite graph, your calls on the left and who they free
-   * on the right, bezier edges weighted by what sits behind them; hovering a
-   * call dims the others, brightens its edges and lifts its parties. One row
-   * (W, W3): the chain form, your top call flowing along a dashed link into
-   * the nodes it frees; the flow stops once you clear it. Neutral tile, violet
-   * only on the "you" node. Every pill's peek is the decision's, with its
-   * prompt and Start button; every party's peek says what they do next.
+   * What your calls unblock: "make these calls and these people and things
+   * move". Two rows and up (M): a list of your calls, each an open row with
+   * its title (wrapping, never cut), a quiet meta line (company logo, product
+   * in mono caps, the age as a pill that turns warm past a day) and, under
+   * it, who it frees: a Phosphor arrow, a monochrome glass circle (a
+   * person's initial, a cube for work) and the name with what they do next,
+   * wrapping instead of truncating. At most three calls and five party lines;
+   * each call keeps at least one line, the rest folds into its own "+N more".
+   * Hovering a call dims the others and reveals its Start button in place of
+   * the age. One row (W, W3): the lead call and the chain of what it frees,
+   * as initial chips after one arrow. Every call's peek is the decision's,
+   * with its prompt and Start button; every party's peek says what they do
+   * next and which calls free them.
    */
+  import BriefLaunch from "./BriefLaunch.svelte";
   import BriefLogo from "./BriefLogo.svelte";
   import { peek, useBrief } from "./brief-context.svelte.js";
   import { decisionPeek } from "./brief-peeks.js";
-  import { monogram, monogramHue, productName } from "./brief-origin.js";
+  import { productName } from "./brief-origin.js";
   import {
-    MORE_KEY,
+    NARROW_CALL_CAP,
+    NARROW_LINE_CAP,
     ageLabel,
     blockedHeadline,
     blockedLayout,
+    blockedStats,
     chainNodes,
+    initialOf,
+    isFreed,
     isLate,
     morePartiesPeek,
     morePillsPeek,
@@ -26,7 +36,6 @@
     summarizeBlocked,
     titlesOf,
     type FreedParty,
-    type LaidEdge,
   } from "./brief-blocked-by-me.js";
   import type { BriefDecision } from "./brief-types.js";
 
@@ -43,31 +52,98 @@
   const titles = $derived(titlesOf(s));
   const headline = $derived(blockedHeadline(s));
   const chain = $derived(rows === 1);
-  const lay = $derived(blockedLayout(s));
-  const ch = $derived(chainNodes(s, cols >= 3 ? 3 : 2));
-  const byId = $derived(new Map(s.decisions.map((d) => [d.id, d])));
+  // A one-column card lists fewer calls and lines, and its chain names one party.
+  const lay = $derived(cols <= 1 ? blockedLayout(s, NARROW_CALL_CAP, NARROW_LINE_CAP) : blockedLayout(s));
+  const ch = $derived(chainNodes(s, cols >= 3 ? 3 : cols === 2 ? 2 : 1));
+  const stats = $derived(blockedStats(s));
+  /** Two calls or fewer on a two-column card: larger titles and more air, so the card is not half empty. */
+  const roomy = $derived(!chain && cols >= 2 && lay.calls.length <= 2);
 
-  // Fixed row heights make every edge endpoint computable without measuring the DOM.
-  const PILL_H = 48;
-  const PILL_GAP = 8;
-  const PARTY_H = 30;
-  const PARTY_GAP = 6;
-  const pillY = (i: number) => PILL_H / 2 + i * (PILL_H + PILL_GAP);
-  const partyY = (j: number) => PARTY_H / 2 + j * (PARTY_H + PARTY_GAP);
-  const partyRows = $derived(lay.parties.length + (lay.moreParties.length ? 1 : 0));
-  const graphH = $derived(Math.max(lay.pills.length * (PILL_H + PILL_GAP) - PILL_GAP, partyRows * (PARTY_H + PARTY_GAP) - PARTY_GAP, PILL_H));
-
-  // Hover focus: a call (by id) or a party (by key, MORE_KEY for the tile).
+  // Hover focus: a call (by id) or a party (by key).
   let hot = $state<string | null>(null);
   let hotParty = $state<string | null>(null);
   const focus = $derived(!!(hot || hotParty));
-  const edgeOn = (e: LaidEdge) => (hot ? e.decisionId === hot : hotParty ? e.partyKey === hotParty : false);
-  const partyLit = (key: string) => (hot ? lay.edges.some((e) => e.decisionId === hot && e.partyKey === key) : hotParty === key);
-  const pillLit = (id: string) => (hotParty ? lay.edges.some((e) => e.partyKey === hotParty && e.decisionId === id) : hot === id);
+  const callLit = (id: string, parties: FreedParty[]) => (hot ? hot === id : hotParty ? parties.some((p) => p.key === hotParty) : false);
+  const partyLit = (p: FreedParty, callId: string) => (hot ? hot === callId : hotParty === p.key);
   const product = (d: BriefDecision) => productName(d.origin.repo, d.origin.product);
+  const CUBE = "M4 8.5 12 4l8 4.5v7L12 20l-8-4.5zM4 8.5l8 4.5 8-4.5M12 13v7";
+  const ARROW = "M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z";
 </script>
 
-<div class="w" data-testid="brief-blocked" data-form={chain ? "chain" : "graph"}>
+<!-- A call: logo, product and age over its title (wraps, never cut); Start takes the age's place on hover. -->
+{#snippet call(d: BriefDecision, testid: string, index: number | undefined, dim: boolean)}
+  {@const done = !!brief.cleared[d.id]}
+  {@const age = ageLabel(d.ageHours)}
+  {@const prompt = prompts[d.id]}
+  <div
+    class="call"
+    class:done
+    class:dim
+    data-testid={testid}
+    data-index={index}
+    role="group"
+    aria-label={titles[d.id]}
+    onmouseenter={() => (hot = d.id)}
+    onmouseleave={() => (hot = null)}
+    use:peek={{ state: brief, content: () => decisionPeek(d, prompts[d.id]) }}
+  >
+    <span class="cm">
+      <BriefLogo company={brief.company(d.origin.companyUid)} fallback={d.origin.companyUid} size={16} />
+      {#if product(d)}<span class="prod" data-testid="brief-blocked-product">{product(d)}</span>{/if}
+      <span class="end">
+        {#if done}
+          <span class="age" data-testid="brief-blocked-age">Done</span>
+        {:else}
+          {#if age}<span class="age" class:late={isLate(d)} data-testid="brief-blocked-age">{age}</span>{/if}
+          {#if prompt}
+            <span class="acts" data-testid="brief-blocked-acts"><span class="verb">Start in</span><BriefLaunch id={d.id} {prompt} compact /></span>
+          {/if}
+        {/if}
+      </span>
+    </span>
+    <span class="ct" data-testid="brief-blocked-title">{titles[d.id]}</span>
+  </div>
+{/snippet}
+
+<!-- A freed party: arrow, then the party (glass circle, name and what they do next, wrapping), then its
+     state and, on a call's last line, the "+N more" it folds. Party and "+N more" are siblings, each with its own peek. -->
+{#snippet party(p: FreedParty, callId: string, dim: boolean, folded: FreedParty[])}
+  {@const freed = isFreed(p, brief.cleared)}
+  <div class="fr" class:freed class:lift={focus && partyLit(p, callId)} class:dim>
+    <svg class="ar" viewBox="0 0 256 256" aria-hidden="true" data-testid="brief-blocked-arrow"><path d={ARROW} /></svg>
+    <span
+      class="who"
+      data-testid="brief-blocked-party"
+      data-kind={p.kind}
+      data-key={p.key}
+      data-freed={freed}
+      role="group"
+      aria-label={p.name}
+      onmouseenter={() => (hotParty = p.key)}
+      onmouseleave={() => (hotParty = null)}
+      use:peek={{ state: brief, content: () => partyPeek(p, titles) }}
+    >
+      <span class="ini" aria-hidden="true">
+        {#if p.kind === "person"}{initialOf(p.name)}{:else}<svg class="cube" viewBox="0 0 24 24" data-testid="brief-blocked-work"><path d={CUBE} /></svg>{/if}
+      </span>
+      <span class="ptx"><span class="pn" data-testid="brief-blocked-name">{p.name}</span>{#if p.what}{" "}<span class="pw" data-testid="brief-blocked-what">{p.what}</span>{/if}</span>
+    </span>
+    {#if freed || (!p.what && p.kind === "work") || folded.length}
+      <span class="tail">
+        {#if freed}
+          <span class="st" data-testid="brief-blocked-state">Freed</span>
+        {:else if !p.what && p.kind === "work"}
+          <span class="st" data-testid="brief-blocked-state">{p.state}</span>
+        {/if}
+        {#if folded.length}
+          <span class="moretxt" data-testid="brief-blocked-more" role="button" tabindex="0" use:peek={{ state: brief, content: () => morePartiesPeek(folded, titles) }}>+{folded.length} more</span>
+        {/if}
+      </span>
+    {/if}
+  </div>
+{/snippet}
+
+<div class="w" class:roomy class:narrow={cols <= 1} data-testid="brief-blocked" data-form={chain ? "chain" : "graph"}>
   <div class="eyebrow">
     <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 1 0-5.6l2.4-2.4a4 4 0 0 1 5.6 5.6L16.6 13M14 10a4 4 0 0 1 0 5.6l-2.4 2.4a4 4 0 0 1-5.6-5.6L7.4 11" /></svg>
     What your calls unblock · {s.decisions.length} call{s.decisions.length === 1 ? "" : "s"}
@@ -78,433 +154,513 @@
     {#if ch.lead}
       {@const lead = ch.lead}
       {@const done = !!brief.cleared[lead.id]}
-      {@const age = ageLabel(lead.ageHours)}
-      <div class="chain" data-testid="brief-blocked-chain">
-        <div
-          class="node you"
-          class:done
-          data-testid="brief-blocked-you"
-          role="group"
-          aria-label={titles[lead.id]}
-          use:peek={{ state: brief, content: () => decisionPeek(lead, prompts[lead.id]) }}
-        >
-          <span class="t">{titles[lead.id]}</span>
-          <small>{done ? "DONE" : age ? `YOU · ${age}` : "YOU"}</small>
+      <div class="chain" class:done data-testid="brief-blocked-chain">
+        {@render call(lead, "brief-blocked-you", undefined, false)}
+        <div class="flow">
+          <svg class="ar" viewBox="0 0 256 256" aria-hidden="true" data-testid="brief-blocked-arrow"><path d={ARROW} /></svg>
+          {#each ch.nodes as p (p.key)}
+            {@const freed = isFreed(p, brief.cleared)}
+            <span
+              class="node"
+              class:freed
+              data-testid="brief-blocked-node"
+              data-kind={p.kind}
+              data-state={freed ? "FREED" : p.state}
+              role="group"
+              aria-label={p.name}
+              use:peek={{ state: brief, content: () => partyPeek(p, titles) }}
+            >
+              <span class="ini" aria-hidden="true">
+                {#if p.kind === "person"}{initialOf(p.name)}{:else}<svg class="cube" viewBox="0 0 24 24" data-testid="brief-blocked-work"><path d={CUBE} /></svg>{/if}
+              </span>
+              <span class="t">{p.name}</span>
+            </span>
+          {/each}
+          {#if ch.more.length}
+            <span class="more moretxt" data-testid="brief-blocked-more" role="button" tabindex="0" use:peek={{ state: brief, content: () => morePartiesPeek(ch.more, titles) }}>+{ch.more.length} more</span>
+          {/if}
         </div>
-        {#each ch.nodes as p (p.key)}
-          <div class="link" class:stop={done}></div>
-          <div class="node" class:person={p.kind === "person"} data-testid="brief-blocked-node" role="group" aria-label={p.name} use:peek={{ state: brief, content: () => partyPeek(p, titles) }}>
-            <span class="t">{p.name}</span>
-            <small class={p.tone && !done ? `tone-${p.tone}` : ""}>{done ? "FREED" : p.state}</small>
-          </div>
-        {/each}
-        {#if ch.more.length}
-          <div class="link" class:stop={done}></div>
-          <div class="node more" data-testid="brief-blocked-more" role="button" tabindex="0" use:peek={{ state: brief, content: () => morePartiesPeek(ch.more, titles) }}>
-            <span class="t">+{ch.more.length} more</span>
-            <small>WAITING</small>
-          </div>
-        {/if}
       </div>
     {/if}
   {:else}
-    <div class="graph" class:focus style:--h="{graphH}px" data-testid="brief-blocked-graph">
-      <div class="pills">
-        {#each lay.pills as d, i (d.id)}
-          {@const done = !!brief.cleared[d.id]}
-          {@const age = ageLabel(d.ageHours)}
-          <div
-            class="pill"
-            class:done
-            class:dim={focus && !pillLit(d.id)}
-            data-testid="brief-blocked-pill"
-            data-index={i}
-            role="group"
-            aria-label={titles[d.id]}
-            onmouseenter={() => (hot = d.id)}
-            onmouseleave={() => (hot = null)}
-            use:peek={{ state: brief, content: () => decisionPeek(d, prompts[d.id]) }}
-          >
-            <div class="pt">{titles[d.id]}</div>
-            <div class="pm">
-              <span class="po">
-                <BriefLogo company={brief.company(d.origin.companyUid)} fallback={d.origin.companyUid} size={14} />
-                {#if product(d)}<b>{product(d)}</b>{/if}
-              </span>
-              <span class="age" class:amber={isLate(d) && !done} data-testid="brief-blocked-age">{done ? "DONE" : age}</span>
+    <div class="list" class:focus data-testid="brief-blocked-graph">
+      {#each lay.calls as c, i (c.decision.id)}
+        {@const dim = focus && !callLit(c.decision.id, c.parties)}
+        <div class="pair" class:lit={focus && !dim}>
+          {@render call(c.decision, "brief-blocked-pill", i, dim)}
+          {#if c.parties.length}
+            <div class="frees">
+              {#each c.parties as p, j (p.key)}
+                {@render party(p, c.decision.id, dim, j === c.parties.length - 1 ? c.folded : [])}
+              {/each}
             </div>
-          </div>
-        {/each}
-        {#if lay.morePills.length}
-          <div class="pill more" role="button" tabindex="0" data-testid="brief-blocked-more-pills" use:peek={{ state: brief, content: () => morePillsPeek(lay.morePills, s, titles) }}>
-            +{lay.morePills.length} more call{lay.morePills.length === 1 ? "" : "s"}
-          </div>
-        {/if}
-      </div>
-      <svg class="edges" viewBox="0 0 100 {graphH}" preserveAspectRatio="none" aria-hidden="true">
-        {#each lay.edges as e (`${e.decisionId}>${e.partyKey}`)}
-          {@const d = byId.get(e.decisionId)}
-          <path
-            class="edge"
-            class:late={d ? isLate(d) : false}
-            class:on={edgeOn(e)}
-            class:done={!!brief.cleared[e.decisionId]}
-            vector-effect="non-scaling-stroke"
-            style:stroke-width="{1 + e.weight * 0.7}px"
-            d="M0 {pillY(e.from)} C45 {pillY(e.from)}, 55 {partyY(e.to)}, 100 {partyY(e.to)}"
-          />
-        {/each}
-      </svg>
-      <div class="parties">
-        {#each lay.parties as p (p.key)}
-          <div
-            class="party"
-            class:lift={partyLit(p.key)}
-            class:dim={focus && !partyLit(p.key)}
-            data-testid="brief-blocked-party"
-            data-kind={p.kind}
-            role="group"
-            aria-label={p.name}
-            onmouseenter={() => (hotParty = p.key)}
-            onmouseleave={() => (hotParty = null)}
-            use:peek={{ state: brief, content: () => partyPeek(p, titles) }}
-          >
-            {#if p.kind === "person"}
-              <span class="ava" style:--h={monogramHue(p.name)} aria-hidden="true">{monogram(p.name)}</span>
-            {:else}
-              <span class="tile" aria-hidden="true">
-                {#if p.origin}
-                  <BriefLogo company={brief.company(p.origin.companyUid)} fallback={p.origin.companyUid} size={16} />
-                {:else}
-                  <svg class="ico" viewBox="0 0 24 24"><path d="M4 8.5 12 4l8 4.5v7L12 20l-8-4.5zM4 8.5l8 4.5 8-4.5M12 13v7" /></svg>
-                {/if}
-              </span>
-            {/if}
-            <span class="pn">{p.name}</span>
-            {#if p.what}<span class="pw">{p.what}</span>{/if}
-          </div>
-        {/each}
-        {#if lay.moreParties.length}
-          <div
-            class="party more"
-            class:lift={partyLit(MORE_KEY)}
-            class:dim={focus && !partyLit(MORE_KEY)}
-            data-testid="brief-blocked-more"
-            role="button"
-            tabindex="0"
-            onmouseenter={() => (hotParty = MORE_KEY)}
-            onmouseleave={() => (hotParty = null)}
-            use:peek={{ state: brief, content: () => morePartiesPeek(lay.moreParties, titles) }}
-          >
-            <span class="pn">+{lay.moreParties.length} more</span>
-          </div>
-        {/if}
-      </div>
+          {/if}
+        </div>
+      {/each}
+      {#if lay.moreCalls.length}
+        <div class="morecalls" class:dim={focus} role="button" tabindex="0" data-testid="brief-blocked-more-pills" use:peek={{ state: brief, content: () => morePillsPeek(lay.moreCalls, s, titles) }}>
+          <span class="moretxt">+{lay.moreCalls.length} more call{lay.moreCalls.length === 1 ? "" : "s"}</span>
+        </div>
+      {/if}
     </div>
+    <!-- The numbers take whatever height the slot has left; they show only when they fit whole. -->
+    {#if stats.length}
+      <div class="room">
+        <div class="sum" class:dim={focus} data-testid="brief-blocked-sum">
+          {#each stats as st (st.key)}
+            <div class="stat" class:late={st.late} data-testid="brief-blocked-stat" data-stat={st.key}>
+              <b>{st.value}</b>
+              <span>{st.label}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
   {/if}
 </div>
 
 <style>
-  h3 {
-    font-size: 15px;
-  }
-
-  /* Glass tile: lit from the top, hairline rim, soft drop. No backdrop-filter, no well. */
-  .pill,
-  .node,
-  .tile {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025) 42%, rgba(255, 255, 255, 0.015)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.06), transparent 60%);
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-top-color: rgba(255, 255, 255, 0.18);
-    box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.3),
-      0 8px 20px -8px rgba(0, 0, 0, 0.5);
-  }
-
-  /* ---- two-row graph ---- */
-  .graph {
-    display: grid;
-    grid-template-columns: minmax(0, 1.25fr) 40px minmax(0, 1fr);
-    align-items: start;
-    margin-top: 14px;
-    min-height: 0;
-  }
-  .pills {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 0;
-  }
-  .pill {
-    height: 48px;
-    padding: 7px 10px;
-    border-radius: 14px;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    min-width: 0;
-    transition: background 0.2s, opacity 0.3s;
-  }
-  .pill:hover {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.05) 42%, rgba(255, 255, 255, 0.03)),
-      radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.08), transparent 60%);
-  }
-  .pill.dim {
-    opacity: 0.45;
-  }
-  .pill.done .pt {
-    text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
-    color: var(--b-t2);
-  }
-  .pill.more {
-    height: 28px;
-    justify-content: center;
-    align-items: center;
-    font-size: 11.5px;
-    color: var(--b-t2);
-    cursor: default;
-  }
-  .pt {
-    font-size: 12.5px;
+  /* Headline: 20px on the list form (the M card family), 16px on the one-row card; whole words, never cut. */
+  .w h3 {
+    font-size: var(--b-fs-title-lg, 20px);
     font-weight: 500;
-    line-height: 1.2;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    color: #fff;
+    hyphens: none;
+    overflow-wrap: normal;
+    word-break: normal;
+    text-wrap: pretty;
   }
-  .pm {
+  .w[data-form="chain"] h3,
+  .w.narrow h3 {
+    font-size: 16px;
+    line-height: 1.3;
+  }
+
+  /* ---- a call: open row, title over a quiet meta line ---- */
+  .call {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    transition: opacity 0.3s;
+  }
+  .ct {
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.3;
+    color: #fff;
+    /* Titles wrap whole words, never clipped or cut with an ellipsis. */
+    white-space: normal;
+    overflow-wrap: break-word;
+    text-wrap: pretty;
+  }
+  .roomy .ct {
+    font-size: 17px;
+    line-height: 1.28;
+    letter-spacing: -0.01em;
+  }
+  .roomy .ptx {
+    font-size: 14px;
+    line-height: 19px;
+  }
+  .call.done .ct {
+    text-decoration: line-through;
+    text-decoration-color: rgba(255, 255, 255, 0.55);
+    color: rgba(255, 255, 255, 0.78);
+  }
+  .cm {
+    container: cm / inline-size;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    gap: 7px;
     min-width: 0;
+    min-height: 22px;
   }
-  .po {
+  /* Product: the mono label style, all caps, quiet. */
+  .prod {
+    min-width: 0;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    line-height: 1.3;
+    color: rgba(255, 255, 255, 0.8);
+    overflow-wrap: break-word;
+  }
+  .end {
+    position: relative;
+    margin-left: auto;
+    flex: none;
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    min-width: 0;
-    font-family: var(--b-mono);
-    font-size: 9.5px;
-    color: var(--b-t3);
+    justify-content: flex-end;
+    min-height: 22px;
   }
-  .po b {
-    font-weight: 500;
-    color: var(--b-t2);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+  /* Age: a small glass pill; warm past a day. */
   .age {
-    flex: none;
-    font-family: var(--b-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    color: var(--b-t3);
+    height: 20px;
+    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    color: rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.16);
+    transition: opacity 0.2s;
   }
-  .age.amber {
-    color: var(--b-warn);
+  .age.late {
+    color: #ffe08a;
+    background: rgba(255, 205, 110, 0.32);
   }
-
-  .edges {
-    display: block;
-    width: 100%;
-    height: var(--h);
-    overflow: visible;
+  /* Start takes the age's place on the hovered call, so nothing moves. */
+  .acts {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    translate: 0 -50%;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
   }
-  .edge {
-    fill: none;
-    stroke: rgba(255, 255, 255, 0.3);
-    transition: stroke 0.25s, opacity 0.25s;
-  }
-  .edge.late {
-    stroke: rgba(250, 204, 21, 0.55);
-  }
-  .edge.done {
-    opacity: 0.2;
-  }
-  .graph.focus .edge {
-    opacity: 0.12;
-  }
-  .graph.focus .edge.on {
+  .call:hover .acts,
+  .call:focus-within .acts {
     opacity: 1;
-    stroke: #fff;
+    pointer-events: auto;
   }
-  .graph.focus .edge.late.on {
-    stroke: var(--b-warn);
+  .call:hover .age,
+  .call:focus-within .age {
+    opacity: 0;
+  }
+  .verb {
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.75);
+    white-space: nowrap;
+  }
+  @container cm (max-width: 230px) {
+    .verb {
+      display: none;
+    }
+  }
+  /* Row button: mono caps on soft glass, filled white with dark text on hover. The peek keeps the engine switch and copy. */
+  .acts :global(.launch .go) {
+    all: unset;
+    cursor: pointer;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 9px;
+    border-radius: 6px;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.16);
+    box-shadow: none;
+    transition: background 0.2s, color 0.2s;
+  }
+  .acts :global(.launch .go:hover),
+  .acts :global(.launch .go:focus-visible) {
+    color: #18181b;
+    background: #fff;
+    outline: none;
+  }
+  .acts :global(.launch .eng),
+  .acts :global(.launch .copy) {
+    display: none;
   }
 
-  .parties {
+  /* ---- list form ---- */
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 12px;
+    min-height: 0;
+  }
+  .roomy .list {
+    gap: 12px;
+  }
+  /* One call and what it frees. Open at rest; a soft glass row while it has your pointer. */
+  .pair {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 -10px;
+    padding: 7px 10px;
+    border-radius: 10px;
+    transition: background 0.2s;
+  }
+  .roomy .pair {
+    gap: 9px;
+    padding: 10px;
+  }
+  .pair:hover,
+  .pair:focus-within {
+    background: rgba(255, 255, 255, 0.14);
+  }
+  .frees {
     display: flex;
     flex-direction: column;
     gap: 6px;
     min-width: 0;
   }
-  .party {
-    height: 30px;
-    display: flex;
+  .fr {
+    display: grid;
+    grid-template-columns: 13px minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: 8px;
+    min-width: 0;
+    transition: opacity 0.3s;
+  }
+  .who {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    align-items: start;
+    column-gap: 8px;
+    min-width: 0;
+  }
+  .tail {
+    display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 0 8px;
-    border-radius: 10px;
-    min-width: 0;
-    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background 0.2s, opacity 0.3s;
+    min-height: 22px;
   }
-  .party.lift {
-    transform: translateX(-4px);
-    background: rgba(255, 255, 255, 0.06);
-  }
-  .party.dim {
+  .dim {
     opacity: 0.45;
   }
-  .party.more {
-    color: var(--b-t2);
-    cursor: default;
+  /* Phosphor arrow-right (regular): what the call sets moving. */
+  .ar {
+    width: 13px;
+    height: 13px;
+    flex: none;
+    margin-top: 4.5px;
+    fill: rgba(255, 255, 255, 0.75);
   }
-  .party.more .pn {
-    font-weight: 400;
-    font-size: 11.5px;
-  }
-  .ava {
+  /* Monochrome glass circle: a person's initial, a cube for work. */
+  .ini {
     width: 22px;
     height: 22px;
     flex: none;
-    border-radius: 7px;
+    border-radius: 50%;
     display: grid;
     place-items: center;
-    font-size: 9.5px;
+    font-size: 11px;
     font-weight: 500;
-    letter-spacing: 0;
+    line-height: 1;
     color: #fff;
-    background: linear-gradient(145deg, hsl(var(--h) 70% 58%), hsl(var(--h) 60% 38%));
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+    background: rgba(255, 255, 255, 0.2);
+    transition: background 0.2s;
   }
-  .tile {
-    width: 22px;
-    height: 22px;
-    flex: none;
-    border-radius: 7px;
-    display: grid;
-    place-items: center;
-    color: var(--b-t2);
+  .fr.lift .ini {
+    background: rgba(255, 255, 255, 0.32);
   }
-  .tile .ico {
+  .cube {
     width: 12px;
     height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linejoin: round;
+  }
+  /* Name and what they do next: one wrapping line of text, never truncated. */
+  .ptx {
+    min-width: 0;
+    padding-top: 2px;
+    font-size: 13px;
+    line-height: 18px;
+    white-space: normal;
+    overflow-wrap: break-word;
   }
   .pn {
-    flex: none;
-    max-width: 62%;
-    font-size: 12px;
     font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    color: #fff;
   }
   .pw {
-    min-width: 0;
-    font-family: var(--b-mono);
-    font-size: 9.5px;
-    color: var(--b-t3);
+    color: rgba(255, 255, 255, 0.82);
+  }
+  /* A work line's state (NEXT, AFTER CUT) or Freed: the mono label style. */
+  .st {
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    color: rgba(255, 255, 255, 0.75);
+  }
+  .fr.freed {
+    opacity: 0.62;
+  }
+  /* "+N more": quiet mono caps text, no fill; it brightens on hover and opens its peek. */
+  .moretxt {
+    display: inline-flex;
+    align-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    line-height: 1.4;
+    white-space: nowrap;
+    color: rgba(255, 255, 255, 0.7);
+    background: none;
+    box-shadow: none;
+    transition: color 0.2s;
+  }
+  .moretxt[role="button"] {
+    cursor: default;
+  }
+  .moretxt:hover,
+  .morecalls:focus-visible .moretxt,
+  .moretxt:focus-visible {
+    color: #fff;
+    background: none;
+    outline: none;
+  }
+  .morecalls {
+    padding: 2px 0 0;
+    cursor: default;
+    transition: opacity 0.3s;
+  }
+  .morecalls:focus-visible {
+    outline: none;
   }
 
-  /* ---- one-row chain ---- */
-  .chain {
+  /* ---- the numbers, at the foot of a tall card ----
+     The room takes the height the slot has left and adds none of its own (size containment), so
+     a short slot never grows for it; the band shows only when it fits whole. */
+  .room {
+    flex: 1 1 0;
+    min-height: 0;
+    container: room / size;
     display: flex;
-    align-items: center;
-    gap: 0;
-    margin-top: auto;
-    padding-top: 12px;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+  .sum {
+    display: none;
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    gap: 12px;
+    padding-top: 14px;
+    transition: opacity 0.3s;
+  }
+  @container room (min-height: 96px) {
+    .sum {
+      display: grid;
+    }
+  }
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
     min-width: 0;
   }
-  .node {
-    flex: 1 1 0;
+  .stat b {
+    font-size: var(--b-fs-num, 32px);
+    font-weight: 400;
+    line-height: 1;
+    letter-spacing: -0.04em;
+    font-variant-numeric: tabular-nums;
+    color: #fff;
+  }
+  /* Past a day: the number stays white like every hero number; a small warm dot leads its label. */
+  .stat.late span::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 6px;
+    border-radius: 50%;
+    vertical-align: 1px;
+    background: #ffe08a;
+  }
+  .stat span {
+    font-family: var(--b-code);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    line-height: 1.3;
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  /* ---- one-row card: the lead call, then the chain it frees ---- */
+  /* Right under the headline, not pushed to the foot: the card reads top-down with no empty middle. */
+  .chain {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 18px;
     min-width: 0;
-    padding: 8px 11px;
-    border-radius: 12px;
-    font-size: 12px;
-    line-height: 1.25;
+  }
+  .chain .call {
+    gap: 4px;
+  }
+  .chain .cm {
+    min-height: 22px;
+  }
+  /* One arrow, then what it frees in a single column: every line starts at the same edge. */
+  .flow {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px 10px;
+    min-width: 0;
+  }
+  .flow .ar {
+    grid-column: 1;
+    grid-row: 1;
+    margin-top: 0;
+  }
+  .flow > .node,
+  .flow > .more {
+    grid-column: 2;
+  }
+  .node {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.3;
+    color: #fff;
     transition: opacity 0.3s;
   }
   .node .t {
-    display: block;
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: break-word;
   }
-  .node small {
-    display: block;
-    font-family: var(--b-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.04em;
-    color: var(--b-t3);
-    margin-top: 3px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .node.freed,
+  .chain.done .flow {
+    opacity: 0.62;
   }
-  /* Violet is earned once: the call that is yours. */
-  .node.you {
-    flex: 1.3 1 0;
-    border-color: rgba(255, 255, 255, 0.14);
-    background: linear-gradient(145deg, #6d43c9, #3b2585);
-    box-shadow: 0 6px 16px rgba(60, 30, 140, 0.45);
-  }
-  .node.you small {
-    color: rgba(255, 255, 255, 0.7);
-  }
-  .node.you.done {
-    opacity: 0.55;
-  }
-  .node.you.done .t {
-    text-decoration: line-through;
-    text-decoration-color: rgba(255, 255, 255, 0.4);
-  }
-  .node.more {
-    flex: 0.8 1 0;
-    color: var(--b-t2);
-    cursor: default;
-  }
-  .node.more .t {
-    font-weight: 400;
-  }
-  /* The dashed flow moves toward the node that is waiting; it stops once the call is made. */
-  .link {
-    position: relative;
-    flex: 0 0 22px;
-    min-width: 14px;
-    height: 2px;
-    overflow: hidden;
-  }
-  /* The dash strip is wider than the link and slides one period with a transform, so the animation stays on the compositor. */
-  .link::before {
-    content: "";
-    position: absolute;
-    inset: 0 auto 0 -20px;
-    width: calc(100% + 20px);
-    background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.35) 0 5px, transparent 5px 10px);
-    animation: flow 1s linear infinite;
-  }
-  .link.stop {
-    opacity: 0.35;
-  }
-  .link.stop::before {
-    animation: none;
-  }
-  @keyframes flow {
-    from {
-      transform: translateX(0);
-    }
-    to {
-      transform: translateX(20px);
-    }
+  .flow .more {
+    justify-self: start;
   }
 </style>
