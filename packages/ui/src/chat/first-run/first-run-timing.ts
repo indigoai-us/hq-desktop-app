@@ -19,6 +19,8 @@
  * [first-run] kind=signin event=<start|done|failed|skipped> tool=<claude|codex>
  * [first-run] kind=account-signin event=timeout provider=<google|microsoft> next=<auto-retry|shown> elapsed_ms=<n>
  * [first-run] kind=account-signin event=retry provider=<google|microsoft> trigger=<auto|person>
+ * [first-run] kind=shell event=<mount|remount|reload> reason=<word>
+ * [first-run] kind=nav event=auto-welcome reason=<word>
  * ```
  *
  * Route lines come once per change of route value. Flag lines come once per
@@ -41,6 +43,12 @@
  * the wizard tried again by itself or showed "Sign-in took too long"), and
  * each attempt started after a timeout, by the wizard or by the person.
  * They carry the provider only, never an email, code or state.
+ * Shell lines say the UI shell mounted, was remounted (sign-in session,
+ * sign-out, company switch) or reloaded its page. The Rust side writes
+ * launch, reload and relaunch lines of the same shape
+ * (`apps/sync/src-tauri/src/first_run_log.rs`). Nav lines say the app moved
+ * to #welcome by itself, and why. Both reasons are reduced to `[a-z0-9-]`
+ * (40 characters at most), so they can never carry a name, path or address.
  *
  * Install ids: node, git, hq-cli, qmd, claude-code, codex, gh, yq, jq (logged
  * from Rust, `apps/sync/src-tauri/src/first_run_timing.rs`), and content,
@@ -216,7 +224,24 @@ export function formatWelcomeReport(event: WelcomeReportEvent, reason?: string):
   return `kind=welcome-report event=${event}${reasonField}`;
 }
 
-export type SignInEvent = "start" | "done" | "failed" | "skipped";
+/** Reduce a reason to a fixed word: lowercase `[a-z0-9-]`, at most 40 characters. */
+function reasonWord(raw: string | undefined): string {
+  const word = (raw ?? "").toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 40);
+  return word === "" ? "unknown" : word;
+}
+
+export type ShellEvent = "mount" | "remount" | "reload";
+
+export function formatShell(event: ShellEvent, reason: string | undefined): string {
+  return `kind=shell event=${event} reason=${reasonWord(reason)}`;
+}
+
+/** An automatic (not person-clicked) navigation to #welcome. */
+export function formatWelcomeNav(reason: string | undefined): string {
+  return `kind=nav event=auto-welcome reason=${reasonWord(reason)}`;
+}
+
+export type SignInEvent ="start" | "done" | "failed" | "skipped";
 
 export function formatSignIn(event: SignInEvent, tool: string): string {
   return `kind=signin event=${event} tool=${sanitizeValue(tool)}`;

@@ -19,6 +19,7 @@ import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
+import { takePendingChannelOpen, takePendingDmRequests } from "../chat/open-target.js";
 import { SETUP_ROW_ID, WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import { SETUP_BOT_COPY_STATIC, SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
 import {
@@ -189,6 +190,10 @@ let component: ReturnType<typeof mount> | null = null;
 beforeEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
+  // A channel open an earlier test asked for (and that test's shell did not
+  // live to take) must not open in this one.
+  takePendingChannelOpen();
+  takePendingDmRequests();
 });
 
 afterEach(async () => {
@@ -303,6 +308,17 @@ describe("visual first run, flag off", () => {
     await vi.waitFor(() => expect(q('[data-testid="bot-progress-card"]')).toBeTruthy());
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBeNull();
+  });
+
+  // PR 1670: a relaunch mid first run landed the person on #welcome and the
+  // log could not say what moved them there.
+  it("logs the automatic boot pick of #welcome with its reason and no names", async () => {
+    const log = logSink();
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform } = adapter({ create, flag: false, logToFile: log.logToFile });
+    await boot(platform);
+    await vi.waitFor(() => expect(log.of("nav")).toContain("kind=nav event=auto-welcome reason=boot-welcome-first"));
+    expect(log.of("shell")).toEqual(["kind=shell event=mount reason=none"]);
   });
 
   it("does not ask for the flag at all once setup has run here", async () => {
@@ -1024,6 +1040,30 @@ describe("welcome report (US-009)", () => {
     expect(q('[data-testid="welcome-report"]')).toBeTruthy();
     expect(q('[data-testid="setup-hero"]')).toBeNull();
     expect(briefInRail()).toBe(true);
+  }, 20_000);
+
+  it("logs each shell mount with what the session marker restored", async () => {
+    const log = logSink();
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo", logToFile: log.logToFile });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+
+    await reloadShell(platform);
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy(), { timeout: 5000 });
+    q<HTMLButtonElement>('[data-rail-id="home"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeNull());
+
+    await reloadShell(platform);
+    await settle(20);
+    expect(log.of("shell")).toEqual([
+      "kind=shell event=mount reason=none",
+      "kind=shell event=mount reason=report-open",
+      "kind=shell event=mount reason=report-left",
+    ]);
+    for (const line of log.of("nav")) expect(line).toMatch(/^kind=nav event=auto-welcome reason=[a-z0-9-]+$/);
   }, 20_000);
 
   it("a reload after the person left the welcome report keeps Daily Brief in the rail and does not open it again", async () => {

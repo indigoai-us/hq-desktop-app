@@ -377,6 +377,8 @@
     createRouteLogger,
     formatFlagLookup,
     formatSetupRunSet,
+    formatShell,
+    formatWelcomeNav,
     formatWelcomeReport,
     writeFirstRunLine,
     type FlagLateOutcome,
@@ -4308,6 +4310,14 @@
     }
   }
   const welcomeReportAtMount = welcomeReportSession();
+  // One line per shell mount, so a reload or remount mid-first-run shows in
+  // the log with what the session marker restored.
+  firstRunTimingLog(
+    formatShell(
+      "mount",
+      welcomeReportAtMount === "open" ? "report-open" : welcomeReportAtMount === "left" ? "report-left" : "none",
+    ),
+  );
   let welcomeReportOwed = $state(welcomeReportAtMount !== null);
   // The takeover was left in this session, so the reload must not set off
   // the automatic start either (`closeVisualFirstRun`).
@@ -12300,6 +12310,7 @@
         settingsSection = null;
         extraPageId = null;
         extraPageParam = null;
+        firstRunTimingLog(formatWelcomeNav("setup-checkout-link"));
         requestChannelOpen(SETUP_CHANNEL_ID, { companyUid: next.companyUid });
         const row = selectedRow;
         if (alreadySetup && row) void catchUpTimeline(row);
@@ -15423,6 +15434,9 @@
           onselect={(row, options) => {
             // A row the person picks, other than #welcome, counts as starting the old first run.
             if (options?.automatic !== true && !isSetupChannel(row.channelId)) noteFirstRunAction();
+            if (options?.automatic === true && isSetupChannel(row.channelId)) {
+              firstRunTimingLog(formatWelcomeNav(options.reason));
+            }
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
               automatic: options?.automatic === true,

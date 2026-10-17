@@ -199,8 +199,10 @@ fn publish_ui_version() {
     hq_desktop_core::client_info::set_ui_version(&ui_version());
 }
 
-/// Reload every webview so it re-reads the (re-resolved) UI root.
-pub fn reload_all(app: &AppHandle) {
+/// Reload every webview so it re-reads the (re-resolved) UI root. `reason`
+/// goes into the `[first-run]` reload line.
+pub fn reload_all(app: &AppHandle, reason: &str) {
+    crate::first_run_log::shell(crate::first_run_log::ShellEvent::Reload, reason);
     invalidate();
     let _ = served_root();
     publish_ui_version();
@@ -239,7 +241,7 @@ pub fn roll_back(app: &AppHandle, reason: &str) {
         }
         Err(err) => log(&format!("rollback: failed to mark {version} bad: {err}")),
     }
-    reload_all(app);
+    reload_all(app, "ui-hot-rollback");
 }
 
 /// After a hot bundle's first document is served, wait for the UI's health
@@ -342,7 +344,7 @@ pub fn ui_hot_call_active(app: AppHandle) -> bool {
 #[tauri::command]
 pub fn ui_hot_reload(app: AppHandle) {
     log("reload requested by UI");
-    reload_all(&app);
+    reload_all(&app, "ui-hot-person");
 }
 
 #[tauri::command]
@@ -575,7 +577,7 @@ fn after_apply(app: &AppHandle, version: &str) {
         return;
     }
     log(&format!("{version} ready; no window in use, reloading now"));
-    reload_all(app);
+    reload_all(app, "ui-hot-idle");
 }
 
 fn check_interval() -> Duration {

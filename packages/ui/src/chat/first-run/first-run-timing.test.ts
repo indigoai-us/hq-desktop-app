@@ -9,6 +9,8 @@ import {
   formatFlagLookup,
   formatRoute,
   formatSetupRunSet,
+  formatShell,
+  formatWelcomeNav,
   formatWelcomeReport,
   formatSignIn,
   formatInstallEnd,
@@ -211,6 +213,21 @@ describe("route, flag and setup-run lines", () => {
     expect(formatWelcomeReport("landed")).toBe("kind=welcome-report event=landed");
     expect(formatWelcomeReport("failed")).toBe("kind=welcome-report event=failed");
     expect(formatWelcomeReport("blocked", "")).toBe("kind=welcome-report event=blocked reason=unknown");
+  });
+
+  it("formats shell lines with a reason word and no free text", () => {
+    expect(formatShell("mount", "report-open")).toBe("kind=shell event=mount reason=report-open");
+    expect(formatShell("remount", "auth-session")).toBe("kind=shell event=remount reason=auth-session");
+    expect(formatShell("reload", "error-boundary")).toBe("kind=shell event=reload reason=error-boundary");
+    expect(formatShell("reload", "Pat /Users/x a@b.c")).toBe("kind=shell event=reload reason=patusersxabc");
+    expect(formatShell("remount", "")).toBe("kind=shell event=remount reason=unknown");
+  });
+
+  it("formats automatic #welcome navigation lines with a reason word", () => {
+    expect(formatWelcomeNav("boot-welcome-first")).toBe("kind=nav event=auto-welcome reason=boot-welcome-first");
+    expect(formatWelcomeNav("setup-checkout-link")).toBe("kind=nav event=auto-welcome reason=setup-checkout-link");
+    expect(formatWelcomeNav(undefined)).toBe("kind=nav event=auto-welcome reason=unknown");
+    expect(formatWelcomeNav("x".repeat(60))).toBe(`kind=nav event=auto-welcome reason=${"x".repeat(40)}`);
   });
 
   it("formats sign-in lines with the tool", () => {
