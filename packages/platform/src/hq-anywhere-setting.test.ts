@@ -10,19 +10,25 @@ import {
 } from "./hq-anywhere-setting.js";
 
 describe("HQ Anywhere setting support", () => {
-  it("fails closed unless the rollout flag is explicitly configured and enabled", async () => {
+  it("is on unless the flag is explicitly configured and false", async () => {
     const identity = {
-      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: false })),
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: false, configured: false })),
     } as unknown as PlatformAdapter["identity"];
 
-    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(false);
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
     expect(identity.resolveFeatureFlagStatus).toHaveBeenCalledWith("hq-anywhere-runtime");
 
     identity.resolveFeatureFlagStatus = vi.fn(async () => ok({ enabled: true, configured: true }));
     await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
+
+    identity.resolveFeatureFlagStatus = vi.fn(async () => ok({ enabled: false, configured: true }));
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(false);
+
+    identity.resolveFeatureFlagStatus = vi.fn(async () => failure("network", "down"));
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
   });
 
-  it("logs an unreadable rollout flag while failing closed", async () => {
+  it("logs an unreadable rollout flag and treats it as on", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const identity = {
       resolveFeatureFlagStatus: vi.fn(async () => {
@@ -30,7 +36,7 @@ describe("HQ Anywhere setting support", () => {
       }),
     } as unknown as PlatformAdapter["identity"];
 
-    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(false);
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
     expect(warn).toHaveBeenCalledWith(
       "[hq-anywhere] runtime flag lookup failed:",
       expect.any(Error),

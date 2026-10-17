@@ -3835,7 +3835,7 @@
   let briefInstallCheckToken = 0;
   let briefOpenToolBusy = $state(false);
   let briefOpenToolError = $state<string | null>(null);
-  /** The kill switch. Null while unread, so Continue waits instead of flashing the callout. */
+  /** Explicit false hides the callout. Null, while the read is still out, means on. */
   let firstRunHqAnywhereFlag = $state<boolean | null>(null);
   /**
    * #welcome shows a loader while the route is pending, or visual with the

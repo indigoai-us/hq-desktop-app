@@ -248,7 +248,7 @@ describe("FirstRunDecisionTakeover", () => {
     expect(handlers.oncontinueintool).not.toHaveBeenCalled();
   });
 
-  it("holds Continue while the flag is unread, then shows the step or skips it with no flash", async () => {
+  it("shows the callout when the flag is unread, and an explicit false skips it", async () => {
     const oncontinueintool = vi.fn();
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -276,17 +276,10 @@ describe("FirstRunDecisionTakeover", () => {
     });
     await waitForDecision();
     expect(byId("first-run-anywhere-slot")).toBeNull();
-    await continuePastCallout();
-    expect(byId("first-run-anywhere-slot")).toBeNull();
+    await showCalloutStep();
+    expect(text("first-run-anywhere-slot")).toContain("Enable HQ Anywhere");
     expect(text("first-run-decision-primary")).toBe("Continue in Codex");
     expect(text("first-run-decision-primary")).not.toContain("Setting up");
-    expect(oncontinueintool).not.toHaveBeenCalled();
-
-    legacy.$set({ hqAnywhereFlag: true });
-    flushSync();
-    await settle();
-    expect(text("first-run-anywhere-slot")).toContain("Enable HQ Anywhere");
-    expect(byId("first-run-decision-question")).toBeNull();
     expect(oncontinueintool).not.toHaveBeenCalled();
     legacy.$destroy();
     legacy = null;
@@ -307,7 +300,7 @@ describe("FirstRunDecisionTakeover", () => {
         initialScreen: "decision",
         initialChoseBot: false,
         reducedMotion: true,
-        hqAnywhereFlag: null,
+        hqAnywhereFlag: false,
         canInstallHq: true,
         onconfirmname: vi.fn(),
         onretry: vi.fn(),
@@ -318,11 +311,8 @@ describe("FirstRunDecisionTakeover", () => {
       },
     });
     await waitForDecision();
-    await continuePastCallout();
     expect(byId("first-run-anywhere-slot")).toBeNull();
-    legacy.$set({ hqAnywhereFlag: false });
-    flushSync();
-    await settle();
+    await continuePastCallout();
     expect(byId("first-run-anywhere-slot")).toBeNull();
     expect(skipped).toHaveBeenCalledWith("codex", { enableHqAnywhere: false });
   });

@@ -69,7 +69,7 @@ interface AdapterOptions {
   installRuntimeForTool?: (runtime: string) => Promise<unknown>;
   /** The HQ Anywhere person-setting write ("Continue in <tool>" is the opt-in). */
   putHqAnywherePersonSetting?: (value: boolean) => Promise<unknown>;
-  /** The hq-anywhere-runtime admin kill switch; off (fail closed) by default. */
+  /** The hq-anywhere-runtime kill switch. This adapter reports it explicitly off unless a test turns it on. */
   hqAnywhereRuntime?: boolean;
   /** Live check of the tool's HQ Anywhere files. Absent: the recorded settle stands. */
   hqAnywhereRuntimeInstalled?: (runtime: string) => Promise<unknown>;

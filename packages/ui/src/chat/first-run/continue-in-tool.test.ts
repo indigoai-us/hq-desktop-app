@@ -143,12 +143,35 @@ describe("continueInTool", () => {
     expect(order).toEqual([]);
   });
 
-  it("with no identity to read the kill switch, fails closed and does not install or open", async () => {
-    const { order, input, installRuntimeForTool, launchClaudeCode } = setup();
-    await expect(continueInTool(input("claude", { identity: undefined, enableHqAnywhere: true }))).resolves.toEqual({ kind: "prepared", install: "skipped" });
-    expect(installRuntimeForTool).not.toHaveBeenCalled();
+  it("with no identity to read the kill switch, treats it as on and installs after Enable", async () => {
+    const { order, input, putHqAnywherePersonSetting, installRuntimeForTool, launchClaudeCode } = setup();
+    await expect(continueInTool(input("claude", { identity: undefined, enableHqAnywhere: true }))).resolves.toEqual({ kind: "prepared", install: "installed" });
+    expect(putHqAnywherePersonSetting).toHaveBeenCalledWith(true);
+    expect(installRuntimeForTool).toHaveBeenCalledWith("claude");
     expect(launchClaudeCode).not.toHaveBeenCalled();
-    expect(order).toEqual([]);
+    expect(order).toEqual(["opt-in:true", "install:claude"]);
+  });
+
+  it("a missing or unreadable kill switch still installs after Enable", async () => {
+    const missing = setup();
+    await expect(continueInTool(missing.input("claude", {
+      enableHqAnywhere: true,
+      identity: {
+        resolveFeatureFlagStatus: async () => ok({ configured: false, enabled: false }),
+      } as ContinueInToolInput["identity"],
+    }))).resolves.toEqual({ kind: "prepared", install: "installed" });
+    expect(missing.installRuntimeForTool).toHaveBeenCalledWith("claude");
+
+    const unreadable = setup();
+    await expect(continueInTool(unreadable.input("claude", {
+      enableHqAnywhere: true,
+      identity: {
+        resolveFeatureFlagStatus: async () => {
+          throw new Error("flag service down");
+        },
+      } as ContinueInToolInput["identity"],
+    }))).resolves.toEqual({ kind: "prepared", install: "installed" });
+    expect(unreadable.installRuntimeForTool).toHaveBeenCalledWith("claude");
   });
 
   it("a failed install still prepares the Open action and does not open the tool", async () => {

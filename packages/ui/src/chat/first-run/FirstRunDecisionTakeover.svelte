@@ -92,9 +92,8 @@
      */
     signin?: FirstRunSignInHost | null;
     /**
-     * The hq-anywhere-runtime kill switch. Null while it is still being read.
-     * Continue waits, and does not show the callout or start the handoff,
-     * until this resolves.
+     * The hq-anywhere-runtime kill switch. False hides the callout and the
+     * install. Null (still unread, missing, or unreadable) and true show it.
      */
     hqAnywhereFlag?: boolean | null;
     /** An installer exists. False hides the callout, the same as the real install. */
@@ -197,22 +196,18 @@
   const tool = $derived(decisionToolFor(scanTools, installed));
   const toolName = $derived(tool ? runtimeLabel(tool) : "");
   /**
-   * The callout uses the same predicate as the install. Hidden at once for
-   * Grok, no tool, or no installer, so Continue never opens this step.
-   * Pending means the kill switch is still unread: Continue waits, with no
-   * box and no "Setting up…", until it resolves.
+   * The callout uses the same predicate as the install. Hidden for Grok, no
+   * tool, no installer, or an explicit kill switch. An unread flag is on, so
+   * Continue opens this step instead of waiting.
    */
-  const calloutPhase = $derived.by((): "hidden" | "pending" | "shown" => {
-    if (!tool || tool === "grok" || !canInstallHq) return "hidden";
-    if (hqAnywhereFlag === null) return "pending";
-    return hqAnywhereFlag ? "shown" : "hidden";
+  const calloutPhase = $derived.by((): "hidden" | "shown" => {
+    if (!tool || tool === "grok" || !canInstallHq || hqAnywhereFlag === false) return "hidden";
+    return "shown";
   });
   /** Unset until the person presses Enable or Not now. Neither starts selected. */
   let anywhereChoice = $state<"unset" | "enable" | "later">("unset");
   /** The callout's own step, after Continue in Claude Code or Codex. */
   let anywhereStep = $state(false);
-  /** Continue was pressed while the kill switch was still unread. */
-  let waitingForAnywhereFlag = $state(false);
   $effect(() => {
     if (calloutPhase !== "hidden") return;
     if (anywhereChoice !== "unset") anywhereChoice = "unset";
@@ -264,11 +259,11 @@
 
   /**
    * Continue on the question opens the callout when this press can install.
-   * An unread flag waits, with no box and no "Setting up…". A hidden callout
-   * goes straight on. Continue on the callout step is the handoff.
+   * An unread flag counts as on, so the step shows with no "Setting up…".
+   * A hidden callout goes straight on. Continue on the callout step is the handoff.
    */
   function continueInChosenTool(): void {
-    if (!tool || pressed !== null || waitingForAnywhereFlag) return;
+    if (!tool || pressed !== null) return;
     if (anywhereStep) {
       handoffChosenTool(tool);
       return;
@@ -277,25 +272,8 @@
       anywhereStep = true;
       return;
     }
-    if (calloutPhase === "pending") {
-      waitingForAnywhereFlag = true;
-      return;
-    }
     handoffChosenTool(tool);
   }
-
-  $effect(() => {
-    if (!waitingForAnywhereFlag || calloutPhase === "pending") return;
-    const phase = calloutPhase;
-    const runtime = tool;
-    waitingForAnywhereFlag = false;
-    if (!runtime) return;
-    if (phase === "shown") {
-      anywhereStep = true;
-      return;
-    }
-    untrack(() => handoffChosenTool(runtime));
-  });
 
   // ── the coding tool's sign-in (owner, 2026-10-16) ──────────────────────
   /** The sign-in on screen: waiting on the browser, or did not finish. */
@@ -643,7 +621,7 @@
           type="button"
           class="new-bot-create-submit"
           data-testid="first-run-decision-primary"
-          disabled={pressed !== null || waitingForAnywhereFlag}
+          disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
           onclick={continueInChosenTool}
         >{pressed === "tool"
@@ -655,7 +633,7 @@
           type="button"
           class="new-bot-create-submit"
           data-testid="first-run-decision-other"
-          disabled={pressed !== null || waitingForAnywhereFlag}
+          disabled={pressed !== null}
           onclick={() => (choseBot = true)}
         >{COPY.toolOther}</button>
       </div>

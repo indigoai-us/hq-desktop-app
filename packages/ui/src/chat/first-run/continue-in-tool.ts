@@ -51,7 +51,7 @@ export type OpenPreparedToolOutcome =
 export interface ContinueInToolInput {
   runtime: FirstRunRuntime;
   settings: Pick<SettingsApi, "getSetupStatus" | "installRuntimeForTool" | "putHqAnywherePersonSetting">;
-  /** Resolves the hq-anywhere-runtime kill switch; missing means off. */
+  /** Resolves the hq-anywhere-runtime kill switch. Missing or unreadable means on. */
   identity?: Pick<IdentityApi, "resolveFeatureFlagStatus">;
   log?: (message: string) => void;
   /** Test seam. */
@@ -69,8 +69,8 @@ export interface ContinueInToolInput {
 
 /**
  * True only when Continue will write the opt-in and install HQ into the tool.
- * Grok is never installed. A missing installer or a kill switch that is off
- * (or unreadable) installs nothing, matching continueInTool.
+ * Grok is never installed. A missing installer or an explicit kill switch
+ * installs nothing. A missing or unreadable flag does not.
  */
 export function continueWillInstallHq(input: {
   runtime: FirstRunRuntime;
@@ -131,10 +131,13 @@ export async function continueInTool(input: ContinueInToolInput): Promise<Contin
   let notice: string | null = null;
   let installState: ContinueInstallState = "skipped";
   // Enable is the consent. Not now, or a callout that was never shown, skips
-  // the opt-in and the install. The kill switch still gates a consented install.
-  const runtimeEnabled = input.enableHqAnywhere === true && input.identity
-    ? await hqAnywhereRuntimeEnabled(input.identity as IdentityApi)
-    : false;
+  // the opt-in and the install. An explicit kill switch still blocks a
+  // consented install. No reader, or an unreadable one, means the switch is on.
+  const runtimeEnabled = input.enableHqAnywhere !== true
+    ? false
+    : input.identity
+      ? await hqAnywhereRuntimeEnabled(input.identity as IdentityApi)
+      : true;
   if (
     input.enableHqAnywhere === true &&
     continueWillInstallHq({ runtime, runtimeEnabled, canInstall: Boolean(settings.installRuntimeForTool) })
