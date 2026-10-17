@@ -28,10 +28,14 @@ function scan(apps: FoundWorkApps["apps"]): FoundWorkApps {
   return { platform: "macos", scannedAtMs: 1, apps, mcpServers: [], sources: [], truncated: false };
 }
 
-function render(apps: FoundWorkApps["apps"], cli = { claudeCode: false, codex: false }): void {
+function render(
+  apps: FoundWorkApps["apps"],
+  cli = { claudeCode: false, codex: false },
+  installedId: string | null = null,
+): void {
   target = document.createElement("div");
   document.body.appendChild(target);
-  component = mount(ConnectAiAppsCard, { target, props: { detect: async () => scan(apps), cli } });
+  component = mount(ConnectAiAppsCard, { target, props: { detect: async () => scan(apps), cli, installedId } });
 }
 
 afterEach(() => {
@@ -79,6 +83,27 @@ describe("ConnectAiAppsCard", () => {
     q("connect-ai-app-chatgpt-copy")!.click();
     await settle();
     expect(q("connect-ai-app-chatgpt-manual")?.textContent).toBe(CONNECTOR_APPS.find((a) => a.id === "chatgpt")!.copyText);
+  });
+
+  it("shows a tool as already set up, with no Copy prompt, when its HQ install succeeded", async () => {
+    render([], { claudeCode: true, codex: true }, "codex");
+    await settle();
+    expect(q("connect-ai-app-codex")?.textContent).toContain("HQ is already installed in Codex.");
+    expect(q("connect-ai-app-codex-setup")?.textContent).toBe("Set up");
+    expect(q("connect-ai-app-codex-copy")).toBeNull();
+    expect(q("connect-ai-app-codex")?.textContent).not.toContain("Paste into Codex");
+    expect(q("connect-ai-app-claude-code-copy")).not.toBeNull();
+    expect(q("connect-ai-app-claude-code-setup")).toBeNull();
+  });
+
+  it("keeps Copy when the install did not succeed", async () => {
+    render([], { claudeCode: true, codex: true }, null);
+    await settle();
+    expect(q("connect-ai-app-claude-code-copy")?.textContent?.trim()).toBe("Copy");
+    expect(q("connect-ai-app-codex-copy")?.textContent?.trim()).toBe("Copy");
+    expect(q("connect-ai-app-claude-code-setup")).toBeNull();
+    expect(q("connect-ai-app-codex-setup")).toBeNull();
+    expect(q("connect-ai-app-claude-code")?.textContent).toContain("Paste into a Claude Code session");
   });
 
   it("is left out when no found app matches", async () => {

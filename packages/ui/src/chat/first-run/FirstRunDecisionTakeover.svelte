@@ -89,6 +89,11 @@
      * name path go on. Null: neither waits on a sign-in.
      */
     signin?: FirstRunSignInHost | null;
+    /**
+     * The hq-anywhere-runtime kill switch is on. Off (the default) hides the
+     * install line, because Continue installs nothing then.
+     */
+    hqAnywhereOn?: boolean;
   }
 
   let {
@@ -109,6 +114,7 @@
     initialChoseBot = false,
     timingLog = null,
     signin = null,
+    hqAnywhereOn = false,
   }: Props = $props();
 
   let hostNoun = $state(hostComputerNoun());
@@ -184,6 +190,8 @@
   );
   const tool = $derived(decisionToolFor(scanTools, installed));
   const toolName = $derived(tool ? runtimeLabel(tool) : "");
+  /** The line is shown only when this press will install HQ into the tool. */
+  const showInstallNote = $derived(Boolean(tool) && tool !== "grok" && hqAnywhereOn);
   const toolSessions = $derived(tool ? toolSessionCount(scanTools, tool) : null);
   let choseBot = $state(untrack(() => initialChoseBot));
   const showBot = $derived(choseBot || tool === null);
@@ -492,7 +500,7 @@
           data-testid="first-run-decision-primary"
           disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
-          aria-describedby="first-run-decision-install-note"
+          aria-describedby={showInstallNote ? "first-run-decision-install-note" : undefined}
           onclick={() =>
             void press("tool", async () => {
               // A failed handoff can retry directly; Skip never installs or opens the tool.
@@ -514,7 +522,9 @@
           onclick={() => (choseBot = true)}
         >{COPY.toolOther}</button>
       </div>
-      <p id="first-run-decision-install-note" class="fr-tool-note" data-testid="first-run-decision-install-note">{COPY.toolInstallNote(toolName)}</p>
+      {#if showInstallNote}
+        <p id="first-run-decision-install-note" class="fr-tool-note" data-testid="first-run-decision-install-note">{COPY.toolInstallNote(toolName)}</p>
+      {/if}
     {/if}
   </div>
 {/snippet}

@@ -61,6 +61,8 @@ interface Opts {
   oncontinueintool?: (runtime: string) => string | null | void | Promise<string | null | void>;
   onretry?: () => void | Promise<void>;
   signin?: FirstRunSignInHost | null;
+  /** Default true so the install line is on screen unless a test turns it off. */
+  hqAnywhereOn?: boolean;
 }
 
 function render(opts: Opts = {}) {
@@ -88,6 +90,7 @@ function render(opts: Opts = {}) {
       reducedMotion: true,
       timingLog: (line: string) => timing.push(line),
       signin: opts.signin ?? null,
+      hqAnywhereOn: opts.hqAnywhereOn ?? true,
       ...handlers,
     },
   });
@@ -169,6 +172,22 @@ describe("FirstRunDecisionTakeover", () => {
     expect(byId("first-run-decision-other")).toBeNull();
     expect(byId("first-run-decision-lead")).toBeNull();
     expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("Continue in");
+  });
+
+  it("hides the install line when HQ Anywhere is off, and when the tool is Grok", async () => {
+    render({ hqAnywhereOn: false });
+    await waitForDecision();
+    expect(byId("first-run-decision-install-note")).toBeNull();
+    expect(byId("first-run-decision-primary")?.getAttribute("aria-describedby")).toBeNull();
+    expect(byId("first-run-takeover")?.textContent ?? "").not.toContain("This also installs HQ");
+    await unmount(component!);
+    component = null;
+    host?.remove();
+
+    render({ hqAnywhereOn: true, scanTools: [], installed: { claude: false, codex: false, grok: true } });
+    await waitForDecision();
+    expect(text("first-run-decision-primary")).toBe("Continue in Grok");
+    expect(byId("first-run-decision-install-note")).toBeNull();
   });
 
   it("with no scan counts, names the first installed tool", async () => {

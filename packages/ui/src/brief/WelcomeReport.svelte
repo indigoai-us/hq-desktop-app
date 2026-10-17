@@ -46,7 +46,12 @@
      */
     madeBy?: { name: string; onmeet: () => void };
     /** The "Connect your AI apps" card inputs; null leaves it out. */
-    aiApps?: { detect: () => Promise<FoundWorkApps | null>; cli: { claudeCode: boolean; codex: boolean } } | null;
+    aiApps?: {
+      detect: () => Promise<FoundWorkApps | null>;
+      cli: { claudeCode: boolean; codex: boolean };
+      /** Connector id whose HQ install succeeded. That row has no Copy prompt. */
+      installedId?: string | null;
+    } | null;
     /**
      * The job is held back until the assistant can take it (not running, no
      * model connected): the brief check's own sentence and fix button, under
@@ -84,7 +89,7 @@
 
 <div class="welcome" data-testid="welcome-report">
   {#if openTool}
-    <BriefOpenTool label={openTool.label} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
+    <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
   {/if}
   {#if connect}
     {#key connect.company.uid}
@@ -98,7 +103,7 @@
     {/key}
   {/if}
   {#if aiApps}
-    <ConnectAiAppsCard detect={aiApps.detect} cli={aiApps.cli} />
+    <ConnectAiAppsCard detect={aiApps.detect} cli={aiApps.cli} installedId={aiApps.installedId ?? null} />
   {/if}
   {#if ready}
     <div class="report" data-testid="welcome-report-ready">

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureHqAnywhereGlobalRuntime, HQ_ANYWHERE_RUNTIME_FLAG } from "@hq/platform";
-import { continueInTool, openPreparedCodingTool, FIRST_RUN_INSTALL_WAIT_MS, type ContinueInToolInput } from "./continue-in-tool";
+import { type LaunchShell } from "../../settings/launch-actions";
+import { continueInTool, continueWillInstallHq, openPreparedCodingTool, FIRST_RUN_INSTALL_WAIT_MS, type ContinueInToolInput } from "./continue-in-tool";
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
 const failure = (reason: string, message: string) => ({ ok: false as const, reason, message });
@@ -75,7 +76,6 @@ function setup(overrides: {
     runtime,
     identity: identity as unknown as ContinueInToolInput["identity"],
     settings: settings as unknown as ContinueInToolInput["settings"],
-    shell: shell as unknown as ContinueInToolInput["shell"],
     pause: noPause,
     ...extra,
   });
@@ -90,7 +90,7 @@ afterEach(() => {
 describe("continueInTool", () => {
   it("records the HQ Anywhere opt-in before the install and does not open the tool", async () => {
     const { order, input, putHqAnywherePersonSetting, launchClaudeCode } = setup();
-    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared" });
+    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared", installed: true });
     expect(putHqAnywherePersonSetting).toHaveBeenCalledWith(true);
     expect(order).toEqual(["opt-in:true", "install:claude"]);
     expect(launchClaudeCode).not.toHaveBeenCalled();
@@ -127,7 +127,7 @@ describe("continueInTool", () => {
 
   it("with the hq-anywhere-runtime kill switch off, prepares nothing: no opt-in write, no install, no open", async () => {
     const { order, input, putHqAnywherePersonSetting, installRuntimeForTool, launchClaudeCode } = setup({ runtimeFlag: false });
-    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared" });
+    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared", installed: false });
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(installRuntimeForTool).not.toHaveBeenCalled();
     expect(launchClaudeCode).not.toHaveBeenCalled();
@@ -136,7 +136,7 @@ describe("continueInTool", () => {
 
   it("with no identity to read the kill switch, fails closed and does not install or open", async () => {
     const { order, input, installRuntimeForTool, launchClaudeCode } = setup();
-    await expect(continueInTool(input("claude", { identity: undefined }))).resolves.toEqual({ kind: "prepared" });
+    await expect(continueInTool(input("claude", { identity: undefined }))).resolves.toEqual({ kind: "prepared", installed: false });
     expect(installRuntimeForTool).not.toHaveBeenCalled();
     expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(order).toEqual([]);
@@ -145,7 +145,7 @@ describe("continueInTool", () => {
   it("a failed install still prepares the Open action and does not open the tool", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { input, launchClaudeCode } = setup({ install: async () => failure("hq-install", "exit 1") });
-    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared" });
+    await expect(continueInTool(input("claude"))).resolves.toEqual({ kind: "prepared", installed: false });
     expect(launchClaudeCode).not.toHaveBeenCalled();
   });
 
@@ -158,7 +158,7 @@ describe("continueInTool", () => {
     await vi.advanceTimersByTimeAsync(FIRST_RUN_INSTALL_WAIT_MS - 1);
     expect(launchClaudeCode).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    await expect(pending).resolves.toEqual({ kind: "prepared" });
+    await expect(pending).resolves.toEqual({ kind: "prepared", installed: false });
     expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringContaining("installed runtime=claude ok=timeout"));
     expect(FIRST_RUN_INSTALL_WAIT_MS).toBe(20_000);
@@ -166,7 +166,7 @@ describe("continueInTool", () => {
 
   it("Grok Build prepares without an opt-in, an install, or an open", async () => {
     const { order, input, putHqAnywherePersonSetting, installRuntimeForTool } = setup();
-    await expect(continueInTool(input("grok"))).resolves.toEqual({ kind: "prepared" });
+    await expect(continueInTool(input("grok"))).resolves.toEqual({ kind: "prepared", installed: false });
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(installRuntimeForTool).not.toHaveBeenCalled();
     expect(order).toEqual([]);
@@ -188,22 +188,33 @@ describe("continueInTool", () => {
   it("returns the launcher's plain sentence when Open cannot start the tool", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const notDetected = setup({ tools: { claude_cli: false } });
-    await expect(openPreparedCodingTool(notDetected.input("claude"))).resolves.toEqual({
+    await expect(openPreparedCodingTool({ ...notDetected.input("claude"), shell: notDetected.shell as LaunchShell })).resolves.toEqual({
       kind: "open-failed",
       message: "Claude Code was not detected. Open your HQ folder in Claude Code.",
     });
     const failed = setup({ launchClaudeCode: async () => failure("spawn", "ENOENT /bin/zsh") });
-    await expect(openPreparedCodingTool(failed.input("claude"))).resolves.toEqual({
+    await expect(openPreparedCodingTool({ ...failed.input("claude"), shell: failed.shell as LaunchShell })).resolves.toEqual({
       kind: "open-failed",
       message: "Could not open Claude Code. Try again.",
     });
   });
 });
 
+describe("continueWillInstallHq", () => {
+  it("is true only when Continue will install, and false when HQ Anywhere is off", () => {
+    expect(continueWillInstallHq({ runtime: "claude", runtimeEnabled: true, canInstall: true })).toBe(true);
+    expect(continueWillInstallHq({ runtime: "codex", runtimeEnabled: true, canInstall: true })).toBe(true);
+    expect(continueWillInstallHq({ runtime: "claude", runtimeEnabled: false, canInstall: true })).toBe(false);
+    expect(continueWillInstallHq({ runtime: "codex", runtimeEnabled: false, canInstall: true })).toBe(false);
+    expect(continueWillInstallHq({ runtime: "grok", runtimeEnabled: true, canInstall: true })).toBe(false);
+    expect(continueWillInstallHq({ runtime: "claude", runtimeEnabled: true, canInstall: false })).toBe(false);
+  });
+});
+
 describe("openPreparedCodingTool", () => {
   it("opens Claude Code in the HQ folder and leaves Codex closed", async () => {
     const { shell, input, launchClaudeCode } = setup();
-    await expect(openPreparedCodingTool(input("claude"))).resolves.toEqual({ kind: "opened" });
+    await expect(openPreparedCodingTool({ ...input("claude"), shell: shell as LaunchShell })).resolves.toEqual({ kind: "opened" });
     expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ");
     expect(shell.launchCodexWorkspace).not.toHaveBeenCalled();
   });
@@ -212,7 +223,7 @@ describe("openPreparedCodingTool", () => {
     const { shell, input, launchClaudeCode } = setup({
       tools: { claude_cli: false, codex_cli: false, codex_desktop: true },
     });
-    await expect(openPreparedCodingTool(input("codex"))).resolves.toEqual({ kind: "opened" });
+    await expect(openPreparedCodingTool({ ...input("codex"), shell: shell as LaunchShell })).resolves.toEqual({ kind: "opened" });
     expect(shell.launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ");
     expect(launchClaudeCode).not.toHaveBeenCalled();
   });

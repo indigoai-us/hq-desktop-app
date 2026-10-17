@@ -30,8 +30,8 @@ export function optInNotSavedMessage(runtime: FirstRunRuntime): string {
 }
 
 export type ContinueInToolOutcome =
-  /** Opt-in and install finished (or were skipped). The tool was not opened. */
-  | { kind: "prepared" }
+  /** The tool was not opened. `installed` is true only when the runtime install returned ok. */
+  | { kind: "prepared"; installed: boolean }
   /** The opt-in write failed, so nothing was installed. The tool was not opened. */
   | { kind: "prepared-without-opt-in"; message: string }
   /** No HQ folder to open the tool in later; the caller takes the chat path. */
@@ -46,7 +46,6 @@ export type OpenPreparedToolOutcome =
 export interface ContinueInToolInput {
   runtime: FirstRunRuntime;
   settings: Pick<SettingsApi, "getSetupStatus" | "installRuntimeForTool" | "putHqAnywherePersonSetting">;
-  shell: LaunchShell;
   /** Resolves the hq-anywhere-runtime kill switch; missing means off. */
   identity?: Pick<IdentityApi, "resolveFeatureFlagStatus">;
   log?: (message: string) => void;
@@ -54,6 +53,19 @@ export interface ContinueInToolInput {
   installWaitMs?: number;
   /** Test seam: the opt-in write's retry pause. */
   pause?: (milliseconds: number) => Promise<void>;
+}
+
+/**
+ * True only when Continue will write the opt-in and install HQ into the tool.
+ * Grok is never installed. A missing installer or a kill switch that is off
+ * (or unreadable) installs nothing, matching continueInTool.
+ */
+export function continueWillInstallHq(input: {
+  runtime: FirstRunRuntime;
+  runtimeEnabled: boolean;
+  canInstall: boolean;
+}): boolean {
+  return input.runtime !== "grok" && input.canInstall && input.runtimeEnabled;
 }
 
 async function hqFolder(settings: ContinueInToolInput["settings"]): Promise<string> {
@@ -98,10 +110,11 @@ export async function continueInTool(input: ContinueInToolInput): Promise<Contin
   }
 
   let notice: string | null = null;
+  let installedOk = false;
   // The admin kill switch gates every install and reconcile; with it off the
   // reconcile never removes hooks, so Continue changes nothing in the tool.
   const runtimeEnabled = input.identity ? await hqAnywhereRuntimeEnabled(input.identity as IdentityApi) : false;
-  if (runtime !== "grok" && settings.installRuntimeForTool && runtimeEnabled) {
+  if (continueWillInstallHq({ runtime, runtimeEnabled, canInstall: Boolean(settings.installRuntimeForTool) })) {
     const optIn = await putHqAnywherePersonSetting(settings as SettingsApi, true, { pause: input.pause });
     if (!optIn.ok) {
       // Without the saved opt-in the next launch would uninstall, so skip the install.
@@ -110,9 +123,10 @@ export async function continueInTool(input: ContinueInToolInput): Promise<Contin
       notice = optInNotSavedMessage(runtime);
     } else {
       const installed = await boundedInstall(
-        () => settings.installRuntimeForTool!(runtime),
+        () => settings.installRuntimeForTool!(runtime as "claude" | "codex"),
         input.installWaitMs ?? FIRST_RUN_INSTALL_WAIT_MS,
       );
+      installedOk = installed !== "timeout" && installed?.ok === true;
       if (installed === "timeout") console.warn("[first-run] runtime install is still running; landing on the welcome report");
       else if (installed && !installed.ok) console.warn("[first-run] runtime install failed", installed.message);
       const state = installed === "timeout" ? "timeout" : String(installed?.ok ?? "skipped");
@@ -122,7 +136,7 @@ export async function continueInTool(input: ContinueInToolInput): Promise<Contin
 
   log(`continue-in-tool prepared runtime=${runtime} ms=${Date.now() - startedAt}`);
   if (notice) return { kind: "prepared-without-opt-in", message: notice };
-  return { kind: "prepared" };
+  return { kind: "prepared", installed: installedOk };
 }
 
 /**

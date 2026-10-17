@@ -2011,7 +2011,10 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
       status: 200,
       body: JSON.stringify({
         version: 1,
-        flags: { 'hq-anywhere-runtime': true },
+        flags: {
+          'hq-anywhere-runtime':
+            typeof window === 'undefined' || new URLSearchParams(window.location.search).get('anywhere') !== 'off',
+        },
       }),
     };
   }
@@ -2093,6 +2096,9 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   if (cmd === 'get_pending_conflict_notices') {
     const conflicts = conflictNoticesSwitch(search);
     if (conflicts) return conflicts as T;
+  }
+  if (cmd === 'install_hq_runtime_for_tool' && new URLSearchParams(search ?? '').get('install') === 'fail') {
+    throw new Error('harness: HQ install failed');
   }
   const switched = switchedHandler(cmd, args, search);
   if (switched) return switched.value as T;

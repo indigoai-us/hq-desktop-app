@@ -59,7 +59,7 @@
 <div class="host" data-testid="brief-host">
   {#if openTool}
     <div class="open">
-      <BriefOpenTool label={openTool.label} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
+      <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
     </div>
   {/if}
   <div class="page">

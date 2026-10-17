@@ -32,6 +32,7 @@
     READY_FIRST_ACTION_FLAG,
     VISUAL_FIRST_RUN_FLAG,
     FIRST_RUN_FOUND_APPS_FLAG,
+    hqAnywhereRuntimeEnabled,
     dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
@@ -340,9 +341,12 @@
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
   import { continueInTool, openPreparedCodingTool } from "../chat/first-run/continue-in-tool.js";
   import {
+    briefOpenToolConnectorId,
+    briefOpenToolContext,
     briefOpenToolLabel,
     forgetBriefOpenTool,
     readBriefOpenTool,
+    readBriefOpenToolInstalled,
     rememberBriefOpenTool,
     type BriefOpenToolRuntime,
   } from "../brief/brief-open-tool.js";
@@ -3810,8 +3814,12 @@
   let visualFirstRunOpen = $state(false);
   /** The coding tool Continue prepared. Read back on a later Daily Brief. */
   let briefOpenTool = $state<BriefOpenToolRuntime | null>(readBriefOpenTool());
+  /** True only when that tool's HQ install returned ok. */
+  let briefOpenToolInstalled = $state(readBriefOpenToolInstalled());
   let briefOpenToolBusy = $state(false);
   let briefOpenToolError = $state<string | null>(null);
+  /** The kill switch, read while the decision is up. Off hides the install line. */
+  let firstRunHqAnywhereOn = $state(false);
   /**
    * #welcome shows a loader while the route is pending, or visual with the
    * takeover not yet open. Not once setup has run here: that route is legacy.
@@ -3850,9 +3858,22 @@
       // This first run has not chosen Continue yet. Skip must not inherit an older Open action.
       forgetBriefOpenTool();
       briefOpenTool = null;
+      briefOpenToolInstalled = false;
       briefOpenToolError = null;
       visualFirstRunOpen = true;
     });
+  });
+  $effect(() => {
+    if (!visualFirstRunOpen) return;
+    const identity = untrack(() => adapter.identity);
+    let alive = true;
+    firstRunHqAnywhereOn = false;
+    void hqAnywhereRuntimeEnabled(identity).then((on) => {
+      if (alive) firstRunHqAnywhereOn = on;
+    });
+    return () => {
+      alive = false;
+    };
   });
   /**
    * The account's assistant keeps its name, whether it is on this computer or
@@ -4089,7 +4110,6 @@
     const outcome = await continueInTool({
       runtime,
       settings: adapter.settings,
-      shell: adapter.shell,
       identity: adapter.identity,
       log: firstRunTimingLog,
     });
@@ -4097,8 +4117,10 @@
       pushToast({ key: "first-run-opt-in", kind: "sticky", tone: "neutral", testId: "first-run-opt-in-toast", title: outcome.message, detail: "" });
     }
     if (outcome.kind === "prepared" || outcome.kind === "prepared-without-opt-in") {
-      rememberBriefOpenTool(runtime);
+      const installed = outcome.kind === "prepared" && outcome.installed;
+      rememberBriefOpenTool(runtime, installed);
       briefOpenTool = runtime;
+      briefOpenToolInstalled = installed;
       briefOpenToolError = null;
     }
     continueFirstRunInChat();
@@ -4129,6 +4151,7 @@
     briefOpenTool
       ? {
           label: briefOpenToolLabel(briefOpenTool),
+          detail: briefOpenToolContext(briefOpenTool, briefOpenToolInstalled),
           busy: briefOpenToolBusy,
           error: briefOpenToolError,
           onopen: () => {
@@ -4531,7 +4554,11 @@
   /** The "Connect your AI apps" card: the launch scan plus the CLIs launch detection found. */
   const welcomeAiApps = $derived(
     welcomeAppsHost
-      ? { detect: () => welcomeAppsHost.detect(), cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) } }
+      ? {
+          detect: () => welcomeAppsHost.detect(),
+          cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) },
+          installedId: briefOpenToolInstalled ? briefOpenToolConnectorId(briefOpenTool) : null,
+        }
       : null,
   );
   // The cards and the AI apps card need launch detection; ask for it once the report shows.
@@ -17116,6 +17143,7 @@
       onimport={recordFirstRunImport}
       timingLog={firstRunTimingLog}
       signin={firstRunSignIn}
+      hqAnywhereOn={firstRunHqAnywhereOn}
     />
   {/if}
 

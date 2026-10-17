@@ -5,11 +5,13 @@
    */
   interface Props {
     label: string;
+    /** One line under the button. Null leaves the button on its own. */
+    detail?: string | null;
     busy?: boolean;
     error?: string | null;
     onopen: () => void;
   }
-  let { label, busy = false, error = null, onopen }: Props = $props();
+  let { label, detail = null, busy = false, error = null, onopen }: Props = $props();
 </script>
 
 <div class="open-tool" data-testid="brief-open-tool">
@@ -19,8 +21,12 @@
     data-testid="brief-open-tool-button"
     disabled={busy}
     aria-busy={busy ? "true" : undefined}
+    aria-describedby={detail ? "brief-open-tool-detail" : undefined}
     onclick={onopen}
   >{busy ? "Opening…" : label}</button>
+  {#if detail}
+    <p id="brief-open-tool-detail" class="detail" data-testid="brief-open-tool-detail">{detail}</p>
+  {/if}
   {#if error}
     <p class="error" role="alert" data-testid="brief-open-tool-error">{error}</p>
   {/if}
@@ -29,9 +35,17 @@
 <style>
   .open-tool {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .detail {
+    margin: 0;
+    max-width: 420px;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
+    color: rgba(255, 255, 255, 0.62);
   }
   .cta {
     font: inherit;

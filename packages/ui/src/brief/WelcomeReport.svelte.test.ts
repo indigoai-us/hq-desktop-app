@@ -181,12 +181,21 @@ describe("WelcomeReport", () => {
     const onopen = vi.fn();
     mountReport({
       ready: false,
-      openTool: { label: "Open Claude Code", busy: false, error: null, onopen },
+      openTool: {
+        label: "Open Claude Code",
+        detail: "Claude Code is set up with HQ. Open it to keep working there.",
+        busy: false,
+        error: null,
+        onopen,
+      },
       children: briefPage,
     });
     await settle();
     const button = q<HTMLButtonElement>('[data-testid="brief-open-tool-button"]');
     expect(button?.textContent?.trim()).toBe("Open Claude Code");
+    expect(q('[data-testid="brief-open-tool-detail"]')?.textContent).toBe(
+      "Claude Code is set up with HQ. Open it to keep working there.",
+    );
     expect(q('[data-testid="welcome-report-loading"]')).not.toBeNull();
     button!.click();
     expect(onopen).toHaveBeenCalledTimes(1);
