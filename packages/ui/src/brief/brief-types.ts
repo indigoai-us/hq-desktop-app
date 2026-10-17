@@ -123,6 +123,7 @@ export interface BriefTodo {
 
 /** One of today's priorities, linked to the item it is about. */
 export interface BriefPriority {
+  companyUid?: string | null;
   n: number;
   text: string;
   because: string | null;
@@ -309,6 +310,7 @@ export interface BriefRecovered {
 }
 
 export interface BriefFleetIncident {
+  companyUid?: string | null;
   id: string;
   series: { at: string; stuck: number }[];
   incidentStart: string | null;
@@ -319,6 +321,7 @@ export interface BriefFleetIncident {
 }
 
 export interface BriefTeammate {
+  companyUid?: string | null;
   id: string;
   sample?: boolean;
   name: string;
@@ -357,6 +360,7 @@ export interface BriefSession {
 }
 
 export interface BriefReminder {
+  companyUid?: string | null;
   id: string;
   /** The owner's own words, verbatim. */
   text: string;
@@ -410,6 +414,7 @@ export interface BriefInput {
   mainHealth?: BriefMainHealth[];
   recovered?: BriefRecovered[];
   fleetIncident?: BriefFleetIncident | null;
+  fleetIncidents?: BriefFleetIncident[];
   /** Up to 7 local days, oldest first. */
   days?: BriefDay[];
   reminders?: BriefReminder[];
