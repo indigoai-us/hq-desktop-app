@@ -343,8 +343,8 @@ export const FIRST_RUN_DECISION_COPY = {
       ? `We noticed you use ${tool} the most on this ${noun}, ${sessions === 1 ? "1 session" : `${sessions} sessions`} so far. Want to keep working there?`
       : `We noticed ${tool} on this ${noun}. Want to keep working there?`,
   toolPrimary: (tool: string) => `Continue in ${tool}`,
-  // The HQ Anywhere callout above Continue (owner, 2026-10-17). Enable is not
-  // preselected. Continue installs only after Enable.
+  // The HQ Anywhere callout on the step after Continue in Claude Code or Codex
+  // (owner, 2026-10-17). Enable is not preselected. Continue installs only after Enable.
   anywhereTitle: "Enable HQ Anywhere",
   anywhereBody: (tool: string) =>
     `Use HQ in every project, not only in your HQ folder. ${tool} gets HQ's instructions, skills and tools wherever you open it. You can change this later in Settings.`,

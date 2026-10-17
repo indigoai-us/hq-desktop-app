@@ -92,8 +92,9 @@
      */
     signin?: FirstRunSignInHost | null;
     /**
-     * The hq-anywhere-runtime kill switch. Null while it is still being read,
-     * so the callout keeps its space and the Continue row does not jump.
+     * The hq-anywhere-runtime kill switch. Null while it is still being read.
+     * Continue waits, and does not show the callout or start the handoff,
+     * until this resolves.
      */
     hqAnywhereFlag?: boolean | null;
     /** An installer exists. False hides the callout, the same as the real install. */
@@ -197,8 +198,9 @@
   const toolName = $derived(tool ? runtimeLabel(tool) : "");
   /**
    * The callout uses the same predicate as the install. Hidden at once for
-   * Grok, no tool, or no installer (no reserved slot). Pending reserves the
-   * unchosen box while the kill switch is unread.
+   * Grok, no tool, or no installer, so Continue never opens this step.
+   * Pending means the kill switch is still unread: Continue waits, with no
+   * box and no "Setting up…", until it resolves.
    */
   const calloutPhase = $derived.by((): "hidden" | "pending" | "shown" => {
     if (!tool || tool === "grok" || !canInstallHq) return "hidden";
@@ -207,8 +209,14 @@
   });
   /** Unset until the person presses Enable or Not now. Neither starts selected. */
   let anywhereChoice = $state<"unset" | "enable" | "later">("unset");
+  /** The callout's own step, after Continue in Claude Code or Codex. */
+  let anywhereStep = $state(false);
+  /** Continue was pressed while the kill switch was still unread. */
+  let waitingForAnywhereFlag = $state(false);
   $effect(() => {
-    if (calloutPhase === "hidden" && anywhereChoice !== "unset") anywhereChoice = "unset";
+    if (calloutPhase !== "hidden") return;
+    if (anywhereChoice !== "unset") anywhereChoice = "unset";
+    if (anywhereStep) anywhereStep = false;
   });
   const toolSessions = $derived(tool ? toolSessionCount(scanTools, tool) : null);
   let choseBot = $state(untrack(() => initialChoseBot));
@@ -243,6 +251,51 @@
       pressed = null;
     }
   }
+
+  /** Sign in, then continue. A failed handoff retries from here. Skip never installs. */
+  function handoffChosenTool(runtime: FirstRunRuntime): void {
+    void press("tool", async () => {
+      const connected = toolError !== null || (await signInFirst(runtime));
+      if (!live) return;
+      if (connected) await continueInTool(runtime);
+      else await onskipintool(runtime);
+    });
+  }
+
+  /**
+   * Continue on the question opens the callout when this press can install.
+   * An unread flag waits, with no box and no "Setting up…". A hidden callout
+   * goes straight on. Continue on the callout step is the handoff.
+   */
+  function continueInChosenTool(): void {
+    if (!tool || pressed !== null || waitingForAnywhereFlag) return;
+    if (anywhereStep) {
+      handoffChosenTool(tool);
+      return;
+    }
+    if (calloutPhase === "shown") {
+      anywhereStep = true;
+      return;
+    }
+    if (calloutPhase === "pending") {
+      waitingForAnywhereFlag = true;
+      return;
+    }
+    handoffChosenTool(tool);
+  }
+
+  $effect(() => {
+    if (!waitingForAnywhereFlag || calloutPhase === "pending") return;
+    const phase = calloutPhase;
+    const runtime = tool;
+    waitingForAnywhereFlag = false;
+    if (!runtime) return;
+    if (phase === "shown") {
+      anywhereStep = true;
+      return;
+    }
+    untrack(() => handoffChosenTool(runtime));
+  });
 
   // ── the coding tool's sign-in (owner, 2026-10-16) ──────────────────────
   /** The sign-in on screen: waiting on the browser, or did not finish. */
@@ -374,7 +427,7 @@
   );
 
   const question = $derived(
-    !answered ? "" : screen === "done" ? "" : showBot ? COPY.botQuestion : COPY.toolQuestion,
+    !answered || screen === "done" || anywhereStep ? "" : showBot ? COPY.botQuestion : COPY.toolQuestion,
   );
   const signinText = $derived(
     signinView === null
@@ -515,46 +568,35 @@
           >{COPY.backToTool(toolName)}</button>
         </p>
       {/if}
-    {:else if tool}
+    {:else if tool && anywhereStep}
       <div class="fr-decision-head">
-        <p class="fr-decision-q" data-testid="first-run-decision-question">{COPY.toolQuestion}</p>
-        <p class="fr-decision-lead" data-testid="first-run-decision-lead">{COPY.toolLead(toolName, hostNoun, toolSessions)}</p>
         {#if toolError && pressed === null}
           <p class="fr-decision-lead fr-decision-failed" role="alert" data-testid="first-run-decision-error">{toolError}</p>
         {/if}
-        {#if calloutPhase !== "hidden"}
         <div
           class="fr-anywhere"
           id="first-run-anywhere-callout"
           data-testid="first-run-anywhere-slot"
-          data-state={calloutPhase === "pending" ? "pending" : anywhereChoice}
-          aria-hidden={calloutPhase === "pending" ? "true" : undefined}
-          inert={calloutPhase === "pending"}
-          style={calloutPhase === "pending" ? "visibility: hidden" : undefined}
+          data-state={anywhereChoice}
         >
-          {#if calloutPhase === "pending" || anywhereChoice === "unset"}
+          {#if anywhereChoice === "unset"}
             <p class="fr-anywhere-title">{COPY.anywhereTitle}</p>
             <p class="fr-anywhere-body">{COPY.anywhereBody(toolName)}</p>
             <div class="fr-anywhere-actions">
-              {#if calloutPhase === "shown"}
-                <button
-                  type="button"
-                  class="new-bot-create-next"
-                  data-testid="first-run-anywhere-enable"
-                  disabled={pressed !== null}
-                  onclick={() => (anywhereChoice = "enable")}
-                >{COPY.anywhereEnable}</button>
-                <button
-                  type="button"
-                  class="fr-anywhere-later"
-                  data-testid="first-run-anywhere-not-now"
-                  disabled={pressed !== null}
-                  onclick={() => (anywhereChoice = "later")}
-                >{COPY.anywhereNotNow}</button>
-              {:else}
-                <span class="new-bot-create-next">{COPY.anywhereEnable}</span>
-                <span class="fr-anywhere-later">{COPY.anywhereNotNow}</span>
-              {/if}
+              <button
+                type="button"
+                class="new-bot-create-next"
+                data-testid="first-run-anywhere-enable"
+                disabled={pressed !== null}
+                onclick={() => (anywhereChoice = "enable")}
+              >{COPY.anywhereEnable}</button>
+              <button
+                type="button"
+                class="fr-anywhere-later"
+                data-testid="first-run-anywhere-not-now"
+                disabled={pressed !== null}
+                onclick={() => (anywhereChoice = "later")}
+              >{COPY.anywhereNotNow}</button>
             </div>
           {:else if anywhereChoice === "enable"}
             <p class="fr-anywhere-line" data-testid="first-run-anywhere-on">
@@ -571,6 +613,28 @@
             <p class="fr-anywhere-line" data-testid="first-run-anywhere-off">{COPY.anywhereOff}</p>
           {/if}
         </div>
+      </div>
+      <div class="new-bot-foot-actions single">
+        <button
+          type="button"
+          class="new-bot-create-submit"
+          data-testid="first-run-decision-primary"
+          disabled={pressed !== null}
+          aria-busy={pressed === "tool" ? "true" : undefined}
+          aria-describedby="first-run-anywhere-callout"
+          onclick={continueInChosenTool}
+        >{pressed === "tool"
+          ? firstRunOpeningLabel(toolName)
+          : toolError
+            ? FIRST_RUN_COPY.retry
+            : COPY.toolPrimary(toolName)}</button>
+      </div>
+    {:else if tool}
+      <div class="fr-decision-head">
+        <p class="fr-decision-q" data-testid="first-run-decision-question">{COPY.toolQuestion}</p>
+        <p class="fr-decision-lead" data-testid="first-run-decision-lead">{COPY.toolLead(toolName, hostNoun, toolSessions)}</p>
+        {#if toolError && pressed === null}
+          <p class="fr-decision-lead fr-decision-failed" role="alert" data-testid="first-run-decision-error">{toolError}</p>
         {/if}
       </div>
       <!-- Two equal paths (owner, 2026-10-15): the tool, or naming the assistant. -->
@@ -579,17 +643,9 @@
           type="button"
           class="new-bot-create-submit"
           data-testid="first-run-decision-primary"
-          disabled={pressed !== null}
+          disabled={pressed !== null || waitingForAnywhereFlag}
           aria-busy={pressed === "tool" ? "true" : undefined}
-          aria-describedby={calloutPhase === "shown" ? "first-run-anywhere-callout" : undefined}
-          onclick={() =>
-            void press("tool", async () => {
-              // A failed handoff can retry directly; Skip never installs or opens the tool.
-              const connected = toolError !== null || await signInFirst(tool);
-              if (!live) return;
-              if (connected) await continueInTool(tool);
-              else await onskipintool(tool);
-            })}
+          onclick={continueInChosenTool}
         >{pressed === "tool"
           ? firstRunOpeningLabel(toolName)
           : toolError
@@ -599,7 +655,7 @@
           type="button"
           class="new-bot-create-submit"
           data-testid="first-run-decision-other"
-          disabled={pressed !== null}
+          disabled={pressed !== null || waitingForAnywhereFlag}
           onclick={() => (choseBot = true)}
         >{COPY.toolOther}</button>
       </div>

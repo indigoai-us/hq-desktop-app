@@ -164,7 +164,9 @@ describe("decision takeover source contract", () => {
   });
 
   it("shows one primary action per screen", () => {
-    expect(source.match(/data-testid="first-run-decision-primary"/g)).toHaveLength(2);
+    // The bot path, the tool question, and the HQ Anywhere step after Continue.
+    expect(source.match(/data-testid="first-run-decision-primary"/g)).toHaveLength(3);
     expect(source).toContain("{:else if showBot}");
+    expect(source).toContain("{:else if tool && anywhereStep}");
   });
 });

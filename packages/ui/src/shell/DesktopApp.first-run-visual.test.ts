@@ -296,9 +296,19 @@ async function decisionShown(): Promise<void> {
   await vi.waitFor(() => expect(q('[data-testid="first-run-decision-question"]')).toBeTruthy(), { timeout: 5000 });
 }
 
-/** Press Enable on the callout. Continue stays the primary action. */
-async function enableAnywhere(): Promise<void> {
+/** Continue in Claude Code or Codex opens the callout. The decision screen does not show it. */
+async function openAnywhereStep(): Promise<void> {
+  await decisionShown();
+  expect(q('[data-testid="first-run-anywhere-slot"]')).toBeNull();
+  q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
   await vi.waitFor(() => expect(q('[data-testid="first-run-anywhere-enable"]')).toBeTruthy());
+  expect(q('[data-testid="first-run-decision-question"]')).toBeNull();
+  expect(q('[data-testid="first-run-decision-other"]')).toBeNull();
+}
+
+/** Press Enable on the callout step. Continue stays the primary action. */
+async function enableAnywhere(): Promise<void> {
+  await openAnywhereStep();
   q<HTMLButtonElement>('[data-testid="first-run-anywhere-enable"]')!.click();
   await vi.waitFor(() =>
     expect(q('[data-testid="first-run-anywhere-on"]')?.textContent).toContain("HQ Anywhere is on. Continue sets it up."),
@@ -742,7 +752,7 @@ describe("visual first run, flag on", () => {
       },
     });
     await boot(platform);
-    await decisionShown();
+    await openAnywhereStep();
     await vi.waitFor(() => expect(q('[data-testid="first-run-anywhere-not-now"]')).toBeTruthy());
     q<HTMLButtonElement>('[data-testid="first-run-anywhere-not-now"]')!.click();
     await vi.waitFor(() =>
@@ -2682,7 +2692,7 @@ describe("visual first run, the detected tool's sign-in", () => {
     });
     scanFinds(platform, runtime === "claude" ? "claude-code" : "codex");
     await boot(platform);
-    await decisionShown();
+    await openAnywhereStep();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="first-run-signin-skip"]')).toBeTruthy());
     q<HTMLButtonElement>('[data-testid="first-run-signin-skip"]')!.click();
