@@ -28,6 +28,8 @@
  * back to on every uncertainty.
  */
 
+import type { SignInProvider } from './onboarding-signin';
+
 /** The protocol version this build implements. */
 export const SUPPORTED_PROTOCOL_VERSION = 1;
 
@@ -91,6 +93,12 @@ export interface VerifiedIdentity {
 }
 
 /** The native commands this module drives. */
+/** The provider the person chose, which every attempt must name. */
+export interface ContinuationSignIn {
+  provider: SignInProvider;
+  email?: string;
+}
+
 export interface ContinuationBridge {
   /**
    * May this machine start an attempt at all?
@@ -105,8 +113,19 @@ export interface ContinuationBridge {
    * failures.
    */
   mayStart(): Promise<string | null>;
-  /** Begin an attempt. Resolves with the attempt id once the browser is open. */
-  start(input: { installAttemptId: string; sessionId: string }): Promise<{ attemptId: string }>;
+  /**
+   * Begin an attempt. Resolves with the attempt id once the browser is open.
+   *
+   * `provider` is required: without it Cognito shows its bare Hosted UI with
+   * every configured provider listed. `email` is the address a Microsoft
+   * sign-in resolves its work tenant from.
+   */
+  start(input: {
+    installAttemptId: string;
+    sessionId: string;
+    provider: SignInProvider;
+    email?: string;
+  }): Promise<{ attemptId: string }>;
   /** Wait for the callback, exchange, and server-side verification. */
   awaitIdentity(input: { attemptId: string }): Promise<VerifiedIdentity>;
   /** Persist and activate. Nothing is written before this resolves. */
@@ -435,6 +454,7 @@ export function classifyContinuationError(error: unknown): ContinuationErrorKind
 export async function beginContinuation(
   deps: ContinuationDeps,
   decision: RolloutDecision,
+  signIn: ContinuationSignIn,
   onState: (state: ContinuationState) => void,
   shouldContinue: () => boolean = () => true,
 ): Promise<ContinuationState> {
@@ -478,6 +498,8 @@ export async function beginContinuation(
     ({ attemptId } = await deps.bridge.start({
       installAttemptId: deps.installAttemptId,
       sessionId,
+      provider: signIn.provider,
+      ...(signIn.email ? { email: signIn.email } : {}),
     }));
   } catch (error) {
     return await fail(deps, sessionId, startedAt, variant, classifyContinuationError(error), onState);

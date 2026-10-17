@@ -611,7 +611,11 @@ pub async fn desktop_continuation_may_start(app: AppHandle) -> Option<String> {
 /// separate command so a Cancel click is never queued behind a person who
 /// wandered off mid-login.
 #[tauri::command]
-pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationStarted, String> {
+pub async fn desktop_continuation_start(
+    app: AppHandle,
+    provider: String,
+    email: Option<String>,
+) -> Result<ContinuationStarted, String> {
     // Before anything opens: is this machine even eligible? An enrolled
     // installation that has a session, that just signed out, that is mid-update,
     // that already has a login in flight, or that is simply not on its first
@@ -619,13 +623,17 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
     may_start(launch_context(&app).await, RolloutDecision::Continue)
         .map_err(|refusal| start_refusal_code(refusal).to_string())?;
 
+    // The provider the person chose, resolved exactly as the provider buttons
+    // resolve it (Microsoft becomes the tenant's MsOrg provider). Without one,
+    // Cognito shows its bare Hosted UI listing every configured provider, so an
+    // attempt with no provider is refused before anything is armed.
+    let identity_provider =
+        super::oauth::resolve_identity_provider(&provider, email.as_deref()).await?;
+
     let attempt_id = uuid::Uuid::new_v4().to_string();
     let nonce = hq_desktop_core::oauth::generate_nonce();
 
-    // No identity provider: continuation lets the hosted UI use whichever
-    // session the browser already has, which is the entire point — the person
-    // signed in there minutes ago.
-    let armed = super::oauth::arm_oauth_flow(&app, None, Some(&nonce))?;
+    let armed = super::oauth::arm_oauth_flow(&app, &identity_provider, Some(&nonce))?;
 
     let (browser_url, referral_nonce) =
         match prepare_desktop_referral_start_url(&armed.authorize_url).await {

@@ -101,34 +101,61 @@ pub fn cognito_identity_provider(provider: &str) -> Result<&'static str, String>
     }
 }
 
+/// Refusal code returned when an authorize URL is requested without a usable
+/// identity provider.
+pub const SIGNIN_PROVIDER_REQUIRED: &str = "SIGNIN_PROVIDER_REQUIRED";
+
 /// Inputs to the Cognito authorize URL.
 ///
-/// `identity_provider` is optional because browser continuation deliberately
-/// omits it: naming a provider forces that provider's own login, which defeats
-/// the whole point of letting Cognito reuse a session the browser may already
-/// have. The manual provider buttons still pass one.
+/// `identity_provider` is required. Without it Cognito renders its bare
+/// Hosted UI, which lists every configured provider (Google, Microsoft,
+/// MicrosoftPersonal and one `MsOrg*` entry per work tenant). Every desktop
+/// sign-in names the provider the person chose on the first screen instead.
 ///
-/// `nonce` is likewise optional and is set only for continuation, where the
-/// returned ID token is checked against it. It is an OIDC replay defence, not
-/// an identifier, and it never leaves the process except inside the authorize
+/// `nonce` is optional and is set only for continuation, where the returned
+/// ID token is checked against it. It is an OIDC replay defence, not an
+/// identifier, and it never leaves the process except inside the authorize
 /// URL and the ID token that answers it.
 pub struct AuthorizeRequest<'a> {
     pub state: &'a str,
     pub challenge: &'a str,
-    pub identity_provider: Option<&'a str>,
+    pub identity_provider: &'a str,
     pub nonce: Option<&'a str>,
 }
 
-pub fn build_authorize_url_from(request: &AuthorizeRequest<'_>) -> String {
+/// Cognito provider names are ASCII identifiers (`Google`,
+/// `MicrosoftPersonal`, `MsOrg<hex>`). Anything else, including an empty
+/// string, would either open the bare Hosted UI or inject query parameters.
+fn valid_identity_provider(provider: &str) -> bool {
+    !provider.is_empty()
+        && provider
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Refuse an unusable identity provider before any sign-in side effect runs.
+pub fn require_identity_provider(provider: &str) -> Result<&str, String> {
+    if valid_identity_provider(provider) {
+        Ok(provider)
+    } else {
+        Err(SIGNIN_PROVIDER_REQUIRED.to_string())
+    }
+}
+
+pub fn build_authorize_url_from(request: &AuthorizeRequest<'_>) -> Result<String, String> {
     build_authorize_url_from_redirect(request, REDIRECT_URI)
 }
 
 /// Build the same authorization request using a different callback URI that
 /// is already registered to the static app client.
+///
+/// Refuses with [`SIGNIN_PROVIDER_REQUIRED`] when the identity provider is
+/// empty or malformed, so no caller can produce a bare Hosted UI URL.
 pub fn build_authorize_url_from_redirect(
     request: &AuthorizeRequest<'_>,
     redirect_uri: &str,
-) -> String {
+) -> Result<String, String> {
+    require_identity_provider(request.identity_provider)?;
     let mut url = format!(
         "{base}?response_type=code\
          &client_id={client_id}\
@@ -136,29 +163,31 @@ pub fn build_authorize_url_from_redirect(
          &scope=openid+email+profile\
          &state={state}\
          &code_challenge={challenge}\
-         &code_challenge_method=S256",
+         &code_challenge_method=S256\
+         &identity_provider={provider}",
         base = cognito_authorize_url(),
         client_id = cognito_client_id(),
         redirect_uri = redirect_uri,
         state = request.state,
         challenge = request.challenge,
+        provider = request.identity_provider,
     );
-    if let Some(provider) = request.identity_provider {
-        url.push_str("&identity_provider=");
-        url.push_str(provider);
-    }
     if let Some(nonce) = request.nonce {
         url.push_str("&nonce=");
         url.push_str(nonce);
     }
-    url
+    Ok(url)
 }
 
-pub fn build_authorize_url(state: &str, challenge: &str, identity_provider: &str) -> String {
+pub fn build_authorize_url(
+    state: &str,
+    challenge: &str,
+    identity_provider: &str,
+) -> Result<String, String> {
     build_authorize_url_from(&AuthorizeRequest {
         state,
         challenge,
-        identity_provider: Some(identity_provider),
+        identity_provider,
         nonce: None,
     })
 }
@@ -609,7 +638,7 @@ mod tests {
             let verifier = generate_code_verifier();
             let challenge = compute_code_challenge(&verifier);
 
-            let url = build_authorize_url(state, &challenge, "Google");
+            let url = build_authorize_url(state, &challenge, "Google").unwrap();
 
             assert!(url.starts_with(&format!("{}?", cognito_authorize_url())));
             assert!(url.contains("response_type=code"));
@@ -634,20 +663,82 @@ mod tests {
     }
 
     #[test]
-    fn continuation_authorize_url_names_no_provider() {
-        // Naming a provider forces that provider's own login screen, which is
-        // exactly what continuation is trying to avoid. Omitting it is what
-        // lets Cognito reuse a session the browser may already hold.
+    fn continuation_authorize_url_names_the_provider_and_nonce() {
+        // Continuation used to omit the provider, which opened the bare
+        // Hosted UI with every provider listed. It now carries both.
         with_default_cognito_env(|| {
             let url = build_authorize_url_from(&AuthorizeRequest {
                 state: "s",
                 challenge: "c",
-                identity_provider: None,
+                identity_provider: "Google",
                 nonce: Some("n"),
-            });
-            assert!(!url.contains("identity_provider"));
+            })
+            .unwrap();
+            assert!(url.contains("&identity_provider=Google"));
             assert!(url.contains("&nonce=n"));
             assert!(url.contains("code_challenge_method=S256"));
+        });
+    }
+
+    #[test]
+    fn authorize_url_refuses_a_missing_or_malformed_provider() {
+        // No path may build a Cognito authorize URL without identity_provider:
+        // that URL is the bare Hosted UI the owner saw on a cold machine.
+        with_default_cognito_env(|| {
+            for provider in ["", " ", "Google&prompt=login", "Microsoft Personal"] {
+                for nonce in [None, Some("n")] {
+                    let request = AuthorizeRequest {
+                        state: "s",
+                        challenge: "c",
+                        identity_provider: provider,
+                        nonce,
+                    };
+                    assert_eq!(
+                        build_authorize_url_from(&request),
+                        Err(SIGNIN_PROVIDER_REQUIRED.to_string()),
+                        "provider {provider:?} must be refused"
+                    );
+                    assert_eq!(
+                        build_authorize_url_from_redirect(
+                            &request,
+                            "http://localhost:8765/callback"
+                        ),
+                        Err(SIGNIN_PROVIDER_REQUIRED.to_string()),
+                    );
+                }
+            }
+            assert_eq!(
+                build_authorize_url("s", "c", ""),
+                Err(SIGNIN_PROVIDER_REQUIRED.to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn every_built_authorize_url_carries_identity_provider() {
+        with_default_cognito_env(|| {
+            for provider in [
+                "Google",
+                "MicrosoftPersonal",
+                "MsOrg87489d4600af47338b7bafe9bd",
+            ] {
+                for nonce in [None, Some("n")] {
+                    let url = build_authorize_url_from(&AuthorizeRequest {
+                        state: "s",
+                        challenge: "c",
+                        identity_provider: provider,
+                        nonce,
+                    })
+                    .unwrap();
+                    let parsed = url::Url::parse(&url).expect("authorize URL");
+                    let idps: Vec<String> = parsed
+                        .query_pairs()
+                        .filter(|(k, _)| k == "identity_provider")
+                        .map(|(_, v)| v.into_owned())
+                        .collect();
+                    assert_eq!(idps, vec![provider.to_string()]);
+                }
+            }
         });
     }
 
@@ -659,11 +750,12 @@ mod tests {
                 &AuthorizeRequest {
                     state: "fallback-state",
                     challenge: "fallback-challenge",
-                    identity_provider: Some("Google"),
+                    identity_provider: "Google",
                     nonce: None,
                 },
                 redirect_uri,
-            );
+            )
+            .unwrap();
             let parsed = url::Url::parse(&authorize_url).expect("Cognito authorize URL");
 
             assert_eq!(
@@ -682,7 +774,7 @@ mod tests {
     #[test]
     fn manual_authorize_url_is_unchanged_and_carries_no_nonce() {
         with_default_cognito_env(|| {
-            let url = build_authorize_url("s", "c", "Google");
+            let url = build_authorize_url("s", "c", "Google").unwrap();
             assert!(url.contains("identity_provider=Google"));
             assert!(!url.contains("nonce="));
         });
@@ -700,7 +792,8 @@ mod tests {
     #[test]
     fn authorize_url_supports_microsoft_provider() {
         with_default_cognito_env(|| {
-            let url = build_authorize_url("state-123", "challenge-123", "MicrosoftPersonal");
+            let url =
+                build_authorize_url("state-123", "challenge-123", "MicrosoftPersonal").unwrap();
             assert!(url.contains("identity_provider=MicrosoftPersonal"));
             assert!(url.contains("state=state-123"));
             assert!(url.contains("code_challenge=challenge-123"));
@@ -714,7 +807,8 @@ mod tests {
                 "state-123",
                 "challenge-123",
                 "MsOrg87489d4600af47338b7bafe9bd",
-            );
+            )
+            .unwrap();
             assert!(url.contains("identity_provider=MsOrg87489d4600af47338b7bafe9bd"));
             assert!(!url.contains("identity_provider=MicrosoftPersonal"));
         });

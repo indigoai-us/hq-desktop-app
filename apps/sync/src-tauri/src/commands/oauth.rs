@@ -44,7 +44,7 @@ use hq_desktop_core::microsoft_org::identity_provider_for_sign_in;
 use hq_desktop_core::oauth::{
     bind_loopback_listeners, build_authorize_url_from_redirect, cognito_client_id,
     cognito_token_url, compute_code_challenge, generate_code_verifier, parse_callback,
-    AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
+    require_identity_provider, AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -447,7 +447,7 @@ pub async fn start_oauth_login(
     // Explicit identity_provider tells Cognito Hosted UI to skip its own
     // username/password form and redirect straight to the selected provider.
     // No nonce: this path has no confirmation step to bind a token back to.
-    let armed = arm_oauth_flow(&app, Some(&identity_provider), None)?;
+    let armed = arm_oauth_flow(&app, &identity_provider, None)?;
     let (authorize_url, referral_nonce) =
         match crate::commands::desktop_auth::prepare_desktop_referral_start_url(
             &armed.authorize_url,
@@ -477,7 +477,10 @@ pub async fn start_oauth_login(
     })
 }
 
-async fn resolve_identity_provider(provider: &str, email: Option<&str>) -> Result<String, String> {
+pub(crate) async fn resolve_identity_provider(
+    provider: &str,
+    email: Option<&str>,
+) -> Result<String, String> {
     let client = hq_desktop_core::client_info::build_client();
     let api_base = hq_desktop_core::continuation_endpoints::api_base();
     identity_provider_for_sign_in(provider, email, &client, &api_base)
@@ -504,13 +507,15 @@ pub(crate) struct ExchangedOAuthCode {
 /// listener that is already accepting before the browser opens — binding after
 /// would leave a window where a very fast provider redirect hits a closed port
 /// — and both need a state and verifier that belong to exactly one attempt.
-/// They differ only in whether an identity provider is named and whether a
-/// nonce is sent, which is why those are the two parameters.
+/// The identity provider is required: an authorize URL without one opens
+/// Cognito's bare Hosted UI. An empty or malformed provider is refused before
+/// any listener is bound or any earlier attempt is cancelled.
 pub(crate) fn arm_oauth_flow(
     app: &AppHandle,
-    identity_provider: Option<&str>,
+    identity_provider: &str,
     nonce: Option<&str>,
 ) -> Result<ArmedOAuthFlow, String> {
+    let identity_provider = require_identity_provider(identity_provider)?;
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
@@ -569,7 +574,7 @@ pub(crate) fn arm_oauth_flow(
     eprintln!("[oauth] listener ready; opening provider is now safe");
 
     // Store verifier for the exchange. One-time use, taken not read.
-    let selected_identity_provider = identity_provider.map(str::to_owned);
+    let selected_identity_provider = Some(identity_provider.to_owned());
     {
         let mut guard = pkce_store()
             .lock()
@@ -591,7 +596,7 @@ pub(crate) fn arm_oauth_flow(
             nonce,
         },
         &redirect_uri,
-    );
+    )?;
 
     Ok(ArmedOAuthFlow {
         authorize_url,

@@ -57,11 +57,7 @@ afterEach(async () => {
 });
 
 describe('SignInPrompt browser continuation', () => {
-  it('starts provider OAuth and renders loading while rollout preparation is unresolved', async () => {
-    let resolveConfig!: (value: unknown) => void;
-    const config = new Promise<unknown>((resolve) => {
-      resolveConfig = resolve;
-    });
+  it('never starts a browser continuation on mount, because it would open the bare Hosted UI', async () => {
     tauri.invoke.mockImplementation((command: string) => {
       switch (command) {
         case 'desktop_continuation_context':
@@ -71,7 +67,16 @@ describe('SignInPrompt browser continuation', () => {
             apiBase: 'https://api.placeholder.test',
           });
         case 'desktop_continuation_config':
-          return config;
+          return Promise.resolve({
+            protocolVersion: 1,
+            minimumDesktopVersion: '0.10.229',
+            variant: 'continuation',
+            rolloutPercent: 100,
+          });
+        case 'desktop_continuation_may_start':
+          return Promise.resolve(null);
+        case 'desktop_continuation_start':
+          return new Promise(() => {});
         case 'desktop_continuation_deliver':
           return Promise.resolve(200);
         case 'start_oauth_login':
@@ -83,16 +88,21 @@ describe('SignInPrompt browser continuation', () => {
     component = mount(SignInPrompt, { target: host });
 
     await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_config'),
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_context'),
     );
+    for (let i = 0; i < 10; i += 1) await flush();
+
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(commands).not.toContain('desktop_continuation_start');
+    expect(commands).not.toContain('start_oauth_login');
+    expect(tauri.open).not.toHaveBeenCalled();
+
     providerButtons()[0]?.click();
     flushSync();
 
     expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
     expect(providerButtons()[0]?.disabled).toBe(true);
     expect(providerButtons()[0]?.textContent).toContain('Waiting for browser…');
-
-    resolveConfig({ protocolVersion: 1, minimumDesktopVersion: '0.10.229', variant: 'control', rolloutPercent: 100 });
   });
 
   it('asks for email before Microsoft OAuth so work accounts are not sent to MicrosoftPersonal', async () => {
@@ -393,6 +403,128 @@ describe('SignInPrompt welcome handoff', () => {
       expect.objectContaining({ code: 'late-code' }),
     );
     expect(onsuccess).not.toHaveBeenCalled();
+  });
+
+  it('retries a timed-out Google sign-in with the same provider', async () => {
+    vi.useFakeTimers();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return new Promise(() => {});
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+    await vi.advanceTimersByTimeAsync(3 * 60 * 1_000);
+    await flush();
+
+    host.querySelector<HTMLButtonElement>('[data-testid="retry-signin"]')?.click();
+    await flush();
+
+    const starts = tauri.invoke.mock.calls.filter(([command]) => command === 'start_oauth_login');
+    expect(starts).toEqual([
+      ['start_oauth_login', { provider: 'Google' }],
+      ['start_oauth_login', { provider: 'Google' }],
+    ]);
+    expect(tauri.invoke.mock.calls.map(([command]) => command)).not.toContain('desktop_continuation_start');
+  });
+
+  it('retries a timed-out Microsoft sign-in with the same provider and email', async () => {
+    vi.useFakeTimers();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/microsoft', state: 'state' });
+        case 'oauth_listen_for_code':
+          return new Promise(() => {});
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    providerButtons()[1]?.click();
+    flushSync();
+    const email = host.querySelector<HTMLInputElement>('[data-testid="microsoft-email"]')!;
+    email.value = 'person@example.test';
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="microsoft-email-continue"]')?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+    await vi.advanceTimersByTimeAsync(3 * 60 * 1_000);
+    await flush();
+
+    host.querySelector<HTMLButtonElement>('[data-testid="retry-signin"]')?.click();
+    await flush();
+
+    const starts = tauri.invoke.mock.calls.filter(([command]) => command === 'start_oauth_login');
+    expect(starts).toEqual([
+      ['start_oauth_login', { provider: 'Microsoft', email: 'person@example.test' }],
+      ['start_oauth_login', { provider: 'Microsoft', email: 'person@example.test' }],
+    ]);
+  });
+
+  it('shows the Google and Microsoft choice after a failed sign-in in the column layout', async () => {
+    vi.useFakeTimers();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return new Promise(() => {});
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host, props: { layout: 'column' } });
+    await flush();
+
+    const actions = host.querySelector<HTMLElement>('.sign-in-actions')!;
+    expect(actions.hidden).toBe(true);
+    host.querySelector<HTMLButtonElement>('[data-testid="sign-in-with-hq"]')?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+    await vi.advanceTimersByTimeAsync(3 * 60 * 1_000);
+    await flush();
+
+    expect(host.textContent).toContain('We couldn’t finish sign-in. Try again.');
+    expect(host.querySelector('[data-testid="sign-in-with-hq"]')).toBeNull();
+    expect(host.querySelector<HTMLElement>('.sign-in-actions')!.hidden).toBe(false);
+    expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
+      'Continue with Google',
+      'Continue with Microsoft',
+    ]);
+    // The magic link stays reachable when a provider sign-in has failed.
+    expect(host.querySelector('[data-testid="magic-link"]')).not.toBeNull();
+
+    providerButtons()[1]?.click();
+    flushSync();
+    expect(host.querySelector('[data-testid="microsoft-email"]')).not.toBeNull();
+    expect(
+      tauri.invoke.mock.calls.filter(([command]) => command === 'start_oauth_login'),
+    ).toEqual([['start_oauth_login', { provider: 'Google' }]]);
   });
 
   it('cancels the native listener and ignores its callback after unmount', async () => {

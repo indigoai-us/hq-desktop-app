@@ -437,6 +437,15 @@ function expectPreBranchProviderScreen(): void {
   expect(host.textContent).not.toContain('Finishing your sign-in in the browser');
 }
 
+/** After a failed sign-in the wizard offers the same two providers again. */
+function expectPreBranchProviderScreenAfterError(): void {
+  expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
+    'Continue with Google',
+    'Continue with Microsoft',
+  ]);
+  expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+}
+
 /**
  * Finish the welcome animation the way a person can (Escape), then let the
  * next animation frames run so the mark settles and reveals the sign-in block.
@@ -1265,6 +1274,45 @@ describe('first-run sign-in screen', () => {
     expect(tauri.open).toHaveBeenCalledTimes(2);
     expect(host.textContent).toContain('Sign-in took too long. Choose a provider to try again.');
     expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('names the provider on every launch after a timeout, including the retry', async () => {
+    // A launch without a provider is Cognito's bare Hosted UI, which lists
+    // every configured provider. The owner saw it on a cold machine after
+    // "Sign-in took too long".
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'continuation' } });
+    const attempts = stubOAuthAttempts('Timed out waiting for sign-in (5 minutes).');
+
+    await clickGoogleSignIn();
+    await flushUntil(
+      () =>
+        attempts.starts() === 2 &&
+        host.textContent?.includes('Sign-in took too long. Choose a provider to try again.') === true &&
+        providerButtons().every((button) => !button.disabled),
+    );
+    expectPreBranchProviderScreenAfterError();
+
+    providerButtons()[1]?.click();
+    await flush();
+    const email = host.querySelector<HTMLInputElement>('[data-testid="microsoft-email"]')!;
+    email.value = 'person@example.test';
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="microsoft-email-continue"]')?.click();
+    await flushUntil(() => attempts.starts() === 4);
+
+    const starts = tauri.invoke.mock.calls
+      .filter(([command]) => command === 'start_oauth_login')
+      .map(([, args]) => args);
+    expect(starts).toEqual([
+      expect.objectContaining({ provider: 'Google' }),
+      expect.objectContaining({ provider: 'Google' }),
+      expect.objectContaining({ provider: 'Microsoft', email: 'person@example.test' }),
+      expect.objectContaining({ provider: 'Microsoft', email: 'person@example.test' }),
+    ]);
+    expect(tauri.invoke.mock.calls.map(([command]) => command)).not.toContain(
+      'desktop_continuation_start',
+    );
   });
 
   it('restarts sign-in once after an OAuth state mismatch', async () => {
