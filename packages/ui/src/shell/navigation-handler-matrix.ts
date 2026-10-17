@@ -186,6 +186,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   handleSyncToastDismiss: "none",
   // Forward picker (US-009): opens a dialog over the current route, not navigation.
   openForward: "none",
+  // Welcome edition Open: launches the coding tool outside HQ. The shell
+  // stays on the brief, so this is not navigation.
+  openRememberedCodingTool: "none",
 };
 
 export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [

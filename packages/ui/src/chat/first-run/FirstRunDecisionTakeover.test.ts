@@ -115,6 +115,8 @@ describe("FirstRunDecisionTakeover", () => {
     expect(text("first-run-decision-question")).toBe(FIRST_RUN_DECISION_COPY.toolQuestion);
     expect(text("first-run-decision-lead")).toMatch(/^We noticed you use Codex the most on this \w+, \d+ sessions so far\. Want to keep working there\?$/);
     expect(text("first-run-decision-primary")).toBe("Continue in Codex");
+    expect(text("first-run-decision-install-note")).toBe("This also installs HQ into your Codex setup.");
+    expect(byId("first-run-decision-primary")?.getAttribute("aria-describedby")).toBe("first-run-decision-install-note");
     expect(text("first-run-decision-other")).toBe("Name Your Assistant");
     expect(byId("first-run-bot-name")).toBeNull();
     expect(document.querySelectorAll('[data-testid="first-run-decision-primary"]')).toHaveLength(1);
@@ -173,6 +175,7 @@ describe("FirstRunDecisionTakeover", () => {
     render({ scanTools: null, installed: { claude: true, codex: true } });
     await waitForDecision();
     expect(text("first-run-decision-primary")).toBe("Continue in Claude Code");
+    expect(text("first-run-decision-install-note")).toBe("This also installs HQ into your Claude Code setup.");
   });
 
   it("waits for the scan before asking", async () => {
@@ -187,7 +190,7 @@ describe("FirstRunDecisionTakeover", () => {
     expect(text("first-run-decision-primary")).toBe("Continue in Codex");
   });
 
-  it("continue in the tool passes its runtime, shows Opening <tool> at once and ignores a second press", async () => {
+  it("continue in the tool passes its runtime, shows Setting up <tool> at once and ignores a second press", async () => {
     let release: () => void = () => undefined;
     const { handlers } = render({
       oncontinueintool: () => new Promise<void>((resolve) => (release = resolve)),
@@ -198,7 +201,7 @@ describe("FirstRunDecisionTakeover", () => {
     await settle();
     expect(primary.disabled).toBe(true);
     expect(primary.getAttribute("aria-busy")).toBe("true");
-    expect(primary.textContent?.trim()).toBe("Opening Codex…");
+    expect(primary.textContent?.trim()).toBe("Setting up Codex…");
     expect(byId<HTMLButtonElement>("first-run-decision-other")!.disabled).toBe(true);
     primary.click();
     await settle();
@@ -246,7 +249,7 @@ describe("FirstRunDecisionTakeover", () => {
     byId<HTMLButtonElement>("first-run-decision-primary")!.click();
     await settle();
     expect(byId("first-run-decision-error")).toBeNull();
-    expect(text("first-run-decision-primary")).toBe("Opening Codex…");
+    expect(text("first-run-decision-primary")).toBe("Setting up Codex…");
     release();
     await settle();
     expect(handlers.oncontinueintool).toHaveBeenCalledTimes(2);

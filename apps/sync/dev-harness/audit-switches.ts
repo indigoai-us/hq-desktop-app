@@ -259,7 +259,9 @@ function firstRunPreflight(firstRun: FirstRunSwitch): unknown {
   const noTool = NO_TOOL_SWITCHES.has(firstRun);
   const claudeMissing = firstRun === 'visual-desktop';
   const claudeIn = !noTool || harnessSignedIn.has('claude');
-  const codexIn = harnessSignedIn.has('codex');
+  // visual (and visual-import, which is the same sign-in) has every coding
+  // tool signed in. The no-tool switches stay signed out until Sign in finishes.
+  const codexIn = !noTool || harnessSignedIn.has('codex');
   const status = (signedIn: boolean) => ({ state: signedIn ? 'signedIn' : 'signedOut' });
   return {
     hqRoot: '/Users/corey/Documents/HQ',

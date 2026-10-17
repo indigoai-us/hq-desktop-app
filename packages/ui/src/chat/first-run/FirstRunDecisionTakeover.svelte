@@ -65,8 +65,9 @@
     /** Done: open the bot's chat. */
     ontalk: () => void | Promise<void>;
     /**
-     * "Continue in <tool>": open HQ in that coding tool. A returned sentence
-     * means the tool did not open; the takeover shows it and stays up.
+     * "Continue in <tool>": install HQ into that tool and land on the
+     * welcome report. The tool stays closed until Open. A returned sentence
+     * is shown here and the takeover stays up.
      */
     oncontinueintool: (runtime: FirstRunRuntime) => string | null | void | Promise<string | null | void>;
     /** Skip tool sign-in: keep the welcome report held, without opening the tool. */
@@ -191,7 +192,7 @@
   let tried = $state(false);
   const issue = $derived(assistantNameIssue(name));
   let pressed = $state<"tool" | "name" | "talk" | "chat" | "retry" | null>(null);
-  /** Why the tool did not open on the last press (a plain sentence), or null. */
+  /** A sentence from Continue, shown on the takeover, or null. */
   let toolError = $state<string | null>(null);
 
   async function continueInTool(runtime: FirstRunRuntime): Promise<void> {
@@ -491,9 +492,10 @@
           data-testid="first-run-decision-primary"
           disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
+          aria-describedby="first-run-decision-install-note"
           onclick={() =>
             void press("tool", async () => {
-              // A failed open can retry directly; Skip never opens the tool.
+              // A failed handoff can retry directly; Skip never installs or opens the tool.
               const connected = toolError !== null || await signInFirst(tool);
               if (!live) return;
               if (connected) await continueInTool(tool);
@@ -512,6 +514,7 @@
           onclick={() => (choseBot = true)}
         >{COPY.toolOther}</button>
       </div>
+      <p id="first-run-decision-install-note" class="fr-tool-note" data-testid="first-run-decision-install-note">{COPY.toolInstallNote(toolName)}</p>
     {/if}
   </div>
 {/snippet}
@@ -625,6 +628,14 @@
   }
   .fr-decision .new-bot-foot-actions {
     margin: 0;
+  }
+  /* One line under Continue: the press also installs HQ into that tool. */
+  .fr-tool-note {
+    margin: 8px 0 0;
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
   }
   /* Read by screen readers only; the visible lines say the same. */
   .first-run-live {

@@ -20,6 +20,8 @@
   import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
   import type { FoundWorkApps } from "@hq/platform";
   import ConnectAiAppsCard from "./ConnectAiAppsCard.svelte";
+  import BriefOpenTool from "./BriefOpenTool.svelte";
+  import type { BriefOpenToolAction } from "./brief-open-tool.js";
   import { assistantNameInSentence } from "./brief-action-cards.js";
 
   interface Props {
@@ -51,9 +53,14 @@
      * the report's heading, so the page still says the report is coming.
      */
     blocked?: { message: string; label: string; onfix: () => Promise<string | null> | void } | null;
+    /**
+     * Opens the coding tool chosen with Continue. Null on Skip and on any
+     * welcome report that did not prepare a tool.
+     */
+    openTool?: BriefOpenToolAction | null;
     children: Snippet;
   }
-  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, blocked = null, children }: Props = $props();
+  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, blocked = null, openTool = null, children }: Props = $props();
 
   /** What the fix said when it could not finish (the brief page's own copy), as on the run bar. */
   let fixError = $state<string | null>(null);
@@ -76,6 +83,9 @@
 </script>
 
 <div class="welcome" data-testid="welcome-report">
+  {#if openTool}
+    <BriefOpenTool label={openTool.label} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
+  {/if}
   {#if connect}
     {#key connect.company.uid}
       <WelcomeConnectCard

@@ -255,9 +255,9 @@ export const FIRST_RUN_COPY = {
   retrying: "Retrying…",
 } as const;
 
-/** The tool button while the tool opens (US-008). */
+/** The tool button while HQ is installed into that tool. The tool stays closed. */
 export function firstRunOpeningLabel(toolName: string): string {
-  return toolName.trim() ? `Opening ${toolName.trim()}…` : FIRST_RUN_COPY.opening;
+  return toolName.trim() ? `Setting up ${toolName.trim()}…` : "Setting up…";
 }
 
 export function firstRunTalkLabel(name: string): string {
@@ -344,6 +344,8 @@ export const FIRST_RUN_DECISION_COPY = {
       ? `We noticed you use ${tool} the most on this ${noun}, ${sessions === 1 ? "1 session" : `${sessions} sessions`} so far. Want to keep working there?`
       : `We noticed ${tool} on this ${noun}. Want to keep working there?`,
   toolPrimary: (tool: string) => `Continue in ${tool}`,
+  // One line under Continue (owner, 2026-10-17): the press also installs HQ.
+  toolInstallNote: (tool: string) => `This also installs HQ into your ${tool} setup.`,
   // Two equal paths (owner, 2026-10-15): the tool and naming the assistant.
   toolOther: "Name Your Assistant",
   botQuestion: "Name your assistant.",

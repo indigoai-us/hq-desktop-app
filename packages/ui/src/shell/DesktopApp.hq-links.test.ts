@@ -8,7 +8,7 @@
  * rail selection match a rail click.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -21,6 +21,7 @@ import {
   type EmbeddedNavigationTarget,
 } from "./embedded-navigation.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
+import { BRIEF_OPEN_TOOL_KEY } from "../brief/brief-open-tool.js";
 
 /** The targets hq://brief and hq://vault resolve to in the desktop host. */
 const HQ_BRIEF_TARGET: EmbeddedNavigationTarget = { kind: "extra", page: "rail-brief" };
@@ -134,6 +135,34 @@ function current(): string | null {
 }
 
 describe("DesktopApp hq:// links (US-008)", () => {
+  it("a Continue choice opens that tool later from the Daily Brief, and not the other tool", async () => {
+    window.localStorage.setItem(BRIEF_OPEN_TOOL_KEY, "codex");
+    const launchClaudeCode = vi.fn(async () => ok(undefined));
+    const launchCodexWorkspace = vi.fn(async () => ok(undefined));
+    const adapter = withBriefGate(webAdapter());
+    (adapter as unknown as { settings: unknown }).settings = {
+      getSettings: async () => ok({}),
+      getSetupStatus: async () => ok({ hqFolderPath: "/tmp/HQ" }),
+    };
+    (adapter as unknown as { shell: unknown }).shell = {
+      detectAiTools: async () =>
+        ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: true, grok_cli: false, any: true }),
+      launchClaudeCode,
+      launchCodexWorkspace,
+      launchCliInTerminal: async () => ok(undefined),
+      openClaudeCodeLink: async () => ok(undefined),
+    };
+    await mountShell(adapter);
+    dispatchEmbeddedNavigation(HQ_BRIEF_TARGET);
+    await settle();
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="brief-open-tool-button"]');
+    expect(button?.textContent?.trim()).toBe("Open Codex");
+    button!.click();
+    await vi.waitFor(() => expect(launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ"));
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="welcome-report"]')).toBeNull();
+  });
+
   it("hq://brief opens the Daily Brief with the rail on Brief", async () => {
     await mountShell(withBriefGate(webAdapter()));
     expect(host.querySelector('[data-testid="brief-host"]')).toBeNull();

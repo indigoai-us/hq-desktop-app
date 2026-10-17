@@ -98,6 +98,8 @@ describe("decision copy", () => {
     expect(toolSessionCount([usage("codex", 0, 0, null)], "codex")).toBeNull();
     expect(toolSessionCount(null, "claude")).toBeNull();
     expect(FIRST_RUN_DECISION_COPY.toolPrimary("Claude Code")).toBe("Continue in Claude Code");
+    expect(FIRST_RUN_DECISION_COPY.toolInstallNote("Claude Code")).toBe("This also installs HQ into your Claude Code setup.");
+    expect(FIRST_RUN_DECISION_COPY.toolInstallNote("Codex")).toBe("This also installs HQ into your Codex setup.");
     expect(FIRST_RUN_DECISION_COPY.backToTool("Codex")).toBe("Continue in Codex instead");
   });
 
@@ -107,6 +109,8 @@ describe("decision copy", () => {
       FIRST_RUN_DECISION_COPY.toolQuestion,
       FIRST_RUN_DECISION_COPY.toolLead("Codex"),
       FIRST_RUN_DECISION_COPY.toolPrimary("Codex"),
+      FIRST_RUN_DECISION_COPY.toolInstallNote("Claude Code"),
+      FIRST_RUN_DECISION_COPY.toolInstallNote("Codex"),
       FIRST_RUN_DECISION_COPY.toolOther,
       FIRST_RUN_DECISION_COPY.botQuestion,
       FIRST_RUN_DECISION_COPY.botLead,

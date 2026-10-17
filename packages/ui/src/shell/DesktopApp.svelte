@@ -338,7 +338,14 @@
   import { createLaunchActions } from "../settings/launch-actions";
   import FirstRunDecisionTakeover from "../chat/first-run/FirstRunDecisionTakeover.svelte";
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
-  import { continueInTool } from "../chat/first-run/continue-in-tool.js";
+  import { continueInTool, openPreparedCodingTool } from "../chat/first-run/continue-in-tool.js";
+  import {
+    briefOpenToolLabel,
+    forgetBriefOpenTool,
+    readBriefOpenTool,
+    rememberBriefOpenTool,
+    type BriefOpenToolRuntime,
+  } from "../brief/brief-open-tool.js";
   import {
     fromConversationStart,
     readConversationStarts,
@@ -3801,6 +3808,10 @@
   });
   /** Latched: once open it stays until Done or Continue in chat. */
   let visualFirstRunOpen = $state(false);
+  /** The coding tool Continue prepared. Read back on a later Daily Brief. */
+  let briefOpenTool = $state<BriefOpenToolRuntime | null>(readBriefOpenTool());
+  let briefOpenToolBusy = $state(false);
+  let briefOpenToolError = $state<string | null>(null);
   /**
    * #welcome shows a loader while the route is pending, or visual with the
    * takeover not yet open. Not once setup has run here: that route is legacy.
@@ -3836,6 +3847,10 @@
         return;
       }
       firstRunSuggestedName = firstRunInitialName();
+      // This first run has not chosen Continue yet. Skip must not inherit an older Open action.
+      forgetBriefOpenTool();
+      briefOpenTool = null;
+      briefOpenToolError = null;
       visualFirstRunOpen = true;
     });
   });
@@ -4061,14 +4076,14 @@
   /**
    * "Continue in <tool>" on the decision screen (US-008), after the takeover's
    * sign-in step: the assistant is made under the suggested name, then the
-   * press is the person's HQ Anywhere opt-in, so continueInTool saves it,
-   * installs HQ's global runtime setup for that one tool (bounded), and opens
-   * the tool in the HQ folder. Opened, or no HQ folder: the desktop lands on
-   * the welcome report. A failed open returns its sentence for the takeover.
+   * press is the person's HQ Anywhere opt-in, so continueInTool saves it and
+   * installs HQ's global runtime setup for that one tool (bounded). The tool
+   * stays closed. The desktop lands on the welcome report, with Open for that
+   * tool. No HQ folder: the same landing, without an Open action.
    */
   async function continueFirstRunInTool(runtime: FirstRunRuntime): Promise<string | null> {
     // This path follows a connected sign-in. Skip takes the held report path
-    // above without the HQ Anywhere opt-in, install or tool launch.
+    // above without the HQ Anywhere opt-in, install or an Open action.
     if (!firstRunConfirmedName) confirmFirstRunName(firstRunSuggestedName || firstRunInitialName(), runtime, { auto: true });
     firstRunRuntime = runtime;
     const outcome = await continueInTool({
@@ -4078,16 +4093,50 @@
       identity: adapter.identity,
       log: firstRunTimingLog,
     });
-    // The tool did not open: the takeover keeps the sentence and Retry.
-    if (outcome.kind === "open-failed") return outcome.message;
-    // The tool opened without the saved opt-in: say so over the landing.
-    if (outcome.kind === "opened-without-opt-in") {
+    if (outcome.kind === "prepared-without-opt-in") {
       pushToast({ key: "first-run-opt-in", kind: "sticky", tone: "neutral", testId: "first-run-opt-in-toast", title: outcome.message, detail: "" });
     }
-    // Opened, or no HQ folder to open it in: land on the welcome report.
+    if (outcome.kind === "prepared" || outcome.kind === "prepared-without-opt-in") {
+      rememberBriefOpenTool(runtime);
+      briefOpenTool = runtime;
+      briefOpenToolError = null;
+    }
     continueFirstRunInChat();
     return null;
   }
+  /** Open on the welcome edition, and the same action later on the Daily Brief. */
+  async function openRememberedCodingTool(): Promise<void> {
+    const runtime = briefOpenTool;
+    if (!runtime || briefOpenToolBusy) return;
+    briefOpenToolBusy = true;
+    briefOpenToolError = null;
+    try {
+      const outcome = await openPreparedCodingTool({
+        runtime,
+        settings: adapter.settings,
+        shell: adapter.shell,
+      });
+      if (outcome.kind === "open-failed") briefOpenToolError = outcome.message;
+      else if (outcome.kind === "no-folder") briefOpenToolError = "Could not find your HQ folder. Try again in a moment.";
+    } catch (error) {
+      console.warn("[brief] could not open the coding tool", error);
+      briefOpenToolError = "Could not open the coding tool. Try again.";
+    } finally {
+      briefOpenToolBusy = false;
+    }
+  }
+  const briefOpenToolAction = $derived(
+    briefOpenTool
+      ? {
+          label: briefOpenToolLabel(briefOpenTool),
+          busy: briefOpenToolBusy,
+          error: briefOpenToolError,
+          onopen: () => {
+            void openRememberedCodingTool();
+          },
+        }
+      : null,
+  );
   /**
    * The detected tool's sign-in before "Continue in <tool>" and the name path
    * go on (owner, 2026-10-16): the repair card's browser sign-in, bounded.
@@ -15705,7 +15754,7 @@
             {/snippet}
           </LazyDoor>
         {:else if railPlaceholder?.id === "brief"}
-          {#snippet briefPage()}
+          {#snippet briefPage(showOpenTool: boolean)}
             <BriefRailHost
               {adapter}
               companies={railCompanyRoster.map((company) => ({ uid: company.uid, slug: company.slug, label: company.label, iconUrl: company.iconUrl }))}
@@ -15716,6 +15765,7 @@
               onopenmeetings={() => void navigate({ kind: "meetings" })}
               actions={briefActions}
               onshown={(runId) => (briefShownRunId = runId)}
+              openTool={showOpenTool ? briefOpenToolAction : null}
             />
           {/snippet}
           {#if welcomeReportOwed}
@@ -15727,11 +15777,12 @@
               madeBy={welcomeMadeByLine}
               aiApps={welcomeAiApps}
               blocked={welcomeReportBlocked}
+              openTool={briefOpenToolAction}
             >
-              {@render briefPage()}
+              {@render briefPage(false)}
             </WelcomeReport>
           {:else if briefVisible}
-            {@render briefPage()}
+            {@render briefPage(true)}
           {/if}
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}

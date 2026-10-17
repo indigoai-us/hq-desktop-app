@@ -487,7 +487,7 @@ describe("visual first run, flag on", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it("Continue in the coding tool saves the opt-in, installs that tool's runtime, opens it in the HQ folder, makes the assistant once and lands on the welcome report", async () => {
+  it("Continue in the coding tool saves the opt-in, installs that tool's runtime, does not open it, makes the assistant once and lands on the welcome report", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const probe = vi.fn(async () => ok({ ok: true, class: null }));
     const order: string[] = [];
@@ -529,21 +529,25 @@ describe("visual first run, flag on", () => {
     expect(primary.textContent).toContain("Continue in Claude Code");
     primary.click();
 
-    // The takeover holds "Opening Claude Code…" while the install runs.
+    expect(q('[data-testid="first-run-decision-install-note"]')?.textContent).toBe(
+      "This also installs HQ into your Claude Code setup.",
+    );
+    // The takeover holds "Setting up Claude Code…" while the install runs. The tool stays closed.
     await vi.waitFor(() => expect(installRuntimeForTool).toHaveBeenCalledWith("claude"));
     await settle();
     expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
-    expect(q('[data-testid="first-run-decision-primary"]')?.textContent).toContain("Opening Claude Code…");
+    expect(q('[data-testid="first-run-decision-primary"]')?.textContent).toContain("Setting up Claude Code…");
     expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(q('[data-testid="welcome-report"]')).toBeNull();
 
     finishInstall();
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
     // The press is the HQ Anywhere opt-in, saved before the install so the next launch keeps it.
-    expect(order).toEqual(["opt-in:true", "install:claude", "open:/tmp/HQ"]);
+    expect(order).toEqual(["opt-in:true", "install:claude"]);
     expect(installRuntimeForTool).toHaveBeenCalledTimes(1);
-    // Only after the tool opened does the desktop land on the welcome report.
+    expect(launchClaudeCode).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="brief-open-tool-button"]')?.textContent?.trim()).toBe("Open Claude Code");
     expect(q('[data-testid="setup-hero"]')).toBeNull();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
     await settle();
@@ -560,13 +564,14 @@ describe("visual first run, flag on", () => {
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
   });
 
-  it("keeps the takeover up and says why when the coding tool does not open", async () => {
+  it("a connected Continue lands on the welcome edition and the Open action is what launches Claude Code", async () => {
     const installRuntimeForTool = vi.fn(async () => ok(undefined));
     const launchClaudeCode = vi.fn(async () => failure("spawn", "no terminal"));
     const { platform } = adapter({
       flag: true,
       installRuntimeForTool,
       putHqAnywherePersonSetting: async () => ok(undefined),
+      hqAnywhereRuntime: true,
       shell: {
         detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
         launchClaudeCode,
@@ -576,16 +581,20 @@ describe("visual first run, flag on", () => {
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
-    await vi.waitFor(() => expect(launchClaudeCode).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(q('[data-testid="first-run-decision-error"]')).toBeTruthy());
-    expect(q('[data-testid="first-run-decision-error"]')?.textContent).toBe("Could not open Claude Code. Try again.");
-    expect(q('[data-testid="first-run-takeover"]')?.textContent ?? "").not.toContain("no terminal");
-    expect(q('[data-testid="first-run-decision-primary"]')?.textContent?.trim()).toBe("Retry");
-    expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
-    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(q('[data-testid="brief-open-tool-button"]')?.textContent?.trim()).toBe("Open Claude Code");
+
+    q<HTMLButtonElement>('[data-testid="brief-open-tool-button"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="brief-open-tool-error"]')).toBeTruthy());
+    expect(q('[data-testid="brief-open-tool-error"]')?.textContent).toBe("Could not open Claude Code. Try again.");
+    expect(q('[data-testid="welcome-report"]')?.textContent ?? "").not.toContain("no terminal");
+    expect(launchClaudeCode).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
   });
 
-  it("a failed install still opens the coding tool and lands on the welcome report", async () => {
+  it("a failed install still lands on the welcome report without opening the coding tool", async () => {
     const installRuntimeForTool = vi.fn(async () => failure("hq-install", "exit 1"));
     const launchClaudeCode = vi.fn(async () => ok(undefined));
     const { platform } = adapter({
@@ -605,11 +614,12 @@ describe("visual first run, flag on", () => {
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
     expect(installRuntimeForTool).toHaveBeenCalledWith("claude");
-    expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ");
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(q('[data-testid="brief-open-tool-button"]')?.textContent?.trim()).toBe("Open Claude Code");
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
   });
 
-  it("when the opt-in is not saved, opens the tool, lands on the welcome report and says so in a notice", async () => {
+  it("when the opt-in is not saved, does not open the tool, lands on the welcome report and says so in a notice", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const installRuntimeForTool = vi.fn(async () => ok(undefined));
     const launchClaudeCode = vi.fn(async () => ok(undefined));
@@ -628,18 +638,19 @@ describe("visual first run, flag on", () => {
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     // The opt-in write retries with its real 250 ms and 750 ms pauses first.
-    await vi.waitFor(() => expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ"), { timeout: 3000 });
-    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 3000 });
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(launchClaudeCode).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(q('[data-testid="first-run-opt-in-toast"]')).toBeTruthy());
     expect(q('[data-testid="first-run-opt-in-toast"]')?.textContent).toContain(
-      "Couldn't save your HQ Anywhere choice. Claude Code opened without it; try again from Settings.",
+      "Couldn't save your HQ Anywhere choice. HQ was not installed in Claude Code. Try again from Settings.",
     );
     expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(q('[data-testid="brief-open-tool-button"]')?.textContent?.trim()).toBe("Open Claude Code");
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
   });
 
-  it("with the hq-anywhere-runtime kill switch off, Continue opens the tool without the opt-in or the install", async () => {
+  it("with the hq-anywhere-runtime kill switch off, Continue does not opt in, install, or open the tool", async () => {
     const installRuntimeForTool = vi.fn(async () => ok(undefined));
     const putHqAnywherePersonSetting = vi.fn(async () => ok(undefined));
     const launchClaudeCode = vi.fn(async () => ok(undefined));
@@ -659,9 +670,12 @@ describe("visual first run, flag on", () => {
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
-    expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ");
+    expect(launchClaudeCode).not.toHaveBeenCalled();
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(q('[data-testid="brief-open-tool-button"]')?.textContent?.trim()).toBe("Open Claude Code");
+    q<HTMLButtonElement>('[data-testid="brief-open-tool-button"]')!.click();
+    await vi.waitFor(() => expect(launchClaudeCode).toHaveBeenCalledWith("/tmp/HQ"));
   });
 
   it("with no HQ folder to open, lands on the welcome report instead of leaving the button silent", async () => {
@@ -685,6 +699,7 @@ describe("visual first run, flag on", () => {
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
     expect(installRuntimeForTool).not.toHaveBeenCalled();
     expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(q('[data-testid="brief-open-tool-button"]')).toBeNull();
     expect(window.localStorage.getItem(VISUAL_FIRST_RUN_DONE_KEY)).toBe("1");
   });
 });
@@ -2344,7 +2359,7 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(log.of("signin")).toEqual(["kind=signin event=start tool=claude", "kind=signin event=done tool=claude"]);
   }, 20_000);
 
-  it("signed out, Continue in Claude Code runs in order: sign-in, the assistant, the opt-in, the install, the open, then the welcome report", async () => {
+  it("signed out, Continue in Claude Code runs in order: sign-in, the assistant, the opt-in, the install, then the welcome report, and does not open the tool", async () => {
     const tool = signsInThroughBrowser("claude");
     const order: string[] = [];
     const loginStart = vi.fn(async (runtime: string) => {
@@ -2395,7 +2410,9 @@ describe("visual first run, the detected tool's sign-in", () => {
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
     // The assistant is started right after the sign-in; it is made alongside
     // the opt-in, install and open, which never wait on it.
-    expect(order.filter((step) => step !== "assistant")).toEqual(["signin:claude", "opt-in:true", "install:claude", "open:/tmp/HQ"]);
+    expect(order.filter((step) => step !== "assistant")).toEqual(["signin:claude", "opt-in:true", "install:claude"]);
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(q('[data-testid="brief-open-tool-button"]')?.textContent?.trim()).toBe("Open Claude Code");
     expect(order.indexOf("assistant")).toBeGreaterThan(order.indexOf("signin:claude"));
     expect(create).toHaveBeenCalledTimes(1);
     const intro = String((create.mock.calls[0] as unknown as [Record<string, unknown>])[0].intro ?? "");
@@ -2403,7 +2420,46 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(q('[data-testid="first-run-opt-in-toast"]')).toBeNull();
   }, 20_000);
 
-  it("a coding tool that does not open keeps Retry, and Retry opens it without signing in or making the assistant again", async () => {
+  it("a connected sign-in lands on the welcome edition without calling the launcher, and Open launches that tool", async () => {
+    const tool = signsInThroughBrowser("codex");
+    tool.state.connect = true;
+    const launchClaudeCode = vi.fn(async () => ok(undefined));
+    const launchCodexWorkspace = vi.fn(async () => ok(undefined));
+    const launchCliInTerminal = vi.fn(async () => ok(undefined));
+    const { platform } = adapter({
+      flag: true,
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      shell: {
+        detectAiTools: async () => ok({ claude_cli: true, claude_desktop: false, codex_cli: false, codex_desktop: true, grok_cli: false, any: true }),
+        launchClaudeCode,
+        launchCodexWorkspace,
+        launchCliInTerminal,
+      },
+    });
+    scanFinds(platform, "codex");
+    await boot(platform);
+    await decisionShown();
+    expect(q('[data-testid="first-run-decision-install-note"]')?.textContent).toBe(
+      "This also installs HQ into your Codex setup.",
+    );
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy(), { timeout: 10_000 });
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(launchCodexWorkspace).not.toHaveBeenCalled();
+    expect(launchCliInTerminal).not.toHaveBeenCalled();
+    expect(q('[data-testid="brief-open-tool-button"]')?.textContent?.trim()).toBe("Open Codex");
+
+    q<HTMLButtonElement>('[data-testid="brief-open-tool-button"]')!.click();
+    await vi.waitFor(() => expect(launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ"));
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(launchCliInTerminal).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("Open can be pressed again after it fails, without signing in or making the assistant again", async () => {
     const tool = signsInThroughBrowser("claude");
     tool.state.connect = true;
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
@@ -2425,16 +2481,15 @@ describe("visual first run, the detected tool's sign-in", () => {
     await boot(platform);
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="first-run-decision-error"]')).toBeTruthy(), { timeout: 10_000 });
-    expect(q('[data-testid="first-run-decision-error"]')?.textContent).toBe("Could not open Claude Code. Try again.");
-    expect(q('[data-testid="first-run-decision-primary"]')?.textContent?.trim()).toBe("Retry");
-    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy(), { timeout: 10_000 });
+    expect(launchClaudeCode).not.toHaveBeenCalled();
     const signIns = tool.loginStart.mock.calls.length;
 
-    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
-    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
-    expect(launchClaudeCode).toHaveBeenCalledTimes(2);
+    q<HTMLButtonElement>('[data-testid="brief-open-tool-button"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="brief-open-tool-error"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-testid="brief-open-tool-button"]')!.click();
+    await vi.waitFor(() => expect(launchClaudeCode).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(q('[data-testid="brief-open-tool-error"]')).toBeNull());
     expect(tool.loginStart).toHaveBeenCalledTimes(signIns);
     expect(create).toHaveBeenCalledTimes(1);
   }, 20_000);
@@ -2469,6 +2524,7 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(launchCliInTerminal).not.toHaveBeenCalled();
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(q('[data-testid="brief-open-tool-button"]')).toBeNull();
     expect(log.logToFile.mock.calls.some((call) => String(call).includes("continue-in-tool start"))).toBe(false);
     expect(create).toHaveBeenCalledTimes(1);
   }, 20_000);
