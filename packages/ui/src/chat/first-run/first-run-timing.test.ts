@@ -4,6 +4,8 @@ import {
   FIRST_RUN_TIMING_TAG,
   createRouteLogger,
   createScreenTimer,
+  formatAccountSignInRetry,
+  formatAccountSignInTimeout,
   formatFlagLookup,
   formatRoute,
   formatSetupRunSet,
@@ -216,6 +218,21 @@ describe("route, flag and setup-run lines", () => {
     expect(formatSignIn("done", "codex")).toBe("kind=signin event=done tool=codex");
     expect(formatSignIn("failed", "claude")).toBe("kind=signin event=failed tool=claude");
     expect(formatSignIn("skipped", "codex")).toBe("kind=signin event=skipped tool=codex");
+  });
+
+  it("formats account sign-in timeout and retry lines with the provider only", () => {
+    expect(formatAccountSignInTimeout("google", "auto-retry", 300000.4)).toBe(
+      "kind=account-signin event=timeout provider=google next=auto-retry elapsed_ms=300000",
+    );
+    expect(formatAccountSignInTimeout("microsoft", "shown", -5)).toBe(
+      "kind=account-signin event=timeout provider=microsoft next=shown elapsed_ms=0",
+    );
+    expect(formatAccountSignInRetry("google", "auto")).toBe(
+      "kind=account-signin event=retry provider=google trigger=auto",
+    );
+    expect(formatAccountSignInRetry("micro soft", "person")).toBe(
+      "kind=account-signin event=retry provider=micro_soft trigger=person",
+    );
   });
 
   it("adds late= only for an answer that landed after its wait", () => {

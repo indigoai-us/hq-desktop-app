@@ -17,6 +17,8 @@
  * [first-run] kind=team-card event=reply-abandoned
  * [first-run] kind=welcome-report event=<dispatched|blocked|started|landed|failed> [reason=<create-bot|start-bot|sign-in|connect-model>]
  * [first-run] kind=signin event=<start|done|failed|skipped> tool=<claude|codex>
+ * [first-run] kind=account-signin event=timeout provider=<google|microsoft> next=<auto-retry|shown> elapsed_ms=<n>
+ * [first-run] kind=account-signin event=retry provider=<google|microsoft> trigger=<auto|person>
  * ```
  *
  * Route lines come once per change of route value. Flag lines come once per
@@ -34,6 +36,11 @@
  * Sign-in lines follow the coding tool's sign-in that "Continue in <tool>"
  * and the name path run before they go on: started, connected, did not
  * finish (failed, cancelled or timed out), or skipped by the person.
+ * Account sign-in lines follow the HQ account sign-in on the welcome
+ * screen: an attempt that ran out of time (with how long it ran, and whether
+ * the wizard tried again by itself or showed "Sign-in took too long"), and
+ * each attempt started after a timeout, by the wizard or by the person.
+ * They carry the provider only, never an email, code or state.
  *
  * Install ids: node, git, hq-cli, qmd, claude-code, codex, gh, yq, jq (logged
  * from Rust, `apps/sync/src-tauri/src/first_run_timing.rs`), and content,
@@ -213,6 +220,23 @@ export type SignInEvent = "start" | "done" | "failed" | "skipped";
 
 export function formatSignIn(event: SignInEvent, tool: string): string {
   return `kind=signin event=${event} tool=${sanitizeValue(tool)}`;
+}
+
+/** After an HQ sign-in timeout: the wizard tries once by itself, or shows "Sign-in took too long". */
+export type AccountSignInTimeoutNext = "auto-retry" | "shown";
+/** Who started the attempt after a timeout. */
+export type AccountSignInRetryTrigger = "auto" | "person";
+
+export function formatAccountSignInTimeout(
+  provider: string,
+  next: AccountSignInTimeoutNext,
+  elapsedMs: number,
+): string {
+  return `kind=account-signin event=timeout provider=${sanitizeValue(provider)} next=${next} elapsed_ms=${ms(elapsedMs)}`;
+}
+
+export function formatAccountSignInRetry(provider: string, trigger: AccountSignInRetryTrigger): string {
+  return `kind=account-signin event=retry provider=${sanitizeValue(provider)} trigger=${trigger}`;
 }
 
 /** Writes one line through the sink. A sink that throws does not break the caller. */

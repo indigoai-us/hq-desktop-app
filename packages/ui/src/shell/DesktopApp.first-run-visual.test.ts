@@ -188,6 +188,7 @@ let component: ReturnType<typeof mount> | null = null;
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 afterEach(async () => {
@@ -993,6 +994,86 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)[0]![0]).toBe(SETUP_BOT_UID);
     await settle(10);
     expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+  });
+
+  /** Unmount the shell and mount it again, as a reload of the window does. */
+  async function reloadShell(platform: PlatformAdapter): Promise<void> {
+    if (component) await unmount(component);
+    component = null;
+    host.remove();
+    await boot(platform);
+  }
+  const briefInRail = () => Boolean(q('[data-rail-id="brief"]'));
+
+  // VM run 2026-10-16 (6a52505e7): the window reloaded about 30 s after the
+  // held report showed. The report state was only in memory, so the reload
+  // dropped Daily Brief from the rail and sent the person to #welcome.
+  it("a reload while the welcome report is open keeps Daily Brief in the rail and puts the report back", async () => {
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(briefInRail()).toBe(true);
+
+    await reloadShell(platform);
+    expect(q('[data-testid="first-run-takeover"]')).toBeNull();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy(), { timeout: 5000 });
+    await settle(20);
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+    expect(q('[data-testid="setup-hero"]')).toBeNull();
+    expect(briefInRail()).toBe(true);
+  }, 20_000);
+
+  it("a reload after the person left the welcome report keeps Daily Brief in the rail and does not open it again", async () => {
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    q<HTMLButtonElement>('[data-rail-id="home"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeNull());
+
+    await reloadShell(platform);
+    await settle(20);
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    expect(briefInRail()).toBe(true);
+    q<HTMLButtonElement>('[data-rail-id="brief"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    await settle(10);
+    expect(q('[data-testid="welcome-report"]')).toBeTruthy();
+  }, 20_000);
+
+  it("signing out forgets the welcome report, so the next sign-in starts without it", async () => {
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    const onsignout = vi.fn(async () => {});
+    await boot(platform, DesktopApp, mount, { onsignout });
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await settle();
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
+    expect(window.sessionStorage.getItem("hq.welcome-report.session")).toBe("open:prs_test");
+
+    q<HTMLButtonElement>('[data-testid="rail-you"]')!.click();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="account-sign-out"]')!.click();
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-ok"]')!.click();
+    await vi.waitFor(() => expect(onsignout).toHaveBeenCalledOnce());
+    expect(window.sessionStorage.getItem("hq.welcome-report.session")).toBeNull();
+  }, 20_000);
+
+  it("the welcome report kept for one person does not carry over to another account in the same window", async () => {
+    window.sessionStorage.setItem("hq.welcome-report.session", "open:prs_someone_else");
+    const { platform } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: "indigo" });
+    window.localStorage.setItem(VISUAL_FIRST_RUN_DONE_KEY, "1");
+    window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
+    await boot(platform);
+    await settle(20);
+    expect(q('[data-testid="welcome-report"]')).toBeNull();
+    expect(briefInRail()).toBe(false);
   });
 
   /**

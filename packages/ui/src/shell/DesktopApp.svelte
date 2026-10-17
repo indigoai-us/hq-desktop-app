@@ -4271,9 +4271,51 @@
    * US-009: every way out of the visual first run lands on the welcome
    * report (the Daily Brief view), never the bare shell or #welcome. Set for
    * the rest of the session, so the view stays open to this person even where
-   * the rail keeps the Daily Brief hidden (`briefVisible`).
+   * the rail keeps the Daily Brief hidden (`briefVisible`). Kept in
+   * sessionStorage, so a reload of the window keeps the Daily Brief in the
+   * rail, and puts the report back on screen if the person had not left it.
    */
-  let welcomeReportOwed = $state(false);
+  const WELCOME_REPORT_SESSION_KEY = "hq.welcome-report.session";
+  function welcomeReportSession(): "open" | "left" | null {
+    const uid = self?.uid;
+    if (!uid || typeof window === "undefined") return null;
+    try {
+      const value = window.sessionStorage.getItem(WELCOME_REPORT_SESSION_KEY);
+      if (value === `open:${uid}`) return "open";
+      if (value === `left:${uid}`) return "left";
+    } catch (err) {
+      console.warn("[hq-desktop] welcome report: could not read the session marker", err);
+    }
+    return null;
+  }
+  function keepWelcomeReportSession(state: "open" | "left"): void {
+    const uid = self?.uid;
+    if (!uid || firstRunDev.dry || typeof window === "undefined") return;
+    try {
+      window.sessionStorage.setItem(WELCOME_REPORT_SESSION_KEY, `${state}:${uid}`);
+    } catch (err) {
+      // The in-memory state still holds until the window reloads.
+      console.warn("[hq-desktop] welcome report: could not keep the session marker", err);
+    }
+  }
+  /** Sign-out ends the session, so the next sign-in starts without the marker. */
+  function forgetWelcomeReportSession(): void {
+    if (typeof window === "undefined") return;
+    try {
+      window.sessionStorage.removeItem(WELCOME_REPORT_SESSION_KEY);
+    } catch (err) {
+      console.warn("[hq-desktop] welcome report: could not clear the session marker", err);
+    }
+  }
+  const welcomeReportAtMount = welcomeReportSession();
+  let welcomeReportOwed = $state(welcomeReportAtMount !== null);
+  // The takeover was left in this session, so the reload must not set off
+  // the automatic start either (`closeVisualFirstRun`).
+  if (welcomeReportAtMount !== null) setupBotAutoStarted = true;
+  /** The report was on screen when the window reloaded: open it again once the shell is up. */
+  let welcomeReportReopen = welcomeReportAtMount === "open";
+  /** The report has been on screen since it was opened, so another page means the person left it. */
+  let welcomeReportShown = false;
   /** The assistant the welcome report's brief job reached (one job per assistant). */
   const WELCOME_REPORT_SENT_KEY = "hq.welcome-report.sent";
   function welcomeReportSentTo(uid: string): boolean {
@@ -4470,8 +4512,25 @@
   });
   function openWelcomeReport(): void {
     welcomeReportOwed = true;
+    keepWelcomeReportSession("open");
     void navigate({ kind: "extra", page: railPlaceholderPage("brief") });
   }
+  $effect(() => {
+    if (!welcomeReportReopen || !tourShellReady) return;
+    welcomeReportReopen = false;
+    untrack(() => void navigate({ kind: "extra", page: railPlaceholderPage("brief") }));
+  });
+  $effect(() => {
+    if (!welcomeReportOwed) return;
+    const onReport = railPlaceholder?.id === "brief";
+    untrack(() => {
+      if (onReport) welcomeReportShown = true;
+      else if (welcomeReportShown && !welcomeReportReopen) {
+        welcomeReportShown = false;
+        keepWelcomeReportSession("left");
+      }
+    });
+  });
   /** The takeover is done on this computer: it never opens again. */
   function closeVisualFirstRun(): void {
     // The report view is selected before the takeover goes, so the empty
@@ -13553,6 +13612,7 @@
     navigation.clear();
     stopScrollRestore();
     pendingRestoreScroll = null;
+    forgetWelcomeReportSession();
     const cache = imagePreviewCache;
     await onsignout?.();
     clearAccountCaches();
