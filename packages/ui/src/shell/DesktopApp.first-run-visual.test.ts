@@ -2439,41 +2439,37 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(create).toHaveBeenCalledTimes(1);
   }, 20_000);
 
-  it("after Skip for now and a failed open, Retry opens the tool without asking to sign in again", async () => {
-    const tool = signsInThroughBrowser("claude");
+  it.each(["claude", "codex"] as const)("Skip for now in %s shows the held welcome report without opening, opting in or installing", async (runtime) => {
+    const tool = signsInThroughBrowser(runtime);
     const loginCancel = vi.fn(async () => ok({ state: "disconnected" }));
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
-    let opens = 0;
-    const launchClaudeCode = vi.fn(async () => {
-      opens += 1;
-      return opens === 1 ? failure("spawn", "no terminal") : ok(undefined);
-    });
+    const launchClaudeCode = vi.fn(async () => ok(undefined));
+    const launchCodexWorkspace = vi.fn(async () => ok(undefined));
+    const launchCliInTerminal = vi.fn(async () => ok(undefined));
+    const installRuntimeForTool = vi.fn(async () => ok(undefined));
+    const putHqAnywherePersonSetting = vi.fn(async () => ok(undefined));
+    const log = logSink();
     const { platform } = adapter({
-      flag: true,
-      create,
-      activeCompany: "indigo",
-      preflightImpl: tool.preflightImpl,
-      loginStart: tool.loginStart,
-      loginStatus: tool.loginStatus,
-      loginCancel,
-      shell: { launchClaudeCode },
+      flag: true, create, activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl, loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus, loginCancel,
+      hqAnywhereRuntime: true, installRuntimeForTool, putHqAnywherePersonSetting,
+      shell: { launchClaudeCode, launchCodexWorkspace, launchCliInTerminal }, logToFile: log.logToFile,
     });
-    scanFinds(platform, "claude-code");
+    scanFinds(platform, runtime === "claude" ? "claude-code" : "codex");
     await boot(platform);
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="first-run-signin-skip"]')).toBeTruthy());
     q<HTMLButtonElement>('[data-testid="first-run-signin-skip"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="first-run-decision-error"]')).toBeTruthy(), { timeout: 10_000 });
-    expect(q('[data-testid="first-run-decision-primary"]')?.textContent?.trim()).toBe("Retry");
-    expect(tool.loginStart).toHaveBeenCalledTimes(1);
-
-    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
-    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 10_000 });
-    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
-    expect(q('[data-testid="first-run-signin-waiting"]')).toBeNull();
-    expect(launchClaudeCode).toHaveBeenCalledTimes(2);
-    expect(tool.loginStart).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(launchCodexWorkspace).not.toHaveBeenCalled();
+    expect(launchCliInTerminal).not.toHaveBeenCalled();
+    expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(log.logToFile.mock.calls.some((call) => String(call).includes("continue-in-tool start"))).toBe(false);
     expect(create).toHaveBeenCalledTimes(1);
   }, 20_000);
 

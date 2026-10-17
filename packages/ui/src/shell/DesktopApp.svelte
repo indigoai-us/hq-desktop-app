@@ -4051,6 +4051,13 @@
     }) ?? createImportScanHost(adapter.contextImport, syncEvents);
   /** Per-tool session counts from the launch scan: picks the most-used tool for the decision. */
   let firstRunScanTools = $state<FirstRunToolUsage[] | null>(null);
+  /** Skip sign-in: create the assistant and show the held welcome report only. */
+  function skipFirstRunToolSignIn(runtime: FirstRunRuntime): void {
+    if (!firstRunConfirmedName) confirmFirstRunName(firstRunSuggestedName || firstRunInitialName(), runtime, { auto: true });
+    firstRunRuntime = runtime;
+    continueFirstRunInChat();
+  }
+
   /**
    * "Continue in <tool>" on the decision screen (US-008), after the takeover's
    * sign-in step: the assistant is made under the suggested name, then the
@@ -4060,9 +4067,8 @@
    * the welcome report. A failed open returns its sentence for the takeover.
    */
   async function continueFirstRunInTool(runtime: FirstRunRuntime): Promise<string | null> {
-    // The assistant is made here too, under the suggested name, whether the
-    // sign-in connected, failed or was skipped: only the welcome report waits
-    // on the sign-in, and its chat asks for it.
+    // This path follows a connected sign-in. Skip takes the held report path
+    // above without the HQ Anywhere opt-in, install or tool launch.
     if (!firstRunConfirmedName) confirmFirstRunName(firstRunSuggestedName || firstRunInitialName(), runtime, { auto: true });
     firstRunRuntime = runtime;
     const outcome = await continueInTool({
@@ -17054,6 +17060,7 @@
       onretry={retryFirstRunAssistant}
       ontalk={talkToFirstRunAssistant}
       oncontinueintool={continueFirstRunInTool}
+      onskipintool={skipFirstRunToolSignIn}
       oncontinueinchat={continueFirstRunInChat}
       onimport={recordFirstRunImport}
       timingLog={firstRunTimingLog}

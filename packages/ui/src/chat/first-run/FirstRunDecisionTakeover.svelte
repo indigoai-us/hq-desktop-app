@@ -69,6 +69,8 @@
      * means the tool did not open; the takeover shows it and stays up.
      */
     oncontinueintool: (runtime: FirstRunRuntime) => string | null | void | Promise<string | null | void>;
+    /** Skip tool sign-in: keep the welcome report held, without opening the tool. */
+    onskipintool?: (runtime: FirstRunRuntime) => void | Promise<void>;
     /** Done without a signed-in tool: the setup chat takes it from there. */
     oncontinueinchat: () => void | Promise<void>;
     /** The scan finished: its counts and report path, for the handoff. */
@@ -99,6 +101,7 @@
     ontalk,
     oncontinueintool,
     oncontinueinchat,
+    onskipintool = () => oncontinueinchat(),
     onimport = null,
     reducedMotion = null,
     initialScreen = "decision",
@@ -217,7 +220,7 @@
   /** The sign-in on screen: waiting on the browser, or did not finish. */
   let signinView = $state<{ runtime: FirstRunRuntime; state: "waiting" | "failed" } | null>(null);
   /** Lets the action that asked for the sign-in go on (signed in or skipped). */
-  let signinGoOn: (() => void) | null = null;
+  let signinGoOn: ((connected: boolean) => void) | null = null;
   /** Bumped by Skip and by leaving: an older attempt's answer is dropped. */
   let signinAttempt = 0;
   let live = true;
@@ -237,19 +240,19 @@
   /**
    * The one sign-in step before "Continue in <tool>" and the name path go
    * on. Resolves at once when `runtime` is signed in (or the host has no
-   * sign-in); otherwise once the sign-in connected or the person skipped it.
+   * sign-in); otherwise true after connecting, or false after Skip.
    * Never rejects.
    */
-  async function signInFirst(runtime: FirstRunRuntime): Promise<void> {
+  async function signInFirst(runtime: FirstRunRuntime): Promise<boolean> {
     const host = signin;
-    if (!host || installed?.[runtime] === true) return;
+    if (!host || installed?.[runtime] === true) return true;
     try {
-      if (await host.signedIn(runtime)) return;
+      if (await host.signedIn(runtime)) return true;
     } catch (error) {
       console.warn("[first-run] sign-in check failed", error);
     }
-    if (!live) return;
-    await new Promise<void>((resolve) => {
+    if (!live) return false;
+    return new Promise<boolean>((resolve) => {
       signinGoOn = resolve;
       void attemptSignIn(runtime);
     });
@@ -270,18 +273,18 @@
     if (mine !== signinAttempt) return;
     if (connected) {
       logSignIn("done", runtime);
-      goOnAfterSignIn();
+      goOnAfterSignIn(true);
     } else {
       logSignIn("failed", runtime);
       signinView = { runtime, state: "failed" };
     }
   }
 
-  function goOnAfterSignIn(): void {
+  function goOnAfterSignIn(connected = false): void {
     signinView = null;
     const goOn = signinGoOn;
     signinGoOn = null;
-    goOn?.();
+    goOn?.(connected);
   }
 
   /** Stops the running browser sign-in; the host refreshes readiness if it had connected. */
@@ -490,10 +493,11 @@
           aria-busy={pressed === "tool" ? "true" : undefined}
           onclick={() =>
             void press("tool", async () => {
-              // Retry after a failed open: the sign-in step already ran
-              // (connected or skipped), so go straight to the open.
-              if (!toolError) await signInFirst(tool);
-              if (live) await continueInTool(tool);
+              // A failed open can retry directly; Skip never opens the tool.
+              const connected = toolError !== null || await signInFirst(tool);
+              if (!live) return;
+              if (connected) await continueInTool(tool);
+              else await onskipintool(tool);
             })}
         >{pressed === "tool"
           ? firstRunOpeningLabel(toolName)

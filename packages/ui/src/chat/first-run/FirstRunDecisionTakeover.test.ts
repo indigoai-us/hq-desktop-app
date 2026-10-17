@@ -71,6 +71,7 @@ function render(opts: Opts = {}) {
     ontalk: vi.fn(),
     oncontinueintool: vi.fn(opts.oncontinueintool ?? (() => undefined)),
     oncontinueinchat: vi.fn(),
+    onskipintool: vi.fn(),
   };
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -491,13 +492,15 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     expect(signin.cancel).toHaveBeenCalledTimes(1);
     expect(signin.cancel).toHaveBeenCalledWith("codex");
     expect(byId("first-run-signin-waiting")).toBeNull();
-    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    expect(handlers.oncontinueintool).not.toHaveBeenCalled();
+    expect(handlers.onskipintool).toHaveBeenCalledWith("codex");
     expect(timing).toContain("kind=signin event=skipped tool=codex");
 
     // A sign-in that lands after Skip changes nothing.
     runs[0]!.finish(true);
     await settle();
-    expect(handlers.oncontinueintool).toHaveBeenCalledTimes(1);
+    expect(handlers.oncontinueintool).not.toHaveBeenCalled();
+    expect(handlers.onskipintool).toHaveBeenCalledTimes(1);
     expect(timing.some((line) => line.includes("event=done"))).toBe(false);
   });
 
@@ -512,7 +515,8 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     byId<HTMLButtonElement>("first-run-signin-skip")!.click();
     await settle();
     expect(signin.cancel).not.toHaveBeenCalled();
-    expect(handlers.oncontinueintool).toHaveBeenCalledWith("codex");
+    expect(handlers.oncontinueintool).not.toHaveBeenCalled();
+    expect(handlers.onskipintool).toHaveBeenCalledWith("codex");
   });
 
   it("leaving the screen while it waits stops the sign-in and goes on to nothing", async () => {
