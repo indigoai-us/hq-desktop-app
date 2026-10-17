@@ -92,3 +92,71 @@ describe("personal apps over HQ runtime actions", () => {
     expect(await client.signInStatus("agt_1", "flow-1")).toEqual({ ok: true, value: expected });
   });
 });
+
+describe("sign-in that returns to this computer", () => {
+  const LOCAL_URL = "https://vercel.com/oauth/authorize?client_id=c&redirect_uri=http%3A%2F%2Flocalhost%3A53689%2Fpersonal-apps%2Fcallback&state=STATE-L";
+
+  function localHost(caught: unknown = { ok: true, value: { state: "STATE-L", code: "CODE-L", iss: "https://vercel.com" } }) {
+    return {
+      listen: vi.fn(async () => ({ ok: true as const, value: "http://localhost:53689/personal-apps/callback" })),
+      wait: vi.fn(async () => caught as never),
+      cancel: vi.fn(async () => {}),
+    };
+  }
+
+  it("tells HQ it can catch a local return, listens before handing out the page, then completes", async () => {
+    const replies: Record<string, unknown> = {
+      "personalApps.signIn": { flowId: "flow-l", authorizationUrl: LOCAL_URL, returnTo: "local" },
+      "personalApps.completeSignIn": { status: "connecting" },
+    };
+    const post = vi.fn<PersonalAppsPost>(async (_uid, input) => ok(replies[input.actionId] as Json));
+    const local = localHost();
+    const client = createPersonalAppsApi(post, local);
+
+    const started = await client.startSignIn("agt_1", "vercel");
+    expect(started).toEqual({ ok: true, value: { flowId: "flow-l", authorizationUrl: LOCAL_URL } });
+    expect(post.mock.calls[0][1].body).toEqual({ name: "vercel", localReturn: true });
+    expect(local.listen).toHaveBeenCalledWith("STATE-L");
+    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(post.mock.calls[1][1]).toMatchObject({
+      actionId: "personalApps.completeSignIn",
+      body: { state: "STATE-L", code: "CODE-L", iss: "https://vercel.com" },
+    });
+  });
+
+  it("cancels the bot's flow and explains when this computer's sign-in port is busy", async () => {
+    const post = vi.fn<PersonalAppsPost>(async (_uid, input) =>
+      ok((input.actionId === "personalApps.signIn" ? { flowId: "flow-l", authorizationUrl: LOCAL_URL, returnTo: "local" } : {}) as Json),
+    );
+    const local = localHost();
+    local.listen.mockResolvedValueOnce({ ok: false, reason: "error", message: "PERSONAL_APP_SIGNIN_PORT_IN_USE" } as never);
+    const client = createPersonalAppsApi(post, local);
+    const started = await client.startSignIn("agt_1", "vercel");
+    expect(started).toMatchObject({ ok: false, code: "local-port-in-use" });
+    expect(post.mock.calls.map(([, input]) => input.actionId)).toEqual(["personalApps.signIn", "personalApps.cancelSignIn"]);
+    expect(local.wait).not.toHaveBeenCalled();
+  });
+
+  it("does not complete when the listener ends without a redirect", async () => {
+    const post = vi.fn<PersonalAppsPost>(async () => ok({ flowId: "flow-l", authorizationUrl: LOCAL_URL, returnTo: "local" } as Json));
+    const local = localHost({ ok: false, reason: "error", message: "Sign-in was not finished in time." });
+    const client = createPersonalAppsApi(post, local);
+    await client.startSignIn("agt_1", "vercel");
+    await vi.waitFor(() => expect(local.wait).toHaveBeenCalled());
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps desktop-only catalog apps addable here and not on a host without a listener", async () => {
+    const entries = { entries: [{ name: "vercel", url: "https://mcp.vercel.com", auth: "oauth", supported: true, signInReturn: "local" }] };
+    const withLocal = createPersonalAppsApi(vi.fn<PersonalAppsPost>(async () => ok(entries as Json)), localHost());
+    const without = createPersonalAppsApi(vi.fn<PersonalAppsPost>(async () => ok(entries as Json)));
+    expect(await withLocal.catalog("agt_1")).toMatchObject({ value: { entries: [{ supported: true }] } });
+    expect(await without.catalog("agt_1")).toMatchObject({ value: { entries: [{ supported: false }] } });
+  });
+
+  it("asks HQ for the local return when adding from the desktop", async () => {
+    const post = vi.fn<PersonalAppsPost>(async () => ok({} as Json));
+    await createPersonalAppsApi(post, localHost()).add("agt_1", { name: "vercel", url: "https://mcp.vercel.com" });
+    expect(post.mock.calls[0][1].body).toEqual({ name: "vercel", url: "https://mcp.vercel.com", auth: "oauth", localReturn: true });
+  });
+});

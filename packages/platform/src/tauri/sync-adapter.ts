@@ -7,7 +7,7 @@
  */
 
 import { createPersonalAppsBridge, personalAppsBridgeUrl } from "../personal-apps-bridge.js";
-import { createPersonalAppsApi } from "../personal-apps.js";
+import { createPersonalAppsApi, type PersonalAppLocalCallback } from "../personal-apps.js";
 import {
   type AdapterResult,
   type AdapterPromise,
@@ -1789,8 +1789,17 @@ export function createSyncPlatformAdapter(
     // route. A local test build can point them at the spike bridge instead.
     personalApps: personalAppsBridgeUrl()
       ? createPersonalAppsBridge(personalAppsBridgeUrl()!)
-      : createPersonalAppsApi((agentUid, input) =>
-          hqProRequestWithStatus('POST', AGENT_PATHS.runtimeActions(agentUid), input)),
+      : createPersonalAppsApi(
+          (agentUid, input) =>
+            hqProRequestWithStatus('POST', AGENT_PATHS.runtimeActions(agentUid), input),
+          // Apps that refuse HQ's public return page sign in back to this
+          // computer (src-tauri commands/personal_apps_signin.rs).
+          {
+            listen: (state) => call<string>('personal_apps_signin_listen', { state }),
+            wait: (state) => call<PersonalAppLocalCallback>('personal_apps_signin_wait', { state }),
+            cancel: async (state) => { await call<boolean>('personal_apps_signin_cancel', { state }); },
+          },
+        ),
 
     // local-bots US-009: desktop-only — every call shells to `hq bot … --json`
     // behind the host's launch boundary (src-tauri/src/commands/bots.rs).
