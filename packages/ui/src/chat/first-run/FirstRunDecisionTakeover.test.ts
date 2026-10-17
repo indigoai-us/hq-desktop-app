@@ -542,7 +542,7 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     byId<HTMLButtonElement>("first-run-decision-primary")!.click();
     await settle();
     expect(waits.map((wait) => [wait.runtime, wait.retry])).toEqual([["codex", false]]);
-    expect(text("first-run-signin-waiting")).toBe("Signing in to Codex…");
+    expect(text("first-run-signin-waiting")).toBe("Finishing Codex setup…");
     expect(text("first-run-signin-skip")).toBe("Skip for now");
     expect(signin.run).not.toHaveBeenCalled();
     expect(signin.signedIn).toHaveBeenCalledTimes(1);
@@ -592,7 +592,7 @@ describe("FirstRunDecisionTakeover sign-in", () => {
     byId<HTMLButtonElement>("first-run-signin-retry")!.click();
     await settle();
     expect(waits.map((wait) => wait.retry)).toEqual([false, true]);
-    expect(text("first-run-signin-waiting")).toBe("Signing in to Codex…");
+    expect(text("first-run-signin-waiting")).toBe("Finishing Codex setup…");
     waits[1]!.finish("installed");
     await settle();
     expect(runs.map((run) => run.runtime)).toEqual(["codex"]);

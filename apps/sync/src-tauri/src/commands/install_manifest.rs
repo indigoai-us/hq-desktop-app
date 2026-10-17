@@ -546,6 +546,36 @@ mod tests {
     }
 
     #[test]
+    fn unfinished_background_journal_after_first_run_keeps_desktop() {
+        for status in [ItemStatus::Running, ItemStatus::Failed] {
+            let mut manifest = empty_manifest("/tmp/HQ".to_string(), "test".to_string());
+            manifest.steps.insert(
+                "initial-sync".to_string(),
+                StepRecord {
+                    status,
+                    started_at: Some("t1".to_string()),
+                    completed_at: None,
+                    error: None,
+                },
+            );
+            assert!(manifest_indicates_install_in_progress(&manifest));
+            let verdict = classify_lifecycle(LifecycleInputs {
+                install_completed: false,
+                first_run_completed: true,
+                had_machine_id: true,
+                config_valid: true,
+                hq_root_valid: true,
+                has_auth: true,
+                install_in_progress: manifest_indicates_install_in_progress(&manifest),
+                consent_answered: true,
+                evidence_unreadable: false,
+                hq_root_recorded_by_prior_setup: true,
+            });
+            assert_eq!(verdict.state, LifecycleState::SteadyState);
+        }
+    }
+
+    #[test]
     fn incomplete_manifest_with_only_completed_steps_is_evidence_only() {
         let mut manifest = empty_manifest("/tmp/HQ".to_string(), "test".to_string());
         assert!(!manifest_indicates_install_in_progress(&manifest));

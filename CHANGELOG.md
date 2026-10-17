@@ -2,7 +2,9 @@
 
 What changed in the HQ desktop app, newest first.
 
-Write your entry under `## [Unreleased]` in the same pull request as the
+Write your entry under `## [Unreleased]
+
+- First run: quitting after reaching the desktop now reopens the desktop while unfinished setup resumes in the background with the Finishing setup chip. Quitting during the blocking setup steps still resumes welcome. Sign-in waits for the selected tool to install and says "Finishing Claude Code setup…" (or Codex) until browser sign-in begins. A failed person-entity write is retried once before the later company lookup.` in the same pull request as the
 change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 

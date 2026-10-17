@@ -23,6 +23,7 @@ import type { FirstRunRuntime } from "./visual-first-run.js";
 export const FIRST_RUN_SIGNIN_TIMEOUT_MS = 5 * 60_000;
 
 export const FIRST_RUN_SIGNIN_COPY = {
+  installing: (tool: string) => `Finishing ${tool} setup…`,
   waiting: (tool: string) => `Signing in to ${tool}…`,
   failed: "Sign-in didn't finish. Try again or skip for now.",
   skip: "Skip for now",

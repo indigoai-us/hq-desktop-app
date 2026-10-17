@@ -524,6 +524,8 @@
    * screen instead of after it. Reset on an account switch.
    */
   let companyRouteResolution: Promise<void> | null = null;
+  let personEntityNeedsRetry = false;
+  let personEntityRetry: Promise<void> | null = null;
   let companyRouteGeneration = 0;
   /** The company lookup has answered with a usable route (or none needed). */
   let companyRouteResolved = $state(false);
@@ -3066,8 +3068,9 @@
     // so it is created before the decision screen. A failure here is retried
     // by the consent path and by the initial-sync stage.
     try {
-      await invokeCommand<boolean>('ensure_person_entity');
+      personEntityNeedsRetry = !(await invokeCommand<boolean>('ensure_person_entity'));
     } catch (err) {
+      personEntityNeedsRetry = true;
       console.warn('[onboarding-setup] ensure_person_entity failed:', err);
     }
     if (!isCurrentRun(runId)) return;
@@ -3284,6 +3287,23 @@
 
   /** The optional follow-on steps after setup; re-run after an account switch. */
   async function resolvePostSetupSteps(stillCurrent: () => boolean): Promise<void> {
+    if (personEntityNeedsRetry && !personEntityRetry) {
+      // Share one retry across concurrent post-setup resolutions. A failed
+      // blocking-phase person write must not make the company lookup final.
+      personEntityNeedsRetry = false;
+      personEntityRetry = (async () => {
+        try {
+          await invokeCommand<boolean>('ensure_person_entity');
+        } catch (err) {
+          console.warn('[onboarding-setup] person entity retry failed:', err);
+        }
+        if (!stillCurrent()) return;
+        membershipMeRead = null;
+        resetCompanyRoute();
+      })();
+    }
+    if (personEntityRetry) await personEntityRetry;
+    if (!stillCurrent()) return;
     const [firstFolderEnabled] = await Promise.all([
       resolveFirstFolderSyncStepFlag(),
       resolveCompanyStep().then(() => {
@@ -3780,6 +3800,8 @@
       cancelSetupRun();
       setupStarted = false;
       blockingPhaseDone = false;
+      personEntityNeedsRetry = false;
+      personEntityRetry = null;
       stages = buildInitialStages();
       // The only genuine start-over: the next run earns its percent again.
       resetSetupProgressTracker(setupProgressTracker);

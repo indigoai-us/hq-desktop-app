@@ -1046,6 +1046,22 @@ mod tests {
         manifest.mark_running(QueueItemId::VaultUpload);
         save_manifest(&path, &manifest).unwrap();
 
+        // The legacy stage journal still reports initial-sync Running. That
+        // must not reopen welcome after the person has reached the desktop.
+        let verdict = crate::lifecycle::classify_lifecycle(crate::lifecycle::LifecycleInputs {
+            install_completed: false,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: true,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: true,
+            consent_answered: true,
+            evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: true,
+        });
+        assert_eq!(verdict.state, crate::lifecycle::LifecycleState::SteadyState);
+
         // Quit, then relaunch.
         let LoadOutcome::Loaded(mut relaunch) = load_manifest(&path) else {
             panic!("manifest did not load");

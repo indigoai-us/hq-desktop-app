@@ -598,6 +598,23 @@ describe('welcome flow: the install runs in the background', () => {
   });
 });
 
+describe('person entity recovery before the company lookup', () => {
+  it('retries a failed person write before resolving post-setup company steps', async () => {
+    let attempts = 0;
+    stubInvoke({
+      ensure_person_entity: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('temporary person write failure');
+        return true;
+      },
+      run_initial_sync: () => new Promise(() => {}),
+    });
+    mountAt(2);
+    await flushUntil(() => attempts >= 2, 'the later person entity retry');
+    expect(attempts).toBe(2);
+  });
+});
+
 describe('welcome flow: the usage-data answer on the ready screen', () => {
   /** Skip from the first explainer to the ready screen while the install runs. */
   async function skipToReady() {

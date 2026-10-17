@@ -71,6 +71,17 @@ afterEach(() => {
 });
 
 describe("FinishingSetupChip", () => {
+  it("shows resumed background setup on the desktop after relaunch", async () => {
+    const { host, emit } = fakeHost({ ...RUNNING, state: "idle", current: null });
+    const el = render(host);
+    await settle();
+    emit({ ...RUNNING, current: "Vault upload", currentId: "initial-sync" });
+    expect(el.querySelector('[data-testid="finishing-setup-chip"]')?.textContent)
+      .toContain("Finishing setup: Vault upload");
+    emit({ ...RUNNING, state: "complete", current: null, done: 11 });
+    expect(el.querySelector('[data-testid="finishing-setup-chip"]')).toBeNull();
+  });
+
   it("shows the current item and count from the initial status read", async () => {
     const { host } = fakeHost(RUNNING);
     const el = render(host);
