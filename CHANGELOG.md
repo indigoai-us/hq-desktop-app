@@ -24,6 +24,8 @@ The release moves it under the version it ships in.
 - Company settings: Billing for a usage-priced company shows this month's usage, the credit left of the $10 included, the vault fee and the cloud bot box prices instead of seats, and has no Workforce upgrade. Other companies see seats as before.
 - Cloud bot, Slack bot, external bot, meeting recording and invite messages no longer say you need Starter, Workforce or a seat upgrade. They say the company's plan does not include the feature yet.
 - Badges: a new honor, Ecom Rat, for HQ's honorary rat of ecommerce.
+- Badges: Indigo staff can replay the accomplishments announcement from the command palette ("Replay accomplishments announcement") to see it as a first-time user would. It is offered only to @getindigo.ai accounts with badges turned on, and it does not reset the record that the announcement was shown.
+- Badges: the accomplishments announcement now has sound. A soft swell plays as it opens, card sounds play as each badge is dealt, turned over and settles, and quieter sounds play when you point at a card and when you close it. Each of these moments has four sounds that take turns at random, so a hand of cards does not repeat one sound. The sounds are quiet. They never play when Reduce motion is on, and you can turn them off with the new Sound effects switch in Settings > Appearance.
 
 ## [0.11.12] — 2026-10-16
 

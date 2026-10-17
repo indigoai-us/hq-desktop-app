@@ -5324,6 +5324,19 @@
           void navigate({ kind: "explorer" });
         },
       });
+      // Staff only (owner, 2026-10-16): see the accomplishments
+      // announcement again, as someone who has not seen it, without clearing
+      // the "seen" record. Needs badges on for you, like the real one.
+      if (isIndigoStaff && youBadgesEnabled) {
+        nav.push({
+          id: "command-replay-accomplishments",
+          label: "Replay accomplishments announcement",
+          detail: "Staff only: show the badges launch again",
+          action: () => {
+            window.setTimeout(replayLaunch, 0);
+          },
+        });
+      }
       nav.push({
         id: "command-take-tour",
         label: "Take the tour",
@@ -13382,6 +13395,26 @@
     const timer = window.setTimeout(() => (launchOpen = true), LAUNCH_OPEN_DELAY_MS);
     return () => window.clearTimeout(timer);
   });
+  /** True @getindigo.ai gate (the host's is_indigo_user check), for staff-only tools. */
+  let isIndigoStaff = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || adapter.kind !== "desktop") return;
+    let cancelled = false;
+    void identity.hasFeature("is_indigo_user").then((result) => {
+      if (!cancelled) isIndigoStaff = result.ok && result.value === true;
+    }).catch((err) => {
+      console.warn("[hq-desktop] staff check failed:", err);
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+  /** Staff replay from the command palette: open it now, whatever "seen" says. */
+  function replayLaunch(): void {
+    if (launchOpen || visualFirstRunOpen || tourStep) return;
+    launchOpen = true;
+  }
   function closeLaunch(): void {
     launchOpen = false;
     if (launchPreview()) {
