@@ -41,7 +41,6 @@ import {
 } from '../../lib/onboarding-wizard';
 import {
   READY_CONSENT_DWELL_MS,
-  READY_PROGRESS_DONE_TEXT,
   READY_WATCHDOG_MS,
   __setReadyTimingsForTests,
 } from '../../lib/welcome-flow';
@@ -253,7 +252,7 @@ describe('welcome flow: the install runs in the background', () => {
     const card = byId<HTMLElement>('onboarding-setup')!;
     expect(card.classList.contains('on')).toBe(true);
     expect(card.textContent).toContain('Installing HQ in the background');
-    expect(card.textContent).toContain('Step 1 of 5 · Laying the groundwork');
+    expect(card.textContent).toContain('setting up your workspace');
   });
 
   it('drives the corner card from the real stage progress, to done', async () => {
@@ -274,7 +273,8 @@ describe('welcome flow: the install runs in the background', () => {
     template.resolve();
     await flushUntil(() => commands().includes('start_install_queue'), 'the second stage');
     expect(percent()).toBeGreaterThan(before);
-    expect(card().textContent).toMatch(/Step \d of 5 · /);
+    expect(card().textContent).toContain('installing your tools');
+    expect(card().textContent).not.toContain('Step');
 
     deps.resolve();
     await flushUntil(() => card().dataset.state === 'done', 'the finished install');
@@ -336,16 +336,16 @@ describe('welcome flow: the install runs in the background', () => {
   /** The ready screen while the blocking phase runs: honest progress, no buttons, no finish. */
   const expectWaiting = (onfinish: ReturnType<typeof vi.fn>) => {
     expect(readyTitle()).toBe('Almost ready.');
-    expect(readyLine()).not.toBe(READY_PROGRESS_DONE_TEXT);
-    expect(readyLine()).toMatch(/Step \d of 5 · /);
-    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain(READY_PROGRESS_DONE_TEXT);
+    expect(readyLine()).not.toBe('Installed and synced across your devices.');
+    expect(readyLine()).toBe('setting up your workspace');
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('Installed and synced across your devices.');
     expect(byId<HTMLElement>('onboarding-launchers')!.querySelectorAll('button')).toHaveLength(0);
     expect(onfinish).not.toHaveBeenCalled();
     expect(commands()).not.toContain('open_desktop_alt_window');
   };
   const expectReady = () => {
     expect(readyTitle()).toBe('HQ is ready.');
-    expect(readyLine()).toBe(READY_PROGRESS_DONE_TEXT);
+    expect(readyLine()).toBeUndefined();
   };
   /**
    * The ready screen once the blocking phase is done while background work
@@ -354,8 +354,10 @@ describe('welcome flow: the install runs in the background', () => {
    */
   const expectReadyWhileBackgroundRuns = () => {
     expect(readyTitle()).toBe('HQ is ready.');
-    expect(readyLine()).not.toBe(READY_PROGRESS_DONE_TEXT);
-    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain(READY_PROGRESS_DONE_TEXT);
+    expect(readyLine()).toMatch(/^Finishing setup: /);
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('Step');
+    expect(host.querySelector('[data-scene="ready"] .pi')).toBeNull();
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('Installed and synced across your devices.');
     expect(byId<HTMLElement>('onboarding-launchers')!.querySelectorAll('button')).toHaveLength(0);
   };
 
@@ -400,6 +402,7 @@ describe('welcome flow: the install runs in the background', () => {
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     expect(scene()).toBe('ready');
     expectReadyWhileBackgroundRuns();
+    expect(readyLine()).toBe('Finishing setup: installing Claude Code');
     expect(commands()).not.toContain('record_install_complete');
     expect(commands()).not.toContain('cancel_install');
 
@@ -409,6 +412,7 @@ describe('welcome flow: the install runs in the background', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     await flush();
     expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(readyLine()).toBeUndefined();
 
     // The welcome window closes: the queue's install is left running.
     await unmount(component!);
@@ -785,6 +789,7 @@ describe("welcome flow: the ready screen's waits", () => {
   }
 
   it('stays up for the consent dwell after the checkbox appears, then records the answer and finishes', async () => {
+    expect(READY_CONSENT_DWELL_MS).toBe(3_000);
     const onfinish = await mountSettledReady();
     expect(byId<HTMLInputElement>('ready-consent-share')!.checked).toBe(true);
 

@@ -1763,3 +1763,10 @@
 .hq-welcome.motion-failed .scene.on .folder {
   display: none;
 }
+
+/* Background work is information, with no progress capsule or spinner. */
+.hq-welcome .prog.done .finishing-activity {
+  color: var(--w-muted);
+  white-space: normal;
+  text-align: center;
+}

@@ -34,11 +34,10 @@
     keyboardRowsFor,
   } from './welcome/engines';
   import {
-    READY_PROGRESS_DONE_TEXT,
     SCENE_HOLD_MS,
     forwardLabel,
     installCardModel,
-    installCardStepLines,
+    installCardActivityLines,
     isStoryScene,
     previousScene,
     readyTimings,
@@ -124,6 +123,7 @@
     type SetupStageRecoveryAction,
     type StageId,
     type StageState,
+    setupActivityPhrase,
   } from '../../lib/onboarding-setup';
   import {
     openHqShortcutChord,
@@ -876,6 +876,12 @@
     (setupStarted && !setupCompleted && (!blockingPhaseDone || backgroundPhaseRunning)) ||
       hostQueueRunning,
   );
+  const currentInstallItemId = $derived(
+    installPending && currentStageId
+      ? currentStageId
+      : hostQueueRunning && hostQueue?.currentId ? hostQueue.currentId : currentStageId,
+  );
+  const currentInstallActivity = $derived(setupActivityPhrase(currentInstallItemId));
   const chrome = $derived(welcomeChrome({ scene, replay, setupCompleted }));
   const installCard = $derived(
     installCardModel({
@@ -885,13 +891,14 @@
           ? Math.floor((hostQueue.done * 100) / hostQueue.total)
           : overallPercent,
       completed: installSettled,
+      currentItemId: currentInstallItemId,
       retryText:
         setupRetry && setupRetry.stageId === currentStageId
           ? setupRetrySubStatusText(setupRetry.attempt)
           : null,
     }),
   );
-  const installCardLines = installCardStepLines();
+  const installCardLines = installCardActivityLines();
   const consentGate = $derived(deferredConsentGate(deferredConsent));
   const storyOrder = $derived(storyScenes(replay));
 
@@ -4986,15 +4993,16 @@
           HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
         </p>
       </div>
-      <div class="prog" class:done={!installActivityRunning} bind:this={refs.readyProg}>
-        <div class="pwrap">
-          <!-- One indicator for every outcome: a turning ring while the install
-               runs, a check once it has settled. A failed stage is recorded for
-               the setup skill and never turns this into a warning. -->
-          <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
-          <span class="pl">{installActivityRunning ? installCard.line : READY_PROGRESS_DONE_TEXT}</span>
-          <span class="pbar" aria-hidden="true"><b style:width={`${installActivityRunning ? installCard.percent : 100}%`}></b></span>
-        </div>
+      <div class="prog" class:done={!installPending} bind:this={refs.readyProg}>
+        {#if installPending}
+          <div class="pwrap">
+            <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
+            <span class="pl">{currentInstallActivity}</span>
+            <span class="pbar" aria-hidden="true"><b style:width={`${installCard.percent}%`}></b></span>
+          </div>
+        {:else if installActivityRunning && currentInstallActivity}
+          <span class="pl finishing-activity">Finishing setup: {currentInstallActivity}</span>
+        {/if}
       </div>
       <!-- The ready screen has no buttons: it shows the install's progress and
            finishes by itself once the blocking phase is done (the AUTO-FINISH
