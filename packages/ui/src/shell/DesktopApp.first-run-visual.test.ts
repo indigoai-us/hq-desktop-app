@@ -901,8 +901,8 @@ describe("welcome report (US-009)", () => {
     await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
     const [to, body] = briefJobs(sendDm)[0]!;
     expect(to).toBe(SETUP_BOT_UID);
-    expect(body.split("\n")[0]).toMatch(/^\/daily-brief --personal --run-id brief-\d{8}-\d{6}$/);
-    expect(body).toContain("do not pick a company");
+    expect(body.split("\n")[0]).toMatch(/^\/daily-brief --all --run-id brief-\d{8}-\d{6} --welcome$/);
+    expect(body).toContain("every company in the person's lock");
     await vi.waitFor(() => expect(localStorage.getItem("hq.welcome-report.sent")).toBe(SETUP_BOT_UID));
     await vi.waitFor(() => expect(log.of("welcome-report")).toEqual(["kind=welcome-report event=dispatched"]));
     await vi.waitFor(() => expect(q('[data-testid="welcome-report-loading"]')).toBeTruthy());
@@ -911,7 +911,7 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)).toHaveLength(1);
   }, 15_000);
 
-  it("a brief made by hand with no company goes out in personal scope and offers to add a company", async () => {
+  it("a brief made by hand with no company goes out across personal scope without a company toast", async () => {
     localStorage.setItem("hq.welcome-report.sent", SETUP_BOT_UID);
     const { platform, sendDm } = adapter({ flag: true, bots: [runningSetupBot], activeCompany: null });
     await boot(platform);
@@ -924,19 +924,10 @@ describe("welcome report (US-009)", () => {
     expect(briefJobs(sendDm)).toHaveLength(0);
     q<HTMLButtonElement>('[data-testid="brief-create"]')!.click();
     await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
-    expect(briefJobs(sendDm)[0]![1].split("\n")[0]).toMatch(/^\/daily-brief --personal --run-id /);
+    expect(briefJobs(sendDm)[0]![1].split("\n")[0]).toMatch(/^\/daily-brief --all --run-id /);
     expect(q('[data-testid="brief-failed"]')?.textContent ?? "").not.toContain("Open a company first");
-    const note = await vi.waitFor(() => {
-      const found = toastItems().find((t) => t.key === "brief-add-company");
-      expect(found).toBeDefined();
-      return found!;
-    });
-    expect(note.title).toBe("Add a company to include meetings, signals and team agents.");
-    expect(note.actions?.map((a) => a.label)).toEqual(["New company"]);
+    expect(toastItems().some(t => t.key === "brief-add-company")).toBe(false);
     expect(q('[data-testid="new-company-sheet"]')).toBeNull();
-    note.actions![0]!.onAction();
-    await vi.waitFor(() => expect(q('[data-testid="new-company-sheet"]')).toBeTruthy(), { timeout: 10_000 });
-    dismissToast(note.id);
   }, 20_000);
 
   // Lane A (2026-10-16): the report is owed for the whole session, so once it
@@ -1030,7 +1021,7 @@ describe("welcome report (US-009)", () => {
     await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1));
     const [to, body] = briefJobs(sendDm)[0]!;
     expect(to).toBe(SETUP_BOT_UID);
-    expect(body.startsWith("/daily-brief indigo --run-id")).toBe(true);
+    expect(body.startsWith("/daily-brief --all --run-id")).toBe(true);
     // Talk lands on the welcome report, not the DM (owner, 2026-10-16).
     await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
     expect(q('[data-testid="channel-name"]')).toBeNull();

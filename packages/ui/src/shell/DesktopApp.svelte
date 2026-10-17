@@ -4332,12 +4332,12 @@
         if (welcomeReportBlockedOn === null) welcomeReportBlockedOn = botState;
         else if (welcomeReportBlockedOn !== botState) {
           welcomeReportBlockedOn = botState;
-          void run.start();
+          void run.start({ welcome: true });
         }
         return;
       }
       welcomeReportBlockedOn = null;
-      void run.start();
+      void run.start({ welcome: true });
     });
   });
   // A job held back on the assistant (a terminal or browser sign-in, the
@@ -4351,7 +4351,7 @@
     if (!welcomeReportUnsent(uid)) return;
     const onBack = (): void => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      if (run.phase.kind === "blocked") void run.start();
+      if (run.phase.kind === "blocked") void run.start({ welcome: true });
     };
     window.addEventListener("focus", onBack);
     document.addEventListener("visibilitychange", onBack);
@@ -6494,18 +6494,6 @@
    */
   const briefCreator: BriefCreator | null = adapter.bots
     ? {
-        async company() {
-          const open = railCompanyRoster.find((c) => c.uid === tenantCompanyId)?.slug;
-          if (open) return open;
-          const bound = await adapter.appShell.getActiveCompany?.();
-          if (bound?.ok && bound.value) return bound.value;
-          const recent = readSettingsPrefs().companyRecentIds ?? [];
-          for (const uid of recent) {
-            const slug = railCompanyRoster.find((c) => c.uid === uid)?.slug;
-            if (slug) return slug;
-          }
-          return railCompanyRoster.length === 1 ? (railCompanyRoster[0]!.slug ?? null) : null;
-        },
         async check() {
           await refreshLocalBots();
           await loadLocalBotRuntimeReady(true);
@@ -6556,19 +6544,6 @@
           const why = res.message ?? res.reason;
           if (!/not found/i.test(why)) console.warn("[daily-brief] could not read", path, why);
           return null;
-        },
-        onsent: (_runId, company) => {
-          // A personal-scope brief: a company would add its meetings, signals and
-          // team agents. The welcome report's own job shows no note.
-          if (company || (welcomeReportOwed && welcomeReportUnsent(assistantUid))) return;
-          pushToast({
-            key: "brief-add-company",
-            title: "Add a company to include meetings, signals and team agents.",
-            detail: "",
-            tone: "neutral",
-            testId: "brief-add-company",
-            actions: [{ label: "New company", testId: "brief-add-company-new", onAction: () => (newCompanyOpen = true) }],
-          });
         },
       })
     : null;
@@ -15715,6 +15690,7 @@
               onopenthread={openBriefDm}
               onopenmeetings={() => void navigate({ kind: "meetings" })}
               actions={briefActions}
+              onconnectcompany={openWelcomeSetup}
               onshown={(runId) => (briefShownRunId = runId)}
             />
           {/snippet}

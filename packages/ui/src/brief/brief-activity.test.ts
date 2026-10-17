@@ -12,10 +12,11 @@ import {
   stillWorkingLine,
   type BriefCreatePhase,
 } from "./brief-runs.js";
-import { ACTIVE_RUN_COMPANY_KEY, ACTIVE_RUN_KEY, BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
+import { ACTIVE_RUN_KEY, BriefCreateRun, type BriefCreator } from "./brief-create.svelte.js";
 import BriefActivity from "./BriefActivity.svelte";
 import type { BriefActivity as Item } from "./brief-runs.js";
 
+const ACTIVE_RUN_COMPANY_KEY = "hq.brief.activeRunCompany";
 const RUN = "brief-20261009-090122";
 const BOT = { name: "pickles", agentUid: "agt_1", runtime: "claude" } as LocalBotRow;
 
@@ -126,7 +127,7 @@ describe("elapsed and estimate", () => {
   });
 });
 
-describe("dispatch names the app's active company, or runs in personal scope", () => {
+describe("dispatch covers the person across companies", () => {
   const creator = (company: () => string | null | Promise<string | null>): BriefCreator => ({
     company,
     check: async () => ({ ok: true, bot: BOT }),
@@ -135,13 +136,13 @@ describe("dispatch names the app's active company, or runs in personal scope", (
     notify: () => {},
   });
 
-  it("sends /daily-brief <company> --run-id … with the company in the text", async () => {
+  it("sends /daily-brief --all even with an active company", async () => {
     const c = creator(async () => "indigo");
     const run = new BriefCreateRun({ creator: c, read: async () => null, storage: null, setTimer: () => 0, clearTimer: () => {}, log: () => {} });
     await run.start();
     const body = (c.dispatch as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
-    expect(body).toMatch(/^\/daily-brief indigo --run-id brief-\d{8}-\d{6}\n/);
-    expect(body).toContain("for company indigo");
+    expect(body).toMatch(/^\/daily-brief --all --run-id brief-\d{8}-\d{6}\n/);
+    expect(body).toContain("every company in the person's lock");
     run.stop();
   });
 
@@ -160,10 +161,10 @@ describe("dispatch names the app's active company, or runs in personal scope", (
     await run.start();
     expect(c.dispatch).toHaveBeenCalledTimes(1);
     const body = (c.dispatch as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
-    expect(body).toMatch(/^\/daily-brief --personal --run-id brief-\d{8}-\d{6}\n/);
-    expect(body).toContain("in personal scope");
+    expect(body).toMatch(/^\/daily-brief --all --run-id brief-\d{8}-\d{6}\n/);
+    expect(body).toContain("Include personal scope");
     expect(body).toContain("across their HQ");
-    expect(body).toContain("do not pick a company");
+    expect(body).toContain("keeping each company's items in its own section");
     expect(body).not.toContain("for company");
     expect(run.phase.kind).toBe("waiting");
     expect(run.company).toBeNull();
@@ -174,12 +175,12 @@ describe("dispatch names the app's active company, or runs in personal scope", (
     run.stop();
   });
 
-  it("tells the host the company a job was sent for", async () => {
+  it("tells the host that the job belongs to the person", async () => {
     const c = creator(async () => "indigo");
     const sent = vi.fn();
     const run = new BriefCreateRun({ creator: c, read: async () => null, storage: null, onsent: sent, setTimer: () => 0, clearTimer: () => {}, log: () => {} });
     await run.start();
-    expect(sent).toHaveBeenCalledWith(expect.stringMatching(/^brief-\d{8}-\d{6}$/), "indigo");
+    expect(sent).toHaveBeenCalledWith(expect.stringMatching(/^brief-\d{8}-\d{6}$/), null);
     run.stop();
   });
 });

@@ -8,6 +8,10 @@
   import { onDestroy, onMount } from "svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import DailyBrief from "./DailyBrief.svelte";
+  import BriefWelcome from "./BriefWelcome.svelte";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
+  import { briefSections } from "./brief-sections.js";
+  import { readRunWelcome, readRunExclusions, type BriefExclusion, type BriefWelcome as Welcome } from "./brief-welcome.js";
   import type { BriefActions } from "./brief-action-cards.js";
   import BriefRunBar from "./BriefRunBar.svelte";
   import BriefDawn from "./BriefDawn.svelte";
@@ -28,6 +32,7 @@
   import type { BriefInput } from "./brief-types.js";
 
   interface Props {
+    onconnectcompany?: () => void;
     adapter: BriefAdapter;
     companies: { uid: string; slug?: string | null; label: string; iconUrl?: string | null }[];
     onlaunch?: BriefLaunch;
@@ -52,7 +57,7 @@
     /** Told which run is on screen (null for none or the no-run brief), including after a run bar pick. */
     onshown?: (runId: string | null) => void;
   }
-  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp, initialRunId = null, actions = null, onshown }: Props = $props();
+  let { adapter, companies, onconnectcompany, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp, initialRunId = null, actions = null, onshown }: Props = $props();
 
   const LAST_KEY = "hq.brief.lastOpenedAt";
   // Fixed for the page's life; the host remounts the page for a new adapter.
@@ -65,6 +70,9 @@
   /** The run whose brief.json is parsed and on screen; null for the no-run brief. */
   let shownRunId = $state<string | null>(null);
   let input = $state<BriefInput | null>(null);
+  let welcome = $state<Welcome | null>(null);
+  let exclusions = $state<BriefExclusion[]>([]);
+  const sections = $derived(input ? briefSections(input, companies.filter(c => !exclusions.some(e => e.company === c.uid || e.company === c.slug))) : []);
   let housekeeping = $state<BriefHousekeeping | null>(null);
   let missing = $state<string[]>([]);
   let failed = $state(false);
@@ -129,7 +137,11 @@
       });
       if (failures.length) console.warn("[daily-brief] rendered without", failures.join(", "));
       const hk = runId && source ? await readRunHousekeeping(source, runId) : null;
+      const gettingStarted = runId && source ? await readRunWelcome(source, runId) : null;
+      const notIncluded = runId && source ? await readRunExclusions(source, runId) : [];
       if (!alive || mine !== seq) return;
+      welcome = gettingStarted;
+      exclusions = notIncluded;
       input = day;
       shownRunId = runId;
       if (runId) logBrief({ event: "shown", runId });
@@ -329,8 +341,34 @@
 {#if (empty || (dawn && (!input || entries.length === 0 || shownRunId === null))) && (input || run)}
   <div class="daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
+  <div class="brief-content" data-testid="brief-content">
   {#if dawn}<div class="masthead-wrap">{@render dawnScene("masthead")}</div>{/if}
-  <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} onlog={logItem} header={entries.length || run ? runBar : undefined} />
+  {#if welcome}<BriefWelcome {welcome} {onconnectcompany} />{/if}
+  {#if exclusions.length}
+    <aside class="brief-exclusions" data-testid="brief-exclusions" aria-label="Not included">
+      {#each exclusions as excluded}
+        {@const excludedCompany = companies.find(c => c.uid === excluded.company || c.slug === excluded.company)}
+        <p><CompanyLabel name={excludedCompany?.label ?? excluded.company} companyUid={excludedCompany?.uid} iconUrl={excludedCompany?.iconUrl} />: {excluded.reason}</p>
+      {/each}
+    </aside>
+  {/if}
+  {#if sections.length}
+    <div class="brief-sections" data-testid="brief-sections">
+      {#each sections as section, index (section.id)}
+        <section aria-label={section.label} data-company={section.id}>
+          <h2 class="company-heading">
+            {#if section.id === "personal"}Personal{:else}
+              <CompanyLabel name={section.label} companyUid={section.id} iconUrl={companies.find(c => c.uid === section.id)?.iconUrl} />
+            {/if}
+          </h2>
+          <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} input={section.input} {companies} {onlaunch} housekeeping={index === 0 ? housekeeping : null} {actions} onlog={logItem} header={index === 0 && (entries.length || run) ? runBar : undefined} />
+        </section>
+      {/each}
+    </div>
+  {:else}
+    <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} onlog={logItem} header={entries.length || run ? runBar : undefined} />
+  {/if}
+  </div>
 {:else if failed}
   <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
 {:else}
@@ -340,6 +378,10 @@
 {/if}
 
 <style>
+  .brief-content { height: 100%; min-height: 0; overflow: auto; }
+  .brief-content :global(.daily-brief) { height: auto; overflow: visible; }
+  .brief-exclusions { padding: 12px 26px; color: var(--b-t2, var(--muted)); font-size: 13px; }
+  .company-heading { margin: 0; padding: 24px 26px 0; background: var(--b-bg, var(--bg)); color: var(--b-t1, var(--fg)); font: 500 20px var(--font-ui, "Geist", system-ui, sans-serif); }
   .daily-brief-dawn-page,
   .masthead-wrap {
     padding: 22px 26px 0;

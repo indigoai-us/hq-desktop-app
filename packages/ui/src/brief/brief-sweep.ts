@@ -32,6 +32,7 @@
  */
 
 import { productName, repoShort } from "./brief-origin.js";
+import { briefCompanyUid, type BriefCompanyIdentity } from "./brief-company.js";
 import type {
   BriefFleetIncident,
   BriefInput,
@@ -60,6 +61,8 @@ export type SweepRed = string | { workflow: string; since?: string | null; merge
 
 /** One repo's main-branch health as the sweep writes it. */
 export interface SweepMainHealthRow {
+  company?: string | null;
+  repo?: string;
   workflows: number;
   red: SweepRed[];
   product?: string | null;
@@ -84,8 +87,11 @@ export function isMainHealthRow(h: unknown): h is SweepMainHealthRow {
 }
 
 export interface BriefSweep {
+  mode?: "person" | "company" | "personal";
+  personal?: BriefSweep;
+  companies?: Record<string, BriefSweep>;
   generated_at?: string;
-  company?: string;
+  company?: string | null;
   /**
    * `from`/`to` are the gh search reach (dates); the brief's own 24h PR window
    * is `prs_from`..`prs_to` (ISO), written by newer sweeps.
@@ -114,7 +120,7 @@ export interface BriefSweep {
     has_handoff?: boolean;
   }[];
   /** A meeting whose `hq meetings get` failed is written as `{ meeting, error }` with no start or counts. */
-  meeting_signals?: { meeting: string; start?: string | null; counts?: Record<string, number> | null; error?: string }[];
+  meeting_signals?: { company?: string | null; meeting: string; start?: string | null; counts?: Record<string, number> | null; error?: string }[];
   dms?: { from: string | null; from_uid?: string; is_agent?: boolean; at: string }[];
   fleet?: {
     total?: number;
@@ -126,6 +132,7 @@ export interface BriefSweep {
     series?: { generated_at: string; stuck: number }[];
   } | null;
   prs?: {
+    company?: string | null;
     repo: string;
     number: number;
     title: string;
@@ -142,6 +149,7 @@ export interface BriefSweep {
   }[];
   main_health?: Record<string, SweepMainHealthRow | SweepMainHealthError | null>;
   releases?: {
+    company?: string | null;
     product?: string | null;
     repo?: string | null;
     version?: string | null;
@@ -157,6 +165,7 @@ export interface SweepOptions {
   day: string;
   /** Company uid the sweep's work belongs to (for logos). */
   companyUid: string | null;
+  companies?: readonly BriefCompanyIdentity[];
   /** GitHub org for repo chips. */
   org?: string;
   /** The brief owner's display name; their own DMs are not teammates. */
@@ -288,19 +297,76 @@ export type SweepInput = Pick<
   | "today"
   | "mainHealth"
   | "fleetIncident"
+  | "fleetIncidents"
   | "releases"
 >;
 
 export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput {
+  if (sweep.mode === "person") {
+    const sections: [string | null, BriefSweep][] = [
+      ...(sweep.personal ? [[null, sweep.personal] as [null, BriefSweep]] : []),
+      ...Object.entries(sweep.companies ?? {}),
+    ];
+    const parts = sections.filter(([company, section]) => section && typeof section === "object" && section.mode !== "person" && (company === null || !opts.companies || briefCompanyUid(company, opts.companies) !== null)).map(([company, section]) => {
+      const uid = briefCompanyUid(company, opts.companies ?? opts.companyUid);
+      const scoped = <T extends { company?: string | null }>(rows: T[] | undefined) => rows?.map(row => ({ ...row, company }));
+      const part = sweepToInput({
+        ...section,
+        generated_at: section.generated_at ?? sweep.generated_at,
+        prs: scoped(section.prs),
+        meeting_signals: scoped(section.meeting_signals),
+        releases: scoped(section.releases),
+        sessions: scoped(section.sessions),
+        main_health: Object.fromEntries(Object.entries(section.main_health ?? {}).map(([repo, h]) => [repo, isMainHealthRow(h) ? { ...h, company } : h])),
+      }, { ...opts, companyUid: uid });
+      const prefix = company ?? "personal";
+      part.meetingsYesterday = part.meetingsYesterday.map(row => ({ ...row, id: `${prefix}:${row.id}` }));
+      part.sessions = part.sessions.map(row => ({ ...row, id: `${prefix}:${row.id}` }));
+      part.team = part.team.map(row => ({ ...row, companyUid: uid }));
+      return part;
+    });
+    const sum = (field: "merged" | "opened") => parts.some(part => part[field] != null) ? parts.reduce((n, part) => n + (part[field] ?? 0), 0) : null;
+    const windows = parts.flatMap(part => part.prWindow ? [part.prWindow] : []);
+    const team = new Map<string, BriefTeammate>();
+    for (const part of parts) for (const member of part.team) {
+      const memberKey = JSON.stringify([member.companyUid, member.id]);
+      const previous = team.get(memberKey);
+      team.set(memberKey, previous ? { ...previous, dmCount: (previous.dmCount ?? 0) + (member.dmCount ?? 0) } : member);
+    }
+    return {
+      meetingsYesterday: parts.flatMap(part => part.meetingsYesterday),
+      risks: parts.flatMap(part => part.risks),
+      shipped: parts.flatMap(part => part.shipped),
+      sessions: parts.flatMap(part => part.sessions),
+      team: [...team.values()],
+      merged: sum("merged"), opened: sum("opened"),
+      dmCount: parts.reduce((n, part) => n + (part.dmCount ?? 0), 0),
+      today: sweep.window?.today ?? parts.find(part => part.today)?.today,
+      mainHealth: parts.flatMap(part => part.mainHealth ?? []),
+      releases: parts.flatMap(part => part.releases ?? []),
+      fleetIncidents: parts.flatMap(part => part.fleetIncidents ?? []),
+      fleetIncident: null,
+      prWindow: windows.length ? {
+        from: windows.map(w => w.from).sort()[0]!,
+        to: windows.map(w => w.to).sort().at(-1)!,
+        total: windows.reduce((n, w) => n + w.total, 0),
+        merged: windows.reduce((n, w) => n + w.merged, 0),
+        byRepo: windows.flatMap(w => w.byRepo),
+      } : null,
+    };
+  }
   const org = opts.org ?? "indigoai-us";
   const prs = sweep.prs ?? [];
+  const companyUid = (company: unknown) => briefCompanyUid(company, opts.companies ?? opts.companyUid);
+  const key = (repo: string, company: unknown) => JSON.stringify([companyUid(company), repo]);
+  const repoPath = (repo: string) => repo.includes("/") ? repo : `${org}/${repo}`;
   const nowMs = Date.parse(sweep.generated_at ?? "");
   // The product each repo's rows name, from the sweep's PR rows (newer sweeps).
   const products = new Map<string, string>();
-  for (const p of prs) if (p.product?.trim()) products.set(p.repo, p.product.trim());
-  const origin = (repo: string): BriefOrigin => {
-    const product = products.get(repo);
-    return { companyUid: opts.companyUid, repo: `${org}/${repo}`, ...(product ? { product } : {}) };
+  for (const p of prs) if (p.product?.trim()) products.set(key(p.repo, p.company), p.product.trim());
+  const origin = (repo: string, company: unknown): BriefOrigin => {
+    const product = products.get(key(repo, company));
+    return { companyUid: companyUid(company), repo: repoPath(repo), ...(product ? { product } : {}) };
   };
   // One source for merged and opened everywhere, the same one the writer reads:
   // the brief's 24h PR window (window.prs_from..prs_to) over the owner's own
@@ -328,19 +394,21 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
   // first. Without a PR window: the ones closed on the brief's day, by local date.
   const mergedToday = own.filter((p) => p.state === "merged" && (hasPrWindow ? inWindow(closedAt(p.closed)) : localDay(closedAt(p.closed)) === opts.day));
   const byRepoToday = new Map<string, typeof prs>();
-  for (const p of mergedToday) byRepoToday.set(p.repo, [...(byRepoToday.get(p.repo) ?? []), p]);
+  for (const p of mergedToday) byRepoToday.set(key(p.repo, p.company), [...(byRepoToday.get(key(p.repo, p.company)) ?? []), p]);
   const shipped: BriefShipped[] = [...byRepoToday.entries()]
     .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
-    .map(([repo, rows]) => {
-      const open = prs.filter((p) => p.repo === repo && p.state === "open").length;
+    .map(([group, rows]) => {
+      const repo = rows[0]!.repo;
+      const company = rows[0]!.company;
+      const open = prs.filter((p) => key(p.repo, p.company) === group && p.state === "open").length;
       const hours = rows.map((p) => finite(p.merge_hours)).filter((h): h is number => h != null).sort((a, b) => a - b);
       const median = hours.length ? (hours.length % 2 ? hours[(hours.length - 1) / 2]! : (hours[hours.length / 2 - 1]! + hours[hours.length / 2]!) / 2) : null;
       return {
-        id: `ship:${repo}`,
+        id: opts.companies ? `ship:${group}` : `ship:${repo}`,
         title: repo,
         status: `${rows.length} merged`,
         note: open ? `${open} open` : "nothing open",
-        origin: origin(repo),
+        origin: origin(repo, company),
         lines: rows.map((p) => ({ label: `${p.number} ${p.title}`, state: "MERGED", tone: "ok" as const })),
         ...(median != null ? { mergeHoursMedian: median } : {}),
       };
@@ -351,10 +419,10 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
   const windowRows = hasPrWindow ? prs.filter((p) => inWindow(p.created) || inWindow(closedAt(p.closed))) : prs;
   const repoTotals = new Map<string, { repo: string; total: number; merged: number }>();
   for (const p of windowRows) {
-    const row = repoTotals.get(p.repo) ?? { repo: p.repo, total: 0, merged: 0 };
+    const row = repoTotals.get(key(p.repo, p.company)) ?? { repo: p.repo, total: 0, merged: 0 };
     row.total += 1;
     if (p.state === "merged" && (!hasPrWindow || inWindow(closedAt(p.closed)))) row.merged += 1;
-    repoTotals.set(p.repo, row);
+    repoTotals.set(key(p.repo, p.company), row);
   }
   const prWindow = sweep.window
     ? {
@@ -375,7 +443,7 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
         id: `sweep-meeting-${i}`,
         title: m.meeting,
         startTime: m.start,
-        companyUid: opts.companyUid,
+        companyUid: companyUid(m.company),
         decisions: finite(counts.decision) ?? 0,
         actions: finite(counts.action_item) ?? 0,
         risks: finite(counts.risk) ?? 0,
@@ -389,12 +457,13 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
   // "N of M products green" never counts it.
   const mainHealth: BriefMainHealth[] = Object.entries(sweep.main_health ?? {})
     .filter((entry): entry is [string, SweepMainHealthRow] => isMainHealthRow(entry[1]))
-    .map(([repo, h]) => {
+    .map(([entryKey, h]) => {
+      const repo = h.repo ?? entryKey;
       const delta = h.delta;
       return {
         repo,
-        product: productOf(repo, products),
-        companyUid: opts.companyUid,
+        product: h.product?.trim() || products.get(key(repo, h.company)) || productOf(repo, new Map()),
+        companyUid: companyUid(h.company),
         workflows: finite(h.workflows) ?? 0,
         red: redRows(h.red),
         ...(delta ? { delta: { newlyRed: strs(delta.newly_red), stillRed: strs(delta.still_red), recovered: strs(delta.recovered) } } : {}),
@@ -409,12 +478,12 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
       const ageHours = since && Number.isFinite(nowMs) ? Math.max(0, Math.round((nowMs - Date.parse(since)) / HOUR_MS)) : null;
       const merges = h.red.map((r) => r.mergesOnTop).filter((m): m is number => m != null);
       return {
-        id: `ci:${h.repo}`,
+        id: opts.companies ? `ci:${h.companyUid ?? "personal"}:${h.repo}` : `ci:${h.repo}`,
         title: `${h.repo} main CI red`,
         summary: `${names.join(", ")} failing on main (${names.length} of ${h.workflows} workflows).`,
         severity: "incident" as const,
         links: [],
-        origin: origin(h.repo),
+        origin: { companyUid: h.companyUid, repo: repoPath(h.repo), ...(h.product ? { product: h.product } : {}) },
         ci: {
           repo: h.repo,
           workflow: names.length > 1 ? `${names[0]} +${names.length - 1} more` : (names[0] ?? null),
@@ -449,7 +518,7 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
   const sessions: BriefSession[] = (sweep.sessions ?? [])
     .filter((s) => s.date === opts.day && s.company !== "unknown" && (s.kind ?? "you") === "you")
     .map((s, i) => {
-      const mine = s.company === sweep.company;
+      const mine = opts.companies != null || s.company === sweep.company;
       const end = s.end ?? s.ended_at ?? s.last_activity ?? null;
       return {
         id: s.id?.trim() || `sweep-session-${i}`,
@@ -457,7 +526,7 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
         // Newer sweeps carry an ISO start and a local time; older ones a UTC time.
         startedAt: s.started_at ?? `${s.date}T${s.time.replace(/Z$/, "")}:00Z`,
         workstream: mine ? "Work" : "Other",
-        company: mine ? opts.companyUid : s.company,
+        company: opts.companies ? companyUid(s.company) : mine ? opts.companyUid : s.company,
         ...(mine && s.project?.trim() ? { project: s.project.trim() } : {}),
         ...(mine && s.product?.trim() ? { product: s.product.trim() } : {}),
         ...(end && Number.isFinite(Date.parse(end)) ? { endedAt: end } : {}),
@@ -477,7 +546,7 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
       return {
         product,
         version: r.version?.trim() || null,
-        origin: { companyUid: opts.companyUid, repo: repo ? `${org}/${repo}` : null, product },
+        origin: { companyUid: companyUid(r.company), repo: repo ? repoPath(repo) : null, product },
         releasedAt: r.merged_at?.trim() || null,
         pending,
         pendingCount: finite(r.pending_count) ?? pending.reduce((n, d) => n + d.count, 0),
@@ -487,6 +556,7 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
     });
 
   const fleetIncident = fleetIncidentOf(sweep.fleet, sweep.generated_at, { companyUid: opts.companyUid, repo: null });
+  if (fleetIncident) fleetIncident.companyUid = opts.companyUid;
 
   const today = sweep.window?.today;
   return {
@@ -502,6 +572,7 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
     ...(today && /^\d{4}-\d{2}-\d{2}$/.test(today) ? { today } : {}),
     ...(mainHealth.length ? { mainHealth } : {}),
     ...(fleetIncident ? { fleetIncident } : {}),
+    ...(fleetIncident ? { fleetIncidents: [fleetIncident] } : {}),
     ...(releases.length ? { releases } : {}),
   };
 }

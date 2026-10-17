@@ -33,12 +33,8 @@ import {
 
 /** What the host provides so the brief can start a run on a local bot. */
 export interface BriefCreator {
-  /**
-   * The app's active company slug. The job names it when there is one: a bot
-   * that belongs to several companies would otherwise pick one itself. With
-   * none the job runs in personal scope.
-   */
-  company(): string | null | Promise<string | null>;
+  /** Legacy host seam, never consulted by person-scoped dispatch. */
+  company?(): string | null | Promise<string | null>;
   /** Fresh bot list and model check. */
   check(): Promise<BriefBotCheck>;
   /** Send the job to the bot. Resolves to a plain error sentence, or null when sent. */
@@ -68,8 +64,8 @@ export interface BriefCreateDeps {
 
 /** localStorage key holding the run id while a run is in flight. */
 export const ACTIVE_RUN_KEY = "hq.brief.activeRun";
-/** The company that run was sent for, kept beside the run id. */
-export const ACTIVE_RUN_COMPANY_KEY = "hq.brief.activeRunCompany";
+/** Removed after any new run so older company-scoped state cannot linger. */
+const LEGACY_RUN_COMPANY_KEY = "hq.brief.activeRunCompany";
 
 type Finished = Extract<BriefCreatePhase, { kind: "ready" | "failed" }>;
 
@@ -77,7 +73,7 @@ export class BriefCreateRun {
   phase = $state<BriefCreatePhase>({ kind: "idle" });
   /** What the run folder holds, probed while status.json is quiet. */
   files = $state<BriefRunFiles | null>(null);
-  /** The company the in-flight run was sent for; samples are kept to it. */
+  /** Person runs have no single company; retained for older host consumers. */
   company = $state<string | null>(null);
   /**
    * Try again was pressed while a stalled run is still being watched: the UI
@@ -120,7 +116,7 @@ export class BriefCreateRun {
    * so the click paints the sunrise at once; the bot lookup, model check and
    * send happen after that.
    */
-  start(opts: { force?: boolean } = {}): Promise<void> {
+  start(opts: { force?: boolean; welcome?: boolean } = {}): Promise<void> {
     if (this.busy) return Promise.resolve();
     if (this.watching && !opts.force) {
       // The last run may still finish: ask before sending a duplicate.
@@ -133,10 +129,10 @@ export class BriefCreateRun {
     this.stopped = false;
     const runId = briefRunId(this.now());
     this.phase = { kind: "dispatching", runId };
-    return this.dispatch(runId);
+    return this.dispatch(runId, opts.welcome === true);
   }
 
-  private async dispatch(runId: string): Promise<void> {
+  private async dispatch(runId: string, welcome: boolean): Promise<void> {
     const { creator } = this.deps;
     let check: Awaited<ReturnType<BriefCreator["check"]>>;
     try {
@@ -152,17 +148,9 @@ export class BriefCreateRun {
       this.phase = { kind: "blocked", message: check.message, fix: check.fix };
       return;
     }
-    let company: string | null;
-    try {
-      company = (await creator.company())?.trim() || null;
-    } catch (err) {
-      this.log("active company read failed", err instanceof Error ? err.message : err);
-      company = null;
-    }
-    if (this.stopped) return;
     let error: string | null;
     try {
-      error = await creator.dispatch(check.bot, briefJobMessage(runId, company), runId);
+      error = await creator.dispatch(check.bot, briefJobMessage(runId, { welcome }), runId);
     } catch (err) {
       this.log("dispatch failed", err instanceof Error ? err.message : err);
       error = "Could not reach your bot. Try again in a moment.";
@@ -171,9 +159,9 @@ export class BriefCreateRun {
       this.finish({ kind: "failed", runId: null, message: error });
       return;
     }
-    this.company = company;
+    this.company = null;
     this.remember(runId);
-    this.deps.onsent?.(runId, company);
+    this.deps.onsent?.(runId, null);
     const label = briefBotLabel(check.bot);
     const bot = label === "Your assistant" ? "your assistant" : label;
     this.phase = { kind: "waiting", runId, sentAt: this.now().getTime(), ...(bot ? { bot } : {}) };
@@ -214,7 +202,7 @@ export class BriefCreateRun {
         if (Number.isFinite(updated) && now - updated > BRIEF_STALL_TIMEOUT_MS) {
           // Stale, but it may still finish: watch it quietly within the grace window.
           if (runId === stored && now - updated < BRIEF_STALL_TIMEOUT_MS + BRIEF_STALL_GRACE_MS) {
-            this.company = status.company ?? this.storage?.getItem(ACTIVE_RUN_COMPANY_KEY) ?? null;
+            this.company = null;
             const phase = advanceBriefRun(
               { kind: "running", runId, sentAt: runIdTime(runId)?.getTime() ?? now, step: status.step, progress: status.progress, lastChangeAt: updated, updatedAt: status.updatedAt },
               { text: null },
@@ -228,7 +216,7 @@ export class BriefCreateRun {
           continue;
         }
         this.stopped = false;
-        this.company = status.company ?? this.storage?.getItem(ACTIVE_RUN_COMPANY_KEY) ?? null;
+        this.company = null;
         this.remember(runId);
         this.phase = {
           kind: "running",
@@ -267,9 +255,8 @@ export class BriefCreateRun {
   private remember(runId: string): void {
     try {
       this.storage?.setItem(ACTIVE_RUN_KEY, runId);
-      if (this.company) this.storage?.setItem(ACTIVE_RUN_COMPANY_KEY, this.company);
-      // A personal-scope run must not resume with an earlier run's company.
-      else this.storage?.removeItem(ACTIVE_RUN_COMPANY_KEY);
+      // Retire legacy company state while remembering the person's run.
+      this.storage?.removeItem(LEGACY_RUN_COMPANY_KEY);
     } catch (err) {
       this.log("could not remember the active run", err);
     }
@@ -278,7 +265,7 @@ export class BriefCreateRun {
   private forget(): void {
     try {
       this.storage?.removeItem(ACTIVE_RUN_KEY);
-      this.storage?.removeItem(ACTIVE_RUN_COMPANY_KEY);
+      this.storage?.removeItem(LEGACY_RUN_COMPANY_KEY);
     } catch (err) {
       this.log("could not clear the active run", err);
     }

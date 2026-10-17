@@ -618,7 +618,7 @@ const runFailures = (failures: readonly string[]) => failures.filter((f) => !ADA
 describe("gatherBriefInput: folds between the sweep and the writer", () => {
   it("folds a sweep red main into the writer's decision or incident on the same repo or product, keeping the rest", async () => {
     const { input } = await gatherBriefInput({}, { now: NOW2, companies: companies2, sweep: runSource(run2Files), runId: RUN2, log: () => {} });
-    expect(input.risks.map((r) => r.id)).toEqual(["p1", "p2", "ci:hq-pro"]);
+    expect(input.risks.map((r) => r.id)).toEqual(["p1", "p2", "ci:personal:hq-pro"]);
     // The writer's incident keeps its words and prompt slot; the sweep's facts fill what it left blank.
     expect(input.risks[0]!.ci).toMatchObject({ repo: "hq-cloud", workflow: "Sync nightly", ageHours: 48, note: "1 of 3 workflows red on main." });
     expect(input.decisions.map((d) => d.id)).toEqual(["d3"]);
@@ -640,7 +640,7 @@ describe("gatherBriefInput: folds between the sweep and the writer", () => {
 
   it("merges writer shipped rows onto the sweep rollups by product or repo; a named ship stays its own row", async () => {
     const { input } = await gatherBriefInput({}, { now: NOW2, companies: companies2, sweep: runSource(run2Files), runId: RUN2, log: () => {} });
-    expect(input.shipped.map((s) => s.id)).toEqual(["ship:hq-cli", "ship:hq-core-staging", "s1"]);
+    expect(input.shipped.map((s) => s.id)).toEqual(['ship:[null,"hq-cli"]', 'ship:[null,"hq-core-staging"]', "s1"]);
     const [cli, core, named] = input.shipped;
     expect(cli).toMatchObject({ origin: { product: "HQ command line" }, why: "Colors landed.", highlights: ["Colors in the CLI"], mergeHoursMedian: 6 });
     expect(cli!.lines).toHaveLength(1);

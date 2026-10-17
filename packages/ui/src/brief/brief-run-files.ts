@@ -1,3 +1,4 @@
+import { briefCompanyUid, type BriefCompanyScope } from "./brief-company.js";
 /**
  * Parsers for a run's synthesized files: `brief.json` (items with launch
  * prompts, today's priorities, the owner's widget prefs, the week) and
@@ -139,8 +140,9 @@ function itemGroup(items: unknown, key: string, singular = key.replace(/s$/, "")
 }
 
 /** The item's origin: `repo` and `product` on the item, or inside its `origin`. */
-function originOf(i: Record<string, unknown>, companyUid: string | null): BriefOrigin {
+function originOf(i: Record<string, unknown>, scope: BriefCompanyScope): BriefOrigin {
   const o = rec(i.origin);
+  const companyUid = briefCompanyUid("company" in i ? i.company : "company" in o ? o.company : o.companyUid, scope);
   const repo = str(i.repo) || str(o.repo) || null;
   const product = str(i.product) || str(o.product);
   return { companyUid, repo, ...(product ? { product } : {}) };
@@ -173,7 +175,7 @@ function riskSentence(raw: unknown): string {
   return text.split(/\s+/).length >= 2 ? text : "";
 }
 
-function parseBlocks(raw: unknown, companyUid: string | null): BriefBlocked[] {
+function parseBlocks(raw: unknown, companyUid: BriefCompanyScope): BriefBlocked[] {
   return list(raw)
     .map((b): BriefBlocked => {
       const hasOrigin = !!(str(b.repo) || str(rec(b.origin).repo) || str(b.product) || str(rec(b.origin).product));
@@ -198,11 +200,42 @@ function parseTodo(raw: unknown): BriefTodo[] {
 }
 
 /** `brief.json`, or null when it is not a JSON object. */
-export function parseBriefItems(text: string, companyUid: string | null): BriefRunItems | null {
+export function parseBriefItems(text: string, scope: BriefCompanyScope): BriefRunItems | null {
   const root = parseJson(text);
   if (!root) return null;
+  if (root.mode === "person") {
+    const base = parseBriefItems(JSON.stringify({ ...root, mode: "personal", companies: undefined, personal: undefined, items: undefined }), scope)!;
+    const sections = [[null, root.personal], ...Object.entries(rec(root.companies))] as [string | null, unknown][];
+    for (const [company, raw] of sections) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      if (company && Array.isArray(scope) && !briefCompanyUid(company, scope)) continue;
+      // The section is authoritative; an item cannot move to another company.
+      const tag = (value: unknown): unknown => {
+        if (Array.isArray(value)) return value.map(tag);
+        if (!value || typeof value !== "object") return value;
+        const row = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, tag(v)]));
+        return { ...row, company };
+      };
+      const child = parseBriefItems(JSON.stringify({ ...rec(tag(raw)), mode: "company" }), scope)!;
+      const prefix = (id: string) => (company ?? "personal") + ":" + id;
+      for (const key of ["decisions", "waiting", "incidents", "watch", "meetings", "shipped", "carry", "handoffs", "recovered", "reminders"] as const) {
+        for (const item of child[key]) item.id = prefix(item.id);
+      }
+      for (const priority of child.priorities) if (priority.itemId) priority.itemId = prefix(priority.itemId);
+      for (const carried of child.carry) if (carried.itemId) carried.itemId = prefix(carried.itemId);
+
+      for (const key of ["decisions", "waiting", "incidents", "watch", "priorities", "meetings", "people", "shipped", "carry", "handoffs", "recovered", "releases", "reminders"] as const) {
+        // Each key names an array in both shapes; appending preserves its element type.
+        (base[key] as unknown[]).push(...child[key]);
+      }
+      base.landedDays = [...new Set([...base.landedDays, ...child.landedDays])].sort();
+      if (child.timeToClearMin != null) base.timeToClearMin = (base.timeToClearMin ?? 0) + child.timeToClearMin;
+    }
+    return base;
+  }
   const items = root.items;
-  const origin = (i: Record<string, unknown>) => originOf(i, companyUid);
+  const companyUid = briefCompanyUid(null, scope);
+  const origin = (i: Record<string, unknown>) => originOf(i, scope);
 
   // Carry first: a decision it continues gets `carriedBriefs`.
   const carry: BriefCarry[] = [];
@@ -238,7 +271,7 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
     const effort = oneOf(EFFORTS, d.effort);
     const peopleWaiting = num(d.people_waiting);
     const revenue = bool(d.revenue);
-    const blocks = parseBlocks(d.blocks, companyUid);
+    const blocks = parseBlocks(d.blocks, scope);
     const source = str(d.source);
     const rawChoices = Array.isArray(d.choices) ? d.choices.map((c) => str(c)).filter(Boolean) : [];
     const choices: [string, string] | null = rawChoices.length >= 2 ? [rawChoices[0]!, rawChoices[1]!] : null;
@@ -307,7 +340,7 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
         if (typeof x === "string") return { label: x.trim(), origin: { companyUid, repo: null } };
         const l = rec(x);
         const number = typeof l.number === "number" ? `#${l.number}` : "";
-        return { label: str(l.label) || str(l.title) || `${str(l.repo)} ${number}`.trim(), origin: { companyUid, repo: str(l.repo) || null } };
+        return { label: str(l.label) || str(l.title) || `${str(l.repo)} ${number}`.trim(), origin: origin(l) };
       })
       .filter((l) => l.label);
     if (str(r.source) === "fleet" && !fleetIncidentId) fleetIncidentId = id;
@@ -344,6 +377,7 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
     .map((p, i) => {
       const score = num(p.score);
       return {
+        ...(Array.isArray(scope) && origin(p).companyUid ? { companyUid: origin(p).companyUid } : {}),
         n: num(p.n) ?? num(p.rank) ?? i + 1,
         text: str(p.text) || str(p.title),
         because: str(p.because) || null,
@@ -369,7 +403,7 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
       id: str(m.id) || `brief-meeting-${n}`,
       title,
       startTime: str(m.start) || str(m.start_time),
-      companyUid,
+      companyUid: origin(m).companyUid,
       decisions: num(sig.decision) ?? num(sig.decisions) ?? decided.length,
       actions: num(sig.action_item) ?? num(sig.actions) ?? todo.length,
       risks: num(sig.risk) ?? num(sig.risks) ?? 0,
@@ -395,6 +429,7 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
     const tone: BriefTone = load === "storm" ? "red" : NEEDS_ME.test(status) ? "decision" : owes.length ? "warn" : agent ? "neutral" : "ok";
     people.push({
       id: uid || full,
+      ...(Array.isArray(scope) && origin(p).companyUid ? { companyUid: origin(p).companyUid } : {}),
       name: full.split(/\s+/)[0]!,
       doing: status || (agent ? "Agent" : "On the team"),
       tone,
@@ -502,6 +537,7 @@ export function parseBriefItems(text: string, companyUid: string | null): BriefR
     const prompt = str(r.prompt);
     reminders.push({
       id: str(r.id) || `brief-reminder-${n}`,
+      ...(Array.isArray(scope) && origin(r).companyUid ? { companyUid: origin(r).companyUid } : {}),
       text,
       saidAt: str(r.said_at),
       where: str(r.where),
