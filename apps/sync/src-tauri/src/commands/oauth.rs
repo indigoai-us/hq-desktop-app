@@ -447,7 +447,7 @@ pub async fn start_oauth_login(
     // Explicit identity_provider tells Cognito Hosted UI to skip its own
     // username/password form and redirect straight to the selected provider.
     // No nonce: this path has no confirmation step to bind a token back to.
-    let armed = arm_oauth_flow(&app, Some(&identity_provider), None)?;
+    let armed = arm_oauth_flow(&app, &identity_provider, None)?;
     let (authorize_url, referral_nonce) =
         match crate::commands::desktop_auth::prepare_desktop_referral_start_url(
             &armed.authorize_url,
@@ -504,13 +504,16 @@ pub(crate) struct ExchangedOAuthCode {
 /// listener that is already accepting before the browser opens — binding after
 /// would leave a window where a very fast provider redirect hits a closed port
 /// — and both need a state and verifier that belong to exactly one attempt.
-/// They differ only in whether an identity provider is named and whether a
-/// nonce is sent, which is why those are the two parameters.
+/// Both must name a provider so Cognito never displays its raw provider chooser.
+/// Continuation also sends a nonce to bind the browser result to its attempt.
 pub(crate) fn arm_oauth_flow(
     app: &AppHandle,
-    identity_provider: Option<&str>,
+    identity_provider: &str,
     nonce: Option<&str>,
 ) -> Result<ArmedOAuthFlow, String> {
+    if identity_provider.trim().is_empty() {
+        return Err("A sign-in provider is required.".to_string());
+    }
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
@@ -569,7 +572,7 @@ pub(crate) fn arm_oauth_flow(
     eprintln!("[oauth] listener ready; opening provider is now safe");
 
     // Store verifier for the exchange. One-time use, taken not read.
-    let selected_identity_provider = identity_provider.map(str::to_owned);
+    let selected_identity_provider = Some(identity_provider.to_owned());
     {
         let mut guard = pkce_store()
             .lock()
@@ -587,7 +590,7 @@ pub(crate) fn arm_oauth_flow(
         &AuthorizeRequest {
             state: &state,
             challenge: &challenge,
-            identity_provider,
+            identity_provider: Some(identity_provider),
             nonce,
         },
         &redirect_uri,

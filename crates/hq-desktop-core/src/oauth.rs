@@ -634,18 +634,18 @@ mod tests {
     }
 
     #[test]
-    fn continuation_authorize_url_names_no_provider() {
-        // Naming a provider forces that provider's own login screen, which is
-        // exactly what continuation is trying to avoid. Omitting it is what
-        // lets Cognito reuse a session the browser may already hold.
+    fn continuation_authorize_url_names_google_and_preserves_nonce() {
+        // Continuation uses the CLI default when no prior provider is known.
+        // Preserve PKCE and nonce without forcing reauthentication.
         with_default_cognito_env(|| {
             let url = build_authorize_url_from(&AuthorizeRequest {
                 state: "s",
                 challenge: "c",
-                identity_provider: None,
+                identity_provider: Some("Google"),
                 nonce: Some("n"),
             });
-            assert!(!url.contains("identity_provider"));
+            assert!(url.contains("identity_provider=Google"));
+            assert!(!url.contains("prompt="));
             assert!(url.contains("&nonce=n"));
             assert!(url.contains("code_challenge_method=S256"));
         });

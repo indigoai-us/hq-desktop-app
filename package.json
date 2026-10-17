@@ -13,7 +13,7 @@
     "dev": "turbo run dev",
     "test": "turbo run test",
     "coverage": "turbo run coverage",
-    "test:scripts": "vitest run scripts/*.test.ts && node --test scripts/startup-window-order.test.mjs",
+    "test:scripts": "vitest run scripts/*.test.ts && node --test scripts/startup-window-order.test.mjs scripts/continuation-identity-provider.test.mjs",
     "perf": "node scripts/perf-run.mjs",
     "perf:rail": "node scripts/perf-run.mjs --rail",
     "perf:lint": "vitest run scripts/perf-budget-contract.test.ts scripts/perf-stats.test.ts scripts/perf-rail-budget.test.ts",
