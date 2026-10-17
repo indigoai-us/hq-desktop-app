@@ -93,10 +93,14 @@ export function teamOptionsFrom(workspaces: readonly Workspace[] | null | undefi
 /**
  * The person's company with this slug in the roster, for a Retry after a
  * create that failed or timed out (it may have made the company after all).
- * Only a cloud company the person is an active member of counts: a local
- * folder with the same name is not a company they started.
+ * Only a company they started counts: a cloud company whose membership is
+ * active with the owner role, which is what a create makes (the server adds
+ * the creator as an active owner in the same call). Any other status (an
+ * invite, a removed or declined membership, or none at all) or role is
+ * someone else's company, and a local folder with the same name is not a
+ * company they started.
  */
-export function activeCloudCompanyBySlug(
+export function ownCloudCompanyBySlug(
   workspaces: readonly Workspace[] | null | undefined,
   slug: string,
 ): FirstRunTeamCompany | null {
@@ -104,7 +108,8 @@ export function activeCloudCompanyBySlug(
     (w) =>
       w.kind === "company" &&
       w.slug === slug &&
-      w.membershipStatus === "active" &&
+      (w.membershipStatus ?? "").trim().toLowerCase() === "active" &&
+      (w.role ?? "").trim().toLowerCase() === "owner" &&
       (w.cloudUid ?? "").trim() !== "",
   );
   return row ? toCompany(row) : null;
@@ -194,7 +199,10 @@ export function companyNameIssue(name: string): string | null {
 
 // ── one action at a time ───────────────────────────────────────────────────
 
-export type TeamActionResult = { ok: true; choice: FirstRunTeamChoice } | { ok: false; reason: string };
+/** `blocked`: the server refused a create outright, so it made no company. */
+export type TeamActionResult =
+  | { ok: true; choice: FirstRunTeamChoice }
+  | { ok: false; reason: string; blocked?: boolean };
 
 /** Where Join or Create stands, as the screen shows it. */
 export type TeamActionState =

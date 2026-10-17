@@ -176,4 +176,53 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="welcome-report"]')).not.toBeNull();
     expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
   });
+
+  it("says the assistant made the report and Meet <Name> opens its DM", async () => {
+    const onmeet = vi.fn();
+    mountReport({ ready: true, madeBy: { name: "Atlas", onmeet }, children: briefPage });
+    await settle();
+    const line = q('[data-testid="welcome-report-made-by"]');
+    expect(line?.textContent).toContain("Atlas made this report.");
+    const meet = q('[data-testid="welcome-report-meet"]');
+    expect(meet?.textContent).toBe("Meet Atlas");
+    meet!.click();
+    expect(onmeet).toHaveBeenCalledTimes(1);
+  });
+
+  it("names an unnamed assistant in lower case inside the Meet button", async () => {
+    mountReport({ ready: true, madeBy: { name: "Your assistant", onmeet: vi.fn() }, children: briefPage });
+    await settle();
+    expect(q('[data-testid="welcome-report-made-by"]')?.textContent).toContain("Your assistant made this report.");
+    expect(q('[data-testid="welcome-report-meet"]')?.textContent).toBe("Meet your assistant");
+  });
+
+  it("with no assistant, shows no made-by line and no Meet button", async () => {
+    mountReport({ ready: true, children: briefPage });
+    await settle();
+    expect(q('[data-testid="welcome-report-ready"]')).not.toBeNull();
+    expect(q('[data-testid="welcome-report-made-by"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-meet"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("make the next one");
+  });
+
+  it("a held-back job keeps Connect a model with the AI apps card above it and never says who made the report", async () => {
+    const onfix = vi.fn();
+    mountReport({
+      ready: false,
+      madeBy: { name: "Quill", onmeet: vi.fn() },
+      aiApps: { detect: async () => null, cli: { claudeCode: true, codex: false } },
+      blocked: { message: "Quill has no model connected on this computer.", label: "Connect a model", onfix },
+      children: briefPage,
+    });
+    await settle();
+    const apps = q('[data-testid="connect-ai-apps-card"]');
+    const held = q('[data-testid="welcome-report-blocked"]');
+    expect(apps).not.toBeNull();
+    expect(held).not.toBeNull();
+    expect(apps!.compareDocumentPosition(held!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(q('[data-testid="welcome-report-made-by"]')).toBeNull();
+    expect(q('[data-testid="welcome-report-meet"]')).toBeNull();
+    q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
+    expect(onfix).toHaveBeenCalledTimes(1);
+  });
 });

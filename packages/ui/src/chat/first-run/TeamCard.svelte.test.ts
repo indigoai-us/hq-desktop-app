@@ -173,3 +173,23 @@ describe("TeamCard states", () => {
     expect(teamCardSettledLine({ kind: "company", how: "joined", company: acme })).toBe("Joined Acme");
   });
 });
+
+describe("TeamCard after a create made a company", () => {
+  it("shows that name locked, disables the other rows, and Create resends it", () => {
+    const { root, onpick } = render(
+      { invites: [acme], companies: [pickle] },
+      { createdName: "Brine Labs", error: "Something went wrong. Try again." },
+    );
+    const input = q(root, "team-card-name") as HTMLInputElement;
+    expect(input.value).toBe("Brine Labs");
+    expect(input.readOnly).toBe(true);
+    input.value = "Other Name";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect((q(root, "team-card-join") as HTMLButtonElement).disabled).toBe(true);
+    expect((q(root, "team-card-open") as HTMLButtonElement).disabled).toBe(true);
+    expect((q(root, "team-card-personal") as HTMLButtonElement).disabled).toBe(true);
+    q(root, "team-card-create-submit")!.click();
+    expect(onpick).toHaveBeenCalledWith({ kind: "create", name: "Brine Labs" });
+  });
+});

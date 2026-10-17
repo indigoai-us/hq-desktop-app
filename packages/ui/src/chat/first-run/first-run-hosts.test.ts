@@ -47,7 +47,11 @@ describe("team host", () => {
       choice: { kind: "company", how: "created", company: { companyUid: "cmp_new", slug: "pickle-works", name: "Pickle Works" } },
     });
     expect(createCompany).toHaveBeenCalledWith("Pickle Works", "pickle-works");
-    expect(await createFirstRunTeamHost({ dry: false }).create("Pickle Works")).toEqual({ ok: false, reason: CREATE_UNAVAILABLE });
+    expect(await createFirstRunTeamHost({ dry: false }).create("Pickle Works")).toEqual({
+      ok: false,
+      reason: CREATE_UNAVAILABLE,
+      blocked: true,
+    });
   });
 
   it("a dry walk joins and creates nothing", async () => {
@@ -166,6 +170,27 @@ describe("team host: a create or join that ran long", () => {
     await host.create("Pickle Works");
     expect((await host.create("Pickle Works")).ok).toBe(true);
     expect(createCompany).toHaveBeenCalledTimes(2);
+  });
+
+  it("a create the server refuses says so, and one that answers with nothing does not", async () => {
+    const refused = createFirstRunTeamHost({
+      createCompany: async () => ({ ok: false, reason: "That handle is taken.", blocked: true }),
+      dry: false,
+    });
+    expect(await refused.create("Pickle Works")).toEqual({ ok: false, reason: "That handle is taken.", blocked: true });
+    const unknown = createFirstRunTeamHost({ createCompany: async () => ({ ok: false, reason: "No answer." }), dry: false });
+    expect(await unknown.create("Brine Labs")).toEqual({ ok: false, reason: "No answer." });
+    expect(await unknown.create("x")).toMatchObject({ ok: false, blocked: true });
+  });
+
+  it("findCreated looks the name's company up in the roster, within the bound", async () => {
+    const findCompany = vi.fn(async (slug: string) => (slug === "pickle-works" ? PICKLE : null));
+    const host = createFirstRunTeamHost({ findCompany, dry: false, findTimeoutMs: 20 });
+    expect(await host.findCreated!("Pickle Works")).toEqual(PICKLE);
+    expect(await host.findCreated!("Brine Labs")).toBeNull();
+    expect(await host.findCreated!("x")).toBeNull();
+    expect(await createFirstRunTeamHost({ dry: false }).findCreated!("Pickle Works")).toBeNull();
+    expect(await createFirstRunTeamHost({ findCompany, dry: true }).findCreated!("Pickle Works")).toBeNull();
   });
 
   it("a Retry while a join still runs waits on that join", async () => {

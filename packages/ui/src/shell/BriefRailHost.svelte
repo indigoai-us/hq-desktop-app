@@ -11,6 +11,7 @@
   import type { BriefAdapter } from "../brief/brief-data.js";
   import type { BriefLaunch } from "../brief/brief-context.svelte.js";
   import type { BriefCreateRun, BriefCreator } from "../brief/brief-create.svelte.js";
+  import type { BriefActions } from "../brief/brief-action-cards.js";
 
   type BriefModule = Awaited<ReturnType<typeof loadBrief>>;
 
@@ -25,8 +26,12 @@
     /** Opens the DM with this uid in Messages. */
     onopenthread?: (uid: string) => void;
     onopenmeetings?: () => void;
+    /** Report action cards on the brief page. */
+    actions?: BriefActions | null;
+    /** Told which run the brief page has on screen. */
+    onshown?: (runId: string | null) => void;
   }
-  let { adapter, companies, onlaunch, creator = null, run = null, onopenthread, onopenmeetings }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run = null, onopenthread, onopenmeetings, actions = null, onshown }: Props = $props();
 
   let mod = $state<BriefModule | null>(null);
   let failed = $state(false);
@@ -49,7 +54,7 @@
 
 <div class="host" data-testid="brief-host">
   {#if mod}
-    <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} {onopenthread} {onopenmeetings} />
+    <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} {onopenthread} {onopenmeetings} {actions} {onshown} />
   {:else if failed}
     <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
   {:else}
