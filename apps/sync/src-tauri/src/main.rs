@@ -47,6 +47,7 @@ mod meet_native;
 
 mod boot_watchdog;
 mod commands;
+mod local_signals;
 mod app_version;
 mod deep_link;
 mod events;
@@ -371,6 +372,11 @@ fn main() {
 
 #[cfg(not(feature = "meet-native-webdriver"))]
 fn main() {
+    // signals-local-meetings-v1 US-007: `--local-signals-mcp <job.json>` turns
+    // this binary into the stdio MCP server for one local signal run, opened
+    // by the visible Claude session Meetings launched. It must run before
+    // Sentry, single-instance, and Tauri; it exits and never returns.
+    local_signals::mcp_server::run_if_requested();
     // LaunchAgent work is delegated to the user's node installation while
     // launchd sees this Indigo-signed, stable app executable as argv[0].
     launchd_task::run_if_requested();
@@ -744,6 +750,30 @@ fn main() {
             commands::meet_transcript_outbox::meet_transcript_outbox_enqueue,
             commands::meet_transcript_outbox::meet_transcript_outbox_read,
             commands::meet_transcript_outbox::meet_transcript_outbox_ack,
+            commands::local_signal_runs::local_signal_run_request,
+            commands::local_signal_runs::local_signal_run_get,
+            commands::local_signal_runs::local_signal_run_list,
+            commands::local_signal_runs::local_signal_run_claim,
+            commands::local_signal_runs::local_signal_run_progress,
+            commands::local_signal_runs::local_signal_run_store_result,
+            commands::local_signal_runs::local_signal_run_cancel,
+            commands::local_signal_runs::local_signal_run_recover,
+            commands::local_signal_runs::local_signal_run_dispatch,
+            commands::local_signal_runs::local_signal_run_result,
+            commands::local_signals::local_signals_enqueue,
+            commands::local_signals::local_signals_commit,
+            commands::local_signals::local_signals_resume,
+            commands::local_signals::local_signals_launch_session,
+            commands::local_signals::local_signals_tool_call,
+            commands::local_signals::local_signals_extract,
+            commands::local_signals::local_signals_provider_failure,
+            commands::meeting_signals::meeting_signals_status,
+            commands::meeting_signals::meeting_signals_generate,
+            commands::meeting_signals::meeting_signals_open_session,
+            commands::meeting_signals::meeting_signals_cancel,
+            commands::meeting_signals::meeting_signals_upload,
+            commands::meeting_signals::meeting_signals_results,
+            commands::meeting_signals::meeting_signals_citation,
             commands::meet_transcription::meet_transcription_status,
             commands::meet_transcription::meet_transcribe_pcm,
             commands::app::quit_app,

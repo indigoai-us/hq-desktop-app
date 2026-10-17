@@ -27,6 +27,22 @@
     planRequiredUpgradeUrl,
   } from '../lib/invite-errors';
   import PlanUpgradeAction from './PlanUpgradeAction.svelte';
+  import {
+    citationError,
+    resultGroupsView,
+    type MeetingResults,
+    emptyRowUi,
+    isActive as signalsActive,
+    nextRetryDelay,
+    plainError,
+    shouldUpload,
+    signalsRowView,
+    providerName as signalsProviderName,
+    type MeetingSignalsStatus,
+    type SignalsAction,
+    type SignalsRowUi,
+    type UploadSummary,
+  } from '../lib/localMeetingSignals';
   import { openApprovedExternalUrl } from '../desktop-alt/external-open';
   import {
     buildPastMeetingRows,
@@ -1489,6 +1505,187 @@
     ),
   );
 
+  // ── signals-local-meetings-v1 US-009: Generate signals on a completed row ──
+  // Status comes from `meeting_signals_status` (flag, eligibility, durable run,
+  // local receipt, upload ledger). `localMeetingSignals.ts` turns it into the
+  // one inline line each row renders. Raw errors only go to console diagnostics.
+  let signalStatus = $state<Record<string, MeetingSignalsStatus>>({});
+  let signalUi = $state<Record<string, SignalsRowUi>>({});
+  const signalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function signalsRowUi(botId: string): SignalsRowUi {
+    return signalUi[botId] ?? emptyRowUi();
+  }
+  function setSignalsUi(botId: string, patch: Partial<SignalsRowUi>) {
+    signalUi = { ...signalUi, [botId]: { ...signalsRowUi(botId), ...patch } };
+  }
+  function signalsView(botId: string) {
+    return signalsRowView(signalStatus[botId] ?? null, signalsRowUi(botId), Boolean(signalsExpanded[botId]));
+  }
+
+  // US-010: cited local results, read in place under the row.
+  let signalsExpanded = $state<Record<string, boolean>>({});
+  let signalResults = $state<Record<string, MeetingResults | 'error'>>({});
+  let signalsHistoryOpen = $state<Record<string, boolean>>({});
+  let openCitation = $state<
+    Record<string, { key: string; lines: string[] | null; error: string | null }>
+  >({});
+
+  async function loadSignalResults(bot: ScheduledBot) {
+    try {
+      const results = await invoke<MeetingResults>('meeting_signals_results', signalsArgs(bot));
+      signalResults = { ...signalResults, [bot.botId]: results };
+    } catch (err) {
+      console.warn('[local-signals] results failed', err);
+      signalResults = { ...signalResults, [bot.botId]: 'error' };
+    }
+  }
+
+  async function showCitation(bot: ScheduledBot, observationId: string, index: number) {
+    const key = `${observationId}:${index}`;
+    if (openCitation[bot.botId]?.key === key) {
+      const { [bot.botId]: _closed, ...rest } = openCitation;
+      openCitation = rest;
+      return;
+    }
+    openCitation = { ...openCitation, [bot.botId]: { key, lines: null, error: null } };
+    try {
+      const lines = await invoke<string[]>('meeting_signals_citation', { ...signalsArgs(bot), observationId, index });
+      openCitation = { ...openCitation, [bot.botId]: { key, lines, error: null } };
+    } catch (err) {
+      console.warn('[local-signals] citation failed', err);
+      openCitation = { ...openCitation, [bot.botId]: { key, lines: null, error: citationError(err) } };
+    }
+  }
+  function signalsArgs(bot: ScheduledBot) {
+    return { companyUid: bot.companyId, botId: bot.botId, memberUid: signedInPersonUid };
+  }
+  function signalsCandidate(bot: ScheduledBot): boolean {
+    return Boolean(signedInPersonUid && bot.companyId && rowButtonKind(bot) === 'done');
+  }
+
+  async function loadSignalStatus(bot: ScheduledBot) {
+    if (!signalsCandidate(bot)) return;
+    try {
+      const status = await invoke<MeetingSignalsStatus>('meeting_signals_status', signalsArgs(bot));
+      signalStatus = { ...signalStatus, [bot.botId]: status };
+      if (shouldUpload(status, signalsRowUi(bot.botId))) void uploadSignals(bot, false);
+    } catch (err) {
+      // Status failures never fabricate a state: the row simply shows nothing.
+      console.warn('[local-signals] status failed', err);
+    }
+  }
+
+  function scheduleSignalsRetry(bot: ScheduledBot, run: () => Promise<void>) {
+    const ui = signalsRowUi(bot.botId);
+    const delay = nextRetryDelay(ui.attempts);
+    if (delay === null) {
+      setSignalsUi(bot.botId, { autoRetrying: false });
+      return;
+    }
+    setSignalsUi(bot.botId, { autoRetrying: true, attempts: ui.attempts + 1 });
+    clearTimeout(signalTimers.get(bot.botId));
+    signalTimers.set(
+      bot.botId,
+      setTimeout(() => {
+        setSignalsUi(bot.botId, { autoRetrying: false, error: null });
+        void run();
+      }, delay),
+    );
+  }
+
+  async function uploadSignals(bot: ScheduledBot, manual: boolean) {
+    if (signalsRowUi(bot.botId).uploading) return;
+    setSignalsUi(bot.botId, { uploading: true, ...(manual ? { attempts: 0, error: null } : {}) });
+    try {
+      const summary = await invoke<UploadSummary>('meeting_signals_upload', signalsArgs(bot));
+      const prev = signalStatus[bot.botId];
+      if (prev) signalStatus = { ...signalStatus, [bot.botId]: { ...prev, upload: summary } };
+      setSignalsUi(bot.botId, { uploading: false });
+      if (summary.retryable > 0) scheduleSignalsRetry(bot, () => uploadSignals(bot, false));
+      else setSignalsUi(bot.botId, { attempts: 0 });
+    } catch (err) {
+      console.warn('[local-signals] upload failed', err);
+      setSignalsUi(bot.botId, { uploading: false, error: plainError(err) });
+      scheduleSignalsRetry(bot, () => uploadSignals(bot, false));
+    }
+  }
+
+  async function runSignalsAction(bot: ScheduledBot, action: SignalsAction) {
+    if (action === 'view') {
+      const open = !signalsExpanded[bot.botId];
+      signalsExpanded = { ...signalsExpanded, [bot.botId]: open };
+      if (open) void loadSignalResults(bot);
+      return;
+    }
+    const ui = signalsRowUi(bot.botId);
+    if (ui.submitting || ui.uploading) return; // duplicate activation
+    const status = signalStatus[bot.botId];
+    if (action === 'retry' && status?.localComplete) {
+      void uploadSignals(bot, true);
+      return;
+    }
+    // Acknowledge immediately, before any backend round-trip.
+    setSignalsUi(bot.botId, { submitting: true, error: null, ...(action === 'retry' ? { attempts: 0 } : {}) });
+    const perform = async () => {
+      const args = signalsArgs(bot);
+      const jobId = status?.run?.request.jobId;
+      switch (action) {
+        case 'generate':
+        case 'retry':
+          return invoke<MeetingSignalsStatus>('meeting_signals_generate', { ...args, provider: 'any' });
+        case 'cancel':
+          if (jobId) await invoke('meeting_signals_cancel', { jobId });
+          return null;
+        case 'open_claude':
+        case 'sign_in_claude':
+          await invoke('meeting_signals_open_session', { ...args, provider: 'claude' });
+          return null;
+        case 'open_codex':
+        case 'sign_in_codex':
+          await invoke('meeting_signals_open_session', { ...args, provider: 'codex' });
+          return null;
+        case 'resume': {
+          // Re-open the provider named on the row. The new session's MCP
+          // server recovers the same durable run (no new job, no re-parse
+          // after a stored result).
+          const provider = status?.run && signalsProviderName(status.run) === 'Codex' ? 'codex' : 'claude';
+          await invoke('meeting_signals_open_session', { ...args, provider });
+          return null;
+        }
+      }
+    };
+    try {
+      const next = await perform();
+      if (next) signalStatus = { ...signalStatus, [bot.botId]: next };
+      setSignalsUi(bot.botId, { submitting: false, attempts: 0 });
+      await loadSignalStatus(bot);
+    } catch (err) {
+      console.warn('[local-signals] action failed', action, err);
+      setSignalsUi(bot.botId, { submitting: false, error: plainError(err) });
+      scheduleSignalsRetry(bot, () => runSignalsAction(bot, action));
+    }
+  }
+
+  // Load status for completed rows; keep polling only while a job is moving.
+  $effect(() => {
+    if (!signedInPersonUid) return;
+    for (const bot of recordedBots) {
+      if (signalsCandidate(bot) && !(bot.botId in untrack(() => signalStatus))) void loadSignalStatus(bot);
+    }
+  });
+  $effect(() => {
+    const active = recordedBots.filter((bot) => signalsActive(signalStatus[bot.botId] ?? null));
+    if (active.length === 0) return;
+    const timer = setInterval(() => {
+      for (const bot of active) void loadSignalStatus(bot);
+    }, 4_000);
+    return () => clearInterval(timer);
+  });
+  $effect(() => () => {
+    for (const t of signalTimers.values()) clearTimeout(t);
+  });
+
   /** Count of events the link-only filter is currently hiding. Drives
    *  the "X hidden — show all" recovery affordance so the user doesn't
    *  hit an empty list and assume the calendar is broken. */
@@ -1923,6 +2120,105 @@
       </div>
     {/if}
 
+    {#snippet localSignals(bot: ScheduledBot)}
+      {@const signals = signalsView(bot.botId)}
+      {#if signals.visible}
+        <span
+          class="signals-line"
+          data-tone={signals.tone}
+          data-testid="meeting-signals"
+          aria-live="polite"
+          aria-busy={signals.busy}
+        >
+          {#if signals.text}<span class="signals-text" title={signals.text}>{signals.text}</span>{/if}
+          {#each signals.actions as action (action.id)}
+            <button
+              type="button"
+              class="signals-action"
+              disabled={signals.busy}
+              onclick={() => runSignalsAction(bot, action.id)}
+            >
+              {action.label}
+            </button>
+          {/each}
+        </span>
+      {/if}
+    {/snippet}
+    {#snippet signalsVersion(bot: ScheduledBot, groups: ReturnType<typeof resultGroupsView>, live: boolean)}
+      {#each groups as group (group.signalType)}
+        <p class="signals-group">{group.label}</p>
+        {#if group.items.length === 0}
+          <p class="signals-none">None found.</p>
+        {/if}
+        {#each group.items as item (item.observationId)}
+          <div class="signals-item" data-testid="meeting-signal-item">
+            <p class="signals-content">{item.content}</p>
+            {#if item.detail}<p class="signals-meta">{item.detail}</p>{/if}
+            <p class="signals-meta">
+              {#each item.citations as cite, index (index)}
+                {#if live && cite.valid}
+                  <button
+                    type="button"
+                    class="signals-action"
+                    onclick={() => showCitation(bot, item.observationId, index)}
+                  >
+                    {cite.label}
+                  </button>
+                {:else}
+                  <span title="This citation can’t be shown.">{cite.label}</span>
+                {/if}
+              {/each}
+              {#each item.entities as entity (entity.label)}
+                <span class="signals-entity" title={entity.title}>{entity.label}</span>
+              {/each}
+              <span>{item.source}</span>
+              <span class="signals-upload" data-tone={item.uploadTone}>{item.upload}</span>
+            </p>
+            {#if live && openCitation[bot.botId]?.key.startsWith(`${item.observationId}:`)}
+              {@const cite = openCitation[bot.botId]}
+              {#if cite.error}
+                <p class="signals-meta">{cite.error}</p>
+              {:else if cite.lines}
+                <blockquote class="signals-excerpt">
+                  {#each cite.lines as line, i (i)}<span>{line}</span>{/each}
+                </blockquote>
+              {/if}
+            {/if}
+          </div>
+        {/each}
+      {/each}
+    {/snippet}
+    {#snippet signalsResults(bot: ScheduledBot)}
+      {@const results = signalResults[bot.botId]}
+      <li class="signals-results" data-testid="meeting-signal-results">
+        {#if results === undefined}
+          <p class="signals-none">Loading signals…</p>
+        {:else if results === 'error'}
+          <p class="signals-none">Signals can’t be shown right now.</p>
+        {:else}
+          {#if results.current}
+            {@render signalsVersion(bot, resultGroupsView(results.current), true)}
+          {:else}
+            <p class="signals-none">No signals on this device yet.</p>
+          {/if}
+          {#if results.history.length > 0}
+            <button
+              type="button"
+              class="signals-action"
+              onclick={() =>
+                (signalsHistoryOpen = { ...signalsHistoryOpen, [bot.botId]: !signalsHistoryOpen[bot.botId] })}
+            >
+              {signalsHistoryOpen[bot.botId] ? 'Hide earlier versions' : `Earlier versions (${results.history.length})`}
+            </button>
+            {#if signalsHistoryOpen[bot.botId]}
+              {#each results.history as version, i (i)}
+                {@render signalsVersion(bot, resultGroupsView(version), false)}
+              {/each}
+            {/if}
+          {/if}
+        {/if}
+      </li>
+    {/snippet}
     {#snippet companyAssign(bot: ScheduledBot)}
       {@const companyPending = attributionPending.has(bot.botId)}
       <div class="attribution-control">
@@ -2221,8 +2517,12 @@
                     {row.bot.meetingTitle ?? '(no title)'}
                   </span>
                 </div>
+                {@render localSignals(row.bot)}
                 {@render companyAssign(row.bot)}
               </li>
+              {#if signalsExpanded[row.bot.botId]}
+                {@render signalsResults(row.bot)}
+              {/if}
             {:else}
               <li class="event-row">
                 <div class="event-meta">
@@ -2633,6 +2933,105 @@
     color: var(--c-text);
     font-size: var(--text-base);
     text-overflow: ellipsis;
+  }
+  /* signals-local-meetings-v1 US-009: one inline status line in the existing
+     row. No panel, border, accent bar, radius, or heavy weight; color only
+     carries the semantic tone. */
+  .signals-line {
+    flex: 0 1 auto;
+    min-width: 0;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: var(--text-base);
+    font-weight: 400;
+    line-height: 17px;
+    color: var(--c-muted);
+  }
+  .signals-line[data-tone='active'] {
+    color: var(--c-text);
+  }
+  .signals-line[data-tone='ok'] {
+    color: var(--c-success, #4ade80);
+  }
+  .signals-line[data-tone='warn'] {
+    color: var(--c-warning, #fbbf24);
+  }
+  .signals-text {
+    min-width: 0;
+    max-width: 320px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .signals-action {
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--c-text);
+    font: inherit;
+    font-weight: 500;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .signals-action:disabled {
+    color: var(--c-muted);
+    cursor: default;
+  }
+  /* US-010: cited results read in place under the row. Same list, no panel,
+     no border, no radius, no accent bar. */
+  .signals-results {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 8px 12px 56px;
+    font-size: var(--text-base);
+    font-weight: 400;
+    color: var(--c-text);
+  }
+  .signals-group {
+    margin: 8px 0 0;
+    font-weight: 500;
+    color: var(--c-muted);
+  }
+  .signals-none,
+  .signals-meta {
+    margin: 0;
+    color: var(--c-muted);
+  }
+  .signals-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .signals-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .signals-content {
+    margin: 0;
+  }
+  .signals-entity[title=''] {
+    cursor: default;
+  }
+  .signals-upload[data-tone='ok'] {
+    color: var(--c-success, #4ade80);
+  }
+  .signals-upload[data-tone='warn'] {
+    color: var(--c-warning, #fbbf24);
+  }
+  .signals-excerpt {
+    margin: 4px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    color: var(--c-muted);
+    font-variant-numeric: tabular-nums;
   }
   .series-chip {
     flex: 0 0 auto;

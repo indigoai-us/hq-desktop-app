@@ -595,7 +595,7 @@ fn claude_args(permission_mode: Option<&str>, prompt: Option<&str>, quote: fn(&s
 }
 
 /// The macOS `claude` command line: `claude [--permission-mode <mode>] ['<prompt>']`.
-fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
+pub(crate) fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result<String, String> {
     let args = claude_args(permission_mode, prompt, sh_single_quote)?;
     Ok(if args.is_empty() { "claude".to_string() } else { format!("claude {args}") })
 }
@@ -607,6 +607,48 @@ fn claude_command(permission_mode: Option<&str>, prompt: Option<&str>) -> Result
 #[tauri::command]
 pub fn launch_claude_code(path: String, permission_mode: Option<String>, prompt: Option<String>) -> Result<(), String> {
     let result = claude_command(permission_mode.as_deref(), prompt.as_deref()).and_then(|cmd| spawn_cli_terminal_unix(&path, &cmd));
+    crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
+    result
+}
+
+/// signals-local-meetings-v1 US-007: open a visible Terminal running an
+/// interactive `claude` line built and checked by
+/// `local_signals::extractor::plan_session` (MCP-locked, built-in tools off).
+/// `command` is the POSIX line; `args` is the same argv for PowerShell.
+#[cfg(not(windows))]
+pub(crate) fn launch_claude_session_line(path: &str, command: &str, _args: &[String]) -> Result<(), String> {
+    if path.chars().any(char::is_control) || command.chars().any(char::is_control) {
+        return Err("invalid session command".into());
+    }
+    let shell = format!("cd {} && {}", sh_single_quote(path), command);
+    let script = terminal_applescript(&shell);
+    let result = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to spawn osascript: {e}"))
+        .and_then(|output| {
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "osascript failed (exit {}): {}",
+                    output.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+            }
+        });
+    crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
+    result
+}
+
+#[cfg(windows)]
+pub(crate) fn launch_claude_session_line(path: &str, _command: &str, args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| a.chars().any(char::is_control)) {
+        return Err("invalid session command".into());
+    }
+    let joined = args.iter().map(|a| ps_single_quote(a)).collect::<Vec<_>>().join(" ");
+    let result = spawn_cli_terminal_windows_args(path, "claude", &joined);
     crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
     result
 }

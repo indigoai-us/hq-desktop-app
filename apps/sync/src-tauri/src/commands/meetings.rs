@@ -170,7 +170,7 @@ pub async fn meetings_take_pending_focus() -> Option<String> {
 
 // ── HTTP wrappers ─────────────────────────────────────────────────────────────
 
-async fn auth_header() -> Result<String, String> {
+pub(crate) async fn auth_header() -> Result<String, String> {
     // Use the centralised valid-token helper so an expired access token
     // refreshes + persists transparently. The old version read the raw
     // stored access_token, which silently broke every meetings call
@@ -182,7 +182,7 @@ async fn auth_header() -> Result<String, String> {
     Ok(format!("Bearer {token}"))
 }
 
-async fn vault_base() -> Result<String, String> {
+pub(crate) async fn vault_base() -> Result<String, String> {
     resolve_vault_api_url().map(|u| u.trim_end_matches('/').to_string())
 }
 
