@@ -26,6 +26,7 @@
   import { createSceneClock } from "./knowledge-tree/scene-clock.js";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import { portal } from "../portal.js";
+  import { fadeOutOnLeave } from "./first-run-motion.js";
   import { newBotWallpaper } from "../create-bot/new-bot-wallpapers.js";
   import { SETUP_BOT_RUNTIME_ORDER } from "../setup-bot.js";
   import {
@@ -493,6 +494,7 @@
   data-step={screen}
   style={`--new-bot-wallpaper: url("${newBotWallpaper(0)}")`}
   use:portal
+  use:fadeOutOnLeave
 >
   <div class="new-bot-takeover-shade" aria-hidden="true"></div>
   <header class="new-bot-takeover-header">

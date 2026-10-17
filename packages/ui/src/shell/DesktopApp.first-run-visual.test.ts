@@ -1297,9 +1297,9 @@ describe("visual first run: #welcome while the takeover waits for the bot listin
   // #1570 holds the takeover until the bot listings answer. #welcome showed
   // the old setup, with its start button, in that wait; a create made there
   // with #welcome's kickoff, then adopted by the takeover, would write twice.
-  // #welcome now shows a loader until the takeover opens, so the old setup is
-  // never on view and only the takeover creates: once, with no kickoff, and
-  // one note at close.
+  // Since US-010 the shell is not painted in that wait (the takeover's
+  // backdrop holds the window), so the old setup is never on view and only
+  // the takeover creates: once, with no kickoff, and one note at close.
   const listedSetupBot = {
     name: "setup",
     agentUid: SETUP_BOT_UID,
@@ -1336,12 +1336,12 @@ describe("visual first run: #welcome while the takeover waits for the bot listin
 
   const takeoverOpen = () => Boolean(q('[data-testid="first-run-takeover"]'));
 
-  /** The route is visual and the takeover not yet open: #welcome shows the loader and no old setup. */
+  /** The route is visual and the takeover not yet open: the held backdrop paints, with no old setup. */
   async function expectWelcomeWaiting(log: ReturnType<typeof logSink>): Promise<void> {
     await settle(12);
     expect(takeoverOpen()).toBe(false);
     expect(log.of("route").at(-1)).toMatch(/^kind=route route=visual /);
-    expect(q('[data-testid="welcome-route-pending"]')).toBeTruthy();
+    expect(q('[data-testid="first-run-held-page"]')).toBeTruthy();
     expect(q('[data-testid="setup-run"]')).toBeNull();
     expect(q('[data-testid="setup-bot-fallback"]')).toBeNull();
   }
@@ -1379,6 +1379,7 @@ describe("visual first run: #welcome while the takeover waits for the bot listin
     await boot(platform);
     await expectWelcomeWaiting(log);
     expect(create).not.toHaveBeenCalled();
+    expect(sendDm).not.toHaveBeenCalled();
 
     listing.release();
     await walkTheTakeoverToDone();
@@ -1390,11 +1391,11 @@ describe("visual first run: #welcome while the takeover waits for the bot listin
     expectOneHandoffNote(sendDm);
   }
 
-  it("with this computer's bot list slow, #welcome shows the loader until the takeover opens; one create, no kickoff, one note at close", async () => {
+  it("with this computer's bot list slow, the held backdrop paints until the takeover opens; one create, no kickoff, one note at close", async () => {
     await walkCreatesOnceWithOneNote(true);
   });
 
-  it("with only the boot read slow, #welcome shows the loader until the takeover opens; one create, no kickoff, one note at close", async () => {
+  it("with only the boot read slow, the held backdrop paints until the takeover opens; one create, no kickoff, one note at close", async () => {
     await walkCreatesOnceWithOneNote(false);
   });
 });

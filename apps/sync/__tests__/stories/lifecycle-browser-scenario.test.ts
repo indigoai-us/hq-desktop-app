@@ -432,24 +432,32 @@ describe('lifecycle scenario wire shapes', () => {
 });
 
 describe('desktop shell boots the lifecycle scenario', () => {
-  it('paints #setup as just the welcome banner (the setup bot creates the company) and fires shell_ready', async () => {
+  it('holds the first-run backdrop or #setup loader while the route is pending, then paints #setup as just the welcome banner and fires shell_ready', async () => {
     const { invokeFn, calls } = createLifecycleInvoke({ delayScale: 0 });
     host = document.createElement('div');
     document.body.appendChild(host);
-    // A new install: #setup holds a loader until the visual-first-run flag
-    // answers, then the route settles (legacy here: the flag is off) and the
-    // banner paints. The setup bot's DM opens soon after and replaces #setup,
-    // so every DOM change is recorded from mount and the banner is checked on
-    // the frames after the loader leaves.
-    const has = (testId: string) => host.querySelector(`[data-testid="${testId}"]`) !== null;
-    let sawLoader = false;
+    // A new install: until the visual-first-run flag answers, the window shows
+    // the takeover's held backdrop (US-010) or, once the shell has painted,
+    // #setup's loader. Then the route settles (legacy here: the flag is off)
+    // and the banner paints. The setup bot's DM opens soon after and replaces
+    // #setup, so every DOM change is recorded from mount and the banner is
+    // checked on the frames after the wait. The #setup intro must never show
+    // underneath the held backdrop.
+    const has = (testId: string) => document.querySelector(`[data-testid="${testId}"]`) !== null;
+    let sawWait = false;
+    let introUnderHeld = false;
     const settledFrames: Array<{ skeleton: boolean; intro: boolean; run: boolean; card: boolean; composer: boolean }> = [];
     const observer = new MutationObserver(() => {
-      if (has('welcome-route-pending')) {
-        sawLoader = true;
+      if (has('first-run-held')) {
+        sawWait = true;
+        if (has('setup-channel-intro')) introUnderHeld = true;
         return;
       }
-      if (!sawLoader || !has('setup-channel-intro')) return;
+      if (has('welcome-route-pending')) {
+        sawWait = true;
+        return;
+      }
+      if (!sawWait || !has('setup-channel-intro')) return;
       settledFrames.push({
         skeleton: has('channel-skeleton'),
         intro: has('setup-channel-intro'),
@@ -458,7 +466,7 @@ describe('desktop shell boots the lifecycle scenario', () => {
         composer: has('conversation-composer'),
       });
     });
-    observer.observe(host, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true });
     component = mount(HqWorkWorkShell, {
       target: host,
       props: { invokeFn, bootTimeoutMs: 40 },
@@ -468,7 +476,7 @@ describe('desktop shell boots the lifecycle scenario', () => {
     try {
       await vi.waitFor(
         () => {
-          expect(sawLoader).toBe(true);
+          expect(sawWait).toBe(true);
           expect(settledFrames.length).toBeGreaterThan(0);
           expect(calls).toContain('shell_ready');
         },
@@ -477,6 +485,7 @@ describe('desktop shell boots the lifecycle scenario', () => {
     } finally {
       observer.disconnect();
     }
+    expect(introUnderHeld).toBe(false);
     // The first frame after the route settles shows the banner.
     const [banner] = settledFrames;
     expect(banner.skeleton).toBe(false);
