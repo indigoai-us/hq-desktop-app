@@ -15,6 +15,7 @@
     prompts = {},
     now,
     rows,
+    cols = 2,
     companies = [],
     launch = async () => null,
   }: {
@@ -22,6 +23,7 @@
     prompts?: Record<string, string>;
     now: string;
     rows: number;
+    cols?: number;
     companies?: BriefCompanyLogo[];
     launch?: BriefLaunch;
   } = $props();
@@ -29,6 +31,6 @@
 </script>
 
 <div class="daily-brief">
-  <BriefHandoffs {handoffs} {prompts} {now} {rows} />
+  <BriefHandoffs {handoffs} {prompts} {now} {rows} {cols} />
   <BriefPeek />
 </div>

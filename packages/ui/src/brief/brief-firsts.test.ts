@@ -7,11 +7,16 @@ import {
   FIRSTS_TILE_MAX,
   GLINT_DELAY_MS,
   GLINT_MS,
+  ROLLUP_FIRST,
   firstCaption,
+  firstDetail,
+  firstLine,
+  firstMeta,
   firstNotePrompt,
   firstPeek,
   firstProduct,
   firstSub,
+  firstsCount,
   firstsHeadline,
   firstsMorePeek,
   firstsOf,
@@ -40,6 +45,10 @@ const DAY: BriefShipped[] = [
   ship("s3", "Finance dashboard is live", { why: "Geoff's CFO budget dashboard merged and deployed.", first: true, origin: { companyUid: INDIGO, repo: "indigoai-us/hq-finance" }, status: "1 merged" }),
   ship("s4", "Desktop app", { status: "13 merged", note: "nothing open" }),
 ];
+/** The "everything" fixture's first: a rollup row named after its repo, the sweep's "nothing open" note, no why. */
+const ROLLUP = ship("ship:hq-cloud", "hq-cloud", { first: true, status: "2 merged", note: "nothing open", origin: { companyUid: INDIGO, repo: "indigoai-us/hq-cloud" } });
+/** The real 2026-10-11 shape: rollup rows whose why says what the first was. */
+const LEDGER = ship("ship:ledger", "Ledger", { first: true, status: "11 merged", why: "The first invoices went out to real customers.", origin: { companyUid: INDIGO, repo: "northwind/ledger", product: "Ledger" } });
 const FOUR: BriefShipped[] = [...DAY, ship("s5", "Ran the first customer onboarding call", { first: true, origin: { companyUid: INDIGO, repo: "Calendar", product: "Onboarding" } })];
 
 describe("brief-firsts helpers", () => {
@@ -49,11 +58,41 @@ describe("brief-firsts helpers", () => {
     expect(firstsOf([])).toEqual([]);
   });
 
-  it("headline says how many, in words", () => {
-    expect(firstsHeadline(1)).toBe("One first yesterday.");
-    expect(firstsHeadline(2)).toBe("Two firsts yesterday.");
-    expect(firstsHeadline(3)).toBe("Three firsts yesterday.");
-    expect(firstsHeadline(12)).toBe("12 firsts yesterday.");
+  it("headline says how many, in words, and the day (a mono caps marker, so no closing period)", () => {
+    expect(firstsHeadline(1)).toBe("One first yesterday");
+    expect(firstsHeadline(2)).toBe("Two firsts yesterday");
+    expect(firstsHeadline(3)).toBe("Three firsts yesterday");
+    expect(firstsHeadline(12)).toBe("12 firsts yesterday");
+    expect(firstsCount(1)).toBe("One first");
+    expect(firstsCount(4)).toBe("Four firsts");
+  });
+
+  it("a first's line says what happened: a named ship's caption, a rollup row's why, never the repo slug", () => {
+    expect(firstLine(DAY[0]!)).toBe("API keys now stay inside their company");
+    expect(firstLine(DAY[1]!)).toBe("HQ Storage shipped");
+    expect(firstLine(LEDGER)).toBe("The first invoices went out to real customers");
+    expect(firstLine(ROLLUP)).toBe(ROLLUP_FIRST);
+    expect(firstLine(ship("c", "hq-pro: 3 changes shipped", { first: true }))).toBe(ROLLUP_FIRST);
+    // A long why leads with its first sentence; the rest becomes the detail, without PR references.
+    const long = ship("l", "hq-sync", { first: true, why: "Two-way sync shipped (#88). Teams keep both edits on a conflict.", origin: { companyUid: INDIGO, repo: "indigoai-us/hq-sync" } });
+    expect(firstLine(long)).toBe("Two-way sync shipped");
+    expect(firstDetail(long)).toBe("Teams keep both edits on a conflict.");
+    for (const s of [...FOUR, ROLLUP, LEDGER]) expect(firstLine(s)).not.toMatch(/^hq-|[\w.-]+\/[\w.-]+|#\d+/);
+  });
+
+  it("the detail is why it counts, never the sweep's open-PR note, and never repeats the line", () => {
+    expect(firstDetail(DAY[0]!)).toContain("A key can no longer fetch another company's data");
+    expect(firstDetail(ROLLUP)).toBe("");
+    expect(firstSub(ROLLUP)).toBe("");
+    expect(firstSub(ship("n", "t", { note: "2 open" }))).toBe("");
+    expect(firstDetail(LEDGER)).toBe("");
+    expect(firstDetail(ship("h", "Beacon", { first: true, highlights: ["beacon #12: feat: welcome page for trials"] }))).toBe("Welcome page for trials");
+  });
+
+  it("the meta is the row's status in plain case (shown as mono caps)", () => {
+    expect(firstMeta(ROLLUP)).toBe("2 merged");
+    expect(firstMeta(DAY[0]!)).toBe("Merged");
+    expect(firstMeta(ship("e", "t", { status: " " }))).toBe("");
   });
 
   it("captions are plain: no repo slug, no PR number, no conventional prefix, at most eight words", () => {
@@ -78,7 +117,7 @@ describe("brief-firsts helpers", () => {
     expect(firstSub(ship("n", "t"))).toBe("");
   });
 
-  it("tiles per slot: one at S, two at W, three at W3 or taller, never more than the firsts", () => {
+  it("firsts per slot: one at S, two at W, three at W3 or taller, never more than the firsts", () => {
     expect(tileCount(1, 1, 5)).toBe(1);
     expect(tileCount(2, 1, 5)).toBe(2);
     expect(tileCount(3, 1, 5)).toBe(FIRSTS_TILE_MAX);
@@ -97,7 +136,7 @@ describe("brief-firsts helpers", () => {
     expect(firstNotePrompt(ship("n", "Shipped a thing"))).not.toContain("Why it counts");
   });
 
-  it("the medal peek shows why, evidence by product, and a Draft prompt; the more-peek lists the rest", () => {
+  it("a first's peek shows why, evidence by product, and a Draft prompt; the more-peek lists the rest", () => {
     const pk = firstPeek(DAY[0]!, "PROMPT");
     expect(pk.title).toBe("API keys now stay inside their company");
     expect(pk.status).toBe("HQ Pro · a first");
@@ -113,6 +152,19 @@ describe("brief-firsts helpers", () => {
     expect(more.status).toBe("Also yesterday");
     expect(more.sections[0]!.lines!.map((l) => [l.label, l.state])).toEqual([["Ran the first customer onboarding call", "Onboarding"]]);
     expect(firstsMorePeek(firstsOf(FOUR).slice(1)).title).toBe("3 more firsts");
+  });
+
+  it("a rollup first's peek and prompt lead with its why, by product name, without repeating it", () => {
+    const pk = firstPeek(LEDGER, firstNotePrompt(LEDGER));
+    expect(pk.title).toBe("The first invoices went out to real customers");
+    expect(pk.status).toBe("Ledger · a first");
+    expect(pk.sections.map((s) => s.label)).toEqual(["Evidence"]);
+    expect(firstNotePrompt(LEDGER)).toContain("a first for Ledger: The first invoices went out to real customers.");
+    expect(firstNotePrompt(LEDGER)).not.toContain("Why it counts");
+    const roll = firstPeek(ROLLUP, "P");
+    expect(roll.title).toBe(ROLLUP_FIRST);
+    expect(roll.status).toBe("HQ Cloud · a first");
+    expect(firstsMorePeek([ROLLUP]).sections[0]!.lines!.map((l) => [l.label, l.state])).toEqual([[ROLLUP_FIRST, "HQ Cloud"]]);
   });
 });
 
@@ -147,10 +199,12 @@ describe("BriefFirsts", () => {
     expect(target.textContent?.trim()).toBe("");
   });
 
-  it("three firsts at W3 render three medal tiles under the headline, with no more pill", () => {
+  it("three firsts at W3 render three open rows under the marker, with no more pill", () => {
     render({});
-    expect(q('[data-testid="brief-firsts-title"]')!.textContent).toBe("Three firsts yesterday.");
+    expect(q('[data-testid="brief-firsts-title"]')!.textContent).toBe("Three firsts yesterday");
     expect(q(".eyebrow")!.textContent!.trim()).toBe("Firsts");
+    expect(q('[data-testid="brief-firsts"]')!.dataset.layout).toBe("rows");
+    expect(qa('[data-testid="brief-first-product"]').map((el) => el.textContent)).toEqual(["HQ Pro", "Desktop app", "Finance dashboard"]);
     const tiles = qa('[data-testid="brief-first"]');
     expect(tiles).toHaveLength(3);
     expect(qa('[data-testid="brief-first-caption"]').map((el) => el.textContent)).toEqual([
@@ -167,7 +221,7 @@ describe("BriefFirsts", () => {
   it("four firsts cap at three tiles; the +1 more pill's peek lists the fourth", async () => {
     render({ shipped: FOUR });
     expect(qa('[data-testid="brief-first"]')).toHaveLength(3);
-    expect(q('[data-testid="brief-firsts-title"]')!.textContent).toBe("Four firsts yesterday.");
+    expect(q('[data-testid="brief-firsts-title"]')!.textContent).toBe("Four firsts yesterday");
     const more = q('[data-testid="brief-firsts-more"]')!;
     expect(more.textContent!.trim()).toBe("+1 more");
     await hover(more);
@@ -178,9 +232,13 @@ describe("BriefFirsts", () => {
     expect(peek.textContent).not.toContain("API keys now stay");
   });
 
-  it("S renders exactly one tile and sends the rest to +N more; W renders two", () => {
+  it("S renders exactly one first (it leads) and sends the rest to +N more; W renders two rows", () => {
     render({ cols: 1 });
     expect(qa('[data-testid="brief-first"]')).toHaveLength(1);
+    expect(q('[data-testid="brief-firsts"]')!.dataset.layout).toBe("hero");
+    // The day can step aside beside the pill on a narrow card; the count never does.
+    expect(q('[data-testid="brief-firsts-title"]')!.textContent).toBe("Three firsts yesterday");
+    expect(q('[data-testid="brief-firsts-title"] .day')!.textContent).toBe(" yesterday");
     expect(q('[data-testid="brief-firsts-more"]')!.textContent!.trim()).toBe("+2 more");
     unmount(app!);
     app = null;
@@ -198,7 +256,7 @@ describe("BriefFirsts", () => {
     }
   });
 
-  it("the disc shows the company logo when the brief knows the company, else a mono 1st", () => {
+  it("the logo circle shows the company logo when the brief knows the company, else a mono 1st", () => {
     render({ companies: [{ uid: INDIGO, label: "Indigo", iconUrl: null }] });
     expect(qa('[data-testid="brief-logo"]')).toHaveLength(3);
     expect(q('[data-testid="brief-first-figure"]')).toBeNull();
@@ -235,7 +293,37 @@ describe("BriefFirsts", () => {
     expect(q('[data-testid="brief-peek"]')!.textContent).not.toContain("Draft a short note");
   });
 
-  it("the foil glints once after load for 700ms, then rests", () => {
+  it("one first leads the card: what happened, the product by its human name, the status; no repo slug, no 'nothing open'", () => {
+    render({ shipped: [ROLLUP, ship("x", "Plain merge")], cols: 2, companies: [{ uid: INDIGO, label: "Indigo", iconUrl: null }] });
+    const root = q('[data-testid="brief-firsts"]')!;
+    expect(root.dataset.layout).toBe("hero");
+    expect(q('[data-testid="brief-firsts-title"]')!.textContent).toBe("One first yesterday");
+    expect(q('[data-testid="brief-first-caption"]')!.textContent).toBe(ROLLUP_FIRST);
+    expect(q('[data-testid="brief-first-product"]')!.textContent).toBe("HQ Cloud");
+    expect(q('[data-testid="brief-first-meta"]')!.textContent).toBe("2 merged");
+    expect(q('[data-testid="brief-first-sub"]')).toBeNull();
+    expect(q('[data-testid="brief-first"] [data-testid="brief-logo"]')).not.toBeNull();
+    expect(root.textContent).not.toContain("hq-cloud");
+    expect(root.textContent).not.toContain("nothing open");
+  });
+
+  it("a rollup first with a why leads with the why and names its product", () => {
+    render({ shipped: [LEDGER], cols: 2 });
+    expect(q('[data-testid="brief-first-caption"]')!.textContent).toBe("The first invoices went out to real customers");
+    expect(q('[data-testid="brief-first-product"]')!.textContent).toBe("Ledger");
+    expect(q('[data-testid="brief-first-sub"]')).toBeNull();
+  });
+
+  it("says 'Firsts' once: its own label is the card's first child (the corner tag hides it), with no second title", () => {
+    render({});
+    const root = q('[data-testid="brief-firsts"]')!;
+    expect(root.firstElementChild!.classList.contains("eyebrow")).toBe(true);
+    expect(qa(".eyebrow")).toHaveLength(1);
+    const words = (root.textContent ?? "").match(/\bFirsts\b/g) ?? [];
+    expect(words).toHaveLength(1);
+  });
+
+  it("each first glints once after load for 700ms, then rests", () => {
     vi.useFakeTimers();
     render({ reducedMotion: false });
     const root = () => q('[data-testid="brief-firsts"]')!;

@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import type { LocalBotRow } from "@hq/platform";
@@ -188,6 +190,25 @@ describe("BriefActivity rendering", () => {
     expect(Number(items[0]!.style.opacity)).toBeLessThan(Number(items[4]!.style.opacity));
     expect(target.querySelector('[data-testid="brief-elapsed"]')?.textContent).toBe("2m 14s · usually ~12 min");
     expect(target.querySelector('[data-testid="brief-still-working"]')?.textContent).toBe("Still working on checking GitHub PRs…");
+  });
+
+  it("puts the elapsed time on the status row, after the status, which truncates before it", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    const activity = [{ at: "1", label: "Reading work sessions", state: "running", detail: null }] as Item[];
+    app = mount(BriefActivity, { target, props: { activity, visible: 1, elapsed: "7s" } });
+    flushSync();
+    await tick();
+    const row = target.querySelector<HTMLElement>('[data-testid="brief-status-row"]')!;
+    const time = target.querySelector<HTMLElement>('[data-testid="brief-elapsed"]')!;
+    expect(time.parentElement).toBe(row);
+    expect(row.querySelector('[data-testid="brief-activity-item"]')?.textContent).toContain("Reading work sessions");
+    // The time comes after the status in the row.
+    expect(row.lastElementChild).toBe(time);
+    const css = readFileSync(resolve(process.cwd(), "src/brief/BriefActivity.svelte"), "utf8");
+    expect(/\.status-row \{([^}]*)\}/.exec(css)![1]).toMatch(/display: flex/);
+    expect(/li \.lbl \{([^}]*)\}/.exec(css)![1]).toMatch(/text-overflow: ellipsis/);
+    expect(/\.time \{([^}]*)\}/.exec(css)![1]).toMatch(/margin: 0 0 0 auto/);
   });
 
   it("with no activity (older skill) shows only the time line", () => {
