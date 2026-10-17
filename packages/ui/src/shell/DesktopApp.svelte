@@ -614,7 +614,7 @@
     type NavigationScrollState,
     type ProjectsFocusTab,
   } from "./navigation-history.js";
-  import { dropStackedThreadEntries } from "./thread-sidebar-close.js";
+  import { settleThreadSidebarClose } from "./thread-sidebar-close.js";
   import {
     createNavigationScrollTracker,
     scheduleNavigationScrollRestore,
@@ -10724,14 +10724,16 @@
       replyRootEventId: null,
     });
     openReplyRootId = null;
-    const committed = navigate(closed, "replace");
-    if (committed instanceof Promise) {
-      void committed.then((result) => {
-        if (result.committed) dropStackedThreadEntries(navigationHistory, closed);
-      });
+    const settled = navigate(closed, "replace");
+    const finish = (result: { committed: boolean }): void => {
+      settleThreadSidebarClose(navigationHistory, closed, result.committed);
+      syncNavigationChrome();
+    };
+    if (settled instanceof Promise) {
+      void settled.then(finish);
       return;
     }
-    if (committed.committed) dropStackedThreadEntries(navigationHistory, closed);
+    finish(settled);
   }
 
   function queueReplyForRow(

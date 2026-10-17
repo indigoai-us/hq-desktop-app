@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -12,7 +9,10 @@ import {
   createNavigationHistory,
   type NavigationDestination,
 } from "./navigation-history.js";
-import { dropStackedThreadEntries } from "./thread-sidebar-close.js";
+import {
+  dropStackedThreadEntries,
+  settleThreadSidebarClose,
+} from "./thread-sidebar-close.js";
 
 function channel(
   channelId: string,
@@ -33,25 +33,31 @@ function dm(
   return { kind: "dm", personUid, replyRootEventId, agentSurface: "chat" };
 }
 
-function shell(): NavigationController {
+function shell(
+  resolve: (
+    destination: NavigationDestination,
+  ) => NavigationResolveOutcome | Promise<NavigationResolveOutcome> = (
+    destination,
+  ) => ({ status: "ready", destination }),
+): NavigationController {
   return createNavigationController({
     getScope: () => ({ accountId: "acct_ada", companyUid: "cmp_acme" }),
-    resolve: (destination): NavigationResolveOutcome => ({
-      status: "ready",
-      destination,
-    }),
+    resolve,
     apply: () => {},
   });
 }
 
-/** What the thread sidebar X does to history: replace, then drop the stack. */
+/** What the thread sidebar X does after navigation settles. */
 function pressClose(
   navigation: NavigationController,
   closed: NavigationDestination,
+  committed = true,
 ): void {
-  const result = navigation.navigate(closed, "replace");
-  expect(result).toMatchObject({ status: "ready", committed: true });
-  dropStackedThreadEntries(navigation.history, closed);
+  if (committed) {
+    const result = navigation.navigate(closed, "replace");
+    expect(result).toMatchObject({ status: "ready", committed: true });
+  }
+  settleThreadSidebarClose(navigation.history, closed, committed);
 }
 
 function replyRoots(navigation: NavigationController): (string | null)[] {
@@ -62,8 +68,22 @@ function replyRoots(navigation: NavigationController): (string | null)[] {
   });
 }
 
+function cursor(navigation: NavigationController): {
+  index: number;
+  replies: (string | null)[];
+  canGoBack: boolean;
+  canGoForward: boolean;
+} {
+  return {
+    index: navigation.history.snapshot().index,
+    replies: replyRoots(navigation),
+    canGoBack: navigation.history.canGoBack(),
+    canGoForward: navigation.history.canGoForward(),
+  };
+}
+
 describe("thread sidebar close", () => {
-  it("open thread A, open thread B, press X: sidebar is closed and A is not shown", () => {
+  it("open thread A, open thread B, press X: one closed entry and the cursor is on it", () => {
     const navigation = shell();
     navigation.navigate(channel("chn_core", null));
     navigation.navigate(channel("chn_core", "evt_a"));
@@ -71,19 +91,24 @@ describe("thread sidebar close", () => {
 
     pressClose(navigation, channel("chn_core", null));
 
+    expect(cursor(navigation)).toEqual({
+      index: 0,
+      replies: [null],
+      canGoBack: false,
+      canGoForward: false,
+    });
     expect(navigation.history.current()?.destination).toMatchObject({
       kind: "channel",
       channelId: "chn_core",
       replyRootEventId: null,
     });
-    expect(replyRoots(navigation)).not.toContain("evt_a");
-    expect(replyRoots(navigation)).not.toContain("evt_b");
-
     navigation.back();
-    const previous = navigation.history.current()?.destination;
-    if (previous && (previous.kind === "channel" || previous.kind === "dm")) {
-      expect(previous.replyRootEventId ?? null).toBeNull();
-    }
+    expect(navigation.history.current()?.destination).toMatchObject({
+      kind: "channel",
+      channelId: "chn_core",
+      replyRootEventId: null,
+    });
+    expect(cursor(navigation).index).toBe(0);
   });
 
   it("closes a single open thread", () => {
@@ -93,10 +118,12 @@ describe("thread sidebar close", () => {
 
     pressClose(navigation, channel("chn_core", null));
 
-    expect(navigation.history.current()?.destination).toMatchObject({
-      replyRootEventId: null,
+    expect(cursor(navigation)).toEqual({
+      index: 0,
+      replies: [null],
+      canGoBack: false,
+      canGoForward: false,
     });
-    expect(replyRoots(navigation)).not.toContain("evt_a");
   });
 
   it("reopening a thread after X starts from an empty thread stack", () => {
@@ -109,11 +136,11 @@ describe("thread sidebar close", () => {
     navigation.navigate(channel("chn_core", "evt_c"));
     pressClose(navigation, channel("chn_core", null));
 
-    expect(replyRoots(navigation).filter(Boolean)).toEqual([]);
-    expect(navigation.history.current()?.destination).toMatchObject({
-      kind: "channel",
-      channelId: "chn_core",
-      replyRootEventId: null,
+    expect(cursor(navigation)).toEqual({
+      index: 0,
+      replies: [null],
+      canGoBack: false,
+      canGoForward: false,
     });
   });
 
@@ -126,14 +153,17 @@ describe("thread sidebar close", () => {
 
     pressClose(navigation, dm("prs_ada", null));
 
+    expect(cursor(navigation)).toEqual({
+      index: 1,
+      replies: ["evt_other", null],
+      canGoBack: true,
+      canGoForward: false,
+    });
     expect(navigation.history.current()?.destination).toMatchObject({
       kind: "dm",
       personUid: "prs_ada",
       replyRootEventId: null,
     });
-    expect(replyRoots(navigation)).not.toContain("evt_a");
-    expect(replyRoots(navigation)).not.toContain("evt_b");
-    expect(replyRoots(navigation)).toContain("evt_other");
   });
 
   it("does not drop entries when the closed destination is still a thread", () => {
@@ -147,19 +177,80 @@ describe("thread sidebar close", () => {
     expect(history.snapshot().entries).toHaveLength(1);
   });
 
-  it("DesktopApp close uses replace and drops the stack instead of going back", () => {
-    const source = readFileSync(
-      join(dirname(fileURLToPath(import.meta.url)), "DesktopApp.svelte"),
-      "utf8",
+  it("still closes the stack when replace navigation is not committed", () => {
+    const navigation = shell();
+    navigation.navigate(channel("chn_core", null));
+    navigation.navigate(channel("chn_core", "evt_a"));
+    navigation.navigate(channel("chn_core", "evt_b"));
+
+    pressClose(navigation, channel("chn_core", null), false);
+
+    expect(cursor(navigation)).toEqual({
+      index: 0,
+      replies: [null],
+      canGoBack: false,
+      canGoForward: false,
+    });
+    navigation.back();
+    expect(replyRoots(navigation)).toEqual([null]);
+  });
+
+  it("does not clobber a newer destination when close is superseded", () => {
+    const navigation = shell();
+    navigation.navigate(channel("chn_core", null));
+    navigation.navigate(channel("chn_core", "evt_a"));
+    navigation.navigate(channel("chn_core", "evt_b"));
+    navigation.navigate({ kind: "messages" });
+
+    settleThreadSidebarClose(
+      navigation.history,
+      channel("chn_core", null),
+      false,
     );
-    const start = source.indexOf("function closeReply(): void");
-    const end = source.indexOf("function queueReplyForRow", start);
-    expect(start).toBeGreaterThan(-1);
-    expect(end).toBeGreaterThan(start);
-    const body = source.slice(start, end);
-    expect(body).toContain("dropStackedThreadEntries");
-    expect(body).toContain('"replace"');
-    expect(body).not.toContain("leaveCurrentDestination");
-    expect(body).not.toContain("goBack");
+
+    expect(cursor(navigation)).toEqual({
+      index: 1,
+      replies: [null, null],
+      canGoBack: true,
+      canGoForward: false,
+    });
+    expect(navigation.history.current()?.destination).toEqual({
+      kind: "messages",
+    });
+    navigation.back();
+    expect(navigation.history.current()?.destination).toMatchObject({
+      kind: "channel",
+      channelId: "chn_core",
+      replyRootEventId: null,
+    });
+  });
+
+  it("an async close that resolves cancelled still drops the open thread", async () => {
+    let hold = false;
+    let release: (value: NavigationResolveOutcome) => void = () => {};
+    const navigation = shell((destination) => {
+      if (!hold) return { status: "ready", destination };
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    navigation.navigate(channel("chn_core", null));
+    navigation.navigate(channel("chn_core", "evt_a"));
+    navigation.navigate(channel("chn_core", "evt_b"));
+    hold = true;
+
+    const pending = navigation.navigate(channel("chn_core", null), "replace");
+    expect(pending).toBeInstanceOf(Promise);
+    release({ status: "cancelled" });
+    const result = await pending;
+    expect(result.committed).toBe(false);
+    settleThreadSidebarClose(navigation.history, channel("chn_core", null), false);
+
+    expect(cursor(navigation)).toEqual({
+      index: 0,
+      replies: [null],
+      canGoBack: false,
+      canGoForward: false,
+    });
   });
 });

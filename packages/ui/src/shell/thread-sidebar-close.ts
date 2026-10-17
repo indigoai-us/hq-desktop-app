@@ -53,10 +53,9 @@ export function isStackedThreadDestination(
 
 /**
  * Remove open-thread entries for the conversation `closed` lands on.
- * `closed` itself must be that conversation with no thread. The current
- * entry is kept when it is already the closed conversation. Call this only
- * after that entry has been committed, so the cursor does not fall through
- * onto an older thread.
+ * `closed` itself must be that conversation with no thread. Filtering also
+ * collapses the adjacent no-thread copy that replace leaves behind, and
+ * leaves the cursor on the surviving current entry.
  */
 export function dropStackedThreadEntries(
   history: NavigationHistory,
@@ -67,4 +66,34 @@ export function dropStackedThreadEntries(
   history.filter(
     (entry) => !isStackedThreadDestination(entry.destination, conversation),
   );
+}
+
+/**
+ * Finish a thread-sidebar close against history.
+ *
+ * When navigation committed, the current entry is already `closed` and this
+ * only drops the stack. When it did not (superseded, rejected, or still
+ * unavailable), the open thread would stay current and Back could show the
+ * previous thread. In that case, if the current entry is still that
+ * conversation's thread, replace it with `closed` before dropping the stack.
+ * A newer committed destination is left where it is.
+ */
+export function settleThreadSidebarClose(
+  history: NavigationHistory,
+  closed: NavigationDestination,
+  committed: boolean,
+): void {
+  if (!committed) {
+    const conversation = threadConversationOf(closed);
+    const current = history.current();
+    if (
+      conversation &&
+      !threadReplyRoot(closed) &&
+      current &&
+      isStackedThreadDestination(current.destination, conversation)
+    ) {
+      history.replace({ ...current, destination: closed });
+    }
+  }
+  dropStackedThreadEntries(history, closed);
 }

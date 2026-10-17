@@ -21,6 +21,11 @@
   import ReactionBar from "./ReactionBar.svelte";
   import { buildMessageLink } from "./message-link";
   import EmojiPicker from "./EmojiPicker.svelte";
+  import {
+    readThreadComposerDraft,
+    threadComposerDraftKey,
+    writeThreadComposerDraft,
+  } from "./thread-composer-draft.js";
   import MentionPicker from "./MentionPicker.svelte";
   import type { LocalBotRow } from "@hq/platform";
   import AgentThinkingRow from "./AgentThinkingRow.svelte";
@@ -354,6 +359,7 @@
   let loadError = $state<string | null>(null);
   let sending = $state(false);
   let draft = $state("");
+  let composerDraftKeyApplied = "";
   let loadGeneration = 0;
   let localSeq = 0;
   let seenIds = $state(new Set<string>());
@@ -465,6 +471,14 @@
     agentThinking = clearFromMessages(agentThinking, list);
   }
 
+  const composerDraftKey = $derived(
+    threadComposerDraftKey({
+      scope,
+      channelId,
+      withPersonUid,
+      rootEventId,
+    }),
+  );
   const mentionQuery = $derived(activeMentionQuery(draft));
   const mentionHits = $derived(
     filterMentionCandidates(
@@ -785,6 +799,7 @@
     selectedMentions = [];
     mentionHighlight = 0;
     pendingFiles = [];
+    writeThreadComposerDraft(composerDraftKey, { text: "", files: [] });
     attachError = null;
     attachUpgradeUrl = null;
     const echoToChannel = alsoSendToChannel && canAlsoSend;
@@ -949,14 +964,67 @@
     return () => onactivethreadchange?.(null);
   });
 
+  // Restore before the write effect, and save the thread we are leaving.
+  // Reading the outgoing draft inside untrack keeps keystrokes from re-running this.
+  $effect.pre(() => {
+    const key = composerDraftKey;
+    const previous = composerDraftKeyApplied;
+    if (previous === key) return;
+    if (previous) {
+      writeThreadComposerDraft(previous, {
+        text: untrack(() => draft),
+        files: untrack(() => pendingFiles),
+      });
+    }
+    const saved = readThreadComposerDraft(key);
+    composerDraftKeyApplied = key;
+    draft = saved?.text ?? "";
+    pendingFiles = saved ? [...saved.files] : [];
+  });
+
   $effect(() => {
+    const key = composerDraftKey;
+    const text = draft;
+    const files = pendingFiles;
+    if (key !== composerDraftKeyApplied) return;
+    writeThreadComposerDraft(key, { text, files });
+  });
+
+  function escapeClosesOpenThreadLayer(e: KeyboardEvent): boolean {
+    // Capture runs before the mention field, so only the layers that do not
+    // get their own keydown (reaction picker, link menu) are consumed here.
+    if (reactPickerFor) {
+      e.preventDefault();
+      e.stopPropagation();
+      reactPickerFor = null;
+      return true;
+    }
+    if (linkMenu) {
+      e.preventDefault();
+      e.stopPropagation();
+      linkMenu = null;
+      return true;
+    }
+    return false;
+  }
+
+  $effect(() => {
+    function onKeyCapture(e: KeyboardEvent): void {
+      if (e.key !== "Escape") return;
+      escapeClosesOpenThreadLayer(e);
+    }
     function onKey(e: KeyboardEvent): void {
       if (e.key !== "Escape") return;
+      if (escapeClosesOpenThreadLayer(e)) return;
       e.preventDefault();
       onclose();
     }
+    window.addEventListener("keydown", onKeyCapture, true);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKeyCapture, true);
+      window.removeEventListener("keydown", onKey);
+    };
   });
 
   function onReplyNew(root: string, eventId?: string): void {
