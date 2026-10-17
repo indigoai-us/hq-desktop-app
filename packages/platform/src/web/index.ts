@@ -238,6 +238,8 @@ export const WEB_PATHS = {
     `/v1/companies/${encodeURIComponent(companyUid)}/home-channel`,
   /** POST, body `{ companyUid }`: hq-pro's owner-gated Stripe portal mint. */
   companyBillingPortal: () => `/v1/billing/portal`,
+  /** POST, body `{ companyUid }`: hq-pro's owner-gated Stripe card-capture Checkout. */
+  companyBillingCheckout: () => `/v1/billing/checkout/org`,
   /** GET, owner-gated: plan, pricing plan (`usage-only`) and usage trial. */
   companyBillingSummary: (companyUid: string) =>
     `/v1/billing/summary?companyUid=${encodeURIComponent(companyUid)}`,
@@ -1191,6 +1193,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(WEB_PATHS.companyHomeChannel(companyUid)),
     createBillingPortalSession: (companyUid) =>
       this.post(WEB_PATHS.companyBillingPortal(), { companyUid }),
+    createBillingCheckoutSession: (companyUid) =>
+      this.post(WEB_PATHS.companyBillingCheckout(), { companyUid }),
     getBillingSummary: (companyUid) =>
       this.get(WEB_PATHS.companyBillingSummary(companyUid)),
     getUsageStatement: (companyUid) =>

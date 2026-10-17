@@ -29,6 +29,11 @@ export interface OpenBillingPortalInput {
   companyUid: string;
   createSession: (companyUid: string) => Promise<AdapterResult<{ url: string }>>;
   openExternal: (url: string) => void;
+  /**
+   * Which minted URL may be opened. Defaults to the portal host; the card
+   * setup flow passes `approvedCheckoutUrl`.
+   */
+  approveUrl?: (raw: unknown) => string | null;
   /** Total tries for a transient failure. */
   attempts?: number;
   /** Backoff between tries; injectable for tests. */
@@ -38,6 +43,13 @@ export interface OpenBillingPortalInput {
 const BACKOFF_MS = [400, 1200];
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Only a checkout.stripe.com https page counts as a card-setup Checkout URL. */
+export function approvedCheckoutUrl(raw: unknown): string | null {
+  const url = approvedStripeUrl(raw);
+  if (!url) return null;
+  return new URL(url).hostname === "checkout.stripe.com" ? url : null;
+}
 
 /** Only a billing.stripe.com https page counts as a portal URL. */
 export function approvedPortalUrl(raw: unknown): string | null {
@@ -66,7 +78,7 @@ export async function openBillingPortal(input: OpenBillingPortalInput): Promise<
       continue;
     }
     if (result.ok) {
-      const url = approvedPortalUrl(result.value?.url);
+      const url = (input.approveUrl ?? approvedPortalUrl)(result.value?.url);
       if (!url) {
         // A non-Stripe or malformed URL is never opened; nothing to retry.
         console.warn("[billing] portal session returned an unapproved URL");

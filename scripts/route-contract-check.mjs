@@ -91,7 +91,10 @@ export function extractRegistryRoutes(sourceText) {
   const routes = new Set();
   const literalRouteKey = /routeKey:\s*"([A-Z]+\s+\/[^"]*)"/g;
   const literalKeyEntry = /\bkey:\s*"([A-Z]+\s+\/[^"]*)"/g;
-  for (const re of [literalRouteKey, literalKeyEntry]) {
+  // `for (const [name, routeKey] of [["BillingCheckoutOrgRoute", "POST /v1/billing/checkout/org"], ...])`
+  // — a two-literal tuple whose second element is the route key.
+  const literalNameKeyTuple = /\[\s*"\w+"\s*,\s*"([A-Z]+\s+\/[^"]*)"\s*\]/g;
+  for (const re of [literalRouteKey, literalKeyEntry, literalNameKeyTuple]) {
     for (const match of sourceText.matchAll(re)) {
       routes.add(normalizeRoute(match[1]));
     }

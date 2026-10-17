@@ -108,6 +108,26 @@ describe("extractRegistryRoutes", () => {
     );
   });
 
+  it("extracts [name, \"METHOD /path\"] tuple-table literals", () => {
+    const src = `
+      for (const [name, routeKey] of [
+        ["BillingCheckoutOrgRoute", "POST /v1/billing/checkout/org"],
+        // a comment between entries
+        ["BillingCheckoutPersonRoute", "POST /v1/billing/checkout/person"],
+      ]) {
+        new aws.apigatewayv2.Route(name, { routeKey });
+      }
+    `;
+    expect(extractRegistryRoutes(src)).toEqual(
+      new Set(["POST /v1/billing/checkout/org", "POST /v1/billing/checkout/person"]),
+    );
+  });
+
+  it("does not read a tuple whose second element is not a route key", () => {
+    const src = `const pairs = [["BillingCheckoutOrgRoute", "billing-checkout"]];`;
+    expect(extractRegistryRoutes(src).size).toBe(0);
+  });
+
   it("does not fabricate a route out of a runtime-only routeKey", () => {
     const src = `routeKey: route.key,`;
     expect(extractRegistryRoutes(src).size).toBe(0);
