@@ -116,3 +116,45 @@ it('never shows personal apps on a local bot', async () => {
   expect(api.list).not.toHaveBeenCalled();
   expect(target.querySelector('[aria-label="Personal apps"]')).toBeNull();
 });
+it('shows a signed-in app as connecting until the reloading bot reports it connected', async () => {
+  vi.useFakeTimers();
+  try {
+    const vercel = (connected: boolean) => ({ name: 'vercel', url: 'https://mcp.vercel.com', auth: 'oauth', enabled: true, connected, tools: connected ? 239 : null });
+    const api = await setupPersonal({ ok: true, value: { apps: [] } });
+    api.catalog.mockResolvedValue({ ok: true, value: { entries: [{ name: 'vercel', description: 'Deploys', url: 'https://mcp.vercel.com', transport: 'http', auth: 'oauth', installed: false, supported: true }] } });
+    api.add.mockResolvedValue({ ok: true, value: {} });
+    api.list.mockResolvedValue({ ok: true, value: { apps: [vercel(false)] } });
+    api.startSignIn.mockResolvedValue({ ok: true, value: { flowId: 'flow-1', authorizationUrl: 'https://vercel.com/oauth/authorize?state=s' } });
+    api.signInStatus.mockResolvedValue({ ok: true, value: { status: 'authorization_required', error: null, tools: 0 } });
+    const card = () => target.querySelector('[data-testid="personal-app"]')?.textContent ?? '';
+    const section = () => target.querySelector('[aria-label="Personal apps"]')!;
+    [...section().querySelectorAll('button')].find(button => button.textContent?.includes('Browse apps'))!.click(); await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="personal-catalog-app"]')!.click(); await settle();
+    [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Add and sign in')!.click(); await settle();
+    expect(card()).toContain('Waiting for sign-in');
+    await vi.advanceTimersByTimeAsync(6000); await settle();
+    expect(card()).toContain('Waiting for sign-in');
+    api.signInStatus.mockResolvedValue({ ok: true, value: { status: 'approved', error: null, tools: 239 } });
+    await vi.advanceTimersByTimeAsync(2000); await settle();
+    expect(card()).toContain('Connecting…');
+    await vi.advanceTimersByTimeAsync(45000); await settle();
+    expect(card()).toContain('Connecting…');
+    api.list.mockResolvedValue({ ok: true, value: { apps: [vercel(true)] } });
+    await vi.advanceTimersByTimeAsync(3000); await settle();
+    expect(card()).toContain('Signed in · 239 tools');
+    expect(section().querySelector('[role="status"]')?.textContent).toBe('vercel is connected.');
+  } finally { vi.useRealTimers(); }
+});
+it('says so when the bot has not picked up a signed-in app after two minutes', async () => {
+  vi.useFakeTimers();
+  try {
+    const api = await setupPersonal({ ok: true, value: { apps: [{ name: 'vercel', url: 'https://mcp.vercel.com', auth: 'oauth', enabled: true, connected: false, tools: null }] } });
+    api.startSignIn.mockResolvedValue({ ok: true, value: { flowId: 'flow-1', authorizationUrl: 'https://vercel.com/oauth/authorize?state=s' } });
+    api.signInStatus.mockResolvedValue({ ok: true, value: { status: 'approved', error: null, tools: 239 } });
+    target.querySelector<HTMLButtonElement>('[data-testid="personal-app"]')!.click(); await settle();
+    [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Sign in')!.click(); await settle();
+    await vi.advanceTimersByTimeAsync(2000 + 40 * 3000); await settle();
+    expect(target.querySelector('[aria-label="Personal apps"] [role="status"]')?.textContent).toContain('hasn’t picked it up yet');
+    expect(target.querySelector('[data-testid="personal-app"]')?.textContent).toContain('Needs sign-in');
+  } finally { vi.useRealTimers(); }
+});

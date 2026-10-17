@@ -19,6 +19,7 @@
   let actionError = $state('');
   let confirmRemove = $state(false);
   let signingIn = $state<string | null>(null);
+  let connecting = $state(false);
   let browsing = $state(false);
   let catalog = $state<BotPersonalCatalogEntry[]>([]);
   let catalogLoading = $state(false);
@@ -59,14 +60,27 @@
         if (!status.ok || status.value.status === 'expired') { actionError = 'The sign-in expired. Start it again.'; return; }
         if (status.value.status === 'error') { actionError = status.value.error || 'Sign-in failed. Try again.'; return; }
         if (status.value.status === 'approved') {
-          notice = `${app} is connected with ${status.value.tools} tools. The bot is reloading to pick them up.`;
-          await wait(20000);
-          if (version === generation) await refresh();
+          connecting = true;
+          notice = `Signed in to ${app}. The bot is reloading to pick up its tools.`;
+          if (await untilConnected(app, version)) notice = `${app} is connected.`;
+          else if (version === generation) notice = `Signed in to ${app}, but the bot hasn’t picked it up yet. Refresh in a minute.`;
           return;
         }
       }
       if (signingIn === app) actionError = 'Sign-in was not finished in time. Start it again.';
-    } finally { if (signingIn === app) signingIn = null; }
+    } finally { if (signingIn === app) { signingIn = null; connecting = false; } }
+  }
+  async function untilConnected(app: string, version: number) {
+    for (let i = 0; i < 40; i++) {
+      await wait(3000);
+      if (version !== generation) return false;
+      const result = await api.list(uid);
+      if (version !== generation) return false;
+      if (!result.ok) continue;
+      apps = result.value.apps;
+      if (apps.some(row => row.name === app && row.connected)) return true;
+    }
+    return false;
   }
   async function add() {
     busy = true; actionError = '';
@@ -113,7 +127,7 @@
   function close() { if (!busy) { selected = null; adding = false; browsing = false; picked = null; actionError = ''; confirmRemove = false; } }
   $effect(() => {
     void uid; void api;
-    untrack(() => { generation++; apps = []; signingIn = null; void refresh(); });
+    untrack(() => { generation++; apps = []; signingIn = null; connecting = false; void refresh(); });
     return () => { generation++; };
   });
 </script>
@@ -133,7 +147,7 @@
     <div class="cards">{#each apps as app (app.name)}
       <button class="app-card" data-testid="personal-app" onclick={() => { selected = app.name; actionError = ''; confirmRemove = false; }}>
         <span class="logo"><ConnectionCardLogo logo={botAppLogo({ domain: domainOf(app.url), name: app.name, provider: app.name })} size={32} /></span>
-        <span class="content"><strong>{app.name}</strong><span class="status"><i class:ready={app.connected && app.enabled} class:attention={app.auth === 'oauth' && !app.connected}></i>{signingIn === app.name ? 'Waiting for sign-in…' : statusOf(app)}</span></span>
+        <span class="content"><strong>{app.name}</strong><span class="status"><i class:ready={app.connected && app.enabled} class:attention={app.auth === 'oauth' && !app.connected}></i>{signingIn === app.name ? connecting ? 'Connecting…' : 'Waiting for sign-in…' : statusOf(app)}</span></span>
       </button>
     {/each}</div>
   {/if}
