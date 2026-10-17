@@ -430,7 +430,7 @@
   .load-error p { margin: 0; }
   .split { position: relative; container-type: inline-size; display: flex; min-height: 0; flex: 1; }
   .roster { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; }
-  .inspector { flex: 0 0 min(680px, 60%); width: min(680px, 60%); min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  .inspector { flex: 0 0 clamp(340px, min(45%, 100% - 420px), 680px); width: clamp(340px, min(45%, 100% - 420px), 680px); min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
   @container (max-width: 760px) {
     .inspector { position: absolute; inset: 0; width: 100%; border-left: 0; z-index: 2; background: var(--v4-secondary-sidebar, var(--side-bg)); }
   }
