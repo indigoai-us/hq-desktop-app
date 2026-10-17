@@ -223,7 +223,7 @@ function boot(platform: PlatformAdapter, initialRow?: ConversationRow): void {
   });
 }
 
-/** "Talk to <Name>" lands on the Daily Brief page's welcome report, never the DM (owner, 2026-10-16). */
+/** "Open HQ" lands on the Daily Brief page's welcome report, never the DM (owner, 2026-10-16). */
 async function landsOnWelcomeReport(): Promise<void> {
   await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy());
   expect(q('[data-testid="channel-name"]')).toBeNull();
@@ -332,7 +332,7 @@ describe("first-run create racing automatic restore", () => {
     expect(restore, "the bulk restore would take the assistant").not.toHaveBeenCalled();
     expect(adopt.mock.calls.map((call) => call[0])).not.toContain("setup");
     // The chosen name, and no error anywhere.
-    expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Hazel");
+    expect(q('[data-testid="first-run-talk"]')?.textContent?.trim()).toBe("Open HQ");
     expect(screenText()).not.toMatch(/couldn't start/i);
     expect(screenText()).not.toContain("Popcorn");
     // An older hq-cli kept yesterday's name: the app puts the chosen one on the profile.
@@ -355,7 +355,7 @@ describe("first-run create racing automatic restore", () => {
     // Hazel on the account only (with her DM history), Claude Code installed
     // but signed out. The typed name must not relabel Hazel's remote record;
     // the assistant is created on this computer on the installed tool, and
-    // Talk to Nibbles opens the local bot's own chat, where its signed-out
+    // Open HQ opens the local bot's own chat, where its signed-out
     // card asks for the sign-in. Never the "another computer" banner.
     let here: LocalBotRow[] = [];
     const a = adapter({
@@ -409,7 +409,7 @@ describe("first-run create racing automatic restore", () => {
     await nameAssistant("Hazel");
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     expect(create).toHaveBeenCalledTimes(1);
-    expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Hazel");
+    expect(q('[data-testid="first-run-talk"]')?.textContent?.trim()).toBe("Open HQ");
     expect(screenText()).not.toMatch(/couldn't start/i);
     expect(updateAgentProfile).toHaveBeenCalledWith(ASSISTANT_UID, { displayName: "Hazel" });
     expectNoSlug("takeover");
@@ -753,7 +753,7 @@ describe("the hq-cli version gate (5.345.87, hq-cli #1812)", () => {
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
     await settle(20);
     expect(updateAgentProfile).not.toHaveBeenCalledWith(ASSISTANT_UID, expect.objectContaining({ displayName: expect.anything() }));
-    expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Hazel");
+    expect(q('[data-testid="first-run-talk"]')?.textContent?.trim()).toBe("Open HQ");
   });
 
   it("below 5.345.87 the same assistant is named by the app, and create is never called", async () => {
