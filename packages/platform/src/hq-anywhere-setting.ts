@@ -145,7 +145,7 @@ export async function setHqAnywhereGlobalRuntime(
   return result;
 }
 
-/** Reconcile the local setup after sign-in without changing a saved opt-out. */
+/** Launch reconciliation installs opted-in runtimes; it never removes a manual setup. */
 export async function ensureHqAnywhereGlobalRuntime(
   identity: IdentityApi,
   settings: SettingsApi,
@@ -158,5 +158,9 @@ export async function ensureHqAnywhereGlobalRuntime(
     publishGlobalRuntimeStatus({ state: "failed", enabled: null });
     return setting;
   }
-  return setHqAnywhereGlobalRuntime(identity, settings, setting.value, options);
+  if (!setting.value) {
+    publishGlobalRuntimeStatus(IDLE_RUNTIME_STATUS);
+    return ok(undefined);
+  }
+  return setHqAnywhereGlobalRuntime(identity, settings, true, options);
 }

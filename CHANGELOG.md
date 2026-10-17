@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- HQ Anywhere: the General settings switch is available to everyone signed in, even if its availability check fails. Accounts where HQ Anywhere is explicitly turned off see a disabled switch and an explanation. The onboarding choice follows the same availability rule.
+- HQ Anywhere: the General settings switch is available to everyone signed in, even if its availability check fails. Accounts where HQ Anywhere is explicitly turned off see a disabled switch and an explanation. The onboarding choice follows the same availability rule. Signing out hides the row. Launching with HQ Anywhere off preserves any setup installed by hand; only turning off the Settings switch removes it.
 
 - Bots: manage channels, routines, connected apps and AI providers from four tabs beside your conversation. Edit bot details, configure supported connections, browse apps in list or grid views, update MCP credentials, and choose the active provider’s model. Compact dialogs and loading skeletons keep controls readable without showing stale data. Availability follows your permissions and the bot’s supported features.
 - Bots: a cloud bot's Apps tab now has Personal apps beside Company apps. The bot's owner can add apps the bot signs in to on its own, from the bot's app list or by address, sign in to them in the browser, and remove them. Only that bot can use them. Apps that only allow sign-in from a desktop app (Vercel, Asana, Dropbox and a few others) sign in back to HQ Desktop on your computer; apps that refuse both kinds of sign-in show as not available yet.

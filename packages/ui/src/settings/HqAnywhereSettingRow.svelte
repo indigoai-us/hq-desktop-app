@@ -17,6 +17,7 @@
   }
 
   let { adapter = null }: Props = $props();
+  let signedIn = $state(false);
   let available = $state(false);
   let flagLoaded = $state(false);
   let loaded = $state(false);
@@ -37,6 +38,20 @@
     let flagRevision = 0;
     const refreshAvailability = async (): Promise<void> => {
       const revision = ++flagRevision;
+      let authenticated = false;
+      try {
+        const person = await identity.whoami();
+        authenticated = person.ok && Boolean(person.value.personUid);
+      } catch {
+        // Without an authenticated person, the setting must remain hidden.
+      }
+      if (!active || revision !== flagRevision) return;
+      signedIn = authenticated;
+      if (!signedIn) {
+        available = false;
+        loaded = false;
+        return;
+      }
       const enabled = await hqAnywhereRuntimeEnabled(identity);
       if (!active || revision !== flagRevision) return;
 
@@ -116,7 +131,7 @@
   }
 
   async function saveSetting(value: boolean): Promise<void> {
-    if (!adapter || !available || !loaded || loading || saving || setupRunning) return;
+    if (!adapter || !signedIn || !available || !loaded || loading || saving || setupRunning) return;
     const previous = enabled;
     enabled = value;
     saving = true;
@@ -200,7 +215,7 @@
   }
 </script>
 
-{#if adapter?.identity}
+{#if signedIn}
   <div class="setting-row" data-testid="hq-anywhere-setting-row">
     <div class="copy">
       <div class="label">HQ Anywhere</div>

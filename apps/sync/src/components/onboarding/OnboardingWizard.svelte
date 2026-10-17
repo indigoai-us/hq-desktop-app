@@ -3362,7 +3362,8 @@
   }
 
   async function configureHqAnywhereGlobalRuntime(value: boolean): Promise<void> {
-    if (hqAnywhereSettingUp) return;
+    // Only the explicit Settings switch may remove a global CLI setup.
+    if (!value || hqAnywhereSettingUp) return;
     hqAnywhereSettingUp = true;
     hqAnywhereSettingError = false;
     hqAnywhereRetryValue = null;

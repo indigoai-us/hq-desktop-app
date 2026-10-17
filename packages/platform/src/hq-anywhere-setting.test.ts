@@ -92,7 +92,7 @@ describe("HQ Anywhere setting support", () => {
     expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true);
   });
 
-  it("applies a saved opt-out during startup reconciliation", async () => {
+  it("preserves manually installed runtimes when startup reads an opt-out", async () => {
     const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
     const settings = {
       getHqAnywherePersonSetting: vi.fn(async () => ok(false)),
@@ -104,7 +104,7 @@ describe("HQ Anywhere setting support", () => {
 
     await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
       .resolves.toEqual(ok(undefined));
-    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false);
+    expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
   });
 
   it("does not read or change global files while the runtime flag is off", async () => {
