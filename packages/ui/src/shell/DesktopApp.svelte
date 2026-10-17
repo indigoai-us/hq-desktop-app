@@ -217,6 +217,7 @@
     botNeedsCodingToolNotice,
     localBotCodingToolNeed,
     localBotNeedsCodingTool,
+    localBotSignedOutHere,
     withPlainBotFailureReplies,
   } from "../chat/bot-runtime-failure.js";
   import SetupRunCard from "../chat/SetupRunCard.svelte";
@@ -5105,6 +5106,12 @@
       Boolean(!selectedBotProgress && selectedLocalBot && selectedLocalBotOffline),
   );
   const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
+  /** The local bot cannot reply until its coding tool signs in here; the signed-out card says so, no working line. */
+  function localBotSignedOut(agentUid: string | null | undefined): boolean {
+    const uid = (agentUid ?? "").trim();
+    const bot = uid ? localBots.find((b) => b.agentUid === uid) : undefined;
+    return localBotSignedOutHere(bot, localBotRuntimeReady, localCodingToolsInstalled, runtimeRepairController.signedInAt);
+  }
   /**
    * The open bot is paused on a sign-in, but its conversation has no
    * signed-out repair card to fix it from: the bot said so in another
@@ -7227,7 +7234,7 @@
           visibleThinking(
             thinkingByRow[selectedRow.id] ?? [],
             liveTimelineId === selectedRow.id ? liveTimeline : [],
-          ),
+          ).filter((entry) => selectedRow?.kind !== "dm" || !localBotSignedOut(entry.agentUid)),
           assistantNameOverride,
           "agentUid",
           "agentName",
@@ -13405,6 +13412,8 @@
         if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()]) {
           // The person wrote again: a new turn, whatever `busy` still says.
           answeredWhileBusy = forgetAnswered(answeredWhileBusy, row.personUid);
+        }
+        if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()] && !localBotSignedOut(row.personUid)) {
           // Pin the row to "newer than the agent's last message" — a local
           // bot's previous reply is usually < 2 min old and would otherwise
           // clear the fresh row on the next catch-up (skew fallback).
@@ -16910,6 +16919,7 @@
                   <ReplyPanel
                     api={conversationApi}
                     {localBots}
+                    agentSignedOut={localBotSignedOut}
                     rootEventId={openReplyRootId}
                     tasks={threadTasks}
                     scope={replyScope}
