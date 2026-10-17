@@ -14,6 +14,43 @@ pub const SIGNIN_LINK_URL: &str = "https://hqforwork.com/api/desktop/signin-link
 pub const LINK_SOURCE_DOWNLOAD_URL: &str = "download_url";
 pub const CONFIG_TIMEOUT: Duration = Duration::from_millis(1500);
 
+/// A provider is required unless the request goes through the trusted website
+/// signin-start route. Reject blank/duplicate providers even inside the wrapper.
+pub fn validate_browser_signin_url(raw: &str) -> Result<(), &'static str> {
+    let url = Url::parse(raw).map_err(|_| "Invalid sign-in URL")?;
+    let start = Url::parse(SIGNIN_START_URL).expect("static signin-start URL");
+    let wrapped = url.origin() == start.origin()
+        && url.path() == start.path()
+        && url.username().is_empty()
+        && url.password().is_none();
+    let authorize = if wrapped {
+        let requests: Vec<_> = url
+            .query_pairs()
+            .filter(|(key, _)| key == "authorize")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        if requests.len() != 1 {
+            return Err("Expected one authorize request");
+        }
+        Url::parse(&requests[0]).map_err(|_| "Invalid authorize URL")?
+    } else {
+        url
+    };
+    if authorize.scheme() != "https" || authorize.path() != "/oauth2/authorize" {
+        return Err("Invalid authorize URL");
+    }
+    let providers: Vec<_> = authorize
+        .query_pairs()
+        .filter(|(key, _)| key == "identity_provider")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+    match providers.as_slice() {
+        [] if wrapped => Ok(()),
+        [provider] if !provider.trim().is_empty() => Ok(()),
+        _ => Err("A provider is required unless the URL goes through signin-start"),
+    }
+}
+
 /// Fail open: only a successful, valid response with `bounce: true` changes the URL.
 pub async fn should_bounce<F, Fut, E>(fetch: F) -> bool
 where
@@ -37,7 +74,8 @@ where
 }
 
 /// Choose the URL to open and retain the nonce only when the start route was
-/// successfully built. Every config failure returns the original URL verbatim.
+/// successfully built. Provider-less requests always use signin-start; config
+/// failure may only return a direct URL when it has a provider.
 /// `install_id` rides along so the browser request, which carries the
 /// website's `hq_install_aid` cookie, can link this install to the visitor.
 /// `download_aid` is the visitor id recovered from the installer's download
@@ -48,18 +86,20 @@ pub async fn select_browser_url<F, Fut, E>(
     install_id: Option<&str>,
     download_aid: Option<&str>,
     fetch: F,
-) -> (String, Option<String>)
+) -> Result<(String, Option<String>), &'static str>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<(u16, String), E>>,
 {
-    if should_bounce(fetch).await {
+    if validate_browser_signin_url(authorize_url).is_err() || should_bounce(fetch).await {
         let link = new_link_nonce();
         if let Some(url) = signin_start_url(authorize_url, &link, install_id, download_aid) {
-            return (url, Some(link));
+            validate_browser_signin_url(&url)?;
+            return Ok((url, Some(link)));
         }
     }
-    (authorize_url.to_string(), None)
+    validate_browser_signin_url(authorize_url)?;
+    Ok((authorize_url.to_string(), None))
 }
 
 /// A URL-safe encoding of exactly 32 random bytes. UUID v4 supplies the
@@ -144,6 +184,62 @@ mod tests {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use tokio::sync::oneshot;
 
+    #[test]
+    fn browser_boundary_requires_provider_or_trusted_signin_start() {
+        let bare = "https://auth.example/oauth2/authorize?state=s&nonce=n&code_challenge=c";
+        assert!(validate_browser_signin_url(bare).is_err());
+        for provider in [
+            "Google",
+            "MicrosoftPersonal",
+            "Microsoft",
+            "MsOrg0123456789abcdef0123456789",
+        ] {
+            assert!(
+                validate_browser_signin_url(&format!("{bare}&identity_provider={provider}"))
+                    .is_ok()
+            );
+        }
+        for suffix in [
+            "&identity_provider=",
+            "&identity_provider=%20",
+            "&identity_provider=Google&identity_provider=",
+        ] {
+            let invalid = format!("{bare}{suffix}");
+            assert!(validate_browser_signin_url(&invalid).is_err());
+            assert!(validate_browser_signin_url(
+                &signin_start_url(&invalid, "n", None, None).unwrap()
+            )
+            .is_err());
+        }
+        let wrapped = signin_start_url(bare, "n", Some("install"), Some("visitor")).unwrap();
+        assert!(validate_browser_signin_url(&wrapped).is_ok());
+        assert!(
+            validate_browser_signin_url(&wrapped.replace("hqforwork.com", "evil.example")).is_err()
+        );
+        assert!(validate_browser_signin_url(&wrapped.replace("https:", "http:")).is_err());
+        let parsed = Url::parse(&wrapped).unwrap();
+        assert_eq!(
+            parsed
+                .query_pairs()
+                .find(|(key, _)| key == "authorize")
+                .unwrap()
+                .1,
+            bare
+        );
+    }
+
+    #[tokio::test]
+    async fn providerless_request_never_fails_open_on_config_failure() {
+        let bare = "https://auth.example/oauth2/authorize?state=s";
+        let (url, link) =
+            select_browser_url(bare, None, None, || async { Err::<(u16, String), ()>(()) })
+                .await
+                .unwrap();
+        assert!(link.is_some());
+        assert!(url.starts_with(SIGNIN_START_URL));
+        assert!(validate_browser_signin_url(&url).is_ok());
+    }
+
     #[tokio::test]
     async fn config_bounces_only_on_explicit_true() {
         assert!(should_bounce(|| async { Ok::<_, ()>((200, r#"{"bounce":true}"#.into())) }).await);
@@ -161,37 +257,42 @@ mod tests {
 
     #[tokio::test]
     async fn config_timeout_keeps_the_existing_authorize_url_path() {
-        let authorize = "https://cognito.example/authorize?client_id=abc";
+        let authorize =
+            "https://cognito.example/oauth2/authorize?client_id=abc&identity_provider=Google";
         let (result, nonce) = select_browser_url(authorize, None, None, || async {
             tokio::time::sleep(CONFIG_TIMEOUT + Duration::from_millis(50)).await;
             Ok::<_, ()>((200, r#"{"bounce":true}"#.into()))
         })
-        .await;
+        .await
+        .unwrap();
         assert_eq!(result, authorize);
         assert_eq!(nonce, None);
     }
 
     #[tokio::test]
     async fn config_false_or_error_keeps_the_existing_authorize_url() {
-        let authorize = "https://cognito.example/authorize?client_id=abc";
+        let authorize =
+            "https://cognito.example/oauth2/authorize?client_id=abc&identity_provider=Google";
         let (url, nonce) = select_browser_url(authorize, None, None, || async {
             Ok::<_, ()>((200, r#"{"bounce":false}"#.into()))
         })
-        .await;
+        .await
+        .unwrap();
         assert_eq!(url, authorize);
         assert_eq!(nonce, None);
 
         let (url, nonce) = select_browser_url(authorize, None, None, || async {
             Err::<(u16, String), _>(())
         })
-        .await;
+        .await
+        .unwrap();
         assert_eq!(url, authorize);
         assert_eq!(nonce, None);
     }
 
     #[test]
     fn start_url_encodes_authorize_url_and_contains_no_token() {
-        let authorize = "https://cognito.example/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%2Fcallback";
+        let authorize = "https://cognito.example/oauth2/authorize?client_id=abc&identity_provider=Google&redirect_uri=http%3A%2F%2Flocalhost%2Fcallback";
         let url =
             Url::parse(&signin_start_url(authorize, "nonce-value", None, None).unwrap()).unwrap();
         assert!(url.query_pairs().all(|(k, _)| k != "install"));
@@ -216,12 +317,14 @@ mod tests {
 
     #[tokio::test]
     async fn bounced_start_url_carries_the_install_id() {
-        let authorize = "https://cognito.example/authorize?client_id=abc";
+        let authorize =
+            "https://cognito.example/oauth2/authorize?client_id=abc&identity_provider=Google";
         let install = "1b4e28ba-2fa1-4d01-8a1c-9c1c0d2b3e4f";
         let (url, nonce) = select_browser_url(authorize, Some(install), None, || async {
             Ok::<_, ()>((200, r#"{"bounce":true}"#.into()))
         })
-        .await;
+        .await
+        .unwrap();
         let url = Url::parse(&url).unwrap();
         let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(pairs.get("install").map(String::as_str), Some(install));

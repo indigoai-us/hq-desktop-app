@@ -206,6 +206,8 @@ pub(crate) async fn prepare_desktop_referral_start_url(
     .ok_or_else(|| {
         eprintln!("[desktop-referral] sign-in start URL refused");
     })?;
+    hq_desktop_core::desktop_signin_link::validate_browser_signin_url(&browser_url)
+        .map_err(|_| eprintln!("[desktop-referral] unsafe browser URL refused"))?;
     let path = desktop_referral_queue_path().ok_or_else(|| {
         eprintln!("[desktop-referral] queue home unavailable");
     })?;
@@ -622,9 +624,8 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
     let attempt_id = uuid::Uuid::new_v4().to_string();
     let nonce = hq_desktop_core::oauth::generate_nonce();
 
-    // No identity provider: continuation lets the hosted UI use whichever
-    // session the browser already has, which is the entire point — the person
-    // signed in there minutes ago.
+    // The website knows the prior provider. Only signin-start may receive
+    // this provider-less request; never open it directly in the browser.
     let armed = super::oauth::arm_oauth_flow(&app, None, Some(&nonce))?;
 
     let (browser_url, referral_nonce) =
@@ -653,6 +654,13 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
     });
     if let Some(nonce) = superseded_referral_nonce {
         discard_unbound_desktop_referral_nonce(nonce);
+    }
+    if let Err(error) =
+        hq_desktop_core::desktop_signin_link::validate_browser_signin_url(&browser_url)
+    {
+        with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Failed));
+        release_listener(&armed.state);
+        return Err(error.to_string());
     }
     if let Err(error) = app.shell().open(&browser_url, None) {
         with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Failed));
@@ -1690,10 +1698,9 @@ mod authenticated_receipt_tests {
 
     #[test]
     fn onboarding_workspace_receipt_can_bind_a_bearer_when_the_session_snapshot_is_missing() {
-        let captured = workspace_receipt_authorization_from_bearer_token(&bearer_with_sub(
-            "person-a",
-        ))
-        .expect("the current access-token subject authorizes the selection receipt");
+        let captured =
+            workspace_receipt_authorization_from_bearer_token(&bearer_with_sub("person-a"))
+                .expect("the current access-token subject authorizes the selection receipt");
         assert_eq!(captured.account_id, "person-a");
         assert!(workspace_receipt_authorization_from_bearer_token("not-a-jwt").is_none());
     }
@@ -1899,8 +1906,7 @@ mod authenticated_receipt_tests {
             read_authenticated_receipt_queue(&existing_path).expect("read existing-ID receipt");
         assert_eq!(existing_receipts.len(), 1);
         assert_eq!(
-            existing_receipts[0].body["installAttemptId"],
-            "11111111-1111-4111-8111-111111111111",
+            existing_receipts[0].body["installAttemptId"], "11111111-1111-4111-8111-111111111111",
             "login receipts reuse the existing ID rather than replacing it"
         );
     }

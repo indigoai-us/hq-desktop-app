@@ -504,13 +504,17 @@ pub(crate) struct ExchangedOAuthCode {
 /// listener that is already accepting before the browser opens — binding after
 /// would leave a window where a very fast provider redirect hits a closed port
 /// — and both need a state and verifier that belong to exactly one attempt.
-/// They differ only in whether an identity provider is named and whether a
-/// nonce is sent, which is why those are the two parameters.
+/// A missing provider is allowed only through signin-start, which selects it.
+/// Callers must validate the final browser URL before it leaves native code.
+/// Continuation also sends a nonce to bind the browser result to its attempt.
 pub(crate) fn arm_oauth_flow(
     app: &AppHandle,
     identity_provider: Option<&str>,
     nonce: Option<&str>,
 ) -> Result<ArmedOAuthFlow, String> {
+    if identity_provider.is_some_and(|provider| provider.trim().is_empty()) {
+        return Err("A sign-in provider is required.".to_string());
+    }
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);

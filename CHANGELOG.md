@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First-launch sign-in lets the website reuse your previous sign-in provider. Mobile sign-in shows named provider buttons instead of opening the raw provider chooser.
+
 - Badges: the holographic light on the back of a badge card now looks like the foil on its front: fine etched lines in a pearl rainbow that follow the pointer. Before, it showed as a flat green-grey haze with plain rings that spread over the story and made the smaller text hard to read. The light is now softer behind the words, so the story stays easy to read while it shines.
 - Badges: clicking a badge on the Badges page opens its details again, with its levels and a "View card" button, instead of jumping straight to the holographic card. Back returns to the Badges page.
 - Usage pricing: first-run setup shows one card for a new company: $10 of usage included every month, the per-use rates (sync, gateway call, HQ MCP call, agent run, storage, secret), the $5 vault fee waived during the trial, cloud bot boxes from $100 to $800 a month, and a 30-day trial capped at $500. The rates come from HQ's price list and fall back to the published card when it cannot be read. "Sign up free" continues setup; "Request an enterprise demo" and "Use HQ free, self-hosted or on-prem" open in your browser. Starter and Workforce are no longer offered to new companies, and nothing goes to checkout. Existing companies keep their plans.

@@ -70,9 +70,9 @@ describe("mobile sign-in state", () => {
     await signIn.start();
     states.length = 0;
 
-    await signIn.signIn();
+    await signIn.signIn("Google");
 
-    expect(session.beginSignIn).toHaveBeenCalledTimes(1);
+    expect(session.beginSignIn).toHaveBeenCalledExactlyOnceWith({ identityProvider: "Google" });
     // "opening" is what stops a second tap from starting a second flow, which
     // would replace the PKCE material the first callback needs.
     expect(states).toEqual(["opening"]);
@@ -88,7 +88,7 @@ describe("mobile sign-in state", () => {
     await signIn.start();
     states.length = 0;
 
-    await signIn.signIn();
+    await signIn.signIn("Google");
 
     expect(states).toEqual(["opening", "signed-out"]);
   });
@@ -97,7 +97,7 @@ describe("mobile sign-in state", () => {
     const session = fakeSession();
     const { signIn, states } = harness(session);
     await signIn.start();
-    await signIn.signIn();
+    await signIn.signIn("Google");
     states.length = 0;
 
     await signIn.handleCallback("hqmobile://auth?code=CODE-1&state=STATE-1");
@@ -118,7 +118,7 @@ describe("mobile sign-in state", () => {
     });
     const { signIn, states } = harness(session);
     await signIn.start();
-    await signIn.signIn();
+    await signIn.signIn("Google");
     states.length = 0;
 
     await signIn.handleCallback("hqmobile://auth?code=x&state=forged");
@@ -136,4 +136,13 @@ describe("mobile sign-in state", () => {
     await vi.waitFor(() => expect(session.clear).toHaveBeenCalledTimes(1));
     expect(states).toEqual(["signed-out"]);
   });
+});
+
+it("does not open an unregistered provider", async () => {
+  const session = fakeSession();
+  const onState = vi.fn();
+  const flow = createMobileSignIn({ session, onState });
+  await flow.signIn("Microsoft");
+  expect(session.beginSignIn).not.toHaveBeenCalled();
+  expect(onState).not.toHaveBeenCalled();
 });

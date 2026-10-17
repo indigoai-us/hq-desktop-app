@@ -57,6 +57,14 @@ describe("the root route's mobile branch", () => {
     expect(route).toContain('signInState === "checking"');
   });
 
+  it("opens sign-in only with the provider the person chose", () => {
+    expect(code).toContain("{#each SIGNIN_PROVIDERS as provider}");
+    expect(code).toContain("mobile.flow.signIn(provider)");
+    expect(code).toContain("!SIGNIN_PROVIDER_CONFIG[provider].enabled");
+    expect(code).toContain("Continue with ${SIGNIN_PROVIDER_CONFIG[provider].label}");
+    expect(code).not.toContain("mobile.flow.signIn()");
+  });
+
   it("listens for the deep-link callback", () => {
     expect(route).toContain("listenForAuthCallback");
     expect(route).toContain("flow.handleCallback(url)");
