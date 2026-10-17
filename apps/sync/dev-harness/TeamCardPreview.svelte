@@ -9,6 +9,7 @@
    *   existing  existing companies only
    *   none      no companies: create or work solo
    *   error     a failed pick with Retry
+   *   created   a create made a company but its reply failed: name locked, Retry
    *   settled   the one line the card settles into
    */
   import '../../../packages/ui/src/chat/chat-tokens.css';
@@ -34,9 +35,10 @@
   <TeamCard
     {options}
     onpick={(pick) => (picked = JSON.stringify(pick))}
-    error={fixture === 'error' ? 'Something went wrong. Try again.' : null}
+    error={fixture === 'error' || fixture === 'created' ? 'Something went wrong. Try again.' : null}
     onretry={() => (picked = 'retry')}
     settled={fixture === 'settled' ? 'Joined Acme' : null}
+    createdName={fixture === 'created' ? 'Brine Labs' : null}
   />
   {#if picked}<p data-testid="picked" style="margin-top: 16px; font-size: 12px; opacity: 0.6;">{picked}</p>{/if}
 </div>

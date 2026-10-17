@@ -18,6 +18,9 @@
   import type { Snippet } from "svelte";
   import WelcomeConnectCard, { type WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
   import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
+  import type { FoundWorkApps } from "@hq/platform";
+  import ConnectAiAppsCard from "./ConnectAiAppsCard.svelte";
+  import { assistantNameInSentence } from "./brief-action-cards.js";
 
   interface Props {
     /** The report is ready: the brief page replaces the loading card. */
@@ -36,6 +39,13 @@
     /** No assistant to write the report yet: the card offers setting one up. */
     onsetup?: (() => void) | null;
     /**
+     * Who made the report: the assistant and a way to open its DM. Left out
+     * (no assistant, or no landed report on screen), the line is not shown.
+     */
+    madeBy?: { name: string; onmeet: () => void };
+    /** The "Connect your AI apps" card inputs; null leaves it out. */
+    aiApps?: { detect: () => Promise<FoundWorkApps | null>; cli: { claudeCode: boolean; codex: boolean } } | null;
+    /**
      * The job is held back until the assistant can take it (not running, no
      * model connected): the brief check's own sentence and fix button, under
      * the report's heading, so the page still says the report is coming.
@@ -43,7 +53,7 @@
     blocked?: { message: string; label: string; onfix: () => Promise<string | null> | void } | null;
     children: Snippet;
   }
-  let { ready, progress = null, connect = null, onsetup = null, blocked = null, children }: Props = $props();
+  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, blocked = null, children }: Props = $props();
 
   /** What the fix said when it could not finish (the brief page's own copy), as on the run bar. */
   let fixError = $state<string | null>(null);
@@ -77,8 +87,17 @@
       />
     {/key}
   {/if}
+  {#if aiApps}
+    <ConnectAiAppsCard detect={aiApps.detect} cli={aiApps.cli} />
+  {/if}
   {#if ready}
     <div class="report" data-testid="welcome-report-ready">
+      {#if madeBy}
+        <p class="made-by" data-testid="welcome-report-made-by">
+          <span>{madeBy.name} made this report.</span>
+          <button type="button" data-testid="welcome-report-meet" onclick={() => madeBy.onmeet()}>Meet {assistantNameInSentence(madeBy.name)}</button>
+        </p>
+      {/if}
       {@render children()}
     </div>
   {:else if onsetup}
@@ -125,6 +144,29 @@
   .report {
     flex: 1;
     min-height: 0;
+  }
+  .made-by {
+    margin: 0 0 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.72);
+  }
+  .made-by button {
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    color: inherit;
+    cursor: pointer;
+    transition: opacity 120ms cubic-bezier(0.25, 1, 0.5, 1);
+  }
+  .made-by button:active {
+    opacity: 0.7;
   }
   .card {
     border-radius: var(--b-r, 22px);
@@ -194,5 +236,6 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .fill.indeterminate { animation: none; transform: none; width: 100%; opacity: 0.4; }
+    .made-by button { transition: none; }
   }
 </style>

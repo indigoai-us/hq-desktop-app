@@ -6,6 +6,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
+import { SvelteSet } from "svelte/reactivity";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
@@ -110,7 +111,7 @@ function telemetryAdapter(): PlatformAdapter {
   return adapter;
 }
 
-async function mountShell(adapter: PlatformAdapter = webAdapter()): Promise<void> {
+async function mountShell(adapter: PlatformAdapter = webAdapter(), extra: Record<string, unknown> = {}): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
@@ -125,6 +126,7 @@ async function mountShell(adapter: PlatformAdapter = webAdapter()): Promise<void
         email: "stefan@example.com",
       },
       coreFixtures: false,
+      ...extra,
     },
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -223,6 +225,25 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(host.querySelector('[data-testid="brief-host"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("brief");
+    await lazyBodiesLoaded(loadBrief);
+  });
+
+  it("asks for AI-tools detection once on the Daily Brief, even when the host's request reads its own state", async () => {
+    // Mirrors the sync host: the request reads and toggles a probing flag, and a
+    // failed probe leaves aiTools null. A tracked call re-ran forever (CI hang, run 38800019111).
+    const probing = new SvelteSet<string>();
+    let calls = 0;
+    const onrequestaitools = () => {
+      calls += 1;
+      if (calls > 20 || probing.has("probe")) return;
+      probing.add("probe");
+      void Promise.resolve().then(() => probing.delete("probe"));
+    };
+    await mountShell(telemetryAdapter(), { onrequestaitools });
+    click("rail-brief");
+    await settle();
+    await settle();
+    expect(calls).toBe(1);
     await lazyBodiesLoaded(loadBrief);
   });
 

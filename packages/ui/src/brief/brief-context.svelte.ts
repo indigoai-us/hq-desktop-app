@@ -82,6 +82,8 @@ export class BriefState {
   engine = $state<BriefEngine>("claude");
   cleared = $state<Record<string, boolean>>({});
   notes = $state<Record<string, string>>({});
+  /** Items cleared by their own launch (or its Prompt copied fallback), not a dismissal. */
+  launched = $state<Record<string, boolean>>({});
   ripple = $state(0);
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   private showTimer: ReturnType<typeof setTimeout> | null = null;
@@ -162,14 +164,20 @@ export class BriefState {
     return true;
   }
 
-  async start(id: string, prompt: string): Promise<void> {
-    const engine = this.engine;
+  /**
+   * Hand an item's prompt to a session (the chosen engine unless one is
+   * given). A launch, or the Prompt copied fallback, logs and clears the item.
+   * Returns the note it leaves on the item.
+   */
+  async start(id: string, prompt: string, engine: BriefEngine = this.engine): Promise<string> {
     const error = await this.launch(engine, prompt);
-    this.notes = { ...this.notes, [id]: error ?? `Started in ${ENGINES.find((e) => e.id === engine)!.label}.` };
+    const note = error ?? `Started in ${ENGINES.find((e) => e.id === engine)!.label}.`;
+    this.notes = { ...this.notes, [id]: note };
     if (!error || error.startsWith("Prompt copied")) {
       this.links.log?.()?.({ event: "launch", itemId: id, engine });
-      this.markCleared(id);
+      if (this.markCleared(id)) this.launched = { ...this.launched, [id]: true };
     }
+    return note;
   }
 
   showPeek(anchor: HTMLElement, content: PeekContent): void {

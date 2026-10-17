@@ -73,6 +73,8 @@
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import BriefRailHost from "./BriefRailHost.svelte";
   import WelcomeReport from "../brief/WelcomeReport.svelte";
+  import { welcomeMadeBy } from "../brief/welcome-made-by.js";
+  import { briefActionsFor } from "../brief/brief-action-cards.js";
   import type { WelcomeConnectMemory } from "../chat/first-run/WelcomeConnectCard.svelte";
   import { BRIEF_CLAUDE_PERMISSION_MODE, BRIEF_FIX_LABEL, checkBriefBot, waitingStep } from "../brief/brief-runs.js";
   import { BriefCreateRun, type BriefCreator } from "../brief/brief-create.svelte.js";
@@ -224,23 +226,34 @@
   import SetupToolOffer from "../chat/SetupToolOffer.svelte";
   import TeamCard from "../chat/first-run/TeamCard.svelte";
   import {
-    activeCloudCompanyBySlug,
+    ownCloudCompanyBySlug,
     teamCardAnchorEventId,
     teamCardDue,
-    teamCardPickIdentity,
     teamCardPickKey,
     teamOptionsFrom,
-    type FirstRunTeamChoice,
     type TeamCardPick,
   } from "../chat/first-run/team-step.js";
-  import { createTeamCardReplies, runTeamCardPick } from "../chat/first-run/team-card-pick.js";
   import {
+    createTeamCardReplies,
+    runTeamCardPick,
+    teamCardLockName,
+    teamCardResume,
+    teamCardStoredLast,
+    type TeamCardLastPick,
+  } from "../chat/first-run/team-card-pick.js";
+  import {
+    clearTeamCardCreating,
     loadTeamCardRecords,
+    saveTeamCardCreating,
+    saveTeamCardFailedLooks,
+    saveTeamCardReplyFailures,
     saveTeamCardRecord,
+    saveTeamCardUnsentCreate,
     teamCardRecordKey,
     teamCardSettledFromReply,
   } from "../chat/first-run/team-card-record.js";
   import { createFirstRunTeamHost } from "../chat/first-run/first-run-hosts.js";
+  import { parseSlugAvailability } from "../chat/create-company/slug-availability.js";
   import { teamBlockInMessage } from "../chat/messaging/richMessageContent.js";
   import {
     connectItemCarriesState,
@@ -4440,6 +4453,18 @@
     if (welcome) handleSelect(welcome);
     else requestChannelOpen(SETUP_CHANNEL_ID);
   }
+  /** The "Connect your AI apps" card: the launch scan plus the CLIs launch detection found. */
+  const welcomeAiApps = $derived(
+    welcomeAppsHost
+      ? { detect: () => welcomeAppsHost.detect(), cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) } }
+      : null,
+  );
+  // The cards and the AI apps card need launch detection; ask for it once the report shows.
+  // The call is untracked: a host whose request reads its own state (a probing flag) would
+  // otherwise re-run this effect when that state changes and probe forever after a failure.
+  $effect(() => {
+    if ((briefVisible || welcomeReportOwed) && aiTools === null) untrack(() => onrequestaitools?.());
+  });
   function openWelcomeReport(): void {
     welcomeReportOwed = true;
     void navigate({ kind: "extra", page: railPlaceholderPage("brief") });
@@ -4824,8 +4849,27 @@
       return null;
     }
   }
-  let teamCardLastPick: TeamCardPick | null = null;
-  let teamCardCompleted: FirstRunTeamChoice | undefined;
+  /**
+   * The last pick and, when only its reply failed, what it produced (a created
+   * company is kept until its reply goes through). In memory, it also holds
+   * the card's lock for the session when storage cannot.
+   */
+  let teamCardLast = $state<TeamCardLastPick | null>(null);
+  /** The name a create used or may have used, so the card never creates under another one. */
+  const teamCardCreatedName = $derived.by((): string | null => {
+    const bot = selectedLocalBot;
+    const uid = self?.uid?.trim();
+    if (!bot || !uid) return null;
+    return teamCardLockName(teamCardLast ?? teamCardStoredLast(teamCardStorage(), teamCardRecordKey(uid, bot.agentUid)));
+  });
+  // Another account: its card starts clean (a refreshed profile for the same account keeps it).
+  const teamCardAccountUid = $derived(self?.uid?.trim() ?? "");
+  $effect(() => {
+    void teamCardAccountUid;
+    teamCardPending = null;
+    teamCardError = null;
+    teamCardLast = null;
+  });
   /** The setup bot and its conversation, as they were when the pick was made. */
   type TeamCardTarget = { agentUid: string; row: ConversationRow };
   const teamCardReply = createTeamCardReplies<TeamCardTarget>(sendTeamCardReply);
@@ -4888,7 +4932,10 @@
     createCompany: (name, slug) => createCompanyFromSheet({ name, slug, plan: "free", invites: [] }),
     joined: pinTeamCardCompany,
     created: pinTeamCardCompany,
-    findCompany: async (slug) => activeCloudCompanyBySlug(companies, slug),
+    findCompany: async (slug) => {
+      await refreshRoster();
+      return ownCloudCompanyBySlug(companies, slug);
+    },
   });
   function pinTeamCardCompany(companyUid: string | null): void {
     if (!companyUid) return;
@@ -4904,26 +4951,64 @@
     if (teamCardPending) return;
     const bot = selectedLocalBot;
     const row = selectedRow;
-    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return;
+    // The pick is saved per account: none until the account is known.
+    const uid = self?.uid?.trim();
+    if (!bot || !row || !uid || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return;
     const target: TeamCardTarget = { agentUid: bot.agentUid, row };
-    if (teamCardLastPick && teamCardPickIdentity(teamCardLastPick) !== teamCardPickIdentity(pick)) teamCardCompleted = undefined;
-    teamCardLastPick = pick;
+    const recordKey = teamCardRecordKey(uid, bot.agentUid);
+    const run = teamCardResume(pick, teamCardLast ?? teamCardStoredLast(teamCardStorage(), recordKey));
+    teamCardLast = {
+      pick: run.pick,
+      completed: run.completed,
+      creating: run.pick.kind === "create" && !run.completed,
+      refused: run.refused,
+      failedLooks: run.failedLooks,
+      lookupHint: run.lookupHint,
+    };
     teamCardError = null;
-    teamCardPending = teamCardPickKey(pick);
-    const recordKey = teamCardRecordKey(self?.uid, bot.agentUid);
-    const result = await runTeamCardPick(pick, {
+    teamCardPending = teamCardPickKey(run.pick);
+    const result = await runTeamCardPick(run.pick, {
       host: teamCardHost,
       agentUid: target.agentUid,
       pin: pinTeamCardCompany,
       reply: (text, key) => teamCardReply(text, key, target),
-      completed: teamCardCompleted,
+      completed: run.completed,
+      replyFailures: run.replyFailures,
+      unresolved: run.unresolved,
+      refused: run.refused,
+      failedLooks: run.failedLooks,
+      lookupHint: run.lookupHint,
+      slugTaken: async (slug) => {
+        if (!conversationApi.checkCompanySlug) return false;
+        const answer = parseSlugAvailability(await conversationApi.checkCompanySlug(slug));
+        return answer?.valid === true && !answer.available;
+      },
+      looked: (failedLooks) => saveTeamCardFailedLooks(teamCardStorage(), recordKey, failedLooks),
+      creating: (pending) => saveTeamCardCreating(teamCardStorage(), recordKey, pending),
+      notCreating: () => clearTeamCardCreating(teamCardStorage(), recordKey),
+      created: (choice) => {
+        if (choice.kind === "company" && run.pick.kind === "create")
+          saveTeamCardUnsentCreate(teamCardStorage(), recordKey, { created: choice.company, name: run.pick.name });
+      },
+      log: (line) => writeFirstRunLine(firstRunTimingLog, line),
     });
-    teamCardPending = null;
     if (result.ok) teamCardRecords = saveTeamCardRecord(teamCardStorage(), teamCardRecords, recordKey, result.settled);
-    else {
-      teamCardCompleted = result.completed;
-      teamCardError = result.reason;
-    }
+    else if (result.replyFailures) saveTeamCardReplyFailures(teamCardStorage(), recordKey, result.replyFailures);
+    // The account changed while the pick ran: its card was cleared.
+    if (self?.uid?.trim() !== uid) return;
+    teamCardPending = null;
+    teamCardLast = result.ok
+      ? null
+      : {
+          pick: run.pick,
+          completed: result.completed,
+          creating: result.creating,
+          refused: result.refused,
+          failedLooks: result.failedLooks,
+          lookupHint: result.lookupHint,
+          replyFailures: result.replyFailures,
+        };
+    if (!result.ok) teamCardError = result.reason;
   }
   /** "Keep going here": the reply the bot waits for before it starts setup. */
   function keepSetupHere(tool: SetupOfferTool): void {
@@ -6471,6 +6556,18 @@
     void briefRun?.rehydrate();
     return () => briefRun?.stop();
   });
+  /**
+   * Report action cards: where each item can be done, and the assistant DM send (only when it runs here).
+   * While the brief job is held back, only a signed-in Claude Code or Codex is offered.
+   */
+  const briefActions = $derived(
+    briefActionsFor(
+      assistantUid ? { uid: assistantUid, name: assistantLabel, runsHere: botRunsHere(localBotRecords, assistantUid) } : null,
+      { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) },
+      (uid, prompt, idempotencyKey) => adapter.messaging.sendDm(uid, prompt, { audience: "agent", idempotencyKey }),
+      briefRun?.phase.kind === "blocked" ? { signedIn: localBotRuntimeReady } : null,
+    ),
+  );
   /** The Brief's "Open thread": the DM with that person or agent, in Messages. */
   function openBriefDm(uid: string): void {
     const existing = railRows.find((row) => row.kind === "dm" && row.personUid === uid);
@@ -6516,6 +6613,21 @@
     return (kind === "idle" || kind === "blocked") && !!uid && !welcomeReportUnsent(uid);
   });
   const welcomeReportProgress = $derived(briefRun?.phase.kind === "running" ? briefRun.phase.progress : null);
+  /** The run the brief page has on screen; the run bar can put an earlier one there. */
+  let briefShownRunId = $state<string | null>(null);
+  /** The welcome report's "made this report" line: shown only while the run that landed is on screen. */
+  const welcomeMadeByLine = $derived(
+    welcomeMadeBy(
+      assistantUid
+        ? {
+            name: assistantLabel,
+            onmeet: () => openSetupBotDm({ agentUid: assistantUid, handle: existingSetupBot?.handle ?? "" }),
+          }
+        : null,
+      briefRun?.phase.kind === "ready" ? briefRun.phase.runId : null,
+      briefShownRunId,
+    ),
+  );
   /** The held-back job's reason and fix (the brief page's own copy), shown under the report's heading. */
   const welcomeReportBlocked = $derived.by(() => {
     const run = briefRun;
@@ -10775,7 +10887,7 @@
     slug: string;
     plan: NewCompanyPlan;
     invites: string[];
-  }): Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string }> {
+  }): Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string; blocked?: boolean }> {
     const seam = companyCreateSeam;
     if (!seam) return { ok: false, reason: "Creating a company isn't available yet." };
     const draft = await seam.open();
@@ -10786,7 +10898,7 @@
     if (slugId) values[slugId] = input.slug;
     const invites: CompanyInvite[] = input.invites.map((email) => ({ email, role: "member" }));
     const result = await seam.submit(draft.form, values, invites);
-    if (!result.ok) return { ok: false, reason: result.reason };
+    if (!result.ok) return { ok: false, reason: result.reason, blocked: result.blocked };
     createCompanyRequested = true;
     return { ok: true, companyUid: result.company.companyUid };
   }
@@ -15575,6 +15687,8 @@
               run={briefRun}
               onopenthread={openBriefDm}
               onopenmeetings={() => void navigate({ kind: "meetings" })}
+              actions={briefActions}
+              onshown={(runId) => (briefShownRunId = runId)}
             />
           {/snippet}
           {#if welcomeReportOwed}
@@ -15583,6 +15697,8 @@
               progress={welcomeReportProgress}
               connect={welcomeConnect}
               onsetup={welcomeReportNeedsAssistant ? openWelcomeSetup : null}
+              madeBy={welcomeMadeByLine}
+              aiApps={welcomeAiApps}
               blocked={welcomeReportBlocked}
             >
               {@render briefPage()}
@@ -16157,8 +16273,9 @@
                     onpick={(pick) => void pickTeamCard(pick)}
                     pendingKey={teamCardPending}
                     error={teamCardError}
-                    onretry={() => teamCardLastPick && void pickTeamCard(teamCardLastPick)}
+                    onretry={() => teamCardLast && void pickTeamCard(teamCardLast.pick)}
                     settled={teamCardView?.settled ?? null}
+                    createdName={teamCardCreatedName}
                   />
                 {/snippet}
                 {#snippet agentThinkingBelow()}
