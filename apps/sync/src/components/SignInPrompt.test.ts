@@ -516,6 +516,8 @@ describe('SignInPrompt welcome handoff', () => {
       'Continue with Google',
       'Continue with Microsoft',
     ]);
+    // The magic link stays reachable when a provider sign-in has failed.
+    expect(host.querySelector('[data-testid="magic-link"]')).not.toBeNull();
 
     providerButtons()[1]?.click();
     flushSync();

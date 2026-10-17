@@ -699,7 +699,10 @@ mod tests {
                         "provider {provider:?} must be refused"
                     );
                     assert_eq!(
-                        build_authorize_url_from_redirect(&request, "http://localhost:8765/callback"),
+                        build_authorize_url_from_redirect(
+                            &request,
+                            "http://localhost:8765/callback"
+                        ),
                         Err(SIGNIN_PROVIDER_REQUIRED.to_string()),
                     );
                 }
@@ -714,7 +717,11 @@ mod tests {
     #[test]
     fn every_built_authorize_url_carries_identity_provider() {
         with_default_cognito_env(|| {
-            for provider in ["Google", "MicrosoftPersonal", "MsOrg87489d4600af47338b7bafe9bd"] {
+            for provider in [
+                "Google",
+                "MicrosoftPersonal",
+                "MsOrg87489d4600af47338b7bafe9bd",
+            ] {
                 for nonce in [None, Some("n")] {
                     let url = build_authorize_url_from(&AuthorizeRequest {
                         state: "s",
@@ -785,7 +792,8 @@ mod tests {
     #[test]
     fn authorize_url_supports_microsoft_provider() {
         with_default_cognito_env(|| {
-            let url = build_authorize_url("state-123", "challenge-123", "MicrosoftPersonal").unwrap();
+            let url =
+                build_authorize_url("state-123", "challenge-123", "MicrosoftPersonal").unwrap();
             assert!(url.contains("identity_provider=MicrosoftPersonal"));
             assert!(url.contains("state=state-123"));
             assert!(url.contains("code_challenge=challenge-123"));

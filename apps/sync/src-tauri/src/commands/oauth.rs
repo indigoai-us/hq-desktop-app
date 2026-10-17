@@ -44,7 +44,7 @@ use hq_desktop_core::microsoft_org::identity_provider_for_sign_in;
 use hq_desktop_core::oauth::{
     bind_loopback_listeners, build_authorize_url_from_redirect, cognito_client_id,
     cognito_token_url, compute_code_challenge, generate_code_verifier, parse_callback,
-    AuthorizeRequest, require_identity_provider, CallbackOutcome, CallbackRejection, REDIRECT_URI,
+    require_identity_provider, AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};

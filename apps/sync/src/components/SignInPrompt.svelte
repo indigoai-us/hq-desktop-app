@@ -538,9 +538,6 @@
         {loadingProvider ? 'Waiting for browser…' : 'Sign in with HQ'}
       </button>
       <p class="loading-hint">Opens your browser for a secure sign-in, then returns here.</p>
-      <button type="button" class="magic-link" data-testid="magic-link" onclick={() => (showAlternate = true)}>
-        Use a magic link instead
-      </button>
     {/if}
 
     <div
@@ -603,6 +600,14 @@
         </form>
       {/if}
     </div>
+
+    <!-- Outside the error gate above, so a failed provider sign-in still leaves
+         the magic link reachable. -->
+    {#if layout === "column" && !showAlternate && continuation.phase !== 'confirming'}
+      <button type="button" class="magic-link" data-testid="magic-link" onclick={() => (showAlternate = true)}>
+        Use a magic link instead
+      </button>
+    {/if}
 
     {#if loadingProvider}
       <div class="browser-handoff" data-testid="signin-browser-handoff" role="status">
