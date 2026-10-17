@@ -3067,7 +3067,7 @@
     // intro is its greeting. The desktop adds no setup rows of its own: it
     // has no call that grants vault access, and a Local bot already works
     // with the person's own permissions.
-    // The visual first run selects on Done ("Talk to <Name>"), so a create
+    // The visual first run selects on Done ("Open HQ"), so a create
     // that lands behind the takeover, or after the person left it for
     // #welcome, does not move them.
     if (options.select !== false) handleSelect(row);
@@ -3472,7 +3472,7 @@
       input,
       // The progress card and the DM row carry the person's name for it.
       { displayName },
-      // The takeover selects on Done ("Talk to <Name>"); #welcome opens it now.
+      // The takeover selects on Done ("Open HQ"); #welcome opens it now.
       // A takeover create that finishes after Skip leaves the welcome report up.
       { select: !visualFirstRunOpen && !firstRunCreateRunning, cliNamed: assistantCliOwns },
     );
@@ -4483,7 +4483,7 @@
   /** Bots this takeover created in this session (their DM and progress card are already set up). */
   const firstRunCreatedUids = new Set<string>();
   /**
-   * Done: "Talk to <Name>" lands on the Daily Brief page with the welcome
+   * Done: "Open HQ" lands on the Daily Brief page with the welcome
    * report, the same as "Continue in chat" (owner, 2026-10-16). The
    * assistant's DM stays in the sidebar.
    */
