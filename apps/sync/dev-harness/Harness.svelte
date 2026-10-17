@@ -26,6 +26,7 @@
   import ForwardPickerPreview from './ForwardPickerPreview.svelte';
   import ShareStackPreview from './ShareStackPreview.svelte';
   import ClaudeCodePreview from './ClaudeCodePreview.svelte';
+  import BotManagementPreview from './BotManagementPreview.svelte';
   import BotIntegrationsPreview from './BotIntegrationsPreview.svelte';
   import Conversation, {
     type ConversationMessage,
@@ -275,6 +276,8 @@
       {/if}
     </div>
   {/await}
+{:else if view === 'bot-management'}
+  <BotManagementPreview />
 {:else if view === 'bot-integrations'}
   <!-- Per-bot integration control section (BotIntegrationsSection) rendered in
        both Agent profile and Local bot card contexts. Flag

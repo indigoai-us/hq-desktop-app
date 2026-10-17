@@ -97,6 +97,7 @@ function firstLabel(domain: string): string {
 
 export interface CompanyConnection {
   id: string;
+  needsAttention?: boolean;
   /** Provider without the `factory:` prefix, lower case, e.g. "linear". */
   provider: string;
   /** Display name, e.g. "Linear" or "Gmail (Stefan)". */
@@ -133,7 +134,7 @@ function connectionName(raw: Record<string, unknown>, slug: string): string {
  * connections are kept: the card never claims an app that is revoked or
  * failing. Every field may be missing.
  */
-export function readCompanyConnections(json: unknown): CompanyConnections | null {
+export function readCompanyConnections(json: unknown, includeUnhealthy = false): CompanyConnections | null {
   const root = isRecord(json) ? json : null;
   if (!root) return null;
   const viewer = isRecord(root.viewer) ? root.viewer : null;
@@ -142,13 +143,14 @@ export function readCompanyConnections(json: unknown): CompanyConnections | null
   for (const raw of Array.isArray(root.connections) ? root.connections : []) {
     if (!isRecord(raw)) continue;
     const id = text(raw.id);
-    if (!id || ids.has(id) || raw.status !== "connected") continue;
+    if (!id || ids.has(id) || (raw.status !== "connected" && !(includeUnhealthy && ["error", "degraded", "needs-reauth", "needs-attention"].includes(String(raw.status))))) continue;
     ids.add(id);
     const provider = providerSlug(text(raw.provider));
     const installation = isRecord(raw.installation) ? raw.installation : null;
     connections.push({
       id,
       provider,
+      ...(includeUnhealthy ? { needsAttention: raw.status !== "connected" } : {}),
       name: connectionName(raw, provider),
       domain: normalizeConnectDomain(installation?.domain),
       createdBy: text(raw.createdBy),
