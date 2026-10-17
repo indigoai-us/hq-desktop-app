@@ -5,6 +5,8 @@ import {
   __resetCoreUsageCacheForTests,
   billingIsSetUp,
   cachedCoreUsage,
+  canReadBilling,
+  resolveUsageCompany,
   groupAmount,
   groupUsageLines,
   meterView,
@@ -124,6 +126,12 @@ describe("meter view", () => {
     expect(view.usedLine).toBe("$14.20 used · $10.00 free");
   });
 
+  it("says the headline total is a floor while the statement is partial", () => {
+    const view = meterView(monthStatementFromBody(statementBody({ complete: false }))!);
+    expect(view.partial).toBe(true);
+    expect(view.usedLine).toBe("At least $8.00 of $10.00 free");
+  });
+
   it("groups thousands in large amounts", () => {
     const view = meterView(monthStatementFromBody(statementBody({ usageCents: 270122 }))!);
     expect(view.usedLine).toBe("$2,701.22 used · $10.00 free");
@@ -140,9 +148,38 @@ describe("meter view", () => {
   });
 });
 
+describe("which company the panel shows", () => {
+  const rows = [
+    { slug: "acme", displayName: "Acme", kind: "company", cloudUid: "cmp_acme", role: "owner" },
+    { slug: "garage", displayName: "Garage", kind: "company", cloudUid: null, role: null },
+    { slug: "personal", displayName: "Personal", kind: "personal", cloudUid: "prs_me", role: null },
+  ];
+
+  it("a local company on screen gets no usage, never another company's spend", () => {
+    expect(resolveUsageCompany(rows, "garage", "acme")).toEqual({ uid: null, name: "Garage", role: null });
+  });
+
+  it("a cloud company on screen is used with its role", () => {
+    expect(resolveUsageCompany(rows, "acme", null)).toEqual({ uid: "cmp_acme", name: "Acme", role: "owner" });
+  });
+
+  it("falls back to the branded company, then the first cloud company", () => {
+    expect(resolveUsageCompany(rows, "", "garage")?.uid).toBeNull();
+    expect(resolveUsageCompany(rows, null, null)?.uid).toBe("cmp_acme");
+    expect(resolveUsageCompany([], null, null)).toBeNull();
+  });
+
+  it("only owners (or an unknown role) read billing", () => {
+    expect(canReadBilling("owner")).toBe(true);
+    expect(canReadBilling(null)).toBe(true);
+    expect(canReadBilling("member")).toBe(false);
+  });
+});
+
 describe("plan and billing state", () => {
-  it("usage-priced companies are on the Free plan", () => {
+  it("usage-priced companies are on the Free plan until they add a card", () => {
     expect(planLabelFromSummary({ pricingPlan: "usage-only" })).toBe("Free plan");
+    expect(planLabelFromSummary({ pricingPlan: "usage-only", usageTrial: { cardOnFile: true } })).toBe("Pay as you go");
     expect(planLabelFromSummary({ pricingPlan: "current", plan: "team" })).toBe("Workforce plan");
     expect(planLabelFromSummary({ pricingPlan: "current" })).toBeNull();
   });

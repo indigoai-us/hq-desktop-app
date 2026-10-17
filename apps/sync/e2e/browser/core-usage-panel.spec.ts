@@ -35,7 +35,6 @@ test('shows month-to-date usage under the sync row', async ({ page }) => {
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toContainText('Assistant and bots');
   await expect(rows.nth(0)).toContainText('$5.10');
-  // Storage is unreported in the fixture: the group shows the measured part.
   await expect(rows.nth(1)).toContainText('Storage and sync');
   await expect(rows.nth(1)).toContainText('$1.00');
 

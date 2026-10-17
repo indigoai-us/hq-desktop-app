@@ -110,7 +110,7 @@
     /** Workspaces, used only to resolve uids in error copy. */
     workspaces?: readonly Record<string, unknown>[] | null;
     /** Company whose month-to-date usage the Core menu shows. */
-    usageCompany?: { uid: string; name: string } | null;
+    usageCompany?: import("./core-usage-model.js").UsageCompany | null;
     oncloudtoggle?: (paused: boolean) => void;
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;

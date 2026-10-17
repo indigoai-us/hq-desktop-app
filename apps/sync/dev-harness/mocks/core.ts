@@ -2025,7 +2025,7 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
           { key: 'integration-call', status: 'measured', billed: true, costCents: 200 },
           { key: 'hq-mcp-call', status: 'measured', billed: true, costCents: 0 },
           { key: 'agent-run', status: 'measured', billed: true, costCents: 310 },
-          { key: 'storage', status: 'unavailable', billed: true, costCents: null },
+          { key: 'storage', status: 'measured', billed: true, costCents: 0 },
           { key: 'secret', status: 'measured', billed: true, costCents: 40 },
           { key: 'vault', status: 'measured', billed: true, costCents: 0, waived: true },
         ],

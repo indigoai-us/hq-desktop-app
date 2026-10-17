@@ -108,7 +108,7 @@
      * The company whose usage this month shows under the sync row. Null (or
      * fixture mode) hides the panel.
      */
-    usageCompany?: { uid: string; name: string } | null;
+    usageCompany?: import("./core-usage-model.js").UsageCompany | null;
   }
 
   interface CoreStateWire {
@@ -549,6 +549,7 @@
       source={adapter.company}
       companyUid={usageCompany.uid}
       companyName={usageCompany.name}
+      role={usageCompany.role}
       {onopenurl}
     />
   {/if}

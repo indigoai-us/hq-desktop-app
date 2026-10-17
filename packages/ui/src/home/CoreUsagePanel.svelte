@@ -8,6 +8,7 @@
    * renders and routes clicks. Owner-gated reads: a non-owner sees a quiet
    * note, a failed read says usage is unavailable (never $0).
    */
+  import { untrack } from "svelte";
   import type { AdapterResult } from "@hq/platform";
   import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
@@ -20,6 +21,7 @@
   import {
     COMPARE_PLANS_URL,
     cachedCoreUsage,
+    canReadBilling,
     formatUsd,
     readCoreUsage,
     rememberCoreUsage,
@@ -36,24 +38,41 @@
   interface Props {
     /** The adapter's company slice. */
     source: BillingSource;
-    companyUid: string;
+    /** Null when the company has no cloud account: nothing is metered. */
+    companyUid: string | null;
     companyName: string;
+    /** The caller's role in the company, when the roster knows it. */
+    role?: string | null;
     /** Open an external link in the system browser. */
     onopenurl?: (url: string) => void;
   }
 
-  let { source, companyUid, companyName, onopenurl }: Props = $props();
+  let { source, companyUid, companyName, role = null, onopenurl }: Props = $props();
 
   let view = $state<CoreUsageView>({ kind: "loading", companyName: "" });
   let pending = $state(false);
   let outcome = $state<BillingPortalOutcome | null>(null);
+  /** Bumped to re-read after the person returns from Stripe. */
+  let refreshNonce = $state(0);
 
   $effect(() => {
+    void refreshNonce;
     const uid = companyUid;
     const name = companyName;
     const api = source;
-    view = cachedCoreUsage(uid) ?? { kind: "loading", companyName: name };
     outcome = null;
+    if (!uid) {
+      view = { kind: "no-usage", companyName: name };
+      return;
+    }
+    // The reads are owner-gated: a known non-owner gets the note at once
+    // instead of a loading line and a 403.
+    if (!canReadBilling(role)) {
+      view = { kind: "owner-only", companyName: name };
+      return;
+    }
+    const shown = untrack(() => view);
+    view = cachedCoreUsage(uid) ?? (shown.kind === "ready" && shown.companyName === name ? shown : { kind: "loading", companyName: name });
     let cancelled = false;
     void readCoreUsage(api as never, uid, name).then((next) => {
       if (cancelled) return;
@@ -74,23 +93,39 @@
     Boolean(onopenurl) && (paid || typeof source.createBillingCheckoutSession === "function"),
   );
 
+  /**
+   * Stripe's success page returns to the browser, not here. When the window
+   * gets focus back after a billing page opened, read the billing state again
+   * so a card just added flips the button to Manage billing.
+   */
+  function refreshOnReturn(): void {
+    if (typeof window === "undefined") return;
+    const onFocus = () => {
+      window.removeEventListener("focus", onFocus);
+      refreshNonce += 1;
+    };
+    window.addEventListener("focus", onFocus);
+  }
+
   async function openBilling(): Promise<void> {
-    if (pending || !onopenurl) return;
+    const uid = companyUid;
+    if (pending || !onopenurl || !uid) return;
     pending = true;
     outcome = null;
     try {
       outcome = paid
         ? await openBillingPortal({
-            companyUid,
-            createSession: (uid) => source.createBillingPortalSession(uid),
+            companyUid: uid,
+            createSession: (id) => source.createBillingPortalSession(id),
             openExternal: onopenurl,
           })
         : await openBillingPortal({
-            companyUid,
-            createSession: (uid) => source.createBillingCheckoutSession!(uid),
+            companyUid: uid,
+            createSession: (id) => source.createBillingCheckoutSession!(id),
             openExternal: onopenurl,
             approveUrl: approvedCheckoutUrl,
           });
+      if (outcome.kind === "opened") refreshOnReturn();
     } finally {
       pending = false;
     }
@@ -110,7 +145,9 @@
     {/if}
   </div>
 
-  {#if view.kind === "loading"}
+  {#if view.kind === "no-usage"}
+    <p class="core-usage-note" data-testid="core-usage-none">No usage for this company. It isn't connected to HQ cloud.</p>
+  {:else if view.kind === "loading"}
     <p class="core-usage-note" role="status" data-testid="core-usage-loading">Loading usage…</p>
   {:else if view.kind === "owner-only"}
     <p class="core-usage-note" data-testid="core-usage-owner-only">Only a company owner can see usage and billing.</p>
@@ -133,7 +170,7 @@
       <span class="core-usage-fill" class:over={usage.over} style={`--fill: ${usage.fill};`}></span>
     </div>
     <div class="core-usage-totals">
-      <span data-testid="core-usage-used">{usage.usedLine}</span>
+      <span data-testid="core-usage-used" data-partial={usage.partial ? "true" : undefined}>{usage.usedLine}</span>
       {#if usage.resetLine}
         <span data-testid="core-usage-reset">{usage.resetLine}</span>
       {/if}
@@ -155,6 +192,9 @@
           </li>
         {/each}
       </ul>
+    {/if}
+    {#if usage.partial}
+      <p class="core-usage-note small" data-testid="core-usage-partial">Some usage isn't reported yet, so this total can still go up.</p>
     {/if}
   {/if}
 
@@ -229,6 +269,11 @@
     line-height: 1.35;
   }
 
+  .core-usage-note.small {
+    color: var(--t3);
+    font-size: 12px;
+  }
+
   .core-usage-label {
     margin-top: 4px;
     color: var(--t3);
@@ -256,6 +301,11 @@
     transform: scaleX(var(--fill, 0));
     transform-origin: left center;
     transition: transform 300ms ease;
+  }
+
+  /* Past the included usage the bar turns to the error tone. */
+  .core-usage-fill.over {
+    background: var(--v4-error, var(--red));
   }
 
   @media (prefers-reduced-motion: reduce) {

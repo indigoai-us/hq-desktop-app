@@ -42,6 +42,7 @@
     type CloudFileEventPayload,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
+  import { resolveUsageCompany } from "../home/core-usage-model.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
@@ -5565,15 +5566,12 @@
   });
   /**
    * Company for the Core menu's usage panel: the company on screen, else the
-   * branded company, else the first cloud company in the roster.
+   * branded company. A local-only company shows "No usage", never another
+   * company's spend (resolveUsageCompany).
    */
-  const usageCompany = $derived.by((): { uid: string; name: string } | null => {
-    const cloud = (companies ?? []).filter((c) => c.kind === "company" && (c.cloudUid ?? "").trim());
-    const slug = selectedCompanySlug || brandState?.companySlug || "";
-    const row = (slug ? cloud.find((c) => c.slug === slug) : undefined) ?? cloud[0];
-    if (!row) return null;
-    return { uid: (row.cloudUid as string).trim(), name: row.displayName || row.slug };
-  });
+  const usageCompany = $derived(
+    resolveUsageCompany(companies, selectedCompanySlug, brandState?.companySlug),
+  );
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();

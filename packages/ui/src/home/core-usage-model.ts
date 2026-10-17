@@ -82,6 +82,8 @@ export interface UsageMeterView {
 
 export type CoreUsageView =
   | { kind: "loading"; companyName: string }
+  /** The company on screen has no cloud account, so HQ meters nothing for it. */
+  | { kind: "no-usage"; companyName: string }
   | { kind: "owner-only"; companyName: string }
   | { kind: "unavailable"; companyName: string }
   | {
@@ -203,20 +205,25 @@ export function meterView(statement: MonthStatement): UsageMeterView {
       : `${formatUsd(usageCents)} of ${formatUsd(allowanceCents)} free`
     : `${formatUsd(usageCents)} used`;
   const rows = groupUsageLines(statement.lines);
+  const partial = !statement.complete || rows.some((r) => r.amount.kind !== "amount" || r.amount.partial);
   return {
     fill,
     over,
-    usedLine,
+    // A partial total can only rise as missing days and meters arrive.
+    usedLine: partial ? `At least ${usedLine}` : usedLine,
     resetLine: resetLine(statement),
-    partial: !statement.complete || rows.some((r) => r.amount.kind !== "amount" || r.amount.partial),
+    partial,
     rows,
   };
 }
 
-/** Customer-facing plan name. Usage-priced companies are on the Free plan. */
+/**
+ * Customer-facing plan name. A usage-priced company is on the Free plan until
+ * it adds a card; then it pays as it goes (hqforwork.com/pricing wording).
+ */
 export function planLabelFromSummary(summary: unknown): string | null {
   if (!isRecord(summary)) return null;
-  if (isUsageOnlySummary(summary)) return "Free plan";
+  if (isUsageOnlySummary(summary)) return billingIsSetUp(summary) ? "Pay as you go" : "Free plan";
   if (summary.plan === "team") return "Workforce plan";
   return null;
 }
@@ -290,8 +297,55 @@ export function cachedCoreUsage(companyUid: string): CoreUsageView | null {
   return lastGood.get(companyUid) ?? null;
 }
 
+/** Ready views and the owner-only answer are cached; failures never are. */
 export function rememberCoreUsage(companyUid: string, view: CoreUsageView): void {
-  if (view.kind === "ready") lastGood.set(companyUid, view);
+  if (view.kind === "ready" || view.kind === "owner-only") lastGood.set(companyUid, view);
+}
+
+/** The company the Core menu's usage panel is about. A null uid means local only. */
+export interface UsageCompany {
+  uid: string | null;
+  name: string;
+  role: string | null;
+}
+
+export interface UsageCompanyRow {
+  slug: string;
+  displayName?: string | null;
+  kind: string;
+  cloudUid?: string | null;
+  role?: string | null;
+}
+
+/**
+ * Pick the panel's company. The company on screen wins, then the branded
+ * company. When that company has no cloud account, the panel says it has no
+ * usage: it never falls back to another company's spend. Only when no company
+ * is on screen or branded does the first cloud company stand in.
+ */
+export function resolveUsageCompany(
+  companies: readonly UsageCompanyRow[] | null | undefined,
+  onScreenSlug: string | null | undefined,
+  brandSlug: string | null | undefined,
+): UsageCompany | null {
+  const all = (companies ?? []).filter((c) => c.kind === "company");
+  const toView = (c: UsageCompanyRow): UsageCompany => ({
+    uid: (c.cloudUid ?? "").trim() || null,
+    name: c.displayName || c.slug,
+    role: c.role ?? null,
+  });
+  const slug = (onScreenSlug || brandSlug || "").trim();
+  if (slug) {
+    const row = all.find((c) => c.slug === slug);
+    if (row) return toView(row);
+  }
+  const firstCloud = all.find((c) => (c.cloudUid ?? "").trim());
+  return firstCloud ? toView(firstCloud) : null;
+}
+
+/** Roles the summary read is owner-gated on: anything else gets a 403. */
+export function canReadBilling(role: string | null | undefined): boolean {
+  return role == null || role.trim() === "" || role.trim().toLowerCase() === "owner";
 }
 
 export function __resetCoreUsageCacheForTests(): void {

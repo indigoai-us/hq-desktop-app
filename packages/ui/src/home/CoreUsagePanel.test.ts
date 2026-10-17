@@ -43,12 +43,16 @@ function source(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function render(src: ReturnType<typeof source>, onopenurl = vi.fn()) {
+async function render(
+  src: ReturnType<typeof source>,
+  onopenurl = vi.fn(),
+  extra: { companyUid?: string | null; role?: string | null } = {},
+) {
   host = document.createElement("div");
   document.body.append(host);
   component = mount(CoreUsagePanel, {
     target: host,
-    props: { source: src as never, companyUid: "cmp_northwind", companyName: "Northwind", onopenurl },
+    props: { source: src as never, companyUid: "cmp_northwind", companyName: "Northwind", onopenurl, ...extra },
   });
   flushSync();
   for (let i = 0; i < 5; i += 1) await tick();
@@ -65,7 +69,8 @@ describe("CoreUsagePanel", () => {
     expect(q("core-usage")?.dataset.state).toBe("ready");
     expect(q("core-usage-company")?.querySelector('[data-testid="company-label"]')?.textContent).toContain("Northwind");
     expect(q("core-usage-plan")?.textContent).toBe("Free plan");
-    expect(q("core-usage-used")?.textContent).toBe("$8.00 of $10.00 free");
+    // One meter is unreported, so the headline is a floor.
+    expect(q("core-usage-used")?.textContent).toBe("At least $8.00 of $10.00 free");
     expect(q("core-usage-reset")?.textContent).toBe("Resets Nov 1");
     const fill = host.querySelector(".core-usage-fill") as HTMLElement;
     expect(fill.getAttribute("style")).toContain("--fill: 0.8");
@@ -119,6 +124,52 @@ describe("CoreUsagePanel", () => {
     expect(q("core-usage-owner-only")).not.toBeNull();
     expect(q("core-usage-used")).toBeNull();
     expect(q("core-usage-billing")).toBeNull();
+  });
+
+  it("a local company says it has no usage and reads nothing", async () => {
+    const src = source();
+    await render(src, vi.fn(), { companyUid: null });
+    expect(q("core-usage")?.dataset.state).toBe("no-usage");
+    expect(q("core-usage-none")?.textContent).toContain("No usage for this company");
+    expect(src.getBillingSummary).not.toHaveBeenCalled();
+    expect(q("core-usage-used")).toBeNull();
+    expect(q("core-usage-billing")).toBeNull();
+  });
+
+  it("a member the roster knows is not an owner gets the note at once, with no read", async () => {
+    const src = source();
+    await render(src, vi.fn(), { role: "member" });
+    expect(q("core-usage")?.dataset.state).toBe("owner-only");
+    expect(src.getBillingSummary).not.toHaveBeenCalled();
+  });
+
+  it("marks a partial total on the headline and explains it", async () => {
+    await render(source({ getUsageStatement: vi.fn(async () => ok({ ...STATEMENT, complete: false })) }));
+    expect(q("core-usage-used")?.textContent).toBe("At least $8.00 of $10.00 free");
+    expect(q("core-usage-used")?.dataset.partial).toBe("true");
+    expect(q("core-usage-partial")).not.toBeNull();
+  });
+
+  it("styles the bar once usage passes the allowance", async () => {
+    await render(source({ getUsageStatement: vi.fn(async () => ok({ ...STATEMENT, usageCents: 1420 })) }));
+    expect(host.querySelector(".core-usage-fill")?.classList.contains("over")).toBe(true);
+  });
+
+  it("re-reads billing when the window regains focus after Stripe opens", async () => {
+    const src = source();
+    await render(src);
+    expect(src.getBillingSummary).toHaveBeenCalledTimes(1);
+    q("core-usage-billing")!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    src.getBillingSummary.mockResolvedValueOnce(ok({ pricingPlan: "usage-only", usageTrial: { status: "active", cardOnFile: true } }));
+    window.dispatchEvent(new Event("focus"));
+    flushSync();
+    for (let i = 0; i < 5; i += 1) await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(src.getBillingSummary).toHaveBeenCalledTimes(2);
+    expect(q("core-usage-billing")?.textContent).toContain("Manage billing");
+    expect(q("core-usage-plan")?.textContent).toBe("Pay as you go");
   });
 
   it("a failed lookup says unavailable and never shows $0", async () => {
