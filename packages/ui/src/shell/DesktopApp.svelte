@@ -15434,13 +15434,13 @@
           onselect={(row, options) => {
             // A row the person picks, other than #welcome, counts as starting the old first run.
             if (options?.automatic !== true && !isSetupChannel(row.channelId)) noteFirstRunAction();
-            if (options?.automatic === true && isSetupChannel(row.channelId)) {
-              firstRunTimingLog(formatWelcomeNav(options.reason));
-            }
             handleSelect(row, {
               preserveView: options?.automatic === true && view !== "conversation",
               automatic: options?.automatic === true,
             });
+            if (options?.automatic === true && isSetupChannel(row.channelId)) {
+              firstRunTimingLog(formatWelcomeNav(options.reason));
+            }
           }}
           oncompanyscopechange={changeTenantCompany}
           oncommand={() => (paletteOpen = true)}
