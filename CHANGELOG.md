@@ -9,9 +9,12 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Meetings: the "Record as" company list on a detected live meeting now opens over the page and shows every company. Before, it opened inside the short live meeting card and was cut off after one or two rows, so you had to use the arrow keys to change the company. It opens above the picker when there is no room below. The "Save bot to" list next to the meeting link box is fixed the same way.
+- Badges: the holographic light on the back of a badge card now looks like the foil on its front: fine etched lines in a pearl rainbow that follow the pointer. Before, it showed as a flat green-grey haze with plain rings that spread over the story and made the smaller text hard to read. The light is now softer behind the words, so the story stays easy to read while it shines.
+- Badges: clicking a badge on the Badges page opens its details again, with its levels and a "View card" button, instead of jumping straight to the holographic card. Back returns to the Badges page.
 - Usage pricing: first-run setup shows one card for a new company: $10 of usage included every month, the per-use rates (sync, gateway call, HQ MCP call, agent run, storage, secret), the $5 vault fee waived during the trial, cloud bot boxes from $100 to $800 a month, and a 30-day trial capped at $500. The rates come from HQ's price list and fall back to the published card when it cannot be read. "Sign up free" continues setup; "Request an enterprise demo" and "Use HQ free, self-hosted or on-prem" open in your browser. Starter and Workforce are no longer offered to new companies, and nothing goes to checkout. Existing companies keep their plans.
 - Company settings: Billing for a usage-priced company shows this month's usage, the credit left of the $10 included, the vault fee and the cloud bot box prices instead of seats, and has no Workforce upgrade. Other companies see seats as before.
 - Cloud bot, Slack bot, external bot, meeting recording and invite messages no longer say you need Starter, Workforce or a seat upgrade. They say the company's plan does not include the feature yet.
+- Badges: a new honor, Ecom Rat, for HQ's honorary rat of ecommerce.
 
 ## [0.11.12] — 2026-10-16
 

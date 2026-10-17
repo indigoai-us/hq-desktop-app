@@ -57,6 +57,8 @@ describe("the story", () => {
     expect(badgeStory(honor("captain"), "Corey Epstein")?.did).toBe("Corey leads HQ.");
     expect(badgeStory(honor("captain"), null, "first")?.did).toBe("I lead HQ.");
     expect(badgeStory(honor("patientzero"), "Corey Epstein")?.did).toBe("Corey was the first person ever to run HQ, before it had a name.");
+    expect(badgeStory(honor("ecomrat"), "Spencer")?.did).toBe("Spencer was named HQ's honorary Ecom Rat.");
+    expect(badgeStory(honor("ecomrat"))?.did).toBe("You were named HQ's honorary Ecom Rat.");
   });
 
   it("tells Core Builder's four levels with the same numbers", () => {
@@ -98,7 +100,7 @@ describe("the story", () => {
   // earned. Core Builder is earned by merging pull requests.
   it("dates the given honors as Awarded, and Core Builder as Earned", () => {
     const at = (id: string): ResolvedBadge => ({ def: BADGE_BY_ID[id], tier: "L", earnedAt: "2026-10-11" });
-    for (const id of ["og", "captain", "patientzero"]) expect(badgeStory(at(id))?.earned, id).toBe("Awarded Oct 11, 2026");
+    for (const id of ["og", "captain", "patientzero", "ecomrat"]) expect(badgeStory(at(id))?.earned, id).toBe("Awarded Oct 11, 2026");
     expect(badgeStory(at("corebuilder"))?.earned).toBe("Earned Oct 11, 2026");
   });
 
