@@ -44,7 +44,7 @@
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import FinishingSetupChip from "./FinishingSetupChip.svelte";
-  import { installQueueAttentionNotice } from "./finishing-setup.js";
+  import { installQueueAttentionNotice, parseInstallQueueStatus } from "./finishing-setup.js";
   import type { InstallQueueHost } from "./finishing-setup.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -218,6 +218,7 @@
     botNeedsCodingToolNotice,
     localBotCodingToolNeed,
     localBotNeedsCodingTool,
+    localBotSignedOutHere,
     withPlainBotFailureReplies,
   } from "../chat/bot-runtime-failure.js";
   import SetupRunCard from "../chat/SetupRunCard.svelte";
@@ -344,6 +345,7 @@
     briefOpenToolConnectorId,
     briefInstallAfterCheck,
     briefInstallAfterSettle,
+    briefInstallQueueStillRunning,
     briefOpenToolContext,
     briefOpenToolLabel,
     briefOpenToolView,
@@ -3089,7 +3091,7 @@
     // intro is its greeting. The desktop adds no setup rows of its own: it
     // has no call that grants vault access, and a Local bot already works
     // with the person's own permissions.
-    // The visual first run selects on Done ("Talk to <Name>"), so a create
+    // The visual first run selects on Done ("Open HQ"), so a create
     // that lands behind the takeover, or after the person left it for
     // #welcome, does not move them.
     if (options.select !== false) handleSelect(row);
@@ -3494,7 +3496,7 @@
       input,
       // The progress card and the DM row carry the person's name for it.
       { displayName },
-      // The takeover selects on Done ("Talk to <Name>"); #welcome opens it now.
+      // The takeover selects on Done ("Open HQ"); #welcome opens it now.
       // A takeover create that finishes after Skip leaves the welcome report up.
       { select: !visualFirstRunOpen && !firstRunCreateRunning, cliNamed: assistantCliOwns },
     );
@@ -3822,6 +3824,13 @@
   let briefOpenToolSettle = $state<BriefInstallSettle>(readBriefOpenToolSettle());
   /** Null until the installed-state check for this tool has answered. */
   let briefInstallChecked = $state<boolean | null>(null);
+  /**
+   * True only while this launch's Continue install is still running. A quit
+   * clears it, so the next launch does not keep a dead install pending.
+   */
+  let briefInstallLive = $state(false);
+  /** True while the install queue's current item is the HQ command line. */
+  let briefInstallQueueRunning = $state(false);
   /** Bumped so a check that started before the install settled cannot overwrite it. */
   let briefInstallCheckToken = 0;
   let briefOpenToolBusy = $state(false);
@@ -3868,6 +3877,8 @@
       briefOpenTool = null;
       briefOpenToolSettle = "skipped";
       briefInstallChecked = null;
+      briefInstallLive = false;
+      briefInstallQueueRunning = false;
       briefInstallCheckToken += 1;
       briefOpenToolError = null;
       visualFirstRunOpen = true;
@@ -4111,13 +4122,28 @@
    * stays closed. The desktop lands on the welcome report, with Open for that
    * tool. No HQ folder: the same landing, without an Open action.
    */
-  function applyBriefInstallCheck(runtime: BriefOpenToolRuntime, installed: boolean): void {
+  function applyBriefInstallCheck(
+    runtime: BriefOpenToolRuntime,
+    installed: boolean,
+    stillRunning: boolean,
+  ): void {
     briefInstallChecked = installed;
     if (briefOpenTool !== runtime) return;
-    const next = briefInstallAfterCheck(briefOpenToolSettle, installed);
+    const next = briefInstallAfterCheck(briefOpenToolSettle, installed, stillRunning);
     if (next === briefOpenToolSettle) return;
     briefOpenToolSettle = next;
     rememberBriefOpenTool(runtime, next);
+  }
+  /** The queue item that can still be installing HQ. Anything else is not. */
+  async function readBriefInstallQueueRunning(): Promise<boolean> {
+    const host = installQueue;
+    if (!host) return false;
+    try {
+      return briefInstallQueueStillRunning(parseInstallQueueStatus(await host.getStatus()));
+    } catch (error) {
+      console.warn("[brief] could not read the install queue", error);
+      return false;
+    }
   }
   /** Once per brief open, not on every render. A missing check leaves the recorded settle. */
   async function refreshBriefInstallCheck(): Promise<void> {
@@ -4128,10 +4154,17 @@
       if (token === briefInstallCheckToken) briefInstallChecked = null;
       return;
     }
+    let queueRunning = false;
+    try {
+      queueRunning = await readBriefInstallQueueRunning();
+    } catch (error) {
+      console.warn("[brief] could not read the install queue", error);
+    }
     try {
       const result = await check(runtime);
       if (token !== briefInstallCheckToken || !result.ok || typeof result.value !== "boolean") return;
-      applyBriefInstallCheck(runtime, result.value);
+      briefInstallQueueRunning = queueRunning;
+      applyBriefInstallCheck(runtime, result.value, briefInstallLive || queueRunning);
     } catch (error) {
       console.warn("[brief] could not check whether HQ is installed", error);
     }
@@ -4152,9 +4185,10 @@
       enableHqAnywhere: choice?.enableHqAnywhere === true,
       onInstallSettled: (result) => {
         if (readBriefOpenTool() !== runtime) return;
+        briefInstallCheckToken += 1;
+        briefInstallLive = false;
         const next = briefInstallAfterSettle(briefOpenToolSettle, result?.ok === true);
         if (next === briefOpenToolSettle) return;
-        briefInstallCheckToken += 1;
         rememberBriefOpenTool(runtime, next);
         briefOpenToolSettle = next;
         briefInstallChecked = next === "installed" ? true : false;
@@ -4168,6 +4202,7 @@
       rememberBriefOpenTool(runtime, settle);
       briefOpenTool = runtime;
       briefOpenToolSettle = settle;
+      briefInstallLive = settle === "pending";
       briefInstallChecked = settle === "installed" ? true : settle === "failed" ? false : null;
       briefOpenToolError = null;
     }
@@ -4196,7 +4231,13 @@
     }
   }
   const briefInstallView = $derived(
-    briefOpenTool ? briefOpenToolView(briefOpenToolSettle, briefInstallChecked) : "folder",
+    briefOpenTool
+      ? briefOpenToolView(
+          briefOpenToolSettle,
+          briefInstallChecked,
+          briefInstallLive || briefInstallQueueRunning,
+        )
+      : "folder",
   );
   const briefOpenToolAction = $derived(
     briefOpenTool
@@ -4244,6 +4285,12 @@
             if (result.ok && (result.value as { state?: string } | null)?.state === "connected") {
               await onBotRuntimeSignedIn(runtime);
             }
+          },
+          // The sign-in left the browser in front of the Daily Brief.
+          // The adapter answers a failure as {ok:false}; throw it so the caller logs it.
+          focus: async () => {
+            const result = await adapter.sessions?.bringToFront?.();
+            if (result && !result.ok) throw new Error(result.message ?? "could not bring HQ to the front");
           },
         }
       : null;
@@ -4641,7 +4688,7 @@
   /** Bots this takeover created in this session (their DM and progress card are already set up). */
   const firstRunCreatedUids = new Set<string>();
   /**
-   * Done: "Talk to <Name>" lands on the Daily Brief page with the welcome
+   * Done: "Open HQ" lands on the Daily Brief page with the welcome
    * report, the same as "Continue in chat" (owner, 2026-10-16). The
    * assistant's DM stays in the sidebar.
    */
@@ -5264,6 +5311,12 @@
       Boolean(!selectedBotProgress && selectedLocalBot && selectedLocalBotOffline),
   );
   const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
+  /** The local bot cannot reply until its coding tool signs in here; the signed-out card says so, no working line. */
+  function localBotSignedOut(agentUid: string | null | undefined): boolean {
+    const uid = (agentUid ?? "").trim();
+    const bot = uid ? localBots.find((b) => b.agentUid === uid) : undefined;
+    return localBotSignedOutHere(bot, localBotRuntimeReady, localCodingToolsInstalled, runtimeRepairController.signedInAt);
+  }
   /**
    * The open bot is paused on a sign-in, but its conversation has no
    * signed-out repair card to fix it from: the bot said so in another
@@ -7386,7 +7439,7 @@
           visibleThinking(
             thinkingByRow[selectedRow.id] ?? [],
             liveTimelineId === selectedRow.id ? liveTimeline : [],
-          ),
+          ).filter((entry) => selectedRow?.kind !== "dm" || !localBotSignedOut(entry.agentUid)),
           assistantNameOverride,
           "agentUid",
           "agentName",
@@ -13564,6 +13617,8 @@
         if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()]) {
           // The person wrote again: a new turn, whatever `busy` still says.
           answeredWhileBusy = forgetAnswered(answeredWhileBusy, row.personUid);
+        }
+        if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()] && !localBotSignedOut(row.personUid)) {
           // Pin the row to "newer than the agent's last message" — a local
           // bot's previous reply is usually < 2 min old and would otherwise
           // clear the fresh row on the next catch-up (skew fallback).
@@ -17082,6 +17137,7 @@
                   <ReplyPanel
                     api={conversationApi}
                     {localBots}
+                    agentSignedOut={localBotSignedOut}
                     rootEventId={openReplyRootId}
                     tasks={threadTasks}
                     scope={replyScope}

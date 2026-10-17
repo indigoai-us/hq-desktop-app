@@ -251,6 +251,8 @@ export const FIRST_RUN_COPY = {
   /** Shown on the name step once the assistant is being created. */
   nameLocked: "This name is taken into setup now. You can rename your assistant later from its profile.",
   opening: "Opening…",
+  /** Done's button, which leaves the takeover for the desktop. */
+  openHq: "Open HQ",
   retry: "Retry",
   retrying: "Retrying…",
 } as const;
@@ -260,9 +262,6 @@ export function firstRunOpeningLabel(toolName: string): string {
   return toolName.trim() ? `Setting up ${toolName.trim()}…` : "Setting up…";
 }
 
-export function firstRunTalkLabel(name: string): string {
-  return `Talk to ${name.trim() || "your assistant"}`;
-}
 
 export function runtimeLabel(runtime: FirstRunRuntime): string {
   return LOCAL_BOT_RUNTIMES.find((r) => r.id === runtime)?.label ?? runtime;
@@ -708,7 +707,7 @@ export function firstRunIntro(
 // ── never again ────────────────────────────────────────────────────────────
 
 /**
- * Set when the person leaves the takeover through Done ("Talk to <Name>") or
+ * Set when the person leaves the takeover through Done ("Open HQ") or
  * "Continue in chat". From then on the takeover never opens again on this
  * computer, whatever the flag says.
  */

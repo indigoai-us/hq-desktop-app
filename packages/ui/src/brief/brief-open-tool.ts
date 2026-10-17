@@ -55,13 +55,32 @@ export function briefOpenToolContext(runtime: BriefOpenToolRuntime, view: BriefI
 }
 
 /**
- * What to store after a live check. A miss does not turn a running install
- * into a failure, and it does clear a recorded install that is gone.
- * `checked` null is not this function: the recorded settle stands.
+ * The install-queue item that is still installing HQ. Any other running
+ * item, including node, is not this install.
  */
-export function briefInstallAfterCheck(settle: BriefInstallSettle, checked: boolean): BriefInstallSettle {
+export const BRIEF_INSTALL_QUEUE_ITEM = "hq-cli";
+
+/** True only while the queue is running the HQ command-line install. */
+export function briefInstallQueueStillRunning(
+  status: { state: string; currentId: string | null } | null,
+): boolean {
+  return status?.state === "running" && status.currentId === BRIEF_INSTALL_QUEUE_ITEM;
+}
+
+/**
+ * What to store after a live check. A miss clears a recorded install that
+ * is gone. A pending install that is still running stays pending. After a
+ * restart the install is not running, so pending plus not installed is a
+ * failure. `checked` null is not this function: the recorded settle stands.
+ */
+export function briefInstallAfterCheck(
+  settle: BriefInstallSettle,
+  checked: boolean,
+  stillRunning = false,
+): BriefInstallSettle {
   if (checked) return "installed";
-  if (settle === "pending" || settle === "failed") return settle;
+  if (settle === "pending") return stillRunning ? "pending" : "failed";
+  if (settle === "failed") return "failed";
   return "skipped";
 }
 
@@ -71,9 +90,13 @@ export function briefInstallAfterSettle(settle: BriefInstallSettle, ok: boolean)
   return ok ? "installed" : "failed";
 }
 
-export function briefOpenToolView(settle: BriefInstallSettle, checked: boolean | null): BriefInstallView {
+export function briefOpenToolView(
+  settle: BriefInstallSettle,
+  checked: boolean | null,
+  stillRunning = false,
+): BriefInstallView {
   if (checked === true) return "installed";
-  if (checked === false && settle === "pending") return "pending";
+  if (checked === false && settle === "pending") return stillRunning ? "pending" : "failed";
   if (checked === false && settle === "failed") return "failed";
   if (checked === false) return "folder";
   if (settle === "installed") return "installed";

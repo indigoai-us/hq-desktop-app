@@ -3,8 +3,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BRIEF_OPEN_TOOL_KEY,
+  BRIEF_INSTALL_QUEUE_ITEM,
   briefInstallAfterCheck,
   briefInstallAfterSettle,
+  briefInstallQueueStillRunning,
   briefOpenToolConnectorId,
   briefOpenToolContext,
   briefOpenToolLabel,
@@ -78,7 +80,7 @@ describe("brief open tool", () => {
 
   it("a live check promotes a slow install and clears a setup that was removed", () => {
     expect(briefOpenToolView("pending", null)).toBe("pending");
-    expect(briefOpenToolView("pending", false)).toBe("pending");
+    expect(briefOpenToolView("pending", false, true)).toBe("pending");
     expect(briefOpenToolView("pending", true)).toBe("installed");
     expect(briefInstallAfterSettle("pending", true)).toBe("installed");
     expect(briefInstallAfterSettle("pending", false)).toBe("failed");
@@ -89,9 +91,26 @@ describe("brief open tool", () => {
     expect(briefOpenToolView("failed", false)).toBe("failed");
     expect(briefOpenToolView("failed", true)).toBe("installed");
     expect(briefInstallAfterCheck("failed", true)).toBe("installed");
-    expect(briefInstallAfterCheck("pending", false)).toBe("pending");
+    expect(briefInstallAfterCheck("pending", false, true)).toBe("pending");
     expect(briefOpenToolView("skipped", false)).toBe("folder");
     expect(briefOpenToolView("skipped", null)).toBe("folder");
+  });
+
+  it("after a restart, pending plus not installed is a failure unless that install is still running", () => {
+    expect(briefInstallAfterCheck("pending", false)).toBe("failed");
+    expect(briefOpenToolView("pending", false)).toBe("failed");
+    expect(briefOpenToolContext("claude", "failed")).toBe(
+      "HQ is not installed in Claude Code yet. You can try again from Settings.",
+    );
+    expect(briefOpenToolContext("codex", briefOpenToolView("pending", false))).toBe(
+      "HQ is not installed in Codex yet. You can try again from Settings.",
+    );
+    expect(briefInstallQueueStillRunning(null)).toBe(false);
+    expect(briefInstallQueueStillRunning({ state: "running", currentId: "node" })).toBe(false);
+    expect(briefInstallQueueStillRunning({ state: "idle", currentId: BRIEF_INSTALL_QUEUE_ITEM })).toBe(false);
+    expect(briefInstallQueueStillRunning({ state: "running", currentId: BRIEF_INSTALL_QUEUE_ITEM })).toBe(true);
+    expect(briefInstallAfterCheck("pending", false, true)).toBe("pending");
+    expect(briefOpenToolView("pending", false, true)).toBe("pending");
   });
 
   it("ignores a stored value that is not a coding tool", () => {

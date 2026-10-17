@@ -199,7 +199,7 @@ describe("FirstRunTakeover: done", () => {
     expect(talk.textContent).toContain("Getting Pickles ready");
   });
 
-  it("Talk to <Name> opens the chat once, with Opening… while it goes", async () => {
+  it("Open HQ opens the chat once, with Opening… while it goes", async () => {
     let finish!: () => void;
     const { handlers } = render({
       initialStep: "done",
@@ -208,7 +208,7 @@ describe("FirstRunTakeover: done", () => {
     });
     await settle();
     const talk = q<HTMLButtonElement>('[data-testid="first-run-talk"]')!;
-    expect(talk.textContent).toContain("Talk to Pickles");
+    expect(talk.textContent?.trim()).toBe("Open HQ");
     talk.click();
     flushSync();
     talk.click();

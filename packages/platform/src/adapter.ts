@@ -2272,6 +2272,11 @@ export interface SessionsApi {
   loginStart?(tool: SessionProviderId, opts?: SessionLoginStartOptions): AdapterPromise<Json>;
   loginStatus?(tool: SessionProviderId): AdapterPromise<Json>;
   loginCancel?(tool: SessionProviderId): AdapterPromise<Json>;
+  /**
+   * Raise the desktop window above the browser once a browser sign-in ends,
+   * so the person lands back on HQ instead of the vendor's login page.
+   */
+  bringToFront?(): AdapterPromise<void>;
 }
 
 export interface SessionLoginStartOptions {

@@ -34,7 +34,6 @@
     FIRST_RUN_DECISION_COPY as COPY,
     assistantNameIssue,
     decisionToolFor,
-    firstRunTalkLabel,
     normalizeAssistantName,
     runtimeLabel,
     toolSessionCount,
@@ -302,11 +301,22 @@
     if (mine !== signinAttempt) return;
     if (connected) {
       logSignIn("done", runtime);
+      focusHq();
       goOnAfterSignIn(true);
     } else {
       logSignIn("failed", runtime);
+      focusHq();
       signinView = { runtime, state: "failed" };
     }
+  }
+
+  /** The browser sign-in left the browser in front: bring HQ back. */
+  function focusHq(): void {
+    const focus = signin?.focus;
+    if (!focus) return;
+    void Promise.resolve()
+      .then(() => focus())
+      .catch((error: unknown) => console.warn("[first-run] focus after sign-in failed", error));
   }
 
   function goOnAfterSignIn(connected = false): void {
@@ -330,6 +340,7 @@
     signinAttempt += 1;
     logSignIn("skipped", view.runtime);
     if (view.state === "waiting") cancelSignIn(view.runtime);
+    focusHq();
     goOnAfterSignIn();
   }
 
@@ -460,7 +471,7 @@
             ? FIRST_RUN_COPY.opening
             : creation.state === "creating"
               ? `Getting ${shownName} ready…`
-              : firstRunTalkLabel(shownName)}</button>
+              : FIRST_RUN_COPY.openHq}</button>
         </div>
       {/if}
     {:else if showBot}
@@ -707,14 +718,13 @@
     margin: 0;
   }
   /* Raised card above Continue, inside the head so it grows upward and
-     Continue stays on the ground line. This screen's wallpaper stays dark
-     in both app themes, so the card keeps the dark raised-card tokens.
-     The light chat-shell values are near-black and disappear here. */
+     Continue stays on the ground line. The opaque surface token follows
+     the app theme; the translucent raised token disappears on this wallpaper. */
   .fr-anywhere {
-    --raised: rgba(255, 255, 255, 0.05);
-    --line: rgba(255, 255, 255, 0.07);
-    --t1: rgba(255, 255, 255, 0.95);
-    --t2: rgba(255, 255, 255, 0.56);
+    --raised: var(--v4-surface-solid);
+    --line: var(--v4-hairline);
+    --t1: var(--v4-text-1);
+    --t2: var(--v4-text-2);
     margin: 12px 0 0;
     padding: 14px 16px;
     border: 1px solid var(--line);
@@ -747,6 +757,14 @@
   }
   .fr-anywhere-actions .new-bot-create-next {
     padding: 8px 14px;
+    border-color: var(--line);
+    color: var(--t1);
+  }
+  .fr-anywhere-actions .new-bot-create-next:hover:not(:disabled) {
+    background: var(--v4-raised);
+  }
+  .fr-anywhere-actions .new-bot-create-next:focus-visible {
+    outline-color: var(--t1);
   }
   .fr-anywhere-later,
   .fr-anywhere-undo {

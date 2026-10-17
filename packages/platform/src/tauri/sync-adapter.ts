@@ -1766,6 +1766,7 @@ export function createSyncPlatformAdapter(
         call('agent_provider_login_start', { tool, ...(opts?.force ? { force: true } : {}) }),
       loginStatus: (tool) => call('agent_provider_login_status', { tool }),
       loginCancel: (tool) => call('agent_provider_login_cancel', { tool }),
+      bringToFront: () => call<void>('bring_desktop_window_to_front'),
     },
 
     // local-bots US-009: desktop-only — every call shells to `hq bot … --json`

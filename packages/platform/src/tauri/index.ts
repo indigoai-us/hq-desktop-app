@@ -906,6 +906,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.call("agent_provider_login_start", { tool, ...(opts?.force ? { force: true } : {}) }),
     loginStatus: (tool) => this.call("agent_provider_login_status", { tool }),
     loginCancel: (tool) => this.call("agent_provider_login_cancel", { tool }),
+    bringToFront: () => this.call<void>("bring_desktop_window_to_front"),
   };
 
   readonly storage: NonNullable<PlatformAdapter["storage"]> = {

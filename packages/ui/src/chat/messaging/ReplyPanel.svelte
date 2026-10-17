@@ -216,6 +216,8 @@
     onopenurl?: (url: string) => void;
     /** The user's local bots — tells the Cloud / Local chip which is which. */
     localBots?: ReadonlyArray<LocalBotRow> | null;
+    /** True while this local bot cannot reply until its coding tool signs in here; a DM thread shows no working line for it. */
+    agentSignedOut?: ((agentUid: string) => boolean) | null;
   }
 
   let {
@@ -252,6 +254,7 @@
     onopenurl,
     tasks = [],
     localBots = null,
+    agentSignedOut = null,
   }: Props = $props();
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
@@ -371,6 +374,10 @@
   // the indicator stays self-contained (no DesktopApp plumbing).
   const AGENT_THINKING_TICK_MS = 5_000;
   let agentThinking = $state<ThinkingEntry[]>([]);
+  // Hidden, not dropped, while the bot is signed out, so the row shows again once it signs in.
+  const visibleAgentThinking = $derived(
+    scope === "dm" && agentSignedOut ? agentThinking.filter((entry) => !agentSignedOut(entry.agentUid)) : agentThinking,
+  );
 
   onMount(() => {
     const handle = window.setInterval(() => {
@@ -1397,7 +1404,7 @@
          36px avatar column of the rows above, and a gap keeps the last row
          off the composer's border. -->
     <div class="reply-live">
-      <AgentThinkingRow entries={agentThinking} />
+      <AgentThinkingRow entries={visibleAgentThinking} />
       <AgentTaskStrip {tasks} />
     </div>
 
