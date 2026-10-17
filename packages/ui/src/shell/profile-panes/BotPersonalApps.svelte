@@ -170,7 +170,7 @@
 {/if}
 {#if picked}
   <div class="overlay" use:portal><div class="dialog" role="dialog" aria-modal="true" aria-label="Add {picked.name}" tabindex="-1" use:focusOnMount use:dismissable={{ onclose: () => { if (!busy) picked = null; } }}>
-    <header><span class="logo"><ConnectionCardLogo logo={botAppLogo({ domain: domainOf(picked.url), name: picked.name, provider: picked.name })} size={44} /></span><div><h3>{picked.name}</h3><p class="muted">{picked.url}</p></div><button class="icon-button" aria-label="Back" disabled={busy} onclick={() => picked = null}><RailIcon name="x" /></button></header>
+    <header><span class="logo"><ConnectionCardLogo logo={botAppLogo({ domain: domainOf(picked.url), name: picked.name, provider: picked.name })} size={44} /></span><div><h3>{picked.name}</h3><p class="muted">{picked.url}</p></div><button class="icon-button" aria-label="Close" disabled={busy} onclick={() => picked = null}><RailIcon name="x" /></button></header>
     <p>{picked.description}</p>
     <p class="notice">{picked.auth === 'oauth' ? 'You’ll sign in to this app in your browser. The bot keeps that sign-in for itself.' : 'This app doesn’t need a sign-in. The bot reloads to pick up its tools.'}</p>
     {#if actionError}<p class="notice" role="alert">{actionError}</p>{/if}
