@@ -28,6 +28,50 @@ pub fn bring_main_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Raise the desktop workspace window above the browser once a first-run
+/// sign-in ends (done, failed or timed out, or skipped). The sign-in opened
+/// the vendor's login page in the browser, which then stays in front of the
+/// Daily Brief. Same post-OAuth raise as [`bring_main_window_to_front`]: on
+/// macOS it activates the app, not just the window; on Windows the topmost
+/// flag is transient. Targets `desktop-alt` directly and skips the open path's
+/// setup redirect and route handling: this only raises a window that exists.
+#[tauri::command]
+pub fn bring_desktop_window_to_front(app: tauri::AppHandle) -> Result<(), String> {
+    let window = desktop_window(&app)?;
+    crate::util::window_focus::bring_webview_to_front_after_oauth(&window);
+    Ok(())
+}
+
+fn desktop_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::WebviewWindow<R>, String> {
+    app.get_webview_window(crate::commands::desktop_alt::WINDOW_LABEL)
+        .ok_or_else(|| "Desktop window is not available.".to_string())
+}
+
+#[cfg(test)]
+mod desktop_window_tests {
+    use super::desktop_window;
+
+    #[test]
+    fn desktop_window_targets_the_desktop_workspace_not_the_controller() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        assert_eq!(
+            desktop_window(&handle).unwrap_err(),
+            "Desktop window is not available."
+        );
+
+        tauri::WebviewWindowBuilder::new(&app, "desktop-alt", Default::default())
+            .build()
+            .unwrap();
+        assert_eq!(desktop_window(&handle).unwrap().label(), "desktop-alt");
+    }
+}
+
 /// Hide the menubar popover from the renderer — Esc and the header close
 /// button.
 ///

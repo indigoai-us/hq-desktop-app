@@ -217,6 +217,7 @@
     botNeedsCodingToolNotice,
     localBotCodingToolNeed,
     localBotNeedsCodingTool,
+    localBotSignedOutHere,
     withPlainBotFailureReplies,
   } from "../chat/bot-runtime-failure.js";
   import SetupRunCard from "../chat/SetupRunCard.svelte";
@@ -3066,7 +3067,7 @@
     // intro is its greeting. The desktop adds no setup rows of its own: it
     // has no call that grants vault access, and a Local bot already works
     // with the person's own permissions.
-    // The visual first run selects on Done ("Talk to <Name>"), so a create
+    // The visual first run selects on Done ("Open HQ"), so a create
     // that lands behind the takeover, or after the person left it for
     // #welcome, does not move them.
     if (options.select !== false) handleSelect(row);
@@ -3471,7 +3472,7 @@
       input,
       // The progress card and the DM row carry the person's name for it.
       { displayName },
-      // The takeover selects on Done ("Talk to <Name>"); #welcome opens it now.
+      // The takeover selects on Done ("Open HQ"); #welcome opens it now.
       // A takeover create that finishes after Skip leaves the welcome report up.
       { select: !visualFirstRunOpen && !firstRunCreateRunning, cliNamed: assistantCliOwns },
     );
@@ -4093,6 +4094,12 @@
               await onBotRuntimeSignedIn(runtime);
             }
           },
+          // The sign-in left the browser in front of the Daily Brief.
+          // The adapter answers a failure as {ok:false}; throw it so the caller logs it.
+          focus: async () => {
+            const result = await adapter.sessions?.bringToFront?.();
+            if (result && !result.ok) throw new Error(result.message ?? "could not bring HQ to the front");
+          },
         }
       : null;
   /** The finished scan's counts and report path, for the setup bot's handoff. */
@@ -4485,7 +4492,7 @@
   /** Bots this takeover created in this session (their DM and progress card are already set up). */
   const firstRunCreatedUids = new Set<string>();
   /**
-   * Done: "Talk to <Name>" lands on the Daily Brief page with the welcome
+   * Done: "Open HQ" lands on the Daily Brief page with the welcome
    * report, the same as "Continue in chat" (owner, 2026-10-16). The
    * assistant's DM stays in the sidebar.
    */
@@ -5108,6 +5115,12 @@
       Boolean(!selectedBotProgress && selectedLocalBot && selectedLocalBotOffline),
   );
   const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
+  /** The local bot cannot reply until its coding tool signs in here; the signed-out card says so, no working line. */
+  function localBotSignedOut(agentUid: string | null | undefined): boolean {
+    const uid = (agentUid ?? "").trim();
+    const bot = uid ? localBots.find((b) => b.agentUid === uid) : undefined;
+    return localBotSignedOutHere(bot, localBotRuntimeReady, localCodingToolsInstalled, runtimeRepairController.signedInAt);
+  }
   /**
    * The open bot is paused on a sign-in, but its conversation has no
    * signed-out repair card to fix it from: the bot said so in another
@@ -7230,7 +7243,7 @@
           visibleThinking(
             thinkingByRow[selectedRow.id] ?? [],
             liveTimelineId === selectedRow.id ? liveTimeline : [],
-          ),
+          ).filter((entry) => selectedRow?.kind !== "dm" || !localBotSignedOut(entry.agentUid)),
           assistantNameOverride,
           "agentUid",
           "agentName",
@@ -13408,6 +13421,8 @@
         if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()]) {
           // The person wrote again: a new turn, whatever `busy` still says.
           answeredWhileBusy = forgetAnswered(answeredWhileBusy, row.personUid);
+        }
+        if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()] && !localBotSignedOut(row.personUid)) {
           // Pin the row to "newer than the agent's last message" — a local
           // bot's previous reply is usually < 2 min old and would otherwise
           // clear the fresh row on the next catch-up (skew fallback).
@@ -16913,6 +16928,7 @@
                   <ReplyPanel
                     api={conversationApi}
                     {localBots}
+                    agentSignedOut={localBotSignedOut}
                     rootEventId={openReplyRootId}
                     tasks={threadTasks}
                     scope={replyScope}
