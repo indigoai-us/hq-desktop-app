@@ -5563,6 +5563,17 @@
       ""
     );
   });
+  /**
+   * Company for the Core menu's usage panel: the company on screen, else the
+   * branded company, else the first cloud company in the roster.
+   */
+  const usageCompany = $derived.by((): { uid: string; name: string } | null => {
+    const cloud = (companies ?? []).filter((c) => c.kind === "company" && (c.cloudUid ?? "").trim());
+    const slug = selectedCompanySlug || brandState?.companySlug || "";
+    const row = (slug ? cloud.find((c) => c.slug === slug) : undefined) ?? cloud[0];
+    if (!row) return null;
+    return { uid: (row.cloudUid as string).trim(), name: row.displayName || row.slug };
+  });
   const activeCompanyPane = $derived.by(() => {
     if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
     const scope = (selectedRow.channelScope ?? "").trim();
@@ -14256,6 +14267,7 @@
     {cloudReachable}
     {cloudError}
     workspaces={syncWorkspaces}
+    {usageCompany}
     hqFolderPath={hqFolderPath ?? liveSync.hqFolderPath}
     watchedCount={watched}
     {unreadCount}

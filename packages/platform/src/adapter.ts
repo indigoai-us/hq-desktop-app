@@ -1244,6 +1244,13 @@ export interface CompanyApi {
    */
   createBillingPortalSession(companyUid: string): AdapterPromise<{ url: string }>;
   /**
+   * Mint a Stripe-hosted card-capture Checkout session for a company
+   * (`POST /v1/billing/checkout/org`, body `{ companyUid }`), the same route
+   * the console's usage plan "Add a card" uses. Owner-gated; a non-owner gets
+   * 403. The `url` is short-lived: mint one per click and never cache it.
+   */
+  createBillingCheckoutSession?(companyUid: string): AdapterPromise<{ url: string }>;
+  /**
    * Owner-gated billing summary (`GET /v1/billing/summary?companyUid=`).
    * `pricingPlan: "usage-only"` marks a usage-priced company; `usageTrial`
    * carries the trial and allowance. A non-owner gets 403. Optional: hosts

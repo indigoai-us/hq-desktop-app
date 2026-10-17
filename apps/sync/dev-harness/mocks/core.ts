@@ -1986,6 +1986,56 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
     const uid = typeof body?.companyUid === 'string' ? body.companyUid : 'cmp_unknown';
     return { status: 200, body: JSON.stringify({ url: `https://billing.stripe.com/p/session/test_harness_${uid}` }) };
   }
+  // Core menu "Usage this month" (hq-pro owner-gated billing reads).
+  // `?usage=forbidden` previews a non-owner, `?usage=fail` a failed lookup,
+  // `?usage=paid` a company with a card on file.
+  const usageMode = new URLSearchParams(window.location.search).get('usage');
+  // Visual QA with captured hq-pro bodies: a script sets this before load.
+  const captured = (window as Window & { __hqHarnessBilling?: { summary?: unknown; usage?: unknown } }).__hqHarnessBilling;
+  if (captured?.summary && url.startsWith('/v1/billing/summary?')) return { status: 200, body: JSON.stringify(captured.summary) };
+  if (captured?.usage && url.startsWith('/v1/billing/usage?')) return { status: 200, body: JSON.stringify(captured.usage) };
+  if (url.startsWith('/v1/billing/summary?')) {
+    if (usageMode === 'forbidden') return { status: 403, body: JSON.stringify({ error: 'Requires owner role on this company', code: 'FORBIDDEN' }) };
+    if (usageMode === 'fail') return { status: 500, body: JSON.stringify({ error: 'Internal Server Error' }) };
+    return {
+      status: 200,
+      body: JSON.stringify({
+        billingConfigured: true,
+        pricingPlan: 'usage-only',
+        defaultPaymentMethod: { present: usageMode === 'paid', brand: null },
+        usageTrial: { status: 'active', allowanceCents: 1000, cardOnFile: usageMode === 'paid' },
+      }),
+    };
+  }
+  if (url.startsWith('/v1/billing/usage?')) {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        scope: 'company',
+        window: 'month',
+        periodStart: '2026-10-01',
+        periodEnd: '2026-10-31',
+        complete: true,
+        allowanceCents: 1000,
+        usageCents: 800,
+        allowanceLeftCents: 200,
+        billCents: 0,
+        lines: [
+          { key: 'member-sync', status: 'measured', billed: true, costCents: 60 },
+          { key: 'integration-call', status: 'measured', billed: true, costCents: 200 },
+          { key: 'hq-mcp-call', status: 'measured', billed: true, costCents: 0 },
+          { key: 'agent-run', status: 'measured', billed: true, costCents: 310 },
+          { key: 'storage', status: 'unavailable', billed: true, costCents: null },
+          { key: 'secret', status: 'measured', billed: true, costCents: 40 },
+          { key: 'vault', status: 'measured', billed: true, costCents: 0, waived: true },
+        ],
+      }),
+    };
+  }
+  if (url === '/v1/billing/checkout/org' && method === 'POST') {
+    const uid = typeof body?.companyUid === 'string' ? body.companyUid : 'cmp_unknown';
+    return { status: 200, body: JSON.stringify({ url: `https://checkout.stripe.com/c/pay/cs_test_harness_${uid}` }) };
+  }
   if (url === '/v1/flags/resolve') {
     return {
       status: 200,

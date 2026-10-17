@@ -109,6 +109,8 @@
     cloudError?: string | null;
     /** Workspaces, used only to resolve uids in error copy. */
     workspaces?: readonly Record<string, unknown>[] | null;
+    /** Company whose month-to-date usage the Core menu shows. */
+    usageCompany?: { uid: string; name: string } | null;
     oncloudtoggle?: (paused: boolean) => void;
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
@@ -172,6 +174,7 @@
     cloudReachable = true,
     cloudError = null,
     workspaces = null,
+    usageCompany = null,
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
@@ -939,6 +942,7 @@
             {cloudReachable}
             {cloudError}
             {workspaces}
+            {usageCompany}
             {hqFolderPath}
             useFixtures={coreUseFixtures}
             recovery={recoveryCard}

@@ -53,7 +53,9 @@ export type LineIconName =
   | "cards"
   | "arrows-clockwise"
   | "image"
-  | "video-camera";
+  | "video-camera"
+  // Core menu usage panel: Set up billing / Manage billing.
+  | "credit-card";
 
 export type BrandIconName = "claude-code" | "codex" | "grok";
 
@@ -175,6 +177,8 @@ export const LINE_ICONS: Record<LineIconName, string> = {
   // image
   image: "M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40Zm0,16V158.75l-26.07-26.06a16,16,0,0,0-22.63,0l-20,20-44-44a16,16,0,0,0-22.62,0L40,149.37V56ZM40,172l52-52,80,80H40Zm176,28H194.63l-36-36,20-20L216,181.38V200ZM144,100a12,12,0,1,1,12,12A12,12,0,0,1,144,100Z",
   // video-camera
+  // credit-card
+  "credit-card": "M224,48H32A16,16,0,0,0,16,64V192a16,16,0,0,0,16,16H224a16,16,0,0,0,16-16V64A16,16,0,0,0,224,48Zm0,16V88H32V64Zm0,128H32V104H224v88Zm-16-24a8,8,0,0,1-8,8H168a8,8,0,0,1,0-16h32A8,8,0,0,1,208,168Zm-64,0a8,8,0,0,1-8,8H120a8,8,0,0,1,0-16h16A8,8,0,0,1,144,168Z",
   "video-camera": "M251.77,73a8,8,0,0,0-8.21.39L208,97.05V72a16,16,0,0,0-16-16H32A16,16,0,0,0,16,72V184a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V159l35.56,23.71A8,8,0,0,0,248,184a8,8,0,0,0,8-8V80A8,8,0,0,0,251.77,73ZM192,184H32V72H192V184Zm48-22.95-32-21.33V116.28L240,95Z",
 };
 
@@ -286,6 +290,9 @@ const EXACT: Record<string, RailIconName> = {
   reply: "send",
   share: "link",
   "sign in": "key",
+  "set up billing": "credit-card",
+  "manage billing": "credit-card",
+  "compare plans": "arrow-right",
 };
 
 const PREFIX: Array<[string, RailIconName]> = [
