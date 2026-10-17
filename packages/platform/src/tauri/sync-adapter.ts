@@ -1441,6 +1441,10 @@ export function createSyncPlatformAdapter(
         hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingPortal(), {
           companyUid,
         }),
+      createBillingCheckoutSession: (companyUid) =>
+        hqProJson<{ url: string }>('POST', WEB_PATHS.companyBillingCheckout(), {
+          companyUid,
+        }),
       getBillingSummary: (companyUid) =>
         hqProJson('GET', WEB_PATHS.companyBillingSummary(companyUid)),
       getUsageStatement: (companyUid) =>
