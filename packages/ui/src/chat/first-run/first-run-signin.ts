@@ -36,6 +36,12 @@ export interface FirstRunSignInHost {
    * report starts.
    */
   cancel?(runtime: FirstRunRuntime): Promise<void>;
+  /**
+   * Brings the HQ window back in front of the browser when the sign-in step
+   * ends (done, failed or timed out, or skipped). Never while it waits: the
+   * person is on the vendor's login page then.
+   */
+  focus?(): Promise<void>;
 }
 
 /**

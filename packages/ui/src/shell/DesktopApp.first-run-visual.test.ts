@@ -60,6 +60,8 @@ interface AdapterOptions {
   loginStart?: (runtime: string, opts?: { force?: boolean }) => Promise<unknown>;
   loginStatus?: (runtime: string) => Promise<unknown>;
   loginCancel?: (runtime: string) => Promise<unknown>;
+  /** Raises the desktop window after a browser sign-in; absent leaves the host without it. */
+  bringToFront?: () => Promise<unknown>;
   /** `hq bot list --remote` (the account's own listing); absent leaves the host without it. */
   listRemote?: () => Promise<unknown>;
   /** The app's active company slug (the brief job names it); absent leaves the host without its company reads. */
@@ -80,6 +82,7 @@ function adapter({
   loginStart,
   loginStatus,
   loginCancel,
+  bringToFront,
   listRemote,
   listImpl,
   activeCompany,
@@ -136,6 +139,7 @@ function adapter({
       ...(loginStart ? { loginStart } : {}),
       ...(loginStatus ? { loginStatus } : {}),
       ...(loginCancel ? { loginCancel } : {}),
+      ...(bringToFront ? { bringToFront } : {}),
     },
     bots: {
       list: listImpl ?? (async () => ok({ bots })),
@@ -2114,6 +2118,7 @@ describe("visual first run, the detected tool's sign-in", () => {
 
   it("signed out, Continue in Claude Code signs in, waits, then lands on the welcome report and sends its job", async () => {
     const tool = signsInThroughBrowser("claude");
+    const bringToFront = vi.fn(async () => ok(undefined));
     const log = logSink();
     const { platform, sendDm } = adapter({
       flag: true,
@@ -2122,6 +2127,7 @@ describe("visual first run, the detected tool's sign-in", () => {
       preflightImpl: tool.preflightImpl,
       loginStart: tool.loginStart,
       loginStatus: tool.loginStatus,
+      bringToFront,
       logToFile: log.logToFile,
     });
     scanFinds(platform, "claude-code");
@@ -2137,6 +2143,8 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
     expect(q('[data-testid="welcome-report"]')).toBeNull();
     expect(briefJobs(sendDm)).toHaveLength(0);
+    // The browser has the login page: HQ stays behind it while it waits.
+    expect(bringToFront).not.toHaveBeenCalled();
 
     tool.state.connect = true;
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull(), { timeout: 10_000 });
@@ -2144,6 +2152,35 @@ describe("visual first run, the detected tool's sign-in", () => {
     await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
     expect(q('[data-testid="welcome-report-blocked"]')).toBeNull();
     expect(log.of("signin")).toEqual(["kind=signin event=start tool=claude", "kind=signin event=done tool=claude"]);
+    expect(bringToFront).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
+  it("a raise the app answers as failed is logged, and the person still lands on the welcome report", async () => {
+    const tool = signsInThroughBrowser("claude");
+    const bringToFront = vi.fn(async () => failure("unavailable", "Desktop window is not available."));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { platform, sendDm } = adapter({
+      flag: true,
+      bots: [runningSetupBot],
+      activeCompany: "indigo",
+      preflightImpl: tool.preflightImpl,
+      loginStart: tool.loginStart,
+      loginStatus: tool.loginStatus,
+      bringToFront,
+    });
+    scanFinds(platform, "claude-code");
+    await boot(platform);
+    await decisionShown();
+    q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="first-run-signin-waiting"]')).toBeTruthy());
+    tool.state.connect = true;
+    await vi.waitFor(() => expect(q('[data-testid="welcome-report"]')).toBeTruthy(), { timeout: 10_000 });
+    await vi.waitFor(() => expect(briefJobs(sendDm)).toHaveLength(1), { timeout: 10_000 });
+    expect(bringToFront).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(warn.mock.calls.some((call) => call.map(String).join(" ").includes("Desktop window is not available."))).toBe(true),
+    );
+    warn.mockRestore();
   }, 20_000);
 
   it("signed out, Continue in Codex signs Codex in the same way before it goes on", async () => {
@@ -2178,6 +2215,7 @@ describe("visual first run, the detected tool's sign-in", () => {
   it("Skip for now stops the browser sign-in and lands on the welcome report held on the sign-in, as before", async () => {
     const tool = signsInThroughBrowser("claude");
     const loginCancel = vi.fn(async () => ok({ state: "disconnected" }));
+    const bringToFront = vi.fn(async () => ok(undefined));
     const log = logSink();
     const { platform, sendDm } = adapter({
       flag: true,
@@ -2187,6 +2225,7 @@ describe("visual first run, the detected tool's sign-in", () => {
       loginStart: tool.loginStart,
       loginStatus: tool.loginStatus,
       loginCancel,
+      bringToFront,
       logToFile: log.logToFile,
     });
     scanFinds(platform, "claude-code");
@@ -2194,6 +2233,7 @@ describe("visual first run, the detected tool's sign-in", () => {
     await decisionShown();
     q<HTMLButtonElement>('[data-testid="first-run-decision-primary"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="first-run-signin-skip"]')).toBeTruthy());
+    expect(bringToFront).not.toHaveBeenCalled();
     q<HTMLButtonElement>('[data-testid="first-run-signin-skip"]')!.click();
     await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeNull());
     await vi.waitFor(() => expect(q('[data-testid="welcome-report-blocked"]')).toBeTruthy(), { timeout: 10_000 });
@@ -2202,6 +2242,7 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(log.of("signin")).toEqual(["kind=signin event=start tool=claude", "kind=signin event=skipped tool=claude"]);
     expect(loginCancel).toHaveBeenCalledTimes(1);
     expect(loginCancel).toHaveBeenCalledWith("claude");
+    expect(bringToFront).toHaveBeenCalledTimes(1);
   }, 20_000);
 
   it("a sign-in that connects after Skip starts the held report", async () => {
@@ -2345,6 +2386,7 @@ describe("visual first run, the detected tool's sign-in", () => {
   it("a sign-in that cannot start says so, with Retry and Skip for now", async () => {
     const tool = signsInThroughBrowser("claude");
     const loginStart = vi.fn(async () => failure("unavailable", "no browser"));
+    const bringToFront = vi.fn(async () => ok(undefined));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const log = logSink();
     const { platform } = adapter({
@@ -2354,6 +2396,7 @@ describe("visual first run, the detected tool's sign-in", () => {
       preflightImpl: tool.preflightImpl,
       loginStart,
       loginStatus: tool.loginStatus,
+      bringToFront,
       logToFile: log.logToFile,
     });
     scanFinds(platform, "claude-code");
@@ -2368,10 +2411,12 @@ describe("visual first run, the detected tool's sign-in", () => {
     expect(q('[data-testid="first-run-signin-retry"]')?.textContent?.trim()).toBe("Retry");
     expect(q('[data-testid="first-run-signin-skip"]')?.textContent?.trim()).toBe("Skip for now");
     expect(q('[data-testid="first-run-takeover"]')).toBeTruthy();
+    await vi.waitFor(() => expect(bringToFront).toHaveBeenCalledTimes(1));
     q<HTMLButtonElement>('[data-testid="first-run-signin-retry"]')!.click();
     await vi.waitFor(() => expect(loginStart).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(q('[data-testid="first-run-signin-failed"]')).toBeTruthy());
     await vi.waitFor(() => expect(log.of("signin")).toHaveLength(4));
+    await vi.waitFor(() => expect(bringToFront).toHaveBeenCalledTimes(2));
     expect(log.of("signin")).toEqual([
       "kind=signin event=start tool=claude",
       "kind=signin event=failed tool=claude",
