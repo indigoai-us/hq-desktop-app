@@ -8,6 +8,11 @@
  * button during it would ask an already-signed-in user to sign in again.
  */
 
+import {
+  isEnabledSignInProvider,
+  SIGNIN_PROVIDER_CONFIG,
+  type SignInProvider,
+} from "@hq/auth";
 import type { MobileAuthSession } from "./mobile-auth";
 
 export type MobileSignInState =
@@ -21,7 +26,7 @@ export interface MobileSignIn {
   /** Try the stored refresh token. Always settles on signed-in or signed-out. */
   start(): Promise<void>;
   /** Hand the Cognito hosted UI to the system browser. */
-  signIn(): Promise<void>;
+  signIn(provider: SignInProvider): Promise<void>;
   /** Consume an `hqmobile://auth?…` deep link. */
   handleCallback(url: string): Promise<void>;
   /** Forget the session. Safe to call from a synchronous 401 handler. */
@@ -46,10 +51,13 @@ export function createMobileSignIn(deps: {
       }
     },
 
-    async signIn() {
+    async signIn(provider) {
+      if (!isEnabledSignInProvider(provider)) return;
       onState("opening");
       try {
-        await session.beginSignIn();
+        await session.beginSignIn({
+          identityProvider: SIGNIN_PROVIDER_CONFIG[provider].identityProvider,
+        });
       } catch {
         // The browser never opened. Staying in "opening" would strand the
         // user on a screen with nothing to tap.

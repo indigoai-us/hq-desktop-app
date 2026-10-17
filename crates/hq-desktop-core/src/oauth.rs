@@ -634,17 +634,17 @@ mod tests {
     }
 
     #[test]
-    fn continuation_authorize_url_names_google_and_preserves_nonce() {
-        // Continuation uses the CLI default when no prior provider is known.
+    fn continuation_authorize_url_defers_provider_and_preserves_nonce() {
+        // Continuation defers provider selection to the website signin-start hop.
         // Preserve PKCE and nonce without forcing reauthentication.
         with_default_cognito_env(|| {
             let url = build_authorize_url_from(&AuthorizeRequest {
                 state: "s",
                 challenge: "c",
-                identity_provider: Some("Google"),
+                identity_provider: None,
                 nonce: Some("n"),
             });
-            assert!(url.contains("identity_provider=Google"));
+            assert!(!url.contains("identity_provider="));
             assert!(!url.contains("prompt="));
             assert!(url.contains("&nonce=n"));
             assert!(url.contains("code_challenge_method=S256"));

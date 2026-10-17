@@ -88,9 +88,17 @@ function callbackFor(authorizeUrl: string, code = "CODE-1"): string {
 }
 
 describe("mobile sign-in: starting the flow", () => {
+  it("refuses a blank provider before opening the browser", async () => {
+    const { session, opened } = setup();
+    for (const identityProvider of ["", " "]) {
+      await expect(session.beginSignIn({ identityProvider })).rejects.toThrow("provider is required");
+    }
+    expect(opened).toEqual([]);
+  });
+
   it("opens the hosted UI with PKCE and the registered mobile callback", async () => {
     const { session, opened } = setup();
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
 
     expect(opened).toHaveLength(1);
     const url = new URL(opened[0]);
@@ -109,7 +117,7 @@ describe("mobile sign-in: starting the flow", () => {
   it("never puts the verifier itself on the wire", async () => {
     // The whole point of PKCE: the challenge travels, the verifier does not.
     const { session, opened } = setup();
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
     const url = new URL(opened[0]);
     expect(url.searchParams.get("code_verifier")).toBeNull();
     expect(opened[0]).not.toContain("verifier");
@@ -125,8 +133,8 @@ describe("mobile sign-in: starting the flow", () => {
 
   it("uses fresh PKCE material on every attempt", async () => {
     const { session, opened } = setup();
-    await session.beginSignIn();
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
+    await session.beginSignIn({ identityProvider: "Google" });
     const first = new URL(opened[0]).searchParams;
     const second = new URL(opened[1]).searchParams;
     expect(second.get("state")).not.toBe(first.get("state"));
@@ -148,7 +156,7 @@ describe("mobile sign-in: completing the flow", () => {
     const { session, opened, store } = setup({
       fetch: fetchMock as unknown as typeof globalThis.fetch,
     });
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
     await session.completeSignIn(callbackFor(opened[0]));
 
     expect(await session.getToken()).toBe("ID-1");
@@ -165,7 +173,7 @@ describe("mobile sign-in: completing the flow", () => {
     // storage widens what a device compromise yields for no benefit — it is
     // re-mintable from the refresh token in one request.
     const { session, opened, store } = setup();
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
     await session.completeSignIn(callbackFor(opened[0]));
     expect(store.value).toBe("REFRESH-1");
     expect(JSON.stringify(store.value)).not.toContain("ID-1");
@@ -173,7 +181,7 @@ describe("mobile sign-in: completing the flow", () => {
 
   it("rejects a callback whose state does not match", async () => {
     const { session } = setup();
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
     await expect(
       session.completeSignIn(`${MOBILE_REDIRECT_URI}?code=C&state=forged`),
     ).rejects.toThrow(/state/i);
@@ -184,7 +192,7 @@ describe("mobile sign-in: completing the flow", () => {
     // The verifier and state are single-use. A deep link can be delivered more
     // than once, and an old one must not mint a second session.
     const { session, opened } = setup();
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
     const callback = callbackFor(opened[0]);
     await session.completeSignIn(callback);
     await expect(session.completeSignIn(callback)).rejects.toThrow();
@@ -192,7 +200,7 @@ describe("mobile sign-in: completing the flow", () => {
 
   it("surfaces an error the hosted UI reports instead of hanging", async () => {
     const { session, opened } = setup();
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
     const state = new URL(opened[0]).searchParams.get("state");
     await expect(
       session.completeSignIn(
@@ -233,7 +241,7 @@ describe("mobile sign-in: staying signed in", () => {
       fetch: fetchMock as unknown as typeof globalThis.fetch,
       now: () => clock,
     });
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
     await session.completeSignIn(callbackFor(opened[0]));
     expect(await session.getToken()).toBe("ID-1");
 
@@ -276,7 +284,7 @@ describe("mobile sign-in: staying signed in", () => {
 
   it("clears everything on sign-out", async () => {
     const { session, opened, store } = setup();
-    await session.beginSignIn();
+    await session.beginSignIn({ identityProvider: "Google" });
     await session.completeSignIn(callbackFor(opened[0]));
     await session.clear();
     expect(await session.getToken()).toBeNull();

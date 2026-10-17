@@ -206,6 +206,8 @@ pub(crate) async fn prepare_desktop_referral_start_url(
     .ok_or_else(|| {
         eprintln!("[desktop-referral] sign-in start URL refused");
     })?;
+    hq_desktop_core::desktop_signin_link::validate_browser_signin_url(&browser_url)
+        .map_err(|_| eprintln!("[desktop-referral] unsafe browser URL refused"))?;
     let path = desktop_referral_queue_path().ok_or_else(|| {
         eprintln!("[desktop-referral] queue home unavailable");
     })?;
@@ -622,10 +624,9 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
     let attempt_id = uuid::Uuid::new_v4().to_string();
     let nonce = hq_desktop_core::oauth::generate_nonce();
 
-    // First-run/referral state does not carry the browser's provider. Use the
-    // CLI default, Google, to avoid Cognito's raw provider chooser. The system
-    // browser can reuse its Google session; no prompt=login is requested.
-    let armed = super::oauth::arm_oauth_flow(&app, "Google", Some(&nonce))?;
+    // The website knows the prior provider. Only signin-start may receive
+    // this provider-less request; never open it directly in the browser.
+    let armed = super::oauth::arm_oauth_flow(&app, None, Some(&nonce))?;
 
     let (browser_url, referral_nonce) =
         match prepare_desktop_referral_start_url(&armed.authorize_url).await {
@@ -653,6 +654,13 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
     });
     if let Some(nonce) = superseded_referral_nonce {
         discard_unbound_desktop_referral_nonce(nonce);
+    }
+    if let Err(error) =
+        hq_desktop_core::desktop_signin_link::validate_browser_signin_url(&browser_url)
+    {
+        with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Failed));
+        release_listener(&armed.state);
+        return Err(error.to_string());
     }
     if let Err(error) = app.shell().open(&browser_url, None) {
         with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Failed));

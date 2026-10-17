@@ -13,6 +13,7 @@
   The branch below is the whole divergence. Everything under it is shared.
 -->
 <script lang="ts">
+  import { SIGNIN_PROVIDERS, SIGNIN_PROVIDER_CONFIG } from "@hq/auth";
   import { onMount } from "svelte";
 
   import { env } from "$env/dynamic/public";
@@ -99,14 +100,16 @@
       <p class="lede">
         This opens your browser to sign in, then brings you straight back.
       </p>
-      <button
-        class="go"
-        data-testid="mobile-signin-start"
-        disabled={signInState === "opening"}
-        onclick={() => void mobile.flow.signIn()}
-      >
-        {signInState === "opening" ? "Opening your browser…" : "Sign in"}
-      </button>
+      {#each SIGNIN_PROVIDERS as provider}
+        <button
+          class="go"
+          data-testid={`mobile-signin-${provider}`}
+          disabled={signInState === "opening" || !SIGNIN_PROVIDER_CONFIG[provider].enabled}
+          onclick={() => void mobile.flow.signIn(provider)}
+        >
+          {signInState === "opening" ? "Opening your browser…" : `Continue with ${SIGNIN_PROVIDER_CONFIG[provider].label}`}
+        </button>
+      {/each}
     {/if}
   </main>
 {/if}

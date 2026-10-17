@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- First-launch sign-in now opens Google directly instead of showing internal provider names. Microsoft sign-in remains available from the app.
+- First-launch sign-in lets the website reuse your previous sign-in provider. Mobile sign-in shows named provider buttons instead of opening the raw provider chooser.
 
 - Badges: the holographic light on the back of a badge card now looks like the foil on its front: fine etched lines in a pearl rainbow that follow the pointer. Before, it showed as a flat green-grey haze with plain rings that spread over the story and made the smaller text hard to read. The light is now softer behind the words, so the story stays easy to read while it shines.
 - Badges: clicking a badge on the Badges page opens its details again, with its levels and a "View card" button, instead of jumping straight to the holographic card. Back returns to the Badges page.

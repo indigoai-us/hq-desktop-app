@@ -17,8 +17,8 @@ export interface AuthorizeParams {
   state: string;
   /** S256 PKCE code challenge. */
   codeChallenge: string;
-  /** Cognito `identity_provider` — when set, the hosted chooser is skipped. */
-  identityProvider?: string;
+  /** Required for direct Cognito launch; never expose the hosted chooser. */
+  identityProvider: string;
   /** OAuth scopes; defaults to Cognito's openid/email/profile. */
   scope?: string;
 }
@@ -27,6 +27,9 @@ export function buildAuthorizeUrl(
   config: AuthConfig,
   params: AuthorizeParams,
 ): string {
+  if (!params.identityProvider?.trim()) {
+    throw new Error("A sign-in provider is required.");
+  }
   const authorize = new URL(
     `https://${config.hostedUiDomain}/oauth2/authorize`,
   );
