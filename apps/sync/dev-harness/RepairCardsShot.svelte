@@ -126,10 +126,13 @@
 </div>
 
 <style>
-  /* The tray-window CSS pins html/body to the viewport; this page scrolls. */
-  :global(html),
-  :global(body),
-  :global(#app) {
+  /* The tray-window CSS pins html/body to the viewport; this page scrolls.
+     Keep the override on this view only. An unscoped rule leaks into the
+     shell preview, the shell sizes to its content, and a light screenshot
+     shows a blank band under the window. */
+  :global(html[data-harness-view='repair-cards']),
+  :global(html[data-harness-view='repair-cards'] body),
+  :global(html[data-harness-view='repair-cards'] #app) {
     margin: 0;
     height: auto !important;
     min-height: 0 !important;
