@@ -1,8 +1,8 @@
 /**
  * Pure helpers for the "Your week" card (kind `weekArc`): day labels from the
  * date string alone (weekday by arithmetic, never the machine clock), the
- * beats worth a disc, the one-sentence arc title, the stacked-bar geometry and
- * the smooth line over the bar tops. The picker's measure() in
+ * beats worth a disc, the one-sentence arc title, the week's sums, its record
+ * day and average, and the capsule geometry (merges per day). The picker's measure() in
  * brief-catalogue.ts counts the same thing this file does: a beat is any day
  * with `beat` set. No toLocale*, no Date.now.
  */
@@ -14,8 +14,6 @@ import type { BriefDay, BriefTone } from "./brief-types.js";
 export const MAX_BEATS = 4;
 /** Fewer days than this and the card hides itself (the picker's gate too). */
 export const MIN_DAYS = 3;
-/** Share of the chart height the busiest day reaches; the rest is room for discs. */
-export const BAR_SCALE = 0.84;
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
 const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
@@ -27,8 +25,8 @@ export type BeatKind = NonNullable<BriefDay["beat"]>["kind"];
 export const BEAT_STYLE: Record<BeatKind, { word: string; name: string; color: string; tone: BriefTone }> = {
   crisis: { word: "outage", name: "Crisis", color: "var(--b-red)", tone: "red" },
   resolution: { word: "recovery", name: "Resolution", color: "var(--b-ok)", tone: "ok" },
-  push: { word: "record", name: "Push", color: "var(--b-violet)", tone: "decision" },
-  turn: { word: "turn", name: "Turn", color: "#ffffff", tone: "neutral" },
+  push: { word: "record", name: "Push", color: "var(--b-decision)", tone: "decision" },
+  turn: { word: "turn", name: "Turn", color: "var(--b-t1)", tone: "neutral" },
 };
 const BEAT_WEIGHT: Record<BeatKind, number> = { crisis: 4, resolution: 3, push: 2, turn: 1 };
 
@@ -42,16 +40,6 @@ export interface WeekBeat {
   index: number;
   /** Bigger beats win a disc and the title. */
   weight: number;
-}
-
-export interface DayBar {
-  date: string;
-  sessions: number;
-  meetings: number;
-  merged: number;
-  total: number;
-  /** 0..1 share of the busiest day. */
-  share: number;
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -168,38 +156,91 @@ export function arcSentence(days: readonly BriefDay[], today?: string): string {
   return clause ? `${cap(clause)}.` : "Steady week.";
 }
 
-/** One stacked bar per day; `share` is against the busiest day (an all-zero week stays flat). */
-export function bars(days: readonly BriefDay[]): DayBar[] {
-  const totals = days.map((d) => d.sessions + d.meetings + d.merged);
-  const max = Math.max(1, ...totals);
-  return days.map((d, i) => ({
-    date: d.date,
-    sessions: d.sessions,
-    meetings: d.meetings,
-    merged: d.merged,
-    total: totals[i]!,
-    share: totals[i]! / max,
-  }));
+/** "Sun" for 2026-10-11: the column label (set in caps by the card). */
+export function weekdayShort(date: string): string {
+  return WEEKDAYS_SHORT[weekdayOf(date)] ?? "";
 }
 
-/** Bar tops in chart percent: x at each column's centre, y from the top (100 = baseline). */
-export function linePoints(days: readonly BriefDay[]): { x: number; y: number }[] {
-  const b = bars(days);
-  return b.map((d, i) => ({ x: round2(((i + 0.5) / b.length) * 100), y: round2(100 - d.share * BAR_SCALE * 100) }));
+/** The date `n` days after `date`, YYYY-MM-DD, by UTC arithmetic on the string alone. */
+export function addDays(date: string, n: number): string {
+  const [y, m, d] = date.split("-").map(Number);
+  const t = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, (d ?? 1) + n));
+  const pad = (v: number) => String(v).padStart(2, "0");
+  return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
 }
 
-/** A smooth cubic path through the points: horizontal tangents, control points at the midpoints. */
-export function linePath(pts: readonly { x: number; y: number }[]): string {
-  const first = pts[0];
-  if (!first) return "";
-  let d = `M${first.x},${first.y}`;
-  for (let i = 1; i < pts.length; i += 1) {
-    const a = pts[i - 1]!;
-    const b = pts[i]!;
-    const mx = round2((a.x + b.x) / 2);
-    d += ` C${mx},${a.y} ${mx},${b.y} ${b.x},${b.y}`;
-  }
-  return d;
+/** The week's sums: the hero number (merged) and the quiet line under the sentence. */
+export function weekTotals(days: readonly BriefDay[]): { merged: number; sessions: number; meetings: number } {
+  return days.reduce((t, d) => ({ merged: t.merged + d.merged, sessions: t.sessions + d.sessions, meetings: t.meetings + d.meetings }), { merged: 0, sessions: 0, meetings: 0 });
+}
+
+/** "18 sessions · 9 meetings": what else the week held, in plain words. */
+export function weekMix(days: readonly BriefDay[]): string {
+  const t = weekTotals(days);
+  return `${plural(t.sessions, "session")} · ${plural(t.meetings, "meeting")}`;
+}
+
+/**
+ * The week's record day, the one column in the brand colour: the (latest)
+ * push beat when the writer named one, else the day with the most merges
+ * (later wins a tie). Today's partial column only counts when it is the only
+ * day with merges. -1 when nothing merged at all.
+ */
+export function recordIndex(days: readonly BriefDay[], today?: string): number {
+  for (let i = days.length - 1; i >= 0; i -= 1) if (days[i]!.beat?.kind === "push") return i;
+  const pick = (skipToday: boolean) => {
+    let best = -1;
+    days.forEach((d, i) => {
+      if (skipToday && d.date === today) return;
+      if (d.merged > 0 && (best < 0 || d.merged >= days[best]!.merged)) best = i;
+    });
+    return best;
+  };
+  const full = pick(true);
+  return full >= 0 ? full : pick(false);
+}
+
+/** Mean merges a day over the full days (today's partial column left out when two others remain); null under two days. */
+export function mergedAverage(days: readonly BriefDay[], today?: string): number | null {
+  const full = days.filter((d) => d.date !== today);
+  const use = full.length >= 2 ? full : days;
+  if (use.length < 2) return null;
+  return Math.round((use.reduce((n, d) => n + d.merged, 0) / use.length) * 10) / 10;
+}
+
+export interface WeekColumn {
+  date: string;
+  merged: number;
+  /** 0..1 share of the busiest day's merges (an all-zero week stays flat). */
+  share: number;
+  today: boolean;
+  record: boolean;
+}
+
+/** One capsule per day, its height the day's merges against the busiest day. */
+export function weekColumns(days: readonly BriefDay[], today?: string): WeekColumn[] {
+  const max = Math.max(1, ...days.map((d) => d.merged));
+  const rec = recordIndex(days, today);
+  return days.map((d, i) => ({ date: d.date, merged: d.merged, share: round2(d.merged / max), today: d.date === today, record: i === rec }));
+}
+
+/** The average as a share of the busiest day, for the dotted line; null when there is no line to draw. */
+export function averageShare(days: readonly BriefDay[], today?: string): number | null {
+  const avg = mergedAverage(days, today);
+  if (avg == null || avg <= 0) return null;
+  return round2(avg / Math.max(1, ...days.map((d) => d.merged)));
+}
+
+/**
+ * The days still to come, as empty ghost columns, up to a seven-column week:
+ * only when the data ends on today or today is one of those next days (a
+ * morning brief before today has any work in it). Otherwise none.
+ */
+export function futureDays(days: readonly BriefDay[], today: string, span = 7): string[] {
+  const last = days[days.length - 1]?.date;
+  if (!last) return [];
+  const next = Array.from({ length: Math.max(0, span - days.length) }, (_, i) => addDays(last, i + 1));
+  return last === today || next.includes(today) ? next : [];
 }
 
 /** The hover card for a beat disc: the writer's label, the kind and day, the evidence. */

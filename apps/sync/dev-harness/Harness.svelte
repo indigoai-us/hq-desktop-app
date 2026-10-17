@@ -11,6 +11,7 @@
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingsShot from './MeetingsShot.svelte';
   import AccessShot from './AccessShot.svelte';
+  import BriefDesignStage from './BriefDesignStage.svelte';
   import ActivityShot from './ActivityShot.svelte';
   import RepairCardsShot from './RepairCardsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
@@ -257,7 +258,10 @@
   }
 </script>
 
-{#if view === 'brief'}
+{#if view === 'brief-design'}
+  <!-- The rendered brief on fixture days, for design iteration. ?day=oct8|oct11|quiet|catchup|everything -->
+  <BriefDesignStage />
+{:else if view === 'brief'}
   <!-- Daily Brief page alone. Add ?briefDemo=1|fail or ?briefDemoAt=0..1|fail
        (packages/ui/src/brief/brief-demo.ts) to review the Create brief sunrise. -->
   <!-- ?briefRun=<run_id>&briefCompany=<slug>&briefCompanyUid=<uid> renders a real

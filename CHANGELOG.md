@@ -161,6 +161,7 @@ The release moves it under the version it ships in.
 
 - HQ keeps a channel or bot visible when it can confirm that the company or bot still exists but you cannot open its details. Retired and missing companies and bots still disappear as before.
 - Update now appears on every Updates row that has an update available, including the CLI.
+- The Daily Brief has a new look. Cards are soft colour fields with see-through white rows and quiet mono labels, and most cards are redesigned to be easier to scan: Week, Focus time, Welcome back, Incident, Team, Unblocks, Recovery, Resolved, Firsts, Releases, Meetings, Settled and Reminders. Creating a brief, or pressing Refresh, opens a full-screen sunrise that fills in as the brief is written and then hands off to it. Past briefs are a row of small squares beside the Daily Brief title: hover one to see when it was made, and click it or use the arrow keys to open it. Press Shift+A to see every card at once. Elsewhere in the app, grey buttons now show their border only on hover, and tooltips use regular-weight text and wrap long labels.
 
 ## [0.11.1] — 2026-10-09
 
