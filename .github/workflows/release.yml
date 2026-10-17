@@ -61,13 +61,13 @@ jobs:
 
     steps:
       - name: Checkout at the tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -242,7 +242,7 @@ jobs:
           echo "Release tag $TAG classified as channel=$CHANNEL prerelease=$PRERELEASE make_latest=$MAKE_LATEST"
 
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ steps.classify.outputs.tag }}
           fetch-depth: 0
@@ -252,7 +252,7 @@ jobs:
       # at the tag root while loading the reviewed control plane from the exact
       # commit that defines this workflow run.
       - name: Checkout release control plane
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           path: .release-control
@@ -382,9 +382,9 @@ jobs:
 
           echo "v1 desktop shell intact; no V2 chat shell present; all surfaces in $MANIFEST accounted for."
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -406,7 +406,7 @@ jobs:
       # Every build job consumes these exact bytes, so macOS and Windows can
       # never disagree about the version they stamped into a bundle.
       - name: Upload version stamp
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-version-stamp
           if-no-files-found: error
@@ -522,7 +522,7 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
@@ -530,7 +530,7 @@ jobs:
       # Smoke helpers must come from the workflow commit so a dispatch retry
       # of an older tag still fail-closes on a missing non-Indigo identity.
       - name: Checkout release control plane
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           path: .release-control
@@ -539,9 +539,9 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -625,7 +625,7 @@ jobs:
       # the five version files with the bytes the validate job stamped from the
       # tag, so the bundle, the updater archive and the DMG all carry it.
       - name: Apply release version stamp
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-version-stamp
           path: ${{ github.workspace }}
@@ -956,7 +956,7 @@ jobs:
           fi
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hq-macos-universal
           if-no-files-found: error
@@ -1011,12 +1011,12 @@ jobs:
       target: ${{ steps.key.outputs.target }}
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -1067,14 +1067,14 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
       - name: Restore shell from the Actions cache
         id: cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: shell-out/shell-macos.tar.gz
           key: shell-macos-${{ needs.shell-key.outputs.key }}
@@ -1110,10 +1110,10 @@ jobs:
             echo "$ASSET is not in the shell-cache release; building the shell."
           fi
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
         with:
           node-version: 22
@@ -1369,7 +1369,7 @@ jobs:
 
       - name: Save shell to the Actions cache
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: shell-out/shell-macos.tar.gz
           key: shell-macos-${{ needs.shell-key.outputs.key }}
@@ -1443,7 +1443,7 @@ jobs:
           done <<<"$DOOMED"
 
       - name: Upload shell artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: shell-macos
           if-no-files-found: error
@@ -1463,21 +1463,21 @@ jobs:
         working-directory: apps/sync
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           persist-credentials: false
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: apps/sync/pnpm-lock.yaml
 
       - name: Apply release version stamp
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-version-stamp
           path: ${{ github.workspace }}
@@ -1491,7 +1491,7 @@ jobs:
         run: pnpm run build
 
       - name: Upload UI artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ui-dist
           if-no-files-found: error
@@ -1510,13 +1510,13 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
       - name: Checkout release control plane
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           path: .release-control
@@ -1525,9 +1525,9 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -1538,13 +1538,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Download shell
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shell-macos
           path: ${{ runner.temp }}/shell
 
       - name: Download UI
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ui-dist
           path: ${{ runner.temp }}/ui-dist
@@ -1736,7 +1736,7 @@ jobs:
           fi
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hq-macos-universal
           if-no-files-found: error
@@ -1795,12 +1795,12 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -1828,7 +1828,7 @@ jobs:
 
       - name: Restore shell from the Actions cache
         id: cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: shell-out/shell-windows-x64.tar.zst
           key: shell-windows-x64-${{ steps.key.outputs.key }}
@@ -1862,10 +1862,10 @@ jobs:
             echo "$ASSET is not in the shell-cache release; building the shell."
           fi
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
         with:
           node-version: 22
@@ -1936,7 +1936,7 @@ jobs:
 
       - name: Save shell to the Actions cache
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: shell-out/shell-windows-x64.tar.zst
           key: shell-windows-x64-${{ steps.key.outputs.key }}
@@ -2011,7 +2011,7 @@ jobs:
           done <<<"$DOOMED"
 
       - name: Upload shell artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: shell-windows-x64
           if-no-files-found: error
@@ -2040,12 +2040,12 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -2073,7 +2073,7 @@ jobs:
 
       - name: Restore shell from the Actions cache
         id: cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: shell-out/shell-windows-arm64.tar.zst
           key: shell-windows-arm64-${{ steps.key.outputs.key }}
@@ -2107,10 +2107,10 @@ jobs:
             echo "$ASSET is not in the shell-cache release; building the shell."
           fi
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
         with:
           node-version: 22
@@ -2211,7 +2211,7 @@ jobs:
 
       - name: Save shell to the Actions cache
         if: ${{ steps.cache.outputs.cache-hit != 'true' && steps.release-cache.outputs.hit != 'true' }}
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: shell-out/shell-windows-arm64.tar.zst
           key: shell-windows-arm64-${{ steps.key.outputs.key }}
@@ -2286,7 +2286,7 @@ jobs:
           done <<<"$DOOMED"
 
       - name: Upload shell artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: shell-windows-arm64
           if-no-files-found: error
@@ -2315,14 +2315,14 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -2347,7 +2347,7 @@ jobs:
         run: pnpm run sidecar:install
 
       - name: Download shell
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shell-windows-x64
           path: ${{ runner.temp }}/shell
@@ -2361,7 +2361,7 @@ jobs:
           test -f src-tauri/binaries/recall-desktop-sdk-x86_64-pc-windows-msvc.exe
 
       - name: Download UI
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ui-dist
           path: apps/sync/dist
@@ -2370,7 +2370,7 @@ jobs:
       # the five version files with the bytes the validate job stamped from the
       # tag, so both installers and the updater artifacts all carry it.
       - name: Apply release version stamp
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-version-stamp
           path: ${{ github.workspace }}
@@ -2630,7 +2630,7 @@ jobs:
           Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hq-windows-x86_64-pc-windows-msvc
           if-no-files-found: error
@@ -2658,14 +2658,14 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -2685,7 +2685,7 @@ jobs:
         run: pnpm run sidecar:install
 
       - name: Download shell
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: shell-windows-arm64
           path: ${{ runner.temp }}/shell
@@ -2699,7 +2699,7 @@ jobs:
           test -f src-tauri/binaries/recall-desktop-sdk-aarch64-pc-windows-msvc.exe
 
       - name: Download UI
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ui-dist
           path: apps/sync/dist
@@ -2708,7 +2708,7 @@ jobs:
       # the five version files with the bytes the validate job stamped from the
       # tag, so both installers and the updater artifacts all carry it.
       - name: Apply release version stamp
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-version-stamp
           path: ${{ github.workspace }}
@@ -2964,7 +2964,7 @@ jobs:
           Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hq-windows-aarch64-pc-windows-msvc
           if-no-files-found: error
@@ -3001,14 +3001,14 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -3051,7 +3051,7 @@ jobs:
       # the five version files with the bytes the validate job stamped from the
       # tag, so both installers and the updater artifacts all carry it.
       - name: Apply release version stamp
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-version-stamp
           path: ${{ github.workspace }}
@@ -3315,7 +3315,7 @@ jobs:
           Get-ChildItem -Path $stage | ForEach-Object { Write-Host "Staged: $($_.Name)" }
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hq-windows-${{ matrix.target }}
           if-no-files-found: error
@@ -3351,7 +3351,7 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
@@ -3367,9 +3367,9 @@ jobs:
             librsvg2-dev libxdo-dev libssl-dev \
             patchelf libfuse2 desktop-file-utils xdg-utils
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -3398,7 +3398,7 @@ jobs:
       # the five version files with the bytes the validate job stamped from the
       # tag, so both bundles and the updater artifacts all carry it.
       - name: Apply release version stamp
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-version-stamp
           path: ${{ github.workspace }}
@@ -3493,7 +3493,7 @@ jobs:
           ls -la "$STAGE"
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hq-linux-x86_64-unknown-linux-gnu
           if-no-files-found: error
@@ -3519,13 +3519,13 @@ jobs:
 
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
       - name: Checkout release control plane
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           path: .release-control
@@ -3539,25 +3539,25 @@ jobs:
           persist-credentials: false
 
       - name: Download macOS release artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hq-macos-universal
           path: artifacts/hq-macos-universal
 
       - name: Download Windows x64 release artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hq-windows-x86_64-pc-windows-msvc
           path: artifacts/hq-windows-x86_64-pc-windows-msvc
 
       - name: Download Windows ARM64 release artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hq-windows-aarch64-pc-windows-msvc
           path: artifacts/hq-windows-aarch64-pc-windows-msvc
 
       - name: Download Linux release artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hq-linux-x86_64-unknown-linux-gnu
           path: artifacts/hq-linux-x86_64-unknown-linux-gnu
@@ -4165,7 +4165,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout release control plane
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           sparse-checkout: |
@@ -4173,12 +4173,12 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
       - name: Download UI artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ui-dist
           path: ${{ runner.temp }}/ui-dist
@@ -4267,7 +4267,7 @@ jobs:
       - name: Mint App token for the version commit
         id: app-token
         if: steps.creds.outputs.available == 'true'
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ env.HQ_AUDIT_BOT_APP_ID }}
           private-key: ${{ env.HQ_AUDIT_BOT_PRIVATE_KEY }}
@@ -4277,17 +4277,17 @@ jobs:
 
       - name: Checkout main
         if: steps.creds.outputs.available == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         if: steps.creds.outputs.available == 'true'
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.creds.outputs.available == 'true'
         with:
           node-version: 22
@@ -4390,11 +4390,11 @@ jobs:
 
     steps:
       - name: Checkout announcement scripts
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
