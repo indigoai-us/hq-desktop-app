@@ -285,7 +285,7 @@
       <span>{done} of {decisions.length} cleared</span>
       <!-- Progress, quietly: a hairline that fills as calls are cleared. -->
       <span class="bar" role="progressbar" aria-label="Decisions cleared" aria-valuemin="0" aria-valuemax={decisions.length} aria-valuenow={done} data-testid="brief-need-progress"
-        ><i style="width:{decisions.length ? (done / decisions.length) * 100 : 100}%"></i></span
+        ><i style="--fill:{decisions.length ? done / decisions.length : 1}"></i></span
       >
       {#if done === decisions.length || minutes}<span data-testid="brief-need-time">{done === decisions.length ? "All clear" : `~${minutes} min`}</span>{/if}
     </div>
@@ -308,9 +308,12 @@
   .bar i {
     display: block;
     height: 100%;
-    border-radius: inherit;
+    border-radius: 0; /* the track clips the rounded ends; a radius here would squash under scaleX */
     background: rgb(var(--b-ink) / 0.7);
-    transition: width 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
+    /* Fill ratio via --fill (0..1) + scaleX so the transition stays on the compositor. */
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left;
+    transition: transform 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .lead {
     font-size: var(--b-fs-title) !important;
