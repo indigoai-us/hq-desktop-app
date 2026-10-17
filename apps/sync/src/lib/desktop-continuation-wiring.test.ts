@@ -109,24 +109,25 @@ describe('a manual sign-in invalidates anything continuation is holding', () => 
     );
   });
 
-  it('does not start a continuation once a provider button has been pressed', () => {
-    expect(signInPrompt).toContain('manualSignInStarted = true;');
+  it('never starts a continuation on the returning-user surface, which has no provider yet', () => {
+    // An automatic attempt named no identity provider, so on a machine with no
+    // browser session Cognito showed its bare Hosted UI listing every
+    // configured provider. Sign-in there starts only from a provider click.
     const prepare = signInPrompt.slice(
       signInPrompt.indexOf('async function prepareContinuation()'),
       signInPrompt.indexOf('async function handleContinuationConfirm'),
     );
-    // Checked before and after the config round trip, then handed to the
-    // continuation state machine for the native-arming gap. A click during
-    // any of those windows must win over the automatic route.
-    expect(prepare.match(/manualSignInStarted/g) ?? []).toHaveLength(3);
-    expect(prepare).toContain('() => !manualSignInStarted');
+    expect(prepare).toContain('flushReceipts(deps)');
+    for (const name of ['beginContinuation', 'resolveRollout', 'bridge.start']) {
+      expect(signInPrompt).not.toContain(name);
+    }
   });
 
-  it('starts explicit OAuth without waiting for continuation preparation on the returning-user surface', () => {
+  it('starts explicit OAuth with the chosen provider on the returning-user surface', () => {
     const start = signInPrompt.indexOf('async function handleSignIn');
     const handle = signInPrompt.slice(start, signInPrompt.indexOf('\n  async function ', start + 1));
-    expect(handle).toContain('manualSignInStarted = true;');
     expect(handle).not.toContain('await continuationPreparation');
+    expect(handle).toMatch(/'start_oauth_login', \{\s*provider,/);
     expect(handle.indexOf('loadingProvider = provider;')).toBeLessThan(
       handle.indexOf("'start_oauth_login'"),
     );

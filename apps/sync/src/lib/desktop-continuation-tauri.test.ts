@@ -196,9 +196,31 @@ describe('the native bridge', () => {
   it('starts an attempt without handing the renderer anything to hold', async () => {
     const invoke = vi.fn(async () => ({ attemptId: 'attempt-1' }));
     const deps = continuationDeps(CONTEXT, options({ invoke }));
-    await deps.bridge.start({ installAttemptId: CONTEXT.installAttemptId, sessionId: 's1' });
-    // One argument, no payload: no state, no verifier, no nonce crosses here.
-    expect(invoke).toHaveBeenCalledWith('desktop_continuation_start');
+    await deps.bridge.start({
+      installAttemptId: CONTEXT.installAttemptId,
+      sessionId: 's1',
+      provider: 'Google',
+    });
+    // Only the provider crosses here: no state, no verifier, no nonce.
+    expect(invoke).toHaveBeenCalledWith('desktop_continuation_start', {
+      provider: 'Google',
+      email: null,
+    });
+  });
+
+  it('passes the provider and email so the attempt never opens the bare Hosted UI', async () => {
+    const invoke = vi.fn(async () => ({ attemptId: 'attempt-1' }));
+    const deps = continuationDeps(CONTEXT, options({ invoke }));
+    await deps.bridge.start({
+      installAttemptId: CONTEXT.installAttemptId,
+      sessionId: 's1',
+      provider: 'Microsoft',
+      email: 'ada@example.com',
+    });
+    expect(invoke).toHaveBeenCalledWith('desktop_continuation_start', {
+      provider: 'Microsoft',
+      email: 'ada@example.com',
+    });
   });
 
   it('confirms and cancels by attempt id and nothing else', async () => {

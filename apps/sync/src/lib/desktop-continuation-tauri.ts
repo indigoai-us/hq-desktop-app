@@ -117,10 +117,15 @@ function bridge(call: InvokeFn): ContinuationBridge {
   return {
     mayStart: async () =>
       (await call('desktop_continuation_may_start')) as string | null,
-    start: async () => {
+    start: async ({ provider, email }) => {
       // The renderer passes no state, verifier, or nonce — it never had any.
-      // Those exist only in native memory for the life of one attempt.
-      const started = (await call('desktop_continuation_start')) as { attemptId: string };
+      // Those exist only in native memory for the life of one attempt. It does
+      // pass the provider, because an attempt without one would open the bare
+      // Hosted UI.
+      const started = (await call('desktop_continuation_start', {
+        provider,
+        email: email ?? null,
+      })) as { attemptId: string };
       return { attemptId: started.attemptId };
     },
     awaitIdentity: async ({ attemptId }) =>

@@ -24,6 +24,7 @@ import {
 } from './desktop-session-continuation';
 
 const INSTALL = '11111111-1111-4111-8111-111111111111';
+const SIGN_IN = { provider: 'Microsoft' as const, email: 'ada@example.com' };
 const IDENTITY: VerifiedIdentity = {
   email: 'someone@example.test',
   displayName: 'Someone',
@@ -397,7 +398,7 @@ describe('one continuation attempt', () => {
 
   it('walks to the confirmation prompt and writes nothing before it', async () => {
     const { deps, delivered } = harness();
-    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, collect);
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, SIGN_IN, collect);
 
     expect(final).toMatchObject({ phase: 'confirming', identity: IDENTITY });
     expect(deps.bridge.confirm).not.toHaveBeenCalled();
@@ -405,11 +406,25 @@ describe('one continuation attempt', () => {
     expect(outcomes(delivered)).toEqual(['started', 'browser_opened', 'identity_verified']);
   });
 
+  it('names the chosen provider when it starts an attempt', async () => {
+    // An attempt without a provider opened the bare Cognito Hosted UI.
+    const { deps } = harness();
+    await beginContinuation(deps, { enabled: true, config: enabledConfig() }, SIGN_IN, collect);
+
+    expect(deps.bridge.start).toHaveBeenCalledWith({
+      installAttemptId: INSTALL,
+      sessionId: expect.any(String),
+      provider: 'Microsoft',
+      email: 'ada@example.com',
+    });
+  });
+
   it('writes to disk only once the person confirms', async () => {
     const { deps } = harness();
     const confirming = await beginContinuation(
       deps,
       { enabled: true, config: enabledConfig() },
+      SIGN_IN,
       collect,
     );
     if (confirming.phase !== 'confirming') throw new Error('expected a confirmation');
@@ -429,6 +444,7 @@ describe('one continuation attempt', () => {
     const confirming = await beginContinuation(
       deps,
       { enabled: true, config: enabledConfig() },
+      SIGN_IN,
       collect,
     );
     if (confirming.phase !== 'confirming') throw new Error('expected a confirmation');
@@ -443,7 +459,7 @@ describe('one continuation attempt', () => {
     (deps.bridge.start as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error(JSON.stringify({ code: 'OAUTH_PORT_IN_USE', message: 'port busy' })),
     );
-    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, collect);
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, SIGN_IN, collect);
 
     expect(final).toEqual({ phase: 'fallback', errorKind: 'port_in_use' });
     expect(outcomes(delivered)).toEqual(['started', 'failed']);
@@ -455,7 +471,7 @@ describe('one continuation attempt', () => {
     (deps.bridge.awaitIdentity as ReturnType<typeof vi.fn>).mockRejectedValue(
       new Error('Sign-in was cancelled.'),
     );
-    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, collect);
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, SIGN_IN, collect);
 
     expect(final).toEqual({ phase: 'fallback', errorKind: 'cancelled' });
     expect(outcomes(delivered).at(-1)).toBe('cancelled');
@@ -466,6 +482,7 @@ describe('one continuation attempt', () => {
     const confirming = await beginContinuation(
       deps,
       { enabled: true, config: enabledConfig() },
+      SIGN_IN,
       collect,
     );
     if (confirming.phase !== 'confirming') throw new Error('expected a confirmation');
@@ -486,6 +503,7 @@ describe('one continuation attempt', () => {
     const confirming = await beginContinuation(
       deps,
       { enabled: true, config: enabledConfig() },
+      SIGN_IN,
       collect,
     );
     await cancelContinuation(deps, confirming, collect);
@@ -497,6 +515,7 @@ describe('one continuation attempt', () => {
     const final = await beginContinuation(
       deps,
       { enabled: false, reason: 'control' },
+      SIGN_IN,
       collect,
     );
 
@@ -511,7 +530,7 @@ describe('one continuation attempt', () => {
   it('does not block on a telemetry endpoint that is down', async () => {
     const { deps, setDelivery } = harness();
     setDelivery('retry');
-    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, collect);
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, SIGN_IN, collect);
     expect(final.phase).toBe('confirming');
   });
 
@@ -529,6 +548,7 @@ describe('one continuation attempt', () => {
     const final = await beginContinuation(
       deps,
       { enabled: true, config: enabledConfig() },
+      SIGN_IN,
       collect,
       () => continuationStillPreferred,
     );
@@ -612,7 +632,7 @@ describe('a machine that must not start an attempt', () => {
     deps.bridge.mayStart = vi.fn(async () => code);
     const states: ContinuationState[] = [];
 
-    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, (next) =>
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, SIGN_IN, (next) =>
       states.push(next),
     );
 
@@ -632,7 +652,7 @@ describe('a machine that must not start an attempt', () => {
       throw new Error('bridge unavailable');
     });
 
-    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, () => {});
+    const final = await beginContinuation(deps, { enabled: true, config: enabledConfig() }, SIGN_IN, () => {});
 
     expect(final).toEqual({ phase: 'fallback', errorKind: 'unavailable' });
     expect(deps.bridge.start).not.toHaveBeenCalled();
@@ -652,7 +672,7 @@ describe('a machine that must not start an attempt', () => {
       return deliver(receipt);
     });
 
-    await beginContinuation(deps, { enabled: true, config: enabledConfig() }, () => {});
+    await beginContinuation(deps, { enabled: true, config: enabledConfig() }, SIGN_IN, () => {});
 
     expect(order[0]).toBe('mayStart');
   });
