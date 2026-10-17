@@ -124,6 +124,7 @@
     type StageId,
     type StageState,
     setupActivityPhrase,
+    setupActivityLabel,
   } from '../../lib/onboarding-setup';
   import {
     openHqShortcutChord,
@@ -613,7 +614,7 @@
   let autoFinishRetryOwed = $state(false);
   let autoFinishRetried = false;
   // The usage-data checkbox is ticked by default, so the ready step stays up
-  // `readyTimings().consentDwellMs` after the checkbox appears before it
+  // `readyTimings().consentDwellMs` after blocking setup ends and the checkbox is visible before it
   // finishes by itself and records the answer. Touching either checkbox
   // starts the wait again.
   let readyDwellElapsed = $state(false);
@@ -4141,15 +4142,16 @@
   function restartReadyDwell(): void {
     clearReadyDwell();
     readyDwellElapsed = false;
+    if (installPending || scene !== 'ready' || !navRevealed || !consentOnReady) return;
     readyDwellTimer = setTimeout(() => {
       readyDwellTimer = null;
       readyDwellElapsed = true;
     }, readyTimings().consentDwellMs);
   }
 
-  // The dwell starts when the usage-data line comes on show.
+  // Count the full dwell only while the ready heading and usage-data choice are visible.
   $effect(() => {
-    if (scene !== 'ready' || !navRevealed || !consentOnReady) return;
+    if (scene !== 'ready' || !navRevealed || !consentOnReady || installPending) return;
     untrack(restartReadyDwell);
     return clearReadyDwell;
   });
@@ -4997,7 +4999,7 @@
         {#if installPending}
           <div class="pwrap">
             <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
-            <span class="pl">{currentInstallActivity}</span>
+            <span class="pl">{setupActivityLabel(currentInstallItemId, 'Setting up HQ')}</span>
             <span class="pbar" aria-hidden="true"><b style:width={`${installCard.percent}%`}></b></span>
           </div>
         {:else if installActivityRunning && currentInstallActivity}
@@ -5010,11 +5012,6 @@
            (refs.navReady) when it lays out the scene. -->
       <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers"></div>
       <div class="alt-block" bind:this={refs.readyAlt}>
-        {#if installPending}
-          <p class="substatus" data-testid="welcome-ready-substatus">
-            {setupSubStatusModel.text ?? setupExpectation}{#if setupSubStatusModel.elapsedLabel}<span class="elapsed">{setupSubStatusModel.elapsedLabel}</span>{/if}
-          </p>
-        {/if}
         {#if deferredConsent?.phase === 'failed'}
           <div class="note consent-error" role="alert" data-testid="consent-deferred-error">
             {#if deferredConsent.kind === 'offline'}
@@ -5303,7 +5300,7 @@
         <span class="st">{installCard.title}</span>
         <span class="ss-stack">
           {#each installCardLines as line (line)}<span class="ss ghost">{line}</span>{/each}
-          <span class="ss live">{installCard.line}</span>
+          {#if installCard.line}<span class="ss live">{installCard.line}</span>{/if}
         </span>
       </div>
       <span

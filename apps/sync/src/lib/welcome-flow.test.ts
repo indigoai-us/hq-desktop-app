@@ -210,13 +210,17 @@ describe('install card', () => {
     expect(installCardModel({ percent: 0, completed: false, retryText: null, currentItemId: 'content' })).toMatchObject({
       state: 'running',
       title: 'Installing HQ in the background',
-      line: 'setting up your workspace',
+      line: 'Setting up your workspace',
       percent: 0,
     });
     expect(installCardModel({ percent: 47, completed: false, retryText: null, currentItemId: 'hq-cli' })).toMatchObject({
-      line: 'installing the hq command',
+      line: 'Installing the hq command',
       percent: 47,
     });
+  });
+
+  it.each([null, 'future-item'])('hides the corner activity for an unknown item %s', (currentItemId) => {
+    expect(installCardModel({ percent: 30, completed: false, retryText: null, currentItemId }).line).toBe('');
   });
 
   it('never claims done before every stage has settled', () => {
@@ -243,7 +247,7 @@ describe('install card', () => {
   });
 
   it('sizes the card for the activity phrases rather than percentage bands', () => {
-    expect(installCardActivityLines()).toContain('installing the hq command');
+    expect(installCardActivityLines()).toContain('Installing the hq command');
     expect(installCardActivityLines().join(' ')).not.toContain('Step');
   });
 });

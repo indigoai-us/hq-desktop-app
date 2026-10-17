@@ -1352,5 +1352,11 @@ export const SETUP_ACTIVITY_PHRASES: Readonly<Record<string, string>> = {
 };
 
 export function setupActivityPhrase(itemId: string | null): string | null {
-  return itemId ? SETUP_ACTIVITY_PHRASES[itemId] ?? null : null;
+  return itemId && Object.hasOwn(SETUP_ACTIVITY_PHRASES, itemId) ? SETUP_ACTIVITY_PHRASES[itemId] : null;
+}
+
+/** A standalone activity label, unlike the lowercase continuation after a colon. */
+export function setupActivityLabel(itemId: string | null, fallback: string | null = null): string | null {
+  const phrase = setupActivityPhrase(itemId);
+  return phrase ? phrase.charAt(0).toUpperCase() + phrase.slice(1) : fallback;
 }

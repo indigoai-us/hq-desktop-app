@@ -252,7 +252,7 @@ describe('welcome flow: the install runs in the background', () => {
     const card = byId<HTMLElement>('onboarding-setup')!;
     expect(card.classList.contains('on')).toBe(true);
     expect(card.textContent).toContain('Installing HQ in the background');
-    expect(card.textContent).toContain('setting up your workspace');
+    expect(card.textContent).toContain('Setting up your workspace');
   });
 
   it('drives the corner card from the real stage progress, to done', async () => {
@@ -273,7 +273,7 @@ describe('welcome flow: the install runs in the background', () => {
     template.resolve();
     await flushUntil(() => commands().includes('start_install_queue'), 'the second stage');
     expect(percent()).toBeGreaterThan(before);
-    expect(card().textContent).toContain('installing your tools');
+    expect(card().textContent).toContain('Installing your tools');
     expect(card().textContent).not.toContain('Step');
 
     deps.resolve();
@@ -337,7 +337,8 @@ describe('welcome flow: the install runs in the background', () => {
   const expectWaiting = (onfinish: ReturnType<typeof vi.fn>) => {
     expect(readyTitle()).toBe('Almost ready.');
     expect(readyLine()).not.toBe('Installed and synced across your devices.');
-    expect(readyLine()).toBe('setting up your workspace');
+    expect(readyLine()).toBe('Setting up your workspace');
+    expect(byId('welcome-ready-substatus')).toBeNull();
     expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('Installed and synced across your devices.');
     expect(byId<HTMLElement>('onboarding-launchers')!.querySelectorAll('button')).toHaveLength(0);
     expect(onfinish).not.toHaveBeenCalled();
@@ -787,6 +788,29 @@ describe("welcome flow: the ready screen's waits", () => {
     await advance(5);
     return onfinish;
   }
+
+  it('starts the full consent dwell only after blocking setup is ready', async () => {
+    const template = deferred();
+    stubInvoke({ fetch_and_extract_template: () => template.promise });
+    const onfinish = mountAt(2);
+    for (let i = 0; i < 60 && !commands().includes('fetch_and_extract_template'); i++) await advance(5);
+    expect(commands()).toContain('fetch_and_extract_template');
+    byId('welcome-skip')!.click();
+    await advance(5);
+    expect(scene()).toBe('ready');
+    await advance(10_000);
+    expect(host.querySelector('#onboarding-title-ready')?.textContent?.trim()).toBe('Almost ready.');
+    expect(onfinish).not.toHaveBeenCalled();
+    template.resolve();
+    for (let i = 0; i < 60 && host.querySelector('#onboarding-title-ready')?.textContent?.trim() !== 'HQ is ready.'; i++) await advance(5);
+    expect(host.querySelector('#onboarding-title-ready')?.textContent?.trim()).toBe('HQ is ready.');
+    await advance(2_900);
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(optIns()).toHaveLength(0);
+    await advance(200);
+    for (let i = 0; i < 60 && onfinish.mock.calls.length !== 1; i++) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+  });
 
   it('stays up for the consent dwell after the checkbox appears, then records the answer and finishes', async () => {
     expect(READY_CONSENT_DWELL_MS).toBe(3_000);

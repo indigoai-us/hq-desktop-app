@@ -44,7 +44,7 @@ import {
   TRUST_STEP_INDEX,
   WELCOME_SIGNIN_STEP_INDEX,
 } from './onboarding-wizard';
-import { SETUP_ACTIVITY_PHRASES, setupActivityPhrase } from './onboarding-setup';
+import { SETUP_ACTIVITY_PHRASES, setupActivityLabel } from './onboarding-setup';
 
 export const STORY_SCENES = ['welcome', 'folder', 'cloud', 'shortcut', 'ready'] as const;
 export type StorySceneId = (typeof STORY_SCENES)[number];
@@ -317,7 +317,7 @@ const INSTALL_CARD_DONE_LINE = 'Keep going, you’re all set.';
 
 /**
  * The ready screen's two waits. The usage-data checkbox is ticked by default,
- * so the screen stays up READY_CONSENT_DWELL_MS after the checkbox appears (or
+ * so the screen stays up READY_CONSENT_DWELL_MS after blocking setup finishes and the checkbox is visible (or
  * after the person last touched a checkbox) before it finishes by itself and
  * records the answer. A ready screen that has not finished READY_WATCHDOG_MS
  * after it opened shows the Finish setup button.
@@ -366,12 +366,12 @@ export function installCardModel({ percent, completed, retryText, currentItemId 
   return {
     state: retryText ? 'retrying' : 'running',
     title: INSTALL_CARD_TITLE,
-    line: retryText ?? setupActivityPhrase(currentItemId) ?? '',
+    line: retryText ?? setupActivityLabel(currentItemId) ?? '',
     percent: Math.max(0, Math.min(99, percent)),
   };
 }
 
 /** Possible activity lines keep the corner card's width steady. */
 export function installCardActivityLines(): string[] {
-  return [...new Set(Object.values(SETUP_ACTIVITY_PHRASES))];
+  return [...new Set(Object.keys(SETUP_ACTIVITY_PHRASES).map(id => setupActivityLabel(id)!))];
 }

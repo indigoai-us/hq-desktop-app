@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { setupActivityPhrase, SETUP_ACTIVITY_PHRASES } from './onboarding-setup';
+import { setupActivityPhrase, setupActivityLabel, SETUP_ACTIVITY_PHRASES } from './onboarding-setup';
 
 describe('setup activity copy', () => {
   it('names every native queue item in plain language', () => {
@@ -15,6 +15,14 @@ describe('setup activity copy', () => {
     expect(setupActivityPhrase('hq-cli')).toBe('installing the hq command');
     expect(setupActivityPhrase('vault-upload')).toBe('syncing your files');
     expect(setupActivityPhrase('search-index')).toBe('building search');
+  });
+  it('uses sentence case standalone and a nonempty fallback for blocking work', () => {
+    expect(setupActivityLabel('content')).toBe('Setting up your workspace');
+    expect(setupActivityLabel(null, 'Setting up HQ')).toBe('Setting up HQ');
+    expect(setupActivityLabel('future-item', 'Setting up HQ')).toBe('Setting up HQ');
+    expect(setupActivityLabel(null)).toBeNull();
+    expect(setupActivityLabel('future-item')).toBeNull();
+    expect(setupActivityPhrase('hq-cli')).toBe('installing the hq command');
   });
   it('names blocking stages and suppresses idle or unknown items', () => {
     expect(setupActivityPhrase('content')).toBe('setting up your workspace');
