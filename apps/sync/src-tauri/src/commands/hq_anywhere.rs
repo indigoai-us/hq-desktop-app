@@ -43,6 +43,14 @@ impl GlobalRuntime {
     fn binary_name(self) -> &'static str {
         self.as_str()
     }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -163,6 +171,36 @@ fn global_runtime_is_installed(home: &Path, runtime: GlobalRuntime) -> bool {
     }
 }
 
+/// The CLI's own install record, `~/.hq/anywhere/<runtime>-install.json`. A
+/// plugin-mode install (`hq install --global --via plugin`) writes this and
+/// neither the managed block nor the MCP entry.
+fn install_state_file(home: &Path, runtime: GlobalRuntime) -> PathBuf {
+    home.join(".hq/anywhere")
+        .join(format!("{}-install.json", runtime.as_str()))
+}
+
+/// True when any part of the HQ Anywhere setup is on disk for `runtime`: the
+/// managed instructions block, the HQ MCP entry or the CLI's install record.
+/// `hq uninstall` exits 1 with "No HQ global install found" when nothing is
+/// there, so an opted-out person must not run it against a clean home. Before
+/// this check the startup reconcile ran it on every launch and the renderer
+/// retried it twice more. `~/.hq/root` alone is not counted: the CLI also
+/// accepts it, but it only points at the HQ folder and exists on homes with no
+/// runtime install.
+fn global_runtime_has_any_install(home: &Path, runtime: GlobalRuntime) -> bool {
+    let wrote_files = match runtime {
+        GlobalRuntime::Claude => {
+            has_managed_block(&home.join(".claude/CLAUDE.md"), CLAUDE_BLOCK_BEGIN)
+                || claude_mcp_is_hq_anywhere(home)
+        }
+        GlobalRuntime::Codex => {
+            has_managed_block(&home.join(".codex/AGENTS.md"), CODEX_BLOCK_BEGIN)
+                || codex_mcp_is_hq_anywhere(home)
+        }
+    };
+    wrote_files || install_state_file(home, runtime).is_file()
+}
+
 fn global_install_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -180,9 +218,67 @@ fn global_install_lock() -> &'static Mutex<()> {
 /// `hq uninstall --global --runtime claude` from here at launch.
 #[tauri::command]
 pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String> {
+    run_global_install(enabled, None).await
+}
+
+/// First-run "Continue in <tool>": install the HQ Anywhere global runtime
+/// setup (hooks, memory, skills) for the one tool the person chose, whether or
+/// not that tool's home folder exists yet. Same bundle gate and lock as
+/// [`set_hq_anywhere_global_install`].
+#[tauri::command]
+pub async fn install_hq_runtime_for_tool(runtime: String) -> Result<(), String> {
+    let runtime = parse_tool_runtime(&runtime)?;
+    run_global_install(true, Some(runtime)).await
+}
+
+/// The webview supplies `runtime`, so the error never echoes it back.
+fn parse_tool_runtime(runtime: &str) -> Result<GlobalRuntime, String> {
+    GlobalRuntime::parse(runtime).ok_or_else(|| "Unsupported coding tool".to_string())
+}
+
+/// Returned when a one-tool install is refused because this build may not
+/// change the owner's coding tools. It is not success: nothing was installed.
+pub const HQ_ANYWHERE_NOT_INSTALLED: &str = "not-installed";
+
+/// Startup reconcile (`only` is None) still returns Ok for a disallowed
+/// identity, so a scratch launch does not mark setup as failed. A one-tool
+/// install returns [`HQ_ANYWHERE_NOT_INSTALLED`] instead of looking installed.
+fn disallowed_install_result(
+    identity: &crate::scratch_build::LaunchIdentity,
+    only: Option<GlobalRuntime>,
+) -> Result<(), String> {
+    if identity.allows("HQ Anywhere global runtime setup") {
+        return Ok(());
+    }
+    if only.is_some() {
+        return Err(HQ_ANYWHERE_NOT_INSTALLED.to_string());
+    }
+    Ok(())
+}
+
+/// The same check the install skip uses (`global_runtime_is_installed`).
+pub fn runtime_installed_for_tool(home: &Path, runtime: &str) -> Result<bool, String> {
+    Ok(global_runtime_is_installed(
+        home,
+        parse_tool_runtime(runtime)?,
+    ))
+}
+
+/// Cheap read for the welcome report and later briefs. Does not install.
+#[tauri::command]
+pub fn hq_anywhere_runtime_installed(runtime: String) -> Result<bool, String> {
+    let home =
+        dirs::home_dir().ok_or_else(|| "Could not resolve the home directory.".to_string())?;
+    runtime_installed_for_tool(&home, &runtime)
+}
+
+async fn run_global_install(enabled: bool, only: Option<GlobalRuntime>) -> Result<(), String> {
     let _guard = global_install_lock().lock().await;
     let identity = crate::scratch_build::LaunchIdentity::current();
-    if !identity.allows("HQ Anywhere global runtime setup") {
+    // A disallowed one-tool install is an error. A disallowed startup
+    // reconcile stays Ok and must return here, before any home lookup.
+    disallowed_install_result(&identity, only)?;
+    if !identity.is_production() {
         return Ok(());
     }
     let home =
@@ -192,6 +288,7 @@ pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String>
     apply_global_install(
         &identity,
         enabled,
+        only,
         &home,
         &path_entries,
         || crate::commands::install_directory::resolve_hq_path().map(PathBuf::from),
@@ -209,6 +306,7 @@ pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String>
 async fn apply_global_install<R, F, Fut>(
     identity: &crate::scratch_build::LaunchIdentity,
     enabled: bool,
+    only: Option<GlobalRuntime>,
     home: &Path,
     path_entries: &[PathBuf],
     resolve_hq_root: R,
@@ -224,7 +322,10 @@ where
     if !identity.is_production() {
         return Ok(());
     }
-    let runtimes = detect_present_runtimes(home, path_entries);
+    let runtimes = match only {
+        Some(runtime) => vec![runtime],
+        None => detect_present_runtimes(home, path_entries),
+    };
     if runtimes.is_empty() {
         log(
             LOG_TAG,
@@ -245,6 +346,14 @@ where
                 LOG_TAG,
                 &format!(
                     "{} global setup is already installed; skipping",
+                    runtime.as_str()
+                ),
+            );
+        } else if !enabled && !global_runtime_has_any_install(home, runtime) {
+            log(
+                LOG_TAG,
+                &format!(
+                    "{} has no global setup to remove; skipping",
                     runtime.as_str()
                 ),
             );
@@ -289,11 +398,14 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use super::{
-        apply_global_install, detect_present_runtimes, global_runtime_args,
-        global_runtime_is_installed, safe_renderer_failure, GlobalRuntime, RuntimeAction,
+        apply_global_install, detect_present_runtimes, disallowed_install_result,
+        global_runtime_args, global_runtime_is_installed, parse_tool_runtime,
+        runtime_installed_for_tool, safe_renderer_failure, GlobalRuntime, RuntimeAction,
+        HQ_ANYWHERE_NOT_INSTALLED,
     };
     use crate::scratch_build::LaunchIdentity;
 
@@ -317,9 +429,51 @@ mod tests {
         identity: LaunchIdentity,
         enabled: bool,
     ) -> (Result<(), String>, Vec<Vec<String>>, bool) {
+        run_global_install_in(identity, enabled, None, |home| {
+            fs::create_dir_all(home.join(".claude")).unwrap();
+            fs::create_dir_all(home.join(".codex")).unwrap();
+        })
+    }
+
+    fn write_claude_install(home: &Path) {
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        fs::write(
+            home.join(".claude/CLAUDE.md"),
+            "<!-- hq-anywhere:begin managed -->\nHQ\n<!-- hq-anywhere:end -->\n",
+        )
+        .unwrap();
+        fs::write(
+            home.join(".claude.json"),
+            r#"{"mcpServers":{"hq":{"_hqPack":"hq-anywhere"}}}"#,
+        )
+        .unwrap();
+    }
+
+    fn write_codex_install(home: &Path) {
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        fs::write(
+            home.join(".codex/AGENTS.md"),
+            "<!-- hq-anywhere:begin (managed by `hq install --global --runtime codex`) -->\nHQ\n<!-- hq-anywhere:end -->\n",
+        )
+        .unwrap();
+        fs::write(
+            home.join(".codex/config.toml"),
+            "[mcp_servers.hq]\ncommand = \"hq-mcp\"\n_hqPack = \"hq-anywhere\"\n",
+        )
+        .unwrap();
+    }
+
+    /// Runs [`apply_global_install`] against a temporary home that `seed`
+    /// prepares. Returns the result, every `hq` argv the runner was asked to
+    /// run, and whether the HQ root was resolved.
+    fn run_global_install_in(
+        identity: LaunchIdentity,
+        enabled: bool,
+        only: Option<GlobalRuntime>,
+        seed: impl FnOnce(&Path),
+    ) -> (Result<(), String>, Vec<Vec<String>>, bool) {
         let home = TempHome::new();
-        fs::create_dir_all(home.path().join(".claude")).unwrap();
-        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        seed(home.path());
         let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
         let resolved = Arc::new(Mutex::new(false));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -328,6 +482,7 @@ mod tests {
         let result = runtime.block_on(apply_global_install(
             &identity,
             enabled,
+            only,
             home.path(),
             &[],
             {
@@ -375,7 +530,11 @@ mod tests {
 
     #[test]
     fn the_production_bundle_still_runs_the_global_runtime_commands() {
-        let (result, calls, resolved) = run_startup_reconcile(production(), false);
+        let (result, calls, resolved) =
+            run_global_install_in(production(), false, None, |home| {
+                write_claude_install(home);
+                write_codex_install(home);
+            });
         assert_eq!(result, Ok(()));
         assert!(resolved);
         assert_eq!(
@@ -397,16 +556,152 @@ mod tests {
         );
     }
 
+    /// The 2026-10-15 log showed `hq uninstall --global --runtime claude`
+    /// failing with "No HQ global install found" in bursts of three, about
+    /// 4 s apart, for a person with HQ Anywhere off and nothing installed.
+    #[test]
+    fn an_opted_out_person_with_nothing_installed_runs_no_uninstall() {
+        let (result, calls, resolved) = run_startup_reconcile(production(), false);
+        assert_eq!(result, Ok(()));
+        assert!(calls.is_empty(), "ran hq {calls:?}");
+        assert!(!resolved, "resolved the HQ root with nothing to remove");
+    }
+
+    #[test]
+    fn uninstall_still_removes_a_partial_install() {
+        let (result, calls, _) = run_global_install_in(production(), false, None, |home| {
+            fs::create_dir_all(home.join(".claude")).unwrap();
+            fs::write(
+                home.join(".claude.json"),
+                r#"{"mcpServers":{"hq":{"_hqPack":"hq-anywhere"}}}"#,
+            )
+            .unwrap();
+            fs::create_dir_all(home.join(".codex")).unwrap();
+            fs::write(
+                home.join(".codex/AGENTS.md"),
+                "<!-- hq-anywhere:begin (managed by `hq install --global --runtime codex`) -->\nHQ\n<!-- hq-anywhere:end -->\n",
+            )
+            .unwrap();
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            calls,
+            [
+                ["uninstall", "--global", "--runtime", "claude"],
+                ["uninstall", "--global", "--runtime", "codex"],
+            ]
+        );
+    }
+
+    #[test]
+    fn uninstall_removes_a_plugin_mode_install_known_only_by_its_install_record() {
+        let (result, calls, _) = run_global_install_in(production(), false, None, |home| {
+            fs::create_dir_all(home.join(".claude")).unwrap();
+            fs::create_dir_all(home.join(".hq/anywhere")).unwrap();
+            fs::write(
+                home.join(".hq/anywhere/claude-install.json"),
+                r#"{"plugin":{"pluginId":"hq@hq"}}"#,
+            )
+            .unwrap();
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["uninstall", "--global", "--runtime", "claude"]]);
+    }
+
+    #[test]
+    fn the_hq_root_pointer_alone_is_not_an_install() {
+        let (result, calls, _) = run_global_install_in(production(), false, None, |home| {
+            fs::create_dir_all(home.join(".claude")).unwrap();
+            fs::create_dir_all(home.join(".codex")).unwrap();
+            fs::create_dir_all(home.join(".hq")).unwrap();
+            fs::write(home.join(".hq/root"), "/tmp/HQ\n").unwrap();
+        });
+        assert_eq!(result, Ok(()));
+        assert!(calls.is_empty(), "ran hq {calls:?}");
+    }
+
+    #[test]
+    fn installing_for_one_tool_runs_only_that_runtime_even_before_its_folder_exists() {
+        let (result, calls, resolved) =
+            run_global_install_in(production(), true, Some(GlobalRuntime::Codex), |home| {
+                fs::create_dir_all(home.join(".claude")).unwrap();
+            });
+        assert_eq!(result, Ok(()));
+        assert!(resolved);
+        assert_eq!(calls, [["install", "--global", "--runtime", "codex"]]);
+
+        let (result, calls, _) =
+            run_global_install_in(production(), true, Some(GlobalRuntime::Claude), |home| {
+                write_claude_install(home);
+            });
+        assert_eq!(result, Ok(()));
+        assert!(calls.is_empty(), "reinstalled an installed runtime: {calls:?}");
+
+        let (result, calls, _) = run_global_install_in(
+            bundle(Some(SCRATCH_BUNDLE_ID)),
+            true,
+            Some(GlobalRuntime::Claude),
+            |_| {},
+        );
+        assert_eq!(result, Ok(()));
+        assert!(calls.is_empty(), "a scratch bundle ran hq {calls:?}");
+    }
+
+    #[test]
+    fn a_disallowed_one_tool_install_is_not_installed() {
+        let scratch = bundle(Some(SCRATCH_BUNDLE_ID));
+        assert_eq!(
+            disallowed_install_result(&scratch, Some(GlobalRuntime::Claude)),
+            Err(HQ_ANYWHERE_NOT_INSTALLED.to_string())
+        );
+        assert_eq!(disallowed_install_result(&scratch, None), Ok(()));
+        assert_eq!(
+            disallowed_install_result(&production(), Some(GlobalRuntime::Codex)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn runtime_installed_for_tool_uses_the_full_install_check() {
+        let home = TempHome::new();
+        assert_eq!(runtime_installed_for_tool(home.path(), "claude"), Ok(false));
+        write_claude_install(home.path());
+        assert_eq!(runtime_installed_for_tool(home.path(), "claude"), Ok(true));
+        assert_eq!(runtime_installed_for_tool(home.path(), "codex"), Ok(false));
+        assert!(runtime_installed_for_tool(home.path(), "grok").is_err());
+    }
+
+    #[test]
+    fn parses_only_the_supported_tool_names() {
+        assert_eq!(GlobalRuntime::parse("claude"), Some(GlobalRuntime::Claude));
+        assert_eq!(GlobalRuntime::parse("codex"), Some(GlobalRuntime::Codex));
+        assert_eq!(GlobalRuntime::parse("grok"), None);
+        assert_eq!(GlobalRuntime::parse("Claude --global"), None);
+    }
+
+    #[test]
+    fn an_unsupported_tool_error_does_not_echo_the_renderer_string() {
+        assert_eq!(parse_tool_runtime("claude"), Ok(GlobalRuntime::Claude));
+        assert_eq!(
+            parse_tool_runtime("<img src=x> --global"),
+            Err("Unsupported coding tool".to_string())
+        );
+    }
+
     struct TempHome(PathBuf);
 
     impl TempHome {
         fn new() -> Self {
+            // The clock alone collides between parallel tests on macOS, whose
+            // clock has microsecond resolution; the counter keeps homes apart.
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock is after the epoch")
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "hq-anywhere-runtime-test-{}-{nonce}",
+                "hq-anywhere-runtime-test-{}-{nonce}-{sequence}",
                 std::process::id()
             ));
             fs::create_dir_all(&path).expect("create temporary HOME");

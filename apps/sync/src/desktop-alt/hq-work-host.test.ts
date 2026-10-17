@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatWakeBus } from '@hq/ui';
 import {
+  navigationDestinationFromRoute,
   parseHqDesktopSetupUrl,
   subscribeHqWorkNativeWakes,
   type TauriEventListener,
@@ -281,3 +282,17 @@ describe('parseHqDesktopSetupUrl', () => {
   });
 });
 
+
+describe('navigationDestinationFromRoute hq://brief and hq://vault (US-008)', () => {
+  it('sends the native route and the hq:// link to the rail Brief and Files pages', () => {
+    // Rust deep_link.rs hands the shell the bare route; a renderer-side link
+    // arrives as the full hq:// URL. Both must land on the rail's own page.
+    for (const route of ['brief', 'hq://brief', 'HQ://Brief/']) {
+      expect(navigationDestinationFromRoute(route)).toEqual({ kind: 'extra', page: 'rail-brief', param: null });
+    }
+    for (const route of ['vault', 'hq://vault', 'hq://vault/']) {
+      expect(navigationDestinationFromRoute(route)).toEqual({ kind: 'extra', page: 'rail-library', param: null });
+    }
+    expect(navigationDestinationFromRoute('hq://brief/extra')).toBeNull();
+  });
+});

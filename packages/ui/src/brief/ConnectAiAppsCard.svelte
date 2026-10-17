@@ -13,8 +13,13 @@
     detect: () => Promise<FoundWorkApps | null>;
     /** Claude Code and the Codex CLI, as the launch detection found them. */
     cli: { claudeCode: boolean; codex: boolean };
+    /**
+     * The connector whose local HQ Anywhere install is on. Copy stays, because
+     * that install is not the remote indigo connector. Null adds no note.
+     */
+    anywhereOnId?: string | null;
   }
-  let { detect, cli }: Props = $props();
+  let { detect, cli, anywhereOnId = null }: Props = $props();
 
   let scanApps = $state.raw<FoundWorkApps["apps"]>([]);
   let alive = true;
@@ -64,6 +69,9 @@
               <ol class="help steps">
                 {#each app.steps as step}<li>{step}</li>{/each}
               </ol>
+            {/if}
+            {#if anywhereOnId === app.id}
+              <div class="help" data-testid={`connect-ai-app-${app.id}-anywhere`}>HQ Anywhere on</div>
             {/if}
             {#if copyFailedId === app.id}
               <pre class="help manual" data-testid={`connect-ai-app-${app.id}-manual`}>{app.copyText}</pre>

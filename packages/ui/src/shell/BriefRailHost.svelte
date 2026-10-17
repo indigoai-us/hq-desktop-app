@@ -12,6 +12,8 @@
   import type { BriefLaunch } from "../brief/brief-context.svelte.js";
   import type { BriefCreateRun, BriefCreator } from "../brief/brief-create.svelte.js";
   import type { BriefActions } from "../brief/brief-action-cards.js";
+  import BriefOpenTool from "../brief/BriefOpenTool.svelte";
+  import type { BriefOpenToolAction } from "../brief/brief-open-tool.js";
 
   type BriefModule = Awaited<ReturnType<typeof loadBrief>>;
 
@@ -30,8 +32,10 @@
     actions?: BriefActions | null;
     /** Told which run the brief page has on screen. */
     onshown?: (runId: string | null) => void;
+    /** Opens the coding tool chosen at Continue. Null when this brief has none. */
+    openTool?: BriefOpenToolAction | null;
   }
-  let { adapter, companies, onlaunch, creator = null, run = null, onopenthread, onopenmeetings, actions = null, onshown }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run = null, onopenthread, onopenmeetings, actions = null, onshown, openTool = null }: Props = $props();
 
   let mod = $state<BriefModule | null>(null);
   let failed = $state(false);
@@ -53,19 +57,39 @@
 </script>
 
 <div class="host" data-testid="brief-host">
-  {#if mod}
-    <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} {onopenthread} {onopenmeetings} {actions} {onshown} />
-  {:else if failed}
-    <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
-  {:else}
-    <div class="loading" aria-busy="true">
-      <ReadLoader testid="brief-loading" />
+  {#if openTool}
+    <div class="open">
+      <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
     </div>
   {/if}
+  <div class="page">
+    {#if mod}
+      <mod.BriefRunsPage {adapter} {companies} {onlaunch} {creator} {run} {onopenthread} {onopenmeetings} {actions} {onshown} />
+    {:else if failed}
+      <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
+    {:else}
+      <div class="loading" aria-busy="true">
+        <ReadLoader testid="brief-loading" />
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
-  .host { height: 100%; min-height: 0; }
+  .host {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .open {
+    flex: none;
+    padding: 14px 18px 0;
+  }
+  .page {
+    flex: 1;
+    min-height: 0;
+  }
   .loading { padding: 8px; }
   .failed { padding: 20px; }
 </style>

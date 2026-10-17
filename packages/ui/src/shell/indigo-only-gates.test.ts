@@ -99,6 +99,38 @@ describe("RELEASE-001 watchIndigoOnlyGates", () => {
     watchIndigoOnlyGates(null, onChange)();
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it("reports settled once every key's first read has answered or failed", async () => {
+    const answers = new Map<string, (result: { ok: boolean; value?: unknown }) => void>();
+    const failures = new Map<string, (error: unknown) => void>();
+    const onSettled = vi.fn();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const stop = watchIndigoOnlyGates(
+      {
+        hasFeature: (flag) =>
+          new Promise((resolve, reject) => {
+            answers.set(flag, resolve);
+            failures.set(flag, reject);
+          }),
+      },
+      () => undefined,
+      onSettled,
+    );
+    const [first, ...rest] = INDIGO_ONLY_GATE_KEYS;
+    failures.get(first)!(new Error("offline"));
+    for (const key of rest.slice(0, -1)) answers.get(key)!({ ok: true, value: false });
+    await Promise.resolve();
+    expect(onSettled).not.toHaveBeenCalled();
+    answers.get(rest.at(-1)!)!({ ok: false });
+    await vi.waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1));
+    stop();
+  });
+
+  it("is settled at once without an identity reader", () => {
+    const onSettled = vi.fn();
+    watchIndigoOnlyGates(null, () => undefined, onSettled)();
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("RELEASE-001 fallbacks are finished states", () => {
