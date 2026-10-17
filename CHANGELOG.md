@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First run: the knowledge tree now fades out with the rest of the setup screen when you continue to Daily Brief, instead of disappearing at once. If a feature-flag read fails during the handoff, the app retries it instead of treating the feature as turned off.
 - First run: when setup moves on to HQ Desktop, the welcome window now stays on screen until HQ Desktop is actually showing, so you no longer see your own desktop for a moment in between. If HQ Desktop does not report that it is showing within about 1.5 seconds, the welcome window closes anyway.
 - Opening HQ Desktop no longer shows a white, empty window with a small HQ mark first on a Mac. The window now stays hidden until the app has drawn its first screen, on every open (after 5 seconds it shows anyway). After first run is finished on this Mac, opening HQ Desktop also no longer shows the first-run background for a few seconds while the app checks which screen to open; it goes straight to the app.
 - Daily Brief: each open item in the report now has an action card that says what it is, why now and what it is based on. "Do it with <Name>" sends the work to your assistant once, even if you click twice, and says "Sent to <Name>. Watch your messages." when it went through. That button only shows when your assistant runs on this computer. "Open in Claude Code" and "Open in Codex" start it in that tool, and a button only shows when the tool is on this computer.

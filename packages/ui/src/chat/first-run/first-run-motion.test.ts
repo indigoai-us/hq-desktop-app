@@ -45,6 +45,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   HTMLElement.prototype.animate = originalAnimate;
   window.matchMedia = originalMatchMedia;
   document.body.innerHTML = "";
@@ -68,6 +69,32 @@ const leaving = () =>
   document.querySelectorAll<HTMLElement>(`[${FIRST_RUN_LEAVING_ATTR}]`);
 
 describe("fadeOutOnLeave", () => {
+  it("copies every canvas bitmap at its backing resolution into the fading layer", () => {
+    const node = takeover();
+    const sources = [document.createElement("canvas"), document.createElement("canvas")];
+    const draws = new Map<HTMLCanvasElement, ReturnType<typeof vi.fn>>();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+      const drawImage = vi.fn();
+      draws.set(this, drawImage);
+      return { drawImage } as unknown as CanvasRenderingContext2D;
+    });
+    sources.forEach((canvas, i) => {
+      canvas.width = 800 + i;
+      canvas.height = 600 + i;
+      node.appendChild(canvas);
+    });
+    const action = fadeOutOnLeave(node);
+    node.remove();
+    action.destroy();
+    const copies = leaving()[0].querySelectorAll("canvas");
+    sources.forEach((source, i) => {
+      expect(copies[i]).not.toBe(source);
+      expect(copies[i].width).toBe(source.width);
+      expect(copies[i].height).toBe(source.height);
+      expect(draws.get(copies[i])).toHaveBeenCalledWith(source, 0, 0);
+    });
+  });
+
   it("fades an inert copy out over the view that replaced the takeover, in under 400ms", async () => {
     const node = takeover();
     const action = fadeOutOnLeave(node);
@@ -107,6 +134,36 @@ describe("fadeOutOnLeave", () => {
     expect(leaving()).toHaveLength(1);
     vi.advanceTimersByTime(FIRST_RUN_LEAVE_MS + 250);
     expect(leaving()).toHaveLength(0);
+  });
+
+  it.each(["missing context", "rejected copy", "WebGL surface"])("keeps the source canvas visible through the fade on %s", async (failure) => {
+    const node = takeover();
+    const source = document.createElement("canvas");
+    source.id = "tree";
+    source.setAttribute("data-testid", "tree");
+    source.width = 1600;
+    source.height = 1200;
+    node.appendChild(source);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+      if (failure === "missing context") return null;
+      if (failure === "WebGL surface" && this === source) return null;
+      return { drawImage() {
+        if (failure === "rejected copy") throw new DOMException("Copy refused", "SecurityError");
+      } } as unknown as CanvasRenderingContext2D;
+    });
+    const action = fadeOutOnLeave(node);
+    node.remove();
+    action.destroy();
+    expect(leaving()[0].querySelector("canvas")).toBe(source);
+    expect(source.isConnected).toBe(true);
+    expect(source.width).toBe(1600);
+    expect(source.height).toBe(1200);
+    expect(source.hasAttribute("id")).toBe(false);
+    expect(source.hasAttribute("data-testid")).toBe(false);
+    animations[0].finish();
+    await animations[0].finished;
+    await Promise.resolve();
+    expect(source.isConnected).toBe(false);
   });
 
   it("leaves nothing behind under prefers-reduced-motion", () => {

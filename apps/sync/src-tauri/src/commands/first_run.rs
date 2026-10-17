@@ -309,14 +309,20 @@ pub fn first_run_handoff_hint(
 }
 
 #[cfg(not(target_os = "windows"))]
+fn handoff_flag_value(read: Result<Option<bool>, ()>) -> Option<bool> {
+    read.ok().flatten()
+}
+
+#[cfg(not(target_os = "windows"))]
 async fn first_run_handoff_hint_now() -> String {
     async fn bounded(flag: &str) -> Option<bool> {
         tokio::time::timeout(
             FIRST_RUN_HINT_FLAG_TIMEOUT,
-            crate::commands::hq_pro::feature_flag_enabled(flag),
+            crate::commands::hq_pro::feature_flag_read(flag),
         )
         .await
         .ok()
+        .and_then(handoff_flag_value)
     }
     let (visual, found_apps) = tokio::join!(
         bounded(FIRST_RUN_HINT_FLAGS[0]),
@@ -464,6 +470,16 @@ mod first_launch_sync_start_capture_tests {
 #[cfg(test)]
 mod first_run_handoff_hint_tests {
     use super::*;
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn failed_flag_read_stays_unknown_in_the_handoff_payload() {
+        let hint = first_run_handoff_hint(handoff_flag_value(Err(())), Some(false), true, false);
+        assert_eq!(payload(&hint)["flags"][FIRST_RUN_HINT_FLAGS[0]], Value::Null);
+        assert_eq!(handoff_flag_value(Ok(Some(false))), Some(false));
+        assert_eq!(handoff_flag_value(Ok(Some(true))), Some(true));
+        assert_eq!(handoff_flag_value(Ok(None)), None);
+    }
 
     fn payload(hint: &str) -> Value {
         let json = hint

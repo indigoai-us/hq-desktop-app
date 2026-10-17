@@ -31,6 +31,30 @@ function prefersReducedMotion(): boolean {
  */
 function inertCopy(node: HTMLElement): HTMLElement {
   const copy = node.cloneNode(true) as HTMLElement;
+  // cloneNode copies canvas attributes, but leaves its bitmap transparent.
+  // Copy at backing resolution (including device-pixel scaling), before the
+  // fading layer is attached. drawImage can copy tainted canvases without
+  // reading their pixels back into JavaScript.
+  const sources = node.querySelectorAll("canvas");
+  const targets = copy.querySelectorAll("canvas");
+  sources.forEach((source, index) => {
+    const target = targets[index];
+    target.width = source.width;
+    target.height = source.height;
+    try {
+      // WebGL drawing buffers can be cleared after compositing without
+      // drawImage throwing. Keep that surface instead of copying a blank one.
+      if (!source.getContext("2d")) throw new Error("Non-2D canvas surface");
+      const context = target.getContext("2d");
+      if (!context) throw new Error("Canvas context unavailable");
+      context.drawImage(source, 0, 0);
+    } catch {
+      // A browser may refuse a bitmap copy (including a lost GPU context).
+      // Keep the existing surface in the inert layer until the fade ends.
+      // The takeover is already detached and its drawing loop is stopped.
+      target.replaceWith(source);
+    }
+  });
   for (const el of [copy, ...copy.querySelectorAll<HTMLElement>("*")]) {
     el.removeAttribute("data-testid");
     el.removeAttribute("id");
@@ -51,10 +75,10 @@ export function fadeOutOnLeave(node: HTMLElement) {
   return {
     destroy() {
       if (typeof document === "undefined" || prefersReducedMotion()) return;
+      if (typeof node.animate !== "function") return;
       const host =
         document.querySelector<HTMLElement>(".desktop-shell") ?? document.body;
       const copy = inertCopy(node);
-      if (typeof copy.animate !== "function") return;
       host.appendChild(copy);
       const remove = () => copy.remove();
       const safety = setTimeout(remove, LEAVE_SAFETY_MS);
