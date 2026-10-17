@@ -12,6 +12,7 @@
   import { DAWN_CELL, DAWN_PITCH, dawnNoise } from "../chat/create-bot/NewBotDawn.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import { firstLine, type HeroLead } from "./brief-hero.js";
+  import { partOfDay } from "./brief-time.js";
   import { distillTimeline, sessionPeek, sessionTitle, type Timeline, type TimelineSession } from "./brief-timeline.js";
 
   interface Props {
@@ -30,7 +31,7 @@
     now?: string;
     /** Priority 1 in the writer's words; shown as "First: ..." at XL and L, hidden at M. */
     lead?: HeroLead | null;
-    /** Say "Morning, name." above the line; off when the page greets in its own header. */
+    /** Say "Morning, name." (by the local clock) above the line; off when the page greets in its own header. */
     greet?: boolean;
   }
   let {
@@ -271,7 +272,7 @@
   <div class="over">
     <div class="eyebrow" style="color:rgba(255,255,255,.8)">Sunrise · {total ? "decisions cleared" : "nothing owed"}</div>
     <div class="greet" class:big>
-      {#if greet}Morning{userName ? `, ${userName}` : ""}.<br />{/if}<span class="line" aria-label={line}>{lineParts.pre}{#if lineParts.em}<em class="accent-word">{lineParts.em}</em>{/if}{lineParts.post}</span>
+      {#if greet}{partOfDay(new Date())}{userName ? `, ${userName}` : ""}.<br />{/if}<span class="line" aria-label={line}>{lineParts.pre}{#if lineParts.em}<em class="accent-word">{lineParts.em}</em>{/if}{lineParts.post}</span>
     </div>
     {#if big && leadLine}<div class="first" data-testid="brief-sunrise-first">{leadLine}</div>{/if}
     <div class="sub lede" class:big>{sub}</div>
@@ -367,10 +368,21 @@
   /* The timeline sits at the bottom with a guaranteed gap above it, so the lede never touches its label. */
   /* The strip ends the card: no space under it beyond the card's own padding. */
   .tl {
+    position: relative;
+    isolation: isolate;
     margin-top: auto;
     padding-top: 18px;
     /* With the labels trimmed to their baseline, 18px + 2px matches the card's 20px sides. */
     margin-bottom: 2px;
+  }
+  /* A soft dark band under the strip and its labels, so they stay readable where the sun sits behind them. */
+  .tl::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: 0 -20px -20px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, rgba(12, 8, 24, 0), rgba(12, 8, 24, 0.5) 45%, rgba(12, 8, 24, 0.62));
   }
   .tl-head {
     display: flex;
@@ -480,7 +492,8 @@
     font-size: 10px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.62);
+    color: rgba(255, 255, 255, 0.86);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
   }
   .tick {
     grid-row: 1;

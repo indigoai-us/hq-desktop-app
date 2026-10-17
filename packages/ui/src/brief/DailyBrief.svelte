@@ -57,7 +57,8 @@
   import { effortMinutes } from "./brief-hero.js";
   import { briefHover } from "./brief-hover.js";
   import { decoUrl } from "./brief-deco.js";
-  import { FIELD, bandRows, clockLabel, inLabel, nextCall, promoteMain, todayStats, withLine, type TodayStatKey } from "./brief-layout.js";
+  import { FIELD, bandRows, clockLabel, inLabel, nextCall, promoteMain, todayCalls, todayStats, withLine, type TodayStatKey } from "./brief-layout.js";
+  import { partOfDay } from "./brief-time.js";
   import { CARD_TAG, cardTag, tagIconWidth, tagViewBox } from "./brief-card-tags.js";
   /** Reward cards tilt toward the pointer; every other card only takes the light. The hero has its own. */
   const NO_HOVER_KINDS = new Set(["sunrise", "catchup"]);
@@ -114,6 +115,16 @@
   const timeLabel = $derived(nowDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
   const leadForHero = $derived(plan.leadPriority ? { text: plan.leadPriority.text, because: plan.leadPriority.because, itemId: plan.leadPriority.itemId } : null);
 
+  // The greeting follows the clock the brief is read at, not the time it was written.
+  let clock = $state(Date.now());
+  $effect(() => {
+    const t = setInterval(() => (clock = Date.now()), 60_000);
+    return () => clearInterval(t);
+  });
+  const greeting = $derived(partOfDay(new Date(clock)));
+  // Today's calls, less busy holds: the one call count the whole page uses.
+  const calls = $derived(todayCalls(input.calendarToday));
+
   /** One line under the greeting, from what the day holds. */
   const sunSub = $derived.by(() => {
     const parts: string[] = [];
@@ -128,11 +139,17 @@
     }
     // The incident by its plain title ("HQ Cloud main is red"), never the sweep's repo slug.
     if (incident) parts.push(`The one fire: ${watchTitle(incident)}.`);
-    else if (!input.decisions.length) parts.push("Nothing needs you right now.");
+    else if (!input.decisions.length) {
+      // Same counts as the stats above: never "nothing needs you" beside unread DMs or open risks.
+      const dms = input.dmCount ?? 0;
+      if (dms) parts.push(`${dms} DM${dms === 1 ? "" : "s"} to read.`);
+      else if (input.risks.length) parts.push(`${input.risks.length} risk${input.risks.length === 1 ? "" : "s"} to watch.`);
+      else parts.push("Nothing needs you right now.");
+    }
     return parts.join(" ") || "A quiet start.";
   });
   const quietLine = $derived(
-    input.calendarToday.length ? `${input.calendarToday.length} call${input.calendarToday.length === 1 ? "" : "s"} today.` : "Nothing owed.",
+    calls.length ? `${calls.length} call${calls.length === 1 ? "" : "s"} today.` : "Nothing owed.",
   );
   // The sunrise card always shows the last 24 hours of this company's sessions.
   const timeline = $derived.by(() => {
@@ -161,7 +178,6 @@
       return { title: `${input.decisions.length} to decide today`, sections: [{ label: "", lines: input.decisions.map((d) => line(d.title)) }] };
     }
     if (key === "calls") {
-      const calls = input.calendarToday.filter((e) => !e.busy);
       return { title: `${calls.length} call${calls.length === 1 ? "" : "s"} today`, sections: [{ label: "", lines: calls.map((e) => line(e.title, clockLabel(e.start))) }] };
     }
     if (key === "dms") {
@@ -297,7 +313,7 @@
 
   <section class="b-top">
     <div class="b-hello">
-      <h1 class="b-greet">Morning{input.userName ? `, ${input.userName}` : ""}.</h1>
+      <h1 class="b-greet" data-testid="brief-greeting">{greeting}{input.userName ? `, ${input.userName}` : ""}.</h1>
       <div class="b-stats">
         {#each stats as st, i (st.key)}
           <div class="stat prov" class:zero={!st.n} role="group" aria-label="{st.n} {st.label}, {st.caption}" data-testid="brief-stat" data-stat={st.key} use:peek={{ state: briefState, content: () => statPeek(st.key), place: "below" }}>
@@ -324,7 +340,7 @@
         </div>
       {:else}
         <div class="nx-time">Free</div>
-        <div class="nx-detail"><div class="nx-who"><span class="names">{input.calendarToday.length ? "No more calls today" : "Nothing on the calendar"}</span></div></div>
+        <div class="nx-detail"><div class="nx-who"><span class="names">{calls.length ? "No more calls today" : "Nothing on the calendar"}</span></div></div>
       {/if}
       <!-- A quiet orbit: the day around you. On a call two nodes circle it, half a turn apart, so only one is ever in view (the panel shows about a third of the ring); otherwise it is still and empty. -->
       <svg class="orbit" class:live={next?.live} class:idle={!next} viewBox="0 0 120 120" aria-hidden="true">

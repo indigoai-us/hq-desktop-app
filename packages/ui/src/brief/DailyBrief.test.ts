@@ -300,4 +300,40 @@ describe("DailyBrief", () => {
     expect(writeText).toHaveBeenCalledWith(decisionPrompt(day().decisions[0]!));
     expect(onlaunch).not.toHaveBeenCalled();
   });
+
+  it("greets by the local clock it is read at, not the time the brief was made", () => {
+    // Owner report, 2026-10-16: "Morning, Corey." at 7:35 PM on a brief made that morning.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date(2026, 9, 8, 19, 35));
+      render({ input: { ...day(), userName: "Corey" } });
+      expect(q('[data-testid="brief-greeting"]')?.textContent).toBe("Evening, Corey.");
+      if (app) unmount(app);
+      app = null;
+      target.remove();
+      vi.setSystemTime(new Date(2026, 9, 8, 13, 5));
+      render({ input: { ...day(), userName: "Corey" } });
+      expect(q('[data-testid="brief-greeting"]')?.textContent).toBe("Afternoon, Corey.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not say nothing needs you beside unread DMs, and counts calls without busy holds", () => {
+    // Owner report, 2026-10-16: "15 DMs" next to "Nothing needs you right now",
+    // and "2 calls today" from two busy holds beside "NO CALLS".
+    const input: BriefInput = {
+      ...day(),
+      decisions: [],
+      risks: [],
+      dmCount: 15,
+      calendarToday: day().calendarToday.filter((e) => e.busy),
+    };
+    render({ input });
+    const text = target.textContent ?? "";
+    expect(text).not.toContain("Nothing needs you right now");
+    expect(text).toContain("15 DMs to read.");
+    expect(text).not.toMatch(/\d+ calls? today\./);
+    expect(q('[data-stat="calls"] .num')?.textContent).toBe("0");
+  });
 });

@@ -5,7 +5,8 @@
    * Create brief when there is no brief yet or the newest one is from an
    * earlier day, a secondary Refresh once today's brief exists. Same action
    * either way; while a run is in flight the button says so and is disabled.
-   * A blocked check shows its plain message and the fix beside it.
+   * A blocked check shows its plain message and the fix beside it, with
+   * the create button kept beside them so a fix made elsewhere is checked again.
    */
   import RailButton from "../common/button/RailButton.svelte";
   import type { BriefCreateRun } from "./brief-create.svelte.js";
@@ -42,6 +43,14 @@
     <RailButton icon="play" variant="primary" onclick={() => void runFix()} disabled={fixing} data-testid="brief-fix">
       {fixing ? "Working…" : BRIEF_FIX_LABEL[phase.fix]}
     </RailButton>
+    <!-- Stays available while blocked: after a fix made elsewhere, pressing it checks the bot again. -->
+    <RailButton
+      icon={control === "refresh" ? "refresh" : "plus"}
+      variant="secondary"
+      onclick={() => (oncreate ? oncreate() : void create.start())}
+      data-testid="brief-create"
+      data-control={control}
+    >{label}</RailButton>
   {:else}
     <RailButton
       icon={control === "refresh" ? "refresh" : "plus"}

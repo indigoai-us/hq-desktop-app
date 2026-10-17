@@ -11,7 +11,7 @@
    */
   import Tooltip from "../common/Tooltip.svelte";
   import RailButton from "../common/button/RailButton.svelte";
-  import { relativeRunLabel, stepRun, type BriefIndexEntry } from "./brief-runs.js";
+  import { missingNote, relativeRunLabel, stepRun, type BriefIndexEntry } from "./brief-runs.js";
 
   interface Props {
     entries: readonly BriefIndexEntry[];
@@ -95,7 +95,7 @@
   {/if}
 
   {#if missing.length}
-    <span class="miss" data-testid="brief-missing">Missing from this brief: {missing.join(", ")}</span>
+    <span class="miss" data-testid="brief-missing">{missingNote(missing)}</span>
   {/if}
 </div>
 

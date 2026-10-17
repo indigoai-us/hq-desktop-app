@@ -64,6 +64,11 @@
   let input = $state<BriefInput | null>(null);
   let housekeeping = $state<BriefHousekeeping | null>(null);
   let missing = $state<string[]>([]);
+  // The run Create brief is writing right now, if any.
+  const inFlightRunId = $derived.by(() => {
+    const p = run?.phase;
+    return p && (p.kind === "dispatching" || p.kind === "waiting" || p.kind === "running") ? p.runId : null;
+  });
   let failed = $state(false);
   let now = $state(new Date());
   let alive = true;
@@ -292,7 +297,8 @@
 </script>
 
 {#snippet runBar()}
-  <BriefRunBar {entries} {selectedRunId} {latestRunId} {now} {missing} onselect={(id) => void show(id)} />
+  <!-- A run still being written is not missing anything yet. -->
+  <BriefRunBar {entries} {selectedRunId} {latestRunId} {now} missing={inFlightRunId && inFlightRunId === selectedRunId ? [] : missing} onselect={(id) => void show(id)} />
 {/snippet}
 
 {#snippet createTool()}

@@ -116,12 +116,15 @@ describe("BriefRunsPage", () => {
     expect(onlaunch).toHaveBeenCalledWith(expect.any(String), "Remove the merged worktrees after checking for unpushed commits.");
   });
 
-  it("marks files a run is missing", async () => {
+  it("marks a run that is missing files in plain words, never by file name", async () => {
+    // Owner report, 2026-10-16: "Missing from this brief: brief-data.json, brief.json".
     const f = files();
     delete f[`workspace/brief/${NEW}/brief-data.json`];
     render(f);
     await settle();
-    expect(q("brief-missing")?.textContent).toContain("brief-data.json");
+    const note = q("brief-missing")?.textContent ?? "";
+    expect(note).toBe("Part of this brief did not finish, so some cards may be empty.");
+    expect(note).not.toMatch(/\.json/);
   });
 
   it("with no runs and a creator, shows the pre-dawn empty state with one Create brief button", async () => {

@@ -1,6 +1,6 @@
 // The priorities card takes the hero's slot; the sunrise takes the priorities card's slot.
 import { describe, expect, it } from "vitest";
-import { BAND_ROW_PX, bandRows, clockLabel, inLabel, nextCall, peekTop, placePeek, placePeekBelow, promoteMain, stackPeek, todayStats, withLine } from "./brief-layout.js";
+import { BAND_ROW_PX, bandRows, clockLabel, inLabel, nextCall, peekTop, placePeek, placePeekBelow, promoteMain, stackPeek, todayCalls, todayStats, withLine } from "./brief-layout.js";
 import type { BriefWidget } from "./brief-generate.js";
 
 const w = (kind: string, cols: number, rows: number, size = "M"): BriefWidget =>
@@ -179,5 +179,33 @@ describe("bandRows", () => {
     expect(bandRows(["c c c n n m", "c c c n n k", "c c c n n w"], 120)).toBe("");
     expect(bandRows(["s s n n i w", "s s n n a r"], 120)).toBe("");
     expect(bandRows(["a a b b c d", "e e b b c d", "f f f g g g"], 120)).toBe("");
+  });
+});
+
+describe("todayCalls", () => {
+  it("leaves busy holds out, so every call count on the page agrees (owner report, 2026-10-16: '2 calls today' beside 'NO CALLS')", () => {
+    const events = [
+      { id: "a", start: "2026-10-16T15:00:00Z", busy: true },
+      { id: "b", start: "2026-10-16T17:00:00Z", busy: true },
+      { id: "c", start: "2026-10-16T18:00:00Z" },
+    ];
+    expect(todayCalls(events).map((e) => e.id)).toEqual(["c"]);
+    expect(todayCalls(events.slice(0, 2))).toEqual([]);
+  });
+
+  it("the Calls stat counts the same calls", () => {
+    const stats = todayStats({
+      now: "2026-10-16T19:35:00Z",
+      decisions: [],
+      calendarToday: [
+        { start: "2026-10-16T15:00:00Z", busy: true },
+        { start: "2026-10-16T17:00:00Z", busy: true },
+      ],
+      dmCount: 15,
+      team: [],
+      risks: [],
+    });
+    expect(stats.find((s) => s.key === "calls")).toMatchObject({ n: 0, caption: "clear calendar" });
+    expect(stats.find((s) => s.key === "dms")).toMatchObject({ n: 15 });
   });
 });

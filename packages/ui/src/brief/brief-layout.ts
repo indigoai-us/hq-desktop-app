@@ -206,6 +206,15 @@ export function clockLabel(iso: string): string {
   return `${d.getHours() % 12 || 12}${m ? `:${String(m).padStart(2, "0")}` : ""} ${d.getHours() >= 12 ? "PM" : "AM"}`;
 }
 
+/**
+ * Today's calls: the calendar's events less its busy holds. Every count of
+ * calls on the page (the stat, the sunrise line, the day timeline, the next
+ * call panel) comes from this, so they can never disagree.
+ */
+export function todayCalls<T extends { busy?: boolean }>(events: readonly T[]): T[] {
+  return events.filter((e) => !e.busy);
+}
+
 export type TodayStatKey = "decide" | "calls" | "dms" | "risks";
 export interface TodayStat {
   key: TodayStatKey;
@@ -228,7 +237,7 @@ export function todayStats(input: {
   risks: readonly { severity: "incident" | "watch" }[];
   timeToClearMin?: number | null;
 }): TodayStat[] {
-  const calls = input.calendarToday.filter((e) => !e.busy);
+  const calls = todayCalls(input.calendarToday);
   const next = nextCall(calls, input.now);
   const clear = input.timeToClearMin ?? 0;
   const topDm = [...input.team].filter((t) => t.dmCount).sort((a, b) => (b.dmCount ?? 0) - (a.dmCount ?? 0))[0];

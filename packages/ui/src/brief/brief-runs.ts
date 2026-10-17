@@ -346,6 +346,16 @@ export const BRIEF_STALL_GRACE_MS = 30 * 60_000;
 export const BRIEF_WATCH_POLL_MS = 15_000;
 const STALL_MESSAGE = "Your brief has not reported progress in a while. HQ is still watching for it and will show it if it finishes.";
 export const BRIEF_POLL_MS = 2_000;
+/**
+ * Checking the bot and sending the job must finish within this. A bot list
+ * or send that never answers otherwise leaves "Waking your bot…" on screen
+ * for good (owner report, 2026-10-16).
+ */
+export const BRIEF_DISPATCH_TIMEOUT_MS = 60_000;
+export const BRIEF_DISPATCH_TIMEOUT_MESSAGE = "Your bot did not answer. Check that it is running, then try again.";
+/** How often a sent run asks the bot's conversation whether its turn failed. */
+export const BRIEF_BOT_FAILURE_POLL_MS = 10_000;
+
 
 /** One poll's reading: the status file text, null when absent, or a read error. */
 export type BriefPollReading = { text: string | null } | { error: string };
@@ -585,4 +595,17 @@ export function briefJobMessage(runId: string, company: string): string {
     `The company is ${co}, the one open in the HQ app; do not pick another company. ` +
     `Write workspace/brief/${runId}/status.json at every step and append workspace/brief/index.jsonl when the run ends.`
   );
+}
+
+/**
+ * The run bar's line for a brief whose files are not all there, in plain
+ * words: file names are for the log, never the page (owner report,
+ * 2026-10-16: "Missing from this brief: brief-data.json, brief.json").
+ * Null when nothing is missing.
+ */
+export function missingNote(missing: readonly string[]): string | null {
+  if (!missing.length) return null;
+  const core = missing.filter((f) => f === "brief.json" || f === "brief-data.json");
+  if (core.length >= 2) return "This brief did not finish. Create a new one to see it in full.";
+  return "Part of this brief did not finish, so some cards may be empty.";
 }
