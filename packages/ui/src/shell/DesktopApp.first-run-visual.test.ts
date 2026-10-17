@@ -351,7 +351,7 @@ describe("visual first run, flag on", () => {
     });
     expect(step()).toBe("done");
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
-    expect(q('[data-testid="first-run-talk"]')?.textContent).toContain("Talk to Biscuit");
+    expect(q('[data-testid="first-run-talk"]')?.textContent?.trim()).toBe("Open HQ");
 
     expect(sendDm).not.toHaveBeenCalled();
     q<HTMLButtonElement>('[data-testid="first-run-talk"]')!.click();
@@ -1478,7 +1478,7 @@ describe("visual first run: Bring in your context", () => {
     return { sendDm, scanCancel };
   }
 
-  /** Leave the takeover through Done ("Talk to Biscuit"). */
+  /** Leave the takeover through Done ("Open HQ"). */
   async function talk(): Promise<void> {
     expect(step()).toBe("done");
     await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));

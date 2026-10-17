@@ -33,7 +33,6 @@
     FIRST_RUN_DECISION_COPY as COPY,
     assistantNameIssue,
     decisionToolFor,
-    firstRunTalkLabel,
     normalizeAssistantName,
     runtimeLabel,
     toolSessionCount,
@@ -424,7 +423,7 @@
             ? FIRST_RUN_COPY.opening
             : creation.state === "creating"
               ? `Getting ${shownName} ready…`
-              : firstRunTalkLabel(shownName)}</button>
+              : FIRST_RUN_COPY.openHq}</button>
         </div>
       {/if}
     {:else if showBot}
