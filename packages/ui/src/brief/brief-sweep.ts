@@ -32,7 +32,7 @@
  */
 
 import { productName, repoShort } from "./brief-origin.js";
-import { briefCompanyUid, type BriefCompanyIdentity } from "./brief-company.js";
+import { briefCompanyUid, scopeBriefCompanyData, type BriefCompanyIdentity } from "./brief-company.js";
 import type {
   BriefFleetIncident,
   BriefInput,
@@ -121,7 +121,7 @@ export interface BriefSweep {
   }[];
   /** A meeting whose `hq meetings get` failed is written as `{ meeting, error }` with no start or counts. */
   meeting_signals?: { company?: string | null; meeting: string; start?: string | null; counts?: Record<string, number> | null; error?: string }[];
-  dms?: { from: string | null; from_uid?: string; is_agent?: boolean; at: string }[];
+  dms?: { company?: string | null; from: string | null; from_uid?: string; is_agent?: boolean; at: string }[];
   fleet?: {
     total?: number;
     by_status?: Record<string, number>;
@@ -312,6 +312,7 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
       const scoped = <T extends { company?: string | null }>(rows: T[] | undefined) => rows?.map(row => ({ ...row, company }));
       const part = sweepToInput({
         ...section,
+        company,
         generated_at: section.generated_at ?? sweep.generated_at,
         prs: scoped(section.prs),
         meeting_signals: scoped(section.meeting_signals),
@@ -355,6 +356,10 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
       } : null,
     };
   }
+  const rawPrCount = sweep.prs?.length;
+  sweep = { ...sweep, main_health: Object.fromEntries(Object.entries(sweep.main_health ?? {}).map(([repo, health]) => [repo, isMainHealthRow(health) ? { ...health, company: health.company === undefined ? sweep.company : health.company } : health])) };
+  sweep = (scopeBriefCompanyData(sweep, opts.companies ?? opts.companyUid) ?? {}) as BriefSweep;
+  if (rawPrCount !== sweep.prs?.length) sweep.prs_summary = null;
   const org = opts.org ?? "indigoai-us";
   const prs = sweep.prs ?? [];
   const companyUid = (company: unknown) => briefCompanyUid(company, opts.companies ?? opts.companyUid);
@@ -501,10 +506,12 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
   const dmsToday = (sweep.dms ?? []).filter((m) => localDay(m.at) === opts.day || isDay(m.at, opts.day));
   for (const m of dmsToday) {
     const name = (typeof m.from === "string" ? m.from : "").trim();
-    if (!name || name === "assistant" || name === opts.selfName?.trim() || seen.has(name)) continue;
+    const memberKey = JSON.stringify([companyUid(m.company), name]);
+    if (!name || name === "assistant" || name === opts.selfName?.trim() || seen.has(memberKey)) continue;
     const agent = m.is_agent === true || (m.from_uid ?? "").startsWith("agt_");
-    const count = dmsToday.filter((x) => x.from === m.from).length;
-    seen.set(name, {
+    const count = dmsToday.filter((x) => x.from === m.from && companyUid(x.company) === companyUid(m.company)).length;
+    seen.set(memberKey, {
+      companyUid: companyUid(m.company),
       id: m.from_uid || name,
       name: name.split(/\s+/)[0]!,
       doing: agent ? "Agent" : "Messaged you",
@@ -555,8 +562,9 @@ export function sweepToInput(sweep: BriefSweep, opts: SweepOptions): SweepInput 
       };
     });
 
-  const fleetIncident = fleetIncidentOf(sweep.fleet, sweep.generated_at, { companyUid: opts.companyUid, repo: null });
-  if (fleetIncident) fleetIncident.companyUid = opts.companyUid;
+  const fleetCompanyUid = companyUid(sweep.company);
+  const fleetIncident = fleetIncidentOf(sweep.fleet, sweep.generated_at, { companyUid: fleetCompanyUid, repo: null });
+  if (fleetIncident) fleetIncident.companyUid = fleetCompanyUid;
 
   const today = sweep.window?.today;
   return {

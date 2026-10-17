@@ -1,4 +1,4 @@
-import { briefCompanyUid, type BriefCompanyScope } from "./brief-company.js";
+import { briefCompanyUid, scopeBriefCompanyData, type BriefCompanyScope } from "./brief-company.js";
 /**
  * Parsers for a run's synthesized files: `brief.json` (items with launch
  * prompts, today's priorities, the owner's widget prefs, the week) and
@@ -201,10 +201,10 @@ function parseTodo(raw: unknown): BriefTodo[] {
 
 /** `brief.json`, or null when it is not a JSON object. */
 export function parseBriefItems(text: string, scope: BriefCompanyScope): BriefRunItems | null {
-  const root = parseJson(text);
+  let root = parseJson(text);
   if (!root) return null;
   if (root.mode === "person") {
-    const base = parseBriefItems(JSON.stringify({ ...root, mode: "personal", companies: undefined, personal: undefined, items: undefined }), scope)!;
+    const base = parseBriefItems(JSON.stringify({ ...root, company: null, mode: "personal", companies: undefined, personal: undefined, items: undefined }), scope)!;
     const sections = [[null, root.personal], ...Object.entries(rec(root.companies))] as [string | null, unknown][];
     for (const [company, raw] of sections) {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
@@ -233,8 +233,10 @@ export function parseBriefItems(text: string, scope: BriefCompanyScope): BriefRu
     }
     return base;
   }
+  root = scopeBriefCompanyData(root, scope) as typeof root;
+  if (!root) return null;
   const items = root.items;
-  const companyUid = briefCompanyUid(null, scope);
+  const companyUid = briefCompanyUid(root.company, scope);
   const origin = (i: Record<string, unknown>) => originOf(i, scope);
 
   // Carry first: a decision it continues gets `carriedBriefs`.
@@ -315,7 +317,7 @@ export function parseBriefItems(text: string, scope: BriefCompanyScope): BriefRu
     const prompt = str(w.prompt);
     const ageHours = num(w.age_hours);
     const kind = oneOf(WAIT_KINDS, w.kind);
-    const hasOrigin = !!(str(w.repo) || str(rec(w.origin).repo) || str(w.product) || str(rec(w.origin).product));
+    const hasOrigin = !!((Array.isArray(scope) && origin(w).companyUid) || str(w.repo) || str(rec(w.origin).repo) || str(w.product) || str(rec(w.origin).product));
     waiting.push({
       id: str(w.id) || `brief-waiting-${n}`,
       who,

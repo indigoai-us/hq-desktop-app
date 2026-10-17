@@ -6,6 +6,7 @@
 <section class="welcome" data-testid="brief-welcome" aria-label="Getting started">
   <h2>Welcome to your Daily Brief</h2>
   {#if welcome.gettingStarted}<p>{welcome.gettingStarted}</p>{/if}
+  {#if welcome.error}<p data-testid="brief-welcome-error">{welcome.error}</p>{/if}
   <dl>
     <div><dt>Local sessions</dt><dd>{welcome.sessions}</dd></div>
     <div><dt>Imported conversations</dt><dd>{welcome.conversations}</dd></div>

@@ -9,6 +9,7 @@ export interface BriefWelcome {
   connectCompany: boolean;
   gettingStarted?: string;
   nextSteps?: string[];
+  error?: string;
 }
 const object = (value: unknown): Record<string, unknown> | null => value != null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
@@ -16,7 +17,7 @@ const count = (value: unknown): number => typeof value === "number" && Number.is
 /** Welcome is optional. A failed enrichment must never hide the useful brief. */
 export function parseWelcome(value: unknown): BriefWelcome | null {
   const row = object(value);
-  if (!row || row.error || (row.first_run !== true && typeof row.getting_started !== "string")) return null;
+  if (!row || (row.first_run !== true && typeof row.getting_started !== "string" && typeof row.error !== "string")) return null;
   const imported = object(row.import);
   const sessions = object(row.sessions);
   return {
@@ -24,10 +25,25 @@ export function parseWelcome(value: unknown): BriefWelcome | null {
     conversations: count(imported?.conversations),
     sessions: count(sessions?.total),
     apps: Array.isArray(row.apps) ? row.apps.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : [],
-    connectCompany: Array.isArray(row.next_steps) && row.next_steps.some(v => object(v)?.kind === "connect_company"),
+    connectCompany: typeof row.getting_started === "string" || (Array.isArray(row.next_steps) && row.next_steps.some(v => object(v)?.kind === "connect_company")),
     ...(typeof row.getting_started === "string" ? {gettingStarted: row.getting_started} : {}),
+    ...(typeof row.error === "string" ? {error: row.error.replace(/\s+/g, " ").trim()} : {}),
     ...(Array.isArray(row.next_steps) && row.next_steps.some(v => typeof object(v)?.reason === "string") ? { nextSteps: row.next_steps.map(v => object(v)?.reason).filter((v): v is string => typeof v === "string") } : {}),
   };
+}
+
+export async function readRunFailedCompanies(source: BriefSweepSource, runId: string): Promise<string[]> {
+  const failed = new Set<string>();
+  for (const name of ["brief.json", "brief-data.json"] as const) {
+    try {
+      const text = await source.readHqFile(briefRunPath(runId, name));
+      const sections = text ? object(object(JSON.parse(text))?.companies) : null;
+      for (const [company, section] of Object.entries(sections ?? {})) {
+        if (object(section)?.error) failed.add(company);
+      }
+    } catch { /* A partial run can still have useful sections. */ }
+  }
+  return [...failed];
 }
 
 export async function readRunWelcome(source: BriefSweepSource, runId: string): Promise<BriefWelcome | null> {

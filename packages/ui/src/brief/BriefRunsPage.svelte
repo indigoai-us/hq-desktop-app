@@ -11,7 +11,7 @@
   import BriefWelcome from "./BriefWelcome.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import { briefSections } from "./brief-sections.js";
-  import { readRunWelcome, readRunExclusions, type BriefExclusion, type BriefWelcome as Welcome } from "./brief-welcome.js";
+  import { readRunWelcome, readRunExclusions, readRunFailedCompanies, type BriefExclusion, type BriefWelcome as Welcome } from "./brief-welcome.js";
   import type { BriefActions } from "./brief-action-cards.js";
   import BriefRunBar from "./BriefRunBar.svelte";
   import BriefDawn from "./BriefDawn.svelte";
@@ -72,7 +72,8 @@
   let input = $state<BriefInput | null>(null);
   let welcome = $state<Welcome | null>(null);
   let exclusions = $state<BriefExclusion[]>([]);
-  const sections = $derived(input ? briefSections(input, companies.filter(c => !exclusions.some(e => e.company === c.uid || e.company === c.slug))) : []);
+  let failedCompanies = $state<string[]>([]);
+  const sections = $derived(input ? briefSections(input, companies.filter(c => !failedCompanies.some(id => id === c.uid || id === c.slug) && !exclusions.some(e => e.company === c.uid || e.company === c.slug))) : []);
   let housekeeping = $state<BriefHousekeeping | null>(null);
   let missing = $state<string[]>([]);
   let failed = $state(false);
@@ -100,7 +101,9 @@
   // without the append (web, harness, demo) log nothing.
   const appendLog = demo ? null : adapter.files?.appendBriefLog?.bind(adapter.files);
   const logBrief = createBriefLogger(appendLog);
+  let clearedItemIds = $state<string[]>([]);
   function logItem(event: BriefItemEvent): void {
+    if (!clearedItemIds.includes(event.itemId)) clearedItemIds = [...clearedItemIds, event.itemId];
     if (shownRunId) logBrief({ ...event, runId: shownRunId });
   }
 
@@ -139,10 +142,13 @@
       const hk = runId && source ? await readRunHousekeeping(source, runId) : null;
       const gettingStarted = runId && source ? await readRunWelcome(source, runId) : null;
       const notIncluded = runId && source ? await readRunExclusions(source, runId) : [];
+      const companyFailures = runId && source ? await readRunFailedCompanies(source, runId) : [];
       if (!alive || mine !== seq) return;
       welcome = gettingStarted;
       exclusions = notIncluded;
+      failedCompanies = companyFailures;
       input = day;
+      if (shownRunId !== runId) clearedItemIds = [];
       shownRunId = runId;
       if (runId) logBrief({ event: "shown", runId });
       housekeeping = hk;
@@ -348,11 +354,20 @@
     <aside class="brief-exclusions" data-testid="brief-exclusions" aria-label="Not included">
       {#each exclusions as excluded}
         {@const excludedCompany = companies.find(c => c.uid === excluded.company || c.slug === excluded.company)}
-        <p><CompanyLabel name={excludedCompany?.label ?? excluded.company} companyUid={excludedCompany?.uid} iconUrl={excludedCompany?.iconUrl} />: {excluded.reason}</p>
+        <p><CompanyLabel name={excludedCompany?.label ?? excluded.company} companyUid={excludedCompany?.uid} iconUrl={excludedCompany?.iconUrl} /> is not included. Open HQ in that company to include it.</p>
+      {/each}
+    </aside>
+  {/if}
+  {#if failedCompanies.length}
+    <aside class="brief-exclusions" data-testid="brief-company-failures">
+      {#each failedCompanies as id}
+        {@const failedCompany = companies.find(c => c.uid === id || c.slug === id)}
+        <p><CompanyLabel name={failedCompany?.label ?? id} companyUid={failedCompany?.uid} iconUrl={failedCompany?.iconUrl} /> could not be included this time.</p>
       {/each}
     </aside>
   {/if}
   {#if sections.length}
+    <DailyBrief summaryOnly {clearedItemIds} dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {actions} onlog={logItem} header={entries.length || run ? runBar : undefined} />
     <div class="brief-sections" data-testid="brief-sections">
       {#each sections as section, index (section.id)}
         <section aria-label={section.label} data-company={section.id}>
@@ -361,7 +376,7 @@
               <CompanyLabel name={section.label} companyUid={section.id} iconUrl={companies.find(c => c.uid === section.id)?.iconUrl} />
             {/if}
           </h2>
-          <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} input={section.input} {companies} {onlaunch} housekeeping={index === 0 ? housekeeping : null} {actions} onlog={logItem} header={index === 0 && (entries.length || run) ? runBar : undefined} />
+          <DailyBrief sectionOnly dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} input={section.input} {companies} {onlaunch} housekeeping={index === 0 ? housekeeping : null} {actions} onlog={logItem} />
         </section>
       {/each}
     </div>

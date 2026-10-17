@@ -15690,7 +15690,7 @@
               onopenthread={openBriefDm}
               onopenmeetings={() => void navigate({ kind: "meetings" })}
               actions={briefActions}
-              onconnectcompany={openWelcomeSetup}
+              onconnectcompany={() => (newCompanyOpen = true)}
               onshown={(runId) => (briefShownRunId = runId)}
             />
           {/snippet}

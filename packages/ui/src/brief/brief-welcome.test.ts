@@ -12,8 +12,9 @@ describe("welcome edition", () => {
   it("reads personal welcome content in the skill's schema", () => {
     expect(parseWelcome({ first_run: true, import: { skills: 4, conversations: 12 }, sessions: { total: 31 }, apps: ["Claude Code", "Codex"], next_steps: [{kind: "connect_company"}] })).toEqual({ skills: 4, conversations: 12, sessions: 31, apps: ["Claude Code", "Codex"], connectCompany: true });
   });
-  it("ignores absent, failed and malformed welcome data", () => {
-    for (const value of [null, {}, [], { error: "unavailable" }, "welcome"]) expect(parseWelcome(value)).toBeNull();
+  it("ignores absent and malformed welcome data while retaining enrichment errors", () => {
+    for (const value of [null, {}, [], "welcome"]) expect(parseWelcome(value)).toBeNull();
+    expect(parseWelcome({error: "unavailable"})).toMatchObject({error: "unavailable"});
     expect(parseWelcome({first_run: true, apps: {}, sessions: {total: -5}, next_steps: "bad"})).toEqual({skills: 0, conversations: 0, sessions: 0, apps: [], connectCompany: false});
   });
   it("falls back to raw sweep welcome when synthesized output omits it", async () => {
