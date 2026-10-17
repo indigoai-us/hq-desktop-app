@@ -16,6 +16,17 @@ function parseStructuredOAuthError(
   }
 }
 
+const SIGN_IN_TIMEOUT_COPY = 'Sign-in took too long. Choose a provider to try again.';
+
+/**
+ * True when the person is shown "Sign-in took too long" for this error. A
+ * structured or state-mismatch error that happens to say "expired" shows its
+ * own message, so it is not a timeout.
+ */
+export function isSignInTimeout(message: string): boolean {
+  return mapSignInError(message) === SIGN_IN_TIMEOUT_COPY;
+}
+
 export function mapSignInError(message: string, provider?: SignInProvider): string {
   const structured = parseStructuredOAuthError(message);
 
@@ -50,7 +61,7 @@ export function mapSignInError(message: string, provider?: SignInProvider): stri
   }
 
   if (/expired|timed out waiting for sign-in/i.test(message)) {
-    return 'Sign-in took too long. Choose a provider to try again.';
+    return SIGN_IN_TIMEOUT_COPY;
   }
 
   if (/token exchange/i.test(message)) {

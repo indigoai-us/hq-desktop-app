@@ -1,3 +1,5 @@
+import { beforeEach } from "vitest";
+
 /**
  * Node 22+ exposes a global `localStorage` getter that returns undefined
  * unless `--localstorage-file` is set. That shadows happy-dom's Storage and
@@ -44,3 +46,10 @@ function installMemoryLocalStorage(): void {
 }
 
 installMemoryLocalStorage();
+
+// Each test is a new window. The shell keeps per-window state in
+// sessionStorage (the welcome report marker, the update-card snooze), so a
+// marker left by one test must not change the next one.
+beforeEach(() => {
+  if (typeof window !== "undefined") window.sessionStorage?.clear();
+});

@@ -46,6 +46,7 @@ mod launchd_task;
 mod meet_native;
 
 mod boot_watchdog;
+mod first_run_log;
 mod commands;
 mod app_version;
 mod deep_link;
@@ -357,6 +358,11 @@ fn main() {
     #[cfg(target_os = "windows")]
     windows_update::run_helper_if_requested();
 
+    // A build whose updater is off must not be replaced by the HQ hook that
+    // updates the desktop app from inside a Claude run this app starts
+    // (PR #1670). Set before any thread exists; children inherit it.
+    updater::export_ensure_desktop_hook_off_env();
+
     // CI-only probe entrypoint, gated on the non-default `sync-cancel-probe`
     // feature. The dispatch — including its process termination — lives in
     // `commands::process` so the only process exit in this file stays the Windows
@@ -412,6 +418,7 @@ fn main() {
         "startup",
         &format!("app version {} (source: {:?})", app_version::current(), app_version::source()),
     );
+    first_run_log::shell(first_run_log::ShellEvent::Launch, "process-start");
     util::feature_gate::set_email_claim_fetcher(|| {
         Box::pin(async {
             let tokens = commands::cognito::get_tokens().await.ok().flatten()?;

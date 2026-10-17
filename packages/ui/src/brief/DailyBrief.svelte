@@ -39,6 +39,8 @@
   import BriefWeekArc from "./BriefWeekArc.svelte";
   import BriefHousekeeping from "./BriefHousekeeping.svelte";
   import BriefActionCard from "./BriefActionCard.svelte";
+  import BriefConnectApps from "./BriefConnectApps.svelte";
+  import { getWelcomeAiApps } from "./welcome-ai-apps.js";
   import { actionCardData, type BriefActions } from "./brief-action-cards.js";
   import type { Snippet } from "svelte";
   import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
@@ -277,6 +279,9 @@
       allCards = !allCards;
     }
   }
+
+  /** Inside the welcome report: "Connect your AI apps" after the action cards. */
+  const welcomeAiApps = getWelcomeAiApps();
 </script>
 
 <svelte:window onkeydown={onkey} />
@@ -452,6 +457,11 @@
         />
       {/each}
     </section>
+  {/if}
+
+  {#if welcomeAiApps?.current}
+    {@const connect = welcomeAiApps.current}
+    <BriefConnectApps detect={connect.detect} cli={connect.cli} suggest={connect.suggest} session={connect.session} />
   {/if}
 
   {#if notShown.length}
