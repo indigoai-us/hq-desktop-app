@@ -71,6 +71,16 @@ const toggle = () =>
   host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-toggle"]');
 
 describe("Settings > HQ Anywhere", () => {
+  it.each(["missing", "failed", "true"])("shows an operable switch for a %s flag", async (state) => {
+    const { adapter } = createAdapter({ resolveFlag: async () => {
+      if (state === "failed") throw new Error("flag lookup failed");
+      return ok({ enabled: state === "true", configured: state !== "missing" });
+    } });
+    render(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+  });
+
+
   it("hides the row when the adapter has no identity capability", async () => {
     const adapterWithoutIdentity = { settings: {} } as unknown as PlatformAdapter;
     render(adapterWithoutIdentity);
@@ -209,7 +219,7 @@ describe("Settings > HQ Anywhere", () => {
     expect(host.querySelector('[data-testid="hq-anywhere-setting-retry"]')).toBeNull();
   });
 
-  it("hides the row and skips the person-setting read when the rollout flag is off", async () => {
+  it("shows an unavailable switch and skips setting writes when explicitly killed", async () => {
     let releaseFlag!: () => void;
     let flagSettled = false;
     const flagWait = new Promise<void>((resolve) => {
@@ -231,17 +241,19 @@ describe("Settings > HQ Anywhere", () => {
     render(adapter);
 
     await vi.waitFor(() => expect(resolveFeatureFlagStatus).toHaveBeenCalledTimes(1));
-    expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull();
+    expect(toggle()?.disabled).toBe(true);
     releaseFlag();
     await vi.waitFor(() => expect(flagSettled).toBe(true));
 
-    expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull();
+    expect(toggle()?.disabled).toBe(true);
+    expect(host.textContent).toContain("HQ Anywhere is turned off for your account right now.");
+    toggle()!.click();
     expect(getHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
   });
 
-  it("hides the row when the rollout flag turns off while Settings stays open", async () => {
+  it("disables the visible row when the kill switch turns off while Settings stays open", async () => {
     let flagState = ok({ enabled: true, configured: true });
     let onFeatureChange: ((result: AdapterResult<boolean>) => void) | undefined;
     const unsubscribe = vi.fn();
@@ -268,7 +280,7 @@ describe("Settings > HQ Anywhere", () => {
     onFeatureChange(ok(false));
 
     await vi.waitFor(() =>
-      expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull(),
+      expect(toggle()?.disabled).toBe(true),
     );
     expect(getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();

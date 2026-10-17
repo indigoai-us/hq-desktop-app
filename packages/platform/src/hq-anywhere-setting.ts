@@ -46,16 +46,16 @@ function publishGlobalRuntimeStatus(
 const pauseFor = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
-/** Missing, discovered, archived, disabled, or unreadable flags fail closed and hide the setting. */
+/** HQ Anywhere is GA; only a configured, explicitly false flag kills the runtime. */
 export async function hqAnywhereRuntimeEnabled(
   identity: IdentityApi,
 ): Promise<boolean> {
   try {
     const result = await identity.resolveFeatureFlagStatus?.(HQ_ANYWHERE_RUNTIME_FLAG);
-    return result?.ok === true && result.value.configured && result.value.enabled;
+    return !(result?.ok === true && result.value.configured === true && result.value.enabled === false);
   } catch (error) {
     console.warn("[hq-anywhere] runtime flag lookup failed:", error);
-    return false;
+    return true;
   }
 }
 
@@ -127,7 +127,9 @@ export async function setHqAnywhereGlobalRuntime(
   try {
     result = settings.syncHqAnywhereGlobal
       ? await retryHqAnywhereRequest(
-          () => settings.syncHqAnywhereGlobal!(enabled),
+          async () => (await hqAnywhereRuntimeEnabled(identity))
+            ? settings.syncHqAnywhereGlobal!(enabled)
+            : ok(undefined),
           options,
         )
       : unavailable("hq-anywhere-global-runtime-unavailable");

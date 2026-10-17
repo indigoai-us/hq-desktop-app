@@ -2136,6 +2136,17 @@ describe('onboarding launch handoff', () => {
       .toBe(false);
   });
 
+  it.each(['missing', 'failed'])('shows the ready choice with a %s flag', async (state) => {
+    onboardingFlags.resolveFeatureFlagStatus.mockImplementation(async () => {
+      if (state === 'failed') throw new Error('flag unavailable');
+      return { ok: true, value: { enabled: false, configured: false } };
+    });
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+    await flushUntil(() => host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.disabled === false);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.disabled).toBe(false);
+  });
+
   it('hides HQ Anywhere during onboarding when the admin rollout flag is off', async () => {
     onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });
     mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);

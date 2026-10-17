@@ -9,19 +9,19 @@ import {
 } from "./hq-anywhere-setting.js";
 
 describe("HQ Anywhere setting support", () => {
-  it("fails closed unless the rollout flag is explicitly configured and enabled", async () => {
+  it("enables GA for a missing flag and an explicitly enabled flag", async () => {
     const identity = {
       resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: false })),
     } as unknown as PlatformAdapter["identity"];
 
-    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(false);
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
     expect(identity.resolveFeatureFlagStatus).toHaveBeenCalledWith("hq-anywhere-runtime");
 
     identity.resolveFeatureFlagStatus = vi.fn(async () => ok({ enabled: true, configured: true }));
     await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
   });
 
-  it("logs an unreadable rollout flag while failing closed", async () => {
+  it("logs an unreadable flag while keeping GA enabled", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const identity = {
       resolveFeatureFlagStatus: vi.fn(async () => {
@@ -29,12 +29,26 @@ describe("HQ Anywhere setting support", () => {
       }),
     } as unknown as PlatformAdapter["identity"];
 
-    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(false);
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
     expect(warn).toHaveBeenCalledWith(
       "[hq-anywhere] runtime flag lookup failed:",
       expect.any(Error),
     );
     warn.mockRestore();
+  });
+
+  it.each(["missing", "unreadable", "no resolver"])("reconciles startup for %s flags", async (state) => {
+    const identity = (state === "no resolver" ? {} : {
+      resolveFeatureFlagStatus: vi.fn(async () => state === "unreadable"
+        ? failure("network", "unavailable")
+        : ok({ enabled: false, configured: false })),
+    }) as unknown as PlatformAdapter["identity"];
+    const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
+    const settings = {
+      getHqAnywherePersonSetting: vi.fn(async () => ok(true)), syncHqAnywhereGlobal,
+    } as unknown as PlatformAdapter["settings"];
+    await ensureHqAnywhereGlobalRuntime(identity, settings);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true);
   });
 
   it("retries a setting request three times with increasing backoff", async () => {
@@ -139,6 +153,20 @@ describe("HQ Anywhere setting support", () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  it.each([true, false])("stops runtime retries when killed during backoff (saved choice %s)", async (enabled) => {
+    let killed = false;
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: !killed, configured: true })),
+    } as unknown as PlatformAdapter["identity"];
+    const syncHqAnywhereGlobal = vi.fn(async () => failure("network", "temporary"));
+    const settings = { syncHqAnywhereGlobal } as unknown as PlatformAdapter["settings"];
+    const result = await setHqAnywhereGlobalRuntime(identity, settings, enabled, {
+      pause: async () => { killed = true; },
+    });
+    expect(result).toEqual(ok(undefined));
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(1);
   });
 
   it("retries a global runtime change three times with backoff", async () => {

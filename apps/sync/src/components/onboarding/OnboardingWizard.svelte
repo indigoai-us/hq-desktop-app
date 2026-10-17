@@ -3356,8 +3356,8 @@
 
   async function prepareHqAnywhereSetting(): Promise<void> {
     const enabled = await resolveHqAnywhereRuntimeEnabled(onboardingFeatureFlags.identity);
+    hqAnywhereRuntimeEnabled = enabled;
     if (!enabled) return;
-    hqAnywhereRuntimeEnabled = true;
     await loadHqAnywhereSetting();
   }
 

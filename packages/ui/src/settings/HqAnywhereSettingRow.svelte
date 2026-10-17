@@ -18,6 +18,7 @@
 
   let { adapter = null }: Props = $props();
   let available = $state(false);
+  let flagLoaded = $state(false);
   let loaded = $state(false);
   let enabled = $state(false);
   let loading = $state(false);
@@ -41,6 +42,7 @@
 
       const wasAvailable = available;
       available = enabled;
+      flagLoaded = true;
       if (!enabled) {
         loaded = false;
         setupRunning = false;
@@ -114,7 +116,7 @@
   }
 
   async function saveSetting(value: boolean): Promise<void> {
-    if (!adapter || !loaded || loading || saving || setupRunning) return;
+    if (!adapter || !available || !loaded || loading || saving || setupRunning) return;
     const previous = enabled;
     enabled = value;
     saving = true;
@@ -198,11 +200,13 @@
   }
 </script>
 
-{#if available}
+{#if adapter?.identity}
   <div class="setting-row" data-testid="hq-anywhere-setting-row">
     <div class="copy">
       <div class="label">HQ Anywhere</div>
-      <div class="hint">Use your HQ context in Claude Code, Codex, ChatGPT and Grok</div>
+      <div class="hint">{flagLoaded && !available
+        ? "HQ Anywhere is turned off for your account right now."
+        : "Use your HQ context in Claude Code, Codex, ChatGPT and Grok"}</div>
     </div>
     <button
       type="button"
@@ -213,10 +217,12 @@
       aria-label="HQ Anywhere"
       aria-busy={loading || saving || setupRunning}
       data-testid="hq-anywhere-setting-toggle"
-      disabled={!loaded || loading || saving || setupRunning}
+      disabled={!available || !loaded || loading || saving || setupRunning}
       onclick={() => void saveSetting(!enabled)}
     ></button>
-    {#if loading}
+    {#if flagLoaded && !available}
+      <!-- The unavailable explanation is in the row copy above. -->
+    {:else if loading}
       <span class="status" role="status" aria-live="polite">Loading…</span>
     {:else if saving}
       <span class="status" role="status" aria-live="polite">Saving…</span>
