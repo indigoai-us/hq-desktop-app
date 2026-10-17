@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { failure, ok, type PlatformAdapter } from "./adapter.js";
 import {
   ensureHqAnywhereGlobalRuntime,
+  hqAnywhereGlobalRuntimeAllowed,
   hqAnywhereRuntimeEnabled,
   retryHqAnywhereRequest,
   setHqAnywhereGlobalRuntime,
@@ -9,16 +10,25 @@ import {
 } from "./hq-anywhere-setting.js";
 
 describe("HQ Anywhere setting support", () => {
+  it.each(["missing", "failed", "off", "on"])("preserves onboarding rollout semantics for %s", async (state) => {
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(async () => state === "failed"
+        ? failure("network", "unavailable")
+        : ok({ configured: state !== "missing", enabled: state === "on" })),
+    } as unknown as PlatformAdapter["identity"];
+    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(state === "on");
+  });
+
   it("enables GA for a missing flag and an explicitly enabled flag", async () => {
     const identity = {
       resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: false })),
     } as unknown as PlatformAdapter["identity"];
 
-    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
+    await expect(hqAnywhereGlobalRuntimeAllowed(identity)).resolves.toBe(true);
     expect(identity.resolveFeatureFlagStatus).toHaveBeenCalledWith("hq-anywhere-runtime");
 
     identity.resolveFeatureFlagStatus = vi.fn(async () => ok({ enabled: true, configured: true }));
-    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
+    await expect(hqAnywhereGlobalRuntimeAllowed(identity)).resolves.toBe(true);
   });
 
   it("logs an unreadable flag while keeping GA enabled", async () => {
@@ -29,7 +39,7 @@ describe("HQ Anywhere setting support", () => {
       }),
     } as unknown as PlatformAdapter["identity"];
 
-    await expect(hqAnywhereRuntimeEnabled(identity)).resolves.toBe(true);
+    await expect(hqAnywhereGlobalRuntimeAllowed(identity)).resolves.toBe(true);
     expect(warn).toHaveBeenCalledWith(
       "[hq-anywhere] runtime flag lookup failed:",
       expect.any(Error),

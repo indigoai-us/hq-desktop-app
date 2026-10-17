@@ -2136,17 +2136,6 @@ describe('onboarding launch handoff', () => {
       .toBe(false);
   });
 
-  it.each(['missing', 'failed'])('shows the ready choice with a %s flag', async (state) => {
-    onboardingFlags.resolveFeatureFlagStatus.mockImplementation(async () => {
-      if (state === 'failed') throw new Error('flag unavailable');
-      return { ok: true, value: { enabled: false, configured: false } };
-    });
-    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
-    await flushUntil(() => host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.disabled === false);
-    expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.disabled).toBe(false);
-  });
-
   it('hides HQ Anywhere during onboarding when the admin rollout flag is off', async () => {
     onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });
     mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
@@ -2156,17 +2145,6 @@ describe('onboarding launch handoff', () => {
     expect(host.querySelector('[data-testid="ready-hq-anywhere"]')).toBeNull();
     expect(tauri.invoke).not.toHaveBeenCalledWith('get_hq_anywhere_person_setting');
     expect(tauri.invoke).not.toHaveBeenCalledWith('put_hq_anywhere_person_setting', expect.anything());
-    expect(tauri.invoke).not.toHaveBeenCalledWith('set_hq_anywhere_global_install', expect.anything());
-  });
-
-  it('saves an onboarding opt-out without uninstalling a manual CLI setup', async () => {
-    hqAnywhereValue = true;
-    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
-    await flushUntil(() => host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.disabled === false);
-    host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')!.click();
-    await flushUntil(() => tauri.invoke.mock.calls.some(([command]) => command === 'put_hq_anywhere_person_setting'));
-    await flush();
-    expect(tauri.invoke).toHaveBeenCalledWith('put_hq_anywhere_person_setting', { value: false });
     expect(tauri.invoke).not.toHaveBeenCalledWith('set_hq_anywhere_global_install', expect.anything());
   });
 
@@ -2192,8 +2170,7 @@ describe('onboarding launch handoff', () => {
     await flushUntil(() => !choice.disabled);
 
     expect(tauri.invoke).toHaveBeenCalledWith('put_hq_anywhere_person_setting', { value: false });
-    expect(tauri.invoke).not.toHaveBeenCalledWith('set_hq_anywhere_global_install', { enabled: false });
-    expect(tauri.invoke.mock.calls.filter(([command]) => command === 'set_hq_anywhere_global_install')).toHaveLength(1);
+    expect(tauri.invoke).toHaveBeenLastCalledWith('set_hq_anywhere_global_install', { enabled: false });
     expect(choice.checked).toBe(false);
   });
 

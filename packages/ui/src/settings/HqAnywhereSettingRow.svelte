@@ -4,7 +4,7 @@
     ensureHqAnywhereGlobalRuntime,
     HQ_ANYWHERE_RUNTIME_FLAG,
     getHqAnywherePersonSetting,
-    hqAnywhereRuntimeEnabled,
+    hqAnywhereGlobalRuntimeAllowed,
     putHqAnywherePersonSetting,
     setHqAnywhereGlobalRuntime,
     subscribeHqAnywhereGlobalRuntimeStatus,
@@ -52,7 +52,7 @@
         loaded = false;
         return;
       }
-      const enabled = await hqAnywhereRuntimeEnabled(identity);
+      const enabled = await hqAnywhereGlobalRuntimeAllowed(identity);
       if (!active || revision !== flagRevision) return;
 
       const wasAvailable = available;

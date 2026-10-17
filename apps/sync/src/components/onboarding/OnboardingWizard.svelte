@@ -3356,14 +3356,13 @@
 
   async function prepareHqAnywhereSetting(): Promise<void> {
     const enabled = await resolveHqAnywhereRuntimeEnabled(onboardingFeatureFlags.identity);
-    hqAnywhereRuntimeEnabled = enabled;
     if (!enabled) return;
+    hqAnywhereRuntimeEnabled = true;
     await loadHqAnywhereSetting();
   }
 
   async function configureHqAnywhereGlobalRuntime(value: boolean): Promise<void> {
-    // Only the explicit Settings switch may remove a global CLI setup.
-    if (!value || hqAnywhereSettingUp) return;
+    if (hqAnywhereSettingUp) return;
     hqAnywhereSettingUp = true;
     hqAnywhereSettingError = false;
     hqAnywhereRetryValue = null;
