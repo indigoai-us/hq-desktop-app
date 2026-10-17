@@ -331,7 +331,9 @@ describe("Today's priorities (18), folded into the main card", () => {
     expect(items.priorities[0]).toEqual({ n: 1, text: "Priority 1", because: "because 1", itemId: "d1" });
     render(base({ priorities: items.priorities, decisions: [decision(1)] }));
     const card = q("brief-needs")!;
-    expect(q("brief-priorities")!.textContent).toContain("Today's priorities");
+    // The card's own top line is hidden under the corner label; the list carries the name.
+    expect(q("brief-priorities")!.getAttribute("aria-label")).toBe("Today's priorities");
+    expect(card.textContent).toContain("Today's priorities");
     const rows = [...card.querySelectorAll<HTMLElement>("[data-priority]")];
     expect(rows).toHaveLength(5);
     expect(rows.map((r) => r.getAttribute("data-priority"))).toEqual(["1", "2", "3", "4", "5"]);

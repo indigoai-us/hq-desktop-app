@@ -187,11 +187,12 @@
 </script>
 
 <div class="w c-violet" data-testid="brief-needs">
-  <div class="eyebrow" data-testid={priorities.length ? "brief-priorities" : undefined}>
+  <!-- In the grid the corner label names the card and this line is hidden (brief.css); the list below carries the priorities' test id. -->
+  <div class="eyebrow">
     {priorities.length ? "Today's priorities" : "Needs you"}{#if decisions.length}<span class="cnt">{decisions.length} decision{decisions.length === 1 ? "" : "s"}</span>{/if}
   </div>
   <h3 class="lead" class:tall>Clear these and the day is yours.</h3>
-  <div class="items">
+  <div class="items" data-testid={priorities.length ? "brief-priorities" : undefined} aria-label={priorities.length ? "Today's priorities" : undefined}>
     {#each shown as e (e.key)}
       {#if e.d}
         {@const d = e.d}
@@ -213,7 +214,7 @@
             {#if e.rank}<div class="ic rank">{e.rank}</div>
             {:else}<div class="ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d={ICON[d.action] ?? ICON.go} /></svg></div>{/if}
           {/if}
-          <div class="tx">
+          <div class="tx" data-testid={e.rank ? "brief-priority" : undefined}>
             <div class="tt">
               <span class="t" data-testid="brief-need-title" use:asciiDecode>{e.p?.text ?? d.title}</span>
               {#if tall || carried || age}
