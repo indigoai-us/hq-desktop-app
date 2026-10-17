@@ -26,7 +26,6 @@ use std::sync::{Mutex, OnceLock};
 
 use hq_desktop_core::scope_gate::enforce_read_scope;
 
-#[cfg(not(target_os = "windows"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine as _;

@@ -35,6 +35,12 @@ function readDesktopAlt(): string {
 }
 
 describe('US-004: Single-window activation and navigation', () => {
+  it('imports the shared painted-reveal atomics on Windows too', () => {
+    const src = readDesktopAlt();
+    expect(src).toContain('static REVEAL_ON_PAINT: AtomicBool');
+    expect(src).toContain('use std::sync::atomic::{AtomicBool, Ordering};');
+    expect(src).not.toMatch(/#\[cfg\(not\(target_os = "windows"\)\)\]\s*use std::sync::atomic/);
+  });
   describe('typed WindowRouter policy', () => {
     it('declares ActivationSource, ActivationAction, DesktopDestination, and open_destination', () => {
       const src = readDesktopAlt();
