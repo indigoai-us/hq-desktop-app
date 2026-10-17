@@ -41,7 +41,6 @@ import {
 } from '../../lib/onboarding-wizard';
 import {
   READY_CONSENT_DWELL_MS,
-  READY_PROGRESS_DONE_TEXT,
   READY_WATCHDOG_MS,
   __setReadyTimingsForTests,
 } from '../../lib/welcome-flow';
@@ -253,7 +252,7 @@ describe('welcome flow: the install runs in the background', () => {
     const card = byId<HTMLElement>('onboarding-setup')!;
     expect(card.classList.contains('on')).toBe(true);
     expect(card.textContent).toContain('Installing HQ in the background');
-    expect(card.textContent).toContain('Step 1 of 5 · Laying the groundwork');
+    expect(card.textContent).toContain('Setting up your workspace');
   });
 
   it('drives the corner card from the real stage progress, to done', async () => {
@@ -274,7 +273,8 @@ describe('welcome flow: the install runs in the background', () => {
     template.resolve();
     await flushUntil(() => commands().includes('start_install_queue'), 'the second stage');
     expect(percent()).toBeGreaterThan(before);
-    expect(card().textContent).toMatch(/Step \d of 5 · /);
+    expect(card().textContent).toContain('Installing your tools');
+    expect(card().textContent).not.toContain('Step');
 
     deps.resolve();
     await flushUntil(() => card().dataset.state === 'done', 'the finished install');
@@ -313,8 +313,10 @@ describe('welcome flow: the install runs in the background', () => {
 
   // Owner decision (2026-10-15): the ready screen does not open HQ Desktop
   // from a button. It shows honest progress and finishes by itself once the
-  // install has settled and the post-ready steps are done; the desktop then
-  // opens on the knowledge tree.
+  // blocking phase (content, git-init, personalize) and the post-ready steps
+  // are done. Owner report (2026-10-16): the tool installs, the upload and the
+  // index run in the background after that, under the Finishing setup chip;
+  // the ready screen does not wait for them.
   const readyTitle = () => host.querySelector('#onboarding-title-ready')?.textContent?.trim();
   const readyLine = () => host.querySelector('[data-scene="ready"] .pl')?.textContent?.trim();
   const queueStatus = (state: string, done: number, total = 12, failed: string[] = []) => ({
@@ -326,19 +328,38 @@ describe('welcome flow: the install runs in the background', () => {
     failed,
   });
   const progress = (payload: unknown) => events.handlers.get('install-queue:progress')!({ payload });
-  /** The ready screen while the install runs: honest progress, no buttons, no finish. */
+  /** A host queue item's streaming install, as the wizard sees it. */
+  const itemOutput = (handle: string, finished = false) =>
+    events.handlers.get('install:progress')!({
+      payload: { handle, line: 'installing', finished },
+    });
+  /** The ready screen while the blocking phase runs: honest progress, no buttons, no finish. */
   const expectWaiting = (onfinish: ReturnType<typeof vi.fn>) => {
     expect(readyTitle()).toBe('Almost ready.');
-    expect(readyLine()).not.toBe(READY_PROGRESS_DONE_TEXT);
-    expect(readyLine()).toMatch(/Step \d of 5 · /);
-    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain(READY_PROGRESS_DONE_TEXT);
+    expect(readyLine()).not.toBe('Installed and synced across your devices.');
+    expect(readyLine()).toBe('Setting up your workspace');
+    expect(byId('welcome-ready-substatus')).toBeNull();
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('Installed and synced across your devices.');
     expect(byId<HTMLElement>('onboarding-launchers')!.querySelectorAll('button')).toHaveLength(0);
     expect(onfinish).not.toHaveBeenCalled();
     expect(commands()).not.toContain('open_desktop_alt_window');
   };
   const expectReady = () => {
     expect(readyTitle()).toBe('HQ is ready.');
-    expect(readyLine()).toBe(READY_PROGRESS_DONE_TEXT);
+    expect(readyLine()).toBeUndefined();
+  };
+  /**
+   * The ready screen once the blocking phase is done while background work
+   * still runs: the heading says HQ is ready, and the progress line still
+   * names the running work instead of claiming everything is done.
+   */
+  const expectReadyWhileBackgroundRuns = () => {
+    expect(readyTitle()).toBe('HQ is ready.');
+    expect(readyLine()).toMatch(/^Finishing setup: /);
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('Step');
+    expect(host.querySelector('[data-scene="ready"] .pi')).toBeNull();
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('Installed and synced across your devices.');
+    expect(byId<HTMLElement>('onboarding-launchers')!.querySelectorAll('button')).toHaveLength(0);
   };
 
   it('says Almost ready. while the install runs, then HQ is ready. and finishes once it is done', async () => {
@@ -356,8 +377,11 @@ describe('welcome flow: the install runs in the background', () => {
     expectReady();
   });
 
-  // (b) The finish waits for the whole install, the host queue included.
-  it('does not finish while the queue runs after the blocking phase, and finishes once when it settles', async () => {
+  // Regression (owner report 2026-10-16, reversing PR 1656's wait): once the
+  // blocking phase is done and the consent dwell has passed, the ready screen
+  // finishes by itself while the tool installs and the host queue still run,
+  // and neither the finish nor the window closing stops the queue.
+  it('finishes after the blocking phase while deps and the queue still run, and does not stop the queue', async () => {
     const template = deferred();
     const deps = deferred();
     stubInvoke({
@@ -368,64 +392,92 @@ describe('welcome flow: the install runs in the background', () => {
     await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
     byId('welcome-skip')!.click();
     await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await flush();
+    expectWaiting(onfinish);
 
     template.resolve();
     await flushUntil(() => commands().includes('start_install_queue'), 'the background phase');
-    await flush();
-    expectWaiting(onfinish);
-
-    // start_install_queue returns once the queue has started: this flow's
-    // stages can settle while the host queue is still installing.
+    // The queue is installing a tool through a streaming install handle.
     progress(queueStatus('running', 9));
-    deps.resolve();
-    await flushUntil(() => commands().includes('record_install_complete'), 'the settled stages');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await flush();
-    expectWaiting(onfinish);
-
-    progress(queueStatus('complete', 12));
+    itemOutput('install-claude-code');
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
-    expectReady();
+    expect(scene()).toBe('ready');
+    expectReadyWhileBackgroundRuns();
+    expect(readyLine()).toBe('Finishing setup: installing Claude Code');
+    expect(commands()).not.toContain('record_install_complete');
+    expect(commands()).not.toContain('cancel_install');
 
-    // A later event does not finish a second time.
+    // A later settle does not finish a second time.
+    deps.resolve();
     progress(queueStatus('complete', 12));
     await new Promise((resolve) => setTimeout(resolve, 50));
     await flush();
     expect(onfinish).toHaveBeenCalledTimes(1);
+    expect(readyLine()).toBeUndefined();
+
+    // The welcome window closes: the queue's install is left running.
+    await unmount(component!);
+    component = null;
+    await flush();
+    expect(commands()).not.toContain('cancel_install');
   });
 
-  it('finishes when the queue settles with a failed item', async () => {
-    stubInvoke({ get_install_queue_status: () => queueStatus('running', 10) });
-    const onfinish = mountAt(READY_STEP_INDEX);
-    await flushUntil(() => readyTitle() === 'Almost ready.', 'the running queue');
-    expectWaiting(onfinish);
-
-    // gh failed: the queue settles in "attention". The desktop's own note
-    // tells the person what failed, so the ready screen does not hold them.
-    progress(queueStatus('attention', 11, 12, ['gh']));
-    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
-    expectReady();
+  it('leaves the queue running when the window closes while the tool installs are still starting', async () => {
+    const deps = deferred();
+    stubInvoke({ start_install_queue: () => deps.promise });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('start_install_queue'), 'the background phase');
+    itemOutput('install-claude-code');
+    await flush();
+    expect(onfinish).not.toHaveBeenCalled();
+    await unmount(component!);
+    component = null;
+    deps.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await flush();
+    expect(commands()).not.toContain('cancel_install');
   });
 
-  it('waits on the ready step while a queue this wizard did not start still runs', async () => {
+  // A direct mount on the ready step (the window reopened while the desktop's
+  // queue runs) has no blocking phase of its own: it finishes once it has
+  // read the queue, so the progress line is honest, without waiting for the
+  // queue to settle. Before this change it waited for the queue to settle.
+  it('finishes after reading a queue this wizard did not start, while that queue still runs', async () => {
     stubInvoke({ get_install_queue_status: () => queueStatus('running', 9) });
     const onfinish = mountAt(READY_STEP_INDEX);
     await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
-    await flushUntil(() => readyTitle() === 'Almost ready.', 'the pending state');
+    await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     expect(commands()).not.toContain('fetch_and_extract_template');
+    expectReadyWhileBackgroundRuns();
+    expect(commands()).not.toContain('cancel_install');
+    expect(commands()).not.toContain('start_install_queue');
+  });
+
+  it('does not finish on a direct mount before the queue has been read', async () => {
+    const read = deferred<unknown>();
+    stubInvoke({ get_install_queue_status: () => read.promise });
+    const onfinish = mountAt(READY_STEP_INDEX);
+    await flushUntil(() => commands().includes('get_install_queue_status'), 'the queue read');
     await new Promise((resolve) => setTimeout(resolve, 50));
     await flush();
-    expectWaiting(onfinish);
+    expect(onfinish).not.toHaveBeenCalled();
 
-    progress(queueStatus('complete', 12));
+    // A queue that settled with a failed item does not hold the step either:
+    // the desktop's own note tells the person what failed.
+    read.resolve(queueStatus('attention', 11, 12, ['gh']));
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     expectReady();
   });
 
-  // (d) The keyboard cannot finish the ready screen early.
-  it('does not finish on Enter or the right arrow while the install runs', async () => {
-    stubInvoke({ get_install_queue_status: () => queueStatus('running', 9) });
-    const onfinish = mountAt(READY_STEP_INDEX);
+  // (d) The keyboard cannot finish the ready screen early. The blocking phase
+  // is what the step waits for now, so the check holds the template open.
+  it('does not finish on Enter or the right arrow while the blocking phase runs', async () => {
+    const template = deferred();
+    stubInvoke({ fetch_and_extract_template: () => template.promise });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
     await flushUntil(() => readyTitle() === 'Almost ready.', 'the pending state');
     for (const key of ['Enter', 'ArrowRight', ' ']) {
       window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
@@ -438,7 +490,7 @@ describe('welcome flow: the install runs in the background', () => {
     expectWaiting(onfinish);
     expect(scene()).toBe('ready');
 
-    progress(queueStatus('complete', 12));
+    template.resolve();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');
     // Enter after the finish does not finish again.
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -459,8 +511,10 @@ describe('welcome flow: the install runs in the background', () => {
   });
 
   // PR 1656 review: a queue item that finishes without its progress event
-  // reaching the wizard must not hold the ready screen.
-  it('reads the queue again every 10 seconds, so a missed settle event cannot hold the step', async () => {
+  // reaching the wizard must not leave the progress line on a running item.
+  // The step no longer waits for the queue, so the blocking phase is held
+  // open here to keep the screen up while the re-read is checked.
+  it('reads the queue again every 10 seconds, so a missed settle event cannot leave the line stale', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
     try {
       const advance = async (ms: number) => {
@@ -468,32 +522,40 @@ describe('welcome flow: the install runs in the background', () => {
         await flush();
       };
       const statusReads = () => commands().filter((c) => c === 'get_install_queue_status').length;
+      const template = deferred();
       let status = queueStatus('running', 11);
-      stubInvoke({ get_install_queue_status: () => status });
-      const onfinish = mountAt(READY_STEP_INDEX);
-      for (let i = 0; i < 20 && readyTitle() !== 'Almost ready.'; i += 1) await advance(5);
+      stubInvoke({
+        fetch_and_extract_template: () => template.promise,
+        get_install_queue_status: () => status,
+      });
+      const onfinish = mountAt(2);
+      for (let i = 0; i < 20 && !commands().includes('fetch_and_extract_template'); i += 1) await advance(5);
+      byId('welcome-skip')!.click();
+      for (let i = 0; i < 20 && (scene() !== 'ready' || statusReads() === 0); i += 1) await advance(5);
       expectWaiting(onfinish);
       const before = statusReads();
 
       // The queue settles, but its progress event never reaches the wizard.
       status = queueStatus('attention', 11, 12, ['gh']);
       await advance(9_000);
-      expectWaiting(onfinish);
+      expect(statusReads()).toBe(before);
       await advance(1_000);
       expect(statusReads()).toBe(before + 1);
-      for (let i = 0; i < 20 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
+
+      template.resolve();
+      for (let i = 0; i < 40 && onfinish.mock.calls.length === 0; i += 1) await advance(5);
       expect(onfinish).toHaveBeenCalledTimes(1);
+      // The re-read cleared the running queue, so nothing is left running.
       expectReady();
-      // Nothing stops or restarts the queue.
+      // Nothing stops the queue.
       expect(commands()).not.toContain('cancel_install');
-      expect(commands()).not.toContain('start_install_queue');
     } finally {
       vi.useRealTimers();
     }
   });
 
   // (c) A post-ready step that is still to come holds the finish. The
-  // install settles while the post-setup lookup (which names the company the
+  // blocking phase finishes while the post-setup lookup (which names the company the
   // connector import offers itself for) is still out, so the ready screen is
   // on show with the install done and the post-ready steps not yet known.
   it('does not finish while a post-ready step is pending, and finishes after it hands back', async () => {
@@ -538,6 +600,23 @@ describe('welcome flow: the install runs in the background', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     await flush();
     expect(onfinish).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('person entity recovery before the company lookup', () => {
+  it('retries a failed person write before resolving post-setup company steps', async () => {
+    let attempts = 0;
+    stubInvoke({
+      ensure_person_entity: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('temporary person write failure');
+        return true;
+      },
+      run_initial_sync: () => new Promise(() => {}),
+    });
+    mountAt(2);
+    await flushUntil(() => attempts >= 2, 'the later person entity retry');
+    expect(attempts).toBe(2);
   });
 });
 
@@ -700,14 +779,6 @@ describe("welcome flow: the ready screen's waits", () => {
   };
   const optIns = () => calls.filter((c) => c.command === 'post_telemetry_opt_in');
   const finishNote = () => byId<HTMLElement>('launcher-finish-error');
-  const queueRunning = () => ({
-    state: 'running',
-    current: 'Claude Code',
-    currentId: 'claude-code',
-    done: 9,
-    total: 12,
-    failed: [],
-  });
 
   async function mountSettledReady(overrides: Record<string, Handler> = {}) {
     stubInvoke({ get_install_queue_status: () => queueStatusComplete(), ...overrides });
@@ -718,7 +789,31 @@ describe("welcome flow: the ready screen's waits", () => {
     return onfinish;
   }
 
+  it('starts the full consent dwell only after blocking setup is ready', async () => {
+    const template = deferred();
+    stubInvoke({ fetch_and_extract_template: () => template.promise });
+    const onfinish = mountAt(2);
+    for (let i = 0; i < 60 && !commands().includes('fetch_and_extract_template'); i++) await advance(5);
+    expect(commands()).toContain('fetch_and_extract_template');
+    byId('welcome-skip')!.click();
+    await advance(5);
+    expect(scene()).toBe('ready');
+    await advance(10_000);
+    expect(host.querySelector('#onboarding-title-ready')?.textContent?.trim()).toBe('Almost ready.');
+    expect(onfinish).not.toHaveBeenCalled();
+    template.resolve();
+    for (let i = 0; i < 60 && host.querySelector('#onboarding-title-ready')?.textContent?.trim() !== 'HQ is ready.'; i++) await advance(5);
+    expect(host.querySelector('#onboarding-title-ready')?.textContent?.trim()).toBe('HQ is ready.');
+    await advance(2_900);
+    expect(onfinish).not.toHaveBeenCalled();
+    expect(optIns()).toHaveLength(0);
+    await advance(200);
+    for (let i = 0; i < 60 && onfinish.mock.calls.length !== 1; i++) await advance(5);
+    expect(onfinish).toHaveBeenCalledTimes(1);
+  });
+
   it('stays up for the consent dwell after the checkbox appears, then records the answer and finishes', async () => {
+    expect(READY_CONSENT_DWELL_MS).toBe(3_000);
     const onfinish = await mountSettledReady();
     expect(byId<HTMLInputElement>('ready-consent-share')!.checked).toBe(true);
 
@@ -787,10 +882,12 @@ describe("welcome flow: the ready screen's waits", () => {
   });
 
   it('shows Finish setup when the ready screen has not finished by itself after the watchdog', async () => {
-    stubInvoke({ get_install_queue_status: () => queueRunning() });
+    // The step no longer waits for a running queue, so what holds it here is
+    // a queue read that never comes back.
+    stubInvoke({ get_install_queue_status: () => new Promise(() => {}) });
     const onfinish = vi.fn();
     mountAt(READY_STEP_INDEX, { onfinish });
-    for (let i = 0; i < 40 && host.querySelector('#onboarding-title-ready')?.textContent?.trim() !== 'Almost ready.'; i += 1) {
+    for (let i = 0; i < 40 && !calls.some((c) => c.command === 'get_install_queue_status'); i += 1) {
       await advance(5);
     }
     await advance(READY_WATCHDOG_MS - 1_000);

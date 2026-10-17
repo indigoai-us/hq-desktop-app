@@ -482,7 +482,7 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     // setup (and consent) finished on this computer, so preserving
     // steady-state here cannot wave anyone past onboarding or consent — it
     // only refuses to conclude "brand new machine" from a failed read.
-    if inputs.evidence_unreadable && inputs.first_run_completed && !inputs.install_in_progress {
+    if inputs.evidence_unreadable && inputs.first_run_completed {
         return LifecycleVerdict {
             state: LifecycleState::SteadyState,
             needs_install_backfill: false,
@@ -490,7 +490,9 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
         };
     }
 
-    let state = if inputs.install_in_progress {
+    // First run ends on the desktop. The launch queue resumes background work;
+    // only an interrupted blocking phase should reopen the welcome flow.
+    let state = if inputs.install_in_progress && !inputs.first_run_completed {
         LifecycleState::InstallResume
     } else if is_installed {
         // Compulsory consent overrides the "already installed, skip onboarding"
@@ -542,6 +544,29 @@ mod tests {
             evidence_unreadable: false,
             hq_root_recorded_by_prior_setup: false,
         }
+    }
+
+    #[test]
+    fn unfinished_background_after_first_run_reopens_desktop() {
+        let verdict = classify_lifecycle(LifecycleInputs {
+            first_run_completed: true,
+            hq_root_valid: true,
+            consent_answered: true,
+            install_in_progress: true,
+            ..input()
+        });
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
+    }
+
+    #[test]
+    fn interrupted_blocking_phase_still_resumes_welcome() {
+        let verdict = classify_lifecycle(LifecycleInputs {
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: true,
+            ..input()
+        });
+        assert_eq!(verdict.state, LifecycleState::InstallResume);
     }
 
     fn map(v: Value) -> Map<String, Value> {
@@ -625,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_evidence_yields_to_an_in_progress_install() {
+    fn unreadable_evidence_preserves_completed_first_run_with_background_work() {
         let verdict = classify_lifecycle(LifecycleInputs {
             install_completed: true,
             first_run_completed: true,
@@ -635,7 +660,7 @@ mod tests {
             ..input()
         });
 
-        assert_eq!(verdict.state, LifecycleState::InstallResume);
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
     }
 
     #[test]
@@ -765,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_install_resume_takes_precedence_over_installed_flags() {
+    fn completed_first_run_takes_precedence_over_unfinished_background() {
         let verdict = classify_lifecycle(LifecycleInputs {
             install_completed: true,
             first_run_completed: true,
@@ -779,7 +804,7 @@ mod tests {
             hq_root_recorded_by_prior_setup: false,
         });
 
-        assert_eq!(verdict.state, LifecycleState::InstallResume);
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
         assert!(!verdict.needs_install_backfill);
     }
 

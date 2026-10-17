@@ -16,7 +16,7 @@ import {
   STORY_SCENES,
   forwardLabel,
   installCardModel,
-  installCardStepLines,
+  installCardActivityLines,
   nextScene,
   previousScene,
   sceneForStep,
@@ -206,32 +206,33 @@ describe('welcome flow keyboard', () => {
 });
 
 describe('install card', () => {
-  it('reads the real setup progress as Step N of 5', () => {
-    expect(installCardModel({ percent: 0, completed: false, retryText: null })).toMatchObject({
+  it('names the actual current item without a step counter', () => {
+    expect(installCardModel({ percent: 0, completed: false, retryText: null, currentItemId: 'content' })).toMatchObject({
       state: 'running',
       title: 'Installing HQ in the background',
-      line: 'Step 1 of 5 · Laying the groundwork',
+      line: 'Setting up your workspace',
       percent: 0,
     });
-    expect(installCardModel({ percent: 47, completed: false, retryText: null })).toMatchObject({
-      line: 'Step 3 of 5 · Bringing in your AI workers',
+    expect(installCardModel({ percent: 47, completed: false, retryText: null, currentItemId: 'hq-cli' })).toMatchObject({
+      line: 'Installing the hq command',
       percent: 47,
     });
+  });
+
+  it.each([null, 'future-item'])('hides the corner activity for an unknown item %s', (currentItemId) => {
+    expect(installCardModel({ percent: 30, completed: false, retryText: null, currentItemId }).line).toBe('');
   });
 
   it('never claims done before every stage has settled', () => {
     expect(installCardModel({ percent: 100, completed: false, retryText: null })).toMatchObject({
       state: 'running',
       percent: 99,
-      step: 5,
     });
     expect(installCardModel({ percent: 100, completed: true, retryText: null })).toEqual({
       state: 'done',
       title: 'HQ is installed',
       line: 'Keep going, you’re all set.',
       percent: 100,
-      step: 5,
-      total: 5,
     });
   });
 
@@ -243,16 +244,10 @@ describe('install card', () => {
     });
     expect(model.state).toBe('retrying');
     expect(model.line).toBe('Retrying — attempt 2 of 2…');
-    expect(model.step).toBe(2);
   });
 
-  it('lists every step line so the card can hold one width', () => {
-    expect(installCardStepLines()).toEqual([
-      'Step 1 of 5 · Laying the groundwork',
-      'Step 2 of 5 · Building your workspace',
-      'Step 3 of 5 · Bringing in your AI workers',
-      'Step 4 of 5 · Making it yours',
-      'Step 5 of 5 · Syncing across your devices',
-    ]);
+  it('sizes the card for the activity phrases rather than percentage bands', () => {
+    expect(installCardActivityLines()).toContain('Installing the hq command');
+    expect(installCardActivityLines().join(' ')).not.toContain('Step');
   });
 });

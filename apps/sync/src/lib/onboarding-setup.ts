@@ -1328,3 +1328,35 @@ export function stageCreepAt(elapsedMs: number): number {
     Math.min(1, elapsed / STAGE_CREEP_TAIL_MS);
   return Math.min(STAGE_CREEP_CEILING, fast + tail);
 }
+
+/** Actual work reported by the native queue or the wizard's blocking stages. */
+export const SETUP_ACTIVITY_PHRASES: Readonly<Record<string, string>> = {
+  node: 'installing Node.js',
+  'hq-cli': 'installing the hq command',
+  'runtime-hooks': 'connecting your coding tools',
+  'claude-code': 'installing Claude Code',
+  codex: 'installing Codex',
+  gh: 'installing the GitHub command',
+  yq: 'installing YAML tools',
+  jq: 'installing JSON tools',
+  qmd: 'installing search tools',
+  'search-index': 'building search',
+  'vault-upload': 'syncing your files',
+  embeddings: 'building semantic search',
+  content: 'setting up your workspace',
+  'git-init': 'setting up file history',
+  personalize: 'personalizing your workspace',
+  deps: 'installing your tools',
+  'initial-sync': 'syncing your files',
+  indexing: 'building search',
+};
+
+export function setupActivityPhrase(itemId: string | null): string | null {
+  return itemId && Object.prototype.hasOwnProperty.call(SETUP_ACTIVITY_PHRASES, itemId) ? SETUP_ACTIVITY_PHRASES[itemId] : null;
+}
+
+/** A standalone activity label, unlike the lowercase continuation after a colon. */
+export function setupActivityLabel(itemId: string | null, fallback: string | null = null): string | null {
+  const phrase = setupActivityPhrase(itemId);
+  return phrase ? phrase.charAt(0).toUpperCase() + phrase.slice(1) : fallback;
+}
