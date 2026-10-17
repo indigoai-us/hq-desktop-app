@@ -60,6 +60,7 @@ The release moves it under the version it ships in.
 - Desktop updates reclaim stale HQ CLI package-use leases while preserving live long-running CLI holders through their periodic heartbeat.
 - First run: connecting an app on the "Your apps" step now finishes in the browser with "Connected. You can return to HQ." Before, the browser went to the HQ console, which needs you to be signed in there, so the connection could fail and the app never showed as connected. Slack now shows "Connect later in Integrations" with no button, because Slack cannot be connected from this step.
 - Company › Integrations: the "Hidden from AI" switches now show as off for a connection where no owner or admin has chosen yet, matching HQ's server, where hiding is opt-in. Before, the app showed all four switches on in that case. Choices already saved are unchanged.
+- Desktop sync no longer hashes unchanged HQ core files on every pass, and automatic Git mirroring stages changes under your personal folder only. When you use the staging channel, drift badges now refresh whenever the pull-request index refreshes, even if the rest of the Core drift view is cached.
 
 ## [0.11.8] — 2026-10-13
 

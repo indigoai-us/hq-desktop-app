@@ -21,6 +21,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -846,6 +847,132 @@ fn is_probable_text(content: &[u8]) -> bool {
     !sample.contains(&0)
 }
 
+/// Metadata for one regular file in a locked Core scope. This deliberately
+/// omits content hashes so callers can cheaply detect whether a cached drift
+/// scan still describes the current local tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeFileMetadata {
+    pub path: String,
+    pub size: u64,
+    pub modified: SystemTime,
+    /// Unix device, inode, and high-resolution change time. This catches
+    /// same-size rewrites whose modification time is restored.
+    pub filesystem_change_stamp: Option<(u64, u64, i64, i64)>,
+}
+
+fn filesystem_change_stamp(metadata: &std::fs::Metadata) -> Option<(u64, u64, i64, i64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((
+            metadata.dev(),
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+/// Read metadata, but not file contents, for regular files in locked Core
+/// scopes. Any traversal or metadata error prevents cache reuse so callers
+/// fall back to the normal content-hashing scan.
+pub fn local_scope_metadata_under_scope(
+    hq_folder: &Path,
+    locked: &[String],
+    excluded: &[String],
+) -> Result<Vec<ScopeFileMetadata>, String> {
+    let mut out = BTreeMap::new();
+    for scope in locked {
+        let (rel, is_dir) = if let Some(prefix) = scope.strip_suffix('/') {
+            (prefix.to_string(), true)
+        } else {
+            (scope.clone(), false)
+        };
+        let abs = hq_folder.join(&rel);
+        if is_dir {
+            match std::fs::metadata(&abs) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("could not inspect locked scope: {error}")),
+            }
+            for entry in walkdir::WalkDir::new(&abs)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|entry| {
+                    let Ok(rel_path) = entry.path().strip_prefix(hq_folder) else {
+                        return false;
+                    };
+                    let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                    !path_in_excluded_scope(&rel_str, excluded)
+                })
+            {
+                let entry = entry.map_err(|error| {
+                    format!("could not enumerate locked Core files: {error}")
+                })?;
+                if !entry.file_type().is_file() || entry.path_is_symlink() {
+                    continue;
+                }
+                let rel_path = entry
+                    .path()
+                    .strip_prefix(hq_folder)
+                    .map_err(|error| format!("locked Core path escaped its root: {error}"))?;
+                let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                if is_conflict_artifact(&rel_str) {
+                    continue;
+                }
+                let metadata = std::fs::symlink_metadata(entry.path())
+                    .map_err(|error| format!("could not inspect locked Core file: {error}"))?;
+                if !metadata.file_type().is_file() {
+                    continue;
+                }
+                let modified = metadata
+                    .modified()
+                    .map_err(|error| format!("could not read locked Core file time: {error}"))?;
+                out.insert(
+                    rel_str.clone(),
+                    ScopeFileMetadata {
+                        path: rel_str,
+                        size: metadata.len(),
+                        modified,
+                        filesystem_change_stamp: filesystem_change_stamp(&metadata),
+                    },
+                );
+            }
+        } else {
+            if path_in_excluded_scope(&rel, excluded) || is_conflict_artifact(&rel) {
+                continue;
+            }
+            let metadata = match std::fs::symlink_metadata(&abs) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("could not inspect locked Core file: {error}")),
+            };
+            if !metadata.file_type().is_file() {
+                continue;
+            }
+            let modified = metadata
+                .modified()
+                .map_err(|error| format!("could not read locked Core file time: {error}"))?;
+            out.insert(
+                rel.clone(),
+                ScopeFileMetadata {
+                    path: rel,
+                    size: metadata.len(),
+                    modified,
+                    filesystem_change_stamp: filesystem_change_stamp(&metadata),
+                },
+            );
+        }
+    }
+    Ok(out.into_values().collect())
+}
+
 /// Walk the local HQ folder, restricted to the locked-path scopes, and
 /// return a map of relative-path → (drift_sha1, on_disk_size).
 ///
@@ -991,6 +1118,24 @@ mod tests {
         let blobs = walk_local_under_scope(root.path(), &[".claude/settings.json".into()]);
 
         assert_eq!(blobs[".claude/settings.json"].0, drift_blob_sha(settings),);
+    }
+
+    #[test]
+    fn local_scope_metadata_walk_tracks_paths_without_hashing_contents() {
+        let root = tempfile::tempdir().unwrap();
+        test_write(root.path(), "core/policies/one.md", b"one");
+        let locked = vec!["core/policies/".to_string()];
+
+        let first = local_scope_metadata_under_scope(root.path(), &locked, &[]).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].path, "core/policies/one.md");
+        assert_eq!(first[0].size, 3);
+        assert_eq!(first[0].filesystem_change_stamp.is_some(), cfg!(unix));
+
+        test_write(root.path(), "core/policies/two.md", b"two");
+        let second = local_scope_metadata_under_scope(root.path(), &locked, &[]).unwrap();
+        assert_eq!(second.len(), 2);
+        assert_ne!(first, second);
     }
 
     #[test]

@@ -40,6 +40,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -59,8 +60,9 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::hq_core_drift::{
     drift_blob_sha_for_path, excluded_scope_paths_for, git_blob_sha, is_conflict_artifact,
-    normalized_or_raw_drift_sha, path_in_excluded_scope, path_in_locked_scope, read_locked_paths,
-    walk_local_under_scope, BaselineStatus, DriftEntry, DriftReport,
+    local_scope_metadata_under_scope, normalized_or_raw_drift_sha, path_in_excluded_scope,
+    path_in_locked_scope, read_locked_paths, walk_local_under_scope, BaselineStatus, DriftEntry,
+    DriftReport, ScopeFileMetadata,
 };
 use crate::commands::hq_core_staging;
 use crate::commands::hq_core_update::get_local_version;
@@ -166,6 +168,103 @@ pub struct CoreState {
 struct RecentCoreState {
     at: Instant,
     state: Option<CoreState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CoreDriftCacheKey {
+    hq_folder: PathBuf,
+    channel: Channel,
+    target_repo: String,
+    target_version: String,
+    target_ref: String,
+    local_version: Option<String>,
+    installed_stamp: Option<(String, String)>,
+    locked_paths: Vec<String>,
+    excluded_paths: Vec<String>,
+    local_files: Vec<ScopeFileMetadata>,
+    is_eligible: bool,
+}
+
+struct CoreDriftCacheEntry {
+    key: CoreDriftCacheKey,
+    state: CoreState,
+}
+
+static CORE_DRIFT_CACHE: Mutex<Option<CoreDriftCacheEntry>> = Mutex::new(None);
+
+fn core_drift_cache_key_matches(cached: &CoreDriftCacheKey, requested: &CoreDriftCacheKey) -> bool {
+    cached == requested
+}
+
+fn core_drift_inputs_are_cacheable(
+    drift_scan_possible: bool,
+    target_tree_available: bool,
+    floor_blobs_available: bool,
+) -> bool {
+    !drift_scan_possible || (target_tree_available && floor_blobs_available)
+}
+
+fn refresh_staging_entries(
+    modified: &mut [DriftEntry],
+    added: &mut [DriftEntry],
+    index: Option<&hq_core_staging::StagingIndex>,
+) {
+    for entry in modified.iter_mut().chain(added.iter_mut()) {
+        entry.staging_status = index.and_then(|index| {
+            entry
+                .git_sha_local
+                .as_deref()
+                .map(|sha| index.classify(&entry.path, sha))
+        });
+    }
+}
+
+fn cached_staging_status_needs_refresh(
+    channel: Channel,
+    modified: &[DriftEntry],
+    added: &[DriftEntry],
+) -> bool {
+    matches!(channel, Channel::Staging)
+        && modified
+            .iter()
+            .chain(added.iter())
+            .any(|entry| entry.git_sha_local.is_some())
+}
+
+fn cached_core_drift_state(key: &CoreDriftCacheKey, enabled: bool) -> Option<CoreState> {
+    if !enabled {
+        return None;
+    }
+    CORE_DRIFT_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .filter(|entry| core_drift_cache_key_matches(&entry.key, key))
+        .map(|entry| entry.state.clone())
+}
+
+fn store_core_drift_state(key: CoreDriftCacheKey, state: CoreState) {
+    *CORE_DRIFT_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(CoreDriftCacheEntry { key, state });
+}
+
+fn clear_core_drift_cache() {
+    *CORE_DRIFT_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+}
+
+fn emit_core_state(app: &AppHandle, state: &CoreState) {
+    let _ = app.emit("core-state:changed", state);
+    if let Some(slot) = app.try_state::<crate::commands::drift_detail::PendingDrift>() {
+        slot.stash(state.drift_report.clone());
+    }
+    let _ = app.emit_to(
+        crate::commands::drift_detail::WINDOW_LABEL,
+        "drift:report",
+        &state.drift_report,
+    );
 }
 
 static CORE_STATE_CHECK: tokio::sync::Mutex<Option<RecentCoreState>> =
@@ -4332,6 +4431,33 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         return Ok(None);
     }
 
+    let idle_sync_optimizations_enabled =
+        hq_desktop_core::git_mirror::desktop_idle_sync_optimizations_enabled();
+    if !idle_sync_optimizations_enabled {
+        clear_core_drift_cache();
+    }
+    let mut excluded_paths = excluded_scope_paths_for(&hq_folder);
+    excluded_paths.sort();
+    excluded_paths.dedup();
+    let local_files_metadata = if idle_sync_optimizations_enabled {
+        if drift_scan_possible {
+            match local_scope_metadata_under_scope(&hq_folder, &locked, &excluded_paths) {
+                Ok(metadata) => Some(metadata),
+                Err(_) => {
+                    log(
+                        "hq-core-state",
+                        "could not inspect locked-file metadata; running a fresh drift scan",
+                    );
+                    None
+                }
+            }
+        } else {
+            Some(Vec::new())
+        }
+    } else {
+        None
+    };
+
     // Channel + target + eligibility (used for frontend gating).
     let (mut channel, mut target_repo) = resolve_channel();
     let signed_in_email = crate::commands::cognito::read_tokens_from_file()
@@ -4408,6 +4534,50 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         }
     };
 
+    let installed_stamp = local_source_stamp(&hq_folder);
+    let core_cache_key = if idle_sync_optimizations_enabled {
+        local_files_metadata
+            .as_ref()
+            .map(|local_files| CoreDriftCacheKey {
+                hq_folder: hq_folder.clone(),
+                channel,
+                target_repo: target_repo.clone(),
+                target_version: target_version.clone(),
+                target_ref: target_ref.clone(),
+                local_version: local_version.clone(),
+                installed_stamp: installed_stamp.clone(),
+                locked_paths: locked.clone(),
+                excluded_paths: excluded_paths.clone(),
+                local_files: local_files.clone(),
+                is_eligible,
+            })
+    } else {
+        None
+    };
+    if let Some(key) = core_cache_key.as_ref() {
+        if let Some(mut state) = cached_core_drift_state(key, true) {
+            if cached_staging_status_needs_refresh(
+                state.channel,
+                &state.drift_report.modified,
+                &state.drift_report.added,
+            ) {
+                let index = hq_core_staging::build_index_if_eligible().await;
+                refresh_staging_entries(
+                    &mut state.drift_report.modified,
+                    &mut state.drift_report.added,
+                    index.as_ref(),
+                );
+                store_core_drift_state(key.clone(), state.clone());
+            }
+            log(
+                "hq-core-state",
+                "reusing cached core drift state for unchanged target and local metadata",
+            );
+            emit_core_state(app, &state);
+            return Ok(Some(state));
+        }
+    }
+
     // Floor identity. Keep the installed source/commit even when the user has
     // switched channels: the local persisted baseline remains authoritative for
     // classifying already-installed content across repo changes.
@@ -4420,7 +4590,6 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
     // otherwise need to fail closed immediately. Mirrors the spawn-side
     // `--floor-sha` derivation in `install_hq_core_update` so the popover
     // count and the rescue behavior agree.
-    let installed_stamp = local_source_stamp(&hq_folder);
     let floor_identity: Option<(String, String)> = match installed_stamp.clone() {
         Some(identity) => Some(identity),
         None => match (channel, local_version.as_deref()) {
@@ -4560,6 +4729,12 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         (None, None)
     };
 
+    let drift_inputs_cacheable = core_drift_inputs_are_cacheable(
+        drift_scan_possible,
+        target_tree.is_some(),
+        floor_blobs.is_some(),
+    );
+
     // Drift classification — fail closed only when a scan was possible but no
     // trustworthy installed baseline existed. When there is no locked scope,
     // keep the legacy "empty drift report, version-only update signal"
@@ -4568,24 +4743,24 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         if let (Some(target_tree), Some(floor_blobs)) = (target_tree, floor_blobs) {
             // Local files under locked scopes.
             // Pack landings + static runtime excludes (see drift_scope).
-            let excluded = excluded_scope_paths_for(&hq_folder);
+            let excluded = excluded_paths.as_slice();
             let local = walk_local_under_scope(&hq_folder, &locked);
             let local: BTreeMap<String, (String, u64)> = local
                 .into_iter()
-                .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
+                .filter(|(p, _)| !path_in_excluded_scope(p, excluded))
                 .filter(|(p, _)| !is_conflict_artifact(p))
                 .collect();
 
             let target_in_scope: BTreeMap<String, (String, u64)> = target_tree
                 .into_iter()
                 .filter(|(p, _)| path_in_locked_scope(p, &locked))
-                .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
+                .filter(|(p, _)| !path_in_excluded_scope(p, excluded))
                 .collect();
 
             let floor_in_scope: BTreeMap<String, String> = floor_blobs
                 .into_iter()
                 .filter(|(p, _)| path_in_locked_scope(p, &locked))
-                .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
+                .filter(|(p, _)| !path_in_excluded_scope(p, excluded))
                 .collect();
 
             // Compare this setup-owned field semantically while retaining the
@@ -4790,13 +4965,8 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
             // PR #110: "Respect the staging-channel opt-out for
             // badges"). Fail-quiet: ineligible users see None.
             if matches!(channel, Channel::Staging) {
-                if let Some(index) = hq_core_staging::build_index_if_eligible().await {
-                    for entry in user_edit.iter_mut().chain(user_only.iter_mut()) {
-                        if let Some(sha) = entry.git_sha_local.as_deref() {
-                            entry.staging_status = Some(index.classify(&entry.path, sha));
-                        }
-                    }
-                }
+                let index = hq_core_staging::build_index_if_eligible().await;
+                refresh_staging_entries(&mut user_edit, &mut user_only, index.as_ref());
             }
 
             let user_only_count = user_only.len() as u32;
@@ -4942,6 +5112,11 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         scanned_at: chrono::Utc::now().to_rfc3339(),
         prewarm_deferral_count: hq_desktop_core::prewarm::automatic_update_deferral_count(),
     };
+    if drift_inputs_cacheable {
+        if let Some(key) = core_cache_key {
+            store_core_drift_state(key, state.clone());
+        }
+    }
 
     log(
         "hq-core-state",
@@ -4961,17 +5136,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
         ),
     );
 
-    // Emit. Drift detail window keeps its `drift:report` listener — pipe
-    // the report there too so its render stays live across re-checks.
-    let _ = app.emit("core-state:changed", &state);
-    if let Some(slot) = app.try_state::<crate::commands::drift_detail::PendingDrift>() {
-        slot.stash(state.drift_report.clone());
-    }
-    let _ = app.emit_to(
-        crate::commands::drift_detail::WINDOW_LABEL,
-        "drift:report",
-        &state.drift_report,
-    );
+    emit_core_state(app, &state);
 
     Ok(Some(state))
 }
@@ -10705,6 +10870,123 @@ error: clone failed";
         let window = Duration::from_secs(15);
         let now = at + Duration::from_secs(1);
         assert!(recent_core_state_is_reusable(at, now, window));
+    }
+
+    #[test]
+    fn core_drift_cache_key_invalidates_when_target_version_or_file_metadata_changes() {
+        let base = CoreDriftCacheKey {
+            hq_folder: PathBuf::from("/tmp/hq"),
+            channel: Channel::Release,
+            target_repo: "indigoai-us/hq-core".to_string(),
+            target_version: "15.0.1".to_string(),
+            target_ref: "v15.0.1".to_string(),
+            local_version: Some("15.0.0".to_string()),
+            installed_stamp: Some(("indigoai-us/hq-core".to_string(), "floor-sha".to_string())),
+            locked_paths: vec!["core/policies/".to_string()],
+            excluded_paths: vec!["core/packages/".to_string()],
+            local_files: vec![ScopeFileMetadata {
+                path: "core/policies/example.md".to_string(),
+                size: 12,
+                modified: std::time::UNIX_EPOCH,
+                filesystem_change_stamp: Some((1, 2, 3, 4)),
+            }],
+            is_eligible: true,
+        };
+        assert!(core_drift_cache_key_matches(&base, &base));
+
+        let target_changed = CoreDriftCacheKey {
+            target_ref: "v15.0.2".to_string(),
+            ..base.clone()
+        };
+        assert!(!core_drift_cache_key_matches(&base, &target_changed));
+
+        let version_changed = CoreDriftCacheKey {
+            local_version: Some("15.0.1".to_string()),
+            ..base.clone()
+        };
+        assert!(!core_drift_cache_key_matches(&base, &version_changed));
+
+        let mut changed_files = base.local_files.clone();
+        changed_files[0].size += 1;
+        let local_file_changed = CoreDriftCacheKey {
+            local_files: changed_files,
+            ..base.clone()
+        };
+        assert!(!core_drift_cache_key_matches(&base, &local_file_changed));
+
+        let mut changed_file_identity = base.local_files.clone();
+        changed_file_identity[0].filesystem_change_stamp = Some((1, 2, 3, 5));
+        let local_file_replaced = CoreDriftCacheKey {
+            local_files: changed_file_identity,
+            ..base.clone()
+        };
+        assert!(!core_drift_cache_key_matches(&base, &local_file_replaced));
+    }
+
+    #[test]
+    fn core_drift_cache_does_not_reuse_incomplete_remote_scans() {
+        assert!(core_drift_inputs_are_cacheable(false, false, false));
+        assert!(core_drift_inputs_are_cacheable(true, true, true));
+        assert!(!core_drift_inputs_are_cacheable(true, false, true));
+        assert!(!core_drift_inputs_are_cacheable(true, true, false));
+    }
+
+    #[test]
+    fn cached_staging_drift_status_refreshes_with_the_index_and_clears_on_failure() {
+        let mut modified = vec![DriftEntry {
+            path: "personal/main.md".to_string(),
+            size: 1,
+            git_sha_local: Some("main-sha".to_string()),
+            git_sha_upstream: None,
+            staging_status: Some(hq_core_staging::StagingStatus::StagingPr(181)),
+        }];
+        let mut added = vec![DriftEntry {
+            path: "personal/pr.md".to_string(),
+            size: 1,
+            git_sha_local: Some("pr-sha".to_string()),
+            git_sha_upstream: None,
+            staging_status: Some(hq_core_staging::StagingStatus::StagingPr(181)),
+        }];
+
+        assert!(cached_staging_status_needs_refresh(
+            Channel::Staging,
+            &modified,
+            &added
+        ));
+        assert!(!cached_staging_status_needs_refresh(
+            Channel::Release,
+            &modified,
+            &added
+        ));
+        assert!(!cached_staging_status_needs_refresh(
+            Channel::Staging,
+            &[],
+            &[]
+        ));
+
+        let main = BTreeMap::from([(
+            "personal/main.md".to_string(),
+            BTreeSet::from(["main-sha".to_string()]),
+        )]);
+        let pr_files = BTreeMap::from([(
+            "personal/pr.md".to_string(),
+            BTreeSet::from(["pr-sha".to_string()]),
+        )]);
+        let index = hq_core_staging::StagingIndex::from_parts(main, vec![(182, pr_files)]);
+        refresh_staging_entries(&mut modified, &mut added, Some(&index));
+
+        assert_eq!(
+            modified[0].staging_status,
+            Some(hq_core_staging::StagingStatus::StagingMain)
+        );
+        assert_eq!(
+            added[0].staging_status,
+            Some(hq_core_staging::StagingStatus::StagingPr(182))
+        );
+
+        refresh_staging_entries(&mut modified, &mut added, None);
+        assert_eq!(modified[0].staging_status, None);
+        assert_eq!(added[0].staging_status, None);
     }
 
     #[test]

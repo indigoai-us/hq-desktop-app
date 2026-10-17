@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { FlagClient, FlagClientOptions, FlagSnapshot } from '@indigoai-us/hq-flags-client';
+import {
+  IDLE_SYNC_OPTIMIZATIONS_FLAG,
+  IDLE_SYNC_OPTIMIZATIONS_FLAG_DEFINITION,
+  LEGACY_TO_REGISTRY,
+} from '../flags.js';
 import { createSyncPlatformAdapter } from './sync-adapter.js';
 
 interface Invocation {
@@ -8,6 +13,20 @@ interface Invocation {
 }
 
 describe('scope-quarantine mirror feature flag', () => {
+  it('registers the desktop optimization kill-switch row as default-on', () => {
+    expect(LEGACY_TO_REGISTRY[IDLE_SYNC_OPTIMIZATIONS_FLAG]).toBe(
+      IDLE_SYNC_OPTIMIZATIONS_FLAG,
+    );
+    expect(IDLE_SYNC_OPTIMIZATIONS_FLAG_DEFINITION).toMatchObject({
+      flagKey: IDLE_SYNC_OPTIMIZATIONS_FLAG,
+      defaultValue: true,
+      ownerRepo: 'indigoai-us/hq-desktop-app',
+    });
+    expect(IDLE_SYNC_OPTIMIZATIONS_FLAG_DEFINITION.description.toLowerCase()).toContain(
+      'kill switch',
+    );
+  });
+
   it('primes the Rust snapshot during native shell setup', async () => {
     const calls: Invocation[] = [];
     let notifyFlagSet!: () => void;
@@ -224,6 +243,94 @@ describe('scope-quarantine mirror feature flag', () => {
       value: 'hq-sync',
     });
     expect(calls[2]?.args).toMatchObject({ enabled: false });
+    await adapter.dispose?.();
+  });
+
+  it('keeps desktop idle optimizations on when the registry is unavailable', async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      primeIdleSyncOptimizations: true,
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === 'hq_pro_fetch') return { status: 503, body: 'unavailable' };
+        if (cmd === 'register_mirror_quarantine_move_not_deletion_generation') return 45;
+        if (cmd === 'set_mirror_quarantine_move_not_deletion') return null;
+        if (cmd === 'set_desktop_idle_sync_optimizations') return null;
+        if (cmd === 'unregister_mirror_quarantine_move_not_deletion_generation') return null;
+        if (cmd === 'start_sync') return 'hq-sync';
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+
+    await expect(adapter.sync.startSync()).resolves.toEqual({
+      ok: true,
+      value: 'hq-sync',
+    });
+    const snapshot = calls.find((call) => call.cmd === 'set_desktop_idle_sync_optimizations');
+    expect(snapshot?.args).toMatchObject({ enabled: true, generation: 45 });
+    await adapter.dispose?.();
+  });
+
+  it('keeps desktop idle optimizations on when the snapshot omits the key', async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      primeIdleSyncOptimizations: true,
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === 'hq_pro_fetch') {
+          return {
+            status: 200,
+            body: JSON.stringify({ version: 1, flags: { 'other.feature': false } }),
+          };
+        }
+        if (cmd === 'register_mirror_quarantine_move_not_deletion_generation') return 47;
+        if (cmd === 'set_mirror_quarantine_move_not_deletion') return null;
+        if (cmd === 'set_desktop_idle_sync_optimizations') return null;
+        if (cmd === 'unregister_mirror_quarantine_move_not_deletion_generation') return null;
+        if (cmd === 'start_sync') return 'hq-sync';
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+
+    await expect(adapter.sync.startSync()).resolves.toEqual({
+      ok: true,
+      value: 'hq-sync',
+    });
+    const snapshot = calls.find((call) => call.cmd === 'set_desktop_idle_sync_optimizations');
+    expect(snapshot?.args).toMatchObject({ enabled: true, generation: 47 });
+    await adapter.dispose?.();
+  });
+
+  it('uses false as the explicit kill-switch value', async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      primeIdleSyncOptimizations: true,
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === 'hq_pro_fetch') {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { 'desktop.idle-sync-optimizations-v1': false },
+            }),
+          };
+        }
+        if (cmd === 'register_mirror_quarantine_move_not_deletion_generation') return 46;
+        if (cmd === 'set_mirror_quarantine_move_not_deletion') return null;
+        if (cmd === 'set_desktop_idle_sync_optimizations') return null;
+        if (cmd === 'unregister_mirror_quarantine_move_not_deletion_generation') return null;
+        if (cmd === 'start_sync') return 'hq-sync';
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+
+    await expect(adapter.sync.startSync()).resolves.toEqual({
+      ok: true,
+      value: 'hq-sync',
+    });
+    const snapshot = calls.find((call) => call.cmd === 'set_desktop_idle_sync_optimizations');
+    expect(snapshot?.args).toMatchObject({ enabled: false, generation: 46 });
     await adapter.dispose?.();
   });
 });

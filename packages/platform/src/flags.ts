@@ -191,6 +191,22 @@ export const RAIL_GATE_EVERYONE_DEFAULT: Readonly<Record<string, boolean>> = {
   [RAIL_BRIEF_FLAG]: false,
 };
 
+/**
+ * Registry row proposed by the desktop PR. It ships enabled for everyone;
+ * setting it false is the operational kill switch. No live flag store write
+ * is performed by the desktop client.
+ */
+export const IDLE_SYNC_OPTIMIZATIONS_FLAG =
+  "desktop.idle-sync-optimizations-v1";
+export const IDLE_SYNC_OPTIMIZATIONS_FLAG_DEFINITION = {
+  flagKey: IDLE_SYNC_OPTIMIZATIONS_FLAG,
+  description: "Kill switch for desktop idle sync optimizations.",
+  defaultValue: true,
+  ownerRepo: "indigoai-us/hq-desktop-app",
+  reason:
+    "Avoid repeated root-wide mirror staging and unchanged core drift scans after regression tests and local build verification.",
+} as const;
+
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
@@ -214,6 +230,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [VISUAL_FIRST_RUN_FLAG]: VISUAL_FIRST_RUN_FLAG,
   [FIRST_RUN_FOUND_APPS_FLAG]: FIRST_RUN_FOUND_APPS_FLAG,
   [BOT_INTEGRATION_CONTROL_FLAG]: BOT_INTEGRATION_CONTROL_FLAG,
+  [IDLE_SYNC_OPTIMIZATIONS_FLAG]: IDLE_SYNC_OPTIMIZATIONS_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
   [RAIL_TELEMETRY_FLAG]: RAIL_TELEMETRY_FLAG,

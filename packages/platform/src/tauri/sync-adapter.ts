@@ -67,6 +67,7 @@ import {
   createHqProRestFetch,
   createScopedFeatureFlagGates,
   resolveCompanyFeature,
+  IDLE_SYNC_OPTIMIZATIONS_FLAG,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
@@ -96,6 +97,8 @@ export interface SyncPlatformAdapterConfig {
   /** Resolve the mirror rollout gate as the native shell boots, before its
    * launch-started daemon reaches the first AllComplete mirror callback. */
   primeMirrorQuarantineGate?: boolean;
+  /** Resolve the default-on idle-sync kill switch as the native shell boots. */
+  primeIdleSyncOptimizations?: boolean;
   /** Test seam for deterministic flag-refresh and startup-race coverage. */
   createFlagClient?: FeatureFlagGateOptions["createClient"];
   /**
@@ -222,6 +225,8 @@ export function createSyncPlatformAdapter(
   const invokeFn = config.invoke;
   const requestPolicy = config.requestPolicy ?? {};
   let mirrorQuarantineRevision = 0;
+  let idleSyncOptimizationRevision = 0;
+  let unsubscribeIdleSyncOptimizationFlag: (() => void) | undefined;
   let mirrorQuarantineGenerationPromise: AdapterPromise<number> | null = null;
   let mirrorQuarantineDisposed = false;
   let mirrorQuarantineDisposePromise: Promise<void> | null = null;
@@ -348,6 +353,8 @@ export function createSyncPlatformAdapter(
   function disposeMirrorQuarantineGate(): Promise<void> {
     if (mirrorQuarantineDisposePromise) return mirrorQuarantineDisposePromise;
     mirrorQuarantineDisposed = true;
+    unsubscribeIdleSyncOptimizationFlag?.();
+    unsubscribeIdleSyncOptimizationFlag = undefined;
     unsubscribeMirrorQuarantineFlag?.();
     unsubscribeMirrorQuarantineFlag = null;
     if (typeof window !== 'undefined' && mirrorQuarantineWindowLifecycleInstalled) {
@@ -403,6 +410,26 @@ export function createSyncPlatformAdapter(
     });
   }
 
+  async function updateIdleSyncOptimizationsFlag(): AdapterPromise<void> {
+    if (mirrorQuarantineDisposed) return ok(undefined);
+    const revision = ++idleSyncOptimizationRevision;
+    const configured = await flags.resolve(
+      IDLE_SYNC_OPTIMIZATIONS_FLAG,
+      () => Promise.resolve(ok(true)),
+    );
+    if (mirrorQuarantineDisposed) return ok(undefined);
+    const generation = await mirrorQuarantineGenerationResult();
+    if (!generation.ok) return generation;
+    if (mirrorQuarantineDisposed) return ok(undefined);
+    // The kill switch is default-on. A failed resolve keeps the optimization on;
+    // only an explicit false value turns it off.
+    return call('set_desktop_idle_sync_optimizations', {
+      enabled: !configured.ok || configured.value,
+      generation: generation.value,
+      revision,
+    });
+  }
+
   if (config.primeMirrorQuarantineGate) {
     unsubscribeMirrorQuarantineFlag = flags.subscribe(
       MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
@@ -412,6 +439,17 @@ export function createSyncPlatformAdapter(
       },
     );
     void updateMirrorQuarantineFlag();
+  }
+
+  if (config.primeIdleSyncOptimizations) {
+    unsubscribeIdleSyncOptimizationFlag = flags.subscribe(
+      IDLE_SYNC_OPTIMIZATIONS_FLAG,
+      () => Promise.resolve(ok(true)),
+      () => {
+        void updateIdleSyncOptimizationsFlag();
+      },
+    );
+    void updateIdleSyncOptimizationsFlag();
   }
 
   async function getVersions(): AdapterPromise<VersionInfo> {
@@ -1598,6 +1636,10 @@ export function createSyncPlatformAdapter(
       startDaemon: async () => {
         const configured = await updateMirrorQuarantineFlag();
         if (!configured.ok) return configured;
+        if (config.primeIdleSyncOptimizations) {
+          const optimized = await updateIdleSyncOptimizationsFlag();
+          if (!optimized.ok) return optimized;
+        }
         return call('start_daemon');
       },
       stopDaemon: () => call('stop_daemon'),
@@ -1606,6 +1648,10 @@ export function createSyncPlatformAdapter(
       startSync: async (slug) => {
         const configured = await updateMirrorQuarantineFlag();
         if (!configured.ok) return configured;
+        if (config.primeIdleSyncOptimizations) {
+          const optimized = await updateIdleSyncOptimizationsFlag();
+          if (!optimized.ok) return optimized;
+        }
         const result = await call<void>('start_sync', slug ? { companySlug: slug } : undefined);
         if (result.ok) dispatchPostReadyAction('start_sync', slug ? { slug } : undefined);
         return result;
