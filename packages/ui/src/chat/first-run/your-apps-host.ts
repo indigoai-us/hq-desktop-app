@@ -243,11 +243,21 @@ export function createYourAppsHost(deps: YourAppsHostDeps): YourAppsHost {
     return { ok: false, reason: why.sentence, retry: why.retry };
   }
 
+  // Cards that mount together (the welcome report's connect card and its AI
+  // apps card) share one launch scan; a later call scans again.
+  let scanning: Promise<FoundWorkApps | null> | null = null;
+  async function scan(): Promise<FoundWorkApps | null> {
+    if (!deps.detectWorkApps) return null;
+    const res = await deps.detectWorkApps().catch(() => null);
+    return res?.ok ? res.value : null;
+  }
+
   return {
-    async detect() {
-      if (!deps.detectWorkApps) return null;
-      const res = await deps.detectWorkApps().catch(() => null);
-      return res?.ok ? res.value : null;
+    detect() {
+      scanning ??= scan().finally(() => {
+        scanning = null;
+      });
+      return scanning;
     },
 
     async load(companyUid) {

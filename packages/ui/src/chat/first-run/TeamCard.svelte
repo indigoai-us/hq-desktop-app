@@ -30,14 +30,31 @@
     onretry?: () => void;
     /** The one line the card settles into ("Joined Acme"). */
     settled?: string | null;
+    /**
+     * The name of a company a create already made whose reply has not gone
+     * through: the name field shows it, locked, and the other rows are
+     * disabled, so the card can only resend that company's reply.
+     */
+    createdName?: string | null;
   }
 
-  let { options, inviters = {}, onpick, pendingKey = null, error = null, onretry, settled = null }: Props = $props();
+  let {
+    options,
+    inviters = {},
+    onpick,
+    pendingKey = null,
+    error = null,
+    onretry,
+    settled = null,
+    createdName = null,
+  }: Props = $props();
 
   let creating = $state(false);
-  let name = $state("");
+  let typed = $state("");
 
   const busy = $derived(pendingKey !== null);
+  const locked = $derived(!!createdName);
+  const name = $derived(createdName ?? typed);
   const primary = $derived(
     options.invites.length > 0 ? "invite" : options.companies.length > 0 ? "existing" : "create",
   );
@@ -70,7 +87,7 @@
           <SetupButton
             variant={primary === "invite" ? "primary" : "secondary"}
             data-testid="team-card-join"
-            disabled={busy}
+            disabled={busy || locked}
             aria-busy={pendingKey === `invite:${company.slug}` || undefined}
             onclick={() => onpick({ kind: "invite", company })}
           >
@@ -88,7 +105,7 @@
           <SetupButton
             variant={primary === "existing" ? "primary" : "secondary"}
             data-testid="team-card-open"
-            disabled={busy}
+            disabled={busy || locked}
             aria-busy={pendingKey === `existing:${company.slug}` || undefined}
             onclick={() => onpick({ kind: "existing", company })}
           >
@@ -98,7 +115,7 @@
         </div>
       {/each}
       <div class="row" data-testid="team-card-create-row">
-        {#if creating}
+        {#if creating || locked}
           <form class="create" onsubmit={submitCreate}>
             <input
               class="new-bot-create-input"
@@ -106,7 +123,12 @@
               aria-label={TEAM_CARD_COPY.nameLabel}
               maxlength={COMPANY_NAME_MAX}
               disabled={busy}
-              bind:value={name}
+              readonly={locked}
+              value={name}
+              oninput={(event) => {
+                if (locked) event.currentTarget.value = name;
+                else typed = event.currentTarget.value;
+              }}
             />
             <SetupButton
               variant={primary === "create" ? "primary" : "secondary"}
@@ -144,7 +166,7 @@
     <SetupButton
       variant="quiet"
       data-testid="team-card-personal"
-      disabled={busy}
+      disabled={busy || locked}
       aria-busy={pendingKey === "personal" || undefined}
       onclick={() => onpick({ kind: "personal" })}
     >

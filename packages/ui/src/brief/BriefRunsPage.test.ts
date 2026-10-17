@@ -107,6 +107,22 @@ describe("BriefRunsPage", () => {
     expect(target.textContent).toContain("Newest call");
   });
 
+  it("reports the run on screen through onshown, including after a run bar pick and on leaving", async () => {
+    const onshown = vi.fn();
+    render(files(), { onshown });
+    await settle();
+    expect(onshown).toHaveBeenLastCalledWith(NEW);
+    q("brief-older")!.click();
+    await settle();
+    expect(onshown).toHaveBeenLastCalledWith(OLD);
+    q("brief-latest")!.click();
+    await settle();
+    expect(onshown).toHaveBeenLastCalledWith(NEW);
+    unmount(app!);
+    app = null;
+    expect(onshown).toHaveBeenLastCalledWith(null);
+  });
+
   it("renders the Housekeeping card and launches a proposal's prompt", async () => {
     const onlaunch = vi.fn(async () => null);
     render(files(), { onlaunch });

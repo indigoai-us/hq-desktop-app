@@ -8,6 +8,7 @@
   import { onDestroy, onMount } from "svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import DailyBrief from "./DailyBrief.svelte";
+  import type { BriefActions } from "./brief-action-cards.js";
   import BriefRunBar from "./BriefRunBar.svelte";
   import BriefDawn from "./BriefDawn.svelte";
   import BriefActivity from "./BriefActivity.svelte";
@@ -46,8 +47,12 @@
     source?: BriefSweepSource | null;
     /** Open this run first instead of the latest ready one (the design harness's ?briefRun). */
     initialRunId?: string | null;
+    /** Report action cards; passed through to the brief page. */
+    actions?: BriefActions | null;
+    /** Told which run is on screen (null for none or the no-run brief), including after a run bar pick. */
+    onshown?: (runId: string | null) => void;
   }
-  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp, initialRunId = null }: Props = $props();
+  let { adapter, companies, onlaunch, creator = null, run: sharedRun = null, onopenthread, onopenmeetings, source: sourceProp, initialRunId = null, actions = null, onshown }: Props = $props();
 
   const LAST_KEY = "hq.brief.lastOpenedAt";
   // Fixed for the page's life; the host remounts the page for a new adapter.
@@ -67,6 +72,12 @@
   let alive = true;
   let seq = 0;
   const latestRunId = $derived(latestReadyRun(entries)?.runId ?? null);
+  $effect(() => {
+    const id = shownRunId;
+    onshown?.(id);
+  });
+  // Leaving the page puts no run on screen.
+  $effect(() => () => onshown?.(null));
 
   function storage(): Storage | null {
     try {
@@ -319,7 +330,7 @@
   <div class="daily-brief-dawn-page">{@render dawnScene("page")}</div>
 {:else if input}
   {#if dawn}<div class="masthead-wrap">{@render dawnScene("masthead")}</div>{/if}
-  <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} onlog={logItem} header={entries.length || run ? runBar : undefined} />
+  <DailyBrief dmApi={adapter.messaging ?? null} {onopenthread} {onopenmeetings} {input} {companies} {onlaunch} {housekeeping} {actions} onlog={logItem} header={entries.length || run ? runBar : undefined} />
 {:else if failed}
   <p class="failed" data-testid="brief-failed">The Daily Brief could not load. Try again in a moment.</p>
 {:else}

@@ -4,7 +4,7 @@
   import { hostComputerNoun } from "@hq/platform";
   import "./settings-chrome.css";
   import { announceRuntimeSignedIn } from "../chat/messaging/runtime-repair.svelte.js";
-  import { CONNECTOR_APPS, INDIGO_MCP_URL } from "./hq-connector-setup.js";
+  import { CONNECTOR_APPS, INDIGO_MCP_URL, copyConnectorSetup } from "./hq-connector-setup.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -207,13 +207,10 @@
     clearTimeout(copyTimer);
     copiedId = null;
     copyFailedId = null;
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API is unavailable");
-      await navigator.clipboard.writeText(app.copyText);
+    if (await copyConnectorSetup(app.copyText)) {
       copiedId = app.id;
       copyTimer = setTimeout(() => (copiedId = null), 1500);
-    } catch (err) {
-      console.warn("[agents-settings] copy connector setup failed", err);
+    } else {
       copyFailedId = app.id;
     }
   }

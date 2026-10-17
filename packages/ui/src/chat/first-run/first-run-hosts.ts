@@ -34,6 +34,12 @@ import type { FirstRunAppsHandoff, FirstRunTeamHandoff } from "./visual-first-ru
 export interface FirstRunTeamHost {
   join(company: FirstRunTeamCompany): Promise<TeamActionResult>;
   create(name: string): Promise<TeamActionResult>;
+  /**
+   * The person's company a create of this name would have made, or null when
+   * the roster does not have it (or does not answer in time). Asked before a
+   * create that may already have run, so the company is never made twice.
+   */
+  findCreated?(name: string): Promise<FirstRunTeamCompany | null>;
 }
 /** Reads the catalog and connects apps for Note taker and Project management. */
 export interface FirstRunAppsHost {
@@ -73,7 +79,10 @@ export interface TeamHostDeps {
   claimInvite?: ((slug: string) => Promise<AdapterResult<Json>>) | null;
   /** The New company sheet's create (the `create_company` card). */
   createCompany?:
-    | ((name: string, slug: string) => Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string }>)
+    | ((
+        name: string,
+        slug: string,
+      ) => Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string; blocked?: boolean }>)
     | null;
   /** After a join or a create: pin, refresh the roster. Never navigates. */
   joined?: (companyUid: string | null) => void | Promise<void>;
@@ -157,7 +166,7 @@ export function createFirstRunTeamHost(deps: TeamHostDeps): FirstRunTeamHost {
       await sleep(delay);
       return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: "cmp_dry_run", slug, name } } };
     }
-    if (!deps.createCompany) return { ok: false, reason: CREATE_UNAVAILABLE };
+    if (!deps.createCompany) return { ok: false, reason: CREATE_UNAVAILABLE, blocked: true };
     const before = lastCreate.get(slug);
     // The last try made it after the screen gave up waiting: keep that company.
     if (before?.ok) return before;
@@ -167,7 +176,8 @@ export function createFirstRunTeamHost(deps: TeamHostDeps): FirstRunTeamHost {
       if (found) return { ok: true, choice: { kind: "company", how: "existing", company: found } };
     }
     const result = await deps.createCompany(name, slug);
-    if (!result.ok) return { ok: false, reason: result.reason };
+    // Blocked: the server refused it (a taken handle), so it made no company.
+    if (!result.ok) return { ok: false, reason: result.reason, ...(result.blocked ? { blocked: true } : {}) };
     await deps.created?.(result.companyUid);
     return { ok: true, choice: { kind: "company", how: "created", company: { companyUid: result.companyUid, slug, name } } };
   }
@@ -178,7 +188,12 @@ export function createFirstRunTeamHost(deps: TeamHostDeps): FirstRunTeamHost {
     },
     create(name) {
       const slug = companySlugFromName(name);
-      if (!slug) return Promise.resolve({ ok: false, reason: "Use at least three letters or digits, starting with a letter." });
+      if (!slug)
+        return Promise.resolve({
+          ok: false,
+          reason: "Use at least three letters or digits, starting with a letter.",
+          blocked: true,
+        });
       return once(`create:${slug}`, async () => {
         let result: TeamActionResult;
         try {
@@ -190,6 +205,11 @@ export function createFirstRunTeamHost(deps: TeamHostDeps): FirstRunTeamHost {
         lastCreate.set(slug, result);
         return result;
       });
+    },
+    async findCreated(name) {
+      const slug = companySlugFromName(name);
+      if (deps.dry || !deps.findCompany || !slug) return null;
+      return findWithin(deps.findCompany, slug, deps.findTimeoutMs ?? FIND_COMPANY_TIMEOUT_MS);
     },
   };
 }

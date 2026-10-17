@@ -38,6 +38,8 @@
   import BriefWaiting from "./BriefWaiting.svelte";
   import BriefWeekArc from "./BriefWeekArc.svelte";
   import BriefHousekeeping from "./BriefHousekeeping.svelte";
+  import BriefActionCard from "./BriefActionCard.svelte";
+  import { actionCardData, type BriefActions } from "./brief-action-cards.js";
   import type { Snippet } from "svelte";
   import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
   import type { BriefDmApi } from "./brief-dms.js";
@@ -75,8 +77,13 @@
     onopenmeetings?: () => void;
     /** Records what the person did with an item (dismiss, launch) in the brief log. */
     onlog?: (event: BriefItemEvent) => void;
+    /**
+     * Report action cards: where each suggested piece of work can be done and
+     * how to hand it to the assistant. Left out, the cards are not shown.
+     */
+    actions?: BriefActions | null;
   }
-  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog }: Props = $props();
+  let { input, companies = [], onlaunch, header, housekeeping = null, dmApi = null, onopenthread, onopenmeetings, onlog, actions = null }: Props = $props();
 
   const briefState = new BriefState(
     (engine, prompt) => (onlaunch ?? launchBriefPromptViaClipboard)(engine, prompt),
@@ -91,6 +98,21 @@
   // Needs rows: the ones a priority points at first, then by what they unblock.
   const needsRows = $derived(rankDecisions(ctx));
   const cleared = $derived(input.decisions.filter((d) => briefState.cleared[d.id]).length);
+  // One card per open decision that carries a launch prompt, in the Needs-you order.
+  // A card its own launch cleared stays, with the launch note and no buttons.
+  const launchedNote = (id: string): string | null => (briefState.launched[id] ? (briefState.notes[id] ?? null) : null);
+  const actionCards = $derived(
+    actions
+      ? needsRows
+          .filter((d) => !briefState.cleared[d.id] || launchedNote(d.id))
+          .map((d) => actionCardData(d, plan.prompts))
+          .filter((c) => c !== null)
+      : [],
+  );
+  /** A card launch takes the Start path: it logs, clears the item and leaves the Started note. */
+  function launchAction(itemId: string, engine: "claude" | "codex", prompt: string): Promise<string> {
+    return briefState.start(itemId, prompt, engine);
+  }
   // Every live incident the catalogue counted; the lead is the one a priority points at (by rank), else the first.
   const incidents = $derived(input.risks.filter((r) => r.severity === "incident"));
   const incident = $derived.by((): BriefRiskRow | null => {
@@ -416,6 +438,22 @@
     {/each}
   </main>
 
+  {#if actions && actionCards.length}
+    <section class="b-actions" data-testid="brief-action-cards">
+      {#each actionCards as card (card.id)}
+        <BriefActionCard
+          {card}
+          destinations={actions.destinations}
+          runId={input.runId ?? null}
+          now={input.now}
+          onassistant={actions.onassistant}
+          onlaunch={(engine, prompt) => launchAction(card.id, engine, prompt)}
+          launched={launchedNote(card.id)}
+        />
+      {/each}
+    </section>
+  {/if}
+
   {#if notShown.length}
     <div class="b-dropped" data-testid="brief-dropped">
       <span class="eyebrow">Not shown today</span>
@@ -445,6 +483,12 @@
   }
   .prov:hover {
     background: rgba(255, 255, 255, 0.06);
+  }
+  .b-actions {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 10px;
   }
   .b-review {
     margin-top: 12px;
