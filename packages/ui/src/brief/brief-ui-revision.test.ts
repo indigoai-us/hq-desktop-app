@@ -19,17 +19,17 @@ it("opens the actual new-company sheet from the brief action", () => {
   const source = readFileSync("src/shell/DesktopApp.svelte", "utf8");
   expect(source).toContain("onconnectcompany={() => (newCompanyOpen = true)}");
 });
-async function renderPersonBrief() {
+async function renderPersonBrief(offRailFailure = false) {
   const run = "brief-20261017-090000";
   const companies = ["alpha", "beta", "gamma"].map(slug => ({uid:`cmp_${slug}`,slug,label:slug[0]!.toUpperCase()+slug.slice(1)}));
-  const payload = {mode:"person", personal:{items:{}}, companies:{alpha:{company:"alpha",items:{decisions:[{id:"d1",title:"Approve launch",action:"go",company:"alpha",prompt:"Check the release and report the result."}]}},beta:{error:"service unavailable"}}, not_included:[{company:"gamma",reason:"not included: open HQ in that company to include it"}],welcome:{error:"Import unavailable",getting_started:"Begin with a personal task."}};
+  const payload = {mode:"person", personal:{items:{}}, companies:{alpha:{company:"alpha",items:{decisions:[{id:"d1",title:"Approve launch",action:"go",company:"alpha",prompt:"Check the release and report the result."}]}},beta:{label:"Beta Research",error:"service unavailable"}}, not_included:[{company:"gamma",reason:"not included: open HQ in that company to include it"}],welcome:{error:"Import unavailable",getting_started:"Begin with a personal task."}};
   const files:Record<string,string> = {"workspace/brief/index.jsonl":JSON.stringify({run_id:run,created_at:"2026-10-17T16:00:00Z",state:"ready",counts:{}}),[`workspace/brief/${run}/brief.json`]:JSON.stringify(payload),[`workspace/brief/${run}/brief-data.json`]:JSON.stringify(payload)};
   const older = "brief-20261016-090000";
   files["workspace/brief/index.jsonl"] += "\n" + JSON.stringify({run_id:older,created_at:"2026-10-16T16:00:00Z",state:"ready",counts:{}});
   files[`workspace/brief/${older}/brief.json`] = JSON.stringify(payload);
   files[`workspace/brief/${older}/brief-data.json`] = JSON.stringify(payload);
   target=document.createElement("div"); document.body.appendChild(target);
-  app=mount(BriefRunsPage,{target,props:{adapter:{},companies,onlaunch:async()=>null,actions:{destinations:{assistantName:null,claudeCode:true,codex:true},onassistant:async()=>null},source:{readHqFile:async p=>files[p]??null}}});
+  app=mount(BriefRunsPage,{target,props:{adapter:{},companies:offRailFailure?companies.filter(c=>c.slug!=="beta"):companies,onlaunch:async()=>null,actions:{destinations:{assistantName:null,claudeCode:true,codex:true},onassistant:async()=>null},source:{readHqFile:async p=>files[p]??null}}});
   await vi.waitFor(async()=>{await tick();expect(target.querySelector('[data-testid="brief-content"]')).not.toBeNull();});
 }
 
@@ -44,6 +44,12 @@ it("renders getting-started content and one plain welcome error line", async () 
 it("renders the failed company notice without an empty company section", async () => {
   await renderPersonBrief();
   expect(readableText('[data-testid="brief-company-failures"]')).toBe("Beta could not be included this time.");
+  expect(target.querySelector('[data-company="cmp_beta"]')).toBeNull();
+});
+
+it("uses a failed company's recorded label when it is outside the rail roster", async () => {
+  await renderPersonBrief(true);
+  expect(readableText('[data-testid="brief-company-failures"]')).toBe("Beta Research could not be included this time.");
   expect(target.querySelector('[data-company="cmp_beta"]')).toBeNull();
 });
 

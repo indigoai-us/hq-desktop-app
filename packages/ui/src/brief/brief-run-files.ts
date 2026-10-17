@@ -199,8 +199,8 @@ function parseTodo(raw: unknown): BriefTodo[] {
     .filter((t) => t.text);
 }
 
-/** `brief.json`, or null when it is not a JSON object. */
-export function parseBriefItems(text: string, scope: BriefCompanyScope): BriefRunItems | null {
+/** `brief.json`, or null when invalid. legacyCompany is only the paired non-person sweep's root company. */
+export function parseBriefItems(text: string, scope: BriefCompanyScope, legacyCompany: string | null = null): BriefRunItems | null {
   let root = parseJson(text);
   if (!root) return null;
   if (root.mode === "person") {
@@ -233,7 +233,7 @@ export function parseBriefItems(text: string, scope: BriefCompanyScope): BriefRu
     }
     return base;
   }
-  root = scopeBriefCompanyData(root, scope) as typeof root;
+  root = scopeBriefCompanyData(root, scope, legacyCompany) as typeof root;
   if (!root) return null;
   const items = root.items;
   const companyUid = briefCompanyUid(root.company, scope);

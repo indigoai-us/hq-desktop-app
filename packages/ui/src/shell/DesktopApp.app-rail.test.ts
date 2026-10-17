@@ -244,6 +244,12 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     await vi.waitFor(() => expect(action()).toBeDefined());
     action()!.click();
     await vi.waitFor(() => expect(host.querySelector('[data-testid="new-company-sheet"]')).not.toBeNull());
+    expect(host.querySelector('[data-testid="new-company-sheet"]')?.getAttribute("role")).toBe("dialog");
+    expect(host.querySelector('[data-testid="new-company-name"]')).not.toBeNull();
+    host.querySelector<HTMLButtonElement>('[data-testid="new-company-scrim"]')!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="new-company-sheet"]')).toBeNull());
+    action()!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="new-company-name"]')).not.toBeNull());
     expect(current()).toBe("brief");
   });
 

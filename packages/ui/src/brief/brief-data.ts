@@ -391,9 +391,9 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
     dmCount: dms.count,
   };
   const sweep = opts.sweep === undefined ? adapterSweepSource(adapter.files) : opts.sweep;
-  if (sweep) await mergeSweep(input, sweep, opts, now, yesterday, fail);
+  const legacyCompany = sweep ? await mergeSweep(input, sweep, opts, now, yesterday, fail) : null;
   if (sweep && opts.runId) {
-    await mergeRunItems(input, sweep, opts, fail);
+    await mergeRunItems(input, sweep, opts, fail, legacyCompany);
     input.runId = opts.runId;
     input.previous = opts.previousRunId === null ? null : await readPrevious(sweep, opts, now, userName, log);
     input.previousRunId = input.previous?.runId ?? null;
@@ -441,8 +441,8 @@ async function readPrevious(
     const soft = (name: string) => problems.push(name);
     const prevOpts: GatherOptions = { ...opts, runId: prevId, lastBriefAt };
     const prev = baseInput(prevNow, userName, opts.companies.slice(0, MAX_COMPANIES), lastBriefAt);
-    await mergeSweep(prev, source, prevOpts, prevNow, prevYesterday, soft);
-    await mergeRunItems(prev, source, prevOpts, soft);
+    const legacyCompany = await mergeSweep(prev, source, prevOpts, prevNow, prevYesterday, soft);
+    await mergeRunItems(prev, source, prevOpts, soft, legacyCompany);
     if (problems.length) {
       log(`previous brief ${prevId} is missing ${problems.join(", ")}; no rotation`);
       return null;
@@ -466,6 +466,7 @@ async function mergeRunItems(
   source: BriefSweepSource,
   opts: GatherOptions,
   fail: (name: string, err: unknown) => void,
+  legacyCompany: string | null = null,
 ): Promise<void> {
   let text: string | null;
   try {
@@ -478,7 +479,7 @@ async function mergeRunItems(
     fail("brief.json", new SourceError("brief.json: not written"));
     return;
   }
-  const items = parseBriefItems(text, opts.companies);
+  const items = parseBriefItems(text, opts.companies, legacyCompany);
   if (!items) {
     fail("brief.json", new SourceError("brief.json: not valid JSON"));
     return;
@@ -714,7 +715,7 @@ async function mergeSweep(
   now: Date,
   yesterday: Date,
   fail: (name: string, err: unknown) => void,
-): Promise<void> {
+): Promise<string | null | undefined> {
   let text: string | null;
   try {
     text = await source.readHqFile(sweepPath(now, opts.runId));
@@ -747,6 +748,7 @@ async function mergeSweep(
   if (s.fleetIncident) input.fleetIncident = input.fleetIncident ?? s.fleetIncident;
   if (s.fleetIncidents) input.fleetIncidents = s.fleetIncidents;
   if (s.releases?.length) input.releases = input.releases ?? s.releases;
+  return sweep.mode !== "person" && typeof sweep.company === "string" ? sweep.company : null;
 }
 
 /**

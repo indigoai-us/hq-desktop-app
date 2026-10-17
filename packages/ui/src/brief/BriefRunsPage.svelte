@@ -11,7 +11,7 @@
   import BriefWelcome from "./BriefWelcome.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import { briefSections } from "./brief-sections.js";
-  import { readRunWelcome, readRunExclusions, readRunFailedCompanies, type BriefExclusion, type BriefWelcome as Welcome } from "./brief-welcome.js";
+  import { readRunWelcome, readRunExclusions, readRunFailedCompanies, type BriefFailedCompany, type BriefExclusion, type BriefWelcome as Welcome } from "./brief-welcome.js";
   import type { BriefActions } from "./brief-action-cards.js";
   import BriefRunBar from "./BriefRunBar.svelte";
   import BriefDawn from "./BriefDawn.svelte";
@@ -72,8 +72,8 @@
   let input = $state<BriefInput | null>(null);
   let welcome = $state<Welcome | null>(null);
   let exclusions = $state<BriefExclusion[]>([]);
-  let failedCompanies = $state<string[]>([]);
-  const sections = $derived(input ? briefSections(input, companies.filter(c => !failedCompanies.some(id => id === c.uid || id === c.slug) && !exclusions.some(e => e.company === c.uid || e.company === c.slug))) : []);
+  let failedCompanies = $state<BriefFailedCompany[]>([]);
+  const sections = $derived(input ? briefSections(input, companies.filter(c => !failedCompanies.some(f => f.company === c.uid || f.company === c.slug) && !exclusions.some(e => e.company === c.uid || e.company === c.slug))) : []);
   let housekeeping = $state<BriefHousekeeping | null>(null);
   let missing = $state<string[]>([]);
   let failed = $state(false);
@@ -360,9 +360,9 @@
   {/if}
   {#if failedCompanies.length}
     <aside class="brief-exclusions" data-testid="brief-company-failures">
-      {#each failedCompanies as id}
-        {@const failedCompany = companies.find(c => c.uid === id || c.slug === id)}
-        <p><CompanyLabel name={failedCompany?.label ?? id} companyUid={failedCompany?.uid} iconUrl={failedCompany?.iconUrl} /> could not be included this time.</p>
+      {#each failedCompanies as failure}
+        {@const failedCompany = companies.find(c => c.uid === failure.company || c.slug === failure.company)}
+        <p><CompanyLabel name={failedCompany?.label ?? failure.label ?? failure.company} companyUid={failedCompany?.uid} iconUrl={failedCompany?.iconUrl} /> could not be included this time.</p>
       {/each}
     </aside>
   {/if}

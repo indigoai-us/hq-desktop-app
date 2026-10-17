@@ -32,18 +32,23 @@ export function parseWelcome(value: unknown): BriefWelcome | null {
   };
 }
 
-export async function readRunFailedCompanies(source: BriefSweepSource, runId: string): Promise<string[]> {
-  const failed = new Set<string>();
+export interface BriefFailedCompany { company: string; label?: string }
+export async function readRunFailedCompanies(source: BriefSweepSource, runId: string): Promise<BriefFailedCompany[]> {
+  const failed = new Map<string, BriefFailedCompany>();
   for (const name of ["brief.json", "brief-data.json"] as const) {
     try {
       const text = await source.readHqFile(briefRunPath(runId, name));
       const sections = text ? object(object(JSON.parse(text))?.companies) : null;
       for (const [company, section] of Object.entries(sections ?? {})) {
-        if (object(section)?.error) failed.add(company);
+        const row = object(section);
+        if (row?.error) {
+          const label = typeof row.label === "string" && row.label.trim() ? row.label.trim() : failed.get(company)?.label;
+          failed.set(company, { company, ...(label ? {label} : {}) });
+        }
       }
     } catch { /* A partial run can still have useful sections. */ }
   }
-  return [...failed];
+  return [...failed.values()];
 }
 
 export async function readRunWelcome(source: BriefSweepSource, runId: string): Promise<BriefWelcome | null> {
