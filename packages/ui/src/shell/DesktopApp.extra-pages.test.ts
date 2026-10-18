@@ -10,7 +10,7 @@
  * loud failure for an id no host registered.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -243,5 +243,17 @@ describe("DesktopApp extraPages", () => {
     expect(
       host.querySelector('[data-testid="embedded-navigation-error"]')?.textContent,
     ).toContain("Unknown destination: probe");
+  });
+
+  it("mounts company jobs on outpost-jobs when the host registers no extra page", async () => {
+    await mountShell();
+    await navigateEmbedded({ kind: "extra", page: "outpost-jobs", param: null });
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-testid='company-jobs-page']")).toBeTruthy();
+    });
+    expect(host.querySelector("[data-testid='company-jobs-route']")?.getAttribute("data-route")).toBe("outpost-jobs");
+    expect(host.querySelector("[data-testid='embedded-navigation-error']")).toBeNull();
+    expect(host.textContent).toContain("Choose a company to see its jobs.");
+    expect(host.querySelector("[data-testid='company-jobs-add']")).toBeNull();
   });
 });

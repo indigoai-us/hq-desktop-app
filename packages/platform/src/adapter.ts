@@ -1502,6 +1502,18 @@ export interface AgentProfilePatch {
 export const OUTPOST_PATHS = {
   status: "/outpost/status",
   jobsStatus: "/outpost/jobs/status",
+  /** POST company job revisions: list, create, update, enable, disable, delete, run-now. */
+  companyJobs: "/outpost/company/jobs",
+  companyJobsStatus: (companyUid: string, outpostId?: string | null): string => {
+    const company = `companyUid=${encodeURIComponent(companyUid)}`;
+    const box = outpostId ? `&outpostId=${encodeURIComponent(outpostId)}` : "";
+    return `/outpost/company/jobs/status?${company}${box}`;
+  },
+  /** GET company Outpost list. Falls back to the legacy single row when list is absent. */
+  companyOutpostList: (companyUid: string): string =>
+    `/outpost/status?companyUid=${encodeURIComponent(companyUid)}&list=true`,
+  companyOutpostLegacy: (companyUid: string): string =>
+    `/outpost/status?companyUid=${encodeURIComponent(companyUid)}&ownerKind=company`,
 } as const;
 
 /**
@@ -1782,6 +1794,18 @@ export interface AgentsApi {
   getMyOutpostStatus?(): AdapterPromise<Json>;
   /** GET /outpost/jobs/status — the caller's scheduled-job status rows. */
   listMyOutpostJobs?(): AdapterPromise<Json>;
+  /**
+   * POST /outpost/company/jobs. Body is companyUid, action, and the action's
+   * fields. A refusal keeps the HTTP status so a 403 stays admin_required.
+   */
+  postCompanyJobs?(body: Json): AdapterPromise<Json>;
+  /** GET /outpost/company/jobs/status?companyUid=&outpostId= */
+  getCompanyJobsStatus?(companyUid: string, outpostId?: string | null): AdapterPromise<Json>;
+  /**
+   * GET /outpost/status?companyUid=&list=true. A 400 or 404 falls back to the
+   * legacy single company Outpost. Optional so older test doubles stay valid.
+   */
+  listCompanyOutposts?(companyUid: string): AdapterPromise<Json>;
   /** GET /v1/google/accounts — the caller's connected Google accounts. */
   listMyGoogleAccounts?(): AdapterPromise<Json>;
   /** GET /v1/slack/personal/accounts — the caller's personal Slack accounts. */

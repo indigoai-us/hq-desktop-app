@@ -90,6 +90,8 @@
   import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
+  import CompanyJobsRailHost from "./CompanyJobsRailHost.svelte";
+  import { OUTPOST_JOBS_ROUTE, parseOutpostJobsParam } from "../outpost/company-jobs-model.js";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
@@ -11329,6 +11331,12 @@
       };
     }
     if (destination.kind === "extra") {
+      if (destination.page === OUTPOST_JOBS_ROUTE) {
+        const jobsCompany = destination.companyUid ?? extraParamCompanyKey(destination.param);
+        const jobsDenied = accessOutcome(destination, jobsCompany);
+        if (jobsDenied) return jobsDenied;
+        return { status: "ready", destination };
+      }
       if (
         railPlaceholderForPage(destination.page) ||
         accountPlaceholderForPage(destination.page) ||
@@ -13336,6 +13344,29 @@
   // OWNER-R24: the caller's role in the open company, from the membership
   // roster. Grants and Billing show only to owners and admins.
   const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  const jobsCompanyUid = $derived.by(() => {
+    if (extraPageId !== OUTPOST_JOBS_ROUTE) return null;
+    return parseOutpostJobsParam(extraPageParam).companyUid ?? tenantCompanyId;
+  });
+  const jobsRole = $derived.by(() => {
+    const uid = jobsCompanyUid;
+    if (!uid) return "unknown" as const;
+    const role = callerRole(uid);
+    if (role === "Owner") return "owner" as const;
+    if (role === "Admin") return "admin" as const;
+    if (role === undefined) return "unknown" as const;
+    return "member" as const;
+  });
+  $effect(() => {
+    const uid = jobsCompanyUid;
+    if (!uid) return;
+    loadCallerRole({
+      companyUid: uid,
+      selfUid: self?.uid ?? null,
+      selfEmail: self?.email ?? null,
+      company: adapter.company ?? null,
+    });
+  });
   // Grants pane: the caller's other companies, grantable where they are an
   // owner or admin (hq-pro enforces the same rule).
   const grantsOpen = $derived(railPlaceholder?.id === "grants");
@@ -15090,6 +15121,13 @@
             <p>{railPlaceholder.summary}</p>
             <p class="rail-placeholder-story">Built in {railPlaceholder.story}.</p>
           </section>
+        {:else if view === "extra" && extraPageId === OUTPOST_JOBS_ROUTE}
+          <CompanyJobsRailHost
+            companyUid={jobsCompanyUid}
+            outpostId={parseOutpostJobsParam(extraPageParam).outpostId}
+            role={jobsRole}
+            api={adapter.agents ?? null}
+          />
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
           {@const Page = extraPages[extraPageId].component}
           <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>

@@ -288,6 +288,58 @@ describe("createSyncPlatformAdapter personal Outpost", () => {
   });
 });
 
+describe("createSyncPlatformAdapter company Outpost jobs", () => {
+  it("posts a job revision and reads health with the company and box in the query", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ jobs: [] }) };
+      },
+    });
+    const body = { companyUid: "cmp_1", action: "list" };
+    await adapter.agents.postCompanyJobs?.(body);
+    await adapter.agents.getCompanyJobsStatus?.("cmp_1", "opc 1");
+    expect(calls).toEqual([
+      { cmd: "hq_pro_fetch", args: { url: OUTPOST_PATHS.companyJobs, method: "POST", body: JSON.stringify(body) } },
+      {
+        cmd: "hq_pro_fetch",
+        args: { url: OUTPOST_PATHS.companyJobsStatus("cmp_1", "opc 1"), method: "GET", body: null },
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toMatch(/registered_by/);
+    expect(calls[1]?.args?.url).toBe("/outpost/company/jobs/status?companyUid=cmp_1&outpostId=opc%201");
+  });
+
+  it("keeps a 403 on a company job write", async () => {
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => ({ status: 403, body: JSON.stringify({ code: "admin_required" }) }),
+    });
+    const res = await adapter.agents.postCompanyJobs?.({ companyUid: "cmp_1", action: "create" });
+    expect(res).toMatchObject({ ok: false, status: 403, code: "admin_required" });
+  });
+
+  it("reads the company Outpost list and falls back to the legacy row", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        const url = String(args?.url ?? "");
+        if (url.includes("list=true")) {
+          return { status: 404, body: JSON.stringify({ code: "not_found" }) };
+        }
+        return { status: 200, body: JSON.stringify({ outpost: { outpostId: "outpost_cmp_1", name: "main" } }) };
+      },
+    });
+    const listed = await adapter.agents.listCompanyOutposts?.("cmp_1");
+    expect(listed).toMatchObject({ ok: true, value: { outpost: { outpostId: "outpost_cmp_1" } } });
+    expect(calls.map((call) => call.args?.url)).toEqual([
+      OUTPOST_PATHS.companyOutpostList("cmp_1"),
+      OUTPOST_PATHS.companyOutpostLegacy("cmp_1"),
+    ]);
+  });
+});
+
 describe("createSyncPlatformAdapter personal integrations", () => {
   it("reads Google and personal Slack accounts on the console's routes", async () => {
     const calls: Invocation[] = [];
