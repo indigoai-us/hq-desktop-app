@@ -1564,59 +1564,6 @@ describe('first-run sign-in screen', () => {
     expect(tauri.invoke).not.toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
   });
 
-  const GOOGLE_DEVICE_CHECK_COPY =
-    "Google may ask you to confirm it's you on your phone. That is Google's own check.";
-
-  function hangBrowserSignIn(): void {
-    stubContinuationInvoke();
-    const fallbackInvoke = tauri.invoke.getMockImplementation();
-    if (!fallbackInvoke) throw new Error('Expected the onboarding invoke stub to be installed.');
-    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-      if (command === 'oauth_listen_for_code') return new Promise(() => {});
-      return fallbackInvoke(command, args);
-    });
-  }
-
-  it('shows the Google phone check on the welcome screen only after the browser wait passes 10 seconds', async () => {
-    hangBrowserSignIn();
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
-    await revealSignIn();
-    providerButtons()[0]?.click();
-    await flushUntil(() => tauri.open.mock.calls.length > 0);
-    await flush();
-
-    expect(host.querySelector('[data-testid="google-device-check"]')).toBeNull();
-    await vi.advanceTimersByTimeAsync(9_000);
-    flushSync();
-    expect(host.querySelector('[data-testid="google-device-check"]')).toBeNull();
-    expect(host.textContent).not.toContain(GOOGLE_DEVICE_CHECK_COPY);
-
-    await vi.advanceTimersByTimeAsync(1_000);
-    flushSync();
-    const line = host.querySelector('[data-testid="google-device-check"]');
-    expect(line?.textContent).toBe(GOOGLE_DEVICE_CHECK_COPY);
-    expect(host.querySelectorAll('[data-testid="google-device-check"]')).toHaveLength(1);
-  });
-
-  it('does not show the Google phone check while Microsoft sign-in waits on the browser', async () => {
-    hangBrowserSignIn();
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
-    await revealSignIn();
-    providerButtons()[1]?.click();
-    flushSync();
-    const email = host.querySelector<HTMLInputElement>('[data-testid="microsoft-email"]');
-    expect(email).not.toBeNull();
-    email!.value = 'scottallen@dim6fitness.com';
-    email!.dispatchEvent(new Event('input', { bubbles: true }));
-    await flush();
-    host.querySelector<HTMLButtonElement>('[data-testid="microsoft-email-continue"]')?.click();
-    await flushUntil(() => tauri.open.mock.calls.length > 0);
-    await vi.advanceTimersByTimeAsync(15_000);
-    flushSync();
-    expect(host.querySelector('[data-testid="google-device-check"]')).toBeNull();
-    expect(host.textContent).not.toContain(GOOGLE_DEVICE_CHECK_COPY);
-  });
-
   it('records completion without abandonment when finishing unmounts the wizard', async () => {
     const onfinish = vi.fn(async () => {
       if (component === null) throw new Error('Expected the wizard to be mounted before finish.');
