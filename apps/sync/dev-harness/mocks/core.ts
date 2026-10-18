@@ -1655,14 +1655,7 @@ This final paragraph verifies spacing after a thematic break.
   // resolve as a successful OAuth round trip so the flow can be walked from
   // the very first screen.
   start_oauth_login: () => ({ authorizeUrl: 'about:blank', state: 'preview' }),
-  // ?holdOauth=1 keeps the browser wait open so a preview can show the
-  // Google phone-check line. The default still finishes the round trip.
-  oauth_listen_for_code: () => {
-    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('holdOauth') === '1') {
-      return new Promise(() => {});
-    }
-    return new Promise((resolve) => setTimeout(() => resolve({ code: 'preview' }), 900));
-  },
+  oauth_listen_for_code: () => new Promise((resolve) => setTimeout(() => resolve({ code: 'preview' }), 900)),
   oauth_exchange_code: () => ({ authenticated: true, accountId: 'preview' }),
   // The folder step checks the chosen location before installing.
   detect_hq: () => ({ exists: false, looksLikeHq: false, nonEmpty: false }),
