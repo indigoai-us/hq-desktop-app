@@ -960,8 +960,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getHqAnywherePersonSetting: () => this.call("get_hq_anywhere_person_setting"),
     putHqAnywherePersonSetting: (value) =>
       this.call("put_hq_anywhere_person_setting", { value }),
-    syncHqAnywhereGlobal: (enabled) =>
-      this.call("set_hq_anywhere_global_install", { enabled }),
+    syncHqAnywhereGlobal: (enabled, explicit) =>
+      this.call("set_hq_anywhere_global_install", { enabled, explicit: explicit === true }),
     installRuntimeForTool: (runtime) =>
       this.call("install_hq_runtime_for_tool", { runtime }),
     hqAnywhereRuntimeInstalled: (runtime) =>

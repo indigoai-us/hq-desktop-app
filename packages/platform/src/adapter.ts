@@ -2922,8 +2922,12 @@ export interface SettingsApi {
   getHqAnywherePersonSetting?(): AdapterPromise<boolean>;
   /** Write the signed-in person's server-backed HQ Anywhere preference. */
   putHqAnywherePersonSetting?(value: boolean): AdapterPromise<void>;
-  /** Apply or remove the native global Claude Code/Codex setup. */
-  syncHqAnywhereGlobal?(enabled: boolean): AdapterPromise<void>;
+  /**
+   * Apply or remove the native global Claude Code/Codex setup. `explicit` is
+   * true when the person flipped the switch themselves; only then does turning
+   * it off remove a setup whose desktop record no longer matches the files.
+   */
+  syncHqAnywhereGlobal?(enabled: boolean, explicit?: boolean): AdapterPromise<void>;
   /**
    * Install the HQ global runtime setup (hooks, memory, skills) for one
    * coding tool, used by first-run "Continue in <tool>".

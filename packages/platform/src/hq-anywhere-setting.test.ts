@@ -82,7 +82,7 @@ describe("HQ Anywhere setting support", () => {
     await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
       .resolves.toEqual(ok(undefined));
     expect(settings.getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
-    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true, false);
   });
 
   it("applies a saved opt-out during startup reconciliation", async () => {
@@ -97,7 +97,29 @@ describe("HQ Anywhere setting support", () => {
 
     await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
       .resolves.toEqual(ok(undefined));
-    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false, false);
+  });
+
+  // The desktop removes a setup whose record no longer matches only when the
+  // person turned the switch off themselves (hq_anywhere.rs GlobalInstallTrigger).
+  it("passes a person's own choice to the desktop and keeps launch sync a reconcile", async () => {
+    const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
+    const settings = {
+      getHqAnywherePersonSetting: vi.fn(async () => ok(false)),
+      syncHqAnywhereGlobal,
+    } as unknown as PlatformAdapter["settings"];
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: true })),
+    } as unknown as PlatformAdapter["identity"];
+
+    await expect(
+      setHqAnywhereGlobalRuntime(identity, settings, false, { pause: async () => {}, explicit: true }),
+    ).resolves.toEqual(ok(undefined));
+    await expect(setHqAnywhereGlobalRuntime(identity, settings, false, { pause: async () => {} }))
+      .resolves.toEqual(ok(undefined));
+    await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
+      .resolves.toEqual(ok(undefined));
+    expect(syncHqAnywhereGlobal.mock.calls).toEqual([[false, true], [false, false], [false, false]]);
   });
 
   it("does not read or change global files while the runtime flag is off", async () => {
@@ -148,7 +170,7 @@ describe("HQ Anywhere setting support", () => {
       .resolves.toEqual(ok(undefined));
     expect(getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
     expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(1);
-    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false, false);
     warn.mockRestore();
   });
 

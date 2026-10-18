@@ -109,7 +109,7 @@ describe("Settings > HQ Anywhere", () => {
 
     await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("true"));
     expect(putHqAnywherePersonSetting).toHaveBeenCalledWith(true);
-    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true));
+    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true, true));
   });
 
   it("turns the setting off", async () => {
@@ -121,7 +121,7 @@ describe("Settings > HQ Anywhere", () => {
 
     await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("false"));
     expect(putHqAnywherePersonSetting).toHaveBeenCalledWith(false);
-    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false));
+    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false, true));
   });
 
   it("keeps the toggle optimistic and shows a muted setup hint while install runs", async () => {

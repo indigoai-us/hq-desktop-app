@@ -116,7 +116,7 @@ describe("continueInTool", () => {
     // The next launch's startup reconcile, as App.svelte runs it.
     await ensureHqAnywhereGlobalRuntime(identity as never, settings as never, { pause: noPause });
     expect(settings.syncHqAnywhereGlobal).toHaveBeenCalledTimes(1);
-    expect(settings.syncHqAnywhereGlobal).toHaveBeenCalledWith(true);
+    expect(settings.syncHqAnywhereGlobal).toHaveBeenCalledWith(true, false);
     expect(order).not.toContain("reconcile:false");
   });
 

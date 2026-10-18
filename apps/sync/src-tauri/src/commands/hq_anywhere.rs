@@ -209,15 +209,25 @@ fn global_runtime_has_any_install(home: &Path, runtime: GlobalRuntime) -> bool {
 
 /// Written by HQ Desktop when it installs or adopts the HQ Anywhere setup for
 /// `runtime`: `~/.hq/anywhere/<runtime>-desktop-enabled`. The file names the
-/// install it recorded (path, mtime and content of the files that install
-/// wrote). An uninstall request removes a setup only when the files still
-/// match. A setup made with `hq install --global` and never turned on in the
+/// install it recorded (see [`install_fingerprint`]). The launch reconcile
+/// removes a setup only when that record still matches; a person turning the
+/// switch off removes it whenever a record exists. A setup made with `hq install --global` and never turned on in the
 /// desktop has no marker, so launch sync leaves it in place. A marker left
 /// behind by `hq uninstall --global` then `hq install --global` does not match
 /// the fresh install, so launch sync drops the marker and leaves the install.
 fn desktop_marker_file(home: &Path, runtime: GlobalRuntime) -> PathBuf {
     home.join(".hq/anywhere")
         .join(format!("{}-desktop-enabled", runtime.as_str()))
+}
+
+/// Why a turn-off reached [`apply_global_install`]. The person flipping the
+/// Settings switch (or answering the onboarding question) chose to remove the
+/// setup. The launch reconcile only repeats a saved choice, so it must never
+/// remove an install the desktop cannot prove it made or took on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalInstallTrigger {
+    PersonChoice,
+    Reconcile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,40 +270,72 @@ fn file_stamp(path: &Path) -> Option<String> {
     ))
 }
 
-/// Identity of the HQ Anywhere files currently on disk for `runtime`. A CLI
-/// reinstall rewrites those files, so the stamp changes even when the managed
-/// text is the same.
+/// The managed instructions block in `path`, from its begin marker through
+/// the end marker. Text the person keeps around the block is not part of it.
+fn managed_block_text(path: &Path, begin: &str) -> Option<String> {
+    let contents = fs::read_to_string(path).ok()?;
+    let start = contents.find(begin)?;
+    let end = contents[start..].find(MANAGED_BLOCK_END)? + start + MANAGED_BLOCK_END.len();
+    Some(contents[start..end].to_string())
+}
+
+/// The `mcpServers.hq` entry in `~/.claude.json`, serialized. Other keys in
+/// that file (startup counters, project history, other servers) are not part
+/// of it.
+fn claude_mcp_entry_text(home: &Path) -> Option<String> {
+    let value: Value =
+        serde_json::from_str(&fs::read_to_string(home.join(".claude.json")).ok()?).ok()?;
+    let entry = value.get("mcpServers")?.get("hq")?;
+    serde_json::to_string(entry).ok()
+}
+
+/// The `[mcp_servers.hq]` table (and any `[mcp_servers.hq.*]` sub-table) in
+/// `~/.codex/config.toml`, as its trimmed non-blank lines. Other tables and
+/// top-level keys are not part of it.
+fn codex_mcp_entry_text(home: &Path) -> Option<String> {
+    let contents = fs::read_to_string(home.join(".codex/config.toml")).ok()?;
+    let mut in_hq_server = false;
+    let mut lines = Vec::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_hq_server = line == "[mcp_servers.hq]" || line.starts_with("[mcp_servers.hq.");
+        }
+        if in_hq_server && !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn text_digest(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// Identity of the HQ Anywhere setup currently on disk for `runtime`. It
+/// covers only what `hq install --global` owns: its install record (path,
+/// mtime and content, so a CLI reinstall changes it), the managed block and
+/// the `hq` MCP entry. Edits elsewhere in `CLAUDE.md`, `AGENTS.md`,
+/// `.claude.json` or `config.toml` leave it unchanged.
 fn install_fingerprint(home: &Path, runtime: GlobalRuntime) -> String {
     let state = file_stamp(&install_state_file(home, runtime)).unwrap_or_default();
-    let (managed_path, mcp_path, mcp_present) = match runtime {
+    let (managed, mcp) = match runtime {
         GlobalRuntime::Claude => (
-            home.join(".claude/CLAUDE.md"),
-            home.join(".claude.json"),
-            claude_mcp_is_hq_anywhere(home),
+            managed_block_text(&home.join(".claude/CLAUDE.md"), CLAUDE_BLOCK_BEGIN),
+            claude_mcp_is_hq_anywhere(home)
+                .then(|| claude_mcp_entry_text(home))
+                .flatten(),
         ),
         GlobalRuntime::Codex => (
-            home.join(".codex/AGENTS.md"),
-            home.join(".codex/config.toml"),
-            codex_mcp_is_hq_anywhere(home),
+            managed_block_text(&home.join(".codex/AGENTS.md"), CODEX_BLOCK_BEGIN),
+            codex_mcp_is_hq_anywhere(home)
+                .then(|| codex_mcp_entry_text(home))
+                .flatten(),
         ),
     };
-    let managed = if has_managed_block(
-        &managed_path,
-        match runtime {
-            GlobalRuntime::Claude => CLAUDE_BLOCK_BEGIN,
-            GlobalRuntime::Codex => CODEX_BLOCK_BEGIN,
-        },
-    ) {
-        file_stamp(&managed_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let mcp = if mcp_present {
-        file_stamp(&mcp_path).unwrap_or_default()
-    } else {
-        String::new()
-    };
-    format!("v1\nstate={state}\nmanaged={managed}\nmcp={mcp}")
+    let managed = managed.as_deref().map(text_digest).unwrap_or_default();
+    let mcp = mcp.as_deref().map(text_digest).unwrap_or_default();
+    format!("v2\nstate={state}\nmanaged={managed}\nmcp={mcp}")
 }
 
 fn fingerprint_identifies_install(fingerprint: &str) -> bool {
@@ -321,12 +363,13 @@ fn marker_origin(home: &Path, runtime: GlobalRuntime) -> Option<MarkerOrigin> {
 }
 
 /// True when the record was written for the files that are on disk now.
-/// A legacy `1\n` marker, or a record whose files were replaced, does not match.
+/// A legacy `1\n` marker, a `v: 1` record (whole-file stamps) or a record
+/// whose HQ-owned content was replaced does not match.
 fn marker_matches(home: &Path, runtime: GlobalRuntime) -> bool {
     let Some(record) = read_desktop_record(home, runtime) else {
         return false;
     };
-    if record.get("v").and_then(Value::as_u64) != Some(1) {
+    if record.get("v").and_then(Value::as_u64) != Some(2) {
         return false;
     }
     let Some(stored) = record.get("fingerprint").and_then(Value::as_str) else {
@@ -338,7 +381,7 @@ fn marker_matches(home: &Path, runtime: GlobalRuntime) -> bool {
 fn write_desktop_marker(home: &Path, runtime: GlobalRuntime, origin: MarkerOrigin) {
     let marker = desktop_marker_file(home, runtime);
     let body = serde_json::json!({
-        "v": 1,
+        "v": 2,
         "origin": origin.as_str(),
         "fingerprint": install_fingerprint(home, runtime),
     });
@@ -405,8 +448,16 @@ fn global_install_lock() -> &'static Mutex<()> {
 /// `ai.indigo.hq-lane-check.conflict-toast` bundle ran
 /// `hq uninstall --global --runtime claude` from here at launch.
 #[tauri::command]
-pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String> {
-    run_global_install(enabled, None).await
+pub async fn set_hq_anywhere_global_install(
+    enabled: bool,
+    explicit: Option<bool>,
+) -> Result<(), String> {
+    let trigger = if explicit.unwrap_or(false) {
+        GlobalInstallTrigger::PersonChoice
+    } else {
+        GlobalInstallTrigger::Reconcile
+    };
+    run_global_install(enabled, trigger, None).await
 }
 
 /// First-run "Continue in <tool>": install the HQ Anywhere global runtime
@@ -416,7 +467,7 @@ pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String>
 #[tauri::command]
 pub async fn install_hq_runtime_for_tool(runtime: String) -> Result<(), String> {
     let runtime = parse_tool_runtime(&runtime)?;
-    run_global_install(true, Some(runtime)).await
+    run_global_install(true, GlobalInstallTrigger::PersonChoice, Some(runtime)).await
 }
 
 /// The webview supplies `runtime`, so the error never echoes it back.
@@ -460,7 +511,11 @@ pub fn hq_anywhere_runtime_installed(runtime: String) -> Result<bool, String> {
     runtime_installed_for_tool(&home, &runtime)
 }
 
-async fn run_global_install(enabled: bool, only: Option<GlobalRuntime>) -> Result<(), String> {
+async fn run_global_install(
+    enabled: bool,
+    trigger: GlobalInstallTrigger,
+    only: Option<GlobalRuntime>,
+) -> Result<(), String> {
     let identity = crate::scratch_build::LaunchIdentity::current();
     // A disallowed one-tool install is an error. A disallowed startup
     // reconcile stays Ok and must return here, before any home lookup.
@@ -475,6 +530,7 @@ async fn run_global_install(enabled: bool, only: Option<GlobalRuntime>) -> Resul
     apply_global_install_locked(
         &identity,
         enabled,
+        trigger,
         only,
         &home,
         &path_entries,
@@ -494,6 +550,7 @@ async fn run_global_install(enabled: bool, only: Option<GlobalRuntime>) -> Resul
 async fn apply_global_install_locked<R, F, Fut>(
     identity: &crate::scratch_build::LaunchIdentity,
     enabled: bool,
+    trigger: GlobalInstallTrigger,
     only: Option<GlobalRuntime>,
     home: &Path,
     path_entries: &[PathBuf],
@@ -510,6 +567,7 @@ where
     apply_global_install(
         identity,
         enabled,
+        trigger,
         only,
         home,
         path_entries,
@@ -526,6 +584,7 @@ where
 async fn apply_global_install<R, F, Fut>(
     identity: &crate::scratch_build::LaunchIdentity,
     enabled: bool,
+    trigger: GlobalInstallTrigger,
     only: Option<GlobalRuntime>,
     home: &Path,
     path_entries: &[PathBuf],
@@ -597,7 +656,10 @@ where
                     runtime.as_str()
                 ),
             );
-        } else if !enabled && !marker_matches(home, runtime) {
+        } else if !enabled
+            && trigger == GlobalInstallTrigger::Reconcile
+            && !marker_matches(home, runtime)
+        {
             clear_desktop_marker(home, runtime);
             log(
                 LOG_TAG,
@@ -677,8 +739,8 @@ mod tests {
         apply_global_install, apply_global_install_locked, desktop_adopted_install,
         detect_present_runtimes, disallowed_install_result, global_runtime_args,
         global_runtime_is_installed, parse_tool_runtime, runtime_installed_for_tool,
-        safe_renderer_failure, write_desktop_marker, GlobalRuntime, MarkerOrigin, RuntimeAction,
-        HQ_ANYWHERE_NOT_INSTALLED,
+        safe_renderer_failure, write_desktop_marker, GlobalInstallTrigger, GlobalRuntime,
+        MarkerOrigin, RuntimeAction, HQ_ANYWHERE_NOT_INSTALLED,
     };
     use crate::scratch_build::LaunchIdentity;
 
@@ -761,6 +823,7 @@ mod tests {
         let result = runtime.block_on(apply_global_install(
             &identity,
             enabled,
+            GlobalInstallTrigger::Reconcile,
             only,
             home.path(),
             &[],
@@ -940,6 +1003,7 @@ mod tests {
             runtime.block_on(apply_global_install(
                 &production(),
                 enabled,
+                GlobalInstallTrigger::Reconcile,
                 None,
                 home.path(),
                 &[],
@@ -1016,6 +1080,7 @@ mod tests {
             runtime.block_on(apply_global_install(
                 &production(),
                 enabled,
+                GlobalInstallTrigger::Reconcile,
                 None,
                 home.path(),
                 &[],
@@ -1076,6 +1141,7 @@ mod tests {
         let result = runtime.block_on(apply_global_install(
             &production(),
             false,
+            GlobalInstallTrigger::Reconcile,
             Some(GlobalRuntime::Claude),
             home.path(),
             &[],
@@ -1109,6 +1175,7 @@ mod tests {
             runtime.block_on(apply_global_install(
                 &production(),
                 enabled,
+                GlobalInstallTrigger::Reconcile,
                 Some(GlobalRuntime::Claude),
                 home.path(),
                 &[],
@@ -1171,6 +1238,197 @@ mod tests {
         assert_eq!(calls, [["uninstall", "--global", "--runtime", "claude"]]);
     }
 
+    /// Runs [`apply_global_install`] once against `home`. An `hq install`
+    /// writes that runtime's files, the way the CLI does. Returns the result
+    /// and every `hq` argv the runner was asked to run.
+    fn apply_in(
+        home: &Path,
+        enabled: bool,
+        trigger: GlobalInstallTrigger,
+    ) -> (Result<(), String>, Vec<Vec<String>>) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let home_path = home.to_path_buf();
+        let result = runtime.block_on(apply_global_install(
+            &production(),
+            enabled,
+            trigger,
+            None,
+            home,
+            &[],
+            Duration::from_secs(20),
+            || Ok(PathBuf::from("/tmp/hq-root-for-test")),
+            {
+                let calls = calls.clone();
+                move |argv: Vec<String>, _hq_root: PathBuf| {
+                    if argv.first().map(String::as_str) == Some("install") {
+                        if argv.iter().any(|arg| arg == "claude") {
+                            write_claude_install(&home_path);
+                        } else if argv.iter().any(|arg| arg == "codex") {
+                            write_codex_install(&home_path);
+                        }
+                    }
+                    calls.lock().unwrap().push(argv);
+                    async { Ok(()) }
+                }
+            },
+        ));
+        let calls = calls.lock().unwrap().clone();
+        (result, calls)
+    }
+
+    fn append(path: &Path, text: &str) {
+        let mut contents = fs::read_to_string(path).unwrap_or_default();
+        contents.push_str(text);
+        fs::write(path, contents).unwrap();
+    }
+
+    /// Claude Code rewrites `~/.claude.json` all the time (startup counts,
+    /// project history), and people add their own lines to CLAUDE.md. Those
+    /// edits leave the HQ block and the HQ MCP entry alone, so the desktop
+    /// record must still match and turning the setting off must remove the
+    /// install the desktop made.
+    #[test]
+    fn unrelated_edits_to_claude_files_keep_the_desktop_record() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let (result, calls) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["install", "--global", "--runtime", "claude"]]);
+
+        fs::write(
+            home.path().join(".claude.json"),
+            r#"{"numStartups":5,"projects":{"/tmp/x":{}},"mcpServers":{"hq":{"_hqPack":"hq-anywhere"}}}"#,
+        )
+        .unwrap();
+        append(&home.path().join(".claude/CLAUDE.md"), "\nMy own note.\n");
+
+        let (result, calls) = apply_in(home.path(), false, GlobalInstallTrigger::Reconcile);
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["uninstall", "--global", "--runtime", "claude"]]);
+    }
+
+    /// The Codex side of the same check: another MCP server added to
+    /// config.toml and a line added to AGENTS.md outside the HQ block.
+    #[test]
+    fn unrelated_edits_to_codex_files_keep_the_desktop_record() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        let (result, calls) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["install", "--global", "--runtime", "codex"]]);
+
+        let config = home.path().join(".codex/config.toml");
+        let original = fs::read_to_string(&config).unwrap();
+        fs::write(
+            &config,
+            format!("model = \"o4\"\n\n{original}\n[mcp_servers.other]\ncommand = \"other\"\n"),
+        )
+        .unwrap();
+        append(&home.path().join(".codex/AGENTS.md"), "\nMy own note.\n");
+
+        let (result, calls) = apply_in(home.path(), false, GlobalInstallTrigger::Reconcile);
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["uninstall", "--global", "--runtime", "codex"]]);
+    }
+
+    /// The counterpart: a CLI reinstall that rewrote the HQ block, or only the
+    /// HQ MCP entry, is not the install the desktop recorded. Launch sync
+    /// leaves it in place.
+    #[test]
+    fn a_replaced_hq_block_or_mcp_entry_is_left_by_launch_sync() {
+        for replace_block in [true, false] {
+            let home = TempHome::new();
+            fs::create_dir_all(home.path().join(".claude")).unwrap();
+            let (result, _) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+            assert_eq!(result, Ok(()));
+            if replace_block {
+                fs::write(
+                    home.path().join(".claude/CLAUDE.md"),
+                    "<!-- hq-anywhere:begin managed -->\nHQ fresh\n<!-- hq-anywhere:end -->\n",
+                )
+                .unwrap();
+            } else {
+                fs::write(
+                    home.path().join(".claude.json"),
+                    r#"{"mcpServers":{"hq":{"_hqPack":"hq-anywhere","installed":"fresh"}}}"#,
+                )
+                .unwrap();
+            }
+
+            let (result, calls) = apply_in(home.path(), false, GlobalInstallTrigger::Reconcile);
+            assert_eq!(result, Ok(()));
+            assert!(
+                calls.is_empty(),
+                "launch sync removed a replaced install (replace_block={replace_block}): {calls:?}"
+            );
+            assert!(!home
+                .path()
+                .join(".hq/anywhere/claude-desktop-enabled")
+                .exists());
+        }
+    }
+
+    /// Turning the switch off is the person's choice. A desktop record that
+    /// no longer matches must not stop the removal they asked for.
+    #[test]
+    fn turning_the_switch_off_removes_the_install_when_the_record_is_stale() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let (result, _) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        fs::write(
+            home.path().join(".claude/CLAUDE.md"),
+            "<!-- hq-anywhere:begin managed -->\nHQ fresh\n<!-- hq-anywhere:end -->\n",
+        )
+        .unwrap();
+
+        let (result, calls) = apply_in(home.path(), false, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["uninstall", "--global", "--runtime", "claude"]]);
+        assert!(!home
+            .path()
+            .join(".hq/anywhere/claude-desktop-enabled")
+            .exists());
+    }
+
+    /// A setup made only with `hq install --global` has no desktop record.
+    /// Turning the switch off leaves it, as it did before the record existed.
+    #[test]
+    fn turning_the_switch_off_leaves_an_install_with_no_desktop_record() {
+        let home = TempHome::new();
+        write_claude_install(home.path());
+        let (result, calls) = apply_in(home.path(), false, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        assert!(calls.is_empty(), "removed a CLI-made install: {calls:?}");
+    }
+
+    /// Unrelated edits must not relabel a desktop install as adopted on the
+    /// next launch, or Settings would describe the wrong install.
+    #[test]
+    fn unrelated_edits_do_not_relabel_a_desktop_install_as_adopted() {
+        let home = TempHome::new();
+        fs::create_dir_all(home.path().join(".claude")).unwrap();
+        let (result, _) = apply_in(home.path(), true, GlobalInstallTrigger::PersonChoice);
+        assert_eq!(result, Ok(()));
+        fs::write(
+            home.path().join(".claude.json"),
+            r#"{"numStartups":9,"mcpServers":{"hq":{"_hqPack":"hq-anywhere"}}}"#,
+        )
+        .unwrap();
+
+        let (result, calls) = apply_in(home.path(), true, GlobalInstallTrigger::Reconcile);
+        assert_eq!(result, Ok(()));
+        assert!(calls.is_empty(), "relaunched install: {calls:?}");
+        assert!(
+            !desktop_adopted_install(home.path()),
+            "an unrelated edit relabeled the desktop install as adopted"
+        );
+    }
+
     /// A hung `hq install` must drop the shared lock when the 20s deadline
     /// fires. The test uses a short deadline so it does not wait 20s. A later
     /// call has to acquire that same lock.
@@ -1190,6 +1448,7 @@ mod tests {
                 apply_global_install_locked(
                     &production(),
                     true,
+                    GlobalInstallTrigger::Reconcile,
                     Some(GlobalRuntime::Claude),
                     &home_path,
                     &[],
@@ -1219,6 +1478,7 @@ mod tests {
                 apply_global_install_locked(
                     &production(),
                     false,
+                    GlobalInstallTrigger::Reconcile,
                     Some(GlobalRuntime::Claude),
                     home.path(),
                     &[],

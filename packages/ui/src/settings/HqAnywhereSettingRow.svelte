@@ -165,6 +165,7 @@
         adapter.identity,
         adapter.settings,
         value,
+        { explicit: true },
       );
       if (!result.ok) {
         console.warn("[hq-anywhere] global runtime setup failed:", result);

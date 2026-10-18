@@ -96,8 +96,8 @@ vi.mock('@hq/platform', async () => {
           await tauri.invoke('put_hq_anywhere_person_setting', { value });
           return { ok: true, value: undefined };
         },
-        syncHqAnywhereGlobal: async (enabled: boolean) => {
-          await tauri.invoke('set_hq_anywhere_global_install', { enabled });
+        syncHqAnywhereGlobal: async (enabled: boolean, explicit?: boolean) => {
+          await tauri.invoke('set_hq_anywhere_global_install', { enabled, explicit: explicit === true });
           return hqAnywhereRuntimeSetup
             ? await hqAnywhereRuntimeSetup(enabled)
             : { ok: true, value: undefined };
@@ -2032,7 +2032,7 @@ describe('onboarding launch handoff', () => {
     );
 
     expect(tauri.invoke).toHaveBeenCalledWith('put_hq_anywhere_person_setting', { value: true });
-    expect(tauri.invoke).toHaveBeenCalledWith('set_hq_anywhere_global_install', { enabled: true });
+    expect(tauri.invoke).toHaveBeenCalledWith('set_hq_anywhere_global_install', { enabled: true, explicit: true });
     expect(choice.checked).toBe(true);
     expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')).toBeNull();
 
@@ -2040,7 +2040,7 @@ describe('onboarding launch handoff', () => {
     await flushUntil(() => !choice.disabled);
 
     expect(tauri.invoke).toHaveBeenCalledWith('put_hq_anywhere_person_setting', { value: false });
-    expect(tauri.invoke).toHaveBeenLastCalledWith('set_hq_anywhere_global_install', { enabled: false });
+    expect(tauri.invoke).toHaveBeenLastCalledWith('set_hq_anywhere_global_install', { enabled: false, explicit: true });
     expect(choice.checked).toBe(false);
   });
 

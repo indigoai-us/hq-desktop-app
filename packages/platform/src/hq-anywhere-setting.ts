@@ -131,12 +131,17 @@ export function putHqAnywherePersonSetting(
   );
 }
 
+export interface HqAnywhereGlobalRuntimeOptions extends HqAnywhereRetryOptions {
+  /** The person flipped the switch themselves (Settings or onboarding), not launch sync. */
+  explicit?: boolean;
+}
+
 /** Apply a saved HQ Anywhere choice only while its kill switch is enabled. */
 export async function setHqAnywhereGlobalRuntime(
   identity: IdentityApi,
   settings: SettingsApi,
   enabled: boolean,
-  options?: HqAnywhereRetryOptions,
+  options?: HqAnywhereGlobalRuntimeOptions,
 ): Promise<AdapterResult<void>> {
   if (!(await hqAnywhereRuntimeEnabled(identity))) {
     publishGlobalRuntimeStatus(IDLE_RUNTIME_STATUS);
@@ -147,7 +152,7 @@ export async function setHqAnywhereGlobalRuntime(
   try {
     result = settings.syncHqAnywhereGlobal
       ? await retryHqAnywhereRequest(
-          () => settings.syncHqAnywhereGlobal!(enabled),
+          () => settings.syncHqAnywhereGlobal!(enabled, options?.explicit === true),
           options,
         )
       : unavailable("hq-anywhere-global-runtime-unavailable");
@@ -180,5 +185,8 @@ export async function ensureHqAnywhereGlobalRuntime(
     publishGlobalRuntimeStatus({ state: "failed", enabled: null });
     return setting;
   }
-  return setHqAnywhereGlobalRuntime(identity, settings, setting.value, options);
+  return setHqAnywhereGlobalRuntime(identity, settings, setting.value, {
+    pause: options?.pause,
+    explicit: false,
+  });
 }
