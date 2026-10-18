@@ -50,6 +50,7 @@ export {
   ensureHqAnywhereGlobalRuntime,
   getHqAnywherePersonSetting,
   hqAnywhereRuntimeEnabled,
+  hqAnywhereGlobalRuntimeAllowed,
   putHqAnywherePersonSetting,
   retryHqAnywhereRequest,
   setHqAnywhereGlobalRuntime,
