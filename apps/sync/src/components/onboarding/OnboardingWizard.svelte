@@ -41,6 +41,7 @@
     isStoryScene,
     previousScene,
     readyProgressLine,
+    readyRequiredFailureHeading,
     readyTimings,
     sceneForStep,
     stepForScene,
@@ -115,6 +116,7 @@
     SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS,
     withProgressTimeout,
     partitionStages,
+    BLOCKING_STAGES,
     STAGE_ORDER,
     withTimeout,
     type InstallManifest,
@@ -590,6 +592,9 @@
   // entity) is done. The ready screen stops waiting on the install here;
   // tools, sync and indexing keep running in the background.
   let blockingPhaseDone = $state(false);
+  /** Try again is re-running a required step that already failed. */
+  let blockingRetryRunning = $state(false);
+  let retryFailedBlocking: (() => Promise<void>) | null = null;
   // True while the background phase of backgroundRunId is still running, so
   // unmounting the wizard does not cancel it.
   let backgroundPhaseRunning = $state(false);
@@ -878,9 +883,24 @@
       hostQueueRunning,
   );
   const currentInstallItemId = $derived(
-    installPending && currentStageId
+    (installPending || blockingRetryRunning) && currentStageId
       ? currentStageId
       : hostQueueRunning && hostQueue?.currentId ? hostQueue.currentId : currentStageId,
+  );
+  const failedBlockingStageIds = $derived(
+    stages
+      .filter(
+        (stage) =>
+          stage.status === 'failed' &&
+          (BLOCKING_STAGES as readonly StageId[]).includes(stage.id),
+      )
+      .map((stage) => stage.id),
+  );
+  /** Set only after a required step has failed and is not running again. */
+  const requiredFailureHeading = $derived(
+    installPending || blockingRetryRunning
+      ? null
+      : readyRequiredFailureHeading(failedBlockingStageIds),
   );
   const currentInstallActivity = $derived(setupActivityPhrase(currentInstallItemId));
   // While blocking setup runs, the Ready line names the step and says so when
@@ -3072,6 +3092,29 @@
     return isCurrentRun(runId);
     };
 
+    retryFailedBlocking = async () => {
+      if (!isCurrentRun(runId) || blockingRetryRunning) return;
+      const ids = stages
+        .filter(
+          (stage) =>
+            stage.status === 'failed' &&
+            (BLOCKING_STAGES as readonly StageId[]).includes(stage.id),
+        )
+        .map((stage) => stage.id);
+      if (ids.length === 0) return;
+      blockingRetryRunning = true;
+      readyDwellElapsed = false;
+      for (const id of ids) {
+        retryCounts.delete(id);
+        stages = setStageStatus(stages, id, 'pending', null);
+      }
+      try {
+        await runStageList(ids);
+      } finally {
+        if (isCurrentRun(runId)) blockingRetryRunning = false;
+      }
+    };
+
     // US-004: the person waits only on the blocking phase (local files, git,
     // personalize, person entity). Tool installs, the vault upload and
     // indexing run after the decision screen opens.
@@ -4154,7 +4197,14 @@
   function restartReadyDwell(): void {
     clearReadyDwell();
     readyDwellElapsed = false;
-    if (installPending || scene !== 'ready' || !navRevealed || !consentOnReady) return;
+    if (
+      installPending ||
+      blockingRetryRunning ||
+      requiredFailureHeading ||
+      scene !== 'ready' ||
+      !navRevealed ||
+      !consentOnReady
+    ) return;
     readyDwellTimer = setTimeout(() => {
       readyDwellTimer = null;
       readyDwellElapsed = true;
@@ -4163,7 +4213,14 @@
 
   // Count the full dwell only while the ready heading and usage-data choice are visible.
   $effect(() => {
-    if (scene !== 'ready' || !navRevealed || !consentOnReady || installPending) return;
+    if (
+      scene !== 'ready' ||
+      !navRevealed ||
+      !consentOnReady ||
+      installPending ||
+      blockingRetryRunning ||
+      requiredFailureHeading
+    ) return;
     untrack(restartReadyDwell);
     return clearReadyDwell;
   });
@@ -4294,7 +4351,7 @@
   $effect(() => {
     if (consentOnly || replay || currentStep !== READY_STEP_INDEX || scene !== 'ready') return;
     if (!navRevealed || !hostQueueChecked) return;
-    if (installPending) return;
+    if (installPending || blockingRetryRunning || requiredFailureHeading) return;
     if (consentOnReady && !readyDwellElapsed) return;
     if (consentGate !== 'clear' || consentFailure !== null || finishing || autoFinishAttempted) return;
     if (setupStarted) {
@@ -5001,14 +5058,24 @@
       <canvas bind:this={refs.readyCanvas} aria-hidden="true"></canvas>
       <div class="copy" bind:this={refs.readyCopy}>
         <h2 class="h h-lg" id="onboarding-title-ready" tabindex="-1" data-scene-heading>
-          {installPending ? 'Almost ready.' : 'HQ is ready.'}
+          {installPending || blockingRetryRunning
+            ? 'Almost ready.'
+            : requiredFailureHeading ?? 'HQ is ready.'}
         </h2>
         <p class="body">
           HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.
         </p>
+        {#if requiredFailureHeading}
+          <button
+            class="btn btn-secondary ready-retry"
+            type="button"
+            data-testid="ready-required-retry"
+            onclick={() => void retryFailedBlocking?.()}
+          >Try again</button>
+        {/if}
       </div>
-      <div class="prog" class:done={!installPending} bind:this={refs.readyProg} aria-live="polite">
-        {#if installPending}
+      <div class="prog" class:done={!installPending && !blockingRetryRunning} bind:this={refs.readyProg} aria-live="polite">
+        {#if installPending || blockingRetryRunning}
           <div class="pwrap">
             <i class="pi" data-testid="onboarding-completion-success-indicator" aria-hidden="true"></i>
             <span class="pl">{readyLine}</span>
@@ -5018,10 +5085,10 @@
           <span class="pl finishing-activity">Finishing setup: {currentInstallActivity}</span>
         {/if}
       </div>
-      <!-- The ready screen has no buttons: it shows the install's progress and
-           finishes by itself once the blocking phase is done (the AUTO-FINISH
-           effect); the rest of the install keeps running in the background. This element stays because the ready engine measures it
-           (refs.navReady) when it lays out the scene. -->
+      <!-- Nav stays empty. The screen finishes by itself once blocking setup
+           is done (the AUTO-FINISH effect), unless a required step failed:
+           then Try again sits in the copy block. This element stays because
+           the ready engine measures it (refs.navReady). -->
       <div class="nav ready-options" class:on={scene === 'ready' && navRevealed} bind:this={refs.navReady} data-testid="onboarding-launchers"></div>
       <div class="alt-block" bind:this={refs.readyAlt}>
         {#if deferredConsent?.phase === 'failed'}

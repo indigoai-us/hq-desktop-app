@@ -7,8 +7,10 @@
  *   2 cloud     company cloud orbit                   (wizard step setup; install runs)
  *   3 shortcut  the Option-Shift-O keyboard           (wizard step setup; install runs)
  *   4 ready     "HQ is ready." + install progress     (wizard step ready)
- *               and the usage-data checkbox; no
- *               buttons, it finishes by itself
+ *               and the usage-data checkbox. It finishes
+ *               by itself, unless a required step failed:
+ *               then the heading names that step and
+ *               Try again is the one action.
  *
  * The usage-data question is not a screen of its own in the first-run flow:
  * it is one checkbox line on the ready screen, recorded when the flow
@@ -399,6 +401,23 @@ export function readyProgressLine({ itemId, retrying, elapsedMs }: ReadyProgress
   if (retrying) return `Still ${phrase}, trying again`;
   if (elapsedMs >= SETUP_STILL_WORKING_AFTER_MS) return `Still ${phrase}`;
   return setupActivityLabel(itemId, READY_PROGRESS_FALLBACK)!;
+}
+
+/**
+ * Heading once a required setup step has ended in failure. One sentence,
+ * built from that step's existing activity phrase, so the screen does not
+ * say "HQ is ready." Null when no named step failed.
+ */
+export function readyRequiredFailureHeading(failedIds: readonly string[]): string | null {
+  const phrases: string[] = [];
+  for (const id of failedIds) {
+    const phrase = setupActivityPhrase(id);
+    if (phrase && !phrases.includes(phrase)) phrases.push(phrase);
+  }
+  if (phrases.length === 0) return null;
+  const first = phrases[0]!.charAt(0).toUpperCase() + phrases[0]!.slice(1);
+  const named = phrases.length === 1 ? first : `${first} and ${phrases.slice(1).join(' and ')}`;
+  return `${named} did not finish.`;
 }
 
 /** Possible activity lines keep the corner card's width steady. */

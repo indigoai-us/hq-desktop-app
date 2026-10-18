@@ -18,6 +18,7 @@ import {
   installCardModel,
   installCardActivityLines,
   readyProgressLine,
+  readyRequiredFailureHeading,
   nextScene,
   previousScene,
   sceneForStep,
@@ -274,6 +275,24 @@ describe('ready progress line', () => {
   it('says when the step has run past the still-working threshold', () => {
     expect(readyProgressLine({ itemId: 'deps', retrying: false, elapsedMs: 19_999 })).toBe('Installing your tools');
     expect(readyProgressLine({ itemId: 'deps', retrying: false, elapsedMs: 20_000 })).toBe('Still installing your tools');
+  });
+
+  it('names a failed required step in one sentence and ignores an unknown id', () => {
+    expect(readyRequiredFailureHeading(['content'])).toBe(
+      'Setting up your workspace did not finish.',
+    );
+    expect(readyRequiredFailureHeading(['git-init'])).toBe(
+      'Setting up file history did not finish.',
+    );
+    expect(readyRequiredFailureHeading(['personalize'])).toBe(
+      'Personalizing your workspace did not finish.',
+    );
+    expect(readyRequiredFailureHeading(['content', 'git-init'])).toBe(
+      'Setting up your workspace and setting up file history did not finish.',
+    );
+    expect(readyRequiredFailureHeading([])).toBeNull();
+    expect(readyRequiredFailureHeading(['future-item'])).toBeNull();
+    expect(readyRequiredFailureHeading(['content'])).not.toMatch(/[!—]/);
   });
 
   it('keeps every line in sentence case with no em dash or exclamation mark', () => {

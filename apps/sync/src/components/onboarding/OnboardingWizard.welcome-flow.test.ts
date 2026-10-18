@@ -364,6 +364,71 @@ describe('welcome flow: the install runs in the background', () => {
     expect(byId<HTMLElement>('onboarding-launchers')!.querySelectorAll('button')).toHaveLength(0);
   };
 
+  // US-017: a required (blocking) step that has ended in failure is not
+  // "HQ is ready." The heading names what did not finish and offers Try again.
+  it('names the required step that did not finish and offers Try again', async () => {
+    stubInvoke({
+      fetch_and_extract_template: () => {
+        throw new Error('permission denied');
+      },
+    });
+    const onfinish = mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await flushUntil(() => readyTitle() !== 'Almost ready.', 'the settled heading');
+
+    expect(readyTitle()).toBe('Setting up your workspace did not finish.');
+    expect(readyTitle()).not.toContain('!');
+    expect(byId('ready-required-retry')?.textContent?.trim()).toBe('Try again');
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('permission denied');
+    expect(onfinish).not.toHaveBeenCalled();
+  });
+
+  // A background step is not required. Its failure keeps the calm heading.
+  // The quiet named line for that failure stays the desktop's own note, not
+  // a second heading on this screen.
+  it('keeps HQ is ready after a background setup step fails', async () => {
+    stubInvoke({
+      start_install_queue: () => {
+        throw new Error('permission denied');
+      },
+    });
+    mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => scene() === 'ready', 'the ready screen');
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the ready heading');
+    await flushUntil(() => commands().includes('start_install_queue'), 'the background step');
+    await flush();
+
+    expect(readyTitle()).toBe('HQ is ready.');
+    expect(byId('ready-required-retry')).toBeNull();
+    expect(host.querySelector('#onboarding-title-ready')!.textContent).not.toContain('did not finish');
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('permission denied');
+  });
+
+  it('returns to HQ is ready after Try again finishes the required step', async () => {
+    let attempts = 0;
+    stubInvoke({
+      fetch_and_extract_template: () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('permission denied');
+      },
+    });
+    mountAt(2);
+    await flushUntil(() => commands().includes('fetch_and_extract_template'), 'the install');
+    byId('welcome-skip')!.click();
+    await flushUntil(() => byId('ready-required-retry') !== null, 'Try again');
+    expect(readyTitle()).toBe('Setting up your workspace did not finish.');
+
+    byId('ready-required-retry')!.click();
+    await flushUntil(() => readyTitle() === 'HQ is ready.', 'the recovered heading');
+    expect(byId('ready-required-retry')).toBeNull();
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    expect(host.querySelector('[data-scene="ready"]')!.textContent).not.toContain('permission denied');
+  });
+
   it('says Almost ready. while the install runs, then HQ is ready. and finishes once it is done', async () => {
     const template = deferred();
     stubInvoke({ fetch_and_extract_template: () => template.promise });
