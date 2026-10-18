@@ -20,9 +20,24 @@ describe('friendlyPath', () => {
     expect(friendlyPath('/Users/ada-work/hq', '/Users/ada')).toBe('/Users/ada-work/hq');
   });
 
-  it('handles Windows-style paths', () => {
-    expect(friendlyPath('C:\\Users\\Ada\\hq', 'C:\\Users\\Ada')).toBe('~\\hq');
+  it('shows a Windows path as its native absolute path, never ~-relative', () => {
+    // A tilde path is not something Explorer, cmd or PowerShell can open, so
+    // the ready screen must show the folder Claude will actually open.
+    expect(friendlyPath('C:\\Users\\Ada\\hq', 'C:\\Users\\Ada')).toBe('C:\\Users\\Ada\\hq');
+    expect(friendlyPath('C:\\Users\\Ada\\', 'C:\\Users\\Ada')).toBe('C:\\Users\\Ada');
     expect(friendlyPath('C:\\Users\\Ada2\\hq', 'C:\\Users\\Ada')).toBe('C:\\Users\\Ada2\\hq');
+    expect(friendlyPath('\\\\server\\share\\hq', '\\\\server\\share')).toBe(
+      '\\\\server\\share\\hq',
+    );
+  });
+
+  it('strips the Windows verbatim prefix before showing a path', () => {
+    expect(friendlyPath(String.raw`\\?\C:\Users\Ada\hq`, 'C:\\Users\\Ada')).toBe(
+      'C:\\Users\\Ada\\hq',
+    );
+    expect(friendlyPath(String.raw`\\?\UNC\server\share\hq`, null)).toBe(
+      '\\\\server\\share\\hq',
+    );
   });
 
   it('returns a trimmed absolute path when no home directory is known', () => {

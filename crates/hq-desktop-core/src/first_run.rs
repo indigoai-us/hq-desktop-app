@@ -30,6 +30,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
 
@@ -58,6 +59,23 @@ pub enum MenubarRead {
     /// A previous safe-write attempt moved corrupt settings aside but did not
     /// finish writing a replacement before the process stopped.
     PreservedCorrupt,
+}
+
+/// The launch kind classified at app `.setup()`, before `ensure_machine_id`
+/// writes `machineId`. Process-wide so code outside Tauri managed state (the
+/// HQ root resolver) sees the same verdict as `LaunchKindState`. Unset in the
+/// CLI and in tests.
+static SETUP_LAUNCH_KIND: OnceLock<LaunchKind> = OnceLock::new();
+
+/// Record the setup-time launch kind. Only the first call takes effect;
+/// returns false when a kind was already recorded.
+pub fn set_setup_launch_kind(kind: LaunchKind) -> bool {
+    SETUP_LAUNCH_KIND.set(kind).is_ok()
+}
+
+/// The launch kind recorded by [`set_setup_launch_kind`], if any.
+pub fn setup_launch_kind() -> Option<LaunchKind> {
+    SETUP_LAUNCH_KIND.get().copied()
 }
 
 /// Pure classifier over an already-parsed `menubar.json` object. Kept
