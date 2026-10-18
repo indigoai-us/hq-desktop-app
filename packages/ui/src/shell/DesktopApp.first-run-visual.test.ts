@@ -1919,12 +1919,14 @@ describe("visual first run: Bring in your context", () => {
 
   it("keeps a finished import for the one note at close, and tries a failed send again after the ledger's wait", async () => {
     const { sendDm, scanCancel } = await finishAScan(async () => failure("network", "offline"));
-    // The scan finished while the takeover is open: nothing goes to the assistant.
-    await vi.advanceTimersByTimeAsync(10 * 60_000);
-    await settle();
+    // Naming does not send the note. The done screen is still up.
     expect(sendDm).not.toHaveBeenCalled();
+    expect(step()).toBe("done");
 
-    await talk();
+    // US-015: a ready done screen moves on by itself after 1s. That close sends the note.
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    expect(step()).toBeNull();
     expect(sendDm).toHaveBeenCalledTimes(1);
     // Not before the notice ledger allows it (30 s after a failure that may pass).
     await vi.advanceTimersByTimeAsync(20_000);
