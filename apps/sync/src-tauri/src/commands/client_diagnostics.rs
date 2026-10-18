@@ -631,7 +631,7 @@ where
     }
 }
 
-/// CHECK_NOW (US-007): the terminal action runs the eight bounded, redacted,
+/// CHECK_NOW (US-007): the terminal action runs the nine bounded, redacted,
 /// panic-isolated probes and derives the terminal state from them. A thin
 /// wrapper over the shared [`execute_command_lifecycle`].
 async fn execute_check_now(
