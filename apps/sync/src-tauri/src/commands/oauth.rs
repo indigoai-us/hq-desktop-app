@@ -30,7 +30,7 @@
 //   - Single-use: accepts at most one request, closes listener afterwards.
 //   - A timeout so a stalled flow cannot leak a socket. Named-provider
 //     sign-in waits 5 minutes. A provider-less continuation waits the
-//     attempt lifetime (90 seconds), and that listener uses the same bound.
+//     continuation callback window (90 seconds); see `listen_timeout_for`.
 //   - PKCE (S256) prevents authorization code interception.
 //
 // Error contract with the frontend (see `onboarding-signin.ts::mapSignInError`):
@@ -75,6 +75,20 @@ fn set_oauth_flow_active(active: bool) {
 // static Cognito client. Never choose an unregistered ephemeral redirect URI.
 const REGISTERED_LOOPBACK_PORTS: [u16; 3] = [53682, 8765, 3000];
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long the loopback listener waits for the browser.
+///
+/// A named provider goes straight to that provider and keeps the 5-minute
+/// wait. A provider-less request goes through the website, so a broken page
+/// there gives up after the continuation callback window (90 seconds). The
+/// "Continue as …" confirmation that follows the callback has its own window
+/// and is not bounded by this one.
+fn listen_timeout_for(identity_provider: Option<&str>) -> Duration {
+    match identity_provider {
+        Some(_) => IDLE_TIMEOUT,
+        None => hq_desktop_core::session_continuation::CALLBACK_WINDOW,
+    }
+}
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ── PKCE verifier storage ──────────────────────────────────────────────
@@ -470,7 +484,7 @@ pub async fn start_oauth_login(
     // Explicit identity_provider tells Cognito Hosted UI to skip its own
     // username/password form and redirect straight to the selected provider.
     // No nonce: this path has no confirmation step to bind a token back to.
-    let armed = arm_oauth_flow(&app, Some(&identity_provider), None, IDLE_TIMEOUT)?;
+    let armed = arm_oauth_flow(&app, Some(&identity_provider), None)?;
     let (authorize_url, referral_nonce) =
         match crate::commands::desktop_auth::prepare_desktop_referral_start_url(
             &armed.authorize_url,
@@ -534,7 +548,6 @@ pub(crate) fn arm_oauth_flow(
     app: &AppHandle,
     identity_provider: Option<&str>,
     nonce: Option<&str>,
-    idle_timeout: Duration,
 ) -> Result<ArmedOAuthFlow, String> {
     if identity_provider.is_some_and(|provider| provider.trim().is_empty()) {
         return Err("A sign-in provider is required.".to_string());
@@ -594,7 +607,7 @@ pub(crate) fn arm_oauth_flow(
         *guard = Some(start_loopback_listener(
             listeners,
             state.clone(),
-            idle_timeout,
+            listen_timeout_for(identity_provider),
         ));
     }
     set_oauth_flow_active(true);
@@ -1244,31 +1257,20 @@ mod tests {
                     .find("*guard = Some(PendingPkce")
                     .expect("PKCE replacement")
         );
-
-        let desktop_auth = include_str!("desktop_auth.rs");
-        let continuation = desktop_auth
-            .split("pub async fn desktop_continuation_start(")
-            .nth(1)
-            .expect("continuation start")
-            .split("pub async fn desktop_continuation_await_identity(")
-            .next()
-            .expect("continuation start body");
-        assert!(
-            continuation.contains("ATTEMPT_LIFETIME"),
-            "a provider-less attempt must bound its listener by the attempt lifetime"
-        );
-        assert!(login_uses_named_provider_timeout(source));
     }
 
-    fn login_uses_named_provider_timeout(source: &str) -> bool {
-        let login = source
-            .split("pub async fn start_oauth_login(")
-            .nth(1)
-            .expect("manual login")
-            .split("async fn resolve_identity_provider(")
-            .next()
-            .expect("manual login body");
-        login.contains("IDLE_TIMEOUT") && !login.contains("ATTEMPT_LIFETIME")
+    #[test]
+    fn a_named_provider_waits_five_minutes_and_a_website_sign_in_waits_ninety_seconds() {
+        assert_eq!(listen_timeout_for(Some("Google")), Duration::from_secs(300));
+        assert_eq!(
+            listen_timeout_for(Some("MicrosoftPersonal")),
+            Duration::from_secs(300)
+        );
+        assert_eq!(listen_timeout_for(None), Duration::from_secs(90));
+        // The browser wait is shorter than the attempt, so tokens that arrive
+        // at the end of it still get a full "Continue as …" window.
+        use hq_desktop_core::session_continuation::{ATTEMPT_LIFETIME, CONFIRMATION_WINDOW};
+        assert!(listen_timeout_for(None) + CONFIRMATION_WINDOW <= ATTEMPT_LIFETIME);
     }
 
     #[test]

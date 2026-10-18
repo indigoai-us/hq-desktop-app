@@ -353,10 +353,22 @@
    * Cancel releases that attempt's listener, nonce, and PKCE verifier. The
    * named sign-in then arms a new listener. Cancelling after the new listener
    * exists is still safe: teardown is scoped to the old attempt's state.
+   *
+   * While the browser wait is still running, `beginContinuation` sees the
+   * click and records the cancel itself. Once it has returned at the
+   * confirmation card, nothing else will: that case goes through
+   * `cancelContinuation`, the same path as "Use another account", so the card
+   * closes and a `cancelled` receipt is written.
    */
   async function releaseContinuationForNamedProvider(): Promise<void> {
     const attemptId = continuationAttemptId();
     if (!attemptId) return;
+    if (continuation.phase === 'confirming' && continuationDepsRef) {
+      await cancelContinuation(continuationDepsRef, continuation, (next) => {
+        continuation = next;
+      });
+      return;
+    }
     try {
       await invoke('desktop_continuation_cancel', { attemptId });
     } catch (cause) {

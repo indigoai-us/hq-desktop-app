@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { MobileAuthSession } from "./mobile-auth";
+import {
+  MICROSOFT_EMAIL_INVALID,
+  MICROSOFT_RESOLVE_NETWORK,
+  MicrosoftResolveError,
+} from "./mobile-providers";
 import { createMobileSignIn, type MobileSignInState } from "./mobile-sign-in";
 
 /**
@@ -142,7 +147,71 @@ it("does not open an unregistered provider", async () => {
   const session = fakeSession();
   const onState = vi.fn();
   const flow = createMobileSignIn({ session, onState });
-  await flow.signIn("Microsoft");
+  await flow.signIn("Facebook" as never);
   expect(session.beginSignIn).not.toHaveBeenCalled();
   expect(onState).not.toHaveBeenCalled();
+});
+
+describe("Microsoft on a phone", () => {
+  const WORK_PROVIDER = "MsOrg87489d4600af47338b7bafe9bd";
+
+  it("asks hq-pro which provider owns the email, then opens Cognito at it", async () => {
+    const session = fakeSession();
+    const states: MobileSignInState[] = [];
+    const errors: (string | null)[] = [];
+    const resolveMicrosoft = vi.fn(async () => WORK_PROVIDER);
+    const flow = createMobileSignIn({
+      session,
+      onState: (state) => states.push(state),
+      onError: (message) => errors.push(message),
+      resolveMicrosoft,
+    });
+
+    await flow.signIn("Microsoft", { email: "person@contoso.example" });
+
+    expect(resolveMicrosoft).toHaveBeenCalledExactlyOnceWith("person@contoso.example");
+    expect(session.beginSignIn).toHaveBeenCalledExactlyOnceWith({
+      identityProvider: WORK_PROVIDER,
+    });
+    expect(states).toEqual(["opening"]);
+    expect(errors).toEqual([null]);
+  });
+
+  it("shows the resolve error and never opens the browser when resolve fails", async () => {
+    const session = fakeSession();
+    const states: MobileSignInState[] = [];
+    const errors: (string | null)[] = [];
+    const flow = createMobileSignIn({
+      session,
+      onState: (state) => states.push(state),
+      onError: (message) => errors.push(message),
+      resolveMicrosoft: vi.fn(async () => {
+        throw new MicrosoftResolveError(MICROSOFT_EMAIL_INVALID);
+      }),
+    });
+
+    await flow.signIn("Microsoft", { email: "not-an-email" });
+
+    expect(session.beginSignIn).not.toHaveBeenCalled();
+    expect(states).toEqual(["opening", "signed-out"]);
+    expect(errors).toEqual([null, MICROSOFT_EMAIL_INVALID]);
+  });
+
+  it("does not leak an unexpected error's text to the screen", async () => {
+    const session = fakeSession();
+    const errors: (string | null)[] = [];
+    const flow = createMobileSignIn({
+      session,
+      onState: () => {},
+      onError: (message) => errors.push(message),
+      resolveMicrosoft: vi.fn(async () => {
+        throw new Error("internal detail");
+      }),
+    });
+
+    await flow.signIn("Microsoft", { email: "person@contoso.example" });
+
+    expect(session.beginSignIn).not.toHaveBeenCalled();
+    expect(errors).toEqual([null, MICROSOFT_RESOLVE_NETWORK]);
+  });
 });

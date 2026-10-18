@@ -230,6 +230,34 @@ describe('provider buttons stay beside a provider-less browser wait', () => {
     expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
   });
 
+  it('closes the confirmation card and records the cancel when a provider is pressed there', async () => {
+    const order: string[] = [];
+    installContinuationInvoke({
+      awaitIdentity: () => Promise.resolve({ email: 'person@example.test' }),
+      onInvoke: (command) => {
+        if (command === 'desktop_continuation_cancel' || command === 'start_oauth_login') {
+          order.push(command);
+        }
+      },
+    });
+    component = mount(SignInPrompt, { target: host, props: { layout: 'column' } });
+    await flushUntil(() => host.querySelector('[data-testid="continuation-confirm"]') !== null);
+    expect(host.textContent).toContain('person@example.test');
+
+    providerButtons().find((button) => button.textContent?.includes('Google'))?.click();
+    await flushUntil(() => order.includes('start_oauth_login'));
+
+    expect(order).toEqual(['desktop_continuation_cancel', 'start_oauth_login']);
+    expect(tauri.invoke).toHaveBeenCalledWith('desktop_continuation_cancel', { attemptId: 'attempt-1' });
+    expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
+    expect(host.querySelector('[data-testid="continuation-confirm"]')).toBeNull();
+    expect(host.textContent).not.toContain('That sign-in did not finish');
+    const outcomes = tauri.invoke.mock.calls
+      .filter(([command]) => command === 'desktop_continuation_deliver')
+      .map(([, args]) => (args as { body: { outcome?: string } }).body.outcome);
+    expect(outcomes.filter((outcome) => outcome === 'cancelled')).toHaveLength(1);
+  });
+
   it('returns to the provider buttons when the opened website sign-in fails', async () => {
     let rejectIdentity: (error: Error) => void = () => {};
     installContinuationInvoke({

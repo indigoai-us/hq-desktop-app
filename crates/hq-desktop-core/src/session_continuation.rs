@@ -34,17 +34,23 @@ use sha2::{Digest, Sha256};
 /// different one is not understood, and not understood means disabled.
 pub const SUPPORTED_PROTOCOL_VERSION: u32 = 1;
 
-/// How long a pending provider-less attempt may live.
+/// How long a provider-less attempt waits for the browser to come back.
 ///
 /// The loopback listener for that attempt uses this same bound, so neither
 /// side outlives the other. Ninety seconds is long enough to finish in the
 /// browser and short enough that a website error is not a five-minute dead
 /// end. A named-provider sign-in keeps its own longer listener timeout.
-pub const ATTEMPT_LIFETIME: Duration = Duration::from_secs(90);
+pub const CALLBACK_WINDOW: Duration = Duration::from_secs(90);
 
-/// How long the "Continue as …" confirmation stays answerable, bounded by the
-/// attempt deadline — a confirmation window cannot extend an expired attempt.
+/// How long the "Continue as …" confirmation stays answerable once tokens
+/// arrive, bounded by the attempt deadline.
 pub const CONFIRMATION_WINDOW: Duration = Duration::from_secs(120);
+
+/// How long a pending attempt may live in total: the longest browser wait
+/// followed by a full confirmation window. The browser wait alone must not
+/// cut the confirmation short.
+pub const ATTEMPT_LIFETIME: Duration =
+    Duration::from_secs(CALLBACK_WINDOW.as_secs() + CONFIRMATION_WINDOW.as_secs());
 
 /// Longest a config response is trusted before it is fetched again.
 pub const CONFIG_CACHE_TTL: Duration = Duration::from_secs(120);
@@ -278,6 +284,8 @@ pub struct ContinuationAttempt {
     /// without any of the transitions having to find and cancel this attempt.
     auth_generation: u64,
     started_at: EpochMillis,
+    /// When the browser wait ends if no callback has arrived.
+    callback_deadline: EpochMillis,
     deadline: EpochMillis,
     phase: AttemptPhase,
 }
@@ -296,6 +304,7 @@ impl ContinuationAttempt {
             nonce: nonce.into(),
             auth_generation,
             started_at: now,
+            callback_deadline: now + CALLBACK_WINDOW.as_millis() as i64,
             deadline: now + ATTEMPT_LIFETIME.as_millis() as i64,
             phase: AttemptPhase::AwaitingCallback,
         }
@@ -344,7 +353,7 @@ impl ContinuationAttempt {
     /// loopback listener too, and that listener is addressed by state. Without
     /// it, pressing **Use another account** would drop the custody entry while
     /// the native listener kept both sockets and the blur-suppression flag
-    /// alive until a callback or the attempt lifetime — a Cancel that
+    /// alive until a callback or the callback window — a Cancel that
     /// visibly cancels nothing.
     ///
     /// Not a secret in the sense a token is: it is a per-attempt random value
@@ -359,11 +368,12 @@ impl ContinuationAttempt {
         if self.is_finished() {
             return;
         }
-        let confirm_deadline = match &self.phase {
-            AttemptPhase::AwaitingConfirmation { confirm_deadline } => Some(*confirm_deadline),
-            _ => None,
+        let effective = match &self.phase {
+            AttemptPhase::AwaitingConfirmation { confirm_deadline } => {
+                (*confirm_deadline).min(self.deadline)
+            }
+            _ => self.callback_deadline.min(self.deadline),
         };
-        let effective = confirm_deadline.map_or(self.deadline, |c| c.min(self.deadline));
         if now >= effective {
             self.phase = AttemptPhase::Finished(AttemptEnd::Expired);
         }
@@ -747,37 +757,60 @@ mod tests {
     }
 
     #[test]
-    fn an_attempt_expires_when_its_lifetime_ends() {
+    fn a_browser_wait_with_no_callback_expires_after_ninety_seconds() {
         // A person who is staring at a broken website sign-in should not wait
-        // five minutes. Ninety seconds is the backstop; one second earlier the
-        // attempt is still alive.
-        assert_eq!(ATTEMPT_LIFETIME, std::time::Duration::from_secs(90));
+        // five minutes. Ninety seconds is the backstop for the browser wait;
+        // one second earlier the attempt is still alive.
+        assert_eq!(CALLBACK_WINDOW, std::time::Duration::from_secs(90));
         let mut live = attempt();
         assert!(live.tokens_received(NOW + 89_000).is_ok());
         let mut attempt = attempt();
         assert_eq!(
-            attempt.tokens_received(NOW + ATTEMPT_LIFETIME.as_millis() as i64),
+            attempt.tokens_received(NOW + CALLBACK_WINDOW.as_millis() as i64),
             Err(AttemptEnd::Expired)
+        );
+        let mut waiting = self::attempt();
+        waiting.tick(NOW + CALLBACK_WINDOW.as_millis() as i64);
+        assert_eq!(
+            waiting.phase(),
+            &AttemptPhase::Finished(AttemptEnd::Expired)
         );
     }
 
     #[test]
-    fn a_confirmation_window_cannot_outlive_the_attempt() {
-        // Tokens arrive 30 seconds before the attempt deadline. The two-minute
-        // confirmation window would run past it; the attempt deadline wins.
+    fn tokens_that_arrive_late_in_the_wait_still_get_a_full_confirmation() {
+        // A new user picks Google on the website, chooses an account and
+        // passes 2FA. That takes 80 seconds. They then read "Continue as …"
+        // and press it 70 seconds later. The browser wait is 90 seconds; the
+        // confirmation that follows it is a full two minutes, not the ten
+        // seconds that would be left if the wait capped it.
         let mut attempt = attempt();
-        let late = NOW + ATTEMPT_LIFETIME.as_millis() as i64 - 30_000;
-        attempt.tokens_received(late).unwrap();
+        attempt.tokens_received(NOW + 80_000).unwrap();
         match attempt.phase() {
             AttemptPhase::AwaitingConfirmation { confirm_deadline } => {
-                assert_eq!(*confirm_deadline, NOW + ATTEMPT_LIFETIME.as_millis() as i64);
+                assert_eq!(
+                    *confirm_deadline,
+                    NOW + 80_000 + CONFIRMATION_WINDOW.as_millis() as i64
+                );
             }
             other => panic!("expected a confirmation window, got {other:?}"),
         }
+        assert_eq!(attempt.confirm(NOW + 150_000, 7), ConfirmOutcome::Activate);
+    }
+
+    #[test]
+    fn a_confirmation_window_cannot_outlive_the_attempt() {
+        // The attempt lifetime covers the longest browser wait plus a full
+        // confirmation window, and no more. Even tokens that arrive at the
+        // last moment of the wait expire with their window.
+        let mut attempt = attempt();
+        let last = NOW + CALLBACK_WINDOW.as_millis() as i64 - 1;
+        attempt.tokens_received(last).unwrap();
         assert_eq!(
-            attempt.confirm(late + 60_000, 7),
+            attempt.confirm(last + CONFIRMATION_WINDOW.as_millis() as i64, 7),
             ConfirmOutcome::Discard(AttemptEnd::Expired)
         );
+        assert!(ATTEMPT_LIFETIME >= CALLBACK_WINDOW + CONFIRMATION_WINDOW);
     }
 
     #[test]
