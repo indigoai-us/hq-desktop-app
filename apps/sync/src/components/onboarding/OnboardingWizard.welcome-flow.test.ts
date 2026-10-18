@@ -469,7 +469,13 @@ describe('welcome flow: the install runs in the background', () => {
     await flushUntil(() => attempts === 2, 'the retried step');
     // The background phase ends while the retried step is still running.
     deps.resolve();
-    await flushUntil(() => commands().includes('register_search_index'), 'the last background step');
+    await flushUntil(
+      () =>
+        calls.some(
+          (call) => call.command === 'set_first_run_background_setup' && call.args?.running === false,
+        ),
+      'the end of the background phase',
+    );
     await flush();
     expect(commands()).not.toContain('record_install_complete');
     expect(readyTitle()).toBe('Almost ready.');

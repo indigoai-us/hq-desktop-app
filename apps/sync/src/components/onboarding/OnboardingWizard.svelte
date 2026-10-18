@@ -923,6 +923,8 @@
     readyProgressLine({
       itemId: currentInstallItemId,
       retrying: Boolean(setupRetry && setupRetry.stageId === currentInstallItemId),
+      // The clock follows the first active stage, so a step Try again runs
+      // beside a background step shows no elapsed time.
       elapsedMs: currentInstallItemId !== null && currentInstallItemId === currentStageId ? stageElapsedMs : 0,
     }),
   );
@@ -3148,7 +3150,9 @@
         }
       }
       // The background phase may have ended while this retry ran; its own
-      // completion check saw the failed step and passed.
+      // completion check saw the retried step still running and passed. A
+      // background phase that ended before Try again already completed setup
+      // with the failed step, and this call does nothing.
       if (isCurrentRun(runId) && backgroundOkRunId === runId && !backgroundPhaseRunning) {
         await completeSetup(runId);
       }
