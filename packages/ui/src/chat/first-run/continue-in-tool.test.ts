@@ -205,6 +205,67 @@ describe("continueInTool", () => {
     await vi.waitFor(() => expect(onInstallSettled).toHaveBeenCalledWith(ok(undefined)));
   });
 
+  it("a hung kill switch read is pending after one deadline, and installs nothing", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const onInstallSettled = vi.fn();
+    const { input, putHqAnywherePersonSetting, installRuntimeForTool, launchClaudeCode } = setup();
+    let answer: (value: unknown) => void = () => undefined;
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(() => new Promise((resolve) => {
+        answer = resolve;
+      })),
+    } as unknown as ContinueInToolInput["identity"];
+    const pending = continueInTool(input("claude", { identity, enableHqAnywhere: true, onInstallSettled }));
+    await vi.advanceTimersByTimeAsync(FIRST_RUN_INSTALL_WAIT_MS - 1);
+    expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual({ kind: "prepared", install: "pending" });
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    // A late explicit kill switch still blocks the opt-in and the install.
+    answer(ok({ configured: true, enabled: false }));
+    await vi.waitFor(() => expect(onInstallSettled).toHaveBeenCalledWith(undefined));
+    expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
+  });
+
+  it("a hung opt-in write is pending after one deadline, then installs once it is saved", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const onInstallSettled = vi.fn();
+    let saved: (value: unknown) => void = () => undefined;
+    const { input, installRuntimeForTool, launchClaudeCode } = setup({
+      putSetting: () => new Promise((resolve) => {
+        saved = resolve;
+      }),
+    });
+    const pending = continueInTool(input("claude", { enableHqAnywhere: true, onInstallSettled }));
+    await vi.advanceTimersByTimeAsync(FIRST_RUN_INSTALL_WAIT_MS);
+    await expect(pending).resolves.toEqual({ kind: "prepared", install: "pending" });
+    expect(installRuntimeForTool).not.toHaveBeenCalled();
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    saved(ok(undefined));
+    await vi.waitFor(() => expect(onInstallSettled).toHaveBeenCalledWith(ok(undefined)));
+    expect(installRuntimeForTool).toHaveBeenCalledWith("claude");
+  });
+
+  it("the kill switch read, opt-in write and install share one deadline", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const after = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+    const { input } = setup({
+      putSetting: () => after(8_000, ok(undefined)),
+      install: () => after(8_000, ok(undefined)),
+    });
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(() => after(8_000, ok({ configured: true, enabled: true }))),
+    } as unknown as ContinueInToolInput["identity"];
+    const pending = continueInTool(input("claude", { identity, enableHqAnywhere: true }));
+    await vi.advanceTimersByTimeAsync(FIRST_RUN_INSTALL_WAIT_MS);
+    // Each part is under 20 s; together they are 24 s, so the one wait runs out.
+    await expect(pending).resolves.toEqual({ kind: "prepared", install: "pending" });
+  });
+
   it("Grok Build prepares without an opt-in, an install, or an open", async () => {
     const { order, input, putHqAnywherePersonSetting, installRuntimeForTool } = setup();
     await expect(continueInTool(input("grok", { enableHqAnywhere: true }))).resolves.toEqual({ kind: "prepared", install: "skipped" });

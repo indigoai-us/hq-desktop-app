@@ -13,12 +13,17 @@
     type PlatformAdapter,
   } from "@hq/platform";
 
+  const HQ_ANYWHERE_UNAVAILABLE_LINE = "HQ Anywhere is not available right now.";
+
   interface Props {
     adapter?: PlatformAdapter | null;
   }
 
   let { adapter = null }: Props = $props();
   let available = $state(false);
+  // The kill switch is set: the flag read back an explicit false. A missing or
+  // unreadable flag leaves HQ Anywhere on (owner decision: HQ Anywhere is GA).
+  let switchedOff = $state(false);
   let loaded = $state(false);
   let enabled = $state(false);
   let loading = $state(false);
@@ -44,6 +49,7 @@
 
       const wasAvailable = available;
       available = enabled;
+      switchedOff = !enabled;
       if (!enabled) {
         loaded = false;
         setupRunning = false;
@@ -246,6 +252,13 @@
         onclick={retry}
       >Tap to retry</button>
     {/if}
+  </div>
+{:else if switchedOff}
+  <div class="setting-row" data-testid="hq-anywhere-setting-unavailable">
+    <div class="copy">
+      <div class="label">HQ Anywhere</div>
+      <div class="hint">{HQ_ANYWHERE_UNAVAILABLE_LINE}</div>
+    </div>
   </div>
 {/if}
 

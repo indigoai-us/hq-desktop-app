@@ -5,9 +5,10 @@
  * callout. That press is the explicit opt-in, so the person setting is
  * written first. The startup reconcile reads the same setting, so an install
  * made here is kept on the next launch instead of being uninstalled. Then
- * the one tool's global runtime is installed (bounded, so a hung `hq install`
- * cannot hold the takeover). A wait that runs out is pending, not failed:
- * the install keeps running and reports its real result later. Not now, or
+ * the one tool's global runtime is installed. The kill switch read, the
+ * opt-in write and the install share one deadline, so none of them can hold
+ * the takeover. A wait that runs out is pending, not failed: the step keeps
+ * running and reports its real result later. Not now, or
  * no callout, installs nothing. The tool stays closed: the welcome edition,
  * and later the Daily Brief, open it when the person presses Open.
  */
@@ -91,25 +92,25 @@ async function hqFolder(settings: ContinueInToolInput["settings"]): Promise<stri
   }
 }
 
+/** What the Enable step did, once it finished. */
+type EnableStepResult =
+  | { kind: "not-installing" }
+  | { kind: "opt-in-failed"; message: string }
+  | { kind: "installed"; result: AdapterResult<void> | undefined };
+
 /**
- * Resolves with the install result, or "timeout" once the wait runs out.
- * The install itself is not cancelled: `settled` is that same promise.
+ * Resolves with the step's result, or "timeout" once the wait runs out.
+ * The step itself is not cancelled: `settled` is that same promise.
  */
-function boundedInstall(
-  install: () => Promise<AdapterResult<void> | undefined>,
+function bounded<T>(
+  step: () => Promise<T>,
   waitMs: number,
-): {
-  raced: Promise<AdapterResult<void> | undefined | "timeout">;
-  settled: Promise<AdapterResult<void> | undefined>;
-} {
+): { raced: Promise<T | "timeout">; settled: Promise<T> } {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), waitMs);
   });
-  const settled = install().catch((error: unknown) => {
-    console.warn("[first-run] runtime install threw", error);
-    return undefined;
-  });
+  const settled = step();
   const raced = Promise.race([settled, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
@@ -131,47 +132,62 @@ export async function continueInTool(input: ContinueInToolInput): Promise<Contin
   let notice: string | null = null;
   let installState: ContinueInstallState = "skipped";
   // Enable is the consent. Not now, or a callout that was never shown, skips
-  // the opt-in and the install. An explicit kill switch still blocks a
-  // consented install. No reader, or an unreadable one, means the switch is on.
-  const runtimeEnabled = input.enableHqAnywhere !== true
-    ? false
-    : input.identity
-      ? await hqAnywhereRuntimeEnabled(input.identity as IdentityApi)
-      : true;
-  if (
-    input.enableHqAnywhere === true &&
-    continueWillInstallHq({ runtime, runtimeEnabled, canInstall: Boolean(settings.installRuntimeForTool) })
-  ) {
-    const optIn = await putHqAnywherePersonSetting(settings as SettingsApi, true, { pause: input.pause });
-    if (!optIn.ok) {
-      // Without the saved opt-in the next launch would uninstall, so skip the install.
-      console.warn("[first-run] HQ Anywhere opt-in was not saved; skipping the install", optIn.message);
-      log(`continue-in-tool opt-in failed runtime=${runtime} ms=${Date.now() - startedAt}`);
-      notice = optInNotSavedMessage(runtime);
-    } else {
-      const { raced, settled } = boundedInstall(
-        () => settings.installRuntimeForTool!(runtime as "claude" | "codex"),
-        input.installWaitMs ?? FIRST_RUN_INSTALL_WAIT_MS,
-      );
-      const installed = await raced;
-      if (installed === "timeout") {
-        installState = "pending";
-        console.warn("[first-run] runtime install is still running; landing on the welcome report");
-        void settled.then((result) => {
-          try {
-            input.onInstallSettled?.(result);
-          } catch (error) {
-            console.warn("[first-run] install follow-up failed", error);
-          }
-        });
-      } else if (installed?.ok === true) {
+  // the opt-in and the install.
+  if (input.enableHqAnywhere === true) {
+    // The kill switch read, the opt-in write and the install share one
+    // deadline, so a hung flag read or setting write cannot hold Continue on
+    // "Turning on HQ Anywhere…" any longer than a hung install can.
+    const enableStep = async (): Promise<EnableStepResult> => {
+      // An explicit kill switch blocks a consented install. No reader, or an
+      // unreadable one, means the switch is on.
+      const runtimeEnabled = input.identity
+        ? await hqAnywhereRuntimeEnabled(input.identity as IdentityApi)
+        : true;
+      if (!continueWillInstallHq({ runtime, runtimeEnabled, canInstall: Boolean(settings.installRuntimeForTool) })) {
+        return { kind: "not-installing" };
+      }
+      const optIn = await putHqAnywherePersonSetting(settings as SettingsApi, true, { pause: input.pause });
+      if (!optIn.ok) {
+        // Without the saved opt-in the next launch would uninstall, so skip the install.
+        console.warn("[first-run] HQ Anywhere opt-in was not saved; skipping the install", optIn.message);
+        log(`continue-in-tool opt-in failed runtime=${runtime} ms=${Date.now() - startedAt}`);
+        return { kind: "opt-in-failed", message: optInNotSavedMessage(runtime) };
+      }
+      const result = await settings.installRuntimeForTool!(runtime as "claude" | "codex");
+      return { kind: "installed", result };
+    };
+    const { raced, settled } = bounded(
+      () =>
+        enableStep().catch((error: unknown): EnableStepResult => {
+          console.warn("[first-run] HQ Anywhere enable step threw", error);
+          return { kind: "installed", result: undefined };
+        }),
+      input.installWaitMs ?? FIRST_RUN_INSTALL_WAIT_MS,
+    );
+    const step = await raced;
+    if (step === "timeout") {
+      installState = "pending";
+      console.warn("[first-run] HQ Anywhere setup is still running; landing on the welcome report");
+      void settled.then((late) => {
+        try {
+          // A late opt-in failure or kill switch installed nothing.
+          input.onInstallSettled?.(late.kind === "installed" ? late.result : undefined);
+        } catch (error) {
+          console.warn("[first-run] install follow-up failed", error);
+        }
+      });
+      log(`continue-in-tool installed runtime=${runtime} ok=timeout ms=${Date.now() - startedAt}`);
+    } else if (step.kind === "opt-in-failed") {
+      notice = step.message;
+    } else if (step.kind === "installed") {
+      const installed = step.result;
+      if (installed?.ok === true) {
         installState = "installed";
       } else {
         installState = "failed";
         if (installed && !installed.ok) console.warn("[first-run] runtime install failed", installed.message);
       }
-      const state = installed === "timeout" ? "timeout" : String(installed?.ok ?? "skipped");
-      log(`continue-in-tool installed runtime=${runtime} ok=${state} ms=${Date.now() - startedAt}`);
+      log(`continue-in-tool installed runtime=${runtime} ok=${String(installed?.ok ?? "skipped")} ms=${Date.now() - startedAt}`);
     }
   }
 

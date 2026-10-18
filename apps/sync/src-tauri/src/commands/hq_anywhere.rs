@@ -201,6 +201,49 @@ fn global_runtime_has_any_install(home: &Path, runtime: GlobalRuntime) -> bool {
     wrote_files || install_state_file(home, runtime).is_file()
 }
 
+/// Written by HQ Desktop when it installs or adopts the HQ Anywhere setup for
+/// `runtime`: `~/.hq/anywhere/<runtime>-desktop-enabled`. An uninstall request
+/// (the setting is off, or was never turned on) removes only a setup that has
+/// this marker. A setup made with `hq install --global` and never turned on in
+/// the desktop has no marker, so launch sync leaves it in place.
+fn desktop_marker_file(home: &Path, runtime: GlobalRuntime) -> PathBuf {
+    home.join(".hq/anywhere")
+        .join(format!("{}-desktop-enabled", runtime.as_str()))
+}
+
+fn write_desktop_marker(home: &Path, runtime: GlobalRuntime) {
+    let marker = desktop_marker_file(home, runtime);
+    let written = marker
+        .parent()
+        .map(fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|()| fs::write(&marker, b"1\n"));
+    if let Err(error) = written {
+        log(
+            LOG_TAG,
+            &format!(
+                "could not record that HQ Desktop set up {}: {error}",
+                runtime.as_str()
+            ),
+        );
+    }
+}
+
+fn clear_desktop_marker(home: &Path, runtime: GlobalRuntime) {
+    let marker = desktop_marker_file(home, runtime);
+    if marker.exists() {
+        if let Err(error) = fs::remove_file(&marker) {
+            log(
+                LOG_TAG,
+                &format!(
+                    "could not clear the HQ Desktop record for {}: {error}",
+                    runtime.as_str()
+                ),
+            );
+        }
+    }
+}
+
 fn global_install_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -342,6 +385,7 @@ where
     let mut pending = Vec::new();
     for runtime in runtimes {
         if enabled && global_runtime_is_installed(home, runtime) {
+            write_desktop_marker(home, runtime);
             log(
                 LOG_TAG,
                 &format!(
@@ -350,10 +394,19 @@ where
                 ),
             );
         } else if !enabled && !global_runtime_has_any_install(home, runtime) {
+            clear_desktop_marker(home, runtime);
             log(
                 LOG_TAG,
                 &format!(
                     "{} has no global setup to remove; skipping",
+                    runtime.as_str()
+                ),
+            );
+        } else if !enabled && !desktop_marker_file(home, runtime).is_file() {
+            log(
+                LOG_TAG,
+                &format!(
+                    "{} global setup was set up outside HQ Desktop (hq install --global); leaving it",
                     runtime.as_str()
                 ),
             );
@@ -371,10 +424,17 @@ where
         let argv = global_runtime_args(action, runtime);
         log(LOG_TAG, &format!("running hq {}", argv.join(" ")));
         match run_hq(argv, hq_root.clone()).await {
-            Ok(()) => log(
-                LOG_TAG,
-                &format!("{} global setup completed", runtime.as_str()),
-            ),
+            Ok(()) => {
+                if enabled {
+                    write_desktop_marker(home, runtime);
+                } else {
+                    clear_desktop_marker(home, runtime);
+                }
+                log(
+                    LOG_TAG,
+                    &format!("{} global setup completed", runtime.as_str()),
+                );
+            }
             Err(error) => {
                 log(
                     LOG_TAG,
@@ -463,6 +523,15 @@ mod tests {
         .unwrap();
     }
 
+    fn write_desktop_marker_for(home: &Path, runtime: &str) {
+        fs::create_dir_all(home.join(".hq/anywhere")).unwrap();
+        fs::write(
+            home.join(format!(".hq/anywhere/{runtime}-desktop-enabled")),
+            "1\n",
+        )
+        .unwrap();
+    }
+
     /// Runs [`apply_global_install`] against a temporary home that `seed`
     /// prepares. Returns the result, every `hq` argv the runner was asked to
     /// run, and whether the HQ root was resolved.
@@ -530,11 +599,12 @@ mod tests {
 
     #[test]
     fn the_production_bundle_still_runs_the_global_runtime_commands() {
-        let (result, calls, resolved) =
-            run_global_install_in(production(), false, None, |home| {
-                write_claude_install(home);
-                write_codex_install(home);
-            });
+        let (result, calls, resolved) = run_global_install_in(production(), false, None, |home| {
+            write_claude_install(home);
+            write_codex_install(home);
+            write_desktop_marker_for(home, "claude");
+            write_desktop_marker_for(home, "codex");
+        });
         assert_eq!(result, Ok(()));
         assert!(resolved);
         assert_eq!(
@@ -582,6 +652,8 @@ mod tests {
                 "<!-- hq-anywhere:begin (managed by `hq install --global --runtime codex`) -->\nHQ\n<!-- hq-anywhere:end -->\n",
             )
             .unwrap();
+            write_desktop_marker_for(home, "claude");
+            write_desktop_marker_for(home, "codex");
         });
         assert_eq!(result, Ok(()));
         assert_eq!(
@@ -603,9 +675,134 @@ mod tests {
                 r#"{"plugin":{"pluginId":"hq@hq"}}"#,
             )
             .unwrap();
+            write_desktop_marker_for(home, "claude");
         });
         assert_eq!(result, Ok(()));
         assert_eq!(calls, [["uninstall", "--global", "--runtime", "claude"]]);
+    }
+
+    /// HQ Anywhere is on by default and the saved desktop setting defaults to
+    /// false, so launch sync asks for an uninstall for everyone who never
+    /// turned it on. A setup made with `hq install --global` has no desktop
+    /// record and must survive that request.
+    #[test]
+    fn launch_sync_leaves_a_cli_made_install_the_desktop_never_turned_on() {
+        let (result, calls, resolved) = run_global_install_in(production(), false, None, |home| {
+            write_claude_install(home);
+            write_codex_install(home);
+        });
+        assert_eq!(result, Ok(()));
+        assert!(calls.is_empty(), "removed a CLI-made install: {calls:?}");
+        assert!(!resolved, "resolved the HQ root with nothing to remove");
+    }
+
+    #[test]
+    fn launch_sync_leaves_a_cli_made_plugin_install_the_desktop_never_turned_on() {
+        let (result, calls, _) = run_global_install_in(production(), false, None, |home| {
+            fs::create_dir_all(home.join(".claude")).unwrap();
+            fs::create_dir_all(home.join(".hq/anywhere")).unwrap();
+            fs::write(
+                home.join(".hq/anywhere/claude-install.json"),
+                r#"{"plugin":{"pluginId":"hq@hq"}}"#,
+            )
+            .unwrap();
+        });
+        assert_eq!(result, Ok(()));
+        assert!(calls.is_empty(), "removed a CLI-made install: {calls:?}");
+    }
+
+    #[test]
+    fn launch_sync_removes_only_the_runtime_the_desktop_turned_on() {
+        let (result, calls, _) = run_global_install_in(production(), false, None, |home| {
+            write_claude_install(home);
+            write_codex_install(home);
+            write_desktop_marker_for(home, "codex");
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(calls, [["uninstall", "--global", "--runtime", "codex"]]);
+    }
+
+    /// Install, adopt and uninstall keep the desktop record in step, so a
+    /// later turn-off removes what the desktop set up and nothing else.
+    #[test]
+    fn the_desktop_record_follows_install_adopt_and_uninstall() {
+        let home = TempHome::new();
+        let marker = |runtime: &str| {
+            home.path()
+                .join(format!(".hq/anywhere/{runtime}-desktop-enabled"))
+        };
+        write_claude_install(home.path());
+        fs::create_dir_all(home.path().join(".codex")).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let calls = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let run = |enabled: bool| {
+            let calls = calls.clone();
+            runtime.block_on(apply_global_install(
+                &production(),
+                enabled,
+                None,
+                home.path(),
+                &[],
+                || Ok(PathBuf::from("/tmp/hq-root-for-test")),
+                move |argv: Vec<String>, _hq_root: PathBuf| {
+                    calls.lock().unwrap().push(argv);
+                    async { Ok(()) }
+                },
+            ))
+        };
+
+        assert_eq!(run(true), Ok(()));
+        assert!(
+            marker("claude").is_file(),
+            "did not adopt the existing claude setup"
+        );
+        assert!(
+            marker("codex").is_file(),
+            "did not record the codex install"
+        );
+        assert_eq!(
+            calls.lock().unwrap().clone(),
+            [["install", "--global", "--runtime", "codex"]]
+        );
+
+        calls.lock().unwrap().clear();
+        write_codex_install(home.path());
+        assert_eq!(run(false), Ok(()));
+        assert_eq!(
+            calls.lock().unwrap().clone(),
+            [
+                ["uninstall", "--global", "--runtime", "claude"],
+                ["uninstall", "--global", "--runtime", "codex"],
+            ]
+        );
+        assert!(!marker("claude").exists());
+        assert!(!marker("codex").exists());
+    }
+
+    #[test]
+    fn a_failed_uninstall_keeps_the_desktop_record() {
+        let home = TempHome::new();
+        write_claude_install(home.path());
+        write_desktop_marker_for(home.path(), "claude");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        let result = runtime.block_on(apply_global_install(
+            &production(),
+            false,
+            Some(GlobalRuntime::Claude),
+            home.path(),
+            &[],
+            || Ok(PathBuf::from("/tmp/hq-root-for-test")),
+            |_argv: Vec<String>, _hq_root: PathBuf| async { Err("boom".to_string()) },
+        ));
+        assert!(result.is_err());
+        assert!(home
+            .path()
+            .join(".hq/anywhere/claude-desktop-enabled")
+            .is_file());
     }
 
     #[test]
