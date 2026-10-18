@@ -1,0 +1,46 @@
+# Cold customer install of the latest stable Windows NSIS package.
+#
+# Runs on a clean windows-latest runner with no HQ checkout state required
+# beyond this workflow. It is not a pull_request workflow, so it is not a
+# required status check. GitHub only runs the nightly schedule from the
+# default branch; workflow_dispatch runs the file from any branch.
+name: Windows cold install
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 8 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-cold-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cold-install:
+    name: Cold Windows install
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install the published stable app and probe it
+        shell: pwsh
+        env:
+          # Built-in Actions token for the public release API. Not an HQ secret.
+          GH_TOKEN: ${{ github.token }}
+        run: .\.github\scripts\windows-cold-install.ps1
+
+      - name: Upload summary and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-cold-install
+          if-no-files-found: error
+          path: |
+            cold-install-out/summary.json
+            cold-install-out/logs/**
