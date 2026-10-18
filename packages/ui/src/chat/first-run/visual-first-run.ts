@@ -257,6 +257,8 @@ export const FIRST_RUN_COPY = {
   retrying: "Retrying…",
 } as const;
 
+
+
 export function runtimeLabel(runtime: FirstRunRuntime): string {
   return LOCAL_BOT_RUNTIMES.find((r) => r.id === runtime)?.label ?? runtime;
 }
@@ -337,6 +339,20 @@ export const FIRST_RUN_DECISION_COPY = {
       ? `We noticed you use ${tool} the most on this ${noun}, ${sessions === 1 ? "1 session" : `${sessions} sessions`} so far. Want to keep working there?`
       : `We noticed ${tool} on this ${noun}. Want to keep working there?`,
   toolPrimary: (tool: string) => `Continue in ${tool}`,
+  // The HQ Anywhere callout on the step after Continue in Claude Code or Codex
+  // (owner, 2026-10-17). Enable is not preselected. Continue installs only after Enable.
+  anywhereTitle: "Enable HQ Anywhere",
+  anywhereBody: (tool: string) =>
+    `Use HQ in every project, not only in your HQ folder. ${tool} gets HQ's instructions, skills and tools wherever you open it. You can change this later in Settings.`,
+  anywhereEnable: "Enable",
+  anywhereNotNow: "Not now",
+  anywhereOn: "HQ Anywhere is on. Continue sets it up.",
+  /** Continue's label only while Enable's HQ Anywhere install runs. Nothing else is installed. */
+  anywhereTurningOn: "Turning on HQ Anywhere…",
+  /** Continue threw: the handoff to the desktop did not happen. */
+  handoffFailed: "Could not continue to the desktop. Try again.",
+  anywhereUndo: "Undo",
+  anywhereOff: "HQ Anywhere is off. Turn it on later in Settings.",
   // Two equal paths (owner, 2026-10-15): the tool and naming the assistant.
   toolOther: "Name Your Assistant",
   botQuestion: "Name your assistant.",

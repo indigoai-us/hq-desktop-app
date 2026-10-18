@@ -122,6 +122,23 @@ describe('desktop route grammar', () => {
     });
   });
 
+  it('selects the Daily Brief and Files rail pages for brief and vault (US-008)', () => {
+    const brief = parseDesktopRoute('brief');
+    expect(brief).toEqual({ kind: 'brief' });
+    expect(serializeDesktopRoute(brief!)).toBe('brief');
+    expect(desktopRouteToEmbeddedTarget(brief!)).toEqual({ kind: 'extra', page: 'rail-brief' });
+    const vault = parseDesktopRoute('vault');
+    expect(vault).toEqual({ kind: 'vault' });
+    expect(serializeDesktopRoute(vault!)).toBe('vault');
+    expect(desktopRouteToEmbeddedTarget(vault!)).toEqual({ kind: 'extra', page: 'rail-library' });
+    expect(parseDesktopRoute('brief:today')).toEqual({
+      kind: 'unsupported',
+      route: 'brief:today',
+      reason: 'Unsupported embedded destination',
+    });
+    expect(parseDesktopRoute('vault:indigo')).toMatchObject({ kind: 'unsupported' });
+  });
+
   it('still parses the existing top-level destinations', () => {
     expect(parseDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(parseDesktopRoute('meetings')).toEqual({ kind: 'meetings' });

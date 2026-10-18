@@ -16,6 +16,8 @@
  *   files:<slug>:<path>
  *   company:<slug>[:<tab>]
  *   meetings
+ *   brief   (hq://brief, the Daily Brief)
+ *   vault   (hq://vault, the rail's Files page)
  */
 
 import {
@@ -48,6 +50,8 @@ export type DesktopRoute =
     }
   | { kind: 'messages' }
   | { kind: 'meetings' }
+  | { kind: 'brief' }
+  | { kind: 'vault' }
   | { kind: 'files'; slug: string; path: string }
   | { kind: 'company'; slug: string; tab?: string }
   | { kind: 'atlas' }
@@ -126,6 +130,12 @@ export function parseDesktopRoute(
     case 'meetings':
       if (!detail) return { kind: 'meetings' };
       break;
+    case 'brief':
+      if (!detail) return { kind: 'brief' };
+      break;
+    case 'vault':
+      if (!detail) return { kind: 'vault' };
+      break;
     case 'files': {
       const slug = trimSegment(detail);
       const path = rest.join(':').trim();
@@ -203,6 +213,10 @@ export function serializeDesktopRoute(route: DesktopRoute): string {
       return 'messages';
     case 'meetings':
       return 'meetings';
+    case 'brief':
+      return 'brief';
+    case 'vault':
+      return 'vault';
     case 'files':
       return `files:${route.slug}:${route.path}`;
     case 'company':
@@ -257,6 +271,13 @@ export function desktopRouteToEmbeddedTarget(
       return { kind: 'messages' };
     case 'meetings':
       return { kind: 'meetings' };
+    // The rail's own destinations (`railDestination` in @hq/ui app-rail.ts),
+    // so a link selects the page exactly as a rail click does, including the
+    // shell's redirect when the Daily Brief is not open to this person.
+    case 'brief':
+      return { kind: 'extra', page: 'rail-brief' };
+    case 'vault':
+      return { kind: 'extra', page: 'rail-library' };
     case 'files':
       // The Work shell has no extra `files` page. Shared files is the Files
       // destination it already navigates to (share notifications, inbox).

@@ -234,6 +234,9 @@
             : 'main'
   );
   document.documentElement.dataset.forceTheme = theme;
+  // Repair-card CSS used to force height:auto on every harness page. Scope
+  // that override to this view so the shell fills the viewport.
+  document.documentElement.dataset.harnessView = view;
 
   // Stateful lifecycle backend — created once per page load so clicks persist.
   const lifecycleInvoke =

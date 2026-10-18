@@ -834,6 +834,8 @@ fn main() {
             commands::personal::get_hq_anywhere_person_setting,
             commands::personal::put_hq_anywhere_person_setting,
             commands::hq_anywhere::set_hq_anywhere_global_install,
+            commands::hq_anywhere::install_hq_runtime_for_tool,
+            commands::hq_anywhere::hq_anywhere_runtime_installed,
             commands::folder_picker::pick_folder,
             commands::install_directory::command::resolve_hq_path,
             commands::install_directory::set_hq_install_path,

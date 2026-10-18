@@ -177,6 +177,36 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="welcome-connect-card"]')).toBeNull();
   });
 
+  it("shows Open Claude Code on the welcome edition and calls through when pressed", async () => {
+    const onopen = vi.fn();
+    mountReport({
+      ready: false,
+      openTool: {
+        label: "Open Claude Code",
+        detail: "Claude Code is set up with HQ. Open it to keep working there.",
+        busy: false,
+        error: null,
+        onopen,
+      },
+      children: briefPage,
+    });
+    await settle();
+    const button = q<HTMLButtonElement>('[data-testid="brief-open-tool-button"]');
+    expect(button?.textContent?.trim()).toBe("Open Claude Code");
+    expect(q('[data-testid="brief-open-tool-detail"]')?.textContent).toBe(
+      "Claude Code is set up with HQ. Open it to keep working there.",
+    );
+    expect(q('[data-testid="welcome-report-loading"]')).not.toBeNull();
+    button!.click();
+    expect(onopen).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the Open action out when no tool was prepared", async () => {
+    mountReport({ ready: false, children: briefPage });
+    await settle();
+    expect(q('[data-testid="brief-open-tool-button"]')).toBeNull();
+  });
+
   it("says the assistant made the report and Meet <Name> opens its DM", async () => {
     const onmeet = vi.fn();
     mountReport({ ready: true, madeBy: { name: "Atlas", onmeet }, children: briefPage });

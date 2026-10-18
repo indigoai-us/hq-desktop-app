@@ -20,6 +20,8 @@
   import type { YourAppsHost } from "../chat/first-run/your-apps-host.js";
   import type { FoundWorkApps } from "@hq/platform";
   import ConnectAiAppsCard from "./ConnectAiAppsCard.svelte";
+  import BriefOpenTool from "./BriefOpenTool.svelte";
+  import type { BriefOpenToolAction } from "./brief-open-tool.js";
   import { assistantNameInSentence } from "./brief-action-cards.js";
 
   interface Props {
@@ -44,16 +46,26 @@
      */
     madeBy?: { name: string; onmeet: () => void };
     /** The "Connect your AI apps" card inputs; null leaves it out. */
-    aiApps?: { detect: () => Promise<FoundWorkApps | null>; cli: { claudeCode: boolean; codex: boolean } } | null;
+    aiApps?: {
+      detect: () => Promise<FoundWorkApps | null>;
+      cli: { claudeCode: boolean; codex: boolean };
+      /** Connector id whose local HQ Anywhere install is on. Copy stays on every row. */
+      anywhereOnId?: string | null;
+    } | null;
     /**
      * The job is held back until the assistant can take it (not running, no
      * model connected): the brief check's own sentence and fix button, under
      * the report's heading, so the page still says the report is coming.
      */
     blocked?: { message: string; label: string; onfix: () => Promise<string | null> | void } | null;
+    /**
+     * Opens the coding tool chosen with Continue. Null on Skip and on any
+     * welcome report that did not prepare a tool.
+     */
+    openTool?: BriefOpenToolAction | null;
     children: Snippet;
   }
-  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, blocked = null, children }: Props = $props();
+  let { ready, progress = null, connect = null, onsetup = null, madeBy, aiApps = null, blocked = null, openTool = null, children }: Props = $props();
 
   /** What the fix said when it could not finish (the brief page's own copy), as on the run bar. */
   let fixError = $state<string | null>(null);
@@ -76,6 +88,9 @@
 </script>
 
 <div class="welcome" data-testid="welcome-report">
+  {#if openTool}
+    <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
+  {/if}
   {#if connect}
     {#key connect.company.uid}
       <WelcomeConnectCard
@@ -88,7 +103,7 @@
     {/key}
   {/if}
   {#if aiApps}
-    <ConnectAiAppsCard detect={aiApps.detect} cli={aiApps.cli} />
+    <ConnectAiAppsCard detect={aiApps.detect} cli={aiApps.cli} anywhereOnId={aiApps.anywhereOnId ?? null} />
   {/if}
   {#if ready}
     <div class="report" data-testid="welcome-report-ready">

@@ -20,4 +20,22 @@ describe("sync adapter HQ Anywhere person setting", () => {
       ["set_hq_anywhere_global_install", { enabled: true }],
     ]);
   });
+
+  it("installs the runtime setup for one coding tool", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const adapter = createSyncPlatformAdapter({ invoke });
+
+    await expect(adapter.settings.installRuntimeForTool?.("codex")).resolves.toEqual(ok(undefined));
+
+    expect(invoke.mock.calls).toEqual([["install_hq_runtime_for_tool", { runtime: "codex" }]]);
+  });
+
+  it("reads whether one tool's HQ Anywhere setup is installed", async () => {
+    const invoke = vi.fn(async () => true);
+    const adapter = createSyncPlatformAdapter({ invoke });
+
+    await expect(adapter.settings.hqAnywhereRuntimeInstalled?.("claude")).resolves.toEqual(ok(true));
+
+    expect(invoke.mock.calls).toEqual([["hq_anywhere_runtime_installed", { runtime: "claude" }]]);
+  });
 });

@@ -32,6 +32,7 @@
     READY_FIRST_ACTION_FLAG,
     VISUAL_FIRST_RUN_FLAG,
     FIRST_RUN_FOUND_APPS_FLAG,
+    hqAnywhereRuntimeEnabled,
     dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
@@ -43,7 +44,7 @@
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import FinishingSetupChip from "./FinishingSetupChip.svelte";
-  import { installQueueAttentionNotice } from "./finishing-setup.js";
+  import { installQueueAttentionNotice, parseInstallQueueStatus } from "./finishing-setup.js";
   import type { InstallQueueHost } from "./finishing-setup.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
@@ -341,6 +342,22 @@
   import FirstRunHeldBackdrop from "../chat/first-run/FirstRunHeldBackdrop.svelte";
   import type { FirstRunHandoffHint } from "../chat/first-run/first-run-handoff.js";
   import { mostUsedTool } from "../chat/first-run/visual-first-run.js";
+  import { continueInTool, openPreparedCodingTool } from "../chat/first-run/continue-in-tool.js";
+  import {
+    briefOpenToolConnectorId,
+    briefInstallAfterCheck,
+    briefInstallAfterSettle,
+    briefInstallQueueStillRunning,
+    briefOpenToolContext,
+    briefOpenToolLabel,
+    briefOpenToolView,
+    forgetBriefOpenTool,
+    readBriefOpenTool,
+    readBriefOpenToolSettle,
+    rememberBriefOpenTool,
+    type BriefInstallSettle,
+    type BriefOpenToolRuntime,
+  } from "../brief/brief-open-tool.js";
   import {
     fromConversationStart,
     readConversationStarts,
@@ -2550,12 +2567,19 @@
   // RELEASE-001: Indigo-only rail gates. Registry answers keep each key
   // current; until they arrive every key uses its everyone-default.
   let railGateValues = $state<GateRegistryValues>({});
+  let railGatesSettled = $state(false);
   $effect(() => {
     const identity = adapter?.identity;
     return untrack(() =>
-      watchIndigoOnlyGates(identity, (values) => {
-        railGateValues = values;
-      }),
+      watchIndigoOnlyGates(
+        identity,
+        (values) => {
+          railGateValues = values;
+        },
+        () => {
+          railGatesSettled = true;
+        },
+      ),
     );
   });
 
@@ -3830,6 +3854,25 @@
   });
   /** Latched: once open it stays until Done or Continue in chat. */
   let visualFirstRunOpen = $state(false);
+  /** The coding tool Continue prepared. Read back on a later Daily Brief. */
+  let briefOpenTool = $state<BriefOpenToolRuntime | null>(readBriefOpenTool());
+  /** What Continue recorded. A live check replaces this when the brief opens. */
+  let briefOpenToolSettle = $state<BriefInstallSettle>(readBriefOpenToolSettle());
+  /** Null until the installed-state check for this tool has answered. */
+  let briefInstallChecked = $state<boolean | null>(null);
+  /**
+   * True only while this launch's Continue install is still running. A quit
+   * clears it, so the next launch does not keep a dead install pending.
+   */
+  let briefInstallLive = $state(false);
+  /** True while the install queue's current item is the HQ command line. */
+  let briefInstallQueueRunning = $state(false);
+  /** Bumped so a check that started before the install settled cannot overwrite it. */
+  let briefInstallCheckToken = 0;
+  let briefOpenToolBusy = $state(false);
+  let briefOpenToolError = $state<string | null>(null);
+  /** Explicit false hides the callout. Null, while the read is still out, means on. */
+  let firstRunHqAnywhereFlag = $state<boolean | null>(null);
   /**
    * #welcome shows a loader while the route is pending, or visual with the
    * takeover not yet open. Not once setup has run here: that route is legacy.
@@ -3865,8 +3908,29 @@
         return;
       }
       firstRunSuggestedName = firstRunInitialName();
+      // This first run has not chosen Continue yet. Skip must not inherit an older Open action.
+      forgetBriefOpenTool();
+      briefOpenTool = null;
+      briefOpenToolSettle = "skipped";
+      briefInstallChecked = null;
+      briefInstallLive = false;
+      briefInstallQueueRunning = false;
+      briefInstallCheckToken += 1;
+      briefOpenToolError = null;
       visualFirstRunOpen = true;
     });
+  });
+  $effect(() => {
+    if (!visualFirstRunOpen) return;
+    const identity = untrack(() => adapter.identity);
+    let alive = true;
+    firstRunHqAnywhereFlag = null;
+    void hqAnywhereRuntimeEnabled(identity).then((on) => {
+      if (alive) firstRunHqAnywhereFlag = on;
+    });
+    return () => {
+      alive = false;
+    };
   });
   /**
    * US-010: the first-run route is not settled yet, or it is visual and the
@@ -4135,19 +4199,150 @@
     }) ?? createImportScanHost(adapter.contextImport, syncEvents);
   /** Per-tool session counts from the launch scan: picks the most-used tool for the decision. */
   let firstRunScanTools = $state<FirstRunToolUsage[] | null>(null);
-  /**
-   * "Continue in <tool>" on the decision screen.
-   * TODO(US-008): open HQ in that coding tool with the scan's context. Until
-   * then it hands off to the setup chat, as the old flow's last step did.
-   */
-  async function continueFirstRunInTool(runtime: FirstRunRuntime): Promise<void> {
-    // The assistant is made here too, under the suggested name, whether the
-    // sign-in connected, failed or was skipped: only the welcome report waits
-    // on the sign-in, and its chat asks for it.
+  /** Skip sign-in: create the assistant and show the held welcome report only. */
+  function skipFirstRunToolSignIn(runtime: FirstRunRuntime): void {
     if (!firstRunConfirmedName) confirmFirstRunName(firstRunSuggestedName || firstRunInitialName(), runtime, { auto: true });
     firstRunRuntime = runtime;
-    await continueFirstRunInChat();
+    continueFirstRunInChat();
   }
+
+  /**
+   * "Continue in <tool>" on the decision screen (US-008), after the takeover's
+   * sign-in step: the assistant is made under the suggested name. HQ Anywhere
+   * is saved and installed only when the person pressed Enable. The tool
+   * stays closed. The desktop lands on the welcome report, with Open for that
+   * tool. No HQ folder: the same landing, without an Open action.
+   */
+  function applyBriefInstallCheck(
+    runtime: BriefOpenToolRuntime,
+    installed: boolean,
+    stillRunning: boolean,
+  ): void {
+    briefInstallChecked = installed;
+    if (briefOpenTool !== runtime) return;
+    const next = briefInstallAfterCheck(briefOpenToolSettle, installed, stillRunning);
+    if (next === briefOpenToolSettle) return;
+    briefOpenToolSettle = next;
+    rememberBriefOpenTool(runtime, next);
+  }
+  /** The queue item that can still be installing HQ. Anything else is not. */
+  async function readBriefInstallQueueRunning(): Promise<boolean> {
+    const host = installQueue;
+    if (!host) return false;
+    try {
+      return briefInstallQueueStillRunning(parseInstallQueueStatus(await host.getStatus()));
+    } catch (error) {
+      console.warn("[brief] could not read the install queue", error);
+      return false;
+    }
+  }
+  /** Once per brief open, not on every render. A missing check leaves the recorded settle. */
+  async function refreshBriefInstallCheck(): Promise<void> {
+    const runtime = briefOpenTool;
+    const token = ++briefInstallCheckToken;
+    const check = adapter.settings.hqAnywhereRuntimeInstalled;
+    if (!runtime || runtime === "grok" || typeof check !== "function") {
+      if (token === briefInstallCheckToken) briefInstallChecked = null;
+      return;
+    }
+    let queueRunning = false;
+    try {
+      queueRunning = await readBriefInstallQueueRunning();
+    } catch (error) {
+      console.warn("[brief] could not read the install queue", error);
+    }
+    try {
+      const result = await check(runtime);
+      if (token !== briefInstallCheckToken || !result.ok || typeof result.value !== "boolean") return;
+      briefInstallQueueRunning = queueRunning;
+      applyBriefInstallCheck(runtime, result.value, briefInstallLive || queueRunning);
+    } catch (error) {
+      console.warn("[brief] could not check whether HQ is installed", error);
+    }
+  }
+  async function continueFirstRunInTool(
+    runtime: FirstRunRuntime,
+    choice?: { enableHqAnywhere?: boolean },
+  ): Promise<string | null> {
+    // This path follows a connected sign-in. Skip takes the held report path
+    // above without the HQ Anywhere opt-in, install or an Open action.
+    if (!firstRunConfirmedName) confirmFirstRunName(firstRunSuggestedName || firstRunInitialName(), runtime, { auto: true });
+    firstRunRuntime = runtime;
+    const outcome = await continueInTool({
+      runtime,
+      settings: adapter.settings,
+      identity: adapter.identity,
+      log: firstRunTimingLog,
+      enableHqAnywhere: choice?.enableHqAnywhere === true,
+      onInstallSettled: (result) => {
+        if (readBriefOpenTool() !== runtime) return;
+        briefInstallCheckToken += 1;
+        briefInstallLive = false;
+        const next = briefInstallAfterSettle(briefOpenToolSettle, result?.ok === true);
+        if (next === briefOpenToolSettle) return;
+        rememberBriefOpenTool(runtime, next);
+        briefOpenToolSettle = next;
+        briefInstallChecked = next === "installed" ? true : false;
+      },
+    });
+    if (outcome.kind === "prepared-without-opt-in") {
+      pushToast({ key: "first-run-opt-in", kind: "sticky", tone: "neutral", testId: "first-run-opt-in-toast", title: outcome.message, detail: "" });
+    }
+    if (outcome.kind === "prepared" || outcome.kind === "prepared-without-opt-in") {
+      const settle: BriefInstallSettle = outcome.kind === "prepared" ? outcome.install : "skipped";
+      rememberBriefOpenTool(runtime, settle);
+      briefOpenTool = runtime;
+      briefOpenToolSettle = settle;
+      briefInstallLive = settle === "pending";
+      briefInstallChecked = settle === "installed" ? true : settle === "failed" ? false : null;
+      briefOpenToolError = null;
+    }
+    continueFirstRunInChat();
+    return null;
+  }
+  /** Open on the welcome edition, and the same action later on the Daily Brief. */
+  async function openRememberedCodingTool(): Promise<void> {
+    const runtime = briefOpenTool;
+    if (!runtime || briefOpenToolBusy) return;
+    briefOpenToolBusy = true;
+    briefOpenToolError = null;
+    try {
+      const outcome = await openPreparedCodingTool({
+        runtime,
+        settings: adapter.settings,
+        shell: adapter.shell,
+      });
+      if (outcome.kind === "open-failed") briefOpenToolError = outcome.message;
+      else if (outcome.kind === "no-folder") briefOpenToolError = "Could not find your HQ folder. Try again in a moment.";
+    } catch (error) {
+      console.warn("[brief] could not open the coding tool", error);
+      briefOpenToolError = "Could not open the coding tool. Try again.";
+    } finally {
+      briefOpenToolBusy = false;
+    }
+  }
+  const briefInstallView = $derived(
+    briefOpenTool
+      ? briefOpenToolView(
+          briefOpenToolSettle,
+          briefInstallChecked,
+          briefInstallLive || briefInstallQueueRunning,
+        )
+      : "folder",
+  );
+  const briefOpenToolAction = $derived(
+    briefOpenTool
+      ? {
+          label: briefOpenToolLabel(briefOpenTool),
+          detail: briefOpenToolContext(briefOpenTool, briefInstallView),
+          busy: briefOpenToolBusy,
+          error: briefOpenToolError,
+          onopen: () => {
+            void openRememberedCodingTool();
+          },
+        }
+      : null,
+  );
   /**
    * The detected tool's sign-in before "Continue in <tool>" and the name path
    * go on (owner, 2026-10-16): the repair card's browser sign-in, bounded.
@@ -4551,7 +4746,11 @@
   /** The "Connect your AI apps" card: the launch scan plus the CLIs launch detection found. */
   const welcomeAiApps = $derived(
     welcomeAppsHost
-      ? { detect: () => welcomeAppsHost.detect(), cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) } }
+      ? {
+          detect: () => welcomeAppsHost.detect(),
+          cli: { claudeCode: Boolean(aiTools?.claude_cli), codex: Boolean(aiTools?.codex_cli) },
+          anywhereOnId: briefInstallView === "installed" ? briefOpenToolConnectorId(briefOpenTool) : null,
+        }
       : null,
   );
   // The cards and the AI apps card need launch detection; ask for it once the report shows.
@@ -14035,8 +14234,35 @@
     railGate(RAIL_BRIEF_FLAG) ||
       railCompanyRoster.some((company) => isIndigoCompany({ slug: company.slug ?? null })),
   );
+  // The installed-state check runs when the welcome edition or a later brief
+  // opens, not on every render. Leaving and coming back checks again.
   $effect(() => {
-    if (railPlaceholder?.id !== "brief" || briefVisible || welcomeReportOwed) return;
+    const showingBrief = railPlaceholder?.id === "brief" && (welcomeReportOwed || briefVisible);
+    const runtime = briefOpenTool;
+    if (!showingBrief || !runtime) return;
+    untrack(() => {
+      void refreshBriefInstallCheck();
+    });
+  });
+  // A gate that never answers must not hold a cold-start hq://brief forever.
+  const BRIEF_GATE_WAIT_MS = 10_000;
+  let briefGateWaitExpired = $state(false);
+  $effect(() => {
+    // Leaving the brief page ends that request, so the next hq://brief gets its own wait.
+    if (railPlaceholder?.id !== "brief") {
+      briefGateWaitExpired = false;
+      return;
+    }
+    if (railGatesSettled || briefGateWaitExpired) return;
+    const timer = setTimeout(() => {
+      console.warn("[first-run] hq://brief gates did not answer in 10s; opening Home without the brief");
+      briefGateWaitExpired = true;
+    }, BRIEF_GATE_WAIT_MS);
+    return () => clearTimeout(timer);
+  });
+  $effect(() => {
+    // A cold-start hq://brief lands before the gates answer; wait for them, up to BRIEF_GATE_WAIT_MS.
+    if (railPlaceholder?.id !== "brief" || briefVisible || welcomeReportOwed || !(railGatesSettled || briefGateWaitExpired)) return;
     const company = tenantCompanyId;
     untrack(() => {
       void navigate(company ? companyRowDestination("atlas", company) : { kind: "messages" });
@@ -15788,7 +16014,7 @@
             {/snippet}
           </LazyDoor>
         {:else if railPlaceholder?.id === "brief"}
-          {#snippet briefPage()}
+          {#snippet briefPage(showOpenTool: boolean)}
             <BriefRailHost
               {adapter}
               companies={railCompanyRoster.map((company) => ({ uid: company.uid, slug: company.slug, label: company.label, iconUrl: company.iconUrl }))}
@@ -15800,6 +16026,7 @@
               actions={briefActions}
               onconnectcompany={() => (newCompanyOpen = true)}
               onshown={(runId) => (briefShownRunId = runId)}
+              openTool={showOpenTool ? briefOpenToolAction : null}
             />
           {/snippet}
           {#if welcomeReportOwed}
@@ -15811,11 +16038,12 @@
               madeBy={welcomeMadeByLine}
               aiApps={welcomeAiApps}
               blocked={welcomeReportBlocked}
+              openTool={briefOpenToolAction}
             >
-              {@render briefPage()}
+              {@render briefPage(false)}
             </WelcomeReport>
           {:else if briefVisible}
-            {@render briefPage()}
+            {@render briefPage(true)}
           {/if}
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}
@@ -17145,10 +17373,13 @@
       onretry={retryFirstRunAssistant}
       ontalk={talkToFirstRunAssistant}
       oncontinueintool={continueFirstRunInTool}
+      onskipintool={skipFirstRunToolSignIn}
       oncontinueinchat={continueFirstRunInChat}
       onimport={recordFirstRunImport}
       timingLog={firstRunTimingLog}
       signin={firstRunSignIn}
+      hqAnywhereFlag={firstRunHqAnywhereFlag}
+      canInstallHq={Boolean(adapter.settings.installRuntimeForTool)}
     />
   {:else if firstRunHeld}
     <FirstRunHeldBackdrop />

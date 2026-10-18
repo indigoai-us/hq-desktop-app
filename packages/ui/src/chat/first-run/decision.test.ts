@@ -98,6 +98,15 @@ describe("decision copy", () => {
     expect(toolSessionCount([usage("codex", 0, 0, null)], "codex")).toBeNull();
     expect(toolSessionCount(null, "claude")).toBeNull();
     expect(FIRST_RUN_DECISION_COPY.toolPrimary("Claude Code")).toBe("Continue in Claude Code");
+    expect(FIRST_RUN_DECISION_COPY.anywhereTitle).toBe("Enable HQ Anywhere");
+    expect(FIRST_RUN_DECISION_COPY.anywhereBody("Claude Code")).toBe(
+      "Use HQ in every project, not only in your HQ folder. Claude Code gets HQ's instructions, skills and tools wherever you open it. You can change this later in Settings.",
+    );
+    expect(FIRST_RUN_DECISION_COPY.anywhereBody("Codex")).toBe(
+      "Use HQ in every project, not only in your HQ folder. Codex gets HQ's instructions, skills and tools wherever you open it. You can change this later in Settings.",
+    );
+    expect(FIRST_RUN_DECISION_COPY.anywhereOn).toBe("HQ Anywhere is on. Continue sets it up.");
+    expect(FIRST_RUN_DECISION_COPY.anywhereOff).toBe("HQ Anywhere is off. Turn it on later in Settings.");
     expect(FIRST_RUN_DECISION_COPY.backToTool("Codex")).toBe("Continue in Codex instead");
   });
 
@@ -107,6 +116,14 @@ describe("decision copy", () => {
       FIRST_RUN_DECISION_COPY.toolQuestion,
       FIRST_RUN_DECISION_COPY.toolLead("Codex"),
       FIRST_RUN_DECISION_COPY.toolPrimary("Codex"),
+      FIRST_RUN_DECISION_COPY.anywhereTitle,
+      FIRST_RUN_DECISION_COPY.anywhereBody("Claude Code"),
+      FIRST_RUN_DECISION_COPY.anywhereBody("Codex"),
+      FIRST_RUN_DECISION_COPY.anywhereEnable,
+      FIRST_RUN_DECISION_COPY.anywhereNotNow,
+      FIRST_RUN_DECISION_COPY.anywhereOn,
+      FIRST_RUN_DECISION_COPY.anywhereUndo,
+      FIRST_RUN_DECISION_COPY.anywhereOff,
       FIRST_RUN_DECISION_COPY.toolOther,
       FIRST_RUN_DECISION_COPY.botQuestion,
       FIRST_RUN_DECISION_COPY.botLead,
@@ -147,7 +164,9 @@ describe("decision takeover source contract", () => {
   });
 
   it("shows one primary action per screen", () => {
-    expect(source.match(/data-testid="first-run-decision-primary"/g)).toHaveLength(2);
+    // The bot path, the tool question, and the HQ Anywhere step after Continue.
+    expect(source.match(/data-testid="first-run-decision-primary"/g)).toHaveLength(3);
     expect(source).toContain("{:else if showBot}");
+    expect(source).toContain("{:else if tool && anywhereStep}");
   });
 });

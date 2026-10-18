@@ -63,8 +63,17 @@
     onretry: () => void;
     /** Done: open the bot's chat. */
     ontalk: () => void | Promise<void>;
-    /** "Continue in <tool>": open HQ in that coding tool. */
-    oncontinueintool: (runtime: FirstRunRuntime) => void | Promise<void>;
+    /**
+     * "Continue in <tool>": land on the welcome report. HQ Anywhere is
+     * installed only when `enableHqAnywhere` is true. The tool stays closed
+     * until Open. A returned sentence is shown here and the takeover stays up.
+     */
+    oncontinueintool: (
+      runtime: FirstRunRuntime,
+      choice: { enableHqAnywhere: boolean },
+    ) => string | null | void | Promise<string | null | void>;
+    /** Skip tool sign-in: keep the welcome report held, without opening the tool. */
+    onskipintool?: (runtime: FirstRunRuntime) => void | Promise<void>;
     /** Done without a signed-in tool: the setup chat takes it from there. */
     oncontinueinchat: () => void | Promise<void>;
     /** The scan finished: its counts and report path, for the handoff. */
@@ -82,6 +91,13 @@
      * name path go on. Null: neither waits on a sign-in.
      */
     signin?: FirstRunSignInHost | null;
+    /**
+     * The hq-anywhere-runtime kill switch. False hides the callout and the
+     * install. Null (still unread, missing, or unreadable) and true show it.
+     */
+    hqAnywhereFlag?: boolean | null;
+    /** An installer exists. False hides the callout, the same as the real install. */
+    canInstallHq?: boolean;
   }
 
   let {
@@ -95,12 +111,15 @@
     ontalk,
     oncontinueintool,
     oncontinueinchat,
+    onskipintool = () => oncontinueinchat(),
     onimport = null,
     reducedMotion = null,
     initialScreen = "decision",
     initialChoseBot = false,
     timingLog = null,
     signin = null,
+    hqAnywhereFlag = null,
+    canInstallHq = false,
   }: Props = $props();
 
   let hostNoun = $state(hostComputerNoun());
@@ -176,6 +195,24 @@
   );
   const tool = $derived(decisionToolFor(scanTools, installed));
   const toolName = $derived(tool ? runtimeLabel(tool) : "");
+  /**
+   * The callout uses the same predicate as the install. Hidden for Grok, no
+   * tool, no installer, or an explicit kill switch. An unread flag is on, so
+   * Continue opens this step instead of waiting.
+   */
+  const calloutPhase = $derived.by((): "hidden" | "shown" => {
+    if (!tool || tool === "grok" || !canInstallHq || hqAnywhereFlag === false) return "hidden";
+    return "shown";
+  });
+  /** Unset until the person presses Enable or Not now. Neither starts selected. */
+  let anywhereChoice = $state<"unset" | "enable" | "later">("unset");
+  /** The callout's own step, after Continue in Claude Code or Codex. */
+  let anywhereStep = $state(false);
+  $effect(() => {
+    if (calloutPhase !== "hidden") return;
+    if (anywhereChoice !== "unset") anywhereChoice = "unset";
+    if (anywhereStep) anywhereStep = false;
+  });
   const toolSessions = $derived(tool ? toolSessionCount(scanTools, tool) : null);
   let choseBot = $state(untrack(() => initialChoseBot));
   const showBot = $derived(choseBot || tool === null);
@@ -184,6 +221,34 @@
   let tried = $state(false);
   const issue = $derived(assistantNameIssue(name));
   let pressed = $state<"tool" | "name" | "talk" | "chat" | "retry" | null>(null);
+  /** A sentence from Continue, shown on the takeover, or null. */
+  let toolError = $state<string | null>(null);
+
+  /** True only while Enable's HQ Anywhere install runs; every other Continue installs nothing. */
+  let installingAnywhere = $state(false);
+  /** True while a press that follows a failed handoff runs, so the button keeps reading Retry. */
+  let retryingHandoff = $state(false);
+  const toolPrimaryLabel = $derived(
+    pressed === "tool" && installingAnywhere
+      ? COPY.anywhereTurningOn
+      : (pressed === "tool" ? retryingHandoff : toolError !== null)
+        ? FIRST_RUN_COPY.retry
+        : COPY.toolPrimary(toolName),
+  );
+
+  async function continueInTool(runtime: FirstRunRuntime): Promise<void> {
+    toolError = null;
+    const enableHqAnywhere = calloutPhase === "shown" && anywhereChoice === "enable";
+    installingAnywhere = enableHqAnywhere;
+    try {
+      toolError = (await oncontinueintool(runtime, { enableHqAnywhere })) || null;
+    } catch (error) {
+      console.warn("[first-run] tool failed", error);
+      toolError = COPY.handoffFailed;
+    } finally {
+      installingAnywhere = false;
+    }
+  }
 
   async function press(kind: NonNullable<typeof pressed>, action: () => void | Promise<void>): Promise<void> {
     if (pressed !== null) return;
@@ -197,11 +262,44 @@
     }
   }
 
+  /** Sign in, then continue. A failed handoff retries from here. Skip never installs. */
+  function handoffChosenTool(runtime: FirstRunRuntime): void {
+    void press("tool", async () => {
+      retryingHandoff = toolError !== null;
+      try {
+        const connected = retryingHandoff || (await signInFirst(runtime));
+        if (!live) return;
+        if (connected) await continueInTool(runtime);
+        else await onskipintool(runtime);
+      } finally {
+        retryingHandoff = false;
+      }
+    });
+  }
+
+  /**
+   * Continue on the question opens the callout when this press can install.
+   * An unread flag counts as on, so the step shows before any handoff.
+   * A hidden callout goes straight on. Continue on the callout step is the handoff.
+   */
+  function continueInChosenTool(): void {
+    if (!tool || pressed !== null) return;
+    if (anywhereStep) {
+      handoffChosenTool(tool);
+      return;
+    }
+    if (calloutPhase === "shown") {
+      anywhereStep = true;
+      return;
+    }
+    handoffChosenTool(tool);
+  }
+
   // ── the coding tool's sign-in (owner, 2026-10-16) ──────────────────────
   /** The sign-in on screen: installing the tool, waiting on the browser, or failed. */
   let signinView = $state<{ runtime: FirstRunRuntime; state: "installing" | "waiting" | "failed" } | null>(null);
   /** Lets the action that asked for the sign-in go on (signed in or skipped). */
-  let signinGoOn: (() => void) | null = null;
+  let signinGoOn: ((connected: boolean) => void) | null = null;
   /** Bumped by Skip and by leaving: an older attempt's answer is dropped. */
   let signinAttempt = 0;
   let live = true;
@@ -221,19 +319,19 @@
   /**
    * The one sign-in step before "Continue in <tool>" and the name path go
    * on. Resolves at once when `runtime` is signed in (or the host has no
-   * sign-in); otherwise once the sign-in connected or the person skipped it.
+   * sign-in); otherwise true after connecting, or false after Skip.
    * Never rejects.
    */
-  async function signInFirst(runtime: FirstRunRuntime): Promise<void> {
+  async function signInFirst(runtime: FirstRunRuntime): Promise<boolean> {
     const host = signin;
-    if (!host || installed?.[runtime] === true) return;
+    if (!host || installed?.[runtime] === true) return true;
     try {
-      if (await host.signedIn(runtime)) return;
+      if (await host.signedIn(runtime)) return true;
     } catch (error) {
       console.warn("[first-run] sign-in check failed", error);
     }
-    if (!live) return;
-    await new Promise<void>((resolve) => {
+    if (!live) return false;
+    return new Promise<boolean>((resolve) => {
       signinGoOn = resolve;
       void attemptSignIn(runtime);
     });
@@ -271,7 +369,8 @@
         if (cancelled()) return;
         if (signedIn) {
           logSignIn("done", runtime);
-          goOnAfterSignIn();
+          // Signed in once the install finished: "Continue in <tool>" goes on.
+          goOnAfterSignIn(true);
           return;
         }
       }
@@ -287,7 +386,7 @@
     if (connected) {
       logSignIn("done", runtime);
       focusHq();
-      goOnAfterSignIn();
+      goOnAfterSignIn(true);
     } else {
       logSignIn("failed", runtime);
       focusHq();
@@ -304,11 +403,11 @@
       .catch((error: unknown) => console.warn("[first-run] focus after sign-in failed", error));
   }
 
-  function goOnAfterSignIn(): void {
+  function goOnAfterSignIn(connected = false): void {
     signinView = null;
     const goOn = signinGoOn;
     signinGoOn = null;
-    goOn?.();
+    goOn?.(connected);
   }
 
   /** Stops the running browser sign-in; the host refreshes readiness if it had connected. */
@@ -359,7 +458,7 @@
   );
 
   const question = $derived(
-    !answered ? "" : screen === "done" ? "" : showBot ? COPY.botQuestion : COPY.toolQuestion,
+    !answered || screen === "done" || anywhereStep ? "" : showBot ? COPY.botQuestion : COPY.toolQuestion,
   );
   const signinText = $derived(
     signinView === null
@@ -502,10 +601,70 @@
           >{COPY.backToTool(toolName)}</button>
         </p>
       {/if}
+    {:else if tool && anywhereStep}
+      <div class="fr-decision-head">
+        {#if toolError && pressed === null}
+          <p class="fr-decision-lead fr-decision-failed" role="alert" data-testid="first-run-decision-error">{toolError}</p>
+        {/if}
+        <div
+          class="fr-anywhere"
+          id="first-run-anywhere-callout"
+          data-testid="first-run-anywhere-slot"
+          data-state={anywhereChoice}
+        >
+          {#if anywhereChoice === "unset"}
+            <p class="fr-anywhere-title">{COPY.anywhereTitle}</p>
+            <p class="fr-anywhere-body">{COPY.anywhereBody(toolName)}</p>
+            <div class="fr-anywhere-actions">
+              <button
+                type="button"
+                class="new-bot-create-next"
+                data-testid="first-run-anywhere-enable"
+                disabled={pressed !== null}
+                onclick={() => (anywhereChoice = "enable")}
+              >{COPY.anywhereEnable}</button>
+              <button
+                type="button"
+                class="fr-anywhere-later"
+                data-testid="first-run-anywhere-not-now"
+                disabled={pressed !== null}
+                onclick={() => (anywhereChoice = "later")}
+              >{COPY.anywhereNotNow}</button>
+            </div>
+          {:else if anywhereChoice === "enable"}
+            <p class="fr-anywhere-line" data-testid="first-run-anywhere-on">
+              {COPY.anywhereOn}
+              <button
+                type="button"
+                class="fr-anywhere-undo"
+                data-testid="first-run-anywhere-undo"
+                disabled={pressed !== null}
+                onclick={() => (anywhereChoice = "unset")}
+              >{COPY.anywhereUndo}</button>
+            </p>
+          {:else}
+            <p class="fr-anywhere-line" data-testid="first-run-anywhere-off">{COPY.anywhereOff}</p>
+          {/if}
+        </div>
+      </div>
+      <div class="new-bot-foot-actions single">
+        <button
+          type="button"
+          class="new-bot-create-submit"
+          data-testid="first-run-decision-primary"
+          disabled={pressed !== null}
+          aria-busy={pressed === "tool" ? "true" : undefined}
+          aria-describedby="first-run-anywhere-callout"
+          onclick={continueInChosenTool}
+        >{toolPrimaryLabel}</button>
+      </div>
     {:else if tool}
       <div class="fr-decision-head">
         <p class="fr-decision-q" data-testid="first-run-decision-question">{COPY.toolQuestion}</p>
         <p class="fr-decision-lead" data-testid="first-run-decision-lead">{COPY.toolLead(toolName, hostNoun, toolSessions)}</p>
+        {#if toolError && pressed === null}
+          <p class="fr-decision-lead fr-decision-failed" role="alert" data-testid="first-run-decision-error">{toolError}</p>
+        {/if}
       </div>
       <!-- Two equal paths (owner, 2026-10-15): the tool, or naming the assistant. -->
       <div class="new-bot-foot-actions">
@@ -515,12 +674,8 @@
           data-testid="first-run-decision-primary"
           disabled={pressed !== null}
           aria-busy={pressed === "tool" ? "true" : undefined}
-          onclick={() =>
-            void press("tool", async () => {
-              await signInFirst(tool);
-              if (live) await oncontinueintool(tool);
-            })}
-        >{pressed === "tool" ? FIRST_RUN_COPY.opening : COPY.toolPrimary(toolName)}</button>
+          onclick={continueInChosenTool}
+        >{toolPrimaryLabel}</button>
         <button
           type="button"
           class="new-bot-create-submit"
@@ -643,6 +798,75 @@
   }
   .fr-decision .new-bot-foot-actions {
     margin: 0;
+  }
+  /* Raised card above Continue, inside the head so it grows upward and
+     Continue stays on the ground line. The opaque surface token follows
+     the app theme; the translucent raised token disappears on this wallpaper. */
+  .fr-anywhere {
+    --raised: var(--v4-surface-solid);
+    --line: var(--v4-hairline);
+    --t1: var(--v4-text-1);
+    --t2: var(--v4-text-2);
+    margin: 12px 0 0;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--raised);
+    color: var(--t1);
+  }
+  .fr-anywhere-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+  .fr-anywhere-body,
+  .fr-anywhere-line {
+    margin: 6px 0 0;
+    color: var(--t2);
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 18px;
+  }
+  .fr-anywhere-line {
+    margin: 0;
+  }
+  .fr-anywhere-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .fr-anywhere-actions .new-bot-create-next {
+    padding: 8px 14px;
+    border-color: var(--line);
+    color: var(--t1);
+  }
+  .fr-anywhere-actions .new-bot-create-next:hover:not(:disabled) {
+    background: var(--v4-raised);
+  }
+  .fr-anywhere-actions .new-bot-create-next:focus-visible {
+    outline-color: var(--t1);
+  }
+  .fr-anywhere-later,
+  .fr-anywhere-undo {
+    border: 0;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 400;
+    cursor: pointer;
+  }
+  .fr-anywhere-undo {
+    margin-left: 8px;
+    color: var(--t1);
+    text-decoration: underline;
+  }
+  .fr-anywhere-later:disabled,
+  .fr-anywhere-undo:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   /* Read by screen readers only; the visible lines say the same. */
   .first-run-live {
