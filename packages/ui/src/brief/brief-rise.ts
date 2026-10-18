@@ -107,7 +107,7 @@ export function riseHaloCells(theme: "dark" | "light"): RisePixel[] {
 export function riseRippleCells(age: number, theme: "dark" | "light"): RisePixel[] {
   if (age < 0 || age > RISE_RIPPLE_S) return [];
   const rr = RISE_ICON / 2 + age * 70;
-  const fade = (1 - age / RISE_RIPPLE_S) * 0.55;
+  const fade = (1 - age / RISE_RIPPLE_S) * 0.85;
   const color = theme === "light" ? `rgba(176, 100, 98, ${fade.toFixed(3)})` : `rgba(255, 190, 160, ${fade.toFixed(3)})`;
   const cells: RisePixel[] = [];
   const reach = Math.ceil((rr + RISE_PITCH) / RISE_PITCH) * RISE_PITCH;

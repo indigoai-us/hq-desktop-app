@@ -65,4 +65,18 @@ describe("BriefRise frames", () => {
     expect(target.querySelector('[data-testid="brief-rise-card-claude"]')?.textContent).toContain(FINDING);
     expect(target.querySelector('[data-testid="brief-rise-count"]')?.textContent).toBe("168 sessions read");
   });
+
+  it("keeps the whole halo out of the waterline clip once the mark has cleared the water", async () => {
+    await show(riseRevealAt(0) + 0.35);
+    const icon = target.querySelector<HTMLElement>('[data-testid="brief-rise-icon-claude"]');
+    expect(icon?.dataset.whole).toBe("true");
+    expect(icon?.closest(".above")?.classList.contains("free")).toBe(true);
+  });
+
+  it("keeps an emerging mark inside the waterline clip", async () => {
+    await show(riseRevealAt(0));
+    const icon = target.querySelector<HTMLElement>('[data-testid="brief-rise-icon-claude"]');
+    expect(icon?.dataset.whole).toBe("false");
+    expect(icon?.closest(".above")?.classList.contains("free")).toBe(false);
+  });
 });

@@ -17,6 +17,7 @@
     riseHaloCells,
     riseRippleCells,
     type RiseCompany,
+    type RiseIconFrame,
     type RiseSource,
   } from "./brief-rise.js";
 
@@ -110,6 +111,32 @@
   }
 </script>
 
+{#snippet riseIcon(icon: RiseIconFrame)}
+  {@const source = sources.find((item) => item.id === icon.id)}
+  {@const mark = source ? markFor(source) : null}
+  <div
+    class="icon"
+    data-testid={`brief-rise-icon-${icon.id}`}
+    data-whole={icon.whole ? "true" : "false"}
+    style:--lane="{icon.lane}px"
+    style:--y="{icon.centerY}px"
+    style:--op={icon.opacity}
+  >
+    <span class="halo" aria-hidden="true">
+      {#each halo as cell (`${cell.x},${cell.y}`)}
+        <i style="left:{cell.x}px;top:{cell.y}px;background:{cell.color}"></i>
+      {/each}
+    </span>
+    {#if mark}
+      <svg class="mark" class:clay={mark.fill === "clay"} viewBox={mark.viewBox} width="60" height="60">
+        <path fill-rule="evenodd" d={mark.d} />
+      </svg>
+    {:else}
+      <span class="initials">{source ? initials(source) : ""}</span>
+    {/if}
+  </div>
+{/snippet}
+
 <div
   class="stage"
   data-testid="brief-rise"
@@ -117,34 +144,21 @@
   data-elapsed={frame.elapsed.toFixed(3)}
   data-brief-opacity={frame.briefOpacity.toFixed(2)}
 >
-  <BriefDawn progress={dawn} phase={frame.briefOpacity >= 1 ? "ready" : "running"} size="page" theme={resolvedTheme} />
+  <BriefDawn progress={dawn} phase={frame.briefOpacity >= 1 ? "ready" : "running"} size="page" theme={resolvedTheme} reflection={false} />
   <div class="overlay" aria-hidden={meter ? undefined : "true"}>
+    <!-- Emerging icons are clipped at the waterline. Whole icons sit in the free
+         sky layer, so the bottom row of the halo is never cut off. -->
     <div class="above">
       {#each frame.icons as icon (icon.id)}
-        {#if icon.visible}
-          {@const source = sources.find((item) => item.id === icon.id)}
-          {@const mark = source ? markFor(source) : null}
-          <div
-            class="icon"
-            data-testid={`brief-rise-icon-${icon.id}`}
-            data-whole={icon.whole ? "true" : "false"}
-            style:--lane="{icon.lane}px"
-            style:--y="{icon.centerY}px"
-            style:--op={icon.opacity}
-          >
-            <span class="halo" aria-hidden="true">
-              {#each halo as cell (`${cell.x},${cell.y}`)}
-                <i style="left:{cell.x}px;top:{cell.y}px;background:{cell.color}"></i>
-              {/each}
-            </span>
-            {#if mark}
-              <svg class="mark" class:clay={mark.fill === "clay"} viewBox={mark.viewBox} width="60" height="60">
-                <path fill-rule="evenodd" d={mark.d} />
-              </svg>
-            {:else}
-              <span class="initials">{source ? initials(source) : ""}</span>
-            {/if}
-          </div>
+        {#if icon.visible && !icon.whole}
+          {@render riseIcon(icon)}
+        {/if}
+      {/each}
+    </div>
+    <div class="above free">
+      {#each frame.icons as icon (icon.id)}
+        {#if icon.visible && icon.whole}
+          {@render riseIcon(icon)}
         {/if}
       {/each}
     </div>
@@ -232,6 +246,9 @@
     inset: 0 0 50% 0;
     overflow: hidden;
     z-index: 2;
+  }
+  .above.free {
+    overflow: visible;
   }
   .icon {
     position: absolute;

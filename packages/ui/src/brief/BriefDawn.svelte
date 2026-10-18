@@ -22,10 +22,12 @@
     size?: "page" | "masthead";
     /** Light opens from a dim warm grey. Dark is the night-to-dawn sky. */
     theme?: "dark" | "light";
+    /** The mirrored sun in the water. The first-brief rise turns it off (round 11b). */
+    reflection?: boolean;
     onbloomdone?: () => void;
     children?: Snippet;
   }
-  let { progress, phase, headline = "", step = "", size = "page", theme = "dark", onbloomdone, children }: Props = $props();
+  let { progress, phase, headline = "", step = "", size = "page", theme = "dark", reflection = true, onbloomdone, children }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
@@ -121,7 +123,7 @@
           const my = 2 * hz - y - 1;
           const sway = Math.sin(time * 1.6 + y * 0.7) * (1 + depth * 0.08);
           const dist = Math.hypot(x + sway - cx, (my - sy) * 1.05);
-          if (dist < R && (y % 2 === 0 || depth < 3)) {
+          if (reflection && dist < R && (y % 2 === 0 || depth < 3)) {
             col = WATER;
             a = Math.max(0.06, 0.6 - depth * 0.045) * (0.3 + 0.7 * e);
           } else {
