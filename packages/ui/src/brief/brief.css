@@ -650,14 +650,21 @@ html[data-force-theme="light"] .daily-brief .w:not([class*="c-"]) .b-glass,
   border-color: rgba(42, 28, 22, 0.08);
   border-top-color: rgba(255, 255, 255, 0.7);
 }
-/* The sunrise tile stays a dark scene in both themes. Resetting the tokens here
-   keeps its greeting and subtitle light; the page tokens above would paint them brown. */
-html[data-force-theme="light"] .daily-brief .dawn,
-[data-theme="light"] .daily-brief .dawn {
+/* The sunrise card turns light with the page (data-tone="light", set by BriefSunrise).
+   Any other dawn scene (the create masthead) stays dark, so its tokens reset to light ink. */
+html[data-force-theme="light"] .daily-brief .dawn:not([data-tone="light"]),
+[data-theme="light"] .daily-brief .dawn:not([data-tone="light"]) {
   --b-t1: rgba(255, 248, 242, 0.96);
   --b-t2: rgba(255, 236, 220, 0.92);
   --b-t3: rgba(255, 220, 200, 0.78);
   color: rgba(255, 248, 242, 0.96);
+}
+/* Today's calendar strip: a light card with dark ink. Event colours keep their own type. */
+html[data-force-theme="light"] .daily-brief [data-testid="brief-today"],
+[data-theme="light"] .daily-brief [data-testid="brief-today"] {
+  --strip-bg: #fffaf3;
+  --strip-ink: 42, 28, 22;
+  --strip-more: #efe6da;
 }
 html[data-force-theme="light"] .daily-brief .action-card,
 [data-theme="light"] .daily-brief .action-card {

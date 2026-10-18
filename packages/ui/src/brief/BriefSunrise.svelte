@@ -12,6 +12,7 @@
   import { DAWN_CELL, DAWN_PITCH, dawnNoise } from "../chat/create-bot/NewBotDawn.svelte";
   import { peek, useBrief, type PeekContent } from "./brief-context.svelte.js";
   import { etaLabel, firstLine, type HeroLead } from "./brief-hero.js";
+  import { sunrisePalette, sunriseTone, type SunriseTone } from "./brief-sunrise-tone.js";
   import { distillTimeline, sessionPeek, sessionTitle, type Timeline, type TimelineSession } from "./brief-timeline.js";
 
   interface Props {
@@ -71,6 +72,8 @@
   const eta = $derived(etaLabel(timeToClearMin, left, total));
 
   let host = $state<HTMLDivElement | null>(null);
+  /** The page theme the card sits in; the canvas and the copy follow it. */
+  let tone = $state<SunriseTone>("dark");
   let canvas = $state<HTMLCanvasElement | null>(null);
   // Read by the draw loop every frame; none should schedule a Svelte update.
   let target = 0.1;
@@ -131,6 +134,9 @@
       last = now;
       clock += dt;
       shown = still ? target : shown + (target - shown) * (1 - Math.exp(-dt * 2.4));
+      const t = sunriseTone(box);
+      if (t !== tone) tone = t;
+      const pal = sunrisePalette(t);
       const cols = Math.floor(width / DAWN_PITCH);
       const rows = Math.floor(height / DAWN_PITCH);
       const hz = Math.floor(rows * 0.64);
@@ -141,15 +147,15 @@
       const breathe = left > 0 && !still ? 0.5 + 0.5 * Math.sin(1.4 * clock) : 1;
       ctx!.clearRect(0, 0, width, height);
       const sky = ctx!.createLinearGradient(0, 0, 0, hz * DAWN_PITCH);
-      sky.addColorStop(0, "rgba(20,20,30,1)");
-      sky.addColorStop(1, `rgba(${60 + e * 60},${30 + e * 25},${45 + e * 10},1)`);
+      sky.addColorStop(0, pal.skyTop);
+      sky.addColorStop(1, pal.skyLow(e));
       ctx!.fillStyle = sky;
       ctx!.fillRect(0, 0, width, hz * DAWN_PITCH);
-      ctx!.fillStyle = "#121216";
+      ctx!.fillStyle = pal.ground;
       ctx!.fillRect(0, hz * DAWN_PITCH, width, height);
       for (let y = 0; y < rows; y += 1) {
         for (let x = 0; x < cols; x += 1) {
-          let col = [255, 255, 255];
+          let col: number[] = pal.cell;
           let a = 0;
           if (y < hz) {
             const d = Math.hypot(x - cx, (y - sy) * 1.05);
@@ -161,7 +167,7 @@
               a = (0.32 + 0.18 * breathe) * (1 - (d - R) / 2.4);
             } else {
               const n = dawnNoise(x, y);
-              a = n < 0.07 && y < hz * 0.7 && x > cols * 0.6 ? (1 - e) * (0.12 + 0.16 * Math.sin(clock * 1.3 + n * 80) ** 2) : 0.022;
+              a = pal.stars && n < 0.07 && y < hz * 0.7 && x > cols * 0.6 ? (1 - e) * (0.12 + 0.16 * Math.sin(clock * 1.3 + n * 80) ** 2) : pal.skyAlpha;
             }
             for (const t0 of ripples) {
               const rr = (clock - t0) * 15;
@@ -182,7 +188,7 @@
             if (d < R && (y % 2 === 0 || depth < 3)) {
               col = WATER;
               a = Math.max(0.08, 0.7 - depth * 0.045) * (0.6 + 0.4 * e);
-            } else a = 0.018;
+            } else a = pal.seaAlpha;
           }
           if (a > 0.004) {
             ctx!.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${a})`;
@@ -222,7 +228,9 @@
 
 <div
   class="w dawn"
+  class:light={tone === "light"}
   bind:this={host}
+  data-tone={tone}
   data-testid="brief-sunrise"
   role="progressbar"
   aria-label="Decisions cleared today"
@@ -234,7 +242,7 @@
 >
   <canvas bind:this={canvas} aria-hidden="true"></canvas>
   <div class="over">
-    <div class="eyebrow" style="color:rgba(255,210,186,.92)">Sunrise · {total ? (cleared ? "decisions cleared" : "decisions today") : "nothing owed"}</div>
+    <div class="eyebrow sun-eye">Sunrise · {total ? (cleared ? "decisions cleared" : "decisions today") : "nothing owed"}</div>
     <div class="greet" class:big>
       Morning{userName ? `, ${userName}` : ""}.<br /><span>{line}</span>
     </div>
@@ -243,7 +251,6 @@
     <div class="tl">
       <div
         class="eyebrow tl-head"
-        style="color:rgba(255,220,200,.92)"
         data-testid="brief-timeline-head"
         title={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}
       >
@@ -266,7 +273,7 @@
       </div>
       <svg viewBox="0 0 360 14" aria-hidden="true">
         {#each ticks as t (t.label)}
-          <text x={t.x} y="11" fill="rgba(255,236,220,.78)" font-size="8.5" text-anchor={t.label === "now" ? "end" : "middle"}>{t.label}</text>
+          <text x={t.x} y="11" class="tick" font-size="8.5" text-anchor={t.label === "now" ? "end" : "middle"}>{t.label}</text>
         {/each}
       </svg>
     </div>
@@ -282,6 +289,55 @@
   .dawn {
     padding: 0;
     background: #141418;
+  }
+  .sun-eye {
+    color: rgba(255, 210, 186, 0.92);
+  }
+  .tl-head {
+    color: rgba(255, 220, 200, 0.92);
+  }
+  .tick {
+    fill: rgba(255, 236, 220, 0.78);
+  }
+  /* Light: the warm round 11b morning with dark ink. */
+  .dawn.light {
+    background: #fffaf3;
+    color: #2a1c16;
+  }
+  .light .sun-eye,
+  .light .tl-head {
+    color: #a4553f;
+  }
+  .light .tick {
+    fill: rgba(42, 28, 22, 0.6);
+  }
+  .light .greet span {
+    color: #c8613f;
+  }
+  .light .first {
+    color: rgba(42, 28, 22, 0.86);
+  }
+  .light .dots .rule {
+    background: rgba(164, 85, 63, 0.35);
+  }
+  .light .dot:hover,
+  .light .dot:focus-visible {
+    background: #2a1c16;
+  }
+  .light .tip {
+    color: #2a1c16;
+  }
+  .light .track {
+    background: rgba(42, 28, 22, 0.1);
+    box-shadow: none;
+  }
+  .light .meter b {
+    color: #2a1c16;
+  }
+  .light .eta {
+    color: #a4553f;
+    border-color: rgba(164, 85, 63, 0.3);
+    background: rgba(255, 181, 128, 0.14);
   }
   canvas {
     position: absolute;
