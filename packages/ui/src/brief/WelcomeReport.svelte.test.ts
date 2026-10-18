@@ -20,6 +20,7 @@ import WelcomeReport, {
 } from "./WelcomeReport.svelte";
 import ReportWithBrief from "./WelcomeReportBriefHarness.test-support.svelte";
 import { octoberEightBrief } from "./brief-fixture.js";
+import { WELCOME_RISE_FINDING_CLAUDE, welcomeRiseBriefInput } from "./welcome-rise-run.js";
 import type { YourAppsHost, YourAppsLoad, YourAppsResult } from "../chat/first-run/your-apps-host.js";
 
 let target: HTMLDivElement;
@@ -432,5 +433,57 @@ describe("WelcomeReport", () => {
     expect(q('[data-testid="welcome-report-meet"]')).toBeNull();
     q<HTMLButtonElement>('[data-testid="welcome-report-blocked-fix"]')!.click();
     expect(onfix).toHaveBeenCalledTimes(1);
+  });
+
+  it("after the rise, the brief is the round 11b welcome edition and its decision link hands the item to a session", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    const onlaunch = vi.fn(async () => null);
+    component = mount(ReportWithBrief, {
+      target,
+      props: {
+        input: welcomeRiseBriefInput(),
+        actions: { destinations: { assistantName: "Atlas", claudeCode: true, codex: false }, onassistant: vi.fn(async () => null) },
+        report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } },
+        onlaunch,
+      },
+    });
+    await settle();
+    const edition = q('[data-testid="welcome-report-ready"] [data-testid="welcome-edition"]')!;
+    expect(edition).not.toBeNull();
+    expect(q('[data-testid="welcome-edition-greeting"]')?.textContent).toBe("Good morning, Alex.");
+    expect(q('[data-testid="welcome-edition-date"]')?.textContent).toBe("Saturday, October 17");
+    expect([...document.querySelectorAll<HTMLElement>('[data-testid="welcome-edition-card"]')].map((c) => c.dataset.card)).toEqual(["decision", "day", "work"]);
+    expect(document.querySelectorAll('[data-testid="welcome-edition-section"]')).toHaveLength(1);
+    // The purple sunrise card and the ticker are gone from the welcome page.
+    expect(q('[data-testid="welcome-report-ready"] .b-head')).toBeNull();
+    expect(q('[data-testid="welcome-report-ready"] [data-testid="brief-action-cards"]')).toBeNull();
+
+    const decision = q('[data-card="decision"] [data-testid="welcome-edition-action"]') as HTMLButtonElement;
+    expect(decision.textContent).toBe("Review the decision");
+    decision.click();
+    await settle();
+    expect(onlaunch).toHaveBeenCalledTimes(1);
+    // The brief plan's prompt for the item, not just its title.
+    const [engine, prompt] = onlaunch.mock.calls[0] as unknown as [string, string];
+    expect(engine).toBe("claude");
+    expect(prompt.startsWith(`${WELCOME_RISE_FINDING_CLAUDE} Repo or source: northstar/desktop.`)).toBe(true);
+    expect(q('[data-card="decision"] [data-testid="welcome-edition-note"]')).not.toBeNull();
+    expect(q('[data-card="decision"] [data-testid="welcome-edition-action"]')).toBeNull();
+  });
+
+  it("review mode (Shift+A) swaps the welcome edition back to the full catalogue", async () => {
+    target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(ReportWithBrief, {
+      target,
+      props: { input: welcomeRiseBriefInput(), report: { aiApps: { detect: async () => SCAN, cli: { claudeCode: true, codex: false } } } },
+    });
+    await settle();
+    expect(q('[data-testid="welcome-edition"]')).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A", shiftKey: true }));
+    await settle();
+    expect(q('[data-testid="welcome-edition"]')).toBeNull();
+    expect(q('[data-testid="brief-review"]')).not.toBeNull();
   });
 });

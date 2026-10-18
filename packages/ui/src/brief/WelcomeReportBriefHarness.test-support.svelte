@@ -8,6 +8,7 @@
   import DailyBrief from "./DailyBrief.svelte";
   import type { BriefActions } from "./brief-action-cards.js";
   import type { BriefInput } from "./brief-types.js";
+  import type { BriefLaunch } from "./brief-context.svelte.js";
 
   interface Props {
     input: BriefInput;
@@ -15,10 +16,11 @@
     report: Record<string, unknown>;
     /** The report turns ready when this does, as the shell's job lands. */
     ready?: boolean;
+    onlaunch?: BriefLaunch;
   }
-  let { input, actions, report, ready = true }: Props = $props();
+  let { input, actions, report, ready = true, onlaunch = async () => null }: Props = $props();
 </script>
 
 <WelcomeReport {ready} {...report}>
-  <DailyBrief {input} {actions} onlaunch={async () => null} />
+  <DailyBrief {input} {actions} {onlaunch} />
 </WelcomeReport>

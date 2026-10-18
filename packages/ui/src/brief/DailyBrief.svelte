@@ -40,7 +40,9 @@
   import BriefHousekeeping from "./BriefHousekeeping.svelte";
   import BriefActionCard from "./BriefActionCard.svelte";
   import BriefConnectApps from "./BriefConnectApps.svelte";
+  import BriefWelcomeEdition from "./BriefWelcomeEdition.svelte";
   import { getWelcomeAiApps } from "./welcome-ai-apps.js";
+  import { welcomeEdition } from "./brief-welcome-edition.js";
   import { actionCardData, type BriefActions } from "./brief-action-cards.js";
   import type { Snippet } from "svelte";
   import type { BriefHousekeeping as BriefHousekeepingData } from "./brief-run-files.js";
@@ -289,11 +291,21 @@
 
   /** Inside the welcome report: "Connect your AI apps" after the action cards. */
   const welcomeAiApps = getWelcomeAiApps();
+  /** Inside the welcome report, outside review mode: the round 11b welcome edition replaces the grid. */
+  const edition = $derived(
+    welcomeAiApps && !allCards && !sectionOnly && !summaryOnly
+      ? welcomeEdition(input, plan.prompts, new Map(companies.flatMap((c) => (c.slug ? [[c.slug.toLowerCase(), c.label] as [string, string]] : []))))
+      : null,
+  );
+  const editionEngine = $derived(actions && actions.destinations.codex && !actions.destinations.claudeCode ? "codex" : "claude");
 </script>
 
 <svelte:window onkeydown={onkey} />
 
 <div class="daily-brief" data-testid="daily-brief" data-lead={plan.lead} data-density={plan.density} data-template={plan.template} data-daytype={plan.dayType}>
+  {#if edition}
+  <BriefWelcomeEdition {edition} now={nowDate} onlaunch={(id, prompt) => launchAction(id, editionEngine, prompt)} launched={launchedNote} {onopenmeetings} />
+  {:else}
   {#if !sectionOnly}
   <header class="b-head">
     <div class="b-brand">
@@ -469,6 +481,7 @@
         />
       {/each}
     </section>
+  {/if}
   {/if}
 
   {#if !summaryOnly && !sectionOnly && welcomeAiApps?.current}

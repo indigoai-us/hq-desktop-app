@@ -41,10 +41,12 @@
     reflection?: boolean;
     /** Centre: the sun mid-sky over a split page. Welcome: the round 11b sky beside the hero, with a striped sea. */
     layout?: "center" | "welcome";
+    /** The welcome sea under the horizon. The welcome edition turns it off so its cards sit on clear sky (round 11b final). */
+    sea?: boolean;
     onbloomdone?: () => void;
     children?: Snippet;
   }
-  let { progress, phase, headline = "", step = "", size = "page", theme = "dark", reflection = true, layout = "center", onbloomdone, children }: Props = $props();
+  let { progress, phase, headline = "", step = "", size = "page", theme = "dark", reflection = true, layout = "center", sea = true, onbloomdone, children }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
@@ -133,12 +135,12 @@
       }
     }
     // The striped sea runs edge to edge, every other row, and fades into the progress block.
-    const sea = light ? [176, 100, 98] : [255, 150, 150];
+    const seaTint = light ? [176, 100, 98] : [255, 150, 150];
     const seaTop = (hz + 1) * 8;
-    for (let yy = seaTop; yy < Math.min(H, WELCOME_SEA_BOTTOM); yy += 16) {
+    for (let yy = seaTop; sea && yy < Math.min(H, WELCOME_SEA_BOTTOM); yy += 16) {
       const fadeOut = Math.min(1, (WELCOME_SEA_BOTTOM - yy) / 16);
       const a = (light ? 0.4 : 0.26) * fadeOut * Math.max(0.5, lit);
-      const c = tint(sea);
+      const c = tint(seaTint);
       ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${a.toFixed(3)})`;
       for (let xx = 0; xx < W; xx += 8) ctx.fillRect(xx + 1, yy + 1, 6, 6);
     }

@@ -266,6 +266,17 @@
     z-index: 4;
     width: min(485px, calc(100% - 104px));
   }
+  /* The welcome edition runs edge to edge like the rise; what follows it keeps the page inset. */
+  .welcome:has(:global([data-testid="welcome-edition"])) {
+    padding: 0;
+  }
+  .report :global(.daily-brief:has(> [data-testid="welcome-edition"])) {
+    padding: 0 0 28px;
+  }
+  .report :global(.daily-brief:has(> [data-testid="welcome-edition"]) > :not([data-testid="welcome-edition"])) {
+    margin-left: 52px;
+    margin-right: 48px;
+  }
   .report.reveal {
     animation: brief-in 0.6s ease both;
   }
