@@ -534,6 +534,49 @@ describe("FirstRunDecisionTakeover", () => {
     expect(handlers.ontalk).toHaveBeenCalledTimes(1);
   });
 
+  it("a ready done screen moves on by itself within 3 seconds", async () => {
+    const { handlers } = render({ initialScreen: "done", creation: READY });
+    await waitForDecision();
+    expect(text("first-run-talk")).toBe("Open HQ");
+    expect(handlers.ontalk).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(handlers.ontalk).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    await settle();
+    expect(handlers.ontalk).toHaveBeenCalledTimes(1);
+    expect(handlers.oncontinueinchat).not.toHaveBeenCalled();
+  });
+
+  it("an idle done screen continues by itself within 3 seconds", async () => {
+    const { handlers } = render({ initialScreen: "done", creation: { state: "idle" } });
+    await waitForDecision();
+    expect(text("first-run-done-continue")).toBe(FIRST_RUN_DECISION_COPY.botPrimary);
+    expect(handlers.oncontinueinchat).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(handlers.oncontinueinchat).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    await settle();
+    expect(handlers.oncontinueinchat).toHaveBeenCalledTimes(1);
+    expect(handlers.ontalk).not.toHaveBeenCalled();
+  });
+
+  it("a done screen that is still creating or failed does not move on by itself", async () => {
+    const creating = render({ initialScreen: "done", creation: { state: "creating", name: "Pickles" } });
+    await waitForDecision();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(creating.handlers.ontalk).not.toHaveBeenCalled();
+    expect(creating.handlers.oncontinueinchat).not.toHaveBeenCalled();
+    if (component) await unmount(component);
+    component = null;
+    host?.remove();
+
+    const failed = render({
+      initialScreen: "done",
+      creation: { state: "failed", name: "Pickles", reason: "Couldn't create Pickles. Try again." },
+    });
+    await waitForDecision();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(failed.handlers.ontalk).not.toHaveBeenCalled();
+    expect(failed.handlers.oncontinueinchat).not.toHaveBeenCalled();
+    expect(failed.handlers.onretry).not.toHaveBeenCalled();
+  });
+
   it("a failed create shows the reason and one retry", async () => {
     let release: () => void = () => undefined;
     const { handlers } = render({

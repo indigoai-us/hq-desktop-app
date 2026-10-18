@@ -153,6 +153,8 @@
 
   /** How often a failed load of the scene is tried again. */
   const IMPORT_DOOR_RETRY_MS = 5000;
+  /** A finished done screen leaves on its own. 1s stays inside the 3s budget (US-015). */
+  const DONE_MOVE_ON_MS = 1000;
   let importDoorFailed = $state(false);
   /** Bumped when the scene loads after a failed load, so it mounts. */
   let importDoorKey = $state(0);
@@ -303,6 +305,29 @@
   /** Bumped by Skip and by leaving: an older attempt's answer is dropped. */
   let signinAttempt = 0;
   let live = true;
+  /** Set once the done screen's primary action has been asked for, by a press or the timer. */
+  let doneMoveOnSent = false;
+
+  function moveOnFromDone(kind: "chat" | "talk"): void {
+    if (!live || doneMoveOnSent || pressed !== null || screen !== "done") return;
+    const state = creation.state;
+    if (state === "creating" || state === "failed") return;
+    if (kind === "chat" ? state !== "idle" : state === "idle") return;
+    doneMoveOnSent = true;
+    const action = kind === "chat" ? oncontinueinchat : ontalk;
+    void press(kind, action);
+  }
+
+  // Creating and failed stay until the person acts. Idle and ready do not linger.
+  $effect(() => {
+    if (screen !== "done") return;
+    const state = creation.state;
+    if (state !== "idle" && state !== "ready") return;
+    const kind = state === "idle" ? "chat" : "talk";
+    const timer = setTimeout(() => moveOnFromDone(kind), DONE_MOVE_ON_MS);
+    return () => clearTimeout(timer);
+  });
+
   onDestroy(() => {
     live = false;
     // Leaving stops the browser sign-in and lets the waiting press() end;
@@ -541,7 +566,7 @@
             data-testid="first-run-done-continue"
             disabled={pressed !== null}
             aria-busy={pressed === "chat" ? "true" : undefined}
-            onclick={() => void press("chat", oncontinueinchat)}
+            onclick={() => moveOnFromDone("chat")}
           >{pressed === "chat" ? FIRST_RUN_COPY.opening : COPY.botPrimary}</button>
         </div>
       {:else}
@@ -552,7 +577,7 @@
             data-testid="first-run-talk"
             disabled={creation.state === "creating" || pressed !== null}
             aria-busy={creation.state === "creating" || pressed === "talk" ? "true" : undefined}
-            onclick={() => void press("talk", ontalk)}
+            onclick={() => moveOnFromDone("talk")}
           >{pressed === "talk"
             ? FIRST_RUN_COPY.opening
             : creation.state === "creating"
