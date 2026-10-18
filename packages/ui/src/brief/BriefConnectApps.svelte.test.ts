@@ -77,7 +77,7 @@ function render(
   apps: FoundWorkApps["apps"],
   cli = { claudeCode: false, codex: false },
   suggest: WelcomeSuggest | null = null,
-  extra: { quiet?: boolean; anywhereOnId?: string | null } = {},
+  extra: { quiet?: boolean; anywhereOnId?: string | null; theme?: "dark" | "light" | null } = {},
 ): { detect: ReturnType<typeof vi.fn> } {
   target = document.createElement("div");
   document.body.appendChild(target);
@@ -184,21 +184,42 @@ describe("BriefConnectApps", () => {
     expect(q("connect-ai-apps-card")).toBeNull();
   });
 
-  it("quiet mode keeps Copy and the Anywhere note, and drops the step wall", async () => {
+  it("quiet mode is one Connect action, not a row of Copy pills", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
     render(
-      [{ bundleId: "com.anthropic.claudefordesktop", name: "Claude" }],
+      [
+        { bundleId: "com.anthropic.claudefordesktop", name: "Claude" },
+        { bundleId: "com.openai.chat", name: "ChatGPT" },
+      ],
       { claudeCode: false, codex: false },
       null,
-      { quiet: true, anywhereOnId: "claude" },
+      { quiet: true, anywhereOnId: "claude", theme: "light" },
     );
     await settle();
     const card = q("connect-ai-apps-card");
-    expect(card?.querySelector(".quiet-line")?.textContent).toBe("Connect your AI apps");
+    expect(card?.getAttribute("data-theme")).toBe("light");
+    expect(card?.textContent).toContain("Make the next brief more yours.");
+    expect(card?.textContent).toContain("Bring in another tool while your agent keeps reading.");
     expect(card?.querySelector("h2")).toBeNull();
     expect(card?.querySelector("ol")).toBeNull();
     expect(card?.textContent).not.toContain("Let the apps you already use read and write your HQ.");
-    expect(q("connect-ai-app-claude-copy")?.textContent?.trim()).toBe("Copy");
+    expect(q("connect-ai-app-claude-copy")).toBeNull();
+    expect(q("connect-ai-app-chatgpt-copy")).toBeNull();
+    expect(q("connect-ai-app-chatgpt")?.getAttribute("aria-pressed")).toBe("true");
+    expect(q("connect-ai-app-claude")?.getAttribute("aria-pressed")).toBe("false");
+    expect(q("connect-ai-quiet-connect")?.textContent?.trim()).toBe("Connect ChatGPT");
     expect(q("connect-ai-app-claude-anywhere")?.textContent).toBe("HQ Anywhere on");
+    q("connect-ai-app-claude")!.click();
+    await settle();
+    expect(q("connect-ai-quiet-connect")?.textContent?.trim()).toBe("Connect Claude");
+    q("connect-ai-quiet-connect")!.click();
+    await settle();
+    expect(copyConnectorSetup).toHaveBeenCalled();
+    expect(q("connect-ai-quiet-connect")?.textContent?.trim()).toBe("Copied");
   });
 
   it("is left out when no found app matches and there are no suggestions", async () => {

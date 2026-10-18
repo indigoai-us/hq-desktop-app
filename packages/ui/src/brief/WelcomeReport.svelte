@@ -160,7 +160,7 @@
   });
 </script>
 
-<div class="welcome" class:rising data-testid="welcome-report">
+<div class="welcome" class:rising data-testid="welcome-report" data-theme={theme === "light" || theme === "dark" ? theme : undefined}>
   {#if openTool}
     <BriefOpenTool label={openTool.label} detail={openTool.detail} busy={openTool.busy} error={openTool.error} onopen={openTool.onopen} />
   {/if}
@@ -211,6 +211,7 @@
           session={connectApps.session}
           anywhereOnId={connectApps.anywhereOnId ?? null}
           quiet={rising}
+          {theme}
         />
       </div>
     {/if}
@@ -229,6 +230,10 @@
     background: var(--b-bg, #1b1b1e);
     font-family: var(--font-ui, "Geist", system-ui, sans-serif);
     color: var(--b-t1, rgba(255, 255, 255, 0.95));
+  }
+  .welcome[data-theme="light"] {
+    background: #f6f1ea;
+    color: #2a1c16;
   }
   .welcome.rising {
     position: relative;

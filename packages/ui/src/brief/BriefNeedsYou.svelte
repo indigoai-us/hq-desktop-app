@@ -343,7 +343,7 @@
   }
   .ts {
     font-size: 11.5px;
-    color: rgba(255, 255, 255, 0.62);
+    color: rgba(255, 255, 255, 0.88);
     margin-top: 2px;
     overflow: hidden;
     text-overflow: ellipsis;

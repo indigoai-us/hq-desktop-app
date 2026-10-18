@@ -39,8 +39,9 @@
     anywhereOnId?: string | null;
     /** One quiet action inside the sunrise, not the full copy-card wall. */
     quiet?: boolean;
+    theme?: "dark" | "light" | null;
   }
-  let { detect, cli, suggest = null, session: given = null, anywhereOnId = null, quiet = false }: Props = $props();
+  let { detect, cli, suggest = null, session: given = null, anywhereOnId = null, quiet = false, theme = null }: Props = $props();
 
   /** The brand mark per app: Claude and Claude Code share the Claude mark, ChatGPT and Codex the OpenAI mark. */
   const MARK: Record<ConnectorApp["id"], BrandIconName> = {
@@ -66,6 +67,24 @@
   const matched = $derived(matchFoundApps(scan));
   const suggesting = $derived(suggest !== null && matched.apps.some((app) => !app.excluded));
 
+  let appearance = $state<"dark" | "light">("dark");
+  function readTheme(): "dark" | "light" {
+    if (theme === "light" || theme === "dark") return theme;
+    const forced = globalThis.document?.documentElement?.dataset?.forceTheme;
+    if (forced === "light" || forced === "dark") return forced;
+    if (typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: light)").matches) return "light";
+    return "dark";
+  }
+  $effect(() => {
+    appearance = readTheme();
+  });
+
+  let pickedId = $state<string | null>(null);
+  const chosen = $derived.by(() => {
+    if (apps.length === 0) return null;
+    return apps.find((app) => app.id === pickedId) ?? apps.find((app) => app.id === "chatgpt") ?? apps[0]!;
+  });
+
   let copiedId = $state<string | null>(null);
   let copyFailedId = $state<string | null>(null);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -84,23 +103,43 @@
 </script>
 
 {#if apps.length || suggesting}
-  <section class="connect" class:quiet data-testid="connect-ai-apps-card">
+  <section class="connect" class:quiet data-testid="connect-ai-apps-card" data-theme={quiet ? appearance : undefined}>
     {#if quiet}
-      <p class="quiet-line">Connect your AI apps</p>
-      {#if apps.length}
-        <ul class="quiet-apps">
-          {#each apps as app (app.id)}
-            <li data-testid={`connect-ai-app-${app.id}`}>
-              <span class="name">{app.name}</span>
-              {#if anywhereOnId === app.id}
-                <span class="anywhere" data-testid={`connect-ai-app-${app.id}-anywhere`}>HQ Anywhere on</span>
-              {/if}
-              <button type="button" class:copied={copiedId === app.id} data-testid={`connect-ai-app-${app.id}-copy`} onclick={() => void copy(app)}>
-                {copiedId === app.id ? "Copied" : "Copy"}
+      {#if apps.length && chosen}
+        <div class="strip">
+          <p class="strip-title">Make the next brief more yours.</p>
+          <p class="strip-hint">Bring in another tool while your agent keeps reading.</p>
+          <div class="tools">
+            {#each apps as app (app.id)}
+              <button
+                type="button"
+                class="tool"
+                aria-pressed={chosen.id === app.id}
+                data-testid={`connect-ai-app-${app.id}`}
+                onclick={() => (pickedId = app.id)}
+              >
+                <span class="name">{app.name}</span>
+                {#if app.id === "chatgpt"}<span class="rec">Recommended</span>{/if}
               </button>
-            </li>
-          {/each}
-        </ul>
+            {/each}
+          </div>
+          <button
+            type="button"
+            class="connect-one"
+            class:copied={copiedId === chosen.id}
+            data-testid="connect-ai-quiet-connect"
+            onclick={() => void copy(chosen)}
+          >
+            {copiedId === chosen.id ? "Copied" : `Connect ${chosen.name}`}
+          </button>
+          {#if anywhereOnId}
+            <p class="anywhere" data-testid={`connect-ai-app-${anywhereOnId}-anywhere`}>HQ Anywhere on</p>
+          {/if}
+          {#if copyFailedId === chosen.id}
+            <pre class="manual" data-testid={`connect-ai-app-${chosen.id}-manual`}>{chosen.copyText}</pre>
+            <p class="help" role="status">Copy didn't work. Select the text above, or tap the button to try again.</p>
+          {/if}
+        </div>
       {/if}
     {:else if apps.length}
     <h2 class="eyebrow">Connect your AI apps</h2>
@@ -173,34 +212,82 @@
   }
   .connect.quiet {
     margin-top: 0;
-    padding: 0;
-    background: transparent;
+    padding: 14px 16px 16px;
+    border-radius: 16px;
+    background: rgba(22, 16, 24, 0.88);
+    color: rgba(255, 236, 220, 0.94);
     box-shadow: none;
     animation: none;
   }
-  .quiet-line {
-    margin: 0 0 8px;
-    font-size: 13px;
+  .connect.quiet[data-theme="light"] {
+    background: rgba(255, 250, 243, 0.94);
+    color: #2a1c16;
   }
-  .quiet-apps {
-    list-style: none;
+  .strip-title,
+  .strip-hint,
+  .anywhere {
+    margin: 0;
+  }
+  .strip-title {
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+  .strip-hint,
+  .connect.quiet .anywhere,
+  .connect.quiet .help {
+    color: inherit;
+    opacity: 0.72;
+  }
+  .strip-hint {
+    margin-top: 4px;
+    font-size: 12.5px;
+  }
+  .tools {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px 16px;
-    margin: 0 0 10px;
-    padding: 0;
-  }
-  .quiet-apps li {
-    display: flex;
-    align-items: center;
     gap: 8px;
+    margin-top: 12px;
+  }
+  .connect.quiet .tool {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    color: inherit;
+    border: 1px solid currentColor;
+    opacity: 0.72;
+  }
+  .connect.quiet .tool[aria-pressed="true"] {
+    opacity: 1;
+  }
+  .rec {
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.72;
+  }
+  .connect-one {
+    margin-top: 12px;
+  }
+  .connect.quiet[data-theme="light"] .connect-one {
+    background: #2a1c16;
+    color: #fffaf3;
+  }
+  .connect.quiet[data-theme="dark"] .connect-one {
+    background: rgba(255, 236, 220, 0.94);
+    color: #161018;
+  }
+  .connect.quiet .anywhere {
+    margin-top: 8px;
+    font-size: 12px;
   }
   .anywhere {
     color: var(--b-t2, rgba(255, 255, 255, 0.62));
     font-size: 12px;
   }
-  .connect.quiet :global(h2),
-  .connect.quiet :global(h3) {
+  .connect.quiet .group :global(h2),
+  .connect.quiet .group :global(h3) {
     display: none;
   }
   .connect.quiet::after {

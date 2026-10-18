@@ -4,14 +4,18 @@
    * Icons are clipped at the waterline. Nothing is drawn underwater, and
    * there is no reflection. Pass `elapsed` to freeze a frame; otherwise the
    * rise runs from mount. `meter` is the loading path's progressbar.
+   *
+   * The count and the finding card sit together just below the horizon.
+   * The count is one line. The card is the finding, not a second count.
    */
   import { onDestroy, type Snippet } from "svelte";
   import { BRAND_ICONS, type BrandMark } from "../common/button/rail-icons.js";
   import BriefDawn from "./BriefDawn.svelte";
   import {
-    RISE_ICON,
     riseDawnProgress,
     riseFrame,
+    riseHaloCells,
+    riseRippleCells,
     type RiseCompany,
     type RiseSource,
   } from "./brief-rise.js";
@@ -87,6 +91,7 @@
     }),
   );
   const dawn = $derived(riseDawnProgress(t, readyAt));
+  const halo = $derived(riseHaloCells(resolvedTheme));
   $effect(() => {
     briefOpacity = frame.briefOpacity;
   });
@@ -103,8 +108,6 @@
     if (!word) return "";
     return word.slice(0, 2);
   }
-
-  const half = RISE_ICON / 2;
 </script>
 
 <div
@@ -116,45 +119,69 @@
 >
   <BriefDawn progress={dawn} phase={frame.briefOpacity >= 1 ? "ready" : "running"} size="page" theme={resolvedTheme} />
   <div class="overlay" aria-hidden={meter ? undefined : "true"}>
-    {#each frame.icons as icon (icon.id)}
-      {#if icon.visible}
-        {@const source = sources.find((item) => item.id === icon.id)}
-        {@const mark = source ? markFor(source) : null}
-        <div
-          class="icon"
-          data-testid={`brief-rise-icon-${icon.id}`}
-          style:--lane="{icon.lane}px"
-          style:--y="{icon.centerY}px"
-          style:--op={icon.opacity}
-          style:--clip="{Math.max(0, icon.centerY + half)}px"
-        >
-          <span class="halo"></span>
-          {#if mark}
-            <svg class="mark" class:clay={mark.fill === "clay"} viewBox={mark.viewBox} width="60" height="60">
-              <path fill-rule="evenodd" d={mark.d} />
-            </svg>
-          {:else}
-            <span class="initials">{source ? initials(source) : ""}</span>
-          {/if}
-        </div>
-        {#if icon.ripple}
-          <div class="ripple" style:--lane="{icon.lane}px" data-testid={`brief-rise-ripple-${icon.id}`}></div>
+    <div class="above">
+      {#each frame.icons as icon (icon.id)}
+        {#if icon.visible}
+          {@const source = sources.find((item) => item.id === icon.id)}
+          {@const mark = source ? markFor(source) : null}
+          <div
+            class="icon"
+            data-testid={`brief-rise-icon-${icon.id}`}
+            data-whole={icon.whole ? "true" : "false"}
+            style:--lane="{icon.lane}px"
+            style:--y="{icon.centerY}px"
+            style:--op={icon.opacity}
+          >
+            <span class="halo" aria-hidden="true">
+              {#each halo as cell (`${cell.x},${cell.y}`)}
+                <i style="left:{cell.x}px;top:{cell.y}px;background:{cell.color}"></i>
+              {/each}
+            </span>
+            {#if mark}
+              <svg class="mark" class:clay={mark.fill === "clay"} viewBox={mark.viewBox} width="60" height="60">
+                <path fill-rule="evenodd" d={mark.d} />
+              </svg>
+            {:else}
+              <span class="initials">{source ? initials(source) : ""}</span>
+            {/if}
+          </div>
         {/if}
+      {/each}
+    </div>
+    <div class="sea">
+      {#each frame.icons as icon (icon.id)}
+        {#if icon.ripple}
+          <div class="ripple" style:--lane="{icon.lane}px" data-testid={`brief-rise-ripple-${icon.id}`}>
+            {#each riseRippleCells(icon.rippleAge, resolvedTheme) as cell (`${icon.id}:${cell.x},${cell.y}`)}
+              <i style="left:{cell.x}px;top:{cell.y}px;background:{cell.color}"></i>
+            {/each}
+          </div>
+        {/if}
+      {/each}
+    </div>
+    <div class="readout">
+      {#if frame.countText}
+        <p class="count" data-testid="brief-rise-count">{frame.countText}</p>
       {/if}
-    {/each}
-    {#if frame.countText}
-      <p class="count" data-testid="brief-rise-count">{frame.countText}</p>
-    {/if}
-    {#if companies}
-      <p class="companies" data-testid="brief-rise-companies">{frame.companiesLine}</p>
-    {/if}
-    {#if frame.cards.length}
-      <ul class="cards">
-        {#each frame.cards as card (card.id)}
-          <li class:failed={card.failed} data-testid={`brief-rise-card-${card.id}`}>{card.text}</li>
-        {/each}
-      </ul>
-    {/if}
+      {#if companies}
+        <p class="companies" data-testid="brief-rise-companies">{frame.companiesLine}</p>
+      {/if}
+      {#if frame.cards.length}
+        <ul class="cards">
+          {#each frame.cards as card (card.id)}
+            {#if card.failed}
+              <li class="failed" data-testid={`brief-rise-card-${card.id}`}>{card.text}</li>
+            {:else}
+              <li class="card" data-testid={`brief-rise-card-${card.id}`}>
+                <div class="head"><span>{card.label}</span><span>Found</span></div>
+                <p class="quote">{card.text}</p>
+                {#if card.detail}<p class="detail">{card.detail}</p>{/if}
+              </li>
+            {/if}
+          {/each}
+        </ul>
+      {/if}
+    </div>
     {#if meter}
       <div
         class="sr"
@@ -199,98 +226,141 @@
     inset: 0;
     pointer-events: none;
   }
+  /* The waterline is the bottom of this box. Overflow clips the icon and its halo. */
+  .above {
+    position: absolute;
+    inset: 0 0 50% 0;
+    overflow: hidden;
+    z-index: 2;
+  }
   .icon {
     position: absolute;
     left: calc(50% + var(--lane));
-    top: calc(50% + var(--y));
+    top: calc(100% + var(--y));
     width: 60px;
     height: 60px;
     transform: translate(-50%, -50%);
     opacity: var(--op);
-    clip-path: inset(0 0 var(--clip) 0);
-    display: grid;
-    place-items: center;
   }
   .halo {
     position: absolute;
-    inset: -18px;
-    background-image: radial-gradient(circle, rgba(255, 184, 160, 0.72) 0 3px, transparent 3.5px);
-    background-size: 8px 8px;
-    background-position: center;
-    mask-image: radial-gradient(circle, #000 20%, transparent 70%);
+    left: 50%;
+    top: 50%;
+    width: 0;
+    height: 0;
+  }
+  .halo i,
+  .ripple i {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+  }
+  .mark,
+  .initials {
+    position: relative;
+    z-index: 1;
   }
   .mark {
-    position: relative;
+    display: block;
     fill: #1a1a1a;
   }
   .mark.clay {
     fill: #c96442;
   }
   .initials {
-    position: relative;
+    display: grid;
+    place-items: center;
+    width: 60px;
+    height: 60px;
     font-size: 18px;
     font-weight: 600;
     letter-spacing: -0.03em;
     color: #1a1a1a;
   }
+  .sea {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 48px;
+    z-index: 2;
+    pointer-events: none;
+  }
   .ripple {
     position: absolute;
     left: calc(50% + var(--lane));
-    top: 50%;
-    width: 96px;
-    height: 16px;
-    transform: translate(-50%, -50%);
-    background-image: radial-gradient(circle, rgba(255, 190, 170, 0.9) 0 3px, transparent 3.5px);
-    background-size: 8px 8px;
-    animation: ripple 0.6s ease-out both;
-    pointer-events: none;
+    top: 0;
+    width: 0;
+    height: 0;
   }
-  @keyframes ripple {
-    from { opacity: 0.9; transform: translate(-50%, -50%) scaleX(0.4); }
-    to { opacity: 0; transform: translate(-50%, -50%) scaleX(1.35); }
-  }
-  .count,
-  .companies,
-  .cards {
+  .readout {
     position: absolute;
     left: 28px;
-    width: min(300px, calc(50% - 140px));
-    margin: 0;
+    top: calc(50% + 18px);
+    width: min(420px, calc(50% - 80px));
+    z-index: 3;
     color: rgba(255, 236, 220, 0.94);
   }
-  .stage[data-theme="light"] .count,
-  .stage[data-theme="light"] .companies,
-  .stage[data-theme="light"] .cards {
-    color: #3a2a22;
+  .stage[data-theme="light"] .readout {
+    color: #2a1c16;
+  }
+  .count,
+  .companies {
+    margin: 0;
   }
   .count {
-    top: calc(50% - 96px);
     font-size: 15px;
     font-weight: 500;
     letter-spacing: -0.02em;
   }
   .companies {
-    top: calc(50% - 68px);
+    margin-top: 4px;
     font-size: 13px;
   }
   .cards {
-    top: 64px;
     display: flex;
     flex-direction: column;
     gap: 8px;
+    margin: 10px 0 0;
     padding: 0;
     list-style: none;
   }
-  .cards li {
-    padding: 8px 12px;
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.14);
-    font-size: 13px;
+  .card {
+    padding: 12px 14px;
+    border-radius: 16px;
+    background: rgba(22, 16, 24, 0.72);
+  }
+  .stage[data-theme="light"] .card {
+    background: rgba(255, 250, 243, 0.94);
+  }
+  .head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.72;
+  }
+  .quote,
+  .detail,
+  .failed {
+    margin: 0;
+  }
+  .quote {
+    margin-top: 6px;
+    font-size: 15px;
     line-height: 1.35;
   }
-  .cards li.failed {
-    background: transparent;
-    padding-left: 0;
+  .detail {
+    margin-top: 4px;
+    font-size: 12px;
+    opacity: 0.72;
+  }
+  .failed {
+    font-size: 13px;
+    line-height: 1.35;
   }
   .invite {
     position: absolute;
@@ -305,8 +375,5 @@
     height: 1px;
     overflow: hidden;
     clip: rect(0 0 0 0);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .ripple { animation: none; opacity: 0; }
   }
 </style>

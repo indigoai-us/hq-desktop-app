@@ -613,3 +613,70 @@
 .daily-brief .b-more:hover {
   color: var(--b-t1);
 }
+
+/* Light theme. The dark tokens above stay the default. Coloured cards keep white type. */
+html[data-force-theme="light"] .daily-brief,
+[data-theme="light"] .daily-brief {
+  --b-bg: #f6f1ea;
+  --b-card: #fffaf3;
+  --b-card-hi: #ffffff;
+  --b-t1: #2a1c16;
+  --b-t2: rgba(42, 28, 22, 0.82);
+  --b-t3: rgba(42, 28, 22, 0.68);
+  --b-line: rgba(42, 28, 22, 0.1);
+  --b-raise: -1px -1px 0 rgba(255, 255, 255, 0.7), 2px 3px 4px rgba(42, 28, 22, 0.05),
+    16px 22px 44px rgba(42, 28, 22, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --b-well: 0 0 0 1px rgba(42, 28, 22, 0.08);
+  background: radial-gradient(1200px 700px at 30% -10%, #fffdf9 0%, var(--b-bg) 60%), var(--b-bg);
+  color: var(--b-t1);
+}
+html[data-force-theme="light"] .daily-brief .w:not([class*="c-"]) .chip,
+[data-theme="light"] .daily-brief .w:not([class*="c-"]) .chip {
+  background: rgba(42, 28, 22, 0.06);
+  color: #2a1c16;
+}
+html[data-force-theme="light"] .daily-brief .w:not([class*="c-"]) .foot,
+[data-theme="light"] .daily-brief .w:not([class*="c-"]) .foot {
+  border-top-color: rgba(42, 28, 22, 0.12);
+  color: rgba(42, 28, 22, 0.55);
+}
+html[data-force-theme="light"] .daily-brief [class*="c-"],
+[data-theme="light"] .daily-brief [class*="c-"] {
+  color: rgba(255, 255, 255, 0.95);
+}
+html[data-force-theme="light"] .daily-brief .w:not([class*="c-"]) .b-glass,
+[data-theme="light"] .daily-brief .w:not([class*="c-"]) .b-glass {
+  background: rgba(42, 28, 22, 0.04);
+  border-color: rgba(42, 28, 22, 0.08);
+  border-top-color: rgba(255, 255, 255, 0.7);
+}
+/* The sunrise tile stays a dark scene in both themes. Resetting the tokens here
+   keeps its greeting and subtitle light; the page tokens above would paint them brown. */
+html[data-force-theme="light"] .daily-brief .dawn,
+[data-theme="light"] .daily-brief .dawn {
+  --b-t1: rgba(255, 248, 242, 0.96);
+  --b-t2: rgba(255, 236, 220, 0.92);
+  --b-t3: rgba(255, 220, 200, 0.78);
+  color: rgba(255, 248, 242, 0.96);
+}
+html[data-force-theme="light"] .daily-brief .action-card,
+[data-theme="light"] .daily-brief .action-card {
+  border-color: rgba(42, 28, 22, 0.12);
+  background: rgba(42, 28, 22, 0.03);
+}
+html[data-force-theme="light"] .daily-brief .action-card .why,
+[data-theme="light"] .daily-brief .action-card .why {
+  color: rgba(42, 28, 22, 0.82);
+}
+html[data-force-theme="light"] .daily-brief .action-card .evidence,
+html[data-force-theme="light"] .daily-brief .action-card .note,
+[data-theme="light"] .daily-brief .action-card .evidence,
+[data-theme="light"] .daily-brief .action-card .note {
+  color: rgba(42, 28, 22, 0.68);
+}
+html[data-force-theme="light"] .daily-brief .action-card button,
+[data-theme="light"] .daily-brief .action-card button {
+  border-color: rgba(42, 28, 22, 0.18);
+  background: rgba(42, 28, 22, 0.05);
+  color: #2a1c16;
+}

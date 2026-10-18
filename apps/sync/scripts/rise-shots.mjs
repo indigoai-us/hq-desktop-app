@@ -13,7 +13,7 @@ mkdirSync(clipsDir, { recursive: true });
 const base = 'http://localhost:1422/?view=rise';
 const STILLS = [
   { phase: 'opening', t: '1', name: 'opening' },
-  { phase: 'reveal', t: '9', name: 'reveal' },
+  { phase: 'reveal', t: '9.35', name: 'reveal' },
   { phase: 'brief', t: null, name: 'brief' },
 ];
 
@@ -28,9 +28,9 @@ for (const theme of ['dark', 'light']) {
   page.on('pageerror', (error) => errors.push(`${theme} ${error.message}`));
   for (const still of STILLS) {
     const t = still.t == null ? '' : `&t=${still.t}`;
-    await page.goto(`${base}&phase=${still.phase}&theme=${theme}${t}`, { waitUntil: 'networkidle' });
+    await page.goto(`${base}&phase=${still.phase}&theme=${theme}${t}`, { waitUntil: 'load', timeout: 120000 });
     const selector = still.phase === 'brief' ? '[data-testid="welcome-report-ready"]' : '[data-testid="brief-rise"]';
-    await page.waitForSelector(selector, { timeout: 20000 });
+    await page.waitForSelector(selector, { timeout: 120000 });
     await page.waitForTimeout(700);
     const file = join(framesDir, `app-1670-rise-${theme}-${still.name}.png`);
     await page.screenshot({ path: file });
@@ -49,8 +49,8 @@ for (const theme of ['dark', 'light']) {
   });
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(`clip ${theme} ${error.message}`));
-  await page.goto(`${base}&phase=record&theme=${theme}`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('[data-testid="brief-rise"]', { timeout: 20000 });
+  await page.goto(`${base}&phase=record&theme=${theme}`, { waitUntil: 'load', timeout: 120000 });
+  await page.waitForSelector('[data-testid="brief-rise"]', { timeout: 120000 });
   await page.waitForTimeout(25000);
   await page.close();
   await context.close();

@@ -37,7 +37,10 @@ export interface RiseSource {
   /** Brand mark name when one exists. Company rows use initials. */
   icon?: string;
   counts: Partial<RiseCounts>;
+  /** The finding card. Not a second copy of the count line. */
   finding: string;
+  /** Smaller line under the finding, when the source has one. */
+  detail?: string;
   failed?: boolean;
   /** One calm line. Shown instead of the finding when the source failed. */
   failureLine?: string;
@@ -56,15 +59,67 @@ export interface RiseIconFrame {
   lane: number;
   opacity: number;
   ripple: boolean;
+  /** Seconds since the icon broke the water. -1 when the ring is off. */
+  rippleAge: number;
   visible: boolean;
+  /** The full 60 px mark is above the waterline. */
+  whole: boolean;
   /** True when the 60 px icon would intersect the sun disc. */
   crossesSun: boolean;
 }
 
 export interface RiseCardFrame {
   id: string;
+  label: string;
   text: string;
+  detail: string;
   failed: boolean;
+}
+
+export interface RisePixel {
+  x: number;
+  y: number;
+  color: string;
+}
+
+/** 6 px cells on the 8 px pitch, sunrise palette, in a ring around the 60 px mark. */
+export const RISE_HALO_DARK = ["#ffb580", "#ff809f", "#ffa88c", "#ffbea0", "#ff9696"];
+export const RISE_HALO_LIGHT = ["#d67860", "#d46880", "#dc8c6e"];
+
+export function riseHaloCells(theme: "dark" | "light"): RisePixel[] {
+  const colors = theme === "light" ? RISE_HALO_LIGHT : RISE_HALO_DARK;
+  const cells: RisePixel[] = [];
+  const r0 = RISE_ICON / 2 - 10;
+  const r1 = RISE_ICON / 2 + 26;
+  const start = -Math.ceil(r1 / RISE_PITCH) * RISE_PITCH;
+  for (let gy = start; gy <= r1; gy += RISE_PITCH) {
+    for (let gx = start; gx <= r1; gx += RISE_PITCH) {
+      const d = Math.hypot(gx + RISE_CELL / 2, gy + RISE_CELL / 2);
+      if (d < r0 || d > r1) continue;
+      const color = colors[Math.abs((gx / RISE_PITCH + gy / RISE_PITCH) | 0) % colors.length]!;
+      cells.push({ x: gx, y: gy, color });
+    }
+  }
+  return cells;
+}
+
+/** Flat pixel ring on the two waterline rows. Age is seconds since emergence. */
+export function riseRippleCells(age: number, theme: "dark" | "light"): RisePixel[] {
+  if (age < 0 || age > RISE_RIPPLE_S) return [];
+  const rr = RISE_ICON / 2 + age * 70;
+  const fade = (1 - age / RISE_RIPPLE_S) * 0.55;
+  const color = theme === "light" ? `rgba(176, 100, 98, ${fade.toFixed(3)})` : `rgba(255, 190, 160, ${fade.toFixed(3)})`;
+  const cells: RisePixel[] = [];
+  const reach = Math.ceil((rr + RISE_PITCH) / RISE_PITCH) * RISE_PITCH;
+  for (const gy of [RISE_PITCH, RISE_PITCH * 2]) {
+    for (let gx = -reach; gx <= reach; gx += RISE_PITCH) {
+      const ry = gy / (RISE_PITCH * 2);
+      const dx = (gx + RISE_CELL / 2) / rr;
+      if (Math.abs(Math.hypot(dx, ry * 0.9) - 1) > 0.12) continue;
+      cells.push({ x: gx, y: gy, color });
+    }
+  }
+  return cells;
 }
 
 export interface RiseFrame {
@@ -121,7 +176,7 @@ function crossesSun(lane: number): boolean {
 }
 
 function hiddenIcon(id: string, lane: number): RiseIconFrame {
-  return { id, centerY: RISE_ICON, lane, opacity: 0, ripple: false, visible: false, crossesSun: crossesSun(lane) };
+  return { id, centerY: RISE_ICON, lane, opacity: 0, ripple: false, rippleAge: -1, visible: false, whole: false, crossesSun: crossesSun(lane) };
 }
 
 function iconAt(source: RiseSource, index: number, t: number, reduced: boolean): RiseIconFrame {
@@ -133,7 +188,9 @@ function iconAt(source: RiseSource, index: number, t: number, reduced: boolean):
     if (age > RISE_REDUCED_HOLD_S) return hiddenIcon(source.id, lane);
     // Visible on the reveal frame itself, then faded out before the hold ends.
     const opacity = age < 0.25 ? Math.max(age / 0.25, 0.001) : age > 1 ? Math.max(0, 1 - (age - 1) / 0.5) : 1;
-    return { id: source.id, centerY: 0, lane, opacity, ripple: false, visible: opacity > 0, crossesSun: crossesSun(lane) };
+    // Whole mark, sitting just above the water. Nothing is left cut off.
+    const centerY = -(RISE_ICON / 2 + RISE_PITCH);
+    return { id: source.id, centerY, lane, opacity, ripple: false, rippleAge: -1, visible: opacity > 0, whole: true, crossesSun: crossesSun(lane) };
   }
   const centerY = (reveal - t) * RISE_SPEED;
   const half = RISE_ICON / 2;
@@ -144,8 +201,21 @@ function iconAt(source: RiseSource, index: number, t: number, reduced: boolean):
   const fadeStart = RISE_PEAK - RISE_FADE_S * RISE_SPEED;
   const opacity = above <= fadeStart ? 1 : Math.max(0, 1 - (above - fadeStart) / (RISE_PEAK - fadeStart));
   const emergedFor = t - (reveal - half / RISE_SPEED);
-  const ripple = emergedFor >= 0 && emergedFor <= RISE_RIPPLE_S && centerY > -RISE_CELL;
-  return { id: source.id, centerY, lane, opacity, ripple, visible: opacity > 0, crossesSun: crossesSun(lane) };
+  // The ring lasts 0.6s from the moment the icon breaks the water, which is
+  // long enough for the full mark to clear the horizon while the ring is still on.
+  const ripple = emergedFor >= 0 && emergedFor <= RISE_RIPPLE_S;
+  const whole = centerY + half <= 0;
+  return {
+    id: source.id,
+    centerY,
+    lane,
+    opacity,
+    ripple,
+    rippleAge: ripple ? emergedFor : -1,
+    visible: opacity > 0,
+    whole,
+    crossesSun: crossesSun(lane),
+  };
 }
 
 /**
@@ -175,11 +245,17 @@ export function riseFrame(
     icons.push(iconAt(source, index, t, reduced));
     if (t + 1e-9 < riseRevealAt(index)) return;
     if (source.failed) {
-      cards.push({ id: source.id, text: source.failureLine?.trim() || `${source.label} could not be read.`, failed: true });
+      cards.push({
+        id: source.id,
+        label: source.label,
+        text: source.failureLine?.trim() || `${source.label} could not be read.`,
+        detail: "",
+        failed: true,
+      });
       return;
     }
     addCounts(counts, source.counts);
-    cards.push({ id: source.id, text: source.finding, failed: false });
+    cards.push({ id: source.id, label: source.label, text: source.finding, detail: source.detail?.trim() ?? "", failed: false });
   });
   const companiesLine = riseCompaniesLine(companies);
   const briefOpacity = readyAt == null ? 0 : Math.min(1, Math.max(0, (t - readyAt) / RISE_CROSSFADE_S));

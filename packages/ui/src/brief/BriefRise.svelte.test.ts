@@ -5,9 +5,10 @@ import { mount, tick, unmount } from "svelte";
 import BriefRise from "./BriefRise.svelte";
 import { riseRevealAt, type RiseSource } from "./brief-rise.js";
 
+const FINDING = "Keep the offline installer in the first release.";
 const SOURCES: RiseSource[] = [
-  { id: "claude", label: "Claude", counts: { sessions: 168 }, finding: "168 sessions in Claude Code" },
-  { id: "codex", label: "Codex", counts: { sessions: 244, repos: 3 }, finding: "244 sessions across 3 repos" },
+  { id: "claude", label: "Claude", icon: "claude", counts: { sessions: 168 }, finding: FINDING, detail: "Session · Yesterday, 4:42 PM" },
+  { id: "codex", label: "Codex", icon: "codex", counts: { sessions: 244, repos: 3 }, finding: "PR #248 · Restore offline install is ready for review." },
 ];
 
 let target: HTMLDivElement;
@@ -36,10 +37,32 @@ describe("BriefRise frames", () => {
     expect(target.querySelector('[data-testid="brief-rise-count"]')).toBeNull();
   });
 
-  it("shows the count and the card on the horizon frame", async () => {
+  it("shows the count once, beside the finding card, on the horizon frame", async () => {
     await show(riseRevealAt(0));
-    expect(target.querySelector('[data-testid="brief-rise-card-claude"]')?.textContent).toBe("168 sessions in Claude Code");
+    const card = target.querySelector('[data-testid="brief-rise-card-claude"]');
+    const count = target.querySelector('[data-testid="brief-rise-count"]');
+    const readout = target.querySelector(".readout");
+    expect(card?.textContent).toContain(FINDING);
+    expect(card?.textContent).not.toContain("sessions read");
+    expect(count?.textContent).toBe("168 sessions read");
+    expect(readout?.contains(card ?? null)).toBe(true);
+    expect(readout?.contains(count ?? null)).toBe(true);
+    expect(target.textContent?.match(/sessions read/g)).toEqual(["sessions read"]);
+    const icon = target.querySelector<HTMLElement>('[data-testid="brief-rise-icon-claude"]');
+    expect(icon).not.toBeNull();
+    expect(icon?.dataset.whole).toBe("false");
+    expect(icon?.querySelector("svg")?.getAttribute("width")).toBe("60");
+    expect(icon?.querySelectorAll(".halo i").length).toBeGreaterThan(12);
+  });
+
+  it("draws the whole 60 px mark, the halo, and the ripple once the icon has cleared the water", async () => {
+    await show(riseRevealAt(0) + 0.35);
+    const icon = target.querySelector<HTMLElement>('[data-testid="brief-rise-icon-claude"]');
+    expect(icon?.dataset.whole).toBe("true");
+    expect(icon?.querySelector("svg")?.getAttribute("width")).toBe("60");
+    expect(icon?.querySelectorAll(".halo i").length).toBeGreaterThan(12);
+    expect(target.querySelector('[data-testid="brief-rise-ripple-claude"]')?.querySelectorAll("i").length).toBeGreaterThan(0);
+    expect(target.querySelector('[data-testid="brief-rise-card-claude"]')?.textContent).toContain(FINDING);
     expect(target.querySelector('[data-testid="brief-rise-count"]')?.textContent).toBe("168 sessions read");
-    expect(target.querySelector('[data-testid="brief-rise-icon-claude"]')).not.toBeNull();
   });
 });

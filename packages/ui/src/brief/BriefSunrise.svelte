@@ -234,7 +234,7 @@
 >
   <canvas bind:this={canvas} aria-hidden="true"></canvas>
   <div class="over">
-    <div class="eyebrow" style="color:rgba(255,190,160,.7)">Sunrise · {total ? "decisions cleared" : "nothing owed"}</div>
+    <div class="eyebrow" style="color:rgba(255,210,186,.92)">Sunrise · {total ? "decisions cleared" : "nothing owed"}</div>
     <div class="greet" class:big>
       Morning{userName ? `, ${userName}` : ""}.<br /><span>{line}</span>
     </div>
@@ -243,7 +243,7 @@
     <div class="tl">
       <div
         class="eyebrow tl-head"
-        style="color:rgba(255,190,160,.6)"
+        style="color:rgba(255,220,200,.92)"
         data-testid="brief-timeline-head"
         title={tl.background ? `${tl.background} background session${tl.background === 1 ? "" : "s"} hidden` : undefined}
       >
@@ -266,7 +266,7 @@
       </div>
       <svg viewBox="0 0 360 14" aria-hidden="true">
         {#each ticks as t (t.label)}
-          <text x={t.x} y="11" fill="rgba(255,255,255,.3)" font-size="8.5" text-anchor={t.label === "now" ? "end" : "middle"}>{t.label}</text>
+          <text x={t.x} y="11" fill="rgba(255,236,220,.78)" font-size="8.5" text-anchor={t.label === "now" ? "end" : "middle"}>{t.label}</text>
         {/each}
       </svg>
     </div>
@@ -454,7 +454,7 @@
     font-family: var(--b-mono);
     font-size: 12px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.56);
+    color: rgba(255, 248, 242, 0.92);
   }
   /* The estimate sits after the count in the same mono, dimmer, with its own chip. */
   .eta {

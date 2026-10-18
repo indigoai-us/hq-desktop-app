@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   RISE_ICON,
+  RISE_PITCH,
   RISE_SPEED,
   riseCompaniesLine,
   riseDawnProgress,
   riseFrame,
+  riseHaloCells,
   riseRevealAt,
+  riseRippleCells,
   welcomeRiseSources,
   type RiseSource,
 } from "./brief-rise.js";
@@ -71,7 +74,8 @@ describe("rise reduced motion", () => {
     expect(before.icons.every((icon) => icon.visible === false)).toBe(true);
     expect(before.cards.map((card) => card.id)).not.toContain("codex");
     const icon = frame.icons[1]!;
-    expect(icon.centerY).toBe(0);
+    expect(icon.centerY).toBe(-(RISE_ICON / 2 + RISE_PITCH));
+    expect(icon.whole).toBe(true);
     expect(icon.visible).toBe(true);
     expect(icon.ripple).toBe(false);
     expect(frame.cards.map((card) => card.id)).toEqual(["claude", "codex"]);
@@ -88,7 +92,7 @@ describe("rise failed source", () => {
     ];
     const frame = riseFrame(riseRevealAt(2), sources);
     const card = frame.cards.find((row) => row.id === "calendar");
-    expect(card).toEqual({ id: "calendar", text: "Calendar could not be read.", failed: true });
+    expect(card).toEqual({ id: "calendar", label: "Calendar", text: "Calendar could not be read.", detail: "", failed: true });
     expect(frame.countText).toBe("412 sessions read · 3 repos");
     expect(frame.countText).not.toContain("calendar");
   });
@@ -116,6 +120,33 @@ describe("rise companies", () => {
     expect(frame.countText).toBe("4 sessions read");
     expect(frame.companiesLine).toBe("Northwind · Acme · Initech");
     expect(frame.companyGate).toBe(false);
+  });
+});
+
+describe("rise pixels", () => {
+  it("draws a halo of 6 px cells on an 8 px pitch in both themes", () => {
+    for (const theme of ["dark", "light"] as const) {
+      const cells = riseHaloCells(theme);
+      expect(cells.length).toBeGreaterThan(12);
+      for (const cell of cells) {
+        expect(Math.abs(cell.x % RISE_PITCH)).toBe(0);
+        expect(Math.abs(cell.y % RISE_PITCH)).toBe(0);
+      }
+    }
+    expect(riseHaloCells("light").some((cell) => cell.color === "#d67860")).toBe(true);
+    expect(riseHaloCells("dark").some((cell) => cell.color === "#ffb580")).toBe(true);
+  });
+
+  it("keeps a short ripple at emergence and none outside that window", () => {
+    expect(riseRippleCells(0.2, "dark").length).toBeGreaterThan(0);
+    expect(riseRippleCells(0.2, "light").length).toBeGreaterThan(0);
+    expect(riseRippleCells(-0.01, "dark")).toEqual([]);
+    expect(riseRippleCells(0.61, "dark")).toEqual([]);
+    const cleared = riseFrame(riseRevealAt(0) + RISE_ICON / 2 / RISE_SPEED + 0.02, SOURCES);
+    const icon = cleared.icons[0]!;
+    expect(icon.whole).toBe(true);
+    expect(icon.centerY + RISE_ICON / 2).toBeLessThanOrEqual(0);
+    expect(icon.ripple).toBe(true);
   });
 });
 

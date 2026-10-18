@@ -10,8 +10,7 @@
   import BriefConnectApps from '../../../packages/ui/src/brief/BriefConnectApps.svelte';
   import WelcomeReport from '../../../packages/ui/src/brief/WelcomeReport.svelte';
   import DailyBrief from '../../../packages/ui/src/brief/DailyBrief.svelte';
-  import { octoberEightBrief } from '../../../packages/ui/src/brief/brief-fixture';
-  import type { RiseSource } from '../../../packages/ui/src/brief/brief-rise';
+  import { WELCOME_RISE_SOURCES, welcomeRiseBriefInput, welcomeRiseNow } from '../../../packages/ui/src/brief/welcome-rise-run';
   import type { YourAppsHost, YourAppsLoad, YourAppsResult } from '../../../packages/ui/src/chat/first-run/your-apps-host';
 
   const params = new URLSearchParams(window.location.search);
@@ -20,19 +19,7 @@
   const elapsed = params.has('t') ? Number(params.get('t')) : null;
   let briefOpacity = $state(0);
 
-  const SOURCES: RiseSource[] = [
-    { id: 'claude', label: 'Claude', icon: 'claude', counts: { sessions: 168 }, finding: '168 sessions in Claude Code' },
-    { id: 'codex', label: 'Codex', icon: 'codex', counts: { sessions: 244, repos: 3 }, finding: '244 sessions across 3 repos' },
-    {
-      id: 'calendar',
-      label: 'Calendar',
-      counts: { calendars: 1 },
-      finding: '1 calendar',
-      failed: true,
-      failureLine: 'Calendar could not be read.',
-    },
-    { id: 'repos', label: 'Repos', counts: { repos: 3 }, finding: '3 more repos' },
-  ];
+  const SOURCES = WELCOME_RISE_SOURCES;
 
   const SCAN = {
     platform: 'macos',
@@ -65,10 +52,10 @@
 
   const showRise = phase !== 'brief';
   const showBrief = phase === 'brief' || phase === 'record';
-  const NOW = new Date('2026-10-08T09:00:00');
+  const briefInput = welcomeRiseBriefInput(welcomeRiseNow());
 </script>
 
-<div class="shot" data-testid="rise-shot" data-phase={phase}>
+<div class="shot" data-testid="rise-shot" data-phase={phase} data-theme={theme}>
   {#if showRise}
     <BriefRise
       sources={SOURCES}
@@ -83,11 +70,12 @@
         cli={{ claudeCode: true, codex: false }}
         anywhereOnId="claude"
         quiet
+        {theme}
       />
     </div>
   {/if}
   {#if showBrief}
-    <div class="brief" style:opacity={phase === 'brief' ? 1 : briefOpacity}>
+    <div class="brief" data-theme={theme} style:opacity={phase === 'brief' ? 1 : briefOpacity}>
       <WelcomeReport
         ready
         {theme}
@@ -95,7 +83,7 @@
         connect={{ host, company: { uid: 'cmp_preview', name: 'Acme' }, onnewcompany: async () => never() }}
       >
         <DailyBrief
-          input={{ ...octoberEightBrief(NOW), today: '2026-10-08' }}
+          input={briefInput}
           actions={{ destinations: { assistantName: 'Atlas', claudeCode: true, codex: false }, onassistant: async () => null }}
           onlaunch={async () => null}
         />
@@ -111,6 +99,9 @@
     overflow: hidden;
     background: #121216;
   }
+  .shot[data-theme="light"] {
+    background: #f4efe9;
+  }
   .invite {
     position: absolute;
     left: 28px;
@@ -123,5 +114,8 @@
     inset: 0;
     overflow: auto;
     background: var(--b-bg, #1b1b1e);
+  }
+  .brief[data-theme="light"] {
+    background: #f6f1ea;
   }
 </style>
